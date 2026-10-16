@@ -147,6 +147,9 @@ import {
   provisionalTasks,
   emptyPaneFailed,
   emptyPaneText,
+  cardTitleLine,
+  INTERRUPTED_REPLY,
+  recapTitlesOn,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -2554,7 +2557,7 @@ describe("the unread mark", () => {
     // Akshil, 2026-08-18. The List is mostly history and the rows scheduled ahead
     // are the ones a reader is not being asked to read yet — so they recede
     // without leaving the list. The predicate is the lib's, asked once per row.
-    expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "")}');
+    expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "") + (line.kind === "recap" ? " is-recap" : "")}');
     // …and a DRAFT row reads the same (Akshil, 2026-09-15): unsent words are
     // work further ahead than a scheduled run, in the same lane.
     expect(VIEWS).toContain("const ahead = isUpcomingTask(task) || isDraftTask(task);");
@@ -5625,7 +5628,7 @@ describe("the folder chip on a row and a card", () => {
     // …and it captions the WHOLE of whatever the line is one line of: the
     // untruncated message when the row is titled by one, the title otherwise.
     expect(ROW).toContain(
-      "data-hint={line.said ? task.last_message?.text : task.title}");
+      "data-hint={line.hint}");
   });
 });
 
@@ -8941,7 +8944,7 @@ describe("the Cards view's frame", () => {
     // The full title rides the app's own hint (hints.ts), like a List row's,
     // not a native `title` that arrives a second later — and where the line
     // is the newest message, the hint is that message's own full text.
-    expect(CARDS).toContain('data-hint={line.said ? task.last_message?.text : task.title}');
+    expect(CARDS).toContain("data-hint={line.hint}");
     expect(CARDS).not.toContain('className="task-card-title" title=');
     // Two rows: ring then id top-left (the List row's order), the time at the
     // right, the title alone below (Akshil, 2026-09-04). No Open button
@@ -8955,7 +8958,7 @@ describe("the Cards view's frame", () => {
     const row = head.slice(head.indexOf('<div className="task-card-head-row">'), head.indexOf("</div>"));
     expect(row.indexOf("<StatusIcon")).toBeLessThan(row.indexOf("tasks-id--task"));
     expect(row.indexOf("tasks-id--task")).toBeLessThan(row.indexOf("task-card-when"));
-    expect(head.indexOf("</div>")).toBeLessThan(head.indexOf('className="task-card-title"'));
+    expect(head.indexOf("</div>")).toBeLessThan(head.indexOf('className={"task-card-title"'));
     expect(block(CARDS_CSS, ".task-card-head")).toContain("flex-direction: column");
     expect(block(CARDS_CSS, ".task-card-head-row > .schedule-tv-id")).toContain("margin-left: auto");
     // The tag wears the List row's skin, widened to this row in tasks.css — not
@@ -11114,5 +11117,84 @@ describe("the optimistic queue claim", () => {
     const line = [row({ key: "a", status: "queued", queue_key: "/repo", queue_position: 1 })];
     const claims = skipLineOverrides(line as Task[], { key: "gone", status: "queued", queue_position: 1 });
     expect(claims.map((c) => c.key)).toEqual(["gone"]);
+  });
+});
+
+describe("cardTitleLine — task recaps (prefs task_recap.enabled)", () => {
+  const base = {
+    title: "ai title",
+    last_message: { text: "fix the login bug\nwith detail" },
+    last_reply: "Fixed it: the token was stale.",
+  };
+
+  it("flag off (no recap key): the reader's newest message, exactly as before", () => {
+    expect(cardTitleLine({ ...base, status: "done" })).toEqual({
+      text: "fix the login bug", said: true, kind: "said", hint: "fix the login bug\nwith detail",
+    });
+    expect(cardTitleLine({ title: "ai title", status: "done", last_reply: "x" })).toEqual({
+      text: "ai title", said: false, kind: "title", hint: "ai title",
+    });
+  });
+
+  it("a finished turn: the recap once it lands, else the reply's first line", () => {
+    const recap = { text: "Login bug fixed, token refreshed", for_uuid: "u1" };
+    expect(cardTitleLine({ ...base, status: "done", recap })).toMatchObject({
+      text: "Login bug fixed, token refreshed", kind: "recap", hint: recap.text, said: false,
+    });
+    expect(cardTitleLine({ ...base, status: "done", recap: null })).toMatchObject({
+      text: "Fixed it: the token was stale.", kind: "reply", hint: base.last_reply,
+    });
+    expect(cardTitleLine({ ...base, status: "archived", recap: null }).kind).toBe("reply");
+  });
+
+  it("a running or waiting turn keeps the reader's message, recap or not", () => {
+    const recap = { text: "old turn recap", for_uuid: "u0" };
+    for (const status of ["in_progress", "needs_attention", "queued", "upcoming"]) {
+      expect(cardTitleLine({ ...base, status, recap }).kind).toBe("said");
+    }
+  });
+
+  it("no reply (or only the stop marker) falls back to the message", () => {
+    expect(cardTitleLine({ ...base, status: "done", recap: null, last_reply: "" }).kind).toBe("said");
+    expect(
+      cardTitleLine({ ...base, status: "done", recap: null, last_reply: INTERRUPTED_REPLY }).kind,
+    ).toBe("said");
+    expect(cardTitleLine({ ...base, status: "done", recap: { text: "  ", for_uuid: "u" } }).kind)
+      .toBe("reply");
+  });
+});
+
+describe("cardTitleLine — interrupted turn", () => {
+  it("a recap still titles it; the stop marker never does", () => {
+    const row = {
+      title: "ai title",
+      last_message: { text: "fix the login bug" },
+      last_reply: INTERRUPTED_REPLY,
+      status: "done",
+      recap: { text: "Old recap text here", for_uuid: "u1" },
+    };
+    expect(cardTitleLine(row)).toMatchObject({ kind: "recap", text: "Old recap text here" });
+    expect(cardTitleLine({ ...row, recap: null })).toMatchObject({
+      kind: "said", text: "fix the login bug",
+    });
+  });
+});
+
+describe("recapTitlesOn", () => {
+  it("is the presence of the recap key, null or not", () => {
+    expect(recapTitlesOn({})).toBe(false);
+    expect(recapTitlesOn({ recap: null })).toBe(true);
+    expect(recapTitlesOn({ recap: { text: "x", for_uuid: "u" } })).toBe(true);
+  });
+});
+
+describe("cardTitleLine — reply fallback is plain words", () => {
+  it("strips list markers, bold and code from the first line; hint stays raw", () => {
+    const last_reply = "- **Servers killed:** `3131` now\nmore";
+    expect(cardTitleLine({ status: "done", recap: null, last_reply })).toMatchObject({
+      text: "Servers killed: 3131 now", kind: "reply", hint: last_reply,
+    });
+    expect(cardTitleLine({ status: "done", recap: null, last_reply: "## 1.  Done   it" }).text)
+      .toBe("1. Done it");
   });
 });

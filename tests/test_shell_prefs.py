@@ -1560,6 +1560,29 @@ def test_project_queue_junk_value_reads_as_off(tmp_path, monkeypatch):
     assert prefs_mod.project_queue_enabled() is False
 
 
+# -- task recap titles (beta) flag ---------------------------------------------
+
+
+def test_task_recap_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Same opt-in idiom as `project_queue_enabled`: only a stored `true` is on,
+    and the PUT takes booleans only."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["task_recap"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"task_recap_titles_enabled": True},
+                      headers=FUSED).json()
+    assert body["task_recap"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["task_recap_titles_enabled"] is True
+    assert prefs_mod.task_recap_titles_enabled() is True
+    bad = client.put("/api/prefs", json={"task_recap_titles_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "task_recap_titles_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"task_recap_titles_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.task_recap_titles_enabled() is False
+
+
 def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert (

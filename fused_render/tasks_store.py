@@ -279,8 +279,13 @@ def _update(filename: str, mutate):
         data = load_state(filename)
         result, changed = mutate(data)
         if changed:
-            with open(path, "w", encoding="utf-8") as f:
+            # Atomic: unlocked readers (`load_state` in a listing) must never
+            # see a half-written file and read it as `{}`. A tmp file beside
+            # it, then `os.replace`.
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp, path)
     return result
 
 
@@ -946,6 +951,58 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
     return _update(SETTINGS_FILE, mutate)
 
 
+# THE TURN RECAP rides on the same per-session record (Akshil, 2026-10-15:
+# "just add a field in json"), under its own key so `session_settings` and
+# `record_settings` never see it:
+#
+#     {"<session-id>": {"model": …, "recap": {"text": "…", "for_uuid": "…", "at": …}}}
+#
+# `for_uuid` is the turn the recap is about — the same key the away fold's
+# `/api/claude-sessions/recap` takes — so the fold and the Tasks row title share
+# one haiku call. `text: ""` is a stored FAILURE: the turn was tried and haiku
+# said nothing usable, and the listing does not ask again. One recap per
+# session: a newer turn's replaces it. Written only while
+# `task_recap_titles_enabled` is on (claude_sessions `_recap`).
+
+
+def session_recap(state: dict, session_id: str) -> dict | None:
+    """The stored recap for one session — `{"text", "for_uuid", "at"}` — or
+    None when there is none (or the record is not that shape)."""
+    rec = state.get(str(session_id or ""))
+    recap = rec.get("recap") if isinstance(rec, dict) else None
+    if not isinstance(recap, dict) or not isinstance(recap.get("for_uuid"), str):
+        return None
+    return {"text": str(recap.get("text") or ""),
+            "for_uuid": recap["for_uuid"],
+            "at": float(recap.get("at") or 0.0),
+            "empty": recap.get("empty") is True}
+
+
+def record_recap(session_id: str, for_uuid: str, text: str,
+                 now: float | None = None, empty: bool = False) -> dict:
+    """Store one turn's recap (or `""` for a failed one) on the session's
+    record, beside whatever model/effort it already holds. Nothing for an empty
+    session id or turn uuid — there is nothing to key it on."""
+    session_id = str(session_id or "").strip()
+    for_uuid = str(for_uuid or "").strip()
+    if not session_id or not for_uuid:
+        return {}
+    recap = {"text": str(text or ""), "for_uuid": for_uuid,
+             "at": time.time() if now is None else float(now)}
+    if empty:
+        # Claude said nothing in prose anywhere: not a failure, so not retried.
+        recap["empty"] = True
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        rec["recap"] = recap
+        state[session_id] = rec
+        return recap, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
 def forget_session(session_id: str) -> dict:
     """Erase what these stores keep about one session — the erase gesture's
     share of `POST /api/tasks/erase`, where the transcript itself goes too.
@@ -954,7 +1011,8 @@ def forget_session(session_id: str) -> dict:
     no longer exist, and there is no thread left for them to be about.
 
     `session_settings.json`'s record GOES for the same reason: it says which
-    model a conversation runs with, and the conversation is gone. Left behind,
+    model a conversation runs with (and holds its last turn recap), and the
+    conversation is gone. Left behind,
     it would be the one thing that outlived the erase and re-seeded a new chat
     that happened to be handed the same id.
 

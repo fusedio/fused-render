@@ -14,6 +14,7 @@ Nothing here reads the real ~/.claude — every path is under tmp_path.
 """
 import json
 import os
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -4430,3 +4431,307 @@ def test_ensure_duties_does_not_block_a_request_behind_a_held_lease(
 
     assert calls == [True]
     assert elapsed < 1.0
+
+
+# ------------------------------------- task recap titles (task_recap_titles_enabled)
+
+
+@pytest.fixture()
+def recap_on(monkeypatch):
+    """The flag on, and no worker thread: these tests read the queue, and a
+    real worker would run haiku."""
+    monkeypatch.setattr(prefs_mod, "task_recap_titles_enabled", lambda: True)
+    monkeypatch.setattr(tasks_mod, "_recap_worker", lambda: None)
+
+
+def _recap_jobs():
+    lanes = tasks_mod._recap_heap + tasks_mod._recap_backfill
+    return [job for _, _, job in sorted(lanes)]
+
+
+def test_recap_flag_off_rows_carry_nothing_new(client, projects_dir, tmp_path):
+    """FLAG OFF IS MAIN: no `recap` key on any row and nothing queued."""
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("fix the login bug", T9), _assistant("Fixed it.", T10)])
+    row = _tasks(client)[0]
+    assert row["status"] == "done"
+    assert "recap" not in row
+    assert row["last_reply"] == "Fixed it."
+    assert row["last_message"]["text"] == "fix the login bug"
+    assert tasks_mod._recap_heap == [] and tasks_mod._recap_backfill == []
+    assert tasks_mod._recap_seen == set()
+
+
+def test_recap_flag_on_queues_a_finished_turn_once_and_shows_the_stored_one(
+        client, projects_dir, tmp_path, recap_on):
+    records_ = [_user("fix the login bug", T9), _assistant("Fixed it.", T10)]
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), records_)
+    row = _tasks(client)[0]
+    assert row["recap"] is None
+    job, = _recap_jobs()
+    assert (job["session_id"], job["for_uuid"], job["file"]) == (
+        "sess-a", "sess-a-0", str(tmp_path))
+    assert job["key"] == row["key"]
+
+    _tasks(client)  # a second poll of the same turn queues nothing more
+    assert len(_recap_jobs()) == 1
+
+    tasks_store.record_recap("sess-a", "sess-a-0", "Login bug fixed", now=time.time())
+    row = _tasks(client)[0]
+    assert row["recap"] == {"text": "Login bug fixed", "for_uuid": "sess-a-0"}
+    assert row["last_message"]["text"] == "fix the login bug"  # untouched
+
+    # A newer send is a new turn: the old recap stops titling the row.
+    _write_transcript(projects_dir, "sess-a", str(tmp_path),
+                      records_ + [_user("now the logout one", T11)])
+    assert _tasks(client)[0]["recap"] is None
+
+
+def test_recap_candidate_rules(tmp_path):
+    """Running turns are never queued; a stored recap for the turn is shown and
+    not re-asked; one taken before the reply landed is re-asked with
+    `stale_before`; a fresh stored failure is neither shown nor re-asked."""
+    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
+    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
+
+    def ask(status, settings, reply="Fixed it."):
+        out = []
+        return tasks_mod._recap_candidate(task, rec, status, reply, settings, out), out
+
+    assert ask("in_progress", {}) == (None, [])
+    assert ask("needs_attention", {}) == (None, [])
+    assert ask("done", {}, reply="")[1] == []
+    shown, out = ask("done", {})
+    assert shown is None and out[0]["stale_before"] == 0.0
+
+    def stored(text, at, for_uuid="u1"):
+        return {"s": {"model": "haiku",
+                      "recap": {"text": text, "for_uuid": for_uuid, "at": at}}}
+
+    assert ask("done", stored("Fixed", 60.0)) == (
+        {"text": "Fixed", "for_uuid": "u1"}, [])
+    shown, out = ask("done", stored("Fixed", 40.0))
+    assert shown == {"text": "Fixed", "for_uuid": "u1"}
+    assert out[0]["stale_before"] == 50.0
+    assert ask("done", stored("", time.time())) == (None, [])  # fresh failure: held off
+    shown, out = ask("done", stored("Older turn", 60.0, for_uuid="u0"))
+    assert shown is None and len(out) == 1
+
+
+def test_recap_feed_queues_every_eligible_turn_newest_first(recap_on):
+    wants = [{"key": f"k{i}", "file": "/f", "session_id": f"s{i}",
+              "for_uuid": "u", "reply_at": float(i), "stale_before": 0.0}
+             for i in range(25)]
+    tasks_mod._recap_feed(wants[:3])  # a narrowed listing feeds too
+    assert len(_recap_jobs()) == 3
+
+    tasks_mod._recap_feed(wants)
+    jobs = _recap_jobs()
+    assert len(jobs) == 25  # no cap
+    assert jobs[0]["reply_at"] == 24.0  # newest reply first
+    tasks_mod._recap_feed(wants)  # already queued
+    assert len(_recap_jobs()) == 25
+
+
+def test_recap_candidate_asks_blocked_and_archived_turns(tmp_path):
+    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
+    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
+    for status in ("done", "blocked", "archived"):
+        out = []
+        tasks_mod._recap_candidate(task, rec, status, "Fixed it.", {}, out)
+        assert len(out) == 1, status
+
+
+def test_recap_run_asks_recap_then_wakes_the_page(monkeypatch, recap_on):
+    asked, woke = [], []
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
+    monkeypatch.setattr(sessions_mod, "_recap",
+                        lambda agent, f, sid, uuid, stale_before=0.0, transcript="", ended=False:
+                        asked.append((f, sid, uuid, stale_before, transcript, ended)) or "R")
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: woke.append(keys))
+    tasks_mod._recap_run({"key": "k", "file": "/f", "session_id": "s",
+                          "for_uuid": "u", "reply_at": 5.0, "stale_before": 5.0,
+                          "transcript": "/t.jsonl"})
+    assert asked == [("/f", "s", "u", 5.0, "/t.jsonl", True)]
+    assert woke == [{"k", "s"}]
+
+
+def test_recap_candidate_asks_interrupted_and_gone_folder_turns(tmp_path):
+    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
+    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
+    out = []
+    tasks_mod._recap_candidate(task, rec, "done", tasks_mod._INTERRUPTED_REPLY, {}, out)
+    assert len(out) == 1
+    # A folder the disk has lost: the transcript path rides on the job instead.
+    gone = {"key": "k", "session_id": "s", "project": str(tmp_path / "gone"),
+            "path": "/t/s.jsonl"}
+    out = []
+    tasks_mod._recap_candidate(gone, rec, "done", "Fixed it.", {}, out)
+    assert out[0]["transcript"] == "/t/s.jsonl"
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_recap_worker_survives_a_raising_job(monkeypatch):
+    """One job blowing up (agent lookup, prefs, notify) must not end the thread:
+    the next job still runs. SystemExit on the second job stops the loop."""
+    ran = []
+
+    def run(job):
+        ran.append(job["session_id"])
+        if job["session_id"] == "bad":
+            raise RuntimeError("boom")
+        raise SystemExit
+
+    monkeypatch.setattr(tasks_mod, "_recap_run", run)
+    tasks_mod._reset_recaps()
+    for seq, sid in enumerate(("bad", "good")):
+        tasks_mod._recap_heap.append((-float(10 - seq), seq, {"session_id": sid}))
+    tasks_mod._recap_heap.sort()
+    t = threading.Thread(target=tasks_mod._recap_worker, daemon=True)
+    t.start()
+    t.join(5)
+    assert not t.is_alive() and ran == ["bad", "good"]
+
+
+def test_recap_seen_is_capped(recap_on):
+    tasks_mod._recap_seen.update((f"s{i}", "u", 1.0) for i in range(tasks_mod._RECAP_SEEN_MAX + 1))
+    tasks_mod._recap_feed([{"key": "k", "file": "/f", "session_id": "new", "for_uuid": "u",
+                            "reply_at": 1.0, "stale_before": 0.0}])
+    assert len(tasks_mod._recap_seen) == 1
+
+
+def test_recap_candidate_retries_a_stored_failure_after_the_cooldown(tmp_path):
+    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
+    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
+
+    def ask(at):
+        out = []
+        settings = {"s": {"recap": {"text": "", "for_uuid": "u1", "at": at}}}
+        tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", settings, out)
+        return out
+
+    assert ask(time.time() - 10) == []
+    old = ask(time.time() - tasks_mod._RECAP_RETRY_S - 5)
+    assert len(old) == 1 and old[0]["stale_before"] > 50.0
+
+
+def test_recap_run_unmarks_a_failed_job_only(monkeypatch, recap_on):
+    job = {"key": "k", "file": "/f", "session_id": "s", "for_uuid": "u",
+           "reply_at": 5.0, "stale_before": 0.0}
+    seen = ("s", "u", 5.0)
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: object())
+    monkeypatch.setattr(tasks_watch, "notify", lambda keys=None: None)
+    for result, kept in (("", False), ("A real recap", True)):
+        tasks_mod._recap_seen.add(seen)
+        monkeypatch.setattr(sessions_mod, "_recap", lambda *a, _r=result, **k: _r)
+        tasks_mod._recap_run(job)
+        assert (seen in tasks_mod._recap_seen) is kept
+
+
+def test_recap_candidate_waits_out_the_settle_minute(tmp_path):
+    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
+
+    def ask(age):
+        out = []
+        rec = {"tail": [{"anchor": "u1"}], "reply_at": time.time() - age}
+        tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", {}, out)
+        return out
+
+    young = ask(59.0)  # reported with its `due`, which `_recap_feed` holds back
+    assert len(young) == 1 and young[0]["due"] > time.time()
+    old = ask(61.0)
+    assert len(old) == 1 and "due" not in old[0]
+
+
+def _job(sid, reply_at):
+    return {"key": sid, "file": "/f", "session_id": sid, "for_uuid": "u",
+            "reply_at": reply_at, "stale_before": 0.0}
+
+
+@pytest.fixture()
+def lanes(monkeypatch):
+    """The two lanes with no worker thread: `_recap_next` is read directly."""
+    monkeypatch.setattr(tasks_mod, "_recap_worker", lambda: None)
+    tasks_mod._reset_recaps()
+    yield
+    tasks_mod._reset_recaps()
+
+
+def test_recap_fresh_lane_beats_backfill_in_any_push_order(lanes):
+    now = time.time()
+    tasks_mod._recap_feed([_job("old", now - 7200), _job("new", now - 100)])
+    tasks_mod._recap_feed([_job("older", now - 9000)])
+    assert [j["session_id"] for j in _recap_jobs()] == ["new", "old", "older"]
+    assert len(tasks_mod._recap_heap) == 1  # only "new" is fresh
+    with tasks_mod._recap_cond:
+        job, _ = tasks_mod._recap_next(1e9)
+    assert job["session_id"] == "new"
+
+
+def test_recap_backfill_waits_for_the_delay_then_honours_the_gap(lanes):
+    now = time.time()
+    tasks_mod._recap_feed([_job("a", now - 7200), _job("b", now - 8000)])
+    t0 = tasks_mod._recap_started
+    with tasks_mod._recap_cond:
+        job, wait = tasks_mod._recap_next(t0 + 10)
+        assert job is None and 109 < wait <= 110
+        job, _ = tasks_mod._recap_next(t0 + tasks_mod._RECAP_BACKFILL_DELAY_S)
+        assert job["session_id"] == "a"  # newest first
+        job, wait = tasks_mod._recap_next(t0 + tasks_mod._RECAP_BACKFILL_DELAY_S + 5)
+        assert job is None and 9 < wait <= 10
+        job, _ = tasks_mod._recap_next(t0 + tasks_mod._RECAP_BACKFILL_DELAY_S
+                                       + tasks_mod._RECAP_BACKFILL_GAP_S)
+        assert job["session_id"] == "b"  # both lanes drain
+        assert tasks_mod._recap_next(t0 + 1e6) == (None, None)
+
+
+def test_recap_backfill_pauses_while_a_task_is_running(lanes):
+    now = time.time()
+    tasks_mod._recap_feed([_job("a", now - 7200)], machine_busy=True)
+    t0 = tasks_mod._recap_started
+    with tasks_mod._recap_cond:
+        job, wait = tasks_mod._recap_next(t0 + 1e6)
+        assert job is None and wait
+    tasks_mod._recap_feed([_job("b", now - 100)], machine_busy=True)
+    with tasks_mod._recap_cond:  # fresh turns are not paused
+        assert tasks_mod._recap_next(t0 + 1e6)[0]["session_id"] == "b"
+    tasks_mod._recap_feed([], machine_busy=False)
+    with tasks_mod._recap_cond:
+        assert tasks_mod._recap_next(t0 + 1e6)[0]["session_id"] == "a"
+
+
+def test_recap_candidate_treats_an_empty_mark_as_settled(tmp_path):
+    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
+    rec = {"tail": [{"anchor": "u1"}], "reply_at": 50.0}
+    out = []
+    settings = {"s": {"recap": {"text": "", "for_uuid": "u1", "at": 100.0, "empty": True}}}
+    tasks_mod._recap_candidate(task, rec, "done", "Fixed it.", settings, out)
+    assert out == []
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_recap_settling_turn_is_queued_without_any_listing(monkeypatch, lanes):
+    """A turn inside its settle minute gets the page woken when it ends — an
+    idle page has no listing to find it. The worker stops via SystemExit."""
+    import threading as _t
+
+    woke = _t.Event()
+
+    def notify(keys=None):
+        woke.set()
+        raise SystemExit
+
+    monkeypatch.undo()  # `lanes` stubbed the worker; this test wants the real one
+    monkeypatch.setattr(tasks_watch, "notify", notify)
+    tasks_mod._reset_recaps()
+    tasks_mod._recap_feed([dict(_job("s", time.time()), due=time.time() + 0.2)])
+    assert tasks_mod._recap_heap == [] and tasks_mod._recap_seen == set()
+    assert woke.wait(5)
+
+
+def test_recap_backfill_jobs_are_marked_for_the_busy_recheck(monkeypatch, lanes):
+    now = time.time()
+    tasks_mod._recap_feed([_job("a", now - 7200)])
+    with tasks_mod._recap_cond:
+        job, _ = tasks_mod._recap_next(tasks_mod._recap_started + 1e6)
+    assert job["backfill"] is True

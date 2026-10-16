@@ -33,6 +33,19 @@ const queueListeners = new Set<(v: boolean) => void>();
  *  send and decide waited up to 8 s until one succeeded). */
 let settledOnce = false;
 
+/** The Tasks recap titles switch (`prefs.task_recap.enabled`): with it on an
+ *  open chat shows its recap fold on open, not only after an absence. Same
+ *  shape as `queue` — opt-in, so "not asked yet" and "off" are one answer —
+ *  and read by the same single prefs GET. */
+let recapTitles = false;
+const recapListeners = new Set<(v: boolean) => void>();
+
+function setRecapTitles(next: boolean) {
+  if (recapTitles === next) return;
+  recapTitles = next;
+  for (const listener of recapListeners) listener(next);
+}
+
 function setQueue(next: boolean) {
   if (queue === next) return;
   queue = next;
@@ -117,6 +130,7 @@ function read(): Promise<void> {
       // `=== true`: the queue is OPT-IN, so a server with no such field is a
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
+      setRecapTitles(p.task_recap?.enabled === true);
     })
     .catch(() => {
       // A failed read keeps whatever answer the page already has (the default,
@@ -171,6 +185,19 @@ export function rereadFlags(): Promise<void> {
  *  keeping the answer it read at load. */
 export const QUEUE_FLAG_BROADCAST_KEY = "fused-render:project-queue";
 
+/** The same announcement for the recap titles switch. */
+export const RECAP_FLAG_BROADCAST_KEY = "fused-render:task-recap-titles";
+
+/** Hand over a known-fresh recap-titles answer (a PUT's prefs payload). */
+export function publishTaskRecapTitlesEnabled(next: boolean) {
+  setRecapTitles(next);
+  try {
+    localStorage.setItem(RECAP_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
+  } catch {
+    // Storage may be unavailable; the other tabs still re-read on focus.
+  }
+}
+
 /** Hand over a known-fresh answer (the prefs payload a PUT returned). */
 export function publishProjectQueueEnabled(next: boolean) {
   setQueue(next);
@@ -194,6 +221,14 @@ export function applyQueueFlagBroadcast(key: string | null, newValue: string | n
 
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (ev) => applyQueueFlagBroadcast(ev.key, ev.newValue));
+  window.addEventListener("storage", (ev) => {
+    if (ev.key !== RECAP_FLAG_BROADCAST_KEY || !ev.newValue) return;
+    try {
+      setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
+    } catch {
+      // Malformed: the next focus re-reads.
+    }
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") void rereadFlags();
   });
@@ -221,6 +256,21 @@ export function useProjectQueueEnabled(): boolean {
   return current;
 }
 
+/** Subscribe to the recap titles switch (see `recapTitles`). Triggers the one
+ *  prefs read, like `useProjectQueueEnabled`. */
+export function useTaskRecapTitlesEnabled(): boolean {
+  const [current, setCurrent] = useState<boolean>(() => recapTitles);
+  useEffect(() => {
+    recapListeners.add(setCurrent);
+    setCurrent(recapTitles);
+    void read();
+    return () => {
+      recapListeners.delete(setCurrent);
+    };
+  }, []);
+  return current;
+}
+
 /** Test-only: how many components are currently subscribed. `bun test` runs
  *  every suite in ONE process, so this Set is shared globally for the run —
  *  a tree a test forgets to unmount leaves its subscription here forever,
@@ -240,4 +290,5 @@ export function resetFlagsForTests() {
   generation += 1;
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
+  setRecapTitles(false);
 }

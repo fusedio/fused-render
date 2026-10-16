@@ -1186,7 +1186,7 @@ def test_poll_context_has_no_window_until_known_and_claude_is_untouched(agent, t
     run_dir = _live_run(agent, tmp_path)
     _out(run_dir, [{"type": "system", "subtype": "init",
                     "session_id": SID_COPILOT}, _reply()])
-    assert "window" not in agent._poll("run-1")["context"]
+    assert agent._poll("run-1")["context"].get("window") is None
     assert not os.path.exists(os.path.join(run_dir, "context_window"))
     # A Claude run: no key, no record, even if a row happened to carry one.
     claude = os.path.join(agent.RUNS, "run-2")
@@ -1197,7 +1197,7 @@ def test_poll_context_has_no_window_until_known_and_claude_is_untouched(agent, t
         fh.write(str(os.getpid()))
     _out(claude, [{"type": "system", "subtype": "init", "session_id": SID_CLAUDE,
                    "context_window": 1}, _reply("claude-opus-5-5")])
-    assert "window" not in agent._poll("run-2")["context"]
+    assert agent._poll("run-2")["context"].get("window") is None
     assert not os.path.exists(os.path.join(claude, "context_window"))
 
 
@@ -1207,7 +1207,7 @@ def test_history_context_carries_the_copilot_window(agent, target):
         dict(_said("hello", workdir), uuid="u1"),
         dict(_reply(used=4321), uuid="a1")])
     # No run dir left: the reading has no window.
-    assert "window" not in agent._history(file, SID_COPILOT)["context"]
+    assert agent._history(file, SID_COPILOT)["context"].get("window") is None
     run_dir = os.path.join(agent.RUNS, "20261016-120000-aaa")
     os.makedirs(run_dir)
     with open(os.path.join(run_dir, "meta.json"), "w") as fh:

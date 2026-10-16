@@ -113,6 +113,7 @@ code.
 import asyncio
 import gzip
 import hashlib
+import heapq
 import json
 import logging
 import os
@@ -294,6 +295,7 @@ def reset_cache() -> None:
     _SCAN.clear()
     _FULL.clear()
     _WINDOW.clear()
+    _reset_recaps()
     with _GZ_LOCK:
         _GZ_CACHE.clear()
     tasks_index.forget()
@@ -3108,13 +3110,282 @@ def _comeback_at(entries: list[dict]) -> float:
     return best
 
 
+# ------------------------------------------------------ turn recaps as titles
+#
+# Behind `task_recap_titles_enabled` (default off): every finished Claude turn
+# gets the away fold's short haiku recap (claude_sessions `_recap`), chat open
+# or not, and the row carries it as `recap` for the title line to show
+# (tasks-lib `cardTitleLine`). The recap is stored on the session's record in
+# `session_settings.json`, keyed by the turn's anchor — the uuid of its newest
+# USER prompt, the same `for_uuid` the fold asks with (protocol/recap.ts
+# `recapAnchor`: assistant turns carry no uuid there), so one call serves both.
+#
+# The listing only FEEDS this: `_recap_candidate` is a dict lookup and an
+# append, the queue push is O(1), and ONE daemon thread runs haiku one turn at
+# a time, newest reply first. A turn is asked about once per server life
+# (`_recap_seen`), failures included. EVERY eligible turn is queued, not a
+# capped few: the queue drains newest-first, so the rows at the top of the list
+# get theirs first and an old backlog trickles in behind them.
+
+# TWO LANES, one thread. A feature that ships to people with hundreds of old
+# chats must not turn "flag on" (or every boot with it on) into a haiku storm
+# that competes with the turns they are living in:
+#
+#   * FRESH — a reply from the last `_RECAP_FRESH_WINDOW_S` (1 h). Served first,
+#     newest first, as soon as the turn has settled for `_RECAP_SETTLE_S`.
+#   * BACKFILL — everything older. Served only while the fresh lane is empty,
+#     newest first, no sooner than `_RECAP_BACKFILL_DELAY_S` (2 min) after the
+#     worker came up (so boot, the index warm-up and the first listings settle
+#     first), at most one per `_RECAP_BACKFILL_GAP_S` (15 s), and not at all
+#     while any task on the machine is `in_progress` — a running Claude turn
+#     means the user is working, and the old history can wait.
+
+# A turn is queued only this long after its reply. Someone who answers inside a
+# minute makes the recap stale before anyone reads it, and the row's title shows
+# the reply line meanwhile.
+_RECAP_SETTLE_S = 60.0
+_RECAP_FRESH_WINDOW_S = 3600.0
+_RECAP_BACKFILL_DELAY_S = 120.0
+_RECAP_BACKFILL_GAP_S = 15.0
+
+_recap_cond = threading.Condition()
+_recap_heap: list = []      # FRESH lane: (-reply_at, seq, job), newest first
+_recap_backfill: list = []  # BACKFILL lane, same shape
+_recap_busy = False         # a task is in_progress, as of the latest listing
+_recap_started = 0.0        # monotonic, when the worker first came up
+_recap_last_backfill = 0.0  # monotonic, the last backfill call's start
+_recap_seen: set = set()    # (session_id, for_uuid, reply_at) ever queued
+_RECAP_SEEN_MAX = 4000      # a dedupe guard only; see `_recap_feed`
+# A stored FAILURE (`""`) is retried once it is this old. The usual cause is
+# transient — haiku refused during a rate-limit window — and without a retry
+# one bad minute would title that turn by its reply for good.
+_RECAP_RETRY_S = 600.0
+_recap_seq = 0
+_recap_thread: threading.Thread | None = None
+
+
+def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
+                     settings: dict | None, out: list) -> dict | None:
+    """The row's `recap` field, and — through `out` — whether this turn still
+    needs one.
+
+    The stored recap is shown only for the turn it is about (`for_uuid` equal
+    to the row's anchor); a newer send makes it `None` until its own lands.
+    A turn wants a recap when it has ended (`done`, `blocked`, `archived`) with a reply to THIS turn
+    (`_last_reply` non-empty) and the store has nothing for its anchor, or has
+    one taken before the newest reply landed (`at < reply_at`: a fold recap
+    asked mid-reply). Decided on the uuid and the clocks, never on the scan
+    record's identity — `_SCAN` is rebuilt from disk on every boot."""
+    sid = task["session_id"]
+    tail = rec["tail"] if rec else []
+    anchor = str(tail[-1].get("anchor") or "") if tail else ""
+    if not sid or not anchor:
+        return None
+    stored = tasks_store.session_recap(settings or {}, sid)
+    same = stored is not None and stored["for_uuid"] == anchor
+    reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
+    # The transcript path rides on the job, so a task whose folder the disk
+    # has lost is still recapped (`_recap_generate` reads the file directly).
+    folder = task["project"]
+    path = task.get("path") or ""
+    # A real failure (CLI error, timeout) is retried after a cooldown; an
+    # `empty` mark (Claude never said anything in prose) is not a failure and
+    # is final for this turn until a newer reply lands.
+    failed = same and not stored["text"] and not stored["empty"]
+    # Done for this turn: recapped after its reply landed, or failed recently.
+    settled = same and stored["at"] >= reply_at and (
+        not failed or time.time() - stored["at"] < _RECAP_RETRY_S)
+    now = time.time()
+    if (status in ("done", "blocked", "archived") and reply
+            and reply != _QUEUED_REPLY
+            and (folder or path) and not settled):
+        # `stale_before` makes `_recap` skip its in-memory cache entry for the
+        # key, which is where a failed ask's `""` is remembered.
+        job = {"key": task["key"], "file": folder or os.path.dirname(path),
+               "transcript": path, "session_id": sid,
+               "for_uuid": anchor, "reply_at": reply_at,
+               "stale_before": max(reply_at, stored["at"]) if failed
+               else reply_at if same else 0.0}
+        if now - reply_at < _RECAP_SETTLE_S:
+            # Too fresh to ask (`_RECAP_SETTLE_S`): reported with its `due`
+            # time, neither queued nor marked seen. `_recap_feed` keeps the
+            # earliest due time so the worker can wake the page when it passes
+            # — an idle page has no listing rebuild to find it otherwise.
+            job["due"] = reply_at + _RECAP_SETTLE_S
+        out.append(job)
+    if same and stored["text"]:
+        return {"text": stored["text"], "for_uuid": anchor}
+    return None
+
+
+_recap_due = 0.0  # epoch: the earliest settle window still open, 0 = none
+
+
+def _recap_feed(wants: list, machine_busy: bool | None = None,
+                full: bool = True) -> None:
+    """Queue the turns one listing found wanting a recap (full or narrowed),
+    each into its lane. Never blocks and never runs haiku.
+
+    `machine_busy` is whether any row is `in_progress`; a narrowed listing can
+    only raise it (it did not see every row), a full one sets it."""
+    global _recap_seq, _recap_thread, _recap_busy, _recap_started, _recap_due
+    with _recap_cond:
+        if machine_busy is not None:
+            _recap_busy = machine_busy if full else (_recap_busy or machine_busy)
+        if len(_recap_seen) > _RECAP_SEEN_MAX:
+            # Only a dedupe guard: the stored recap's `at >= reply_at` is the
+            # real "already done" check, so forgetting costs at most a re-ask.
+            _recap_seen.clear()
+            # Jobs still waiting in a lane keep their mark, or the next
+            # listing would queue them a second time.
+            for lane in (_recap_heap, _recap_backfill):
+                for _k, _s, queued in lane:
+                    if not queued.get("due"):
+                        _recap_seen.add((queued["session_id"], queued["for_uuid"],
+                                         queued["reply_at"]))
+        pushed = False
+        for job in wants:
+            if job.get("due"):
+                _recap_due = job["due"] if not _recap_due else min(_recap_due, job["due"])
+                pushed = True  # the worker has something to wait for
+                continue
+            seen = (job["session_id"], job["for_uuid"], job["reply_at"])
+            if seen in _recap_seen:
+                continue
+            _recap_seen.add(seen)
+            _recap_seq += 1
+            lane = (_recap_heap if job["reply_at"] >= time.time() - _RECAP_FRESH_WINDOW_S
+                    else _recap_backfill)
+            if lane is _recap_backfill:
+                job = dict(job, backfill=True)
+            heapq.heappush(lane, (-job["reply_at"], _recap_seq, job))
+            pushed = True
+        if not pushed:
+            return
+        if not _recap_started:
+            _recap_started = time.monotonic()
+        if _recap_thread is None or not _recap_thread.is_alive():
+            _recap_thread = threading.Thread(target=_recap_worker, daemon=True,
+                                             name="tasks-recap")
+            _recap_thread.start()
+        _recap_cond.notify()
+
+
+def _recap_drop_queue() -> None:
+    """A listing with the flag OFF: nothing waiting should run once it is off.
+    Flag-off listings are the common case, so empty lanes cost no lock."""
+    global _recap_due
+    if not _recap_heap and not _recap_backfill and not _recap_due:
+        return
+    with _recap_cond:
+        _recap_due = 0.0
+        # Queued but never asked: not "seen", so they can be asked later.
+        for lane in (_recap_heap, _recap_backfill):
+            for _, _, job in lane:
+                _recap_seen.discard((job["session_id"], job["for_uuid"], job["reply_at"]))
+            lane.clear()
+
+
+def _recap_next(now: float) -> tuple[dict | None, float | None]:
+    """The next job to run at monotonic time `now`, or `(None, seconds to wait)`
+    (`None` seconds: nothing queued, wait for a feed). Caller holds
+    `_recap_cond`. The lane rules are in the block comment above."""
+    global _recap_last_backfill
+    if _recap_heap:
+        return heapq.heappop(_recap_heap)[2], None
+    if not _recap_backfill:
+        return None, None
+    if _recap_busy:
+        return None, _RECAP_BACKFILL_GAP_S  # look again; a feed can also wake us
+    ready = max(_recap_started + _RECAP_BACKFILL_DELAY_S,
+                _recap_last_backfill + _RECAP_BACKFILL_GAP_S)
+    if now < ready:
+        return None, ready - now
+    _recap_last_backfill = now
+    return heapq.heappop(_recap_backfill)[2], None
+
+
+def _recap_worker() -> None:
+    """One haiku at a time for the life of the server: fresh turns first, then
+    the throttled backfill (`_recap_next`). It also wakes the page when a turn's
+    settle window closes (`_recap_due`), so the listing queues it on an idle
+    page too."""
+    global _recap_due, _recap_seq
+    while True:
+        try:
+            job, wake = None, False
+            with _recap_cond:
+                while True:
+                    job, wait = _recap_next(time.monotonic())
+                    if job is not None:
+                        break
+                    if _recap_due:
+                        left = _recap_due - time.time()
+                        if left <= 0:
+                            _recap_due = 0.0
+                            wake = True
+                            break
+                        wait = left if wait is None else min(wait, left)
+                    _recap_cond.wait(wait)
+                if job is not None and job.get("backfill") and _recap_busy:
+                    # A turn started since the lane was chosen: put it back.
+                    _recap_seq += 1
+                    heapq.heappush(_recap_backfill, (-job["reply_at"], _recap_seq, job))
+                    job = None
+                    _recap_cond.wait(_RECAP_BACKFILL_GAP_S)
+            if wake:
+                tasks_watch.notify()
+            elif job is not None:
+                _recap_run(job)
+        except Exception:  # noqa: BLE001 — nothing may end the one worker
+            logger.warning("tasks recap worker iteration failed", exc_info=True)
+
+
+def _recap_run(job: dict) -> None:
+    """One queued turn: ask `_recap` (which stores the answer while the flag
+    is on, and never raises), then wake the Tasks page so the row re-titles."""
+    agent = _agent_module()
+    if agent is None or not shell_prefs.task_recap_titles_enabled():
+        # Never asked: forget it was queued so a later listing can queue it.
+        with _recap_cond:
+            _recap_seen.discard((job["session_id"], job["for_uuid"], job["reply_at"]))
+        return
+    try:
+        text = sessions._recap(agent, job["file"], job["session_id"],
+                               job["for_uuid"], stale_before=job["stale_before"],
+                               transcript=job.get("transcript", ""), ended=True)
+    except Exception:  # noqa: BLE001 — a title nicety, never a fault
+        logger.debug("tasks recap failed for %s", job["session_id"], exc_info=True)
+        return
+    if not text:
+        # Failed: forget it was asked, so a listing after `_RECAP_RETRY_S` can
+        # queue it again (the stored `""` holds it off until then).
+        with _recap_cond:
+            _recap_seen.discard((job["session_id"], job["for_uuid"], job["reply_at"]))
+    tasks_watch.notify({job["key"], job["session_id"]})
+
+
+def _reset_recaps() -> None:
+    """Tests: forget the queues, the seen set and the throttle."""
+    global _recap_busy, _recap_started, _recap_last_backfill, _recap_due
+    with _recap_cond:
+        _recap_due = 0.0
+        _recap_heap.clear()
+        _recap_backfill.clear()
+        _recap_seen.clear()
+        _recap_busy = False
+        _recap_started = 0.0
+        _recap_last_backfill = 0.0
+
+
 def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          busy: set[str], revived: list[str], parked: dict | None = None,
          queue: dict | None = None, queue_on: bool | None = None,
          chat_drafts: dict | None = None,
          bound_chips: dict | None = None,
          settings: dict | None = None,
-         last_message: bool = False) -> dict:
+         last_message: bool = False,
+         recaps: list | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
@@ -3593,6 +3864,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The peek header's hint and every view's title line read it — see
         # `said` above for where it is decided.
         row["last_message"] = said
+    if recaps is not None:
+        # `task_recap_titles_enabled` only: the key is ABSENT with the flag
+        # off, and the client reads its presence as "the flag is on".
+        row["recap"] = _recap_candidate(task, rec, status, row["last_reply"],
+                                        settings, recaps)
     return row
 
 
@@ -4949,16 +5225,26 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # Collected across the loop and written once, after it, so the listing is
     # not doing IO in the middle of building rows.
     revived: list[str] = []
+    # Turns wanting a haiku recap (`_recap_candidate`), or None with
+    # `task_recap_titles_enabled` off — and then no row carries `recap`.
+    recap_wants: list | None = [] if shell_prefs.task_recap_titles_enabled() else None
+    if recap_wants is None:
+        _recap_drop_queue()
     t2 = time.monotonic()
     for task in listed.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
                        busy, revived, parked, queue, queue_on,
-                       chat_drafts, bound_chips, settings, last_message)
+                       chat_drafts, bound_chips, settings, last_message,
+                       recap_wants)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
     t_rows = time.monotonic() - t2
+    if recap_wants is not None:
+        _recap_feed(recap_wants,
+                    any(r.get("status") == "in_progress" for r in rows),
+                    full=only is None)
     total = time.monotonic() - t0
     if total >= SLOW_BUILD_SEC:
         # The breakdown names the slow half without a thread dump: `collect`

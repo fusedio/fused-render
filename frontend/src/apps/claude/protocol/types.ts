@@ -877,12 +877,14 @@ export interface ContextUsage {
   cache_read_input_tokens: number;
   output_tokens: number;
   model: string;
+  /** The model's context window in tokens AS THE CLI REPORTED IT (the
+   *  `result` row's `modelUsage.<model>.contextWindow`, learned by agent.py).
+   *  `null`/absent when no reply has named this model yet — the page's own
+   *  table stands in. Wins over the table, which is the one that goes stale.
+   *  A Copilot session's comes from its host instead (ACP
+   *  `usage_update.size`, docs/COPILOT_BACKEND.md §4). */
+  window?: number | null;
   compacted: boolean;
-  /** THE CONTEXT SIZE THE AGENT REPORTED, in tokens — present for a Copilot
-   *  session once its host has heard it (ACP `usage_update.size`,
-   *  docs/COPILOT_BACKEND.md §4), absent for Claude, whose window is read off
-   *  the model id (`ui/context-window`). Outranks that rule when present. */
-  window?: number;
 }
 
 /** agent.py:904 / 868,883. */

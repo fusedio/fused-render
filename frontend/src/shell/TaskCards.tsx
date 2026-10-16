@@ -687,12 +687,12 @@ function TaskCard({
             tooltip that arrives a second later read as no tooltip at all
             (Akshil, 2026-09-04). Same mechanism, same words, same delay. */}
         <span
-          className="task-card-title"
+          className={"task-card-title" + (line.kind === "recap" ? " is-recap" : "")}
           // The hint says the line's own words, whole: the title where the line
           // is the title, the message where it is the message — the server caps
           // that at 200 characters and the card clamps it to one, so the hint is
           // where the rest of a long sentence is.
-          data-hint={line.said ? task.last_message?.text : task.title}
+          data-hint={line.hint}
         >
           {title}
         </span>

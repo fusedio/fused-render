@@ -134,6 +134,14 @@ def _runs_root() -> str:
 
 
 RUNS = _runs_root()
+#: WHAT THE CLI SAYS EACH MODEL'S CONTEXT WINDOW IS — `{model id: tokens}`,
+#: learned from the `modelUsage` on every `result` row and kept beside the runs
+#: tree. The page's meter used to hold a hand-copied table of windows that went
+#: stale with every CLI release (2.1.300 gave Opus 5.5 and Haiku 5.5 a million
+#: tokens; the table still said 200k, and the ring read six times too full —
+#: Akshil, 2026-10-15). The CLI reports the number itself, so the table is
+#: now only the fallback for a model no reply has named yet.
+MODEL_WINDOWS = os.path.join(os.path.dirname(RUNS), "model-windows.json")
 
 # Where annotation screenshots land: a SIBLING of `runs`, not a child of a run
 # dir. The ordering is what forces it — annotations are captured and uploaded as
@@ -7521,6 +7529,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         elif t == "result":
             saw_result = True
             idle = True
+            _learn_windows(row)
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
             if row.get("is_error"):
@@ -7530,13 +7539,17 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 gave_up = was_retrying
 
     # COPILOT'S WINDOW SIZE, for the meter: onto this poll's reading as
-    # `window` (no model id says it for `auto`). Claude's rows never carry
-    # one and its page derives the size from the model id, so a Claude poll
-    # neither reads nor writes anything for it. No reading this poll, no key:
-    # `None` already means "keep what you have".
-    window = _run_context_window(run_dir, rows) if backend == "copilot" else 0
-    if window and isinstance(context, dict):
-        context = {**context, "window": window}
+    # `window` (no model id says it for `auto`), from what its host reported.
+    # No reading this poll, no key: `None` already means "keep what you have".
+    if backend == "copilot":
+        window = _run_context_window(run_dir, rows)
+        if window and isinstance(context, dict):
+            context = {**context, "window": window}
+    # Claude: the window the result row just taught, onto the reading built
+    # before it: a chat's FIRST turn names its model and its window in the
+    # same batch.
+    elif context is not None and saw_result and context.get("window") is None:
+        context["window"] = _known_window(context.get("model", ""))
 
     # The task registry (SPEC T-1) and the command list (SPEC C-2): the rows
     # this window holds that the persisted registry has not absorbed yet,
@@ -8780,6 +8793,86 @@ _CONTEXT_ERROR_TEXTS = (
 _CONTEXT_SKIP_ITERATIONS = ("advisor_message", "compaction")
 
 
+_model_windows_cache: tuple = (None, None, {})   # (path, stamp, map)
+
+
+def _model_windows() -> dict:
+    """The learned `{model: window}` map, re-read only when the file changed.
+
+    The change stamp is (mtime, inode, size), not mtime alone: every rewrite
+    is an `os.replace`, so the inode moves even when two writes land in the
+    same nanosecond."""
+    global _model_windows_cache
+    path = MODEL_WINDOWS
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    stamp = (st.st_mtime_ns, st.st_ino, st.st_size)
+    cached_path, cached_stamp, cached = _model_windows_cache
+    if cached_path == path and cached_stamp == stamp:
+        return cached
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if isinstance(key, str) and key and not isinstance(value, bool) \
+                    and isinstance(value, int) and value > 0:
+                out[key] = value
+    _model_windows_cache = (path, stamp, out)
+    return out
+
+
+def _known_window(model: str) -> int | None:
+    """The window the CLI reported for `model`, or None when no result row has
+    named it yet (the page then falls back to its own table)."""
+    model = str(model or "").strip()
+    if not model:
+        return None
+    known = _model_windows()
+    return known.get(model) or known.get(model.lower())
+
+
+def _learn_windows(row: dict) -> None:
+    """Record `modelUsage.<model>.contextWindow` off one `result` row.
+
+    Written only when something is NEW, so the file is not rewritten once per
+    turn; and last-writer-wins is fine because two writers for one model
+    carry the same number — the CLI's."""
+    usage = row.get("modelUsage") if isinstance(row, dict) else None
+    if not isinstance(usage, dict):
+        return
+    learned = {}
+    for model, info in usage.items():
+        if not isinstance(model, str) or not model or not isinstance(info, dict):
+            continue
+        window = info.get("contextWindow")
+        if isinstance(window, bool) or not isinstance(window, int) or window <= 0:
+            continue
+        learned[model] = window
+    if not learned:
+        return
+    if all(_model_windows().get(m) == w for m, w in learned.items()):
+        return
+    # Read-merge-write under a cross-process lock (the `_record_settings`
+    # pattern): two pollers in two server processes racing here would otherwise
+    # each replace the file with their own merge and drop the other's model.
+    try:
+        os.makedirs(os.path.dirname(MODEL_WINDOWS), exist_ok=True)
+        with open(MODEL_WINDOWS + ".lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            known = _model_windows()
+            if all(known.get(m) == w for m, w in learned.items()):
+                return
+            _write_json_atomic(MODEL_WINDOWS, {**known, **learned})
+    except OSError:
+        pass
+
+
 def _context_usage(msg: dict) -> dict | None:
     """The CONTEXT WINDOW READING carried by ONE assistant message, or None.
 
@@ -8847,6 +8940,9 @@ def _context_usage(msg: dict) -> dict | None:
         # 5, Fable and Opus 5 are a million tokens and everything else is 200k.
         # "" when the row does not say, and the page falls back to the picker.
         "model": model,
+        # ...AND HOW BIG ITS WINDOW IS, when the CLI has said so (`_learn_windows`).
+        # None until a result row names this model; the page's table stands in.
+        "window": _known_window(model),
         # True only for the estimate a compaction leaves behind — see `_history`.
         "compacted": False,
     }
@@ -8877,7 +8973,7 @@ def _is_turn_row(row: dict) -> bool:
 
 
 def _history(file: str, session_id: str, app_reads: bool = False,
-             inbox: bool = True) -> dict:
+             inbox: bool = True, transcript: str = "") -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
     Resolved ONLY at the target file's own project dir — with copied files
@@ -8922,7 +9018,9 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         return {"turns": [], "transcript": _transcript_stat(""), "context": None,
                 "tasks": [], "tasks_run": "", "backend": DEFAULT_BACKEND}
     file = os.path.abspath(file)
-    path = _session_transcript_path(_workdir(file), session_id)
+    # `transcript` (the Tasks recap worker) names the file outright, for a task
+    # whose folder is gone and so cannot be resolved through it.
+    path = transcript or _session_transcript_path(_workdir(file), session_id)
     # WHOSE conversation this is (D18 names the agent on every surface): the
     # root the transcript sits under is the authority; before the first row
     # lands, the record `_start` wrote; Claude for everything older.
@@ -8930,7 +9028,10 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                else _session_backend(session_id) or DEFAULT_BACKEND)
     # SPEC T-1: the task registry of this session's LAST run, while its run
     # dir is still on disk — a reload shows the tasks panel it left.
-    task_registry, host_run_id, last_run = _session_task_registry(file, session_id)
+    # (Skipped for a `transcript` read: `file` is then not a project folder.)
+    task_registry, host_run_id, last_run = (
+        ({}, "", "") if transcript
+        else _session_task_registry(file, session_id))
     tasks = _task_list(task_registry)
     # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
     # is the watermark the page follows the conversation by — it re-renders when
@@ -9179,6 +9280,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                        "cache_creation_input_tokens": 0,
                        "cache_read_input_tokens": 0, "output_tokens": 0,
                        "model": (context or {}).get("model", ""),
+                       "window": (context or {}).get("window"),
                        "compacted": True}
     # A Copilot reading carries the window size its host reported (`_poll`'s
     # `context.window`), off the session's newest run dir while it is on disk.

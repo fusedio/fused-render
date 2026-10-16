@@ -28,6 +28,10 @@ export interface RecapResponse {
   for_uuid: string;
   /** ISO-8601, when it was generated. */
   at: string;
+  /** Only with the Tasks recap titles on: the server never generates then (the
+   *  Tasks worker does), so an empty `text` with `pending: true` means "not
+   *  yet — ask again", and `pending: false` means there is nothing to wait for. */
+  pending?: boolean;
 }
 
 /** What the hook holds: the server's answer, keyed to the transcript position

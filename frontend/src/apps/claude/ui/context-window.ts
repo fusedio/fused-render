@@ -2,7 +2,11 @@
 //
 // Every number and every sentence in this file is a mirror of the CLI's, read
 // out of the installed binary (2.1.278) and written down in
-// `.claude-design/context-meter/claude-code-parity.md`. The point of mirroring
+// `.claude-design/context-meter/claude-code-parity.md`, then RE-MEASURED
+// against 2.1.300 on 2026-10-15 (`claude -p --output-format json` reports
+// `modelUsage.<id>.contextWindow`; `/context` prints the compact buffer): every
+// 5.x model and Opus 4.7+ now run a million-token window, nothing is pinned to
+// a 200k auto-compact window any more, and the compact buffer is 3k. The point of mirroring
 // rather than inventing is that the reader ALREADY has a meter for this — the
 // CLI's statusline and its `/context` — and two meters over one conversation
 // that disagree by ten points are worse than one meter.
@@ -27,10 +31,13 @@ import type { ContextUsage } from "../protocol/types";
 export const WINDOW_DEFAULT = 200_000;
 /** What a native-1M model, or a `[1m]` qualifier, buys (`ret`). */
 export const WINDOW_1M = 1_000_000;
-/** The cap on the reserved-output subtraction (`e$t`). */
-export const OUTPUT_RESERVE = 20_000;
-/** Auto-compact head-room below the output reserve (`K0t`). */
-export const COMPACT_HEADROOM = 13_000;
+/** The reserved-output subtraction. 2.1.278 held back 20k here; 2.1.300's
+ *  `/context` shows a single 3k "Compact buffer" row and nothing else, so the
+ *  reserve is folded into COMPACT_HEADROOM and this is 0. */
+export const OUTPUT_RESERVE = 0;
+/** Auto-compact head-room: the 3k "Compact buffer" `/context` prints on every
+ *  model in 2.1.300 (was 13k under a 20k reserve in 2.1.278). */
+export const COMPACT_HEADROOM = 3_000;
 /** The warning appears this far before the compact threshold. */
 export const WARN_MARGIN = 20_000;
 /** The model-default auto-compact cap for the models that enforce one (`Mj`). */
@@ -42,13 +49,19 @@ const QUALIFIER = /\[[^\]]*\]\s*$/;
  *  works on an alias (`opus[1m]`) and a full id (`claude-opus-4-8[1m]`) alike. */
 const ONE_M = /\[1m\]/i;
 
-/** Explicitly NOT 1M-capable (`o_e`): every `claude-3-*`, Haiku 4.5, and Opus
- *  4.0/4.1/4.5. Listed first, so a family rule below cannot promote them. */
-const NOT_1M: readonly RegExp[] = [/claude-3-/, /haiku/, /opus-4-[015](?!\d)/];
-/** Native 1M today: Sonnet 5, the Fable models, Opus 4.7+ and Opus 5 — plus
- *  the bare ALIASES the composer's pill offers (`fable`, `opus`, `sonnet`),
- *  which name exactly those models. `haiku` is not here and falls through to
- *  the 200k default, which is also what its full id does. */
+/** Explicitly NOT 1M-capable: every `claude-3-*`, the 4.x Haikus and Sonnets,
+ *  and Opus 4.0–4.6 (2.1.300: `claude-sonnet-4-6` reports 200k). Listed first,
+ *  so a family rule below cannot promote them. */
+const NOT_1M: readonly RegExp[] = [
+  /claude-3-/,
+  /haiku-4-/,
+  /sonnet-4-/,
+  /opus-4-[0-6](?!\d)/,
+];
+/** Native 1M today (2.1.300, measured): every 5.x model — Fable, Opus, Sonnet
+ *  AND Haiku — plus Opus 4.7/4.8, plus the bare ALIASES the composer's pill
+ *  offers (`fable`, `opus`, `sonnet`, `haiku`), which name exactly those
+ *  models. */
 const NATIVE_1M: readonly RegExp[] = [
   /fable/,
   /^sonnet$/,
@@ -56,16 +69,14 @@ const NATIVE_1M: readonly RegExp[] = [
   /^opus$/,
   /opus-5/,
   /opus-4-[78](?!\d)/,
+  /^haiku$/,
+  /haiku-5/,
 ];
-/** `cIr` — the models pinned to the 200k AUTO-COMPACT window whatever their own
- *  window is. Opus 5 is the interesting one: a million-token head that the CLI
- *  still compacts at 167k. */
-const ENFORCED: readonly RegExp[] = [
-  /sonnet-4-6/,
-  /opus-4-6/,
-  /opus-4-8/,
-  /opus-5/,
-];
+/** `cIr` — the models pinned to a 200k AUTO-COMPACT window whatever their own
+ *  window is. 2.1.278 pinned Sonnet 4.6, Opus 4.6/4.8 and Opus 5 here; 2.1.300
+ *  pins nobody (`/context` on Opus 5 and 4.8 shows 977k free of 1m). Kept as a
+ *  list, empty, so the next CLI that reinstates one needs a one-line change. */
+const ENFORCED: readonly RegExp[] = [];
 
 function ident(model: string | null | undefined): string {
   return (model || "").trim().toLowerCase();
@@ -78,7 +89,18 @@ function ident(model: string | null | undefined): string {
  * does. Guessing LARGE on an unknown id would draw room that is not there,
  * which is the one direction this number must never be wrong in.
  */
-export function modelWindow(model: string | null | undefined): number {
+export function modelWindow(
+  model: string | null | undefined,
+  usage?: ContextUsage | null,
+): number {
+  // THE CLI'S OWN NUMBER FIRST: the `result` row names each model's window and
+  // agent.py stamps it on the reading (`usage.window`). The table below is
+  // only for a chat no reply has named a model in yet — it is the part that
+  // went stale with 2.1.300, and this is why it no longer has to be right.
+  const known = usage?.window;
+  if (typeof known === "number" && Number.isFinite(known) && known > 0) {
+    return known;
+  }
   const raw = ident(model);
   if (!raw) return WINDOW_DEFAULT;
   if (ONE_M.test(raw)) return WINDOW_1M;
@@ -105,9 +127,10 @@ export interface AutoCompactWindow {
  *  for the `cIr` set, the model's own window for everybody else. */
 export function autoCompactWindow(
   model: string | null | undefined,
+  usage?: ContextUsage | null,
 ): AutoCompactWindow {
   const base = ident(model).replace(QUALIFIER, "");
-  const full = modelWindow(model);
+  const full = modelWindow(model, usage);
   if (base && ENFORCED.some((re) => re.test(base))) {
     return {
       window: Math.min(full, AUTOCOMPACT_CAP),
@@ -135,25 +158,19 @@ export interface ContextThresholds {
 /**
  * Every threshold for one model, in one read.
  *
- * Worked, and pinned by the tests: a 1M model with no enforced window gives
- * `effective 980_000`, `compactAt 967_000` — the docs' "about 967K tokens by
- * default". A 200k model gives `180_000` / `167_000`, warning at `147_000`.
+ * Worked, and pinned by the tests: a 1M model gives `compactAt 997_000`
+ * (the 3k buffer `/context` prints), warning at `977_000`. A 200k model gives
+ * `197_000`, warning at `177_000`.
  */
 export function contextThresholds(
   model: string | null | undefined,
-  /** A window the AGENT stated (`ContextUsage.window`, a Copilot session):
-   *  taken as the model's whole window with nothing enforced, ahead of the
-   *  id rules above, which only know Claude's models. */
-  stated?: number,
+  usage?: ContextUsage | null,
 ): ContextThresholds {
-  const known = typeof stated === "number" && Number.isFinite(stated) && stated > 0 ? stated : 0;
-  const { window, enforced } = known
-    ? { window: known, enforced: false }
-    : autoCompactWindow(model);
+  const { window, enforced } = autoCompactWindow(model, usage);
   const effective = window - OUTPUT_RESERVE;
   const compactAt = effective - COMPACT_HEADROOM;
   return {
-    model: known || modelWindow(model),
+    model: modelWindow(model, usage),
     window,
     effective,
     compactAt,
@@ -197,8 +214,8 @@ export function contextTotal(usage: ContextUsage | null | undefined): number {
 /**
  * THE percentage — the whole conversation (input and output) over the point
  * where the CLI auto-compacts, rounded and clamped to 0..100. 100% is the
- * compaction, not the model's head: a 200k model compacts at 167k, so 167k
- * reads 100%, and a million-token one at 967k.
+ * compaction, not the model's head: a 200k model compacts at 197k, so 197k
+ * reads 100%, and a million-token one at 997k.
  *
  * Not the CLI statusline's `IKt` (input over the full window): that number
  * says "how much of the model is in use", which is the wrong question when
@@ -208,7 +225,7 @@ export function usedPct(
   model: string | null | undefined,
   usage: ContextUsage | null | undefined,
 ): number {
-  const { compactAt } = contextThresholds(model, usage?.window);
+  const { compactAt } = contextThresholds(model, usage);
   if (compactAt <= 0) return 0;
   const pct = Math.round((contextTotal(usage) / compactAt) * 100);
   return Math.min(100, Math.max(0, pct));
@@ -228,10 +245,9 @@ export type ContextLevel = "ok" | "warn" | "compact";
 export function contextLevel(
   model: string | null | undefined,
   total: number,
-  /** `ContextUsage.window`, when the agent stated one. */
-  stated?: number,
+  usage?: ContextUsage | null,
 ): ContextLevel {
-  const { compactAt, warnAt } = contextThresholds(model, stated);
+  const { compactAt, warnAt } = contextThresholds(model, usage);
   if (!Number.isFinite(total) || total <= 0) return "ok";
   if (total >= compactAt) return "compact";
   if (total >= warnAt) return "warn";
@@ -253,11 +269,11 @@ export function warnLine(
   usage: ContextUsage | null | undefined,
 ): string {
   const total = contextTotal(usage);
-  if (contextLevel(model, total, usage?.window) === "ok") return "";
+  if (contextLevel(model, total, usage) === "ok") return "";
   // THE SAME NUMBER THE RING SHOWS, in the CLI's two spellings: an enforced
   // window counts down to the compaction, an automatic one counts up to it.
   const pct = usedPct(model, usage);
-  return contextThresholds(model, usage?.window).enforced
+  return contextThresholds(model, usage).enforced
     ? `${100 - pct}% until auto-compact`
     : `${pct}% context used`;
 }
@@ -292,10 +308,10 @@ export function contextHint(
   usage: ContextUsage | null | undefined,
 ): string {
   // Total over the compaction point, the ring's own fraction spelled out —
-  // "of 167k" and not "of 200k", because 167k is where this conversation is
+  // "of 197k" and not "of 200k", because 197k is where this conversation is
   // cut, and a denominator the ring is not measured against would be the two
   // numbers all over again.
-  const { compactAt } = contextThresholds(model, usage?.window);
+  const { compactAt } = contextThresholds(model, usage);
   const used = contextTotal(usage);
   const line = `Context: ${formatTokens(used)} of ${formatTokens(compactAt)} tokens before auto-compact (${usedPct(model, usage)}%)`;
   // AN ESTIMATE IS LABELLED AS ONE. Straight after a compaction the CLI has no
@@ -309,13 +325,13 @@ export function contextHint(
 
 /** One square of the grid. */
 export interface ContextSquare {
-  kind: "messages" | "buffer" | "free";
+  kind: "messages" | "free";
   glyph: string;
 }
 
 /** One legend row under the grid. */
 export interface ContextLegendRow {
-  kind: "messages" | "buffer" | "free";
+  kind: "messages" | "free";
   label: string;
   glyph: string;
   tokens: number;
@@ -328,10 +344,11 @@ export interface ContextLegendRow {
 export interface ContextReport {
   model: string;
   window: number;
-  /** The grid's used tokens — input, clipped to the window, as `/context` draws it. */
+  /** The grid's used tokens — `total`, clipped to `compactAt`. */
   used: number;
   /** The headline's pair: the whole conversation and the compaction point it is
-   *  measured against — `pct` is `total / compactAt`, the ring's own number. */
+   *  measured against — `pct` is `total / compactAt`, the ring's own number,
+   *  and every row of the legend is a share of that same `compactAt`. */
   total: number;
   compactAt: number;
   pct: number;
@@ -345,7 +362,6 @@ export interface ContextReport {
 
 const GLYPH_FULL = "⛁"; // a filled square, fullness >= 0.7
 const GLYPH_PART = "⛀"; // ...and its lighter twin below that
-const GLYPH_BUFFER = "⛝";
 const GLYPH_FREE = "⛶";
 
 /** `round`, min 1 for a segment that has any tokens at all: a category worth
@@ -371,27 +387,22 @@ export function contextReport(
   usage: ContextUsage | null | undefined,
 ): ContextReport {
   const id = (model || "").trim();
-  const { model: modelWindow, compactAt, enforced } = contextThresholds(model, usage?.window);
+  const { model: modelWindow, compactAt } = contextThresholds(model, usage);
   const columns = modelWindow >= WINDOW_1M ? 20 : 10;
   const rows = 10;
   const cells = columns * rows;
-  const used = Math.max(0, Math.min(contextInput(usage), modelWindow));
-  // `window − H`: the room the CLI holds back so a compaction has somewhere to
-  // land. Drawn only when a window is actually enforced — with `source: "auto"`
-  // the CLI prints no buffer row at all.
-  const buffer = enforced ? Math.max(0, modelWindow - compactAt) : 0;
+  // ONE NUMERATOR AND ONE DENOMINATOR for the whole popover: the headline is
+  // `total / compactAt`, so the grid, Messages and Free space are drawn on the
+  // same pair. The first cut drew them on input-only over the model's full
+  // window, and the three numbers on screen did not add up (Akshil,
+  // 2026-10-16: Messages ≠ the headline, Messages + Free ≠ its denominator).
+  const total = contextTotal(usage);
+  const used = Math.max(0, Math.min(total, compactAt));
 
-  let messageCells = squaresFor(used, modelWindow, cells);
-  let bufferCells = squaresFor(buffer, modelWindow, cells);
-  if (messageCells + bufferCells > cells) {
-    // The arithmetic can overflow by a square at the rounding edges; the buffer
-    // gives way first, because the number being read is the used one.
-    messageCells = Math.min(messageCells, cells);
-    bufferCells = Math.max(0, cells - messageCells);
-  }
-  const freeCells = Math.max(0, cells - messageCells - bufferCells);
+  const messageCells = Math.min(cells, squaresFor(used, compactAt, cells));
+  const freeCells = Math.max(0, cells - messageCells);
 
-  const exact = (used / modelWindow) * cells;
+  const exact = (used / compactAt) * cells;
   const squares: ContextSquare[] = [];
   for (let i = 0; i < messageCells; i++) {
     // How full THIS square is: the one at the frontier is a part-square, and
@@ -402,14 +413,11 @@ export function contextReport(
       glyph: fullness >= 0.7 ? GLYPH_FULL : GLYPH_PART,
     });
   }
-  for (let i = 0; i < bufferCells; i++) {
-    squares.push({ kind: "buffer", glyph: GLYPH_BUFFER });
-  }
   for (let i = 0; i < freeCells; i++) {
     squares.push({ kind: "free", glyph: GLYPH_FREE });
   }
 
-  const pctOf = (n: number): string => ((n / modelWindow) * 100).toFixed(1);
+  const pctOf = (n: number): string => ((n / compactAt) * 100).toFixed(1);
   const legend: ContextLegendRow[] = [];
   if (used > 0) {
     legend.push({
@@ -421,16 +429,7 @@ export function contextReport(
       note: "(all context in use)",
     });
   }
-  if (buffer > 0) {
-    legend.push({
-      kind: "buffer",
-      label: "Autocompact buffer",
-      glyph: GLYPH_BUFFER,
-      tokens: buffer,
-      pct: pctOf(buffer),
-    });
-  }
-  const free = Math.max(0, modelWindow - used - buffer);
+  const free = Math.max(0, compactAt - used);
   legend.push({
     kind: "free",
     label: "Free space",
