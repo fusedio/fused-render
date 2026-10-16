@@ -4474,49 +4474,60 @@ def _is_limit_error(text: str) -> bool:
     return "usage limit" in low or "session limit" in low
 
 
-def _drop_stale_limit_errors(turns: list, now: float = None) -> list:
-    """`turns` without the usage-limit rows that no longer say anything true.
+def _is_limit_turn(turn: dict) -> bool:
+    """Whether a history `error` turn is the plan's limit: by its words, or by
+    the CLI's own `quotaLimits.status == "rejected"` riding on it — a row that
+    says only "API Error: 429" with a rejected window is the limit too, and a
+    plain 429 with no window is a break."""
+    if _is_limit_error(turn.get("text", "")):
+        return True
+    quota = turn.get("quota")
+    return isinstance(quota, dict) and quota.get("status") == "rejected"
 
-    A limit hit is the one failure that is NOT a break: it is a clock, and the
-    red card's whole message is "wait for this time, then try again". Kept in
-    the log past that point it stops being a report and becomes a scar — the
-    reader scrolls past "Your Claude plan's usage limit was reached" above a
-    reply that plainly arrived, after the window reopened or after they signed
-    into another account, and reads it as something still wrong.
 
-    So the row goes when either of the two facts that made it true is gone:
+def _drop_resolved_errors(turns: list, now: float = None) -> list:
+    """`turns` without the error rows the conversation has already resolved.
 
-      * THE CHAT MOVED ON — an assistant reply sits after it (whatever lifted
-        the limit — the reset, a switch of account, an upgrade — the
-        transcript cannot name, but it can see that the next turn ran), or a
-        NEWER limit row does, which is then the card. A later failure of any
-        other kind lifts nothing: a retry that died on the network says the
-        limit may well still bind.
-      * THE RESET PASSED — `quota.resets_at` (the CLI's own `quotaLimits` on
-        the failed row) is behind `now`. Nothing to wait for any more.
+    A red row is a report of something the reader may still have to act on:
+    wait for the plan window, fix the network, retry. Once a REPLY sits after
+    it, the thing it reported is over — whatever lifted it (the reset, a switch
+    of account, the Wi-Fi coming back, a retry) the transcript cannot name,
+    but it can see that the next turn ran. Kept past that point the row stops
+    being a report and becomes a scar: "Your Claude plan's usage limit was
+    reached" above an answer that plainly arrived reads as something still
+    wrong (Akshil, 2026-10-16 — and "the same for other error cards").
 
-    A row with a later USER turn and nothing after it stays: the retry is in
-    flight or died before writing anything, and the limit may well still bind.
-    Every other kind of error row — no network, a 500, a gave-up retry — is
-    untouched: those record what happened, and a reply after one does not make
-    it not have happened (`test_a_turn_that_recovered_after_an_error_shows_both`)."""
+    So an error row goes when:
+
+      * A REPLY FOLLOWS IT — any `assistant` turn later in the log.
+      * IT IS THE PLAN'S LIMIT (`_is_limit_turn`) AND EITHER a newer limit row
+        follows (that one is the card now) OR its reset (`quota.resets_at`,
+        the CLI's own `quotaLimits` on the failed row) is behind `now`:
+        nothing to wait for any more.
+
+    A row with only a later USER turn, or only a later failure of another
+    kind, stays: the retry is in flight, died writing nothing, or died
+    differently — nothing says the first problem is over. The LAST failure
+    always stays: it is the one the reader has to act on."""
     if now is None:
         now = time.time()
     out = []
     for i, turn in enumerate(turns):
-        if turn.get("role") == "error" and _is_limit_error(turn.get("text", "")):
-            moved_on = any(
-                t.get("role") == "assistant"
-                or (t.get("role") == "error" and _is_limit_error(t.get("text", "")))
-                for t in turns[i + 1:])
-            quota = turn.get("quota") or {}
-            resets = quota.get("resets_at") or 0
-            reset_passed = isinstance(resets, (int, float)) and 0 < resets <= now
-            if moved_on or reset_passed:
+        if turn.get("role") == "error":
+            later = turns[i + 1:]
+            resolved = any(t.get("role") == "assistant" for t in later)
+            if not resolved and _is_limit_turn(turn):
+                newer_limit = any(t.get("role") == "error" and _is_limit_turn(t)
+                                  for t in later)
+                quota = turn.get("quota") or {}
+                resets = quota.get("resets_at") or 0
+                reset_passed = (isinstance(resets, (int, float))
+                                and 0 < resets <= now)
+                resolved = newer_limit or reset_passed
+            if resolved:
                 continue
         out.append(turn)
     return out
-
 
 def _skill_calls(row: dict) -> list:
     """The Skill invocations in one FINALIZED `assistant` row.
@@ -8335,10 +8346,10 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                         reply["uuid"] = opener
                     turns.append(reply)
     close_stretch()
-    # A usage-limit row that the conversation has outlived (a reply after it,
-    # or its reset behind us) is dropped here rather than drawn: the card says
-    # "wait, then try again", and both halves of that are over.
-    turns = _drop_stale_limit_errors(turns)
+    # An error row the conversation has outlived (a reply after it; for the
+    # plan limit, its reset behind us too) is dropped here rather than drawn:
+    # the card says "fix this, then try again", and both halves are over.
+    turns = _drop_resolved_errors(turns)
     # ...and whether the last of those turns was ENDED BY THE USER. The
     # transcript cannot say — a killed run just stops writing — so it is read
     # off the run dir (`_stopped_last`) and reported on the turn it belongs to,

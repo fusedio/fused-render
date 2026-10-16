@@ -138,15 +138,38 @@ def test_the_error_text_is_not_printed_twice(agent, transcript):
     assert all("segments" not in t for t in turns)
 
 
-def test_a_turn_that_recovered_after_an_error_shows_both(agent, transcript):
-    """A retry that then succeeded: the failure happened and is worth seeing,
-    and the answer that followed is a real assistant turn after it."""
+def test_a_turn_that_recovered_after_an_error_shows_only_the_answer(
+        agent, transcript):
+    """A retry that then succeeded: the failure is RESOLVED, and a red row
+    above the answer that followed would read as something still wrong
+    (Akshil, 2026-10-16: no error card sticks once its issue is over)."""
     turns = transcript([
         _user("go"),
         _assistant("API Error: overloaded", isApiErrorMessage=True),
         _assistant("Second attempt worked."),
     ])
-    assert [t["role"] for t in turns] == ["user", "error", "assistant"]
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    assert turns[-1]["text"] == "Second attempt worked."
+
+
+def test_the_last_failure_always_stays(agent, transcript):
+    turns = transcript([
+        _user("go"),
+        _assistant("API Error: overloaded", isApiErrorMessage=True),
+    ])
+    assert [t["role"] for t in turns] == ["user", "error"]
+
+
+def test_a_failure_followed_only_by_another_failure_stays(agent, transcript):
+    """Two different failures in a row: neither says the other is over, and a
+    reader who retried twice should see what happened both times."""
+    turns = transcript([
+        _user("go"),
+        _assistant("API Error: overloaded", isApiErrorMessage=True),
+        _user("go"),
+        _assistant("API Error: Can't reach the API server", isApiErrorMessage=True),
+    ])
+    assert [t["role"] for t in turns] == ["user", "error", "user", "error"]
 
 
 # ------------------------------------------------ a limit row that is over
@@ -211,13 +234,17 @@ def test_a_limit_without_a_reset_and_nothing_after_is_restored(agent, transcript
     assert [t["role"] for t in turns] == ["user", "error"]
 
 
-def test_only_limit_rows_are_dropped(agent):
-    """`_drop_stale_limit_errors` leaves every other failure alone — a reply
-    after a network error does not make it not have happened."""
-    turns = [{"role": "user", "text": "go"},
-             {"role": "error", "text": "API Error: overloaded"},
-             {"role": "assistant", "text": "ok"}]
-    assert agent._drop_stale_limit_errors(turns) == turns
+def test_the_reset_rule_is_the_limits_alone(agent):
+    """`_drop_resolved_errors`: a reply resolves ANY failure, but only the
+    plan's limit is resolved by a clock — a network error with nothing after
+    it stays however old it is."""
+    old_limit = {"role": "error", "text": "Claude usage limit reached",
+                 "quota": {"status": "rejected", "resets_at": 100}}
+    old_break = {"role": "error", "text": "API Error: overloaded",
+                 "quota": {"status": "allowed", "resets_at": 100}}
+    user = {"role": "user", "text": "go"}
+    assert agent._drop_resolved_errors([user, old_limit], now=200) == [user]
+    assert agent._drop_resolved_errors([user, old_break], now=200) == [user, old_break]
 
 
 def test_a_limit_followed_by_another_kind_of_failure_is_restored(agent, transcript):
@@ -241,3 +268,27 @@ def test_a_newer_limit_row_retires_the_older_one(agent, transcript):
         _limit_row(resets_at=int(time.time()) + 3600),
     ])
     assert [t["role"] for t in turns] == ["user", "user", "error"]
+
+
+def test_a_bare_429_with_a_rejected_window_is_the_limit_too(agent, transcript):
+    """The CLI sometimes says only "API Error: 429" and leaves the plan window
+    on `quotaLimits`; the rejected status is the limit, so it retires."""
+    turns = transcript([
+        _user("go"),
+        _assistant("API Error: 429", isApiErrorMessage=True, apiErrorStatus=429,
+                   quotaLimits={"status": "rejected", "resetsAt": int(time.time()) + 3600,
+                                "rateLimitType": "five_hour"}),
+        _assistant("Back on it."),
+    ])
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+
+
+def test_a_bare_429_without_a_window_is_a_break_not_a_clock(agent, transcript):
+    """No rejected window: not the limit, so a passed-looking time on it means
+    nothing and only a reply resolves it. Alone at the tail it stays."""
+    turns = transcript([
+        _user("go"),
+        _assistant("API Error: 429", isApiErrorMessage=True, apiErrorStatus=429),
+    ])
+    assert [t["role"] for t in turns] == ["user", "error"]
+    assert "quota" not in turns[-1]
