@@ -5,8 +5,9 @@ anything that spawns or writes carries the guard.
 
 **A disabled Copilot is never spawned (D17).** With the Preferences switch
 off, the health read answers the cached snapshot or null and never measures,
-and every POST answers 400 with `registry.disabled_error`'s body. The
-Preferences row only mounts with the switch on, so no UI meets the 400.
+and every POST but `login/cancel` answers 400 with `registry.disabled_error`'s
+body. The Preferences row only mounts with the switch on, so no UI meets the
+400.
 """
 import logging
 
@@ -127,10 +128,11 @@ async def api_copilot_login_status():
 @router.post("/api/copilot/login/cancel")
 async def api_copilot_login_cancel(x_fused: str | None = Header(default=None)):
     """Stop a sign-in the user gave up on. Idempotent; guarded because it
-    signals a process."""
-    gate = _gate(x_fused)
-    if gate is not None:
-        return gate
+    signals a process. NOT behind the D17 switch: it only signals our own
+    child, and a Copilot turned off mid-sign-in must still be stoppable."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
     from fused_render import copilot_login
 
     return await run_in_threadpool(copilot_login.cancel)

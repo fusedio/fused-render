@@ -737,10 +737,35 @@ def test_the_default_switch_is_off_and_gates_every_spawn(monkeypatch):
     c = _client()
     assert c.get("/api/copilot/health").json() is None  # cold cache: null
     for route in _MUTATING:
+        if route == "/api/copilot/login/cancel":
+            continue
         r = c.post(route, headers={"X-Fused": "1"})
         assert r.status_code == 400, route
         assert r.json() == registry.disabled_error("copilot")
         assert r.json()["reason"] == "backend_disabled"
+
+
+def test_cancel_still_stops_a_sign_in_after_copilot_is_turned_off(tmp_path, monkeypatch):
+    """Cancel signals only our own child, so the switch never blocks it: a
+    sign-in started with Copilot on must stay stoppable once it is off."""
+    from fused_render import copilot_login
+    cli = tmp_path / "login-bin" / "copilot"
+    cli.parent.mkdir()
+    cli.write_text(f"#!{sys.executable}\nimport time\nprint('Waiting for authorization...', flush=True)\n"
+                   "time.sleep(60)\n")
+    cli.chmod(0o755)
+    monkeypatch.setenv("PATH", str(cli.parent))
+    copilot_login.reset()
+    _copilot_switch(monkeypatch, True)
+    assert _client().post("/api/copilot/login", headers={"X-Fused": "1"}).json()["in_flight"] is True
+    _copilot_switch(monkeypatch, False)
+    c = _client()
+    assert c.post("/api/copilot/login/cancel").status_code == 403  # X-Fused still applies
+    r = c.post("/api/copilot/login/cancel", headers={"X-Fused": "1"})
+    assert r.status_code == 200 and r.json()["canceled"] is True
+    assert r.json()["in_flight"] is False
+    assert copilot_login._active.proc.poll() is not None
+    copilot_login.reset()
 
 
 def test_disabled_health_serves_the_cache_never_a_measure(tmp_path, monkeypatch):
