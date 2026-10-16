@@ -594,14 +594,20 @@ export function useComposerDefaults(
   // the usual one: it is fast, and it outranks both slow reads. A global that
   // answers "" for a field settles nothing — the ranks below it are detection
   // and the prefs, and those are still out.
+  //
+  // ASKED OF THE LISTED VALUES (`lm`/`le`), the same ones the resolve above
+  // ranks by: a record naming a model THIS agent does not list speaks for
+  // nothing there, so it must not settle the pill either — it would paint the
+  // fallback, then flip when a slow read landed, and an early send would carry
+  // the fallback. The PARAM stays raw, per the note above.
   const recordAnswered = recordReady;
   const modelSettled =
     recordAnswered &&
-    (!!recorded.model || !!local.model || !!paramModel || !!globModel ||
+    (!!lm(recorded.model) || !!lm(local.model) || !!paramModel || !!lm(globModel) ||
       (globalReady && detectionReady && prefsReady));
   const effortSettled =
     recordAnswered &&
-    (!!recorded.effort || !!local.effort || !!paramEffort || !!globEffort ||
+    (!!le(recorded.effort) || !!le(local.effort) || !!paramEffort || !!le(globEffort) ||
       (globalReady && detectionReady));
   const pillsReady = modelSettled && effortSettled;
 

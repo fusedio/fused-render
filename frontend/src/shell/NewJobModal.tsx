@@ -21,6 +21,8 @@ import {
   capsOf,
   defaultModelOf,
   isBackendEnabled,
+  isForeignModel,
+  isUnlistedEffort,
   useAgentBackends,
 } from "@platform/lib/agent-backends";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -1731,6 +1733,14 @@ export function deleteFailureText(err: unknown, series: boolean): string {
 // in automatically" outlived the requirement, and a PREVIEW of the chat's own
 // name is worse than a question when Save then refuses the preview.)
 export const TITLE_PLACEHOLDER = "What should Claude do?";
+
+/** THE AGENT A DRAFT STORES (D2): the card's PICK — "" keeps following the
+ *  default — until a model or effort is stored with it. Those are one agent's
+ *  vocabulary, so the agent they were resolved for is stored beside them;
+ *  otherwise a default that flips later would run `copilot --model sonnet`. */
+export function storedDraftBackend(model: string, effort: string, agent: string, pick: string): string {
+  return model || effort ? agent : pick;
+}
 /** The same question naming the task's AGENT (docs/COPILOT_BACKEND.md D18);
  *  Claude's is the constant above, byte for byte. */
 export const titlePlaceholderFor = (agent: string) =>
@@ -3882,7 +3892,14 @@ export default function NewJobModal({
   // hold from its catalog row. Waits for the catalog — before it lands every
   // id reads as the static Claude row.
   useEffect(() => {
-    if (agent === "claude" || !agents.loaded) return;
+    if (!agents.loaded) return;
+    // THE OTHER AGENT'S VALUES GO FIRST, whichever agent this is: a draft
+    // stored before its agent was (or a default that has flipped since) can
+    // hold "sonnet" for a Copilot card or "auto" for a Claude one. That model
+    // falls to this agent's default, that effort to none.
+    setModel((m) => (isForeignModel(m, agent) ? defaultModelOf(agent) : m));
+    setEffort((e) => (isUnlistedEffort(e, agent) ? "" : e));
+    if (agent === "claude") return;
     const models = runModels.map((o) => o.key);
     const efforts = runEfforts.map((o) => o.key);
     // An EMPTY value is filled; a value the list does not hold is corrected
@@ -3953,8 +3970,7 @@ export default function NewJobModal({
       repeat: repeatOn ? repeat : null,
       model,
       effort,
-      // The PICK, not the resolved agent: "" keeps following the default.
-      backend: backendPick,
+      backend: storedDraftBackend(model, effort, agent, backendPick),
       permission,
       // Paths only once they exist: a chip whose upload has not answered names
       // no file yet, and a draft holding "" would restore an empty chip.

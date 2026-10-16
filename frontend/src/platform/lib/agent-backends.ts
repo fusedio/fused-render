@@ -299,6 +299,30 @@ export function agentNamed(id: string | null | undefined): boolean {
  *  task card cannot point at three places. */
 export const AGENT_PREFS_URL = "/preferences?tab=ai";
 
+/** Has the server answered (a real catalog, or a 404 from an older one)?
+ *  The plain read, which never starts one — for pure code that must not act
+ *  on the static rows as if they were the server's answer. */
+export function agentCatalogLoaded(): boolean {
+  return current.loaded;
+}
+
+/** A model id ANOTHER agent lists and this one does not: a pick carried across
+ *  an agent change ("sonnet" on a Copilot task, "auto" on a Claude one), which
+ *  would spawn one agent with the other's model. An id NO agent lists is not
+ *  foreign — it is a pinned or newer id, carried through as typed. */
+export function isForeignModel(model: string | null | undefined, id: string | null | undefined): boolean {
+  if (!model) return false;
+  const own = id || "claude";
+  if (backendOf(own).models.some((m) => m.id === model)) return false;
+  return current.all.some((b) => b.id !== own && b.models.some((m) => m.id === model));
+}
+
+/** An effort this agent does not offer. Efforts are a closed set per agent,
+ *  so anything off the list is dropped ("no effort", the spawn's default). */
+export function isUnlistedEffort(effort: string | null | undefined, id: string | null | undefined): boolean {
+  return !!effort && !backendOf(id).efforts.includes(effort);
+}
+
 /** What a NEW chat or task opens on: the catalog's default. */
 export function defaultBackend(): string {
   return current.default;

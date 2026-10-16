@@ -41,6 +41,13 @@ import {
 } from "./NewJobModal";
 import type { SchedulePayload } from "./NewJobModal";
 import { repeatChoicesFor } from "./schedule-lib";
+import {
+  agentCatalogLoaded,
+  defaultBackend,
+  defaultModelOf,
+  isForeignModel,
+  isUnlistedEffort,
+} from "@platform/lib/agent-backends";
 import type { DropAction } from "./tasks-lib";
 
 /** True when this draft row can be run by a drag: a task-kind draft whose
@@ -139,6 +146,19 @@ export function boundDraftPayload(
     ? saved.customRule
     : repeatChoicesFor(now).find((c) => c.key === repeat)?.rule ?? null;
   const attachments = saved.attachments ?? [];
+  // THE AGENT THIS RUNS ON, resolved the way the card resolved it — its pick,
+  // else the catalog's default — and the model/effort held to THAT agent's
+  // vocabulary (D2): a draft written before its agent was stored can carry the
+  // other agent's model. Only once the catalog has answered; before it the
+  // default is the static row's, not the server's, so the draft goes as stored.
+  const loaded = agentCatalogLoaded();
+  const agent = saved.backend || (loaded ? defaultBackend() : "");
+  let model = saved.model ?? "";
+  let effort = saved.effort ?? "";
+  if (agent && loaded) {
+    if (isForeignModel(model, agent)) model = defaultModelOf(agent);
+    if (isUnlistedEffort(effort, agent)) effort = "";
+  }
   return buildSchedulePayload({
     target: saved.target ?? "",
     title: saved.title ?? "",
@@ -152,10 +172,10 @@ export function boundDraftPayload(
     // not written cron since it became a checkbox, so no draft can carry one.
     legacyCron: "",
     permission: saved.permission ?? "",
-    model: saved.model ?? "",
-    effort: saved.effort ?? "",
-    // The card's agent pick (D2); none = the default, as the card showed it.
-    backend: saved.backend ?? "",
+    model,
+    effort,
+    // The card's agent pick (D2), or the default it resolved to.
+    backend: agent,
     // WHERE THIS TASK IS GOING, when the draft was written out of a chat: the
     // draft restates it on every save precisely so a card nobody has open still
     // knows (drafts.TaskDraftForm.session_id). A drop is exactly that case.
