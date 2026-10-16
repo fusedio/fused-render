@@ -22,6 +22,7 @@ import {
   troubleReport,
   type TroubleKind as PlatformTroubleKind,
 } from "@platform/lib/trouble";
+import type { HttpError } from "@platform/lib/api";
 
 import { AgentError } from "./agent";
 import type { Trouble, TroubleKind } from "./controller-api";
@@ -70,12 +71,27 @@ function fromPlatform(kind: PlatformTroubleKind, message: string, fromAgent: boo
   return rawKind(message, fromAgent);
 }
 
+/** `start`/`send` refused because the agent is switched off in Preferences
+ *  (docs/COPILOT_BACKEND.md D17): a 400 whose body says
+ *  `{error, reason: "backend_disabled", backend}`. A STRING `error`, so it
+ *  reaches here as the platform `HttpError` (agent.ts `post` only wraps the
+ *  structured object kind) with the body still on it. */
+export function disabledBackendOf(err: unknown): string | null {
+  const body = (err as HttpError | null)?.body as
+    | { reason?: unknown; backend?: unknown }
+    | null
+    | undefined;
+  if (!body || body.reason !== "backend_disabled") return null;
+  return typeof body.backend === "string" && body.backend ? body.backend : "claude";
+}
+
 /** The platform kind a `Trouble` should be RENDERED as — what
  *  `platform/ui/TroubleCard.tsx` takes. The chat's extra kinds have no card copy
  *  of their own, so they fall to `raw`, whose card is the error plus the two
  *  copy buttons. */
 export function platformKindOf(kind: TroubleKind): PlatformTroubleKind {
   if (kind === "cli-missing") return "notfound";
+  if (kind === "disabled") return "raw";
   if (kind === "login") return "login";
   if (kind === "limit") return "limit";
   return "raw";
@@ -105,22 +121,34 @@ export function troubleOf(kind: TroubleKind, message: string, detail?: string): 
  * `fromAgent` says whether agent.py itself raised (a traceback exists), which is
  * what separates `engine` from `generic`.
  */
-export function troubleFromMessage(message: string, fromAgent = false, detail?: string): Trouble {
+export function troubleFromMessage(
+  message: string,
+  fromAgent = false,
+  detail?: string,
+  /** The chat's agent (`ChatState.backend`, D13): a Copilot session's failure
+   *  is classified by Copilot's markers. Claude's rules when absent. */
+  backend = "",
+): Trouble {
   const text = String(message || "");
   if (isUnknownRun(text)) return troubleOf("unknown-run", text);
-  return troubleOf(fromPlatform(platformTroubleKind(text), text, fromAgent), text, detail);
+  return troubleOf(fromPlatform(platformTroubleKind(text, backend || "claude"), text, fromAgent), text, detail);
 }
 
 /**
  * Classify a THROWN failure: `AgentError` (the agent raised or timed out on
  * the server, with a traceback when it raised), an abort, or anything else.
  */
-export function troubleFromError(err: unknown): Trouble {
+export function troubleFromError(err: unknown, backend = ""): Trouble {
   if (err instanceof AgentError) {
-    return troubleFromMessage(err.message, true, err.traceback);
+    return troubleFromMessage(err.message, true, err.traceback, backend);
+  }
+  const disabled = disabledBackendOf(err);
+  if (disabled) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { kind: "disabled", message, backend: disabled };
   }
   const message = err instanceof Error ? err.message : String(err);
-  return troubleFromMessage(message, false);
+  return troubleFromMessage(message, false, undefined, backend);
 }
 
 /** The text behind "Copy the details" (T:13630 `troubleReport`). */

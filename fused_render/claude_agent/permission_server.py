@@ -112,8 +112,19 @@ SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
 # request's own questions and option labels — and why nothing else may carry it.
 ANSWERABLE_TOOL = "AskUserQuestion"
 
-PERM_DIR = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else ""
-STATE_DIR = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else ""
+# `--no-approve` (D4, the Copilot backend): this server is then the PANE tools
+# only — `app_state` and the terminals — and `approve` is neither listed nor
+# served. Copilot asks its client for permissions over ACP, and
+# `copilot_host.py` answers those off the same `perm/` files; a second
+# approval tool on the roster would be one the model could call and nobody
+# would answer. The flag may sit anywhere (agent.py appends it after the
+# dirs) and is stripped before the positional dirs are read, so
+# `argv[1]`/`argv[2]` keep meaning what they always did. Only this exact
+# token: a dir is never mistaken for a flag, whatever it is named.
+NO_APPROVE = "--no-approve" in sys.argv[1:]
+_POSITIONAL = [a for a in sys.argv[1:] if a != "--no-approve"]
+PERM_DIR = os.path.abspath(_POSITIONAL[0]) if len(_POSITIONAL) > 0 else ""
+STATE_DIR = os.path.abspath(_POSITIONAL[1]) if len(_POSITIONAL) > 1 else ""
 
 _stdout_lock = threading.Lock()
 _id_lock = threading.Lock()
@@ -872,7 +883,7 @@ def _dispatch(method: str, params: dict) -> dict:
         # server cannot serve, and the model would spend a 20-second timeout per
         # turn discovering that. D239: an ordinary folder has no left pane, so
         # `agent.py` spawns us with the perm dir alone.
-        tools = [TOOL_SCHEMA]
+        tools = [] if NO_APPROVE else [TOOL_SCHEMA]
         if STATE_DIR:
             tools.append(APP_STATE_SCHEMA)
         if _terminal_origin():
@@ -880,7 +891,9 @@ def _dispatch(method: str, params: dict) -> dict:
         return {"tools": tools}
     if method == "tools/call":
         name = params.get("name")
-        known = (TOOL_NAME, APP_STATE_TOOL) if STATE_DIR else (TOOL_NAME,)
+        known = () if NO_APPROVE else (TOOL_NAME,)
+        if STATE_DIR:
+            known = known + (APP_STATE_TOOL,)
         if _terminal_origin():
             known = known + TERMINAL_TOOLS
         if name not in known:

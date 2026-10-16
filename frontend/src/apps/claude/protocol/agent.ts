@@ -92,8 +92,14 @@ export function runAgent<K extends Action>(
  *  session in a terminal" caller shares (`apps/claude/ui/Kebab.tsx`'s
  *  "Continue in terminal", `shell/TaskPeek.tsx`'s own), so neither re-derives
  *  it and there is exactly one `cd` in the string either ends up sending. */
-export async function fetchTerminalCommand(file: string, sessionId: string): Promise<string> {
-  const out = await runAgent("terminal_command", { file, session_id: sessionId });
+export async function fetchTerminalCommand(file: string, sessionId: string, backend = ""): Promise<string> {
+  // `backend` names the CLI for a FRESH session only; a named session is
+  // continued with its own agent's whatever this says (agent.py, D2).
+  const out = await runAgent("terminal_command", {
+    file,
+    session_id: sessionId,
+    ...(backend ? { backend } : {}),
+  });
   if ("error" in out && out.error) throw new Error(out.error);
   if (!("command" in out)) throw new Error("the chat agent returned no command");
   return out.command;

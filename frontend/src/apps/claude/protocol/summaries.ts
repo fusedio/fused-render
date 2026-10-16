@@ -98,11 +98,64 @@ export function permCardLabel(pretty: string): string {
   return pretty.length > 28 ? pretty.slice(0, 27) + "…" : pretty;
 }
 
+/** THE COPILOT HOST'S SIDECAR on every tool input (docs/COPILOT_BACKEND.md
+ *  D14): `{kind, title}` off the ACP `tool_call`. Plumbing, never a field the
+ *  tool was called with, so no dump shows it; `kind` is the hint a chip for a
+ *  tool name we do not know (Copilot's free-text `title`) still has. */
+export const ACP_KEY = "_acp";
+
+export function acpOf(input: unknown): { kind: string; title: string } | null {
+  const acp = asRecord(asRecord(input)[ACP_KEY]);
+  const kind = typeof acp.kind === "string" ? acp.kind : "";
+  const title = typeof acp.title === "string" ? acp.title : "";
+  return kind || title ? { kind, title } : null;
+}
+
+/** The input with the sidecar taken out — what an unknown tool's dump shows. */
+export function withoutAcp(input: unknown): Record<string, unknown> {
+  const inp = asRecord(input);
+  if (!(ACP_KEY in inp)) return inp;
+  return Object.fromEntries(Object.keys(inp).filter((k) => k !== ACP_KEY).map((k) => [k, inp[k]]));
+}
+
+/** A COPILOT EDIT (D14) carries the change as one unified `diff` string, not
+ *  as `old_string`/`new_string`. True when that is the shape in hand. */
+function isDiffEdit(inp: Record<string, unknown>): boolean {
+  return typeof inp.diff === "string" && inp.old_string === undefined && inp.new_string === undefined;
+}
+
+/** The diff's own lines, without the `diff`/`index`/`---`/`+++` header before
+ *  the first hunk — the path is already printed above the block. */
+function diffBody(diff: string): string[] {
+  const lines = diff.replace(/\n$/, "").split("\n");
+  const hunk = lines.findIndex((l) => l.startsWith("@@"));
+  if (hunk <= 0) return lines;
+  const header = lines.slice(0, hunk).every((l) => /^(diff |index |--- |\+\+\+ |new file|deleted file|similarity|rename )/.test(l) || l === "");
+  return header ? lines.slice(hunk) : lines;
+}
+
+/** `+added -removed` of an Edit in either shape. */
+export function editLineCounts(input: unknown): { added: number; removed: number } {
+  const inp = asRecord(input);
+  if (isDiffEdit(inp)) {
+    const body = diffBody(inp.diff as string);
+    return {
+      added: body.filter((l) => l.startsWith("+")).length,
+      removed: body.filter((l) => l.startsWith("-")).length,
+    };
+  }
+  return { added: segLineCount(inp.new_string), removed: segLineCount(inp.old_string) };
+}
+
 /** T:13781-13786 — an Edit's `old_string`/`new_string` as one `-`/`+` marked
  *  block. TWO call sites (the approval card and the transcript's Edit chip),
- *  and the two showing the same edit differently would be a bug. */
+ *  and the two showing the same edit differently would be a bug.
+ *
+ *  A Copilot Edit's unified `diff` is ALREADY that block (`+`/`-`/` ` per
+ *  line, `@@` per hunk), so it is passed through, headers dropped. */
 export function formatEditDiff(input: unknown): string {
   const inp = asRecord(input);
+  if (isDiffEdit(inp)) return diffBody(inp.diff as string).join("\n");
   const mark = (v: unknown, ch: string) =>
     str(v)
       .split("\n")
@@ -153,6 +206,8 @@ export function summarizePermission(row: Pick<PermissionRow, "tool" | "input">):
     return "";
   };
   const out = (sub: string, body: string): PermissionSummary => ({ sub, body, covered: used });
+  // The Copilot sidecar is never asked about (see ACP_KEY).
+  if (ACP_KEY in inp) used.push(ACP_KEY);
 
   switch (row.tool) {
     case "Bash":
@@ -163,6 +218,7 @@ export function summarizePermission(row: Pick<PermissionRow, "tool" | "input">):
       // Marked covered here, rendered by formatEditDiff off the raw input.
       show("old_string");
       show("new_string");
+      show("diff"); // a Copilot Edit's change, the same block (formatEditDiff)
       return out(path + (inp.replace_all ? "  (every occurrence)" : ""), formatEditDiff(inp));
     }
     case "Write":
@@ -181,10 +237,12 @@ export function summarizePermission(row: Pick<PermissionRow, "tool" | "input">):
     case "WebSearch":
       return out(pick("url", "query"), show("prompt"));
   }
-  // Unknown tool: the whole object is the body, so every key is covered.
-  const keys = Object.keys(inp);
+  // Unknown tool: the whole object is the body, so every key is covered —
+  // bar the Copilot sidecar, which is not part of the call.
+  const bare = withoutAcp(inp);
+  const keys = Object.keys(bare);
   used.push(...keys);
-  return out("", keys.length ? JSON.stringify(inp, null, 2) : "");
+  return out("", keys.length ? JSON.stringify(bare, null, 2) : "");
 }
 
 export interface PermChoice {
@@ -204,6 +262,8 @@ export interface PermChoice {
 export function permChoices(
   row: Pick<PermissionRow, "tool">,
   liveMode?: PermissionMode | "",
+  /** The agent's name for the escalation row (D18); Claude's words otherwise. */
+  agent = "Claude",
 ): PermChoice[] {
   const label = permCardLabel(prettyToolName(row.tool));
   const choices: PermChoice[] = [
@@ -223,13 +283,13 @@ export function permChoices(
   // that is not the plan card.
   if ((liveMode || DEFAULT_PERMISSION) !== "auto" && liveMode !== "plan") {
     choices.push({
-      text: "Allow, and let Claude decide from here",
+      text: `Allow, and let ${agent} decide from here`,
       decision: "allow",
       scope: "once",
       mode: "auto",
       primary: false,
       title:
-        "Stops asking for what Claude judges safe; it still escalates anything " +
+        `Stops asking for what ${agent} judges safe; it still escalates anything ` +
         "it will not vouch for.",
     });
   }
@@ -275,7 +335,8 @@ export function toolChipSummaryParts(seg: Pick<ToolSegment, "name" | "input"> | 
       // +added -removed FIRST: a path is long enough to be clipped by the
       // summary's ellipsis, and a count that only shows on short paths is a
       // count you cannot rely on.
-      const counts = "+" + segLineCount(inp.new_string) + " -" + segLineCount(inp.old_string);
+      const { added, removed } = editLineCounts(inp);
+      const counts = "+" + added + " -" + removed;
       return { lead: counts, path: pick("file_path") };
     }
     case "Write":

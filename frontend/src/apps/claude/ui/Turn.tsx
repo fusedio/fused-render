@@ -16,7 +16,8 @@ import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound, type Annot
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
-import { ClaudeMark } from "./ClaudeMark";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { useAgent } from "./agent-context";
 import { MarkdownView } from "./MarkdownView";
 import { Receipts } from "./Receipts";
 import { SegmentView } from "./SegmentView";
@@ -120,6 +121,7 @@ export const Turn = memo(function Turn({
   onPullPending,
   cwd,
 }: TurnProps) {
+  const agent = useAgent();
   // BEFORE the early returns below: a hook may not sit behind one, and the id
   // is only used on the assistant branch (see `bodyId`).
   const uid = useId();
@@ -349,7 +351,7 @@ export const Turn = memo(function Turn({
           disabled={!foldable}
           onClick={foldable ? () => onToggleCollapse!(turn.key) : undefined}
         >
-          <ClaudeMark size={0.95} />
+          <AgentMark backend={agent.backend} size={0.95} />
         </button>
         <span className="body" id={bodyId}>
           {/* Never both: the text segments join back to exactly the flat

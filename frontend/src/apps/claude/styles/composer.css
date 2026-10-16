@@ -553,6 +553,30 @@
   line-height: 1.45;
   color: var(--c-faint);
 }
+/* The switched-off agent's line under a closed box (D17): `.c-queued`'s quiet
+   line, with its link in the ordinary ink so it reads as the way out. */
+.c-blocked-note a {
+  color: var(--c-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.c-blocked-note a:hover {
+  color: var(--c-fg);
+}
+
+/* The Agent pill once the session has a turn (AgentSelect `fixed`): the same
+   pill box and ink, the mark and the word side by side, and nothing that
+   says "press me" — it is a fact, not a menu. */
+.c-agent-sel.is-fixed {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: default;
+}
+.c-agent-sel.is-fixed:hover {
+  background-color: transparent;
+  color: var(--c-dim);
+}
 
 .c-pill {
   background-color: transparent;

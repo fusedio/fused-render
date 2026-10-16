@@ -37,6 +37,7 @@ import {
   markTaskRunning,
   scheduleMessage,
 } from "@platform/lib/api";
+import { capsOf } from "@platform/lib/agent-backends";
 import { chatDraftKey } from "@platform/lib/drafts";
 import { queueEnabled, queueFlagReady } from "../feature-flag";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
@@ -261,6 +262,7 @@ function emptyState(file: string | null): ChatState {
   return {
     file,
     sessionId: null,
+    backend: "",
     runId: null,
     lastRunId: null,
     status: "idle",
@@ -949,7 +951,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   /** T:13698 `addError(message)` — classify, then report. */
   const addError = (message: string, fromAgent = false) =>
-    reportTrouble(troubleFromMessage(message, fromAgent));
+    reportTrouble(troubleFromMessage(message, fromAgent, undefined, curBackend()));
 
   /**
    * THE COMEBACK AFTER A USAGE LIMIT. Claude Code's own TUI waits in the open
@@ -980,7 +982,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const sessionId = state.sessionId;
     if (!FILE || !sessionId) return false;
     scheduledRuns.add(runId);
-    const trouble: Trouble = { ...troubleFromMessage(error), quota };
+    const trouble: Trouble = { ...troubleFromMessage(error, false, undefined, curBackend()), quota };
     reportTrouble(trouble);
     const post = deps.schedule ?? scheduleMessage;
     void post({
@@ -989,6 +991,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       due: continueDue(quota),
       session_id: sessionId,
       title: CONTINUE_TITLE,
+      // The session's own agent (D2): a create naming none is pinned to the
+      // current Preferences default.
+      ...(curBackend() ? { backend: curBackend() } : {}),
     })
       .then(() => {
         // The card's line about the scheduled follow-up, and the CLI's own
@@ -1535,6 +1540,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
         const poll = data as PollResponse;
         if (poll.session_id) noteSessionId(String(poll.session_id), seat, opts.prompt);
+        if (loopSeq === seat) noteBackend(poll.backend);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
 
         // usage arrives only at message end; estimate from streamed text meanwhile
@@ -1877,7 +1883,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // bubbles and its card belong to a transcript that is no longer on screen.
       if (!disposed && logGen === gen) {
         for (const c of chunks.values()) if (c.key) dropTurn(c.key);
-        reportTrouble(troubleFromError(err));
+        reportTrouble(troubleFromError(err, curBackend()));
       }
     } finally {
       emit({ working: null });
@@ -1937,13 +1943,43 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   const curModel = () => deps.model?.() || "";
   const curEffort = () => deps.effort?.() || "";
-  const curPermission = () => deps.params.get("permission") || DEFAULT_PERMISSION;
+  /** THE SESSION'S OWN AGENT FIRST (D2, immutable); the pill's for a chat
+   *  that has none yet. "" lets agent.py fall back to its default. */
+  const curBackend = () => state.backend || deps.backend?.() || "";
+  /** `state.backend` is the opener's guess, not yet confirmed by the wire
+   *  (`noteBackend`). Set by `openSession`, cleared by the first answer. */
+  let backendSeeded = false;
+  /** What the wire said this conversation runs on. Never cleared by a payload
+   *  that omits it (an older server), and never changed once the WIRE has set
+   *  it: first wire answer wins, because a session's agent is immutable (D2)
+   *  and a second answer can only be a stale one about a conversation this
+   *  page has left. The OPENER's guess (`openSession`'s `backend`, off the row
+   *  it was opened from) is provisional — `backendSeeded` — and the first
+   *  wire answer replaces it: a wrong seed would otherwise brand the chat,
+   *  gate its caps and travel on every later send as the wrong agent. */
+  const noteBackend = (b: unknown) => {
+    if (typeof b !== "string" || !b) return;
+    if (state.backend && !backendSeeded) return;
+    backendSeeded = false;
+    if (b !== state.backend) emit({ backend: b });
+  };
+  /** A `plan` left on the param by an earlier Claude chat, on an agent with no
+   *  plan mode (§7 `plan_mode`): the pill already reads it as the default
+   *  (composer-defaults `permission`), so the wire says the same — sent raw,
+   *  agent.py refuses the start while the pill shows ask-every-time. */
+  const planless = (v: string) => v === "plan" && !capsOf(curBackend()).plan_mode;
+  const curPermission = () => {
+    const v = deps.params.get("permission") || DEFAULT_PERMISSION;
+    return planless(v) ? DEFAULT_PERMISSION : v;
+  };
   /** The same read, NARROWED — `ChatState.permissionMode` is a union and the
    *  param is arbitrary text off a URL. Deliberately separate from
-   *  `curPermission`, which stays a pass-through: T sends `permission_mode`
-   *  verbatim (T:16128) and agent.py is the thing entitled to reject it. */
+   *  `curPermission`, which stays a pass-through for every other value: T
+   *  sends `permission_mode` verbatim (T:16128) and agent.py is the thing
+   *  entitled to reject it. */
   const curPermissionMode = (): PermissionMode => {
     const v = deps.params.get("permission") || "";
+    if (planless(v)) return DEFAULT_PERMISSION;
     return v === "plan" || v === "prompt" || v === "acceptEdits" || v === "auto"
       ? v
       : DEFAULT_PERMISSION;
@@ -2129,6 +2165,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 ...hintParam,
                 message: outgoing,
                 read_dirs: JSON.stringify(opts.readDirs || []),
+                backend: curBackend(),
                 model: curModel(),
                 effort: curEffort(),
                 permission_mode: opts.permission || curPermission(),
@@ -2166,6 +2203,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
               ...hintParam,
               message: outgoing,
               session_id: sessionId,
+              backend: curBackend(),
               model: curModel(),
               effort: curEffort(),
               permission_mode: opts.permission || curPermission(),
@@ -2237,6 +2275,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // re-attach; the landing simply gains nothing.
           const named = (res as { session_id?: string }).session_id;
           if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
+          if (logGen === gen) noteBackend((res as { backend?: string }).backend);
         }
       }
       started = true;
@@ -2272,7 +2311,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // the agent never saw either (T:16693-16720).
         returnSend(text, opts);
       }
-      reportTrouble(troubleFromError(err));
+      reportTrouble(troubleFromError(err, curBackend()));
     } finally {
       if (sendSeq === seat) sending = false;
     }
@@ -2416,6 +2455,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           ...hintParam,
           message: outgoing,
           read_dirs: JSON.stringify(opts.readDirs || []),
+          backend: curBackend(),
           model: curModel(),
           effort: curEffort(),
           permission_mode: opts.permission || curPermission(),
@@ -2439,6 +2479,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             ...hintParam,
             message: outgoing,
             session_id: sessionId,
+            backend: curBackend(),
             model: curModel(),
             effort: curEffort(),
             permission_mode: opts.permission || curPermission(),
@@ -2512,7 +2553,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           return;
         }
         giveBack();
-        reportTrouble(troubleFromError(err));
+        reportTrouble(troubleFromError(err, curBackend()));
         return;
       }
       // Same guard, same reason as the two roads above: a `send` that rejects
@@ -2969,6 +3010,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // THE HINT THE TRANSCRIPT ENDS ON (`_history`'s walk), so a reload keeps
     // the chip. After `clearTasks()` (openSession ran it before the fetch).
     landWorktreeHint(res.worktree_hint);
+    noteBackend(res.backend);
     emit({
       turns: historyToTurns(res),
       transcript: res.transcript ?? null,
@@ -2983,7 +3025,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     });
   }
 
-  async function openSession(sessionId: string): Promise<void> {
+  async function openSession(sessionId: string, opts: { backend?: string } = {}): Promise<void> {
     if (disposed) return;
     // Reuse the `sending` gate: a message sent during the await would be
     // appended first and the older history turns dumped after it (T:17994).
@@ -3010,8 +3052,17 @@ export function createChatController(deps: ControllerDeps): ChatController {
     clearInbox();
     clearTasks();
     setParam({ session_id: sessionId });
+    // The `backend` param is a NEW chat's pick (D18) and names nothing about
+    // the conversation arriving, which carries its own agent.
+    setParam({ backend: null }, "replace");
+    backendSeeded = !!opts.backend;
     emit({
       sessionId,
+      // The agent belongs to the conversation that is leaving. The ARRIVING
+      // one's, when the opener knows it (the row it was opened from), is
+      // named at once — so a restore that fails, or is slow, never shows the
+      // previous chat's agent or the default's. The fetch below confirms it.
+      backend: opts.backend || "",
       historyLoading: true,
       // THE VISIBLE CONVERSATION IS BEING REPLACED, and this counter is how the
       // React side hears about it — T calls `scheduleResetForNewTranscript()`
@@ -3860,7 +3911,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // exists to remove. T only warns here (T:17862-17865), so a warn is also
       // the parity answer for those two roads.
       if (!disposed && logGen === gen) {
-        if (!quiet && !neverShown) reportTrouble(troubleFromError(err));
+        if (!quiet && !neverShown) reportTrouble(troubleFromError(err, curBackend()));
         else console.warn("re-attach failed:", err instanceof Error ? err.message : err);
       }
     } finally {
@@ -4016,11 +4067,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // disowning a session id is the reader navigating home (T:13031's bare set),
     // where clearing a REAL run id must not buy the entry (T:13036).
     setParam({ session_id: null });
+    // THE AGENT PICK GOES WITH THE SESSION (D2/D18): a fresh chat opens on the
+    // catalog's default, the way it opens on the global model pair.
+    setParam({ backend: null }, "replace");
     setParam({ run: null }, "replace");
     // `rev` is documented monotonic and offered as a cheap memo key
     // (controller-api.ts:161), so a fresh transcript carries the old number
     // forward rather than jumping back to 1.
     const carried = state.rev;
+    backendSeeded = false;
     state = { ...emptyState(FILE), rev: carried };
     emit({});
   }

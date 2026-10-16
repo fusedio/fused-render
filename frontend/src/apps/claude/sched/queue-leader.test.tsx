@@ -321,7 +321,11 @@ describe("the session the leader's run opened", () => {
       'const adoptSession = leaderSession(sched.ranSessions, leader.peek(), state.sessionId ?? "");',
     );
     const effect = CHAT.slice(CHAT.indexOf("const adoptSession = leaderSession("));
-    expect(effect).toContain("void controller.openSession(adoptSession);");
+    // …with the row's agent handed over (docs/COPILOT_BACKEND.md D2), the
+    // same option the other "open that chat" doors pass.
+    expect(effect).toContain(
+      'void controller.openSession(adoptSession, { backend: sessionSeed(adoptSession)?.backend || "" });',
+    );
     // NO GUARD REF: `openSession` emits the id, the rule answers "" from then
     // on, and the effect's own dependency is what closes it.
     expect(effect).toContain("}, [adoptSession, controller, cardPolicy, params]);");

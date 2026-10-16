@@ -52,7 +52,9 @@
 // ask a second life.
 const PENDING_TTL_MS = 60_000;
 
-type Pending = { path: string; prompt: string; stagedAt: number };
+/** `backend`: the agent the ask must run on, when its caller names one ("Fix
+ *  with Claude" is Claude's whatever the default says, D17). */
+type Pending = { path: string; prompt: string; stagedAt: number; backend?: string };
 let pending: Pending | null = null;
 
 // SURVIVES A FULL PAGE LOAD, via sessionStorage (this tab only, same TTL): a
@@ -111,14 +113,14 @@ export function pendingClaudeAskVersion(): number {
   return stagedVersion;
 }
 
-export function stageClaudeAsk(path: string, prompt: string): void {
-  pending = { path, prompt, stagedAt: Date.now() };
+export function stageClaudeAsk(path: string, prompt: string, opts: { backend?: string } = {}): void {
+  pending = { path, prompt, stagedAt: Date.now(), ...(opts.backend ? { backend: opts.backend } : {}) };
   persist(pending);
   stagedVersion += 1;
   for (const listener of listeners) listener();
 }
 
-function liveOrExpired(): { path: string; prompt: string } | null {
+function liveOrExpired(): Pending | null {
   if (!pending) pending = hydrate();
   if (!pending) return null;
   if (Date.now() - pending.stagedAt > PENDING_TTL_MS) {
@@ -142,7 +144,17 @@ export function takePendingClaudeAsk(path: string): string | null {
   if (!current || current.path !== path) return null;
   pending = null;
   persist(null);
+  taken = current.backend ? { prompt: current.prompt, backend: current.backend } : null;
   return current.prompt;
+}
+
+/** THE AGENT THE LAST TAKEN ASK NAMED, for the chat that spends it. The ask
+ *  travels to the chat as its bare text (`ClaudeAsk`, through the explorer's
+ *  pane plumbing), so the agent rides beside it here and is matched on that
+ *  same text; "" when the ask named none (the catalog's default stands). */
+let taken: { prompt: string; backend: string } | null = null;
+export function takenAskBackend(prompt: string): string {
+  return taken && taken.prompt === prompt ? taken.backend : "";
 }
 
 // Test-only: production code never needs to look without taking.

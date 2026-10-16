@@ -13,23 +13,22 @@
 // and not a state flip — and the short forms come back on change/blur, the two
 // ways a popup ends. `fitSelect` is deliberately NOT re-run: the pill keeps its
 // fitted width, so nothing in the row moves.
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { agentLabel, capsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import type { PermissionMode } from "../protocol/types";
 import {
   GROUP_LABELS,
-  PERMISSION_LABELS,
   PERMISSION_MODES,
   PERMISSION_SHORT,
   PILL_ARIA,
+  permissionLabelsFor,
 } from "./composer-defaults";
 import { PillSelect, type PillOption } from "./PillSelect";
 
-const OPTIONS: PillOption[] = PERMISSION_MODES.map((value) => ({
-  value,
-  label: PERMISSION_LABELS[value],
-}));
-
 export interface PermissionSelectProps {
+  /** Whose modes (docs/COPILOT_BACKEND.md §7): `plan` is left out when the
+   *  agent's caps say it has none, and "auto" names the agent. */
+  backend?: string;
   value: PermissionMode;
   onChange(value: PermissionMode): void;
   /** The control row ran out of width (`fitComposerRow` stage 2). */
@@ -38,12 +37,24 @@ export interface PermissionSelectProps {
 }
 
 export function PermissionSelect({
+  backend,
   value,
   onChange,
   compact,
   disabled,
 }: PermissionSelectProps) {
   const ref = useRef<HTMLSelectElement | null>(null);
+  useAgentBackends();
+  const plan = capsOf(backend).plan_mode;
+  const labels = permissionLabelsFor(agentLabel(backend));
+  const options: PillOption[] = useMemo(
+    () =>
+      PERMISSION_MODES.filter((m) => plan || m !== "plan").map((value) => ({
+        value,
+        label: labels[value],
+      })),
+    [plan, labels],
+  );
 
   const write = useCallback((short: boolean) => {
     const select = ref.current;
@@ -85,7 +96,7 @@ export function PermissionSelect({
       ariaLabel={PILL_ARIA.permission}
       group={GROUP_LABELS.permission}
       value={value}
-      options={OPTIONS}
+      options={options}
       selectRef={ref}
       onSelectKeyDown={guardKeys}
       onSelectMouseDown={() => write(false)}

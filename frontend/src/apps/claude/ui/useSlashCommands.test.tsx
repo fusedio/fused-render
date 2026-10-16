@@ -47,3 +47,38 @@ test("a new file drops the old list at once; a refetch keeps it; a failure clear
   expect(seen!.commands).toEqual([row("b-cmd")]);
   act(() => r!.unmount());
 });
+
+test("per agent: a pill flip drops the list and re-asks; learning the session re-asks and keeps it", async () => {
+  type Call = { file: string; scope: { sessionId?: string; backend?: string }; resolve(rows: CommandRow[]): void };
+  const calls: Call[] = [];
+  const fetcher = (file: string, scope: { sessionId?: string; backend?: string }) =>
+    new Promise<{ commands: CommandRow[] }>((res) => {
+      calls.push({ file, scope, resolve: (rows) => res({ commands: rows }) });
+    });
+  let seen: { commands: CommandRow[] | null; refetch(): void } | null = null;
+  function Probe({ backend, sessionId }: { backend: string; sessionId: string }) {
+    seen = useSlashCommands("/a", fetcher, { backend, sessionId });
+    return null;
+  }
+  const row = (name: string): CommandRow => ({ name, description: "", source: "x" });
+  let r: ReactTestRenderer | undefined;
+  await act(async () => {
+    r = create(<Probe backend="claude" sessionId="" />);
+  });
+  expect(calls[0]!.scope).toEqual({ backend: "claude" });
+  await act(async () => calls[0]!.resolve([row("claude-cmd")]));
+  expect(seen!.commands).toEqual([row("claude-cmd")]);
+
+  // The Agent pill moves on a new chat: Claude's menu goes at once.
+  await act(async () => r!.update(<Probe backend="copilot" sessionId="" />));
+  expect(seen!.commands).toBeNull();
+  expect(calls[1]!.scope).toEqual({ backend: "copilot" });
+  await act(async () => calls[1]!.resolve([row("copilot-cmd")]));
+  expect(seen!.commands).toEqual([row("copilot-cmd")]);
+
+  // The first send names the session: asked again by the session, same list kept meanwhile.
+  await act(async () => r!.update(<Probe backend="copilot" sessionId="s1" />));
+  expect(seen!.commands).toEqual([row("copilot-cmd")]);
+  expect(calls[2]!.scope).toEqual({ sessionId: "s1" });
+  act(() => r!.unmount());
+});

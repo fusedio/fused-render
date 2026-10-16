@@ -423,8 +423,12 @@
  *     get(key, {scope}) -> Task|null — also finds a started task by the
  *       `pending:<entry>` key it wore before its session began. Scoped like
  *       list(): a task outside this app is null unless `scope: "all"`.
- *     create({prompt, target, title, model, effort, permissionMode, due})
- *       -> TaskHandle (below). `due` is ISO or a Date; omit it to start now.
+ *     create({prompt, target, title, model, effort, backend, permissionMode,
+ *       due}) -> TaskHandle (below). `due` is ISO or a Date; omit it to start
+ *       now. `backend` is which agent runs it, "claude" or "copilot"; omitted,
+ *       the Preferences default at create. An agent switched off, plan mode on
+ *       Copilot, or a model from the other agent's list rejects 400. Rows
+ *       carry `backend` too.
  *     send(key, text, {model, effort}) -> {queued, key} — a follow-up message;
  *       `queued` means it waits behind the run in flight. A `pending:` key
  *       rejects 409 (no session yet); a handle's send() looks the key up first.
@@ -6522,6 +6526,7 @@
       if (spec.title) body.title = spec.title;
       if (spec.model) body.model = spec.model;
       if (spec.effort) body.effort = spec.effort;
+      if (spec.backend) body.backend = spec.backend;
       if (spec.permissionMode) body.permission_mode = spec.permissionMode;
       // `queue: false` — this task never stands in the project queue (runs
       // beside whatever owns the folder). Whatever was given travels, so a

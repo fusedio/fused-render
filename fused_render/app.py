@@ -305,9 +305,14 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     # Probe Claude Code (found / version / signed-in) off the request path, so
     # the first-run strip's GET is a disk read. Mirrors cli._run_serve — an entry
     # point, never create_app.
-    from fused_render import claude_health
+    # Each agent's probe follows its Preferences switch (D17), as in cli.py.
+    from fused_render import claude_health, copilot_health
+    from fused_render.agent_backends import registry as _agent_registry
 
-    claude_health.warm_in_background()
+    if _agent_registry.is_enabled("claude"):
+        claude_health.warm_in_background()
+    if _agent_registry.is_enabled("copilot"):
+        copilot_health.warm_in_background()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.

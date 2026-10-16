@@ -126,7 +126,7 @@ from datetime import datetime, timezone
 from urllib.parse import unquote, urlencode
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -143,6 +143,8 @@ from fused_render import (
     tasks_watch,
 )
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.agent_backends import registry as agent_registry
+from fused_render.agent_backends import roots as agent_roots
 from fused_render.server.common import _error, _require_fused, ws_origin_ok
 from fused_render.server.routers import claude_sessions as sessions
 from fused_render.server.routers import schedule as schedule_api
@@ -2257,8 +2259,12 @@ def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
 # ------------------------------------------------------------ task collection
 
 
-def _new_task(key: str, session_id: str, path: str | None) -> dict:
-    return {"key": key, "session_id": session_id, "path": path, "entries": []}
+def _new_task(key: str, session_id: str, path: str | None,
+              backend: str = "") -> dict:
+    # `backend` is which agent's root the transcript was found under ("" for a
+    # row with no transcript yet); `_row_backend` finishes the answer.
+    return {"key": key, "session_id": session_id, "path": path, "entries": [],
+            "backend": backend}
 
 
 def _entry_session(entry: dict, by_id: dict | None = None) -> str:
@@ -2446,9 +2452,13 @@ def _collect() -> dict[str, dict]:
     later, because the key it is filed under does not change when the watcher
     fills the answer in."""
     tasks: dict[str, dict] = {}
-    for path in tasks_store.transcripts():
+    # EVERY BACKEND'S ROOT, and the root names the backend (D2/D3): a Copilot
+    # session's transcript sits under fused's own root in Claude's shape, so
+    # it is a task like any other, and which root it came from is the one
+    # fact about its agent that costs nothing to know.
+    for backend, path in tasks_store.transcripts_by_backend():
         session_id = os.path.splitext(os.path.basename(path))[0]
-        tasks[session_id] = _new_task(session_id, session_id, path)
+        tasks[session_id] = _new_task(session_id, session_id, path, backend)
     # A SEND IS A TASK BEFORE ANY FILE SAYS SO. `tasks_watch.sent_marks()` is
     # the page that made the send telling this process it made it (see
     # `/api/tasks/running`), which is earlier than the transcript, earlier than
@@ -3578,6 +3588,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # The flags this task's runs are launched with — see `_row_settings`. Both
     # "" for a task that never chose, which is most of them.
     model, effort = _row_settings(task, settings)
+    backend = _row_backend(task, settings)
     # WHERE IN THE LINE, asked once here for the same reason `waiting` is: the
     # status, the position and the name of the task in front have to describe one
     # state of one folder. `{}` for a task nobody said was queued, which is every
@@ -3681,6 +3692,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # (`_row_settings`).
         "model": model,
         "effort": effort,
+        # WHICH AGENT runs this task — "claude" | "copilot", never "" (D2: the
+        # backend is fixed at the first turn and every surface names it). The
+        # recorded choice, else the root the transcript sits under, else the
+        # entries, else Claude — see `_row_backend`.
+        "backend": backend,
         # Over the WHOLE merged thread, not the three-message tail: "is anything
         # running in this task?" and "is every message filed away?" are both
         # questions about all of it, and a run pushed out of the window by two
@@ -4104,6 +4120,9 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
         # "" for a form that has not touched either picker, which is most.
         "model": _display_model(str(record.get("model") or "")),
         "effort": str(record.get("effort") or ""),
+        # The agent the form picked, "" when it has not (the picker's own
+        # default then speaks) — the one row where "" is honest.
+        "backend": str(record.get("backend") or ""),
         "status": _DRAFT_STATUS,
         "failed": False,
         "blocked_reason": "",
@@ -4209,6 +4228,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
         # have been launched with a model, and no session to have recorded one.
         "model": "",
         "effort": "",
+        "backend": "",
         "status": _DRAFT_STATUS,
         "failed": False,
         "blocked_reason": "",
@@ -4673,6 +4693,31 @@ def _row_settings(task: dict, settings: dict | None) -> tuple[str, str]:
     rec_model, rec_effort = tasks_store.session_settings(
         settings, task["session_id"])
     return _display_model(rec_model or model), rec_effort or effort
+
+
+def _row_backend(task: dict, settings: dict | None) -> str:
+    """Which agent backend this task belongs to, as the row states it.
+
+    THE RECORD LEADS: `session_settings.json` carries `backend` from the spawn
+    that started the conversation (D2). Below it, THE ROOT the transcript was
+    found under (`_collect` files it on the task) — the authority for every
+    session that predates the record, and for a transcript the host wrote
+    before `_start` recorded anything. Below that, the newest entry naming one
+    (a `pending:<entry>` row has no transcript and no record, only the message
+    the New Task card scheduled). "claude" for everything else: every
+    pre-existing session is a Claude session, and the row never says "".
+    """
+    if settings is not None and task["session_id"]:
+        recorded = tasks_store.session_backend(settings, task["session_id"])
+        if recorded:
+            return recorded
+    if task.get("backend") in agent_roots.BACKENDS:
+        return task["backend"]
+    for entry in reversed(task["entries"]):
+        value = str(entry.get("backend") or "").strip()
+        if value in agent_roots.BACKENDS:
+            return value
+    return agent_roots.DEFAULT_BACKEND
 
 
 def _run_settings(task: dict) -> tuple[str, str]:
@@ -5720,6 +5765,9 @@ _PULSE_FIELDS = (
     # `None`, still notifies. A row missing this key entirely would be a
     # `KeyError` here, so `_place`/`_row` always set it, even to `None`.
     "entrypoint",
+    # Which agent ran it, so a "Copilot finished: <title>" notice can say so
+    # (D18) without a second fetch.
+    "backend",
 )
 
 
@@ -6122,6 +6170,10 @@ class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
     effort: str = ""
+    # "claude" | "copilot" | "" (not saying). Recorded once by the spawn that
+    # starts a conversation; a later POST naming the same value is a no-op and
+    # one naming another is refused — the backend never changes (D2).
+    backend: str = ""
 
 
 def _settings_session_id(raw: str) -> str:
@@ -6169,9 +6221,13 @@ def api_task_settings_read(session_id: str = ""):
     on the row the picker now offers instead of a blank pill.
     """
     session_id = _settings_session_id(session_id)
-    model, effort = tasks_store.session_settings(
-        tasks_store.settings_state(), session_id)
-    return {"model": _display_model(model), "effort": effort}
+    state = tasks_store.settings_state()
+    model, effort = tasks_store.session_settings(state, session_id)
+    # "" for an unrecorded backend, like the other two: this door answers
+    # what the RECORD says, and the row (`_row_backend`) is where the root
+    # fills the gap for a session that predates the field.
+    return {"model": _display_model(model), "effort": effort,
+            "backend": tasks_store.session_backend(state, session_id)}
 
 
 @router.post("/api/tasks/settings")
@@ -6203,10 +6259,35 @@ def api_task_settings(patch: SettingsPatch,
             status_code=400,
             detail=f"invalid effort {effort!r}: expected one of "
                    + ", ".join(repr(v) for v in _VALID_EFFORTS))
-    if not (model or effort):
+    backend = patch.backend.strip()
+    if backend and backend not in agent_roots.BACKENDS:
         raise HTTPException(status_code=400,
-                            detail="nothing to record (send model or effort)")
-    record = tasks_store.record_settings(session_id, model, effort)
+                            detail=f"invalid backend {backend!r}")
+    if backend:
+        # THE SESSION'S OWNER, not the record alone (invariant 8): a session
+        # that predates the field has no record, and its transcript root is
+        # what says whose it is. No evidence at all is a session nothing has
+        # started, which may still be recorded.
+        held = schedule.session_owner(session_id)
+        if held and held != backend:
+            raise HTTPException(
+                status_code=400,
+                detail=f"this conversation runs on {held}; its agent cannot change")
+    if model:
+        # A model another agent offers would be recorded and only fail on the
+        # next spawn (`registry.foreign_model_error`); the agent is the one
+        # named here, else the session's owner, else Claude (a blank record).
+        from fused_render.agent_backends import registry  # noqa: PLC0415
+        foreign = registry.foreign_model_error(
+            backend or schedule.session_owner(session_id) or registry.DEFAULT,
+            model)
+        if foreign is not None:
+            raise HTTPException(status_code=400, detail=foreign["error"])
+    if not (model or effort or backend):
+        raise HTTPException(status_code=400,
+                            detail="nothing to record (send model, effort or backend)")
+    record = tasks_store.record_settings(session_id, model, effort,
+                                         backend=backend)
     # THE ROW CARRIES THIS PAIR (`_row_settings`), so the other windows have to
     # be told — the same ring `POST /api/tasks/read` makes for the same reason.
     # A session that is not a task is a key nobody is watching, and the notify
@@ -6214,7 +6295,8 @@ def api_task_settings(patch: SettingsPatch,
     tasks_watch.notify({session_id})
     return {"ok": True,
             "model": str(record.get("model") or ""),
-            "effort": str(record.get("effort") or "")}
+            "effort": str(record.get("effort") or ""),
+            "backend": str(record.get("backend") or "")}
 
 
 # ------------------------------------------------------------------ archiving
@@ -6770,22 +6852,36 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     erase that skipped something is not an erase, and must not report one.
     A session id that is not a name (`..`, `.`, a separator) is refused before
     any path is built — `PROJECTS_DIR/*/..` is the projects root itself.
+
+    EVERY BACKEND'S ROOT (D3), with the same realpath rule per root. A
+    transcript that went from under the COPILOT root takes Copilot CLI's own
+    `~/.copilot/session-state/<session_id>/` with it (D15, owner: yes) — the
+    CLI's replay store, which would otherwise keep the conversation resumable
+    from a terminal after the app said it was erased. That dir is outside every
+    projects root, so it is checked on its own: a leaf named exactly the id
+    whose parent resolves to the session-state dir, nothing else.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
         return 0, False, 0, 1
-    root = os.path.realpath(sessions.PROJECTS_DIR)
+    listed_roots = sessions.projects_roots()
+    root_reals = {os.path.realpath(r): backend for backend, r in listed_roots}
     names = (session_id, session_id + ".jsonl")
-    projects: dict[str, str] = {}  # realpath(project dir) -> as listed
-    try:
-        with os.scandir(sessions.PROJECTS_DIR) as it:
-            for entry in it:
-                if entry.is_dir():
-                    projects[os.path.realpath(entry.path)] = entry.path
-    except OSError:
-        pass
+    # realpath(project dir) -> (as listed, the backend of the root it was
+    # LISTED under). Tagged while scanning, not recovered from the realpath
+    # afterwards: a bucket symlinked out of the Copilot root resolves outside
+    # it, and its session-state must still go (D15).
+    projects: dict[str, tuple[str, str]] = {}
+    for backend, projects_dir in listed_roots:
+        try:
+            with os.scandir(projects_dir) as it:
+                for entry in it:
+                    if entry.is_dir():
+                        projects[os.path.realpath(entry.path)] = (entry.path, backend)
+        except OSError:
+            continue
     targets: list[str] = []
-    for listed in projects.values():
+    for listed, _backend in projects.values():
         for name in names:
             candidate = os.path.join(listed, name)
             if os.path.lexists(candidate):
@@ -6800,6 +6896,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     # of a vanished task with orphaned files beside where it was.
     targets.sort(key=lambda t: t.endswith(".jsonl"))
     removed, erased, failed, refused = 0, False, 0, 0
+    copilot = False  # did a transcript go from under the Copilot root
     seen: set[str] = set()
     for target in targets:
         resolved = os.path.realpath(target)
@@ -6807,10 +6904,10 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
             continue
         seen.add(resolved)
         parent = os.path.dirname(resolved)
-        if (resolved == root or parent not in projects
+        if (resolved in root_reals or parent not in projects
                 or os.path.basename(resolved) not in names):
             logger.warning("erase: refusing %s — not a session file of %s under %s",
-                           resolved, session_id, root)
+                           resolved, session_id, sorted(root_reals))
             refused += 1
             break
         try:
@@ -6818,7 +6915,9 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                 shutil.rmtree(resolved)
             elif os.path.exists(resolved):
                 os.remove(resolved)
-                erased = erased or resolved.endswith(".jsonl")
+                if resolved.endswith(".jsonl"):
+                    erased = True
+                    copilot = copilot or projects[parent][1] == "copilot"
             else:
                 continue
         except OSError:
@@ -6826,7 +6925,31 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
             failed += 1
             break
         removed += 1
+    if copilot and not failed and not refused:
+        state = os.path.realpath(_copilot_session_state_dir())
+        candidate = os.path.realpath(os.path.join(state, session_id))
+        if (os.path.dirname(candidate) == state
+                and os.path.basename(candidate) == session_id
+                and os.path.isdir(candidate)):
+            try:
+                shutil.rmtree(candidate)
+                removed += 1
+            except OSError:
+                logger.warning("erase: could not remove %s", candidate, exc_info=True)
+                failed += 1
     return removed, erased, failed, refused
+
+
+def _copilot_session_state_dir() -> str:
+    """Copilot CLI's own per-session replay store (`<COPILOT_HOME or
+    ~/.copilot>/session-state`), NOT fused's Copilot root — the CLI keeps this
+    one, and erase is the only reader. Resolved by `copilot_health.config_dir`,
+    the one place that reads the CLI's own `COPILOT_HOME` override, so erase
+    looks where the CLI actually wrote. A function so a test can point it at a
+    tmp dir."""
+    from fused_render import copilot_health
+
+    return os.path.join(copilot_health.config_dir(), "session-state")
 
 
 def _every_rule_behind(key: str) -> list[str]:
@@ -7442,6 +7565,8 @@ def api_queue_admit(body: dict = Body(...),
         # supposed to cause.
         entry = schedule_api.create_entry(resolved, dict(body, message=message),
                                           schedule._now(), origin="chat")
+    except schedule.BackendRefused as exc:
+        return JSONResponse(exc.body, status_code=400)
     except ValueError as exc:
         return _error(str(exc), status=400)
 
@@ -8273,12 +8398,35 @@ def api_queue_write(body: dict = Body(...),
     return {"enabled": project_queue.enabled()}
 
 
+def _backend_refusal(backend: str):
+    """The request-level gate on `backend` (D17, invariant 10): an unknown id
+    is a 400 naming the choices; a known one the user switched off is a 400
+    with the registry's own body, so the page can say which toggle to flip.
+    "" passes — it is "the default", which the registry resolves at spawn."""
+    if not backend:
+        return None
+    if not agent_registry.is_known(backend):
+        return _error("backend: expected one of "
+                      + ", ".join(repr(b) for b in agent_roots.BACKENDS),
+                      status=400)
+    if not agent_registry.is_enabled(backend):
+        return JSONResponse(agent_registry.disabled_error(backend), status_code=400)
+    return None
+
+
 @router.post("/api/tasks/create")
 def api_task_create(body: dict = Body(...),
                     x_fused: str | None = Header(default=None),
                     x_fused_page: str | None = Header(default=None)):
     """Start a task from a page: `{prompt, target?, title?, model?, effort?,
-    permission_mode?, due?, queue?}` -> `{entry_id, key}`.
+    backend?, permission_mode?, due?, queue?}` -> `{entry_id, key}`.
+
+    `backend` — "claude" or "copilot" — is which agent runs the task (D2).
+    Omitted, it is the Preferences default AT CREATE: `schedule.create` pins
+    `registry.default_id()` on the entry, so the `pending:` row and the run
+    both name the agent the user saw, not the default of the day it fires. A
+    backend the Preferences page has switched off is a 400 with
+    `registry.disabled_error`'s body, before anything is stored (D17).
 
     `queue: false` — THIS TASK NEVER STANDS IN THE PROJECT QUEUE (Akshil,
     2026-10-04: "add option for turn on and off queue in the Task API"). It is
@@ -8310,8 +8458,15 @@ def api_task_create(body: dict = Body(...),
                       + ", ".join(repr(m) for m in _PAGE_PERMISSION_MODES),
                       status=400)
     fields = {}
-    for field in ("target", "title", "model", "effort", "bot"):
+    for field in ("target", "title", "model", "effort", "bot", "backend"):
         fields[field], refusal = _opt_str(body, field)
+        if refusal is not None:
+            return refusal
+    # A BOT'S TASK skips this door's agent check: bots run on Claude whatever
+    # the Claude switch says (D17, owner Q7), and `schedule.create` is the one
+    # place that says so — it pins Claude and refuses any other agent.
+    if not fields["bot"]:
+        refusal = _backend_refusal(fields["backend"])
         if refusal is not None:
             return refusal
     # `bot`: the id of the bot starting this task (bots/bot.py `build`), kept on
@@ -8350,7 +8505,9 @@ def api_task_create(body: dict = Body(...),
             resolved, prompt, when, immediate=immediate,
             title=fields["title"] or None, model=fields["model"],
             effort=fields["effort"], permission_mode=mode, origin="page",
-            bot=fields["bot"])
+            bot=fields["bot"], backend=fields["backend"])
+    except schedule.BackendRefused as exc:
+        return JSONResponse(exc.body, status_code=400)
     except ValueError as exc:
         return _error(str(exc), status=400)
     entry_id = str(entry.get("id") or "")
@@ -8420,8 +8577,14 @@ def api_task_create(body: dict = Body(...),
 @router.post("/api/tasks/{key}/send")
 def api_task_send(key: str, body: dict = Body(...),
                   x_fused: str | None = Header(default=None)):
-    """A follow-up into a task's conversation: `{text, model?, effort?}` ->
-    `{queued, key}`.
+    """A follow-up into a task's conversation: `{text, model?, effort?,
+    backend?}` -> `{queued, key}`.
+
+    `backend`, when sent, must name the agent this conversation already runs
+    on (D2: immutable) — anything else is a 400; the scheduled resume always
+    carries the TASK's backend, so the right host is spawned whether or not
+    the caller said. A task whose agent is switched off cannot take a follow-up
+    either (D17): the row stays, read-only.
 
     A LIVE HOST TAKES IT, with nothing of the request's own settings — the
     chat composer's inbox path (`agent._send`), with the four empty strings
@@ -8445,6 +8608,12 @@ def api_task_send(key: str, body: dict = Body(...),
     effort, refusal = _opt_str(body, "effort")
     if refusal is not None:
         return refusal
+    backend, refusal = _opt_str(body, "backend")
+    if refusal is not None:
+        return refusal
+    refusal = _backend_refusal(backend)
+    if refusal is not None:
+        return refusal
     if tasks_store.pending_entry(key):
         return _error("not started yet — this task has no conversation to "
                       "send into until its first message runs", status=409)
@@ -8455,6 +8624,13 @@ def api_task_send(key: str, body: dict = Body(...),
     target = str(task.get("target") or task.get("project") or "")
     if not target:
         return _error("this task has no target to resume in", status=409)
+    owner = _row_backend(task, tasks_store.settings_state())
+    if backend and backend != owner:
+        return _error(f"this task runs on {owner}; its agent cannot change",
+                      status=400)
+    refusal = _backend_refusal(owner)
+    if refusal is not None:
+        return refusal
 
     agent = project_queue.agent_module()
     if agent is not None:
@@ -8483,7 +8659,10 @@ def api_task_send(key: str, body: dict = Body(...),
         entry = schedule.create(target, text, schedule._now(),
                                 session_id=session, immediate=True,
                                 model=model, effort=effort,
-                                permission_mode=mode, origin="page")
+                                permission_mode=mode, origin="page",
+                                backend=owner)
+    except schedule.BackendRefused as exc:
+        return JSONResponse(exc.body, status_code=400)
     except ValueError as exc:
         return _error(str(exc), status=400)
     entry_id = str(entry.get("id") or "")

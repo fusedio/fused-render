@@ -415,6 +415,23 @@ def test_a_task_draft_is_a_row_with_a_number(client, tmp_path):
     assert row["form"]["description"] == "roll it up"
 
 
+def test_a_draft_remembers_its_agent(client, tmp_path):
+    """The New task modal's agent picker is a form field like the model's: a
+    task draft keeps it across autosaves, and so does the chat record the
+    Schedule hop writes its form onto."""
+    client.put("/api/drafts/task/draft-0001",
+               json={"title": "Nightly", "target": str(tmp_path),
+                     "backend": "copilot"})
+    client.put("/api/drafts/task/draft-0001", json={"title": "Nightly report"})
+    row = _by_key(client)["draft:draft-0001"]
+    assert row["backend"] == "copilot"
+    assert row["form"]["backend"] == "copilot"
+    client.put("/api/drafts/chat/new:%2Ftmp%2Fx.py",
+               json={"text": "unsent", "form": {"backend": "copilot"}})
+    chat = client.get("/api/drafts").json()["chat"]["new:/tmp/x.py"]
+    assert chat["form"]["backend"] == "copilot"
+
+
 def test_two_composer_drafts_on_one_folder_are_two_rows(client, tmp_path):
     """Akshil, 2026-09-16: a never-sent chat's Save and its Schedule used to
     write `new:<file>` — ONE record per FOLDER — so the second thing the reader

@@ -19,8 +19,9 @@
 // import cycle — and the boundary check (scripts/check-boundaries.mjs) opens a
 // hole for named shell modules one file at a time for the same reason.
 import type { Task } from "@platform/lib/api";
+import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { columnLabel } from "./schedule-lib";
-import { StatusIcon } from "./ScheduleTaskViews";
+import { StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
 import { basename, cardTitleLine, firstLine, ringFailed, shortTaskId, taskColumn, tildePath } from "./tasks-lib";
 
 /** The title the header prints — the task's own first line, and the word every
@@ -87,12 +88,27 @@ export function TaskPeekWho({ task, running = false }: {
       >
         <StatusIcon status={status} failed={running ? false : ringFailed(task)} />
       </span>
+      <TaskAgentMark backend={task.backend} />
       <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
       <span className="task-side-peek-title" title={title}>
         {title}
       </span>
     </div>
   );
+}
+
+/**
+ * WHO RUNS IT — "Copilot · gpt-5.4" (docs/COPILOT_BACKEND.md D18): the agent
+ * and the model it was set to, muted, beside the project. Only where there is
+ * an agent to tell apart (`agentNamed`), so a Claude-only header is the header
+ * it always was.
+ */
+export function TaskPeekAgent({ task }: { task: Task }) {
+  useAgentBackends();
+  if (!agentNamed(task.backend)) return null;
+  const model = task.model ? modelLabelsOf(task.backend)[task.model] ?? task.model : "";
+  const line = model ? `${agentLabel(task.backend)} · ${model}` : agentLabel(task.backend);
+  return <span className="task-side-peek-project" title={line}>{line}</span>;
 }
 
 /**

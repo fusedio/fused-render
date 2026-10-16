@@ -21,7 +21,9 @@ import {
   summarizePermission,
 } from "../protocol/summaries";
 import type { Decision, DecisionScope, PermissionMode, PermissionRow, SwitchableMode } from "../protocol/types";
+import { useAgent } from "./agent-context";
 import { CollapsiblePre } from "./CollapsiblePre";
+import { permissionLabelsFor } from "./composer-defaults";
 
 export interface PermCardProps {
   row: PermissionRow;
@@ -78,7 +80,11 @@ export function answerHeld(row: PermissionRow): boolean {
 }
 
 /** T:13957-13975 — the verdict, in the words the transcript keeps. */
-function statusFor(row: PermissionRow, label: string): { cls: string; text: string } {
+function statusFor(
+  row: PermissionRow,
+  label: string,
+  modeLabels: Record<string, string> = PERMISSION_LABELS,
+): { cls: string; text: string } {
   // FIRST, ahead of the three verdicts. A held answer has a `decision` — the one
   // the reader made, which is what latches the card — but the tool has not seen
   // it, so "✓ Allowed" would be a claim about something that has not happened.
@@ -92,7 +98,7 @@ function statusFor(row: PermissionRow, label: string): { cls: string; text: stri
     if (row.mode)
       return {
         cls: "allow",
-        text: "✓ Allowed — approvals set to “" + (PERMISSION_LABELS[row.mode] || row.mode) + "”",
+        text: "✓ Allowed — approvals set to “" + (modeLabels[row.mode] || row.mode) + "”",
       };
     if (row.scope === "session")
       return { cls: "allow", text: "✓ Allowed — not asking again for " + label + " in this reply" };
@@ -112,7 +118,9 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
   const label = permCardLabel(pretty);
   const { sub, body, covered } = summarizePermission(row);
   const extra = leftoverInput(row.input, covered);
-  const choices = permChoices(row, liveMode);
+  // THE AGENT'S WORD on the head and the escalation row (D18).
+  const agent = useAgent();
+  const choices = permChoices(row, liveMode, agent.label);
   // LATCHED BY THE HELD FLAG TOO, not only by a landed verdict. The server has
   // the answer and will write it the moment the folder frees, so a reloaded card
   // that came back with live buttons would be offering to answer a question that
@@ -142,7 +150,7 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
   }
 
   const status = resolved
-    ? statusFor(row, label)
+    ? statusFor(row, label, permissionLabelsFor(agent.label))
     : sendError
       ? { cls: "deny", text: sendError }
       : posting
@@ -159,7 +167,7 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
         {/* Past tense once it is history: a card still reading "Claude wants to
             use" above a verdict looks like a prompt that is somehow still
             waiting (T:13955). */}
-        {resolved ? "Claude wanted to use " : "Claude wants to use "}
+        {resolved ? `${agent.label} wanted to use ` : `${agent.label} wants to use `}
         <span className="tool" {...(pretty !== toolName ? { title: toolName } : {})}>
           {pretty}
         </span>

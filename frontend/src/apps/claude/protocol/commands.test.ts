@@ -105,6 +105,31 @@ describe("fetchCommands", () => {
     }
   });
 
+  test("names the session for an existing chat, else the new chat's agent (per agent, D11)", async () => {
+    const real = globalThis.fetch;
+    const bodies: Record<string, unknown>[] = [];
+    (globalThis as { fetch: unknown }).fetch = (_u: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return Promise.resolve(
+        new Response(JSON.stringify({ commands: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    };
+    try {
+      await fetchCommands("/repo", {}, { sessionId: "s1", backend: "copilot" });
+      await fetchCommands("/repo", {}, { backend: "copilot" });
+      await fetchCommands("/repo", {}, {});
+      // The session outranks the pill: the server reads its agent off it.
+      expect(bodies[0]).toEqual({ action: "commands", file: "/repo", session_id: "s1" });
+      expect(bodies[1]).toEqual({ action: "commands", file: "/repo", backend: "copilot" });
+      expect(bodies[2]).toEqual({ action: "commands", file: "/repo" });
+    } finally {
+      (globalThis as { fetch: unknown }).fetch = real;
+    }
+  });
+
   test("a handler error throws", async () => {
     const real = globalThis.fetch;
     (globalThis as { fetch: unknown }).fetch = () =>

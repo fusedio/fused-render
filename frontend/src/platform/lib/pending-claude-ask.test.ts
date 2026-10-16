@@ -5,6 +5,7 @@ import {
   stageClaudeAsk,
   subscribePendingClaudeAsk,
   takePendingClaudeAsk,
+  takenAskBackend,
 } from "@platform/lib/pending-claude-ask";
 
 // The store is module-level (there is only ever one pending cross-navigation
@@ -185,5 +186,23 @@ describe("persistence across a full page load", () => {
     } finally {
       g.sessionStorage = prev;
     }
+  });
+});
+
+describe("an ask that names its agent (\"Fix with Claude\", D17)", () => {
+  test("the agent rides beside the text and is read back by that text", () => {
+    stageClaudeAsk("/Users/me/repo", "fix the push", { backend: "claude" });
+    expect(takePendingClaudeAsk("/Users/me/repo")).toBe("fix the push");
+    expect(takenAskBackend("fix the push")).toBe("claude");
+    // Another prompt is not this ask: no agent for it.
+    expect(takenAskBackend("something else")).toBe("");
+  });
+
+  test("an ask that names none leaves the default standing", () => {
+    stageClaudeAsk("/Users/me/repo", "fix the push", { backend: "claude" });
+    takePendingClaudeAsk("/Users/me/repo");
+    stageClaudeAsk("/Users/me/repo", "explain this");
+    expect(takePendingClaudeAsk("/Users/me/repo")).toBe("explain this");
+    expect(takenAskBackend("explain this")).toBe("");
   });
 });

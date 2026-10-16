@@ -89,6 +89,7 @@ export function TroubleCard({
   title,
   explain,
   kind: kindProp,
+  backend,
   children,
 }: {
   /** What the app was doing, in the user's terms — goes in the report. */
@@ -131,13 +132,17 @@ export function TroubleCard({
    * for another, which is the wrong thing to hang a duplicate-detection fix on.
    */
   kind?: TroubleKind;
+  /** Which agent failed — "claude" when absent (docs/COPILOT_BACKEND.md D13).
+   *  Picks the classifier's subject and the brief's steps, and keeps Claude's
+   *  install line off a Copilot card. */
+  backend?: string;
   /** Extra actions belonging to the calling surface (e.g. "Fix this"). */
   children?: React.ReactNode;
 }) {
-  const kind = kindProp ?? troubleKind(error);
+  const kind = kindProp ?? troubleKind(error, backend);
   const fallback = SAID[kind] ?? SAID.raw;
   const said = { title: title ?? fallback.title, explain: explain ?? fallback.explain };
-  const ctx = { what, error, ...(facts ?? {}) };
+  const ctx = { what, error, ...(facts ?? {}), ...(backend ? { backend } : {}) };
   const report = troubleReport(ctx);
   const instructions = troubleInstructions(ctx);
 
@@ -183,7 +188,7 @@ export function TroubleCard({
         <pre className="trouble-error">{String(error).trim()}</pre>
       ) : null}
 
-      {kind === "notfound" && (
+      {kind === "notfound" && backend !== "copilot" && (
         <div className="trouble-install">
           <div className="trouble-label">Install Claude Code</div>
           <CommandLine command={CLAUDE_INSTALL_COMMAND} />

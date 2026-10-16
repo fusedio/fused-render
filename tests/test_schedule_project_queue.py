@@ -1171,6 +1171,28 @@ def test_a_host_that_died_under_us_falls_back_to_the_spawn(folders, home,
     assert stored["run_id"] == "r-1" and "host_sent" not in stored
 
 
+def test_a_live_host_whose_agent_is_switched_off_is_a_failure_not_a_spawn(
+        folders, home, spawned, host):
+    """The host is ALIVE and `agent._send` refuses because its agent is off
+    in Preferences (D17). That is not "no host": spawning would start a second
+    CLI on a session whose host is still up. The entry fails with the refusal
+    and nothing is spawned."""
+    from fused_render.agent_backends import registry
+
+    _on(home)
+    refusal = registry.disabled_error("claude")
+    host(run_id="run-live", answer=refusal)
+    entry = schedule.create(str(folders["alpha"]), "carry on", _ago(1),
+                            session_id=SID)
+
+    schedule.tick()
+    assert spawned == []
+    stored = _stored(entry["id"])
+    assert stored["state"] == schedule.ERROR
+    assert stored["error"] == refusal["error"]
+    assert "host_sent" not in stored
+
+
 def test_no_live_host_and_no_session_both_spawn(folders, home, spawned, host):
     """A conversation with no host is the ordinary send, and a fresh
     conversation has no host by definition — neither pays for the lookup twice

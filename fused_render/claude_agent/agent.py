@@ -16,6 +16,15 @@ streams in. Stdlib only (plus ../shared/procutil).
 `claude` is looked up on PATH and then in its known install locations
 (_claude_bin).
 
+TWO AGENT BACKENDS since docs/COPILOT_BACKEND.md: Claude Code (`claude`,
+the default, `session_host.py`) and GitHub Copilot CLI (`copilot`,
+`copilot_host.py`, driven over ACP). `backend` is chosen at a chat's first
+turn and never changes (`_backend_for_session`); both hosts write the same
+run-dir files and stream rows, so everything below the spawn reads one shape.
+Where the two differ it is named: `_copilot_argv` (spawn), `_backend_enabled`
+(the prefs gate), `_send` (what a live Copilot session can and cannot take),
+and the caps gating on snapshots / background tasks.
+
 Sessions are per-file. Claude runs with cwd = the target file's directory and
 an appended system prompt that scopes it (softly) to the file.
 
@@ -95,8 +104,11 @@ _SHARED = os.path.join(os.path.dirname(HERE), "templates", "shared")
 # package import plus a by-path load in a test), and sys.path must not grow.
 if _SHARED not in sys.path:
     sys.path.insert(0, _SHARED)
+import agent_roots as _agent_roots
+from agent_roots import BACKENDS, DEFAULT_BACKEND
 from appenv import canvases_root as _canvases_root
 from appenv import fused_cli_dir as _fused_cli_dir
+from appenv import home_dir as _home_dir
 from appenv import origin as _origin
 from appenv import skill_plugin_dir as _skill_plugin_dir
 from appenv import workbench_plugin_dir as _workbench_plugin_dir
@@ -172,13 +184,96 @@ SHOTS_KEEP = 1000
 # it is set, which now means only where the user set it: the supervisor no
 # longer overrides it, because that dir also holds the login credentials on
 # Linux (see supervisor/paths.py child_environment).
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+#
+# Resolved through `agent_roots` (the one place the rule lives, invariant 7 of
+# docs/COPILOT_BACKEND.md) but KEPT AS MODULE CONSTANTS: the test suite
+# monkeypatches `agent.PROJECTS` / `agent.CLAUDE_DIR` to point a whole run at a
+# tmp store, and a function call re-resolving the env on every read would walk
+# straight past the patch into the real `~/.claude`. The Copilot root is read
+# through `agent_roots` at call time instead (`_transcript_roots`), because no
+# test predates it.
+CLAUDE_DIR = _agent_roots.claude_dir()
 PROJECTS = os.path.join(CLAUDE_DIR, "projects")
+
+
+def _transcript_roots() -> list:
+    """`[(backend, projects_dir), ...]` — every backend's transcript store, in
+    BACKENDS order. Claude's comes off the (patchable) module constant above;
+    Copilot's off `agent_roots` (the fused-owned root its host writes to, D3).
+    ALWAYS both: a disabled backend's old chats still list, read-only — the
+    prefs gate is at the spawn site (`_start`), not here."""
+    return [(DEFAULT_BACKEND, PROJECTS)] + [
+        (b, _agent_roots.projects_dir(b)) for b in BACKENDS if b != DEFAULT_BACKEND]
+
+
+def _registry_roots() -> list:
+    """`[(backend, sessions_dir), ...]` — the live-process registries, same
+    split as `_transcript_roots`."""
+    return [(DEFAULT_BACKEND, os.path.join(CLAUDE_DIR, "sessions"))] + [
+        (b, _agent_roots.sessions_dir(b)) for b in BACKENDS if b != DEFAULT_BACKEND]
+
+
+def _transcript_backend(path: str) -> str:
+    """Which backend's root `path` sits under — the root is the authority on
+    who owns a session (both are uuids — fused mints Claude's, Copilot mints
+    its own in `session/new` — so nothing in the id says which, D2). `claude`
+    when under neither, which is every pre-existing session and every
+    monkeypatched test root."""
+    real = os.path.realpath(path)
+    for backend, root in _transcript_roots():
+        r = os.path.realpath(root)
+        if real == r or real.startswith(r + os.sep):
+            return backend
+    return DEFAULT_BACKEND
+
 
 # Where Claude Code installs `claude`, for when it isn't on our PATH: a
 # GUI-launched app inherits its login session's PATH, not a shell's.
 _POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
                      "/usr/local/bin/claude")
+# ...and where GitHub Copilot CLI installs `copilot`: the standalone
+# installer, Homebrew, npm -g (default prefix and the common user prefix),
+# bun and pnpm. A COPY of `copilot_health.POSIX_CANDIDATES` (this module
+# may not import the package); a test pins the two equal.
+_COPILOT_CANDIDATES = ("~/.local/bin/copilot", "/opt/homebrew/bin/copilot",
+                       "/usr/local/bin/copilot", "~/.npm-global/bin/copilot",
+                       "~/.bun/bin/copilot", "~/Library/pnpm/copilot")
+
+# Where `gh` gets installed, for the D10 login substitute — a COPY of
+# `github_setup.candidates()`: the app's own install dir first (derived at
+# call time, `_gh_bin`), then these. Same override env var too.
+_GH_BIN_ENV = "FUSED_RENDER_GH_BIN"
+_GH_CANDIDATES = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh",
+                  "~/.local/bin/gh")
+
+# The Copilot health snapshot `copilot_health.py` caches under the shell home
+# (`storage.home_dir()`, which `appenv.home_dir()` resolves to). Its
+# `account.method` says which credential a spawn should carry (D10).
+_COPILOT_HEALTH_FILE = "copilot-health.json"
+
+# The user-facing name of each backend, for refusals this module words itself
+# (`_backend_disabled_error`). `agent_backends.<id>.label` is the app-side
+# copy; a test pins the two equal.
+_BACKEND_LABELS = {"claude": "Claude", "copilot": "Copilot"}
+
+# Error-text markers per backend — substrings (lower-cased) of a `result` row
+# or stderr that mean "signed out / no access" and "usage or credit limit".
+# COPIED from `agent_backends/claude.py` and `copilot.py`
+# (`account_error_markers` / `limit_error_markers`): this module may not import
+# the package, and a test pins the tuples equal so the two cannot drift.
+_ACCOUNT_ERROR_MARKERS = {
+    "claude": ("invalid api key", "/login", "oauth token", "not logged in",
+               "authentication_error"),
+    "copilot": ("not logged in", "auth_required", "authentication required",
+                "copilot login", "no copilot access", "not authorized"),
+}
+_LIMIT_ERROR_MARKERS = {
+    # Claude's are the two this function matched before a second backend
+    # existed, byte for byte: a looser "usage limit" would rewrite errors
+    # that were never rewritten.
+    "claude": ("usage limit reached", "session limit"),
+    "copilot": ("ai credits", "premium request", "rate limit", "quota"),
+}
 
 # The MCP server + tool that `--permission-prompt-tool` names. The CLI addresses
 # an MCP tool as mcp__<server>__<tool>, so neither half may contain "__".
@@ -491,6 +586,110 @@ def _claude_bin() -> str:
     )
 
 
+def _copilot_bin() -> str:
+    """Path to the `copilot` executable — `_claude_bin`'s twin, same ladder:
+    FUSED_RENDER_COPILOT_BIN, then PATH, then the known install prefixes.
+    The override is also where `copilot_health.adopt` publishes a binary only
+    the user's login shell could find, which is how that find reaches this
+    module. A stale override that isn't a file is ignored, as for claude."""
+    override = os.environ.get("FUSED_RENDER_COPILOT_BIN")
+    if override and os.path.isfile(override):
+        return override
+    found = shutil.which("copilot")
+    if found:
+        return found
+    for candidate in _COPILOT_CANDIDATES:
+        resolved = os.path.expanduser(os.path.expandvars(candidate))
+        if os.path.isfile(resolved):
+            return resolved
+    raise FileNotFoundError(
+        "copilot CLI not found — install GitHub Copilot CLI, put `copilot` on "
+        "the PATH of the environment that launched fused-render, or set "
+        "FUSED_RENDER_COPILOT_BIN to its full path. Also looked in: "
+        + ", ".join(_COPILOT_CANDIDATES)
+    )
+
+
+# ------------------------------------------------------------ agent backends
+
+def _backend_enabled(backend: str) -> bool:
+    """Whether `backend` may be SPAWNED — the one check in `_start` that keeps
+    a disabled agent from ever starting (docs/COPILOT_BACKEND.md invariant 10).
+
+    A stdlib read of `<home>/prefs.json`, the same file and the same two keys
+    `shell/prefs.py` keeps (`claude_enabled` is on unless stored False,
+    `copilot_enabled` is off unless stored True), because this module cannot
+    import the package. The home is `appenv.home_dir()` — the BRANCH-RESOLVED
+    one the server exports, which is where prefs.json actually lives — not the
+    unnested `_state_file` root the session store uses. Mirrors
+    `registry.enabled_ids`' never-empty rule too: a hand-edited file that
+    clears both reads as Claude on, so this and the router's 400 agree."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        prefs = {}
+    if not isinstance(prefs, dict):
+        prefs = {}
+    claude_on = prefs.get("claude_enabled") is not False
+    copilot_on = prefs.get("copilot_enabled") is True
+    if backend == "copilot":
+        return copilot_on
+    if backend == "claude":
+        return claude_on or not copilot_on
+    return False
+
+
+def _backend_disabled_error(backend: str) -> dict:
+    """The refusal every spawn entry answers with (D17) — same body
+    `agent_backends.registry.disabled_error` builds for the router's 400."""
+    label = _BACKEND_LABELS.get(backend, backend)
+    return {"error": f"{label} is turned off in Preferences",
+            "reason": "backend_disabled", "backend": backend}
+
+
+def _backend_for_session(session_id: str, workdir: str = "",
+                         hint: str = "") -> str:
+    """The backend that OWNS `session_id` — never the request's say-so
+    (invariant 8: a session's backend never changes). The recorded `hint`
+    (the session-settings record, a run's meta.json) wins when it names a
+    known backend; else the root the transcript sits under; else `claude`,
+    which every pre-existing session is. Same ladder as
+    `agent_roots.backend_for_session`, walked over THIS module's (patchable)
+    roots."""
+    if hint in BACKENDS:
+        return hint
+    if session_id and not _bad_id(session_id):
+        path = _session_transcript_path(workdir, session_id) if workdir else ""
+        if path and os.path.isfile(path):
+            return _transcript_backend(path)
+        for backend, root in _transcript_roots():
+            try:
+                with os.scandir(root) as it:
+                    for ent in it:
+                        if os.path.isfile(os.path.join(ent.path, session_id + ".jsonl")):
+                            return backend
+            except OSError:
+                continue
+    return DEFAULT_BACKEND
+
+
+def _meta_backend(meta) -> str:
+    """A run's backend off its meta.json (or host.json) — `claude` for a run
+    written before the field existed."""
+    b = meta.get("backend") if isinstance(meta, dict) else None
+    return b if b in BACKENDS else DEFAULT_BACKEND
+
+
+def _run_backend(run_dir: str) -> str:
+    """`_meta_backend` of one run dir's meta.json; `claude` when unreadable."""
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            return _meta_backend(json.load(fh))
+    except (OSError, ValueError):
+        return DEFAULT_BACKEND
+
+
 def _in_canvases_root(target: str) -> bool:
     """Whether `target` is inside the canvas-clones root.
 
@@ -550,13 +749,11 @@ def _plugin_argv(target: str | None = None) -> list:
     The flag is repeatable, so the roots compose rather than needing a merged
     tree; either can be absent independently, and `target=None` (no target
     resolved yet) gets the ungated root only."""
-    roots = [_skill_plugin_dir()]
-    if target and _in_canvases_root(target):
-        roots.append(_workbench_plugin_dir())
-    return [arg for root in roots if root for arg in ("--plugin-dir", root)]
+    return [arg for root in _skill_plugin_roots(target)
+            for arg in ("--plugin-dir", root)]
 
 
-def _fused_cli_note() -> str:
+def _fused_cli_note(backend: str = "") -> str:
     """The prompt paragraph disclosing the `fused` CLI, or "" when the server
     exported no wrapper (D334) — same rule as every other disclosure here: a
     tool the model is never told about is a tool it never calls, and a prompt
@@ -582,9 +779,15 @@ def _fused_cli_note() -> str:
     to race, and a session that never pushes leaves its work unpublished until
     it ends), and `canvas push` inside a clone is intercepted into the guarded
     server-side push. Telling a session not to push now means telling it to
-    finish blind."""
+    finish blind.
+
+    `backend="copilot"` drops the closing pointer to the clone's CLAUDE.md:
+    that file is Claude Code's project memory, and naming it to Copilot sends
+    it to instructions written for a different agent (D18)."""
     if not _fused_cli_dir():
         return ""
+    if backend == "copilot":
+        return _fused_cli_note().replace(_CANVAS_CLAUDE_MD, "")
     return (
         " The `fused` CLI is on PATH: use it when the user asks to push, "
         "pull or otherwise work with Fused (canvases, UDFs — e.g. `fused "
@@ -602,9 +805,13 @@ def _fused_cli_note() -> str:
         "canvases, fused-render holds its own auto-push while you work and "
         "routes `fused workbench canvas push .` through its sync manager, "
         "which merges concurrent workbench edits first: publish a coherent "
-        "change set with that command and read the errors it prints back. "
-        "See that folder's CLAUDE.md for the details."
+        "change set with that command and read the errors it prints back."
+        + _CANVAS_CLAUDE_MD
     )
+
+
+# The `_fused_cli_note` sentence only Claude gets (see its docstring).
+_CANVAS_CLAUDE_MD = " See that folder's CLAUDE.md for the details."
 
 
 def _origin_note() -> str:
@@ -853,24 +1060,30 @@ def _split_system_prompt(file: str, pane: bool) -> str:
 def _munge(path: str) -> str:
     """A cwd's project-dir name under ~/.claude/projects: every
     non-alphanumeric char becomes '-' (claude-code's own rule, verified
-    against real project dirs — '/', '.', '_' all map to '-')."""
-    return re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(path))
+    against real project dirs — '/', '.', '_' all map to '-'). The Copilot
+    root copies the rule (`agent_roots.munge` is the one definition)."""
+    return _agent_roots.munge(path)
 
 
 def _session_transcript_path(workdir: str, session_id: str) -> str:
-    """Where this session's transcript is: `<PROJECTS>/<munge(workdir)>/<sid>.jsonl`,
-    unless the CLI MOVED it. Its EnterWorktree tool relocates the file into the
-    worktree's own project dir (`<root>/.claude/worktrees/<name>` munges to
-    `<munge(root)>--claude-worktrees-<name>`) and leaves nothing behind, so a
-    read from the original folder alone finds no conversation. The original
-    wins when it exists; else the newest `<sid>.jsonl` under a worktrees
-    sibling of the workdir OR OF ANY ANCESTOR (the worktree lives under the
-    repo root, and the chat may be in a subfolder or on a file); else the original (missing) path, so a caller's not-found
-    handling is unchanged. `session_id` is `_bad_id`-checked by callers."""
+    """Where this session's transcript is: `<root>/<munge(workdir)>/<sid>.jsonl`
+    under whichever backend's root holds it (`_transcript_roots`, Claude's
+    first), unless the CLI MOVED it. Claude Code's EnterWorktree tool relocates
+    the file into the worktree's own project dir (`<root>/.claude/worktrees/<name>`
+    munges to `<munge(root)>--claude-worktrees-<name>`) and leaves nothing
+    behind, so a read from the original folder alone finds no conversation.
+    The original wins when it exists; else the newest `<sid>.jsonl` under a
+    worktrees sibling of the workdir OR OF ANY ANCESTOR (the worktree lives
+    under the repo root, and the chat may be in a subfolder or on a file) —
+    Claude's root only, the Copilot host never relocates; else the original
+    (missing) Claude path, so a caller's not-found handling is unchanged.
+    `session_id` is `_bad_id`-checked by callers."""
     munged = _munge(workdir)
     mine = os.path.join(PROJECTS, munged, session_id + ".jsonl")
-    if os.path.isfile(mine):
-        return mine
+    for _backend, root in _transcript_roots():
+        cand = os.path.join(root, munged, session_id + ".jsonl")
+        if os.path.isfile(cand):
+            return cand
     prefixes = []
     a = os.path.abspath(workdir)
     while True:
@@ -898,10 +1111,17 @@ def _session_transcript_path(workdir: str, session_id: str) -> str:
     return best or mine
 
 
-def _terminal_command(file: str, session_id: str = "") -> dict:
+def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dict:
     """The shell command that continues (or starts) this target's session in a
     real terminal, for the page's "in terminal" menu item to put on the
     clipboard.
+
+    A session named is continued with ITS OWN backend's CLI
+    (`_backend_for_session`, never the request's `backend`); a fresh command
+    takes `backend` (or Claude). Copilot's is `copilot --resume=<sid>` (D12),
+    with no plugin dirs: the fused skills ride the spawn's generated plugin,
+    which has no equivalent in a terminal session. The `fused` PATH prefix
+    below is for both, for the same reason either way.
 
     Same session, same ground: the cwd is `_workdir` (the key everything else
     here uses) and the fused-render skills ride along via the same
@@ -931,28 +1151,38 @@ def _terminal_command(file: str, session_id: str = "") -> dict:
     if not file:
         return {"error": "missing target file (no _file param?)"}
     workdir = _workdir(file)
-    if shutil.which("claude"):
-        binary = "claude"
-    else:
-        try:
-            binary = _claude_bin()
-        except FileNotFoundError:
-            # Not installed anywhere we know. Still hand over the command the
-            # user WOULD run — pasted, it produces the shell's own "command
-            # not found", which names the actual problem.
-            binary = "claude"
-    argv = [binary, *_plugin_argv(file)]
+    if session_id and _bad_id(session_id):
+        return {"error": "malformed session id"}
     if session_id:
-        if _bad_id(session_id):
-            return {"error": "malformed session id"}
-        argv += ["--resume", session_id]
+        backend = _backend_for_session(session_id, workdir,
+                                       hint=_session_backend(session_id))
+    elif backend not in BACKENDS:
+        backend = DEFAULT_BACKEND
+    if backend == "copilot":
+        argv = ["copilot"]
+        if session_id:
+            argv.append("--resume=" + session_id)
+    else:
+        if shutil.which("claude"):
+            binary = "claude"
+        else:
+            try:
+                binary = _claude_bin()
+            except FileNotFoundError:
+                # Not installed anywhere we know. Still hand over the command
+                # the user WOULD run — pasted, it produces the shell's own
+                # "command not found", which names the actual problem.
+                binary = "claude"
+        argv = [binary, *_plugin_argv(file)]
+        if session_id:
+            argv += ["--resume", session_id]
     cli_dir = _fused_cli_dir()
     run = shlex.join(argv)
     if cli_dir:
         # A one-command env prefix, so nothing outlives the session.
         run = "PATH={}:$PATH {}".format(shlex.quote(cli_dir), run)
     command = "cd {} && {}".format(shlex.quote(workdir), run)
-    return {"command": command, "cwd": workdir}
+    return {"command": command, "cwd": workdir, "backend": backend}
 
 
 # ------------------------------------------------------------- tool approvals
@@ -1434,12 +1664,17 @@ def _terminal_tools_supported() -> bool:
     return bool(_origin())
 
 
-def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
+def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
     Each channel gets its own directory in argv — see _state_dir for why they are
     not one.
+
+    `approve=False` adds `--no-approve`, which drops the `approve` tool from
+    the server's roster: a Copilot session's permissions arrive over ACP and
+    its host answers them through the same `perm/` files itself (D4), so the
+    server is kept for the pane tools only (`app_state`, `terminal_*`).
 
     `pane=False` omits the app-state directory from argv entirely, which is what
     takes the tool out of the server's roster (permission_server keys both its
@@ -1458,6 +1693,8 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     args = [server, _perm_dir(run_dir)]
     if pane:
         args.append(_state_dir(run_dir))
+    if not approve:
+        args.append("--no-approve")
     server_env = {
         "FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT),
         # UTF-8 stdio for the server, whatever the machine's locale is.
@@ -1612,7 +1849,29 @@ def _session_settings(session_id: str) -> tuple:
         return "", ""
 
 
-def _record_settings(session_id: str, model: str = "", effort: str = "") -> None:
+def _session_backend(session_id: str) -> str:
+    """The `backend` this app recorded for one conversation (D2), "" when
+    there is no record or it names nothing known — its own reader rather
+    than a third field on `_session_settings`' pair, whose shape callers
+    pin. Same best-effort stat-first read."""
+    if not session_id or _bad_id(session_id):
+        return ""
+    path = _state_file(*SESSION_SETTINGS)
+    try:
+        os.stat(path)
+    except OSError:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rec = json.load(fh).get(session_id)
+        b = rec.get("backend") if isinstance(rec, dict) else ""
+        return b if b in BACKENDS else ""
+    except (OSError, ValueError, AttributeError, TypeError):
+        return ""
+
+
+def _record_settings(session_id: str, model: str = "", effort: str = "",
+                     backend: str = "") -> None:
     """Record what this conversation is running with. Best-effort: a store that
     will not open costs a chat its remembered pill, never a send.
 
@@ -1620,6 +1879,11 @@ def _record_settings(session_id: str, model: str = "", effort: str = "") -> None
     places that each know half: an empty `model` means "not saying", not "no
     model". Same invariant `tasks_store.record_settings` keeps on the server
     side — the two writers share one file, so they have to share one rule.
+    `backend` is written for Copilot sessions only, once, by `_start` — or,
+    for a fresh Copilot chat whose id `_start` cannot know, by
+    `_record_copilot_session` (immutable per session, D2). A Claude session's
+    record carries none: absent reads as Claude. An unknown value is not
+    written at all.
 
     Locked (flock) for the whole read-modify-write, like
     `tasks_store._update`: two chats sending at the same moment is ordinary (the
@@ -1628,7 +1892,8 @@ def _record_settings(session_id: str, model: str = "", effort: str = "") -> None
     session_id = (session_id or "").strip()
     model = (model or "").strip()
     effort = (effort or "").strip()
-    if not session_id or _bad_id(session_id) or not (model or effort):
+    backend = backend if backend in BACKENDS else ""
+    if not session_id or _bad_id(session_id) or not (model or effort or backend):
         return   # an id `_defaults` would refuse to read is not worth writing
     path = _state_file(*SESSION_SETTINGS)
     try:
@@ -1648,12 +1913,41 @@ def _record_settings(session_id: str, model: str = "", effort: str = "") -> None
                 rec["model"] = model
             if effort:
                 rec["effort"] = effort
+            if backend:
+                rec["backend"] = backend
             rec["at"] = time.time()
             state[session_id] = rec
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(state, fh, indent=2, ensure_ascii=False)
     except OSError:
         pass
+
+
+def _record_copilot_session(run_dir: str, meta: dict, session_id: str) -> None:
+    """A FRESH Copilot chat's settings record, written the first time this
+    module names its id to a caller (`_poll`'s answer, `cancel`'s).
+
+    `_start` cannot write it: `copilot --acp` refuses `--session-id`, so the
+    id is Copilot's own, minted in `session/new` after the spawn (D2). The
+    server resolves an id's agent off this record first and falls back to
+    Claude, so it has to exist before the id is out. The values are the ones
+    `_start` would have recorded, kept on meta for this (`model`/`effort`).
+    One-shot per run (`settings_recorded`), set only once the record reads
+    back as Copilot, so a store that would not open is tried again next poll.
+    Claude runs and resumes (whose record `_start` wrote) are no-ops."""
+    if meta.get("backend") != "copilot" or meta.get("resumed_from") \
+            or not session_id or _bad_id(session_id):
+        return
+    done = os.path.join(run_dir, "settings_recorded")
+    if os.path.exists(done):
+        return
+    _record_settings(session_id, str(meta.get("model") or ""),
+                     str(meta.get("effort") or ""), "copilot")
+    if _session_backend(session_id) == "copilot":
+        try:
+            open(done, "w", encoding="utf-8").close()
+        except OSError:
+            pass
 
 
 def _permissions(run_dir: str) -> list:
@@ -2597,9 +2891,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     # The fused CLI note rides every shape (file, app folder, ordinary
     # folder) because it is a fact about the machine, not the target — and
     # only when the wrapper actually exists (see _fused_cli_note).
-    cmd += ["--append-system-prompt",
-            (_split_system_prompt(file, pane) if os.path.isdir(file)
-             else _system_prompt(file)) + _fused_cli_note() + _origin_note()]
+    cmd += ["--append-system-prompt", _appended_prompt(file, pane)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
     if session_id:
@@ -2626,6 +2918,203 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     return cmd
 
 
+def _appended_prompt(file: str, pane: bool, backend: str = "") -> str:
+    """The prompt BOTH backends get appended for this target — the shape
+    `_claude_argv`'s comment above picks (file / app folder / ordinary
+    folder) plus the machine-wide notes. One function so Claude's
+    `--append-system-prompt` and Copilot's generated agent file (D8) can never
+    say different things about the same target — except where a sentence is
+    about Claude Code itself (`_fused_cli_note`'s `backend`)."""
+    return ((_split_system_prompt(file, pane) if os.path.isdir(file)
+             else _system_prompt(file)) + _fused_cli_note(backend)
+            + _origin_note())
+
+
+# The plugin root a Copilot session is handed (D8): its manifest, the one
+# custom agent that carries the system prompt (`--agent fused:fused`), and
+# the fused skills. Generated per run, under the run dir, because the prompt
+# is per target.
+_COPILOT_PLUGIN_MANIFEST = {"name": "fused", "version": "0.0.1",
+                            "description": "fused-render chat context"}
+
+
+def _skill_plugin_roots(target: str | None = None) -> list:
+    """The plugin roots `_plugin_argv` would pass, as paths: fused-render's
+    own skills always, the workbench plugin's only for a canvas target. Split
+    out so the Copilot plugin builder shares the gate without the flags."""
+    roots = [_skill_plugin_dir()]
+    if target and _in_canvases_root(target):
+        roots.append(_workbench_plugin_dir())
+    return [r for r in roots if r]
+
+
+def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
+    """Write `<run_dir>/plugin` and return it.
+
+    * `plugin.json` — the manifest, by the name `--agent fused:fused` resolves.
+    * `agents/fused.agent.md` — frontmatter + body. The body IS the appended
+      prompt (`_appended_prompt`): Copilot has no `--append-system-prompt`,
+      and a custom agent is the documented way to hand it one.
+    * `skills/` — fused's skills. A SYMLINK to the one plugin's `skills/` when
+      only fused-render's own applies; a real directory of per-skill symlinks
+      when the workbench plugin's canvas skills ride along too (two roots, one
+      `skills/` name), so a canvas session sees both sets side by side exactly
+      as two `--plugin-dir`s give Claude. Nothing is copied: the roots are the
+      app's own export dirs and the run dir is junk once the session ends.
+    """
+    plugin = os.path.join(run_dir, "plugin")
+    agents = os.path.join(plugin, "agents")
+    os.makedirs(agents, exist_ok=True)
+    with _private_open(os.path.join(plugin, "plugin.json")) as fh:
+        json.dump(_COPILOT_PLUGIN_MANIFEST, fh)
+    # The prompt names the pane tool in Claude's MCP spelling
+    # (`mcp__<server>__<tool>`); Copilot reaches the same tool as
+    # `<server>-<tool>` (docs/COPILOT_BACKEND.md §10, verified), and a prompt
+    # announcing a name the roster does not carry is the exact failure D235
+    # exists to prevent.
+    body = _appended_prompt(file, pane, "copilot").replace(
+        f"mcp__{PERMISSION_SERVER}__", f"{PERMISSION_SERVER}-")
+    with _private_open(os.path.join(agents, "fused.agent.md")) as fh:
+        fh.write("---\nname: fused\ndescription: fused-render chat context "
+                 "for this target\n---\n\n" + body + "\n")
+    skill_dirs = [os.path.join(r, "skills") for r in _skill_plugin_roots(file)]
+    skill_dirs = [d for d in skill_dirs if os.path.isdir(d)]
+    link = os.path.join(plugin, "skills")
+    if len(skill_dirs) == 1:
+        os.symlink(skill_dirs[0], link)
+    elif skill_dirs:
+        os.makedirs(link, exist_ok=True)
+        for d in skill_dirs:
+            for name in sorted(os.listdir(d)):
+                src = os.path.join(d, name)
+                dst = os.path.join(link, name)
+                if os.path.isdir(src) and not os.path.lexists(dst):
+                    os.symlink(src, dst)
+    return plugin
+
+
+def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
+                  session_id: str, model: str, effort: str,
+                  extra_read_dirs: list | None, file: str) -> list:
+    """The COPILOT CLI's argv — `_claude_argv`'s twin, same leading
+    parameters in the same order so `_start` builds either from one call
+    site, per docs/COPILOT_BACKEND.md §3. Driven over ACP by `copilot_host.py`
+    (`--acp`, JSON-RPC on stdio), never `-p` (D16). `session_id` names no
+    flag: a resume is the host's `session/load`.
+
+    What maps, and to what:
+      * the system prompt → the generated plugin's agent (D8), not a flag;
+      * the permission bridge → NOTHING here: ACP carries permission requests
+        to the host itself (D4). `mcp.json` is passed only when the pane or
+        terminal tools exist, and with `--no-approve` so the server offers
+        those and not `approve`;
+      * `--allowed-tools Read(<dir>)` → `--add-dir` for SHOTS and every
+        `extra_read_dirs` entry (D9) — a directory the session may read, the
+        same thing the Read rule granted;
+      * `Bash(fused:*)` → `--allow-tool 'shell(fused:*)'`, on the same
+        condition (a `fused` wrapper exists);
+      * `--permission-mode acceptEdits` → `--allow-tool write` (D5);
+        `auto`/prompt are the host's `allow_all` switch, not argv;
+      * `--resume` → nothing: the host does `session/load`;
+      * `--session-id` → NEVER: `--acp` refuses it outright ("cannot be used
+        with"; verified 2026-10-16, the CLI exits). Copilot mints the id in
+        its `session/new` reply and the host announces it on the init row,
+        which `_poll` records (D2);
+      * `--effort` → `--reasoning-effort`.
+    """
+    cmd = [_copilot_bin(), "--acp", "--no-auto-update"]
+    if model:
+        cmd += ["--model", model]
+    if effort:
+        cmd += ["--reasoning-effort", effort]
+    cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane),
+            "--agent", "fused:fused"]
+    if pane or _terminal_tools_supported():
+        cmd += ["--additional-mcp-config",
+                "@" + _write_mcp_config(run_dir, pane, approve=False)]
+    for d in [SHOTS, *(extra_read_dirs or [])]:
+        cmd += ["--add-dir", d]
+    if _fused_cli_dir():
+        cmd += ["--allow-tool", "shell(fused:*)"]
+    if cli_mode == "acceptEdits":
+        cmd += ["--allow-tool", "write"]
+    return cmd
+
+
+def _copilot_signs_in_with_gh() -> bool:
+    """Whether the cached Copilot health snapshot says spawns sign in with
+    `gh`'s token (`account.method == "gh"`, D10). The snapshot's probe ran
+    WITH that token and found it works, so this is the one place that knows
+    the substitute is wanted; without it a user with their own `copilot
+    login` would have a `gh` account silently put in front of it. Absent,
+    unreadable, signed out (`account: null`) or any other method → False.
+    Read raw, without the snapshot's freshness gates: the question is which
+    credential this machine uses, not whether the probe is current."""
+    try:
+        with open(os.path.join(_home_dir(), _COPILOT_HEALTH_FILE),
+                  encoding="utf-8") as fh:
+            snap = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    account = snap.get("account") if isinstance(snap, dict) else None
+    return isinstance(account, dict) and account.get("method") == "gh"
+
+
+def _gh_bin(path_env: str) -> str:
+    """The `gh` to run, "" when none — `github_setup.resolve()`'s ladder in
+    stdlib: FUSED_RENDER_GH_BIN, then `path_env` (the spawn's AUGMENTED
+    PATH, not this process's: a Dock-launched app's PATH has no Homebrew),
+    then the app's own install dir (`<home>/bin`, where the onboarding
+    installer writes `gh`) and the package-manager prefixes. An override
+    that is not executable is not fallen through, exactly as
+    `copilot_health.gh_token` treats it: the user named that binary."""
+    forced = os.environ.get(_GH_BIN_ENV)
+    if forced:
+        return forced if os.path.isfile(forced) and os.access(forced, os.X_OK) else ""
+    found = shutil.which("gh", path=path_env)
+    if found and os.path.isabs(found):
+        return found
+    for candidate in (os.path.join(_home_dir(), "bin", "gh"), *_GH_CANDIDATES):
+        resolved = os.path.expanduser(os.path.expandvars(candidate))
+        if os.path.isfile(resolved) and os.access(resolved, os.X_OK):
+            return resolved
+    return ""
+
+
+# `gh auth token`'s answer, cached per process (D10: the login substitute). A
+# token is a fact about the machine that changes on the order of hours; asking
+# `gh` on every spawn would put a subprocess in front of every chat. Only a
+# real token is kept, per binary: a miss is asked again next spawn, so a
+# `gh auth login` takes effect on the next chat rather than ten minutes on.
+_GH_TOKEN_TTL = 600.0
+_GH_TOKEN_CACHE = {"at": 0.0, "gh": "", "token": ""}
+_GH_TOKEN_LOCK = threading.Lock()
+
+
+def _gh_token(gh: str, env: dict | None = None) -> str:
+    """The token `gh auth token` prints, "" when it is not logged in, fails
+    or hangs (5 s). `gh` is `_gh_bin`'s answer; `env` the spawn env it runs
+    under. NEVER logged — it goes into one child env and nowhere else."""
+    if not gh:
+        return ""
+    with _GH_TOKEN_LOCK:
+        now = time.monotonic()
+        if (_GH_TOKEN_CACHE["token"] and _GH_TOKEN_CACHE["gh"] == gh
+                and now - _GH_TOKEN_CACHE["at"] < _GH_TOKEN_TTL):
+            return _GH_TOKEN_CACHE["token"]
+        token = ""
+        try:
+            res = subprocess.run([gh, "auth", "token"], capture_output=True,
+                                 text=True, timeout=5, close_fds=False,
+                                 encoding="utf-8", errors="replace", env=env)
+            if res.returncode == 0:
+                token = res.stdout.strip()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            token = ""
+        _GH_TOKEN_CACHE.update(at=now, gh=gh, token=token)
+        return token
+
+
 def _shell_prefix_path() -> str:
     """Absolute path of the packaged CLAUDE_CODE_SHELL_PREFIX wrapper, made
     executable if a packaging step dropped the bit. "" when unavailable."""
@@ -2647,11 +3136,23 @@ _STRIPPED_PYTHON_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
                         "PYTHONUSERBASE", "PYTHONINSPECT")
 
 
-def _spawn_env(chat_id: str = "") -> dict:
+def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     """`os.environ`, adjusted the same way for every `claude` spawn — the
     session host's own CLI Popen and (nothing else now, but kept as its own
     function so the two never drift again the way _start's inline copy could
     have).
+
+    `backend="copilot"` is the same env minus everything Claude-specific:
+    the `CLAUDE_CODE_*` switches are stripped (a checkpointing flag or a
+    shell prefix mean nothing to `copilot`, and the shell-prefix mirror is a
+    Claude-only surface — D9 keeps no terminal mirror for Copilot), and
+    `COPILOT_GITHUB_TOKEN` is set from `gh auth token` ONLY when the Copilot
+    health snapshot says this machine signs in that way
+    (`_copilot_signs_in_with_gh`, D10's login substitute; Copilot documents
+    the variable as winning over stored credentials, which is exactly why it
+    is not set on a machine with its own `copilot login`). `gh` is resolved
+    against the PATH built below (`_gh_bin`). A token the user exported
+    themselves is never overridden.
 
     The session must not inherit an ambient FUSED_ENV from the server's own
     process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
@@ -2695,6 +3196,17 @@ def _spawn_env(chat_id: str = "") -> dict:
     # PYTHONHOME ("No module named 'encodings'") and fails every Bash command.
     for name in _STRIPPED_PYTHON_ENV:
         env.pop(name, None)
+    if backend == "copilot":
+        for name in [k for k in env if k.startswith("CLAUDE_CODE_")]:
+            env.pop(name, None)
+        # COPILOT_HOME is left exactly as found: it moves Copilot's own
+        # credential + session-state store, and the health probe measured
+        # with whatever the user set.
+        if not env.get("COPILOT_GITHUB_TOKEN") and _copilot_signs_in_with_gh():
+            token = _gh_token(_gh_bin(env["PATH"]), env)
+            if token:
+                env["COPILOT_GITHUB_TOKEN"] = token
+        return env
     env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
     # Mirror this chat's Bash-tool commands into a log the drawer's "Claude" tab
     # reads (D1327). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
@@ -2886,6 +3398,10 @@ def _await_control_response(run_dir: str, request_id: str,
 
 _SESSION_HOST = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "session_host.py")
+# The Copilot twin: speaks ACP to `copilot --acp` and writes the same run-dir
+# files and stream rows (docs/COPILOT_BACKEND.md §0). Picked by `backend`.
+_COPILOT_HOST = os.path.join(HERE, "copilot_host.py")
+_HOST_FILES = {"claude": _SESSION_HOST, "copilot": _COPILOT_HOST}
 
 
 def _start(file: str, message: str, session_id: str, model: str,
@@ -2893,12 +3409,42 @@ def _start(file: str, message: str, session_id: str, model: str,
            message_via_stdin: bool = False,
            has_pane: bool | None = None,
            extra_read_dirs: list | None = None,
-           draft_key: str = "", terminal_hint: str = "") -> dict:
+           draft_key: str = "", terminal_hint: str = "",
+           backend: str = "", bot: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
     if not os.path.exists(file):
         return {"error": f"target not found: {file}"}
+
+    # WHICH AGENT RUNS THIS TURN — settled before anything touches disk, so a
+    # refusal leaves no run dir behind. A RESUME is owned by the session: the
+    # backend is whatever the session's record or transcript root says, and
+    # the request's `backend` is ignored outright (invariant 8 — a session's
+    # backend never changes, and a page whose pill drifted must not be able to
+    # hand a Copilot chat to Claude). A FRESH chat takes the request's, Claude
+    # when it said nothing. The prefs gate is HERE and only here on the agent
+    # side (invariant 10): every spawn passes through this function, so a
+    # disabled agent cannot start whatever the caller.
+    if session_id:
+        backend = _backend_for_session(session_id, _workdir(file),
+                                       hint=_session_backend(session_id))
+    else:
+        backend = backend or DEFAULT_BACKEND
+    if backend not in BACKENDS:
+        return {"error": f"unknown agent backend: {backend!r}"}
+    # BOTS KEEP CLAUDE (D17/Q7): the Claude switch in Preferences is about
+    # Tasks and Sessions, and a bot's turn (`bot` = its id, passed by in-
+    # process callers only — `main` never takes it) runs on Claude whatever
+    # it says. Claude only: a bot pinned to Copilot gets no exemption.
+    if not (bot and backend == "claude") and not _backend_enabled(backend):
+        return _backend_disabled_error(backend)
+    if backend == "copilot" and permission_mode == "plan":
+        # No plan card to approve on ACP (D12/§7 plan_mode): refused rather
+        # than silently downgraded to prompt, which would run edits the user
+        # asked to only see planned.
+        return {"error": "plan mode is not available for Copilot",
+                "reason": "unsupported", "backend": backend}
 
     run_id = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(3).hex()
     run_dir = os.path.join(RUNS, run_id)
@@ -2951,7 +3497,29 @@ def _start(file: str, message: str, session_id: str, model: str,
     # minted id into it would make every new chat look like a continuation to
     # `meta["resumed_from"]`, to `_live_run`, and to the Tasks listing's
     # `_entry_session`. The minted id rides beside it, under its own name.
-    new_session_id = "" if session_id else str(uuid.uuid4())
+    #
+    # CLAUDE ONLY. `copilot --acp` refuses `--session-id` and exits, so a
+    # fresh Copilot chat is nameless here exactly as every chat was before
+    # the flag: Copilot mints its id in `session/new`, the host announces it
+    # on the init row, and `_poll` records it (the `session` file, the
+    # `recorded` marker, and — for this case — the settings record below).
+    new_session_id = "" if session_id or backend == "copilot" \
+        else str(uuid.uuid4())
+
+    # COPILOT'S ARGV, READY-MADE, before anything else is written. Claude's
+    # host builds its own from the request (`_claude_argv`, so the two stay
+    # one function); Copilot's spawns this list as given: the plugin dir and
+    # mcp.json it names are written here, before the host exists, and the
+    # host has no reason to know how. Built FIRST so a missing `copilot`
+    # binary refuses the start with a bare run dir — no meta, no inbox — that
+    # nothing lists as a chat.
+    argv = None
+    if backend == "copilot":
+        try:
+            argv = _copilot_argv(run_dir, pane, cli_mode, session_id, model,
+                                 effort, list(extra_read_dirs or []), file)
+        except (FileNotFoundError, OSError) as exc:
+            return {"error": str(exc), "backend": backend}
 
     # `mode` is the mode this process was SPAWNED with, and it is recorded
     # because nothing else can reconstruct it: the picker's URL param is what
@@ -2966,8 +3534,11 @@ def _start(file: str, message: str, session_id: str, model: str,
     #
     # poll() records the session id with the run once claude reports it;
     # it needs the file + first message, so keep them with the run.
+    # `backend` rides meta (D2) because meta is what every reader of a run
+    # has — `_poll`, `_live_run`, `_send`'s fallback, the queue — and nothing
+    # else about a run dir says which CLI is behind it.
     meta = {"file": file, "message": _strip_app_state(message),
-            "resumed_from": session_id, "mode": mode}
+            "resumed_from": session_id, "mode": mode, "backend": backend}
     if new_session_id:
         # `session_id` on meta is the ANSWER — the conversation this run's turn
         # happens in — next to `resumed_from`, the question. Written before the
@@ -2976,6 +3547,12 @@ def _start(file: str, message: str, session_id: str, model: str,
         # from whenever the CLI first speaks, and `_poll` seeds its own answer
         # from it so the very first poll already carries the id.
         meta["session_id"] = new_session_id
+    if backend == "copilot" and not session_id:
+        # What the settings record will say once `_poll` learns the id this
+        # chat runs in (`_start` cannot write it: there is no id yet). Read
+        # off meta rather than host.json, which the host removes on exit.
+        meta["model"] = model
+        meta["effort"] = effort
     # `draft_key` is the composer's RECEIPT for this send, carried verbatim and
     # read by nothing in this template (fused_render/server/routers/tasks.py
     # `_settle_new_chats` is its one reader). A chat with no session yet keeps
@@ -2988,6 +3565,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     # runs on the same folders and must not look like a composer's first send.
     if draft_key:
         meta["draft_key"] = draft_key
+    if bot:
+        # Which bot started this run, for diagnosis — and what `_send` reads
+        # to give the run's follow-ups the same Claude exemption.
+        meta["bot"] = bot
     with _private_open(os.path.join(run_dir, "meta.json")) as f:
         json.dump(meta, f)
 
@@ -3014,12 +3595,18 @@ def _start(file: str, message: str, session_id: str, model: str,
            "file": file, "cwd": _workdir(file), "pane": pane,
            "cli_mode": cli_mode, "session_id": session_id, "model": model,
            "effort": effort, "extra_read_dirs": list(extra_read_dirs or []),
-           # The id minted above, "" for a resume. Its own key beside
+           # The id minted above, "" for a resume and for every Copilot
+           # chat (Copilot mints its own). Its own key beside
            # `session_id` rather than folded into it: the host builds the CLI's
            # argv from this dict (`_claude_argv`), and the two produce
            # DIFFERENT flags — `--resume` continues a conversation, and
            # `--session-id` names a new one.
-           "new_session_id": new_session_id}
+           "new_session_id": new_session_id,
+           # WHICH host this is (D2); `argv` beside it for Copilot only — see
+           # the build above.
+           "backend": backend}
+    if argv is not None:
+        req["argv"] = argv
     # The HOST's own stderr goes to `host.err.log`, appended, 0600 — not
     # DEVNULL (SPEC §50, D5). A host that crashed (an import error, a native
     # fault its faulthandler prints) used to leave nothing anywhere, and the
@@ -3031,9 +3618,9 @@ def _start(file: str, message: str, session_id: str, model: str,
                        os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         proc = subprocess.Popen(
-            [sys.executable, _SESSION_HOST],
+            [sys.executable, _HOST_FILES[backend]],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=host_err, env=_spawn_env(),
+            stderr=host_err, env=_spawn_env(backend=backend),
             **_HOST_SPAWN)
     finally:
         os.close(host_err)
@@ -3068,8 +3655,13 @@ def _start(file: str, message: str, session_id: str, model: str,
     # conversation to have a record about, and a record for a chat that never
     # ran would answer the next chat handed the same id. `new_session_id or
     # session_id` is the conversation the turn actually happens in, the same
-    # pair the return value names.
-    _record_settings(new_session_id or session_id, model, effort)
+    # pair the return value names. A fresh Copilot chat has neither yet, so
+    # this is a no-op for it and `_poll` writes the record instead. `backend`
+    # is recorded for Copilot only: an absent one reads as Claude, so a Claude
+    # chat's record is written on exactly the condition it always was (a
+    # model or an effort to say), not for every Claude session there is.
+    _record_settings(new_session_id or session_id, model, effort,
+                     backend if backend == "copilot" else "")
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
     # the host's, to reach the CLI's whole process group. Written here, to the
@@ -3099,8 +3691,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     # the same breath it started it — which is what lets the page say "a turn
     # just started HERE" (`POST /api/tasks/running`) before anything the CLI
     # writes exists, and what lets the Tasks listing carry a row for a chat with
-    # no transcript yet.
-    return {"run_id": run_id, "session_id": new_session_id or session_id}
+    # no transcript yet. A fresh Copilot chat answers "" — its id arrives on a
+    # later poll, the path every chat took before Claude's `--session-id`.
+    return {"run_id": run_id, "session_id": new_session_id or session_id,
+            "backend": backend}
 
 
 def _app_dir_for(path: str) -> str:
@@ -3118,9 +3712,10 @@ def _app_dir_for(path: str) -> str:
     return os.path.join(root, parts[0], parts[1])
 
 
-def _commit_turn(file: str, message: str) -> None:
+def _commit_turn(file: str, message: str, backend: str = "") -> None:
     """FALLBACK sweep: commit whatever a finished turn left UNcommitted in
-    the target's APP repo.
+    the target's APP repo. The subject names the agent that ran the turn
+    (`Claude: …` / `Copilot: …`, D12) — the one place git history says who.
 
     App folders are version-controlled from creation (fused_render/app_git.py)
     and the app's CLAUDE.md instructs claude to commit its own work in small
@@ -3154,9 +3749,10 @@ def _commit_turn(file: str, message: str) -> None:
         # :(literal) — folder names may carry pathspec magic (*, ?, […],
         # a leading :); mirrors app_git._pathspec.
         repo_dir, spec = local, ":(literal)" + os.path.basename(app_dir)
+    label = _BACKEND_LABELS.get(backend, _BACKEND_LABELS[DEFAULT_BACKEND])
     subject = " ".join((message or "").split())
-    subject = "Claude: " + (subject[:60] + "…" if len(subject) > 60 else subject) \
-        if subject else "Claude turn"
+    subject = f"{label}: " + (subject[:60] + "…" if len(subject) > 60 else subject) \
+        if subject else f"{label} turn"
 
     # ABSOLUTE argv[0] or nothing: close_fds=False alone does NOT reach
     # posix_spawn — CPython forks unless os.path.dirname(executable) is truthy,
@@ -3375,7 +3971,9 @@ def _run_own_session(run_dir: str, meta: dict) -> str:
     * the head of `out.jsonl` (`_session_from_out`) — the same answer, straight
       out of the CLI's first `system` row, for a run nobody has polled yet;
     * `meta["session_id"]` — the id `_start` MINTED and passed to the CLI as
-      `--session-id`. Written before the spawn, so it is the only one of the
+      `--session-id` (Claude only; a Copilot run has none, its id is
+      Copilot's own and arrives on the init row). Written before the spawn,
+      so it is the only one of the
       three that exists during the seconds this whole path is about: a fresh
       chat used to be nameless until the CLI spoke, and every lookup keyed on
       the session answered "" for it (a page re-attaching to its own run, a
@@ -3466,16 +4064,20 @@ def _registry_running(workdir: str) -> set:
                 continue
     except OSError:
         pass
-    try:
-        names = os.listdir(os.path.join(CLAUDE_DIR, "sessions"))
-    except OSError:
-        return set()
-    out = set()
-    for name in names:
-        if not name.endswith(".json"):
-            continue
+    # Every backend's registry (`_registry_roots`): the Copilot host writes
+    # the same `<pid>.json` shape under its own root (D3), so one loop reads
+    # both and a Copilot chat shows running on the same terms.
+    rows = []
+    for _backend, sessions_dir in _registry_roots():
         try:
-            with open(os.path.join(CLAUDE_DIR, "sessions", name), encoding="utf-8") as fh:
+            names = os.listdir(sessions_dir)
+        except OSError:
+            continue
+        rows += [os.path.join(sessions_dir, n) for n in names if n.endswith(".json")]
+    out = set()
+    for path in rows:
+        try:
+            with open(path, encoding="utf-8") as fh:
                 row = json.load(fh)
         except (OSError, ValueError):
             continue
@@ -3612,7 +4214,7 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
         if _alive(run_dir):
             turn_open, _tasks_pending = _turn_state(run_dir)
             if turn_open:
-                return {"run_id": name}
+                return {"run_id": name, "backend": _meta_backend(meta)}
     return {"run_id": ""}
 
 
@@ -3672,8 +4274,10 @@ def _host_alive(run_dir: str) -> bool:
     the host has overwritten it (see session_host.py), and the CLI can be
     freshly dead — a crash, the tail end of an idle-reap — with `host.json`
     still on disk for the instant before the host notices and removes it.
-    `host.json` is written once, right after the host spawns the CLI, and
-    removed in the host's own `finally` the moment it reaps (or dies) — so
+    `host.json` is written right after the host spawns the CLI (the Copilot
+    host rewrites it once more, with its session id, after the handshake;
+    `_send` re-records model/mode), and removed in the host's own `finally`
+    the moment it reaps (or dies) — so
     its PRESENCE plus an alive PID inside it is the host's own two-part
     answer to "is there still a queue to write a follow-up into"."""
     try:
@@ -3782,9 +4386,40 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         return {"error": "no live session"}
     if not isinstance(host, dict) or not _pid_alive(str(host.get("pid") or "")):
         return {"error": "no live session"}
+    # THE SESSION'S OWN BACKEND, off the host (its host.json carries it) or
+    # the run's meta (a Claude host written before the field existed) —
+    # never the caller's say-so (invariant 8). It decides below which
+    # changes a live session can take and which force a respawn (§7 caps).
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    backend = _meta_backend(host if host.get("backend") in BACKENDS else meta)
+    # THE PREFS GATE, on the live path too (invariant 10, D17). A follow-up
+    # into a host that is already up spawns nothing, but it is still a turn
+    # run by that agent, and Preferences turned the agent off: refused before
+    # anything is written (no inbox row, no control request, no respawn), the
+    # same body `_start` and the router answer. The host itself is left as
+    # it is; its idle reap ends it. A bot's Claude run is exempt, as in
+    # `_start` (`meta.bot`).
+    if not (meta.get("bot") and backend == "claude") \
+            and not _backend_enabled(backend):
+        return _backend_disabled_error(backend)
     wanted = set(_attach_dirs(read_dirs))
     granted = set(host.get("read_dirs") or [])
-    if not wanted <= granted or (effort and effort != host.get("effort", "")):
+    # Copilot takes `--model` at spawn only (D7, caps.live_model_switch): a
+    # changed model is the same respawn a changed effort already is. "" and
+    # "auto" are ONE model there (an unnamed spawn — the scheduler, the apps
+    # API — lets Copilot pick, which is what `auto` says), so the page's
+    # first send carrying the `auto` that `_defaults` answered must not kill
+    # a healthy session over a spelling.
+    model_respawn = (backend == "copilot" and model
+                     and (model or "auto") != (host.get("model") or "auto"))
+    if not wanted <= granted or (effort and effort != host.get("effort", "")) \
+            or model_respawn:
         # interrupt_first=False: unlike the stop button, this call means the
         # session can no longer serve this caller as it stands — leaving the
         # host up (an `interrupt` would) is not an option here, so it skips
@@ -3797,7 +4432,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # same `set_model`/`set_permission_mode` control request the CLI already
     # applied, forever. Recorded here so only a REAL change ever queues one.
     host_changed = False
-    if model and model != host.get("model", ""):
+    # Never `set_model` for Copilot: a real change respawned above, and what
+    # is left is the ""/"auto" spelling of the same model.
+    if model and model != host.get("model", "") and backend != "copilot":
         _write_control_request(run_dir, "set_model", model=model)
         host["model"] = model
         host_changed = True
@@ -3810,19 +4447,42 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         # and not the page's.
         wire_mode = permission_mode if permission_mode in PERMISSION_MODES \
             else DEFAULT_PERMISSION_MODE
+        if backend == "copilot" and wire_mode == "plan":
+            return {"error": "plan mode is not available for Copilot",
+                    "reason": "unsupported", "backend": backend}
         cli_mode = PERMISSION_MODES[wire_mode]
         if cli_mode != host.get("mode", ""):
+            if backend == "copilot" and "acceptEdits" in (cli_mode, host.get("mode")):
+                # `acceptEdits` is an argv grant (`--allow-tool write`, D5):
+                # it can neither be added nor taken back from a live
+                # process. prompt<->auto is the host's `allow_all` switch
+                # and goes through the control request below.
+                _cancel(run_id, interrupt_first=False)
+                return {"respawn": True}
             _write_control_request(run_dir, "set_permission_mode",
                                    mode=cli_mode)
             host["mode"] = cli_mode
             host_changed = True
     if host_changed:
-        # Not racing the host itself: it writes host.json once, at spawn,
-        # and only ever removes it (in its own `finally`) after that — it
-        # never rewrites it mid-session, so this is the only writer for the
-        # life of the file.
-        with _private_open(os.path.join(run_dir, "host.json")) as f:
-            json.dump(host, f)
+        # TWO WRITERS. The Claude host writes host.json once, at spawn; the
+        # Copilot host REWRITES it after its handshake, to put Copilot's own
+        # session id in (read-modify-write + replace, `session_id` only). So
+        # this re-reads it just before writing and changes only the two keys
+        # it owns, then replaces it atomically — a reader never sees half a
+        # file, and the host's id is not written back over with the "" this
+        # send read. Gone by now (the host reaped) → nothing to record into.
+        path = os.path.join(run_dir, "host.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                fresh = json.load(fh)
+            if isinstance(fresh, dict):
+                fresh.update({k: host[k] for k in ("model", "mode") if k in host})
+                tmp = f"{path}.{os.urandom(4).hex()}.tmp"
+                with _private_open(tmp) as f:
+                    json.dump(fresh, f)
+                os.replace(tmp, path)
+        except (OSError, ValueError):
+            pass
     # WHAT THIS CHAT RUNS WITH, recorded for the same reason `_start` records
     # it and at the same moment in the send: a follow-up never passes through
     # `_start`, so without this a pill changed mid-session would reach the CLI
@@ -3830,11 +4490,7 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # back. `_run_own_session` names the conversation this run's turn is in;
     # a resume has its id under `resumed_from` instead, which is the same
     # conversation. Whichever is present is the one the record belongs to.
-    try:
-        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
-            meta = json.load(fh)
-    except (OSError, ValueError):
-        meta = {}
+    # (`meta` was read above, for the backend.)
     _record_settings(
         _run_own_session(run_dir, meta) or str(meta.get("resumed_from") or ""),
         model, effort)
@@ -4446,7 +5102,7 @@ def _overload_error(error: str, info) -> str:
 GUIDE_URL = "https://render.fused.io/#troubleshooting"
 
 
-def _account_error(error: str) -> str:
+def _account_error(error: str, backend: str = "") -> str:
     """Login and plan-limit failures rewritten to say what to do about them.
 
     The raw CLI text ("Invalid API key · Please run /login") names a fix that
@@ -4458,16 +5114,30 @@ def _account_error(error: str) -> str:
     Substring matching over the error text is deliberate: these strings come
     from the CLI's own `result` row or stderr, never from model output, so a
     false positive would need the CLI itself to phrase an unrelated failure in
-    login words."""
+    login words.
+
+    The markers are PER BACKEND (`_ACCOUNT_ERROR_MARKERS` /
+    `_LIMIT_ERROR_MARKERS`, D13): Copilot words a signed-out session and an
+    exhausted premium-request budget in its own terms, and so does the fix."""
     if not error:
         return error
+    if backend not in BACKENDS:
+        backend = DEFAULT_BACKEND
     low = error.lower()
-    if ("invalid api key" in low or "/login" in low or "oauth token" in low
-            or "not logged in" in low or "authentication_error" in low):
+    if any(m in low for m in _ACCOUNT_ERROR_MARKERS[backend]):
+        if backend == "copilot":
+            # No guide link: the troubleshooting page has no Copilot panel.
+            return ("GitHub Copilot isn't signed in. Sign in from Preferences "
+                    "→ Agents (or run `copilot login` in a terminal), then "
+                    "start a new chat here. (%s)" % error)
         return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
                 "type /login and finish the sign-in, then start a new chat "
                 "here. Help: %s-login (%s)" % (GUIDE_URL, error))
-    if "usage limit reached" in low or "session limit" in low:
+    if any(m in low for m in _LIMIT_ERROR_MARKERS[backend]):
+        if backend == "copilot":
+            return ("Your GitHub Copilot plan's request budget was reached. "
+                    "Wait for it to reset, or upgrade the plan, then try again. "
+                    "(%s)" % error)
         return ("Your Claude plan's usage limit was reached. Wait for it to "
                 "reset, or upgrade the plan, then try again. Help: %s-limit (%s)"
                 % (GUIDE_URL, error))
@@ -5706,7 +6376,15 @@ _COMMAND_SCAN_CAP = 500   # files per folder walk; a menu, not an index
 _COMMAND_DIR_CAP = 200    # directories per folder walk
 
 
-def _commands_state_path(workdir: str) -> str:
+def _commands_state_path(workdir: str, backend: str = "") -> str:
+    """The folder's last-announced command list, PER BACKEND: Claude's and
+    Copilot's menus are different lists, and one file per folder would hand a
+    Copilot chat the commands a Claude chat there last announced. Copilot's
+    sit one level down (`commands/copilot/<munge>`), which no munged cwd can
+    collide with (a munge always starts with `-`); Claude's path is the one
+    it always was."""
+    if backend == "copilot":
+        return _state_file(_COMMANDS_STATE, "copilot", _munge(workdir))
     return _state_file(_COMMANDS_STATE, _munge(workdir))
 
 
@@ -5759,9 +6437,10 @@ def _capture_commands(run_dir: str, row: dict) -> None:
             return
         try:
             with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
-                target = str((json.load(fh) or {}).get("file") or "")
+                run_meta = json.load(fh) or {}
+            target = str(run_meta.get("file") or "")
         except (OSError, ValueError, AttributeError):
-            target = ""
+            run_meta, target = {}, ""
         workdir = _workdir(os.path.abspath(target)) if target \
             else str(row.get("cwd") or "")
         unchanged = {k: v for k, v in prev.items() if k not in ("at", "cwd")} == cap
@@ -5770,7 +6449,7 @@ def _capture_commands(run_dir: str, row: dict) -> None:
         if not unchanged:
             _write_json_atomic(cap_path, cap)
         if workdir:
-            state_path = _commands_state_path(workdir)
+            state_path = _commands_state_path(workdir, _meta_backend(run_meta))
             if unchanged and os.path.exists(state_path):
                 return
             _write_json_atomic(state_path, cap)
@@ -5920,7 +6599,7 @@ def _disk_agents(workdir: str) -> list:
     return names
 
 
-def _commands(file: str) -> dict:
+def _commands(file: str, backend: str = "", session_id: str = "") -> dict:
     """SPEC C-2: the command menu for a target.
 
     `{"commands": [{"name", "description", "source"}], "agents": [names],
@@ -5928,13 +6607,25 @@ def _commands(file: str) -> dict:
     CLI itself announced for this folder (the state file `_poll` keeps),
     with descriptions merged in from the disk scan by name; `from: "disk"` is
     the scan alone plus the built-in table, for a folder no session has
-    spoken in yet. Names in `terminal_slash_commands` are dropped."""
+    spoken in yet. Names in `terminal_slash_commands` are dropped.
+
+    PER BACKEND (D18): the named session's own (`_backend_for_session`),
+    else `backend`, else Claude. A Copilot menu is only what Copilot itself
+    announced: the disk scan reads Claude Code's `.claude/` folders and the
+    built-in table is Claude Code's commands (its `/init` writes a
+    CLAUDE.md), neither of which a Copilot chat can run."""
     file = os.path.abspath(file)
     workdir = _workdir(file)
-    disk = _disk_commands(workdir)
+    if session_id and not _bad_id(session_id):
+        backend = _backend_for_session(session_id, workdir,
+                                       hint=_session_backend(session_id))
+    elif backend not in BACKENDS:
+        backend = DEFAULT_BACKEND
+    disk = _disk_commands(workdir) if backend != "copilot" else {}
+    builtins = _BUILTIN_COMMANDS if backend != "copilot" else {}
     state = None
     try:
-        with open(_commands_state_path(workdir), encoding="utf-8") as fh:
+        with open(_commands_state_path(workdir, backend), encoding="utf-8") as fh:
             state = json.load(fh)
     except (OSError, ValueError):
         state = None
@@ -5952,22 +6643,23 @@ def _commands(file: str) -> dict:
             if found:
                 desc, source = found["description"], found["source"]
             else:
-                desc = _BUILTIN_COMMANDS.get(name, "")
+                desc = builtins.get(name, "")
                 source = skill_src.get(name) or (
-                    "builtin" if name in _BUILTIN_COMMANDS else "cli")
+                    "builtin" if name in builtins else "cli")
             commands.append({"name": name, "description": desc,
                              "source": source})
         return {"commands": commands,
                 "agents": _str_list(state.get("agents")),
                 "stale": bool(state.get("stale")), "from": "cli"}
     commands = [dict(v) for v in disk.values()]
-    for name, desc in _BUILTIN_COMMANDS.items():
+    for name, desc in builtins.items():
         if name not in disk:
             commands.append({"name": name, "description": desc,
                              "source": "builtin"})
     return {"commands": [{"name": c["name"], "description": c["description"],
                           "source": c["source"]} for c in commands],
-            "agents": _disk_agents(workdir), "stale": False, "from": "disk"}
+            "agents": _disk_agents(workdir) if backend != "copilot" else [],
+            "stale": False, "from": "disk"}
 
 
 # --------------------------------------------------------------- task output
@@ -5992,6 +6684,8 @@ def _task_output(run_id: str, task_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
+    if _run_backend(run_dir) == "copilot":
+        return {"error": "unsupported"}   # no background tasks (§7 bg_tasks)
     if not _host_alive(run_dir):
         return {"error": "no live session"}
     try:
@@ -6034,6 +6728,8 @@ def _task_stop(run_id: str, task_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
+    if _run_backend(run_dir) == "copilot":
+        return {"error": "unsupported"}   # no background tasks (§7 bg_tasks)
     if not _host_alive(run_dir):
         return {"error": "no live session"}
     try:
@@ -6622,6 +7318,23 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # window (Bugbot-style review, 2026-10-14).
     echo_outstanding = os.path.exists(os.path.join(run_dir, "pending_echo"))
 
+    # The run's own first message rides back on every poll so a re-attaching
+    # page (mode switch / reload killed the poll loop, subprocess kept going)
+    # can restore the user turn it never saw. Read here, ahead of the loop:
+    # the run's backend names the agent in the loop's own fallback error, and
+    # the error rewrite and window read after it are per backend too.
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            meta = {}
+    except (OSError, json.JSONDecodeError):
+        meta = {}
+    backend = _meta_backend(meta)
+    # The CLI the generic errors below name — "claude", byte for byte, for
+    # every Claude run.
+    cli_name = "copilot" if backend == "copilot" else "claude"
+
     for row in rows:
         parsed.append(row)
         t = row.get("type")
@@ -6820,14 +7533,22 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
             if row.get("is_error"):
-                error = str(result_text or "claude exited with an error")
+                error = str(result_text or f"{cli_name} exited with an error")
                 # Only if the failure arrived DURING a retry. A retry earlier in
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
 
-    # The window the result row just taught, onto the reading built before it:
-    # a chat's FIRST turn names its model and its window in the same batch.
-    if context is not None and saw_result and context.get("window") is None:
+    # COPILOT'S WINDOW SIZE, for the meter: onto this poll's reading as
+    # `window` (no model id says it for `auto`), from what its host reported.
+    # No reading this poll, no key: `None` already means "keep what you have".
+    if backend == "copilot":
+        window = _run_context_window(run_dir, rows)
+        if window and isinstance(context, dict):
+            context = {**context, "window": window}
+    # Claude: the window the result row just taught, onto the reading built
+    # before it: a chat's FIRST turn names its model and its window in the
+    # same batch.
+    elif context is not None and saw_result and context.get("window") is None:
         context["window"] = _known_window(context.get("model", ""))
 
     # The task registry (SPEC T-1) and the command list (SPEC C-2): the rows
@@ -6984,8 +7705,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                             errors="replace").read().strip()[-2000:]
             except OSError:
                 tail = ""
-        error = tail or ("claude exited before completing the reply"
-                         if text_parts else "claude exited unexpectedly")
+        error = tail or (f"{cli_name} exited before completing the reply"
+                         if text_parts else f"{cli_name} exited unexpectedly")
 
     # Both error paths above converge here: if the end arrived with a retry in
     # flight then THAT is the story and the raw text does not tell it. `retry`
@@ -6999,7 +7720,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
         error = "Stopped before the first reply."
 
     rewritten = _overload_error(error, gave_up or retry)
-    error = rewritten if rewritten != error else _account_error(error)
+    error = rewritten if rewritten != error else _account_error(error, backend)
 
     # Approvals, after `done` is final. A card the user never answered is only
     # still live while the run is: once it ends, whatever the request was
@@ -7036,17 +7757,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     else:
         app_state = _app_state_requests(run_dir)
 
-    # The run's own first message rides back on every poll so a re-attaching
-    # page (mode switch / reload killed the poll loop, subprocess kept going)
-    # can restore the user turn it never saw.
-    try:
-        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
-            meta = json.load(f)
-        if not isinstance(meta, dict):
-            meta = {}
-    except (OSError, json.JSONDecodeError):
-        meta = {}
-
     # THE FIRST POLL ALREADY NAMES THE SESSION. `new_session` above is whatever
     # the CLI has announced in `out.jsonl` so far, which for the first couple of
     # seconds of a fresh run is nothing — so every early poll answered
@@ -7061,6 +7771,13 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     if not new_session:
         new_session = str(meta.get("session_id") or "")
         seeded_session = bool(new_session)
+    if not new_session and backend == "copilot":
+        # A Copilot run has no minted id to seed from (`_start`), and a later
+        # turn's rows past the cursor need not repeat the init row that named
+        # it — so the run's own record of the CLI's word (the `session` file
+        # a poll latched, else the head of out.jsonl). Not a seed: both are
+        # what the CLI said, not what `_start` intended.
+        new_session = _run_own_session(run_dir, meta)
 
     # First poll that sees a turn finished CLEANLY sweeps anything it left
     # uncommitted into the app's repo (one-shot via a marker, like the
@@ -7090,7 +7807,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             try:
                 fd = os.open(commit_marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.close(fd)
-                _commit_turn(meta["file"], meta.get("message", ""))
+                _commit_turn(meta["file"], meta.get("message", ""), backend)
             except OSError:
                 pass  # another poll claimed it, or the run dir is going away
 
@@ -7117,6 +7834,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 open(marker, "w", encoding="utf-8").close()
         except OSError:
             pass  # session bookkeeping must never break the chat itself
+    # BEFORE this poll names a fresh Copilot chat's id to anyone, the record
+    # saying it is a Copilot chat exists — whatever `error` says, unlike the
+    # latch above: the server resolves an id's agent off that record first
+    # and falls back to Claude.
+    if new_session:
+        _record_copilot_session(run_dir, meta, new_session)
 
     # The streamed deltas are the full turn; the `result` row holds only the
     # LAST assistant message, so swapping to it after a tool-using turn threw
@@ -7160,7 +7883,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # the identical staleness check off its own cursor read.
     cancelled = _cancelled_marker_state(run_dir, scan_cursor)
     return {"text": "" if echo_pending else text, "done": done,
-            "session_id": new_session, "error": error,
+            "session_id": new_session, "error": error, "backend": backend,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
             "app_state": app_state, "mode": _live_mode(meta, permissions),
@@ -7176,7 +7899,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # tools is seven responses — so the meter steps up during a long
             # turn instead of freezing until the transcript refresh lands.
             # `None` when this poll's window held no response at all: "nothing
-            # new", which the page reads as "keep what you have".
+            # new", which the page reads as "keep what you have". A Copilot
+            # reading also carries `window` (see where `window` is read).
             "context": context,
             # The page's own stop button sets a variable and can swallow the
             # resulting error itself, but a stop from anywhere else (the
@@ -7275,12 +7999,17 @@ def _short_model(raw: str) -> str:
     return ""
 
 
-def _scan_transcript(path: str) -> tuple:
+def _scan_transcript(path: str, backend: str = "") -> tuple:
     """(model, effort) of the newest main-loop rows in one session transcript.
 
     Reads only the file's tail: the last rows are the last-used config, and a
     long session's early history can't change the answer. Sidechain rows are
-    skipped — subagents pick their own model, and the user never chose it."""
+    skipped — subagents pick their own model, and the user never chose it.
+
+    `backend="copilot"` keeps the model id RAW: `_short_model` folds to the
+    Claude picker's four names, and a Copilot transcript's `gpt-5.4` would
+    fold to "" (or `claude-sonnet-4.5` to "sonnet", an id Copilot's picker
+    does not hold)."""
     try:
         size = os.path.getsize(path)
         with open(path, "rb") as f:
@@ -7302,7 +8031,8 @@ def _scan_transcript(path: str) -> tuple:
         if not model:
             msg = row.get("message")
             if isinstance(msg, dict):
-                model = _short_model(str(msg.get("model", "")))
+                raw = str(msg.get("model", ""))
+                model = raw if backend == "copilot" else _short_model(raw)
         if not effort:
             e = str(row.get("effort", "")).lower()
             if e in _EFFORT_LEVELS:
@@ -7339,7 +8069,7 @@ def _global_defaults() -> tuple:
     return model, (effort if effort in _EFFORT_LEVELS else "")
 
 
-def _defaults(file: str, session_id: str = "") -> dict:
+def _defaults(file: str, session_id: str = "", backend: str = "") -> dict:
     """The model/effort the selectors should open on — for THIS CONVERSATION
     when one is named, else the GLOBAL preference.
 
@@ -7386,12 +8116,24 @@ def _defaults(file: str, session_id: str = "") -> dict:
     for a new chat (the New task card's deep link, "Fix with AI"), and a seed
     that outranked the record would undo a pill the reader changed mid-chat on
     the next open. Empty fields mean nothing was detected; the page keeps its
-    own fallback."""
+    own fallback.
+
+    `backend` rides back on every answer (D2/§8): the named session's own,
+    or — for a new chat — the one asked for (Claude when unsaid). A NEW
+    COPILOT CHAT opens on `auto` (Copilot picks, its catalog default) and
+    nothing from `~/.claude/settings.json`, which is Claude's preference and
+    says nothing about Copilot."""
     model = effort = source = ""
     # `_bad_id` for the reason every other reader of a session id has it: the id
     # becomes a path below, and one that does not round-trip is not a session
     # this store can hold. A rejected id is treated as no id at all.
     named = bool(session_id) and not _bad_id(session_id)
+    workdir = _workdir(os.path.abspath(file))
+    if named:
+        backend = _backend_for_session(session_id, workdir,
+                                       hint=_session_backend(session_id))
+    elif backend not in BACKENDS:
+        backend = DEFAULT_BACKEND
     rec_model, rec_effort = _session_settings(session_id) if named else ("", "")
     # A RECORD OUTLIVES THE PICKER'S VOCABULARY. Chats settled before the pinned
     # Fable id was retired still have "claude-fable-5-1" written down for them;
@@ -7399,18 +8141,20 @@ def _defaults(file: str, session_id: str = "") -> dict:
     # the pill blanks and the ranking falls to a default nobody chose. Folded
     # through the same function detection uses, it comes back as the alias that
     # now offers that model. A value the vocabulary does not know at all is left
-    # exactly as written — the page is the one that judges it.
-    rec_model = _short_model(rec_model) or rec_model
+    # exactly as written — the page is the one that judges it. Claude only:
+    # a Copilot record is already in its picker's spelling (`gpt-5.4`), and the
+    # fold would turn `claude-sonnet-4.5` into an id that picker does not hold.
+    if backend != "copilot":
+        rec_model = _short_model(rec_model) or rec_model
     if rec_model or rec_effort:
         model, effort, source = rec_model, rec_effort, "record"
     if named:
         # THIS CHAT'S TRANSCRIPT, and then done — see the docstring for why
         # the global read below is not reached from here.
         if not (model and effort):
-            mine = _session_transcript_path(_workdir(os.path.abspath(file)),
-                                            session_id)
+            mine = _session_transcript_path(workdir, session_id)
             if os.path.exists(mine):
-                m, e = _scan_transcript(mine)
+                m, e = _scan_transcript(mine, backend)
                 model = model or m
                 effort = effort or e
                 if m or e:
@@ -7418,17 +8162,21 @@ def _defaults(file: str, session_id: str = "") -> dict:
                     # the one a reader wants named.
                     source = source or "session"
         return {"model": model, "effort": effort, "source": source,
+                "backend": backend,
                 "recorded": {"model": rec_model, "effort": rec_effort}}
     # A BRAND-NEW CHAT TAKES THE GLOBAL PREFERENCE AND NOTHING ELSE — see the
     # docstring for why the folder ladder that used to run here is gone.
-    model, effort = _global_defaults()
-    if model or effort:
-        source = "settings"
+    if backend == "copilot":
+        model, source = "auto", "backend"
+    else:
+        model, effort = _global_defaults()
+        if model or effort:
+            source = "settings"
     # `recorded` is empty for a chat with no id: there is nothing to have
     # recorded about a conversation that does not exist yet, and the caller's
     # own seed is what speaks for that window.
     return {"model": model, "effort": effort, "source": source,
-            "recorded": {"model": "", "effort": ""}}
+            "backend": backend, "recorded": {"model": "", "effort": ""}}
 
 
 # How many OUTSIDE sessions the list carries, and how far into one of them the
@@ -7572,31 +8320,39 @@ def _cli_sessions(file: str) -> list:
     # One scan for the whole list — see `_live_sessions` for why this is not
     # `_live_run` asked once per row.
     live = _live_sessions(file) | _registry_running(_workdir(file))
-    proj = os.path.join(PROJECTS, _munge(workdir))
-    try:
-        names = os.listdir(proj)
-    except OSError:
-        return []      # no store, or no sessions ever in this folder
+    # EVERY BACKEND'S BUCKET for this cwd (`_transcript_roots`), one merged
+    # list: the user has one memory of chats about this folder whichever
+    # agent held them, and the row says which (`backend`, D18 names the agent
+    # on every surface). Same bucket name under each root (the munge rule is
+    # shared); ids cannot collide across roots (uuids either way — fused
+    # mints Claude's, Copilot its own, D2).
     found = []
-    for name in names:
-        if not name.endswith(".jsonl"):
-            continue
-        sid = name[:-len(".jsonl")]
-        # `_bad_id` because the id becomes a path again on resume (and a URL
-        # param on the way there); a filename we cannot round-trip is not
-        # offered at all.
-        if _bad_id(sid):
-            continue
+    for backend, root in _transcript_roots():
+        proj = os.path.join(root, _munge(workdir))
         try:
-            found.append((os.path.getmtime(os.path.join(proj, name)), sid))
+            names = os.listdir(proj)
         except OSError:
-            continue
+            continue      # no store, or no sessions ever in this folder
+        for name in names:
+            if not name.endswith(".jsonl"):
+                continue
+            sid = name[:-len(".jsonl")]
+            # `_bad_id` because the id becomes a path again on resume (and a
+            # URL param on the way there); a filename we cannot round-trip is
+            # not offered at all.
+            if _bad_id(sid):
+                continue
+            path = os.path.join(proj, name)
+            try:
+                found.append((os.path.getmtime(path), sid, backend, path))
+            except OSError:
+                continue
     found.sort(reverse=True)
     out = []
-    for mtime, sid in found:
+    for mtime, sid, backend, path in found:
         if len(out) >= _CLI_SESSION_LIMIT:
             break
-        preview, pane = _cli_preview(os.path.join(proj, sid + ".jsonl"), workdir)
+        preview, pane = _cli_preview(path, workdir)
         if not preview:
             continue
         # Compared as an abspath, not as text: the block records the pane's own
@@ -7608,7 +8364,8 @@ def _cli_sessions(file: str) -> list:
         # last activity, so it lands on `last_used` and `created_at` borrows it.
         out.append({"id": sid, "preview": preview,
                     "created_at": mtime, "last_used": mtime,
-                    "cwd": workdir, "pane": pane, "running": sid in live})
+                    "cwd": workdir, "pane": pane, "running": sid in live,
+                    "backend": backend})
     return out
 
 
@@ -7640,7 +8397,8 @@ def _sessions(file: str) -> dict:
     return {"sessions": sessions}
 
 
-def _snapshots(file: str, enrich: bool, deltas: bool) -> dict:
+def _snapshots(file: str, enrich: bool, deltas: bool,
+               session_id: str = "") -> dict:
     """Claude Code's file-history checkpoints for `file` (SPEC §34).
 
     A pass-through to `shared/file_history.timeline`, which is the ONE reader
@@ -7685,6 +8443,8 @@ def _snapshots(file: str, enrich: bool, deltas: bool) -> dict:
     bad = _snap_target(file)
     if bad:
         return {"error": bad}
+    if _snapshot_backend(file, session_id) == "copilot":
+        return _empty_timeline(file, enrich)
     try:
         import file_history
     except ImportError:
@@ -7694,6 +8454,28 @@ def _snapshots(file: str, enrich: bool, deltas: bool) -> dict:
         return file_history.timeline(file, enrich=enrich, deltas=deltas)
     except Exception as exc:  # noqa: BLE001 — a state to render, never an overlay
         return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def _snapshot_backend(file: str, session_id: str) -> str:
+    """The backend the snapshots panel is asking about: the named session's,
+    or Claude when none is named (the store is Claude Code's own)."""
+    if not session_id or _bad_id(session_id):
+        return DEFAULT_BACKEND
+    return _backend_for_session(session_id, _workdir(os.path.abspath(file)),
+                                hint=_session_backend(session_id))
+
+
+def _empty_timeline(file: str, enrich: bool) -> dict:
+    """`file_history.timeline`'s shape with no versions — what a Copilot
+    session answers (§7 caps.snapshots: it writes no checkpoint store the
+    panel can read). The same keys, so the page's one renderer draws its own
+    "no recorded versions" state rather than a second empty-state branch."""
+    return {"file": os.path.abspath(file), "hash": "", "available": False,
+            "writable": False, "writable_reason": "", "current": None,
+            "versions": [], "position": None, "revert": None, "offer": False,
+            "offer_reason": "", "at_earliest": True, "unconfirmed": False,
+            "blocking": [], "enriched": bool(enrich), "unique_current": False,
+            "skipped": [], "note": "Copilot sessions keep no file snapshots."}
 
 
 # ------------------------------------------------- going back to a snapshot
@@ -7716,7 +8498,7 @@ def _snap_target(file: str) -> str:
     return ""
 
 
-def _snapshot_plan(file: str, version_id: str) -> dict:
+def _snapshot_plan(file: str, version_id: str, session_id: str = "") -> dict:
     """What going back to `version_id` would do — what the expanded row shows.
 
     `version_id` is REQUIRED here, unlike annotate's equivalent. This panel is a
@@ -7729,6 +8511,8 @@ def _snapshot_plan(file: str, version_id: str) -> dict:
     bad = _snap_target(file)
     if bad:
         return {"error": bad}
+    if _snapshot_backend(file, session_id) == "copilot":
+        return {"ok": False, "error": "unsupported"}
     if not isinstance(version_id, str) or not version_id:
         return {"error": "snapshot_plan needs the version_id of the row that "
                          "was clicked — it never picks a snapshot itself"}
@@ -7743,7 +8527,8 @@ def _snapshot_plan(file: str, version_id: str) -> dict:
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
-def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
+def _snapshot_revert(file: str, version_id: str, confirm_unique: bool,
+                     session_id: str = "") -> dict:
     """Put a snapshot back on disk — applying a plan the caller has already seen.
 
     Two refusals, both structural rather than cosmetic:
@@ -7762,6 +8547,8 @@ def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
     bad = _snap_target(file)
     if bad:
         return {"error": bad}
+    if _snapshot_backend(file, session_id) == "copilot":
+        return {"ok": False, "error": "unsupported"}
     if not isinstance(version_id, str) or not version_id:
         return {"error": "snapshot_revert needs the version_id from a "
                          "snapshot_plan call — it never picks a snapshot itself"}
@@ -7923,6 +8710,69 @@ def _row_ts(row: dict) -> float | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=datetime.timezone.utc)
     return parsed.timestamp()
+
+
+# THE CONTEXT WINDOW'S SIZE, for a Copilot run. Claude's page derives it from
+# the model id; Copilot's `auto` names no model, so its host reports the size
+# ACP's `usage_update` carries as `context_window` — on the `system/init` row
+# when known by then, else on a `system/status` row the moment it is. Kept in
+# the run dir once seen, because `_poll` reads only the rows past its cursor
+# and the row that said it is usually turns behind.
+_CONTEXT_WINDOW_FILE = "context_window"
+
+
+def _row_context_window(row) -> int:
+    """The `context_window` an init/status row carries, 0 when none."""
+    if not isinstance(row, dict) or row.get("type") != "system" \
+            or row.get("parent_tool_use_id") \
+            or row.get("subtype") not in ("init", "status"):
+        return 0
+    w = row.get("context_window")
+    if isinstance(w, bool) or not isinstance(w, int) or w <= 0:
+        return 0
+    return w
+
+
+def _run_context_window(run_dir: str, rows: list | None = None) -> int:
+    """The newest window size this run's host reported, 0 when none yet.
+
+    `rows` is `_poll`'s window of `out.jsonl` (everything past its cursor).
+    Every row before the cursor was in some earlier poll's window, and that
+    poll recorded what it saw here — so the record plus this window is the
+    whole file without rereading it. A newer size in `rows` replaces the
+    record. `rows=None` (history, which has no window of its own) answers
+    from the record, and scans the file once when there is none (a run no
+    poll ever watched — a scheduled task opened afterwards)."""
+    path = os.path.join(run_dir, _CONTEXT_WINDOW_FILE)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            kept = int(fh.read().strip() or 0)
+    except (OSError, ValueError):
+        kept = None
+    if rows is None:
+        if kept is not None:
+            return kept
+        rows = []
+        try:
+            with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+                for line in fh:
+                    if b'"context_window"' in line:
+                        try:
+                            rows.append(json.loads(line.decode("utf-8", "replace")))
+                        except ValueError:
+                            continue
+        except OSError:
+            return 0
+    newest = 0
+    for row in rows:
+        newest = _row_context_window(row) or newest
+    if newest and newest != kept:
+        try:
+            with _private_open(path) as fh:
+                fh.write(str(newest))
+        except OSError:
+            pass   # unrecorded costs a later poll the size, never this one
+    return newest or kept or 0
 
 
 # THE TEXTS THE CLI WRITES INSTEAD OF A REPLY (`ERROR_TEXTS`, spec §9). A row
@@ -8166,16 +9016,25 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     same way `uuid` is: the legacy template reads neither and is unaffected."""
     if _bad_id(session_id):
         return {"turns": [], "transcript": _transcript_stat(""), "context": None,
-                "tasks": [], "tasks_run": ""}
+                "tasks": [], "tasks_run": "", "backend": DEFAULT_BACKEND}
     file = os.path.abspath(file)
     # `transcript` (the Tasks recap worker) names the file outright, for a task
     # whose folder is gone and so cannot be resolved through it.
     path = transcript or _session_transcript_path(_workdir(file), session_id)
+    # WHOSE conversation this is (D18 names the agent on every surface): the
+    # root the transcript sits under is the authority (a Claude session older
+    # than the field sits under Claude's); before the first row lands, the
+    # record `_start` wrote. NEITHER is "" — no evidence, not a guess: the page
+    # holds the agent its opener named (the task row) until the wire names
+    # one, and a guessed "claude" here would overwrite a Copilot row's.
+    backend = (_transcript_backend(path) if os.path.isfile(path)
+               else _session_backend(session_id))
     # SPEC T-1: the task registry of this session's LAST run, while its run
     # dir is still on disk — a reload shows the tasks panel it left.
     # (Skipped for a `transcript` read: `file` is then not a project folder.)
-    task_registry, host_run_id = (({}, "") if transcript
-                                  else _session_task_registry(file, session_id))
+    task_registry, host_run_id, last_run = (
+        ({}, "", "") if transcript
+        else _session_task_registry(file, session_id))
     tasks = _task_list(task_registry)
     # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
     # is the watermark the page follows the conversation by — it re-renders when
@@ -8192,7 +9051,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         # A run can be live before its transcript exists (the CLI writes the
         # first row after `system/init`), and its card must not wait on that.
         return {"turns": [], "transcript": stat, "context": None,
-                "tasks": tasks, "tasks_run": host_run_id,
+                "tasks": tasks, "tasks_run": host_run_id, "backend": backend,
                 **_history_live(file, session_id, inbox=inbox)}
 
     turns = []
@@ -8279,6 +9138,15 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
             meta = row.get("compactMetadata")
             compacted = meta if isinstance(meta, dict) else {}
+        if (backend == "copilot" and row.get("type") == "system"
+                and row.get("subtype") == "task_notification"):
+            # The LIVE notice shape, persisted: the Copilot host writes its
+            # first-turn "Handled by GitHub Copilot · model …" row (D18) in
+            # the same `system/task_notification` form `out.jsonl` carries,
+            # and `_segments_from_rows` already draws that as a notice chip.
+            # Onto the stretch, so it lands on the reply it precedes. Copilot
+            # transcripts only: Claude's history reads exactly as it did.
+            stretch.append(row)
         if role == "assistant" and isinstance(msg, dict):
             # Read BEFORE any of the branches below, so a reply this walk drops
             # (an API failure, a row with no prose and no tools) still reports
@@ -8356,7 +9224,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                             # `_poll`'s `error` (see `_account_error`), so a
                             # usage limit reads with the same help line
                             # whether it is live or restored.
-                            "text": _account_error(message)}
+                            "text": _account_error(message, backend)}
                 # The transcript's own copy of the plan window (`quotaLimits`,
                 # camelCase, only on the failed row) — so a restored limit
                 # card can still say when the window resets.
@@ -8417,12 +9285,18 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                        "model": (context or {}).get("model", ""),
                        "window": (context or {}).get("window"),
                        "compacted": True}
+    # A Copilot reading carries the window size its host reported (`_poll`'s
+    # `context.window`), off the session's newest run dir while it is on disk.
+    if backend == "copilot" and last_run and isinstance(context, dict):
+        window = _run_context_window(last_run)
+        if window:
+            context = {**context, "window": window}
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
     return {"turns": turns, "transcript": stat, "context": context,
             "tasks": tasks, "tasks_run": host_run_id,
-            "worktree_hint": worktree_hint,
+            "worktree_hint": worktree_hint, "backend": backend,
             **_history_live(file, session_id, inbox=inbox)}
 
 
@@ -8603,10 +9477,12 @@ def _attach_subagent_children(segments: list, subagents,
 
 
 def _session_task_registry(file: str, session_id: str,
-                           limit: int | None = _LIVE_SCAN_LIMIT) -> tuple[dict, str]:
-    """`(registry, host_run_id)`: the task registry (`bg_tasks.json`) of the
-    newest run dir belonging to this chat's session, live or not — {} when none
-    is left — and that run's id when its HOST is still alive, else "".
+                           limit: int | None = _LIVE_SCAN_LIMIT) -> tuple[dict, str, str]:
+    """`(registry, host_run_id, run_dir)`: the task registry (`bg_tasks.json`)
+    of the newest run dir belonging to this chat's session, live or not — {}
+    when none is left — that run's id when its HOST is still alive, else "",
+    and the run dir itself ("" when none), which history also reads a Copilot
+    run's window size from (`_run_context_window`).
 
     HOST RUN ID: `_live_run` needs an OPEN turn, so once the main turn ended
     while a background subagent still runs, history has no `live_run` and the
@@ -8619,12 +9495,12 @@ def _session_task_registry(file: str, session_id: str,
     such records come back with status `unknown` (and `ended_at` null) rather
     than a confident `running` the panel would tick a live clock for."""
     if not session_id or _bad_id(session_id):
-        return {}, ""
+        return {}, "", ""
     file = os.path.abspath(file)
     try:
         names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
-        return {}, ""
+        return {}, "", ""
     if limit is not None:
         names = names[:limit]
     for name in names:
@@ -8648,8 +9524,8 @@ def _session_task_registry(file: str, session_id: str,
                 if _task_active(rec):
                     rec["status"] = "unknown"
                     rec["ended_at"] = None
-        return registry, (name if _host_alive(run_dir) else "")
-    return {}, ""
+        return registry, (name if _host_alive(run_dir) else ""), run_dir
+    return {}, "", ""
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
@@ -9213,7 +10089,10 @@ def main(action: str = "start", file: str = "", message: str = "",
          answers: str = "", note: str = "", custom: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
-         terminal_hint: str = "", task_id: str = "") -> dict:
+         terminal_hint: str = "", task_id: str = "", backend: str = "") -> dict:
+    # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
+    # session already names one (`_start` resumes, `send`, `history`), which
+    # answer with the session's own under the same key.
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -9230,7 +10109,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _start(file, message, session_id, model, effort, permission_mode,
                       has_pane=None if has_pane == "" else has_pane != "0",
                       extra_read_dirs=_attach_dirs(read_dirs),
-                      draft_key=draft_key, terminal_hint=terminal_hint)
+                      draft_key=draft_key, terminal_hint=terminal_hint,
+                      backend=backend)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
@@ -9272,7 +10152,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         # `session_id` is optional and already bound above: with one this
         # answers for THAT conversation, without one for the folder — see
         # `_defaults`. Same shape as `live_run` two branches up.
-        return _defaults(file, session_id)
+        return _defaults(file, session_id, backend)
     if action == "history":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -9287,16 +10167,19 @@ def main(action: str = "start", file: str = "", message: str = "",
         # get, and only "0"/"false" decline. The page sends "0" and pays for no
         # difflib; the two knobs read in opposite directions because their honest
         # defaults are opposite.
+        # `session_id` is optional on all three snapshot actions: with one, a
+        # Copilot session answers the empty timeline / `unsupported` (§7).
         return _snapshots(file, enrich not in ("", "0", "false"),
-                          deltas not in ("0", "false"))
+                          deltas not in ("0", "false"), session_id)
     if action == "snapshot_plan":
-        return _snapshot_plan(file, version_id)
+        return _snapshot_plan(file, version_id, session_id)
     if action == "snapshot_revert":
         # `confirm_unique` arrives as a STRING like every other param, and only
         # a positive one counts: this is the token that stands between a click
         # and destroying the only copy of what is on disk.
         return _snapshot_revert(file, version_id,
-                                confirm_unique not in ("", "0", "false"))
+                                confirm_unique not in ("", "0", "false"),
+                                session_id)
     if action == "shots_dir":
         # Asked for by the page BEFORE it composes a message, because that is
         # when it has crops to upload — see SHOTS for why this is not a run dir.
@@ -9309,7 +10192,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         # inside SHOTS before touching it.
         return _image_to_png(path)
     if action == "terminal_command":
-        return _terminal_command(file, session_id)
+        return _terminal_command(file, session_id, backend)
     if action == "cancel":
         result = _cancel(run_id, queued=queued == "1")
         # The session the stop was for, so the router can tell the Tasks page
@@ -9323,8 +10206,11 @@ def main(action: str = "start", file: str = "", message: str = "",
                     meta = json.load(fh)
             except (OSError, ValueError):
                 meta = {}
-            result["session_id"] = _run_own_session(
-                run_dir, meta if isinstance(meta, dict) else {})
+            meta = meta if isinstance(meta, dict) else {}
+            result["session_id"] = _run_own_session(run_dir, meta)
+            if result["session_id"]:
+                # Named here too, possibly before any poll: same rule.
+                _record_copilot_session(run_dir, meta, result["session_id"])
         return result
     if action == "live_host":
         # "Is there a session I can hand a follow-up to?" — asked BEFORE
@@ -9349,7 +10235,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         # The composer's slash-command menu (SPEC C-2).
         if not file:
             return {"error": "missing target file (no _file param?)"}
-        return _commands(file)
+        # Per agent: the session's own when one is named, else `backend`.
+        return _commands(file, backend, session_id)
     if action == "task_output":
         # A shell/monitor task's output, asked of the live CLI (SPEC T-3).
         return _task_output(run_id, task_id)

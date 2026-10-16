@@ -829,6 +829,19 @@ def test_relay_uses_the_default_model_pref_when_the_call_names_none(monkeypatch)
     assert _set_models(proc)[0]["model"] == _server_ai._AI_SHORT_MODEL_IDS["opus"]
 
 
+def test_a_copilot_default_agent_never_reaches_the_relay(monkeypatch):
+    """Invariant 12 (docs/COPILOT_BACKEND.md): the default-model pref is a
+    Claude short name and only speaks while Claude is the default agent. With
+    Copilot the default, the relay — Claude-only — takes its own haiku."""
+    monkeypatch.setattr(_server_ai, "default_model", lambda: "opus")
+    # The REGISTRY's default (enabled, re-pointed), not the stored pref.
+    monkeypatch.setattr(_server_ai.agent_registry, "default_id", lambda: "copilot")
+    fake = _cli_ok(monkeypatch, turns=[_result_lines()])
+    _relay({"prompt": "one"})
+    proc, = fake.procs
+    assert _set_models(proc)[0]["model"] == _server_ai._AI_DEFAULT_MODEL
+
+
 def test_relay_falls_back_to_the_hardcoded_default_while_the_pref_is_unset(monkeypatch):
     monkeypatch.setattr(_server_ai, "default_model", lambda: "")
     fake = _cli_ok(monkeypatch, turns=[_result_lines()])

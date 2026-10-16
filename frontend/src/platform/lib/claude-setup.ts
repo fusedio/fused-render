@@ -9,15 +9,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  cancelClaudeLogin,
-  getClaudeHealth,
-  getClaudeInstall,
-  getClaudeLogin,
+  cancelAgentLogin,
+  getAgentHealth,
+  getAgentInstall,
+  getAgentLogin,
   linkClaudePath,
-  refreshClaudeHealth,
+  refreshAgentHealth,
   runClaudeDoctor,
-  startClaudeInstall,
-  startClaudeLogin,
+  startAgentInstall,
+  startAgentLogin,
   type ClaudeDoctor,
   type ClaudeHealth,
   type ClaudeInstallStatus,
@@ -36,7 +36,10 @@ import { useTerminalDockOpen } from "./terminalDockStore";
 // still faced a card telling them to sign in. The server holds the real cache
 // (on disk, and age-bounded), so re-asking on every mount is a small GET —
 // there was never anything to save here.
-let cached: ClaudeHealth | null = null;
+// PER AGENT since the Copilot twin arrived (docs/COPILOT_BACKEND.md D10): the
+// Preferences page mounts one machine per switch, and one slot would hand the
+// Copilot row Claude's snapshot for its first frame.
+const cached = new Map<string, ClaudeHealth>();
 
 //: How long after a check a window-focus event is taken as "they may have gone
 //: and fixed it". Focus/blur flap in bursts (a click through the window, a
@@ -86,8 +89,18 @@ export interface ClaudeSetup {
  *   around.
  */
 export function useClaudeSetup(watching: boolean): ClaudeSetup {
-  const [health, setHealth] = useState<ClaudeHealth | null>(cached);
-  const [loaded, setLoaded] = useState(cached !== null);
+  return useAgentSetup("claude", watching);
+}
+
+/**
+ * The same machine for EITHER agent — `/api/claude/*` or `/api/copilot/*`,
+ * which answer the same bodies (D10). `doctor` and `link-path` are Claude-only
+ * repairs; `agentIssues` never offers them for Copilot, so they are not
+ * generalised here.
+ */
+export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
+  const [health, setHealth] = useState<ClaudeHealth | null>(cached.get(backend) ?? null);
+  const [loaded, setLoaded] = useState(cached.has(backend));
   const [busy, setBusy] = useState(false);
   const lastCheck = useRef(0);
   // The install/update record, polled only while one is running. Null means
@@ -112,9 +125,9 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
   const load = useCallback((force: boolean) => {
     lastCheck.current = Date.now();
     if (force) setBusy(true);
-    (force ? refreshClaudeHealth() : getClaudeHealth()).then(
+    (force ? refreshAgentHealth(backend) : getAgentHealth(backend)).then(
       (h) => {
-        cached = h;
+        cached.set(backend, h);
         setHealth(h);
         setLoaded(true);
         setBusy(false);
@@ -128,7 +141,7 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
         setBusy(false);
       },
     );
-  }, []);
+  }, [backend]);
 
   useEffect(() => {
     load(false);
@@ -142,7 +155,7 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
   // and outlives any component. ONLY A RUNNING RECORD IS ADOPTED: a finished
   // one from earlier belongs to a problem that is already gone.
   useEffect(() => {
-    getClaudeInstall().then(
+    getAgentInstall(backend).then(
       (rec) => {
         if (rec.state === "running") setInstall(rec);
       },
@@ -150,13 +163,13 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
         /* A recovery, not a prerequisite. */
       },
     );
-  }, []);
+  }, [backend]);
 
   // The same recovery for a sign-in: the browser window is in front of the
   // user RIGHT NOW, and a remount that showed "Sign in" again would invite a
   // second press that can only earn a 409.
   useEffect(() => {
-    getClaudeLogin().then(
+    getAgentLogin(backend).then(
       (rec) => {
         if (rec.in_flight) setLogin(rec);
       },
@@ -164,14 +177,14 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
         /* A recovery, not a prerequisite. */
       },
     );
-  }, []);
+  }, [backend]);
 
   // POLL ONLY WHILE SOMETHING IS RUNNING.
   useEffect(() => {
     if (install?.state !== "running") return;
     let alive = true;
     const timer = window.setInterval(() => {
-      getClaudeInstall().then(
+      getAgentInstall(backend).then(
         (next) => {
           if (!alive) return;
           setInstall(next);
@@ -188,7 +201,7 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [install?.state, load]);
+  }, [install?.state, load, backend]);
 
   // POLL ONLY WHILE A SIGN-IN IS OPEN. The CLI writes a credential this app
   // never sees, so the only authority on whether it worked is `claude auth
@@ -197,7 +210,7 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
     if (!login?.in_flight) return;
     let alive = true;
     const timer = window.setInterval(() => {
-      getClaudeLogin().then(
+      getAgentLogin(backend).then(
         (next) => {
           if (!alive) return;
           setLogin(next);
@@ -212,7 +225,7 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
       alive = false;
       window.clearInterval(timer);
     };
-  }, [login?.in_flight, load]);
+  }, [login?.in_flight, load, backend]);
 
   const act = useCallback((issue: ClaudeIssue) => {
     if (!issue.action) return;
@@ -254,7 +267,7 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
       return;
     }
     if (issue.action.kind === "login") {
-      startClaudeLogin().then(
+      startAgentLogin(backend).then(
         (rec) => {
           done();
           setLogin(rec);
@@ -267,7 +280,7 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
       );
       return;
     }
-    startClaudeInstall(issue.action.kind).then(
+    startAgentInstall(backend, issue.action.kind).then(
       (rec) => {
         done();
         setInstall(rec);
@@ -279,17 +292,17 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
         setActionError(String(e?.message || e));
       },
     );
-  }, []);
+  }, [backend]);
 
   // Calling off a sign-in. The server settles the record before answering, so
   // what comes back is already not in flight and the poll stops on its own.
   const cancelLogin = useCallback(() => {
     setActionError(null);
-    cancelClaudeLogin().then(
+    cancelAgentLogin(backend).then(
       (rec) => setLogin(rec),
       () => setLogin(null),
     );
-  }, []);
+  }, [backend]);
 
   useEffect(() => {
     if (!watching) return;
