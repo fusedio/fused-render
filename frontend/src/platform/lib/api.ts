@@ -1329,6 +1329,15 @@ export interface EnginePrefs {
   fused_available: boolean;
 }
 
+/** The contribution loop's phase switches as stored (`Prefs.contrib`). */
+export interface ContribPrefs {
+  sources: boolean;
+  changes: boolean;
+  inbox: boolean;
+  loop: boolean;
+  remix: boolean;
+}
+
 export interface Prefs {
   engine: EnginePrefs;
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
@@ -1366,6 +1375,12 @@ export interface Prefs {
   // /api/share/github. OPTIONAL: an older server answers without it, and the
   // reader (github-link-flag.ts) treats absence as off.
   github_link?: { enabled: boolean };
+  // The GitHub contribution loop's five phase switches, RAW as set
+  // (shell/prefs.py `contrib_<phase>_enabled`, all opt-in, default off —
+  // docs/CONTRIB_LOOP.md §1). Readers want the EFFECTIVE values, with the
+  // prerequisites applied: contrib-flags.ts. OPTIONAL: an older server
+  // answers without it, and absence means every phase off.
+  contrib?: ContribPrefs;
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1736,6 +1751,11 @@ export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { github_link_enabled: enabled });
+}
+
+/** One contribution-loop phase switch (`contrib_<key>_enabled`). */
+export function putContribFlag(key: keyof ContribPrefs, enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { [`contrib_${key}_enabled`]: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal
@@ -2574,6 +2594,20 @@ export interface AppInfo {
   // dock/menubar pin of a `.fused` and for older backends. Undefined for
   // every folder-shaped app.
   kind?: "appfile";
+  // Where this copy came from and how many proposals wait on it — the card's
+  // quiet source line and inbox pill (server/routers/apps.py, from the
+  // contribution loop's cached records — docs/CONTRIB_LOOP.md §12.2). `label`
+  // is the product sentence ("GitHub link · follows alice/x", "Remix of
+  // alice/x", "Your app"); `kind` says which, so a card can stay quiet for an
+  // app of the reader's own. Undefined while the loop is off, on rows it has
+  // no record for, and on older backends.
+  contrib?: AppCardContrib;
+}
+
+export interface AppCardContrib {
+  label: string;
+  inbox: number;
+  kind?: "own" | "github" | "remix";
 }
 
 // The uninstall policy class the server assigned (routers/app_uninstall.kind_for).
@@ -2911,6 +2945,12 @@ export interface AppCheck {
    *  git repository this server can read. Used for "Open in git" — the
    *  in-app git mode opens scoped to this root, not the app subfolder. */
   gitRoot?: string | null;
+  /** `git` row only: written by the GitHub contribution engine for a copy it
+   *  syncs (app_doctor._contrib_git_row). Its one failure is a decision the
+   *  app page is waiting for (an overlap with the author's latest, or a
+   *  sign-in), so the row offers "Open app page" — never Fix with Claude,
+   *  never Open in git. */
+  contrib?: boolean;
 }
 
 export interface AppDoctorReport {

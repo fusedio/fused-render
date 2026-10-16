@@ -411,8 +411,30 @@ def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     return branch, default_branch, None
 
 
+def _follows_author(root):
+    """Whether the contribution engine keeps `root` on its author's latest
+    (a GitHub-link copy, its flag on) — such a root is never this module's to
+    update or switch: the plain `--ff-only` pull would fail against the
+    user's own commits on top, or move the branch behind the engine's back.
+    False on any error (today's behaviour)."""
+    try:
+        from fused_render.contrib import engine as _contrib
+        return _contrib.follows_author(root)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_FOLLOWS_REFUSAL = ("Fused keeps this app up to date with its author's latest "
+                    "version by itself — there is nothing to do here.")
+
+
 def _record(result):
     if result is not None:
+        if _follows_author(result["root"]):
+            # No Update/Switch card (known_repos) for a copy the engine keeps.
+            with _state_lock:
+                _state.pop(result["root"], None)
+            return
         with _state_lock:
             _state[result["root"]] = result
 
@@ -492,8 +514,38 @@ def _mutation_slot():
         yield acquired
     finally:
         if acquired:
-            _check_slot.release()
+            _release_check_slot()
             _drain_pending()
+
+
+# The contrib engine gives a held slot up mid-sync and takes it back with a
+# bound (contrib/replay.py `slot_released`). When that re-acquire times out,
+# this thread no longer holds the lock — someone else does — so its holder's
+# `finally` must not release it. Per thread, set only by that path.
+_slot_lost = threading.local()
+
+
+def _mark_slot_lost():
+    _slot_lost.lost = True
+
+
+def _engine_owns(root):
+    """Whether the contrib engine syncs `root` (its `owns`, a store read).
+    False on any error — today's behaviour."""
+    try:
+        from fused_render.contrib import engine as _contrib
+        return _contrib.owns(root)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _release_check_slot():
+    """Release the slot this thread took — unless the engine already lost
+    it while this thread held it (`_mark_slot_lost`)."""
+    if getattr(_slot_lost, "lost", False):
+        _slot_lost.lost = False
+        return
+    _check_slot.release()
 
 
 _BUSY_REFUSAL = (
@@ -507,6 +559,8 @@ def update_repo(root):
     (should not happen for the default branch under normal use, but the tree
     may have moved between the check and the click) is reported in git's own
     words, exactly like ops.py's `_pull`."""
+    if _follows_author(root):
+        return _refuse("contrib", _FOLLOWS_REFUSAL)
     with _mutation_slot() as slot:
         if not slot:
             return _refuse("busy", _BUSY_REFUSAL)
@@ -619,6 +673,8 @@ def switch_repo(root):
     raw git text, and refused (never silently taking some other action on
     the user's behalf; the fix is a terminal, the same as every other
     refusal this module surfaces)."""
+    if _follows_author(root):
+        return _refuse("contrib", _FOLLOWS_REFUSAL)
     with _mutation_slot() as slot:
         if not slot:
             return _refuse("busy", _BUSY_REFUSAL)
@@ -826,7 +882,45 @@ def _sync_locked(root, *, action, push):
     recorded failure. A `state` key (a `check_repo`-shaped dict) is included
     whenever the fetch succeeded, so the caller can refresh `_state`.
 
-    Never raises for a git problem; the background callers wrap it anyway."""
+    Never raises for a git problem; the background callers wrap it anyway.
+
+    THE CONTRIB INTERCEPT (docs/CONTRIB_LOOP.md §6.5): a root the
+    contribution engine owns — a GitHub-link copy, or an own app with a
+    GitHub repo, each only with its feature flag on — is synced by
+    `contrib.engine.sync` instead (same return shape, slot still held, never
+    a standing failure). With every contrib flag off `owns` is False and the
+    body below runs exactly as before. Only a root `owns` actually CLAIMED
+    is skipped on an engine error (never fallen through to a plain push of a
+    copy the engine claimed); an error deciding ownership at all (an import,
+    an unreadable store) is logged and the root gets today's plain sync."""
+    _contrib = None
+    owned = False
+    try:
+        from fused_render.contrib import engine as _contrib
+        owned = _contrib.owns(root)
+    except Exception:  # noqa: BLE001 — unknown ownership reads as today's sync
+        logger.exception("contrib ownership check failed for %s", root)
+    if owned:
+        try:
+            return _contrib.sync(root, action=action, push=push)
+        except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
+            logger.exception("contrib sync failed for %s", root)
+            return {"ok": True, "status": "skipped", "why": "contrib-error"}
+    if _contrib is not None:
+        try:
+            # The loop switched off after it marked `.fused/` skip-worktree:
+            # undo that once, so the plain sync below sees today's tree. Its
+            # own guard: a failure here must never cost a root the engine does
+            # not own its plain sync.
+            _contrib.settle_when_off(root)
+        except Exception:  # noqa: BLE001
+            logger.exception("contrib un-protect failed for %s", root)
+    return _sync_plain(root, action=action, push=push)
+
+
+def _sync_plain(root, *, action, push):
+    """`_sync_locked`'s body for a root the contrib engine does not own —
+    the auto-sync rules of the section comment above, unchanged."""
     if not os.path.isdir(root):
         return _skipped("unavailable")
     if not _ok(_run(root, "remote", "get-url", "origin")):
@@ -1054,16 +1148,30 @@ def _background_check(path, runner=None):
                                       push=False)
                 if result.get("state"):
                     _record(result["state"])
-                elif result["status"] == "skipped":
+                elif result["status"] == "skipped" and not _engine_owns(root):
                     # No remote / other branch / unreadable: the plain check
-                    # still feeds the Switch card and App Doctor.
+                    # still feeds the Switch card and App Doctor. Never for
+                    # a root the contrib engine owns, whatever it skipped
+                    # for (busy, integrating, mid-operation): a plain fetch
+                    # there moves refs the engine reads behind its back.
                     _record(check_repo(root))
+            elif _engine_owns(root):
+                # Auto-sync off: the engine only fetches (the author's latest
+                # by the record's URL, or the own copy's origin) for the
+                # page's status — no tree move, and no Update card for a
+                # GitHub-link copy (`_record`).
+                result = _sync_locked(root, action="Check on app open", push=False)
+                if result.get("state"):
+                    _record(result["state"])
+                if _follows_author(root):
+                    with _state_lock:
+                        _state.pop(root, None)  # one recorded before the loop took over
             else:
                 _record(check_repo(root))
     except Exception:  # noqa: BLE001 — best-effort housekeeping
         logger.exception("git-upstream check failed for %s", path)
     finally:
-        _check_slot.release()
+        _release_check_slot()
         _drain_pending(runner)
 
 
@@ -1152,7 +1260,10 @@ def force_check(path, *, _runner=None):
         try:
             with _checked_lock:
                 _checked[root] = time.time()
-            _record(check_repo(root))
+            if not _engine_owns(root):
+                # An engine-owned root is fetched by the engine only (its
+                # Doctor row reads the engine's state, not this cache).
+                _record(check_repo(root))
         except Exception:  # noqa: BLE001 — best-effort, exactly like note_app_opened
             logger.exception("git-upstream forced check failed for %s", path)
         finally:
@@ -1180,8 +1291,11 @@ def known_repos():
         # With auto-sync on, the "Update" card is replaced by the automatic
         # fast-forward (a failure of it is a sync failure notification), so
         # only the off-default Switch rows remain.
-        return [dict(v) for v in _state.values()
+        rows = [dict(v) for v in _state.values()
                 if v.get("behind", 0) > 0 and not (auto and v.get("on_default"))]
+    # A state recorded before the contribution loop took the copy over:
+    # still never a card (`_record` stops new ones).
+    return [r for r in rows if not _follows_author(r["root"])]
 
 
 def repo_state_for(root):

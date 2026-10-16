@@ -96,10 +96,10 @@ def _git(*args: str, cwd: str | None = None, timeout: int = TIMEOUT_S) -> subpro
     from fused_render.shell import git_tools
 
     env = _env()
-    cmd = [git_tools.git_bin()] + (["-C", cwd] if cwd else []) + list(args)
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, env=env,
-                              timeout=timeout, close_fds=False)
+        return subprocess.run([git_tools.git_bin(), *(["-C", cwd] if cwd else []), *args],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=env, timeout=timeout, close_fds=False)
     except FileNotFoundError:
         raise GitInstallError("git is required to install from a GitHub link; "
                               "install it from the Tools step in onboarding")
@@ -395,6 +395,12 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
                               f"({target['other_name']}); rename or uninstall it first")
     if state == appfile.STATE_LOCAL:
         if target.get("found_by") == "git":
+            if _contrib_sources():
+                # The contribution loop keeps the copy on the author's latest
+                # with the user's changes on top by itself; there is nothing
+                # for the user to run, only something to look at.
+                raise GitInstallError("You already have this app with your own changes. "
+                                      "Open it to see them.")
             raise GitInstallError(f"{target['path']} has changes of its own; update it with git "
                                   "(git pull)")
         raise GitInstallError(f"{target['path']} was edited since it was installed from a file; "
@@ -405,10 +411,21 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
         raise appfile.InstallNeedsConfirm(target)
 
     if state == appfile.STATE_UPDATE:
-        for args in (("fetch", "-q", "origin"), ("merge", "-q", "--ff-only", src["commit"])):
-            r = _git(*args, cwd=dest)
-            if r.returncode != 0:
-                raise GitInstallError(f"git {args[0]} failed: {_err(r)}")
+        if _contrib_sources():
+            # With the contribution loop on, this update is one more writer
+            # of a repo the engine also moves: it holds the same slot (so it
+            # never meets a land, or shares `fused_aside`'s scratch dir with
+            # one), and a committed `.fused/` the loop marked skip-worktree
+            # needs fused's local copies set aside to let the update through.
+            from fused_render.contrib import replay
+
+            with replay.slot() as held:
+                if not held:
+                    raise GitInstallError("this app is busy updating; open the link again in a moment")
+                _update_clone(dest, src, aside=lambda: replay.fused_aside(
+                    os.path.realpath(dest), src["commit"]))
+        else:
+            _update_clone(dest, src, aside=None)
         action = "updated"
     else:
         staged = staged_clone(src)
@@ -424,8 +441,60 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
     app_git._ensure_excludes(dest)
     app_fused_dir.ensure(dest)
     appfile.write_stamp(dest, manifest, fused_path, git=src)
+    _record_install(dest, src["url"])
     entry = os.path.join(dest, *manifest["entry"].split("/"))
     return {"action": action, "entry": entry.replace(os.sep, "/"), "pruned": [], "adopted_state": None}
+
+
+def _update_clone(dest: str, src: dict, *, aside) -> None:
+    """The fast-forward update of an installed clone: fetch, then
+    `merge --ff-only` to the link's commit. With the contribution loop on
+    (`aside` given): the merge runs inside `aside()`, only the FOLLOWED
+    branch is fetched (not every branch the author ever pushed), and git's
+    own words go to the log, never to the install page — a plain sentence
+    does (§0.1)."""
+    fetch = ("fetch", "-q", "origin")
+    if aside is not None:
+        from fused_render.contrib import classify
+
+        branch = classify._local_default_branch(os.path.realpath(dest))
+        if branch:
+            fetch = ("fetch", "-q", "--", "origin", branch)
+    for args in (fetch, ("merge", "-q", "--ff-only", src["commit"])):
+        if args[0] == "merge" and aside is not None:
+            with aside():
+                r = _git(*args, cwd=dest)
+        else:
+            r = _git(*args, cwd=dest)
+        if r.returncode != 0:
+            if aside is not None:
+                logger.warning("install update of %s: git %s failed: %s", dest, args[0], _err(r))
+                raise GitInstallError("Couldn't update this app right now. Check your "
+                                      "connection and open the link again.")
+            raise GitInstallError(f"git {args[0]} failed: {_err(r)}")
+
+
+def _contrib_sources() -> bool:
+    try:
+        from fused_render.contrib import flags
+
+        return flags.sources()
+    except Exception:  # noqa: BLE001 — an unreadable flag reads as off
+        return False
+
+
+def _record_install(dest: str, url: str) -> None:
+    """Record the install source OUTSIDE the folder (contrib/store.py,
+    docs/CONTRIB_LOOP.md §4) and, with the contribution loop on, mark a
+    committed `.fused/` skip-worktree so the stamp and `meta.json` just
+    written never read as edits. Written whatever the flags (the record is
+    invisible); never fails the install that already landed."""
+    try:
+        from fused_render.contrib import classify
+
+        classify.record_install(dest, url)
+    except Exception:  # noqa: BLE001
+        logger.exception("could not record the install source of %s", dest)
 
 
 def sweep_staging(ttl_s: float = 24 * 3600) -> None:

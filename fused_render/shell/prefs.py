@@ -34,6 +34,8 @@ and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **github_link_enabled** (whether the Share sheet offers a GitHub install link
 for an app whose folder is its own pushed GitHub repo — opt-in, default off;
 see ``github_link_enabled``),
+the five **contrib_*_enabled** phase switches of the GitHub contribution loop
+(opt-in, default off; see ``CONTRIB_PREF_KEYS`` and ``fused_render.contrib.flags``),
 **default_model** (the preferred Claude model as a short
 name, unset by default; see ``default_model``), **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
@@ -313,6 +315,46 @@ def github_link_enabled() -> bool:
     /api/share/github keeps answering. Any non-`true` stored value reads as off.
     """
     return read_prefs().get("github_link_enabled") is True
+
+
+# The GitHub contribution loop's five phase switches (docs/CONTRIB_LOOP.md §1),
+# all opt-in, default off. These are the RAW stored values, which Preferences
+# shows as set; every server branch asks `fused_render.contrib.flags` instead,
+# which applies the prerequisite chain (changes/inbox need sources, loop needs
+# changes and inbox, remix needs changes), so a phase switched on without its
+# prerequisite reads as off everywhere at once.
+CONTRIB_PREF_KEYS = (
+    "contrib_sources_enabled",
+    "contrib_changes_enabled",
+    "contrib_inbox_enabled",
+    "contrib_loop_enabled",
+    "contrib_remix_enabled",
+)
+
+
+def contrib_sources_enabled() -> bool:
+    """A1 (default off): every copy records its install source; share by link."""
+    return read_prefs().get("contrib_sources_enabled") is True
+
+
+def contrib_changes_enabled() -> bool:
+    """A2 (default off): your changes kept on top of the author's latest, Propose."""
+    return read_prefs().get("contrib_changes_enabled") is True
+
+
+def contrib_inbox_enabled() -> bool:
+    """A3 (default off): the author's inbox of proposals."""
+    return read_prefs().get("contrib_inbox_enabled") is True
+
+
+def contrib_loop_enabled() -> bool:
+    """A4 (default off): a merged proposal returns the copy to following."""
+    return read_prefs().get("contrib_loop_enabled") is True
+
+
+def contrib_remix_enabled() -> bool:
+    """A5 (default off): publish your changed copy as a remix."""
+    return read_prefs().get("contrib_remix_enabled") is True
 
 
 def task_peek_enabled() -> bool:
@@ -707,6 +749,16 @@ def _prefs_response() -> dict:
         # Whether the Share sheet offers the GitHub install-link card (opt-in,
         # default off). Not an API guard; see `github_link_enabled`.
         "github_link": {"enabled": github_link_enabled()},
+        # The GitHub contribution loop's phase switches (opt-in, default off),
+        # RAW as stored — Preferences shows each switch as set; the effective
+        # values (prerequisites applied) come from `contrib.flags`.
+        "contrib": {
+            "sources": contrib_sources_enabled(),
+            "changes": contrib_changes_enabled(),
+            "inbox": contrib_inbox_enabled(),
+            "loop": contrib_loop_enabled(),
+            "remix": contrib_remix_enabled(),
+        },
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (default ON, opt-out). `available` says whether THIS
         # process can honour it — the packaged macOS app installs the hook; a
@@ -978,6 +1030,14 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'github_link_enabled' must be a boolean"}, status_code=400)
             prefs["github_link_enabled"] = value
             changed = True
+        for contrib_key in CONTRIB_PREF_KEYS:
+            if contrib_key in body:
+                value = body.get(contrib_key)
+                if not isinstance(value, bool):
+                    return JSONResponse({"error": f"'{contrib_key}' must be a boolean"},
+                                        status_code=400)
+                prefs[contrib_key] = value
+                changed = True
         if "native_windows_enabled" in body:
             value = body.get("native_windows_enabled")
             if not isinstance(value, bool):
@@ -1197,6 +1257,9 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
                           "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
+                          "'contrib_sources_enabled', 'contrib_changes_enabled', "
+                          "'contrib_inbox_enabled', 'contrib_loop_enabled', "
+                          "'contrib_remix_enabled', "
                           "'native_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "

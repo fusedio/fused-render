@@ -194,6 +194,7 @@ def _paged_apps(offset: int, limit: int, tag: str | None, category: str | None,
     # Copy, then hydrate: the snapshot's rows are shared between requests and
     # `hydrate_app` fills its row in place.
     page = [app_listing.hydrate_app(dict(r)) for r in shown[offset:offset + limit]]
+    _with_contrib(page)
     return {
         "apps": page,
         "offset": offset,
@@ -228,7 +229,18 @@ def api_apps(offset: int = 0, limit: int | None = None, tag: str | None = None,
     apps.extend(registered_apps.registered_apps())
     apps = app_hidden.drop_hidden(apps)
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
-    return {"apps": apps}
+    return {"apps": _with_contrib(apps)}
+
+
+def _with_contrib(rows: list[dict]) -> list[dict]:
+    """Each row's optional `contrib: {label, inbox, kind}` card line
+    (CONTRIB_LOOP §12.2), in place on rows this request owns — never the discovery
+    snapshot's shared ones. One store read for the whole list and no git
+    (contrib/refresh.decorate); rows are untouched while the sources phase
+    is off."""
+    from fused_render.contrib import refresh as contrib_refresh
+
+    return contrib_refresh.decorate(rows)
 
 
 # Home renders one row, not the complete app catalog. Its common path follows
@@ -351,10 +363,10 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT, sort: HomeSort = "opened"):
         else:
             rows.sort(key=lambda a: (a["name"].casefold(), a["tag"].casefold()))
         # Hydrate only the slice, on copies: the snapshot's rows are shared.
-        return {"apps": [app_listing.hydrate_app(dict(r)) for r in rows[:limit]]}
+        return {"apps": _with_contrib([app_listing.hydrate_app(dict(r)) for r in rows[:limit]])}
     recent = recent_apps(limit)
     if len(recent) >= limit:
-        return {"apps": recent}
+        return {"apps": _with_contrib(recent)}
 
     seen = {os.path.normcase(os.path.abspath(a["path"])) for a in recent}
     discovered = sorted(
@@ -369,7 +381,7 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT, sort: HomeSort = "opened"):
         seen.add(identity)
         if len(recent) >= limit:
             break
-    return {"apps": recent}
+    return {"apps": _with_contrib(recent)}
 
 
 def _workspace_rel(root: str, path: str) -> str | None:
@@ -602,6 +614,12 @@ def api_app_entry(path: str, opened: bool = False):
             git_upstream.note_app_opened(os.path.dirname(entry))
         except Exception:  # noqa: BLE001 — housekeeping must not fail the probe
             logger.warning("git auto-sync note failed for %s", path, exc_info=True)
+        try:
+            from fused_render.contrib import refresh as contrib_refresh
+
+            contrib_refresh.note_app_opened(os.path.dirname(entry))
+        except Exception:  # noqa: BLE001 — housekeeping must not fail the probe
+            logger.warning("contrib open note failed for %s", path, exc_info=True)
     return {
         "entry": entry,
         # The fused page API version the entry declares (`<meta

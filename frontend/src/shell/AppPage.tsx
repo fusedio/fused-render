@@ -81,13 +81,14 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { navigateUrl, replaceSearch, spaLinkProps, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
   Download,
   Files,
   FolderOpen,
+  Inbox,
   ListTodo,
   Loader2,
   Share2,
@@ -96,7 +97,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -131,6 +132,11 @@ import { useAppPageGitColumn } from "@shell/useAppPageGitColumn";
 import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { peekSearch } from "./task-peek-store";
+import { useAppContrib, type AppContribState } from "@platform/lib/contrib";
+import { SourceLine } from "./contrib/SourceLine";
+import { CopyStatusCard } from "./contrib/CopyStatusCard";
+import { Contributors } from "./contrib/Contributors";
+import { ProposalsTab } from "./contrib/ProposalsTab";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -162,6 +168,10 @@ type TabCtx = {
    *  Only the Doctor tab takes it — its "Open in git" row is the one and only
    *  way in. */
   openGit: () => void;
+  /** The folder's GitHub contribution-loop state (platform/lib/contrib.ts
+   *  `useAppContrib`) — read once by this page and handed to the Overview
+   *  (the copy-status card above the frame) and the Proposals tab. */
+  contrib: AppContribState;
 };
 
 type TabDef = {
@@ -170,6 +180,57 @@ type TabDef = {
   keepMounted?: boolean;
   render: (ctx: TabCtx) => ReactNode;
 };
+
+// The Overview's frame — the app itself, or the reason it cannot be shown.
+// Out of TAB_DEFS so the Overview's render can stack the contribution card
+// above it (see that entry's comment for the `snapshotFrameSrc` story).
+function renderOverviewFrame({ slug, dir, entry, snapshot }: TabCtx): ReactNode {
+  if (snapshot.pending) {
+    // `error` (finding 1, second round): a transient resolve failure
+    // stays `pending` forever — nothing re-runs the resolve on its own —
+    // so this must not be an indefinite skeleton. `SnapshotError` gives
+    // the user a real way out (retry, or back to Live) instead.
+    if (snapshot.error) {
+      return <SnapshotError onRetry={snapshot.retry} />;
+    }
+    return <SkeletonLines rows={2} label="Loading app" />;
+  }
+  const entryPath = snapshot.snap ? snapshot.snap.entry ?? null : entry;
+  // `snapshotFrameSrc` returns `null` exactly when `sha` is claimed but
+  // `snap` is not yet resolved — a case the `snapshot.pending` return
+  // above already rules out here. Checked explicitly rather than
+  // asserted away with `as string` (code review finding 5, second
+  // round): that cast was only ever correct BECAUSE of the early
+  // `pending` return above it, and gave up the null contract
+  // `snapshotFrameSrc` was extracted to enforce — a future edit that
+  // moves or loosens that gate would silently produce `src="null"` on
+  // the iframe instead of a type error surfacing the mistake.
+  const frameSrc = entryPath
+    ? snapshotFrameSrc({ snap: snapshot.snap, sha: snapshot.sha, path: entryPath })
+    : null;
+  return frameSrc ? (
+    <div className="app-page-frame-wrap">
+      <iframe
+        // Keyed on the src: a snapshot -> Live switch mounts a NEW
+        // element rather than navigating the old one in place.
+        key={frameSrc}
+        className="app-page-frame"
+        src={frameSrc}
+        title={`App: ${slug}`}
+      />
+    </div>
+  ) : entryPath ? (
+    // `entryPath` is set but `snapshotFrameSrc` still returned null — the
+    // pending gate above should make this unreachable; fall back to the
+    // loading state rather than an iframe with no src.
+    <SkeletonLines rows={2} label="Loading app" />
+  ) : (
+    <p className="app-page-empty">
+      This folder has no entry page yet.{" "}
+      <a {...spaLinkProps(dir, { isDir: true })}>Open the folder</a> to see what is there.
+    </p>
+  );
+}
 
 const TAB_DEFS: Record<AppPageTab, TabDef> = {
   overview: {
@@ -192,53 +253,22 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // (finding 3) — not `entry` (the LIVE tree's) rewritten by directory
     // prefix alone, which gets the wrong FILENAME whenever the app's entry
     // was renamed since that commit.
-    render: ({ slug, dir, entry, snapshot }) => {
-      if (snapshot.pending) {
-        // `error` (finding 1, second round): a transient resolve failure
-        // stays `pending` forever — nothing re-runs the resolve on its own —
-        // so this must not be an indefinite skeleton. `SnapshotError` gives
-        // the user a real way out (retry, or back to Live) instead.
-        if (snapshot.error) {
-          return <SnapshotError onRetry={snapshot.retry} />;
-        }
-        return <SkeletonLines rows={2} label="Loading app" />;
-      }
-      const entryPath = snapshot.snap ? snapshot.snap.entry ?? null : entry;
-      // `snapshotFrameSrc` returns `null` exactly when `sha` is claimed but
-      // `snap` is not yet resolved — a case the `snapshot.pending` return
-      // above already rules out here. Checked explicitly rather than
-      // asserted away with `as string` (code review finding 5, second
-      // round): that cast was only ever correct BECAUSE of the early
-      // `pending` return above it, and gave up the null contract
-      // `snapshotFrameSrc` was extracted to enforce — a future edit that
-      // moves or loosens that gate would silently produce `src="null"` on
-      // the iframe instead of a type error surfacing the mistake.
-      const frameSrc = entryPath
-        ? snapshotFrameSrc({ snap: snapshot.snap, sha: snapshot.sha, path: entryPath })
-        : null;
-      return frameSrc ? (
-        <div className="app-page-frame-wrap">
-          <iframe
-            // Keyed on the src: a snapshot -> Live switch mounts a NEW
-            // element rather than navigating the old one in place.
-            key={frameSrc}
-            className="app-page-frame"
-            src={frameSrc}
-            title={`App: ${slug}`}
-          />
-        </div>
-      ) : entryPath ? (
-        // `entryPath` is set but `snapshotFrameSrc` still returned null — the
-        // pending gate above should make this unreachable; fall back to the
-        // loading state rather than an iframe with no src.
-        <SkeletonLines rows={2} label="Loading app" />
-      ) : (
-        <p className="app-page-empty">
-          This folder has no entry page yet.{" "}
-          <a {...spaLinkProps(dir, { isDir: true })}>Open the folder</a> to see what is there.
-        </p>
-      );
-    },
+    //
+    // THE CONTRIBUTION LOOP sits above the frame (shell/contrib/): where this
+    // copy stands against its author — one sentence, at most one button — and
+    // the contributors line. Live only: a past version picked in the version
+    // picker is not the copy those sentences are about.
+    render: (ctx) => (
+      <>
+        {ctx.snapshot.sha === null && (
+          <>
+            <CopyStatusCard dir={ctx.dir} slug={ctx.slug} contrib={ctx.contrib} />
+            <Contributors contrib={ctx.contrib.data} />
+          </>
+        )}
+        {renderOverviewFrame(ctx)}
+      </>
+    ),
   },
   tasks: {
     label: "Tasks",
@@ -273,6 +303,15 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // Ignores the version picker on purpose — see AppDoctorPanel.
     render: ({ dir, openGit }) => <AppDoctorPanel dir={dir} onOpenGit={openGit} />,
   },
+  proposals: {
+    label: "Proposals",
+    Icon: Inbox,
+    // The author's inbox (shell/contrib/ProposalsTab.tsx). Offered only on an
+    // app the user owns with a GitHub repo — see `offered` in the page below.
+    // Not keepMounted: its list comes from the page's own contrib read, so a
+    // return costs nothing.
+    render: ({ dir, slug, contrib }) => <ProposalsTab dir={dir} slug={slug} contrib={contrib} />,
+  },
 };
 
 // What the folder turned out to be. `undefined` = still asking.
@@ -297,7 +336,39 @@ export default function AppPage({
   // The tab is the `_tab` query param, re-read on every URL event so
   // back/forward between the two tabs lands on the right one.
   const urlVersion = useUrlVersion();
-  const tab = appPageTabFromSearch(location.search);
+  const urlTab = appPageTabFromSearch(location.search);
+
+  // The GitHub contribution loop (platform/lib/contrib.ts): one read of this
+  // folder's copy status, shared by the header's source line, the Overview's
+  // card and the Proposals tab. Nothing is fetched while every contrib flag is
+  // off, so the page with the feature off is the page it always was.
+  const contrib = useAppContrib(dir);
+  // The one conditional tab. While the first read is still out, a
+  // `?_tab=proposals` link keeps its tab (the panel shows its own skeleton)
+  // rather than flashing the Overview; once answered, a folder without an
+  // inbox falls back to the default like any unknown tab.
+  const inboxOffered = !!contrib.data?.flags.inbox && !!contrib.data.inbox;
+  const offered = (id: AppPageTab) =>
+    id !== "proposals" || inboxOffered || (!contrib.settled && urlTab === "proposals");
+  const tab: AppPageTab = offered(urlTab) ? urlTab : APP_PAGE_TABS[0];
+  const offeredRef = useRef(offered);
+  offeredRef.current = offered;
+  // The tab ACTUALLY shown (a `?_tab=proposals` this folder does not offer
+  // shows the Overview) — what the arrow keys step from.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  // Once answered, a `?_tab=proposals` this folder does not offer (a switch
+  // from an app that had one, a stale link) is rewritten to the default
+  // tab's address in place — so the URL, the strip and Back all agree on the
+  // tab that is on screen.
+  // A REAL answer only (`answered`): a read that merely failed says nothing
+  // about the inbox, and must not rewrite the address the user typed.
+  const dropProposalsTab = contrib.answered && urlTab === "proposals" && !inboxOffered;
+  useEffect(() => {
+    if (!dropProposalsTab) return;
+    replaceSearch(appPageUrl(dir, APP_PAGE_TABS[0], peekSearch(location.search, null)));
+  }, [dropProposalsTab, dir]);
+  const inboxCount = contrib.data?.inbox?.count ?? 0;
 
   // This page's OWN resolution of the URL's `_snapshot` sha — extracted into
   // useAppPageSnapshot.ts, which has its own header comment for why this is
@@ -446,8 +517,12 @@ export default function AppPage({
       if (!onBody && !inSidebar) return;
       // Every tab is always offered now (no more conditional Git tab to
       // skip), so this steps over the route's own static list directly.
-      const cur = appPageTabFromSearch(location.search);
-      const i = APP_PAGE_TABS.indexOf(cur) + (e.key === "ArrowRight" ? 1 : -1);
+      const cur = tabRef.current;
+      const step = e.key === "ArrowRight" ? 1 : -1;
+      let i = APP_PAGE_TABS.indexOf(cur) + step;
+      // Skip a tab this folder does not offer (the Proposals tab, AppPage's
+      // `offered`), so an arrow never lands on a tab that is not drawn.
+      while (i >= 0 && i < APP_PAGE_TABS.length && !offeredRef.current(APP_PAGE_TABS[i])) i += step;
       e.preventDefault();
       if (i < 0 || i >= APP_PAGE_TABS.length) return;
       // The same address a click would take (`tabUrl`): `?peek=` stays behind
@@ -563,7 +638,7 @@ export default function AppPage({
   // the sheet existed — the same `.fused` saved straight to Downloads, with a
   // toast saying where — and shows its own busy state, since there is no sheet
   // to narrate the save. Same version computation either way.
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
   const [exporting, setExporting] = useState(false);
   const shareDisabled = snapshot.pending || snapshot.error || exporting;
   const handleShare = async () => {
@@ -650,9 +725,15 @@ export default function AppPage({
                 {/* Reads as the folder and IS the folder: opens its listing in the
                     explorer. The app's entry page is the "Open in explorer"
                     button opposite. */}
-                <a className="app-page-folder" title={dir} {...spaLinkProps(dir, { isDir: true })}>
-                  {tildePath(dir, home)}
-                </a>
+                <div className="app-page-sub">
+                  <a className="app-page-folder" title={dir} {...spaLinkProps(dir, { isDir: true })}>
+                    {tildePath(dir, home)}
+                  </a>
+                  {/* Where this copy came from (shell/contrib/SourceLine.tsx):
+                      "GitHub link · follows alice/x", "Your app", "Remix of
+                      alice/x". Nothing while the contrib flags are off. */}
+                  <SourceLine contrib={contrib.data} />
+                </div>
               </div>
             </div>
             {entry && (
@@ -745,8 +826,12 @@ export default function AppPage({
                   aria-label="App page"
                   className="h-auto w-full justify-start rounded-none border-b-0 p-0 pb-1"
                 >
-                  {APP_PAGE_TABS.map((id) => {
+                  {APP_PAGE_TABS.filter(offered).map((id) => {
                     const { label, Icon } = TAB_DEFS[id];
+                    // The inbox count rides in the accessible name too: the
+                    // badge is drawn on the icon, and the fold hides the word.
+                    const name =
+                      id === "proposals" && inboxCount > 0 ? `${label} (${inboxCount})` : label;
                     return (
                       <TabsTrigger
                         key={id}
@@ -761,8 +846,8 @@ export default function AppPage({
                             href={tabUrl(id)}
                             // The word is what the fold hides; the tooltip and the
                             // accessible name keep saying it (app-page-fit.ts).
-                            title={label}
-                            aria-label={label}
+                            title={name}
+                            aria-label={name}
                             onClick={(e) => pickTab(e, id)}
                           />
                         }
@@ -775,6 +860,17 @@ export default function AppPage({
                           <span className="app-page-doctor-mark">
                             <Icon data-icon="inline-start" />
                             <AppDoctorStatusDot checks={doctorChecks} />
+                          </span>
+                        ) : id === "proposals" ? (
+                          // Same corner-badge seat as the Doctor dot, so the
+                          // count survives the strip folding to icons.
+                          <span className="app-page-doctor-mark">
+                            <Icon data-icon="inline-start" />
+                            {inboxCount > 0 && (
+                              <span className="contrib-tab-count" aria-hidden="true">
+                                {inboxCount > 99 ? "99+" : inboxCount}
+                              </span>
+                            )}
                           </span>
                         ) : (
                           <Icon data-icon="inline-start" />
@@ -816,7 +912,7 @@ export default function AppPage({
                     role="tabpanel"
                     aria-hidden={!active}
                   >
-                    {def.render({ slug, dir, entry, snapshot, openGit })}
+                    {def.render({ slug, dir, entry, snapshot, openGit, contrib })}
                   </section>
                 );
               })}
