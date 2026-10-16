@@ -18,10 +18,13 @@ import {
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
 import {
-  EFFORTS,
-  MODELS,
-  MODEL_LABELS,
-} from "@apps/claude/ui/composer-defaults";
+  AGENT_PREFS_URL,
+  effortsOf,
+  isBackendEnabled,
+  modelLabelsOf,
+  modelsOf,
+  useAgentBackends,
+} from "@platform/lib/agent-backends";
 import {
   resolveComposerDefaults,
   type ComposerPicks,
@@ -175,8 +178,9 @@ async function createAppUnderFreeName(
 const SAMPLE_ROW = 4;
 
 // The composer's two session pickers — what the scaffolding turn runs with,
-// and what the chat it lands in opens showing. The claude composer's own lists
-// (MODELS / EFFORTS), handed straight to the CLI as --model / --effort.
+// and what the chat it lands in opens showing. The agent catalog's Claude row
+// (docs/COPILOT_BACKEND.md D11) — the same lists the chat's pills read —
+// handed straight to the CLI as --model / --effort.
 //
 // No "Auto": the composer always names a concrete pair, and the pair it shows
 // is the ONE global default (platform/lib/claude-defaults) — so a pick here
@@ -184,11 +188,17 @@ const SAMPLE_ROW = 4;
 //
 // The labels are BARE — "Opus", "high" — not "high effort": each pill's glyph
 // names its axis, so repeating it in the text is the same word twice.
-const MODEL_CHOICES: { value: ComposerPicks["model"]; label: string }[] =
-  MODELS.map((m) => ({ value: m, label: MODEL_LABELS[m] ?? m }));
+/** The closed composer's one line (D17). */
+const CLAUDE_OFF_LINE = "Building an app uses Claude Code, which is turned off in Preferences.";
 
-const EFFORT_CHOICES: { value: ComposerPicks["effort"]; label: string }[] =
-  EFFORTS.map((e) => ({ value: e, label: e }));
+const modelChoices = (): { value: ComposerPicks["model"]; label: string }[] =>
+  modelsOf("claude").map((m) => ({
+    value: m as ComposerPicks["model"],
+    label: modelLabelsOf("claude")[m] ?? m,
+  }));
+
+const effortChoices = (): { value: ComposerPicks["effort"]; label: string }[] =>
+  effortsOf("claude").map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
 
 // A composer attachment — NewJobModal's TaskImage shape. `path` is "" until the
 // upload answers; `thumb` is a blob: URL for a picture the browser can draw.
@@ -327,7 +337,14 @@ export function HeroComposer({
   // AI" button (?annot=). null means no model is annotated; the composer
   // reads as a plain prompt box exactly like today.
   const [annotation, setAnnotation] = useState<AppAnnotation | null>(null);
-  // The global pair, or the fallback while it is unknown; see MODEL_CHOICES.
+  // The global pair, or the fallback while it is unknown; see modelChoices.
+  // Subscribed to the catalog, whose first read can re-list the pickers.
+  const agentCatalog = useAgentBackends();
+  // BUILDING AN APP IS CLAUDE'S (D17): the server refuses the scaffolding
+  // task with Claude switched off, so the composer closes and says why rather
+  // than taking a brief it cannot act on. Only on a real answer — before the
+  // catalog lands, Claude is on.
+  const claudeOff = agentCatalog.loaded && !isBackendEnabled("claude");
   const [model, setModel] = useState(
     () => resolveComposerDefaults(getClaudeDefaults()).model,
   );
@@ -429,7 +446,7 @@ export function HeroComposer({
     if (autoFocus) requestAnimationFrame(() => inputRef.current?.focus());
   }, [autoFocus]);
 
-  const busy = phase !== "idle";
+  const busy = phase !== "idle" || claudeOff;
   const canSubmit = prompt.trim().length > 0 && !busy;
 
   // Upload each file as a task shot; the chip shows at once and is dropped
@@ -701,7 +718,7 @@ export function HeroComposer({
         <TextArea
           ref={inputRef}
           className="home-composer-input"
-          placeholder="What do you want to build?"
+          placeholder={claudeOff ? CLAUDE_OFF_LINE : "What do you want to build?"}
           aria-label="What do you want to build?"
           value={prompt}
           rows={1}
@@ -789,7 +806,7 @@ export function HeroComposer({
                 glyph="model"
                 label="Model"
                 value={model}
-                choices={MODEL_CHOICES}
+                choices={modelChoices()}
                 disabled={busy}
                 onPick={pickModel}
               />
@@ -797,7 +814,7 @@ export function HeroComposer({
                 glyph="effort"
                 label="Effort"
                 value={effort}
-                choices={EFFORT_CHOICES}
+                choices={effortChoices()}
                 disabled={busy}
                 onPick={pickEffort}
               />
@@ -835,6 +852,20 @@ export function HeroComposer({
           </button>
         </div>
       </div>
+      {claudeOff ? (
+        <p className="home-composer-off">
+          {CLAUDE_OFF_LINE}{" "}
+          <a
+            href={AGENT_PREFS_URL}
+            onClick={(e) => {
+              e.preventDefault();
+              navigateUrl(AGENT_PREFS_URL);
+            }}
+          >
+            Turn it on
+          </a>
+        </p>
+      ) : null}
       <div className="home-composer-samples">
         <div className="home-composer-sample-strip" ref={stripRef}>
           {Array.from(

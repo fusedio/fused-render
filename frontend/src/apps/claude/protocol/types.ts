@@ -47,6 +47,10 @@ export interface StartRequest {
   message: string;
   /** "" = a new session (T:16605-16623). */
   session_id: string;
+  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot"
+   *  (docs/COPILOT_BACKEND.md D2). Chosen at the first turn and immutable: a
+   *  send into an existing session must name the session's own. */
+  backend?: string;
   model: string;
   effort: string;
   /** `params.permission || "prompt"` (DEFAULT_PERMISSION, T:11911). */
@@ -141,6 +145,8 @@ export interface AppStateRequest {
 
 export interface SendRequest {
   run_id: string;
+  /** Must equal the session's agent; ignored otherwise (§8). */
+  backend?: string;
   /** The composed outgoing wire text (T:16094-16102). */
   message: string;
   read_dirs: string;
@@ -155,10 +161,21 @@ export interface SendRequest {
 export interface FileRequest {
   file: string;
 }
+/** `commands {file}` — PER AGENT (docs/COPILOT_BACKEND.md D11): an existing
+ *  chat names its session (the server reads the agent off it), a new one the
+ *  Agent pill's `backend`. Neither: Claude's menu, as before. */
+export interface CommandsRequest {
+  file: string;
+  session_id?: string;
+  backend?: string;
+}
 export interface FileSessionRequest {
   file: string;
   /** Optional for `live_run` (target as a whole), required for the rest. */
   session_id: string;
+  /** `terminal_command` only: the agent whose CLI a FRESH session opens in
+   *  (D2); a named session's own agent outranks it. */
+  backend?: string;
   /** `"1"` from the React page (history): app-state reads come back as
    *  in-stream notice segments (agent.py `app_reads`). */
   native?: string;
@@ -219,7 +236,7 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
-  commands: FileRequest;
+  commands: CommandsRequest;
   task_output: TaskOutputRequest;
   task_stop: TaskOutputRequest;
 }
@@ -509,6 +526,8 @@ export interface PollResponse {
   text: string;
   done: boolean;
   session_id: string;
+  /** The run's agent (D2 §8). Absent on an older agent.py. */
+  backend?: string;
   /** "" normally; non-empty does NOT narrow the shape. */
   error: string;
   tokens: number;
@@ -689,6 +708,9 @@ export interface RunIdResponse {
 export interface DefaultsResponse {
   model: string;
   effort: string;
+  /** The conversation's agent, off its record (§8). Absent on an older
+   *  agent.py; "" for a chat with no record. */
+  backend?: string;
   source: "" | "record" | "session" | "settings";
   /** THE APP'S OWN RECORD of what this conversation runs with — written by
    *  every spawn, every send and every pill pick (`tasks_store`'s
@@ -785,6 +807,9 @@ export interface TranscriptStat {
 export interface HistoryResponse {
   turns: HistoryTurn[];
   transcript: TranscriptStat;
+  /** The conversation's agent, by the root its transcript lives under (§8).
+   *  Absent on an older agent.py. */
+  backend?: string;
   /** The worktree hint the transcript's tool calls end on (agent.py `_history`). */
   worktree_hint?: WorktreeHint | null;
   /** agent.py `_history_live`: the run still going for this chat, with its
@@ -855,7 +880,9 @@ export interface ContextUsage {
   /** The model's context window in tokens AS THE CLI REPORTED IT (the
    *  `result` row's `modelUsage.<model>.contextWindow`, learned by agent.py).
    *  `null`/absent when no reply has named this model yet — the page's own
-   *  table stands in. Wins over the table, which is the one that goes stale. */
+   *  table stands in. Wins over the table, which is the one that goes stale.
+   *  A Copilot session's comes from its host instead (ACP
+   *  `usage_update.size`, docs/COPILOT_BACKEND.md §4). */
   window?: number | null;
   compacted: boolean;
 }

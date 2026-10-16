@@ -1082,8 +1082,10 @@ describe("follow-ups (T:16024, D687)", () => {
     // `draft_key` is the one field T never sent, and it is native's own: this
     // send has no session, so it is the send that CREATES one and it names the
     // `new:<file>` draft whose TASK number has to follow (PR #1118 round 5).
-    // Every other field is T's, spelled T's way.
+    // Every other field is T's, spelled T's way — bar `backend`, the agent the
+    // chat runs on (docs/COPILOT_BACKEND.md D2), which every start names.
     expect(Object.keys(started.fields).sort()).toEqual([
+      "backend",
       "draft_key",
       "effort",
       "file",
@@ -1715,8 +1717,9 @@ describe("follow-ups (T:16024, D687)", () => {
     ]);
     expect(made.agent.of("cancel")).toEqual([]);
     const sent = made.agent.of("send")[0]!.fields;
-    // The same field set legacy posts (T:16138-16150).
+    // The same field set legacy posts (T:16138-16150), plus `backend` (D2).
     expect(Object.keys(sent).sort()).toEqual([
+      "backend",
       "effort",
       "message",
       "model",
@@ -4386,6 +4389,85 @@ describe("the start response names the session (task status in under a second)",
     } finally {
       restore();
     }
+  });
+
+  test("a Copilot start answering session_id \"\" takes the id from the first poll that carries it", async () => {
+    // Copilot mints its own id (docs/COPILOT_BACKEND.md), so a fresh start
+    // answers `session_id: ""` and the init row's poll is the first to name it.
+    // An empty id must never reach the url, the state or a running mark.
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      const atPoll: string[] = [];
+      const { controller } = makeController(
+        {
+          start: () => ({ run_id: "r1", session_id: "", backend: "copilot" }),
+          poll: (_f, n) => {
+            atPoll.push(params.get("session_id") || "");
+            // The first frame has no id yet; the second carries the init row's.
+            return poll({
+              done: n > 1,
+              session_id: n > 0 ? "s-copilot" : "",
+              text: "ok",
+              segments: [text("ok")],
+            });
+          },
+        },
+        params,
+      );
+      await controller.sendMessage("hi");
+      expect(atPoll[0]).toBe("");
+      expect(params.get("session_id")).toBe("s-copilot");
+      expect(controller.getState().sessionId).toBe("s-copilot");
+      expect(controller.getState().backend).toBe("copilot");
+      // Marked once, under the real id — never under "".
+      expect(marks(posts)).toEqual([
+        { session_id: "s-copilot", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a plan left on the param goes out as the default for an agent with no plan mode (Bugbot)", async () => {
+    for (const [agentId, expected] of [
+      ["copilot", "prompt"],
+      ["claude", "plan"],
+    ] as const) {
+      const params = createMemoryParamsStore();
+      params.set({ permission: "plan" });
+      const { controller, agent } = makeController(
+        {
+          history: () => ({ turns: [], transcript: null, backend: agentId }),
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1", session_id: "s1" }),
+          poll: () => poll({ done: true, segments: [text("ok")] }),
+        },
+        params,
+      );
+      await controller.openSession("s1", { backend: agentId });
+      await controller.sendMessage("hi");
+      expect(agent.of("start")[0]!.fields.permission_mode).toBe(expected);
+    }
+  });
+
+  test("the opener's agent is a guess the session's history corrects (CodeRabbit)", async () => {
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, backend: "copilot" }),
+    });
+    // The row it was opened from said Claude; the transcript's root says Copilot.
+    await controller.openSession("s1", { backend: "claude" });
+    expect(controller.getState().backend).toBe("copilot");
+  });
+
+  test("an opener's agent stands while nothing on the wire names one", async () => {
+    // `backend: ""` is what agent.py `_history` answers for a session with no
+    // transcript on disk and no record yet — no evidence, never a guess.
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, backend: "" }),
+    });
+    await controller.openSession("s1", { backend: "copilot" });
+    expect(controller.getState().backend).toBe("copilot");
   });
 });
 

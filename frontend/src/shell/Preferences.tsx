@@ -77,6 +77,8 @@ import {
   revokeLanDevice,
   revokeAllLanDevices,
   putDefaultModel,
+  putAgentEnabled,
+  putDefaultBackend,
   putReaderEnabled,
   startHfLogin,
 } from "@platform/lib/api";
@@ -91,6 +93,16 @@ import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import { publishProjectQueueEnabled, publishTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
+import {
+  agentLabel,
+  modelLabelsOf,
+  publishAgentBackendsChanged,
+  useAgentBackends,
+} from "@platform/lib/agent-backends";
+import { useAgentSetup } from "@platform/lib/claude-setup";
+import { agentAccountLine, agentIssues } from "@platform/lib/claude-health";
+import { IssueRow } from "@platform/ui/ClaudeHealthStrip";
+import { signedInHint } from "./onboarding/ToolsStep";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { IS_QUERY_EMBED, navigate, navigateUrl } from "@platform/lib/router";
 import { displayName, isBot } from "@platform/lib/flavor";
@@ -1532,15 +1544,16 @@ function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id
 // server's `choices` list rather than hardcoding the options, so the page can
 // never offer a value a PUT would reject — an unknown name still renders (as
 // itself) instead of vanishing from a control the user has one of selected.
-const MODEL_LABELS: Record<string, string> = {
-  "": "Automatic",
-  fable: "Fable",
-  opus: "Opus",
-  sonnet: "Sonnet",
-  haiku: "Haiku (fastest)",
-};
+//
+// The NAMES come from the agent catalog's Claude row (docs/COPILOT_BACKEND.md
+// D11), not a copy kept here; only this page's own two words stay local — the
+// empty choice, and the note on the fast one.
+const MODEL_NOTES: Record<string, string> = { haiku: " (fastest)" };
+const modelChoiceLabel = (m: string) =>
+  m === "" ? "Automatic" : (modelLabelsOf("claude")[m] ?? m) + (MODEL_NOTES[m] ?? "");
 
 function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  useAgentBackends();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
@@ -1573,12 +1586,157 @@ function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) 
           >
             {prefs.model.choices.map((m) => (
               <option key={m} value={m}>
-                {MODEL_LABELS[m] ?? m}
+                {modelChoiceLabel(m)}
               </option>
             ))}
           </select>
         </label>
       </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17): one
+// switch per agent, each switched-on one's health beneath it — installed,
+// signed in, and the fix when it is not — and the agent new chats and tasks
+// open on. The server refuses a write that would leave none on (400 "turn on
+// the other agent first"); the last switch on is drawn disabled saying so,
+// and a refusal that still arrives is shown under the switches.
+const AGENT_SWITCHES: { id: "claude" | "copilot"; name: string; note?: string }[] = [
+  { id: "claude", name: "Claude Code", note: "Chats and tasks only; bots keep using Claude." },
+  { id: "copilot", name: "GitHub Copilot CLI" },
+];
+
+/** One switched-on agent's health: a line when all is well, the strip's own
+ *  issue rows when it is not. Mounted per agent, so each owns its machine. */
+function AgentHealthRow({ backend }: { backend: "claude" | "copilot" }) {
+  const {
+    health, loaded, busy, install, login, doctor, actionError, acting,
+    linkedNote, load, act, cancelLogin,
+  } = useAgentSetup(backend, true);
+  const name = backend === "copilot" ? "Copilot" : "Claude Code";
+  if (!loaded) return <p className="deploy-muted">Checking {name}…</p>;
+  if (!health) {
+    return (
+      <p className="deploy-muted">
+        Couldn't check {name}.{" "}
+        <button type="button" className="version-panel-link" onClick={() => load(true)} disabled={busy}>
+          {busy ? "Checking…" : "Check again"}
+        </button>
+      </p>
+    );
+  }
+  const issues = agentIssues(health, backend);
+  // `null` is "could not ask", never "signed out" — said as that, with the
+  // re-check right beside it, rather than as a ready line with no account.
+  const account = health.signed_in === null
+    ? "Couldn't confirm sign-in."
+    : agentAccountLine(health, backend, signedInHint);
+  return (
+    <>
+      <p className="deploy-muted">
+        {issues.length ? `${name} needs attention.` : `${name}${health.version ? ` ${health.version}` : ""} is ready.`}
+        {account ? ` ${account.endsWith(".") ? account : account + "."}` : ""}{" "}
+        <button type="button" className="version-panel-link" onClick={() => load(true)} disabled={busy}>
+          {busy ? "Checking…" : "Check again"}
+        </button>
+      </p>
+      {issues.length > 0 && (
+        <ul className="claude-health-issues">
+          {issues.map((issue) => (
+            <IssueRow
+              key={issue.id}
+              issue={issue}
+              install={install}
+              login={login}
+              doctor={issue.id === "broken" ? doctor : null}
+              onAct={act}
+              onCancelLogin={cancelLogin}
+              busy={acting}
+              actionError={issue.action ? actionError : null}
+              doneNote={issue.id === "not-on-path" ? linkedNote : null}
+            />
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+function AgentsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Absent (an older server) reads as the only answer it could give: Claude.
+  const agents = prefs.agents ?? { claude: true, copilot: false, default: "claude" };
+  const onCount = (agents.claude ? 1 : 0) + (agents.copilot ? 1 : 0);
+  // The labels the catalog names them by, subscribed for its first read.
+  useAgentBackends();
+
+  const write = async (put: () => Promise<Prefs>) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await put());
+      // Published, not just saved: the Agent pill, the pickers and every
+      // agent mark read the catalog, which is cached per page.
+      publishAgentBackendsChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const enabledIds = AGENT_SWITCHES.filter((a) => agents[a.id]).map((a) => a.id);
+  return (
+    <section className="prefs-section">
+      <h2>Agents</h2>
+      <p className="deploy-muted">
+        Which coding agents run your chats and tasks. With more than one on, a new
+        chat or task asks which; a conversation keeps the agent it started with.
+      </p>
+      {AGENT_SWITCHES.map((a) => {
+        const on = agents[a.id];
+        const last = on && onCount === 1;
+        return (
+          <div key={a.id} className="prefs-field">
+            <label className="prefs-radio" title={last ? "Turn on the other agent first" : undefined}>
+              <input
+                type="checkbox"
+                checked={on}
+                disabled={busy || last}
+                onChange={() => void write(() => putAgentEnabled(a.id, !on))}
+              />
+              <span>
+                <b>{a.name}</b>
+                {a.note ? ` — ${a.note}` : ""}
+                {last ? <span className="deploy-muted"> Turn on the other agent first.</span> : null}
+              </span>
+            </label>
+            {on && <AgentHealthRow backend={a.id} />}
+          </div>
+        );
+      })}
+      {enabledIds.length > 1 && (
+        <div className="prefs-field">
+          <label>
+            Default agent for new chats and tasks{" "}
+            <select
+              value={enabledIds.includes(agents.default as "claude" | "copilot") ? agents.default : enabledIds[0]}
+              disabled={busy}
+              onChange={(e) => void write(() => putDefaultBackend(e.target.value))}
+            >
+              {enabledIds.map((id) => (
+                <option key={id} value={id}>
+                  {agentLabel(id)}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
@@ -2022,6 +2180,7 @@ export default function Preferences() {
             {tab === "lan" && !bot && <LanSection prefs={prefs} onChange={setPrefs} />}
             {tab === "ai" && (
               <>
+                <AgentsSection prefs={prefs} onChange={setPrefs} />
                 <ModelSection prefs={prefs} onChange={setPrefs} />
                 <HuggingFaceSection />
               </>

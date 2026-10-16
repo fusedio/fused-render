@@ -499,6 +499,9 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # "cli"/"sdk-cli"/None (2026-09-18): the notification hook's terminal-
         # session gate reads this off the pulse row, not `/api/tasks`.
         "entrypoint",
+        # Which agent ran it (2026-10-16, docs/COPILOT_BACKEND.md D18): the
+        # finished-task notice names it.
+        "backend",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
@@ -2371,7 +2374,7 @@ def test_a_pill_pick_is_written_for_the_conversation(client, projects_dir):
                     json={"session_id": "sess-a", "model": "haiku",
                           "effort": "low"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "model": "haiku", "effort": "low"}
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "low", "backend": ""}
     assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
         == ["haiku", "low"]
 
@@ -2384,7 +2387,7 @@ def test_picking_one_pill_never_erases_the_other(client, projects_dir):
                 json={"session_id": "sess-a", "model": "haiku", "effort": "low"})
     r = client.post("/api/tasks/settings", headers={"X-Fused": "1"},
                     json={"session_id": "sess-a", "effort": "max"})
-    assert r.json() == {"ok": True, "model": "haiku", "effort": "max"}
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "max", "backend": ""}
 
 
 # ---- READING the record, without the subprocess (Akshil, 2026-09-19) --------
@@ -2406,7 +2409,7 @@ def test_the_record_can_be_read_back_without_spawning_anything(
     tasks_store.record_settings("sess-a", "haiku", "low")
     r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"model": "haiku", "effort": "low"}
+    assert r.json() == {"model": "haiku", "effort": "low", "backend": ""}
 
 
 def test_reading_a_record_under_the_retired_pinned_Fable_id_says_fable(client):
@@ -2415,7 +2418,7 @@ def test_reading_a_record_under_the_retired_pinned_Fable_id_says_fable(client):
     on a blank pill. Display only — what the CLI is handed is untouched."""
     tasks_store.record_settings("sess-a", "claude-fable-5-1", "max")
     r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
-    assert r.json() == {"model": "fable", "effort": "max"}
+    assert r.json() == {"model": "fable", "effort": "max", "backend": ""}
 
 
 def test_a_session_with_nothing_recorded_reads_as_no_opinion(client):
@@ -2425,7 +2428,7 @@ def test_a_session_with_nothing_recorded_reads_as_no_opinion(client):
     chose."""
     r = client.get("/api/tasks/settings", params={"session_id": "no-such"})
     assert r.status_code == 200
-    assert r.json() == {"model": "", "effort": ""}
+    assert r.json() == {"model": "", "effort": "", "backend": ""}
 
 
 def test_a_record_of_one_field_reads_back_as_one_field(client):
@@ -2435,7 +2438,7 @@ def test_a_record_of_one_field_reads_back_as_one_field(client):
     tasks_store.record_settings("sess-a", effort="low")
     assert client.get("/api/tasks/settings",
                       params={"session_id": "sess-a"}).json() \
-        == {"model": "", "effort": "low"}
+        == {"model": "", "effort": "low", "backend": ""}
 
 
 def test_the_read_refuses_the_same_ids_the_write_does(client):

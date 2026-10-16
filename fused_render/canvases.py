@@ -2471,9 +2471,16 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
             return _error("a fix is already running for this canvas", 409)
         prompt = _fix_prompt(name, manager.error_detail, manager.last_error)
         try:
-            res = claude_spawn.spawn_helper(manager.dir, prompt, "auto")
+            # CLAUDE, NAMED: a canvas fix is a Claude feature (like the app
+            # builder), so it never follows the Preferences default agent.
+            res = claude_spawn.spawn_helper(manager.dir, prompt, "auto",
+                                            backend="claude")
         except Exception as exc:  # noqa: BLE001 — spawn failure is the answer
             return _error(f"failed to start Claude session: {exc}", 500)
+        if res.get("reason") == "backend_disabled":
+            # Claude switched off in Preferences (D17): the refusal whole, as
+            # a 400 the page can act on — not a "failed to start" 500.
+            return JSONResponse(res, status_code=400)
         if res.get("error") or not res.get("run_id"):
             return _error(str(res.get("error") or "failed to start Claude session"), 500)
         run_id = str(res["run_id"])

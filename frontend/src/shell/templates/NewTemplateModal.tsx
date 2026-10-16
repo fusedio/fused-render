@@ -1,3 +1,4 @@
+import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useRef, useState } from "react";
 import { createTemplate, openTemplateInClaude } from "@platform/lib/api";
 import type { NewTemplateResult } from "@platform/lib/api";
@@ -20,6 +21,7 @@ export function NewTemplateModal({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  useAgentBackends();
   const [name, setName] = useState("");
   const [extensions, setExtensions] = useState<string[]>([]);
   const [extDraft, setExtDraft] = useState("");
@@ -162,14 +164,17 @@ export function NewTemplateModal({
             <button type="button" className="btn btn-secondary" onClick={onClose}>
               Done
             </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => openInClaude(result.name)}
-              disabled={opening}
-            >
-              {opening ? "Opening…" : "Open in Claude"}
-            </button>
+            {/* Follows the Claude switch (D17), as the Explorer's item does. */}
+            {isBackendEnabled("claude") && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => openInClaude(result.name)}
+                disabled={opening}
+              >
+                {opening ? "Opening…" : "Open in Claude"}
+              </button>
+            )}
           </>
         ) : (
           <>

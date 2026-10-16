@@ -257,9 +257,10 @@ export function paneNounFor(noun: TargetNoun): PaneNoun {
 }
 
 /** The home composer's placeholder (T:5392). The markup's own kind-free "Ask
- *  Claude…" stands while the noun is still `""`. */
-export function homePlaceholderFor(noun: TargetNoun): string {
-  return noun ? "Ask Claude about this " + noun + "…" : "Ask Claude…";
+ *  Claude…" stands while the noun is still `""`. `agent` names the chat's
+ *  agent (docs/COPILOT_BACKEND.md D18) — Claude's words when absent. */
+export function homePlaceholderFor(noun: TargetNoun, agent = "Claude"): string {
+  return noun ? "Ask " + agent + " about this " + noun + "…" : "Ask " + agent + "…";
 }
 
 /** The annotate switch's idle spoken name (T:5377). PR3 owns the armed names —

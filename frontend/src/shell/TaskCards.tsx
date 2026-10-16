@@ -83,6 +83,7 @@ import {
   usePeekedKey,
 } from "./task-peek-store";
 import { useTaskHeadline } from "./TaskPeekWho";
+import { TaskAgentMark } from "./ScheduleTaskViews";
 import { useMarginWheel } from "./useMarginWheel";
 
 /** What the page says when there is nothing to draw — the Board's own words,
@@ -636,6 +637,7 @@ function TaskCard({
               shows. It was lifted to bold + full fg while that row was the
               conversation's last message (design.md §A); Akshil (2026-09-14)
               took the emphasis back out — one weight for the id everywhere. */}
+          <TaskAgentMark backend={task.backend} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
@@ -821,6 +823,7 @@ function TaskCard({
           <ChatMount
             file={task.target || task.project}
             sessionId={task.session_id}
+            backend={task.backend}
             chatOnly
             compact
             paramsSource="memory"
@@ -946,6 +949,7 @@ function TaskPeek({
       title={
         <span className="task-peek-title">
           <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
+          <TaskAgentMark backend={task.backend} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}
@@ -1057,6 +1061,7 @@ function TaskPeek({
         <ChatMount
           file={task.target || task.project}
           sessionId={task.session_id}
+          backend={task.backend}
           chatOnly
           peek
           paramsSource="memory"

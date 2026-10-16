@@ -85,7 +85,7 @@ def test_the_global_settings_file_is_what_a_new_chat_opens_on(tmp_path,
     # `recorded` is the app's OWN per-session record — there is no conversation
     # here to have one.
     assert out == {"model": "opus", "effort": "low", "source": "settings",
-                   "recorded": {"model": "", "effort": ""}}
+                   "backend": "claude", "recorded": {"model": "", "effort": ""}}
 
 
 def test_transcripts_in_the_folder_no_longer_speak_for_a_new_chat(tmp_path,
@@ -181,7 +181,7 @@ def test_nothing_detected_returns_empty_not_a_guess(tmp_path, monkeypatch):
     file, _ = _target(tmp_path)
     out = agent.main(action="defaults", file=file)
     assert out == {"model": "", "effort": "", "source": "",
-                   "recorded": {"model": "", "effort": ""}}
+                   "backend": "claude", "recorded": {"model": "", "effort": ""}}
 
 
 def test_unknown_values_never_leak_into_the_answer(tmp_path, monkeypatch):

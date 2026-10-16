@@ -479,7 +479,9 @@ test("the strip recovers an install already running when it remounts", () => {
   // navigation. Starting from `null` with no fetch meant the remounted strip
   // showed no progress and a second press got a 409 for an install the user
   // could not see.
-  expect(SETUP).toContain("getClaudeInstall().then(");
+  // Per agent since the Copilot twin (`useAgentSetup(backend)`); Claude's
+  // strip is the same machine with "claude".
+  expect(SETUP).toContain("getAgentInstall(backend).then(");
   // ONLY a running record is adopted: a finished one from earlier in the session
   // belongs to a problem that is already gone, and picking it up would render
   // "Done" on a button whose issue is still on screen.

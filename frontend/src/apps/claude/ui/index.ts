@@ -79,6 +79,9 @@ export {
   useComposerDefaults,
 } from "./composer-defaults";
 export type { ComposerDefaults } from "./composer-defaults";
+export { permissionLabelsFor } from "./composer-defaults";
+export { AgentSelect, fixedAgentTitle } from "./AgentSelect";
+export { AgentProvider, useAgent } from "./agent-context";
 export {
   ago,
   draftHref,

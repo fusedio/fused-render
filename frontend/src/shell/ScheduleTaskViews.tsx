@@ -34,6 +34,8 @@ import {
   useState,
 } from "react";
 import type { DragEvent as ReactDragEvent } from "react";
+import { agentLabel, agentNamed, useAgentBackends } from "@platform/lib/agent-backends";
+import { AgentMark } from "@platform/ui/AgentMark";
 import {
   cancelScheduledMessage,
   forceStart,
@@ -818,6 +820,24 @@ export function IdentityChip({ name, title, onPick, active = false }: {
       >
         {body}
       </button>
+    </span>
+  );
+}
+
+/**
+ * WHICH AGENT RUNS THIS TASK, as a mark (docs/COPILOT_BACKEND.md D18) — on the
+ * List row (and so the chat's Recent list, which borrows it), the Board card,
+ * the cards wall and the peek's header. `agentNamed` decides whether it is
+ * drawn at all: with Claude alone switched on, a Claude row carries nothing
+ * new. Subscribed, so a Preferences switch repaints every row.
+ */
+export function TaskAgentMark({ backend }: { backend?: string | null }) {
+  useAgentBackends();
+  if (!agentNamed(backend)) return null;
+  const label = agentLabel(backend);
+  return (
+    <span className="tasks-agent" title={`Runs on ${label}`} aria-label={label} role="img">
+      <AgentMark backend={backend} />
     </span>
   );
 }
@@ -3950,6 +3970,7 @@ function TaskNode({
             list that alone withholds it is a list whose rows cannot be quoted
             or carried to the Tasks page. The title is the element that gives
             way, which is what it is for. */}
+        <TaskAgentMark backend={task.backend} />
         <IdChip id={task.task_id} kind="task" />
         {/* THE FOLDER CHIP SITS HERE, between the id and the title (Akshil,
             2026-09-15): the row's left end is where it says what it IS — the id,
@@ -5282,6 +5303,9 @@ export function TaskBoard({
           target: action.target,
           message: action.body,
           session_id: action.sessionId,
+          // The thread's own agent (D2): a create naming none is pinned to
+          // the current default.
+          ...(task.backend ? { backend: task.backend } : {}),
           delay_seconds: 1,
           immediate: true,
         });
@@ -5978,6 +6002,7 @@ function TaskCard({
           {waiting
             ? <StatusIcon status="needs_attention" />
             : failedOffLane && <StatusIcon status={lane} failed />}
+          <TaskAgentMark backend={task.backend} />
           <IdChip id={task.task_id} kind="task" />
           {/* The draft chip left this head with the List row's (Akshil,
               2026-09-11) and for the same reason — it is a tag now, and the

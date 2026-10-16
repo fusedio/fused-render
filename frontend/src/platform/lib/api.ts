@@ -470,7 +470,12 @@ export interface ClaudeHealth {
   /** Who, when signed in: the CLI's own `authMethod` ("claude.ai", "console",
       "apiKey", …) plus the claude.ai account's email / org / plan when it has
       one. An env token with no CLI answer reports as an API key. null when
-      there is nothing to say. Read by the setup wizard's "Signed in" row. */
+      there is nothing to say. Read by the setup wizard's "Signed in" row.
+
+      The COPILOT snapshot (`/api/copilot/health`, D10) says one of three:
+      "copilot" (its own `copilot login`), "gh" (a `gh auth login` token the
+      app hands it) or "token" (a token already in the environment) — worded
+      by `agentAccountLine` in platform/lib/claude-health. */
   account: {
     method: string | null;
     email: string | null;
@@ -588,6 +593,12 @@ export interface ClaudeLoginStatus {
   started_at: number | null;
   /** The child's own diagnosis when a sign-in ended without signing in. */
   error: string | null;
+  /** A DEVICE-CODE sign-in's two facts (Copilot, docs/COPILOT_BACKEND.md D10):
+   *  the code to type and the page to type it on. Meaningful ONLY while
+   *  `in_flight` — the record keeps the last flow's after it ends, so a reader
+   *  must never show it otherwise. Absent for Claude, whose browser sign-in
+   *  needs no code. */
+  detail?: { code: string; url: string } | null;
 }
 
 /** Start a browser sign-in. The CLI opens the page and completes on its own
@@ -604,6 +615,97 @@ export function getClaudeLogin(): Promise<ClaudeLoginStatus> {
 export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boolean }> {
   return postJson<ClaudeLoginStatus & { canceled: boolean }>(
     "/api/claude/login/cancel", {});
+}
+
+// -- The same five doors, PER AGENT (docs/COPILOT_BACKEND.md D10) -----------
+//
+// `/api/copilot/{health, health/refresh, install, login, login/cancel}` answer
+// the same bodies as the Claude ones above, so one set of functions keyed on
+// the backend id serves both — `useAgentSetup(backend)` in claude-setup.ts is
+// the caller. The Claude-named functions stay for every reader that predates
+// the second agent. `link-path` and `doctor` are Claude-only (no Copilot twin
+// in the contract) and are not generalised.
+
+function agentRoute(backend: string, tail: string): string {
+  return `/api/${backend === "copilot" ? "copilot" : "claude"}/${tail}`;
+}
+
+export function getAgentHealth(backend: string): Promise<ClaudeHealth> {
+  return getJson<ClaudeHealth>(agentRoute(backend, "health"));
+}
+
+export function refreshAgentHealth(backend: string): Promise<ClaudeHealth> {
+  return postJson<ClaudeHealth>(agentRoute(backend, "health/refresh"), {});
+}
+
+export function startAgentInstall(
+  backend: string,
+  action: "install" | "update" = "install",
+): Promise<ClaudeInstallStatus> {
+  return postJson<ClaudeInstallStatus>(agentRoute(backend, "install"), { action });
+}
+
+export function getAgentInstall(backend: string): Promise<ClaudeInstallStatus> {
+  return getJson<ClaudeInstallStatus>(agentRoute(backend, "install"));
+}
+
+export function startAgentLogin(backend: string): Promise<ClaudeLoginStatus> {
+  return postJson<ClaudeLoginStatus>(agentRoute(backend, "login"), {});
+}
+
+export function getAgentLogin(backend: string): Promise<ClaudeLoginStatus> {
+  return getJson<ClaudeLoginStatus>(agentRoute(backend, "login"));
+}
+
+export function cancelAgentLogin(backend: string): Promise<ClaudeLoginStatus & { canceled: boolean }> {
+  return postJson<ClaudeLoginStatus & { canceled: boolean }>(
+    agentRoute(backend, "login/cancel"), {});
+}
+
+// -- The agent catalog (GET /api/agent-backends, D11) -------------------------
+//
+// What each agent CAN do and which models/efforts/modes it offers, stated by
+// the server's registry rather than hand-synced here. `backends` holds only
+// the ENABLED ones (D17), in order; `all` every one, disabled included, for the
+// Preferences switches. Read through platform/lib/agent-backends, which caches
+// and subscribes; nothing else should call this directly.
+
+export interface AgentCaps {
+  plan_mode: boolean;
+  live_model_switch: boolean;
+  live_mode_switch: boolean;
+  snapshots: boolean;
+  artifacts: boolean;
+  worktrees: boolean;
+  bg_tasks: boolean;
+  ask_user: boolean;
+  terminal_mirror: boolean;
+  mid_turn_messages: boolean;
+}
+
+export interface AgentBackendRow {
+  id: string;
+  /** "Claude" / "Copilot" — the word every surface names the agent by. */
+  label: string;
+  enabled: boolean;
+  models: { id: string; label: string }[];
+  default_model: string;
+  efforts: string[];
+  modes: string[];
+  caps: AgentCaps;
+  /** The agent's health snapshot, same keys as `/api/<agent>/health`; null
+   *  when the catalog was built without one. */
+  health: ClaudeHealth | null;
+}
+
+export interface AgentCatalog {
+  backends: AgentBackendRow[];
+  default: string;
+  all: AgentBackendRow[];
+}
+
+export function getAgentBackends(): Promise<AgentCatalog> {
+  return getJson<AgentCatalog>("/api/agent-backends");
 }
 
 /** `claude doctor` on demand — what the CLI thinks of its own installation. */
@@ -1471,6 +1573,12 @@ export interface Prefs {
   // opt-in). `available` is false off macOS and under `fused-render serve`,
   // where the section is not rendered. OPTIONAL like `launcher`.
   menubar?: { pin_enabled: boolean; available: boolean };
+  // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
+  // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
+  // one new chats and tasks open on. The server refuses a PUT that would turn
+  // the last one off (400 "turn on the other agent first"). OPTIONAL: an older
+  // server answers without it, and the reader treats absence as Claude only.
+  agents?: { claude: boolean; copilot: boolean; default: string };
 }
 
 export interface LauncherPrefs {
@@ -1819,6 +1927,16 @@ export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { default_model: model });
+}
+
+/** One agent's switch (D17). The server answers 400 with its own sentence
+ *  when this would turn the last enabled agent off; the caller shows it. */
+export function putAgentEnabled(backend: string, enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { [`${backend}_enabled`]: enabled });
+}
+
+export function putDefaultBackend(backend: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { default_backend: backend });
 }
 
 // One capability's inference engine. A MAP rather than a pair, because the
@@ -3424,6 +3542,10 @@ export interface Task {
    */
   model: string;
   effort: string;
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" (docs/COPILOT_BACKEND.md
+   *  D2), chosen at the first turn and immutable. Optional: an older server
+   *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
+  backend?: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.
   //
@@ -3734,6 +3856,7 @@ export type TaskPulseTask = Pick<
   | "next_run_entry"
   | "next_run_repeats"
   | "entrypoint"
+  | "backend"
 >;
 
 /** The model / thinking a NEW task opens on: the global Claude preference
@@ -4167,8 +4290,10 @@ export function markWholeTaskRead(
 // composer's constants speaking, and the two cases are the same fact here.
 export function readChatSettings(
   sessionId: string,
-): Promise<{ model: string; effort: string }> {
-  return getJson<{ model: string; effort: string }>(
+): Promise<{ model: string; effort: string; backend?: string }> {
+  // `backend` (docs/COPILOT_BACKEND.md §8): the agent the record names; absent
+  // on an older server.
+  return getJson<{ model: string; effort: string; backend?: string }>(
     `/api/tasks/settings?session_id=${encodeURIComponent(sessionId)}`,
   );
 }
@@ -5988,6 +6113,8 @@ export interface ScheduledMessage {
   // on the first edit.
   model?: string;
   effort?: string;
+  /** The agent the entry's runs use (D2); absent on an older server. */
+  backend?: string;
   state: ScheduledState;
   created: string;
   fired: string;
@@ -6120,6 +6247,10 @@ export function scheduleMessage(body: {
   // model; see the note at the create endpoint.
   model?: string;
   effort?: string;
+  // WHICH AGENT the entry's runs use (docs/COPILOT_BACKEND.md D2). The server
+  // refuses one switched off in Preferences (400) and, for an entry that
+  // continues a session, keeps the session's own.
+  backend?: string;
   // All three are omitted rather than sent empty: blank means "no opinion", and
   // for `title` that is a meaningful answer — the server names the task itself.
   title?: string;

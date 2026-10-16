@@ -18,6 +18,9 @@ import { chipHint, chipWhen } from "./run-when";
 import { useMinuteTick } from "./useMinuteTick";
 
 import {
+  ACP_KEY,
+  acpOf,
+  withoutAcp,
   ANSWERABLE_TOOL,
   CHIP_DIFF_CLIP_LINES,
   chipImageUrl,
@@ -185,7 +188,8 @@ function EditDiff({ input }: { input: Record<string, unknown> }) {
 function usedKeys(seg: ToolSegment, inp: Record<string, unknown>): string[] {
   switch (seg.name) {
     case "Edit":
-      return ["file_path", "old_string", "new_string", "replace_all"];
+      // `diff`: a Copilot Edit's change, drawn by EditDiff in place of the pair.
+      return ["file_path", "old_string", "new_string", "replace_all", "diff"];
     case "Write":
       return ["file_path", "content"];
     case "Read":
@@ -223,7 +227,8 @@ function ChipBody({
   nested?: NestedRenderer;
 }) {
   const inp = asRecord(seg.input);
-  const extra = leftoverInput(inp, usedKeys(seg, inp));
+  // The Copilot sidecar (`_acp`) is plumbing, never a leftover.
+  const extra = leftoverInput(inp, [...usedKeys(seg, inp), ACP_KEY]);
   const out = chipOutput(seg.output);
   const children = Array.isArray(seg.children) ? seg.children : [];
   return (
@@ -351,9 +356,13 @@ function renderInput(seg: ToolSegment, inp: Record<string, unknown>, cwd?: strin
     default:
       // No renderer for this tool, so the input IS the body: a chip that showed
       // part of an unknown call would be a chip that misdescribed what ran.
-      return Object.keys(inp).length ? (
-        <CopyPre copy={JSON.stringify(inp, null, 2)}>{JSON.stringify(inp, null, 2)}</CopyPre>
-      ) : null;
+      // Less the Copilot sidecar, which the header already says (`acpOf`).
+      {
+        const bare = withoutAcp(inp);
+        return Object.keys(bare).length ? (
+          <CopyPre copy={JSON.stringify(bare, null, 2)}>{JSON.stringify(bare, null, 2)}</CopyPre>
+        ) : null;
+      }
   }
 }
 
@@ -476,10 +485,23 @@ function ChipHeaderView({
   model,
 }: ChipHeaderProps & { model: SubagentChipModel }) {
   const pretty = seg.orphan ? model.title : prettyToolName(raw);
+  // A COPILOT TOOL WE HAVE NO NAME FOR arrives under its free-text ACP title
+  // (D14) and draws as a plain chip; its ACP `kind` ("execute", "edit",
+  // "fetch", …) is the one classifier it has, so it rides as the chip's hint
+  // and as `data-acp-kind` for the stylesheet.
+  const acp = acpOf(seg.input);
+  const kindHint = acp?.kind && acp.kind !== "other" ? acp.kind : "";
   return (
       <CollapsibleTrigger
         className="chip-summary"
-        {...(model.hint ? { title: model.hint } : pretty !== raw ? { title: raw } : {})}
+        {...(kindHint ? { "data-acp-kind": kindHint } : {})}
+        {...(model.hint
+          ? { title: model.hint }
+          : pretty !== raw
+            ? { title: raw }
+            : kindHint
+              ? { title: `${raw} (${kindHint})` }
+              : {})}
       >
         <span className="chip-marker" aria-hidden="true">
           ▶

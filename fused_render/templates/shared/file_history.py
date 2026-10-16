@@ -122,6 +122,36 @@ def history_root() -> str:
     return os.path.join(config_dir(), _HISTORY_SUBDIR)
 
 
+#: The `agent_roots` sibling, loaded once on first use (`_transcript_roots`).
+_agent_roots = None
+
+
+def _transcript_roots() -> list:
+    """Every agent backend's projects dir — Claude Code's and fused's own
+    Copilot root — from the `agent_roots` sibling, loaded BY PATH so a user's
+    own module of that name cannot shadow it (the shared-utility rule). Only
+    `enrich` wants this: file-history itself is Claude Code's store and stays
+    under `config_dir()`.
+
+    The module is loaded ONCE, lazily, into `_agent_roots`; the roots it
+    answers are still read live on every call (they follow the env)."""
+    global _agent_roots
+    try:
+        if _agent_roots is None:
+            import importlib.util
+            path = os.path.join(_HERE, "agent_roots.py")
+            spec = importlib.util.spec_from_file_location(
+                "_file_history_agent_roots", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _agent_roots = module
+        return [root for _backend, root in _agent_roots.transcript_roots()]
+    except Exception:
+        # The sibling is part of this package; its absence is a broken
+        # install, and enrichment degrades to Claude's root rather than fail.
+        return [os.path.join(config_dir(), _PROJECTS_SUBDIR)]
+
+
 def path_hash(file: str) -> str:
     """The store's filename key for a path.
 
@@ -415,10 +445,11 @@ def _ghosts(file, sessions):
     """
     ap = os.path.abspath(file)
     out = []
-    projects = os.path.join(config_dir(), _PROJECTS_SUBDIR)
+    roots = _transcript_roots()
     for session, _dir in sessions:
-        for path in _glob.glob(os.path.join(projects, "*",
-                                            _glob.escape(session) + ".jsonl")):
+        for path in [p for projects in roots
+                     for p in _glob.glob(os.path.join(
+                         projects, "*", _glob.escape(session) + ".jsonl"))]:
             try:
                 if os.path.getsize(path) > TRANSCRIPT_BYTE_CAP:
                     continue

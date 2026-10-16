@@ -4,22 +4,26 @@
 // `notify` while the composer keeps the words.
 import { LOCAL_COMMANDS, type ClassifiedCommand } from "../protocol/commands";
 import { parseWorktreeCommand } from "../protocol/worktrees";
-import { EFFORTS, MODELS, MODEL_LABELS } from "./composer-defaults";
+import { agentLabel, capsOf, effortsOf, modelLabelsOf, modelsOf } from "@platform/lib/agent-backends";
 
 /** `/model <name>`'s argument as a model value: a shortlist id or its label
- *  (any case), or a full Claude model id passed through as typed — or "". */
-export function localModelArg(arg: string): string {
+ *  (any case) off the AGENT's catalog row (docs/COPILOT_BACKEND.md D11), or a
+ *  full model id passed through as typed — or "". Claude's list when no
+ *  agent is named, which is the static row until the catalog lands. */
+export function localModelArg(arg: string, backend = "claude"): string {
   const want = arg.trim().toLowerCase();
   if (!want) return "";
-  const short = MODELS.find((m) => m === want || (MODEL_LABELS[m] ?? "").toLowerCase() === want);
+  const labels = modelLabelsOf(backend);
+  const short = modelsOf(backend).find((m) => m === want || (labels[m] ?? "").toLowerCase() === want);
   if (short) return short;
-  return /^claude-[a-z0-9.-]+$/.test(want) ? want : "";
+  const full = backend === "copilot" ? /^[a-z][a-z0-9.-]+$/ : /^claude-[a-z0-9.-]+$/;
+  return full.test(want) ? want : "";
 }
 
 /** `/effort <level>`'s argument as a pill value, or "". */
-export function localEffortArg(arg: string): string {
+export function localEffortArg(arg: string, backend = "claude"): string {
   const want = arg.trim().toLowerCase();
-  return (EFFORTS as readonly string[]).includes(want) ? want : "";
+  return effortsOf(backend).includes(want) ? want : "";
 }
 
 const hint = (name: string) => LOCAL_COMMANDS.find((c) => c.name === name)?.hint ?? "";
@@ -35,6 +39,8 @@ export type LocalPlan =
 export interface LocalContext {
   /** A worktree menu is mounted AND has said this target is in a git repo. */
   worktreeReady: boolean;
+  /** Whose models `/model` and `/effort` validate against; Claude when absent. */
+  backend?: string;
 }
 
 export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): LocalPlan {
@@ -42,24 +48,30 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
     case "clear":
     case "help":
     case "tasks":
+      // No background tasks to show for an agent without them (§7 `bg_tasks`).
+      if (cmd.name === "tasks" && !capsOf(ctx.backend).bg_tasks) {
+        return { refuse: `${agentLabel(ctx.backend)} has no background tasks` };
+      }
       // An argument here is words the reader meant to keep (a message pasted
       // after the command): refuse rather than throw them away.
       if (cmd.arg) return { refuse: `/${cmd.name} takes no argument` };
       if (cmd.name === "help") return { refuse: "/help opens the command menu" };
       return { do: cmd.name };
     case "model": {
-      const value = localModelArg(cmd.arg);
+      const value = localModelArg(cmd.arg, ctx.backend);
       if (!value) {
-        return { refuse: `Usage: /model ${hint("model")} (${MODELS.join(", ")}, or a full claude-… model id)` };
+        const full = ctx.backend === "copilot" ? "a full model id" : "a full claude-… model id";
+        return { refuse: `Usage: /model ${hint("model")} (${modelsOf(ctx.backend).join(", ")}, or ${full})` };
       }
       return { do: "model", value };
     }
     case "effort": {
-      const value = localEffortArg(cmd.arg);
-      if (!value) return { refuse: `Usage: /effort ${hint("effort")} (one of ${EFFORTS.join(", ")})` };
+      const value = localEffortArg(cmd.arg, ctx.backend);
+      if (!value) return { refuse: `Usage: /effort ${hint("effort")} (one of ${effortsOf(ctx.backend).join(", ")})` };
       return { do: "effort", value };
     }
     case "worktree": {
+      if (!capsOf(ctx.backend).worktrees) return { refuse: `${agentLabel(ctx.backend)} has no worktrees` };
       if (!ctx.worktreeReady) {
         return { refuse: "/worktree works in a chat on a file or folder inside a git repository" };
       }

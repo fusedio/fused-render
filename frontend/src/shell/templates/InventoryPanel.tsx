@@ -1,3 +1,4 @@
+import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useRef, useState } from "react";
 import {
   deleteTemplate,
@@ -347,6 +348,7 @@ function InventoryRow({
   onOpenInClaude?: () => void; // only for editable (user) sources; core is read-only
   onDelete?: () => void; // only for editable (user) sources; core is undeletable
 }) {
+  useAgentBackends();
   return (
     <tr className="templates-row">
       <td className="templates-inv-check">
@@ -387,7 +389,8 @@ function InventoryRow({
         <button type="button" className="templates-ghost-btn" onClick={onOpen} title="Open the folder in the file explorer">
           Open
         </button>
-        {onOpenInClaude && (
+        {/* Follows the Claude switch (D17), as the Explorer's item does. */}
+        {onOpenInClaude && isBackendEnabled("claude") && (
           <button
             type="button"
             className="templates-ghost-btn"

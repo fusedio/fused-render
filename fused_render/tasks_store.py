@@ -113,11 +113,23 @@ import urllib.parse
 from datetime import datetime, timezone
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.agent_backends import roots
 
-# CLAUDE_CONFIG_DIR wins where set — same rule (and same deliberate local
-# duplication) as server/routers/claude_sessions.py and claude_artifacts.py.
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+# Claude Code's projects dir, read at import (CLAUDE_CONFIG_DIR wins where
+# set — `agent_roots.claude_dir`). Kept module-level under its old name
+# because the tests monkeypatch it at a tmp dir; `projects_roots()` is what
+# the readers walk, and it puts the Copilot root beside whatever this says.
+CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
+
+
+def projects_roots(projects_dir: str | None = None) -> list[tuple[str, str]]:
+    """`[(backend, projects dir), ...]` — every root a transcript can sit
+    under: the Claude root (`projects_dir` when a caller names one, else
+    `PROJECTS_DIR`) and fused's own Copilot root (docs/COPILOT_BACKEND.md D3).
+    Always both, whatever the Preferences toggles say: a disabled backend's
+    old sessions still belong in the list, read-only."""
+    return roots.projects_roots(projects_dir or PROJECTS_DIR)
 
 # The same directory claude_sessions.py keeps session_names.json and triage.json
 # in, and for the same reason: global, never branch-nested. Derived from the env
@@ -903,8 +915,21 @@ def session_settings(state: dict, session_id: str) -> tuple[str, str]:
     return (str(rec.get("model") or ""), str(rec.get("effort") or ""))
 
 
+def session_backend(state: dict, session_id: str) -> str:
+    """The agent backend recorded for one session ("claude" | "copilot"), ""
+    when this store has no answer — which is every session that predates the
+    field, and which the row then settles from the transcript's root
+    (`roots.backend_for_transcript`). A separate getter rather than a third
+    tuple member: `session_settings`'s pair is unpacked at every pill site."""
+    rec = state.get(str(session_id or ""))
+    if not isinstance(rec, dict):
+        return ""
+    value = str(rec.get("backend") or "")
+    return value if value in roots.BACKENDS else ""
+
+
 def record_settings(session_id: str, model: str = "", effort: str = "",
-                    now: float | None = None) -> dict:
+                    now: float | None = None, backend: str = "") -> dict:
     """Record what this conversation runs with; return the stored record.
 
     ONLY THE FIELDS GIVEN. An empty `model` means "I am not saying anything
@@ -919,7 +944,13 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
     session_id = str(session_id or "").strip()
     model = str(model or "").strip()
     effort = str(effort or "").strip()
-    if not session_id or not (model or effort):
+    # `backend` is the third field of the record (D2): which agent owns the
+    # conversation, chosen at its first turn and never changed — so a known
+    # value is written once and a later writer naming nothing leaves it.
+    backend = str(backend or "").strip()
+    if backend not in roots.BACKENDS:
+        backend = ""
+    if not session_id or not (model or effort or backend):
         return {}
     stamp = time.time() if now is None else float(now)
 
@@ -930,6 +961,8 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
             rec["model"] = model
         if effort:
             rec["effort"] = effort
+        if backend:
+            rec["backend"] = backend
         rec["at"] = stamp
         state[session_id] = rec
         return rec, True
@@ -1927,12 +1960,23 @@ def project_of(cwd: str) -> str:
 
 
 def transcripts(projects_dir: str | None = None) -> list[str]:
-    """Every session transcript on this machine, in a stable order."""
-    root = projects_dir or PROJECTS_DIR
-    try:
-        return sorted(glob.glob(os.path.join(root, "*", "*.jsonl")))
-    except OSError:  # pragma: no cover — glob is forgiving, the dir may vanish
-        return []
+    """Every session transcript on this machine, in a stable order — across
+    every backend's root (`projects_roots`). Which root a path came from is
+    `roots.backend_for_transcript(path)`; `transcripts_by_backend` hands both
+    back for the one caller that files rows by it."""
+    return [path for _backend, path in transcripts_by_backend(projects_dir)]
+
+
+def transcripts_by_backend(projects_dir: str | None = None) -> list[tuple[str, str]]:
+    """`[(backend, path), ...]`, Claude's root first, each root sorted."""
+    out: list[tuple[str, str]] = []
+    for backend, root in projects_roots(projects_dir):
+        try:
+            paths = sorted(glob.glob(os.path.join(root, "*", "*.jsonl")))
+        except OSError:  # pragma: no cover — glob is forgiving, the dir may vanish
+            continue
+        out.extend((backend, path) for path in paths)
+    return out
 
 
 def backfill(projects_dir: str | None = None) -> dict[str, str]:
