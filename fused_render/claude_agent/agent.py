@@ -7389,6 +7389,28 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
 
+    # The run's own first message rides back on every poll so a re-attaching
+    # page (mode switch / reload killed the poll loop, subprocess kept going)
+    # can restore the user turn it never saw. Read here, ahead of the error
+    # rewrite (per backend, `meta["backend"]`) and of the registry update
+    # below, which persists the cursor that `_run_context_window` relies on.
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            meta = {}
+    except (OSError, json.JSONDecodeError):
+        meta = {}
+    backend = _meta_backend(meta)
+    # COPILOT'S WINDOW SIZE, for the meter: onto this poll's reading as
+    # `window` (no model id says it for `auto`). Claude's rows never carry
+    # one and its page derives the size from the model id, so a Claude poll
+    # neither reads nor writes anything for it. No reading this poll, no key:
+    # `None` already means "keep what you have".
+    window = _run_context_window(run_dir, rows) if backend == "copilot" else 0
+    if window and isinstance(context, dict):
+        context = {**context, "window": window}
+
     # The task registry (SPEC T-1) and the command list (SPEC C-2): the rows
     # this window holds that the persisted registry has not absorbed yet,
     # applied once, under the run's registry lock.
@@ -7557,19 +7579,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     if stop_pending:
         error = "Stopped before the first reply."
 
-    # The run's own first message rides back on every poll so a re-attaching
-    # page (mode switch / reload killed the poll loop, subprocess kept going)
-    # can restore the user turn it never saw. Read here, ahead of the error
-    # rewrite, because that rewrite is per backend (`meta["backend"]`).
-    try:
-        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
-            meta = json.load(f)
-        if not isinstance(meta, dict):
-            meta = {}
-    except (OSError, json.JSONDecodeError):
-        meta = {}
-    backend = _meta_backend(meta)
-
     rewritten = _overload_error(error, gave_up or retry)
     error = rewritten if rewritten != error else _account_error(error, backend)
 
@@ -7737,7 +7746,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # tools is seven responses — so the meter steps up during a long
             # turn instead of freezing until the transcript refresh lands.
             # `None` when this poll's window held no response at all: "nothing
-            # new", which the page reads as "keep what you have".
+            # new", which the page reads as "keep what you have". A Copilot
+            # reading also carries `window` (see where `window` is read).
             "context": context,
             # The page's own stop button sets a variable and can swallow the
             # resulting error itself, but a stop from anywhere else (the
@@ -8548,6 +8558,69 @@ def _row_ts(row: dict) -> float | None:
     return parsed.timestamp()
 
 
+# THE CONTEXT WINDOW'S SIZE, for a Copilot run. Claude's page derives it from
+# the model id; Copilot's `auto` names no model, so its host reports the size
+# ACP's `usage_update` carries as `context_window` — on the `system/init` row
+# when known by then, else on a `system/status` row the moment it is. Kept in
+# the run dir once seen, because `_poll` reads only the rows past its cursor
+# and the row that said it is usually turns behind.
+_CONTEXT_WINDOW_FILE = "context_window"
+
+
+def _row_context_window(row) -> int:
+    """The `context_window` an init/status row carries, 0 when none."""
+    if not isinstance(row, dict) or row.get("type") != "system" \
+            or row.get("parent_tool_use_id") \
+            or row.get("subtype") not in ("init", "status"):
+        return 0
+    w = row.get("context_window")
+    if isinstance(w, bool) or not isinstance(w, int) or w <= 0:
+        return 0
+    return w
+
+
+def _run_context_window(run_dir: str, rows: list | None = None) -> int:
+    """The newest window size this run's host reported, 0 when none yet.
+
+    `rows` is `_poll`'s window of `out.jsonl` (everything past its cursor).
+    Every row before the cursor was in some earlier poll's window, and that
+    poll recorded what it saw here — so the record plus this window is the
+    whole file without rereading it. A newer size in `rows` replaces the
+    record. `rows=None` (history, which has no window of its own) answers
+    from the record, and scans the file once when there is none (a run no
+    poll ever watched — a scheduled task opened afterwards)."""
+    path = os.path.join(run_dir, _CONTEXT_WINDOW_FILE)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            kept = int(fh.read().strip() or 0)
+    except (OSError, ValueError):
+        kept = None
+    if rows is None:
+        if kept is not None:
+            return kept
+        rows = []
+        try:
+            with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+                for line in fh:
+                    if b'"context_window"' in line:
+                        try:
+                            rows.append(json.loads(line.decode("utf-8", "replace")))
+                        except ValueError:
+                            continue
+        except OSError:
+            return 0
+    newest = 0
+    for row in rows:
+        newest = _row_context_window(row) or newest
+    if newest and newest != kept:
+        try:
+            with _private_open(path) as fh:
+                fh.write(str(newest))
+        except OSError:
+            pass   # unrecorded costs a later poll the size, never this one
+    return newest or kept or 0
+
+
 # THE TEXTS THE CLI WRITES INSTEAD OF A REPLY (`ERROR_TEXTS`, spec §9). A row
 # carrying one of these is bookkeeping — an interrupt, a refused tool, a turn
 # nobody asked an answer of — and its `usage` is not the state of the window.
@@ -8716,7 +8789,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                else _session_backend(session_id) or DEFAULT_BACKEND)
     # SPEC T-1: the task registry of this session's LAST run, while its run
     # dir is still on disk — a reload shows the tasks panel it left.
-    task_registry, host_run_id = _session_task_registry(file, session_id)
+    task_registry, host_run_id, last_run = _session_task_registry(file, session_id)
     tasks = _task_list(task_registry)
     # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
     # is the watermark the page follows the conversation by — it re-renders when
@@ -8964,6 +9037,12 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                        "cache_read_input_tokens": 0, "output_tokens": 0,
                        "model": (context or {}).get("model", ""),
                        "compacted": True}
+    # A Copilot reading carries the window size its host reported (`_poll`'s
+    # `context.window`), off the session's newest run dir while it is on disk.
+    if backend == "copilot" and last_run and isinstance(context, dict):
+        window = _run_context_window(last_run)
+        if window:
+            context = {**context, "window": window}
     # `transcript` is the watermark the page's live watch compares against
     # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
     # while we were parsing shows up as a change rather than being missed.
@@ -9150,10 +9229,12 @@ def _attach_subagent_children(segments: list, subagents,
 
 
 def _session_task_registry(file: str, session_id: str,
-                           limit: int | None = _LIVE_SCAN_LIMIT) -> tuple[dict, str]:
-    """`(registry, host_run_id)`: the task registry (`bg_tasks.json`) of the
-    newest run dir belonging to this chat's session, live or not — {} when none
-    is left — and that run's id when its HOST is still alive, else "".
+                           limit: int | None = _LIVE_SCAN_LIMIT) -> tuple[dict, str, str]:
+    """`(registry, host_run_id, run_dir)`: the task registry (`bg_tasks.json`)
+    of the newest run dir belonging to this chat's session, live or not — {}
+    when none is left — that run's id when its HOST is still alive, else "",
+    and the run dir itself ("" when none), which history also reads a Copilot
+    run's window size from (`_run_context_window`).
 
     HOST RUN ID: `_live_run` needs an OPEN turn, so once the main turn ended
     while a background subagent still runs, history has no `live_run` and the
@@ -9166,12 +9247,12 @@ def _session_task_registry(file: str, session_id: str,
     such records come back with status `unknown` (and `ended_at` null) rather
     than a confident `running` the panel would tick a live clock for."""
     if not session_id or _bad_id(session_id):
-        return {}, ""
+        return {}, "", ""
     file = os.path.abspath(file)
     try:
         names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
-        return {}, ""
+        return {}, "", ""
     if limit is not None:
         names = names[:limit]
     for name in names:
@@ -9195,8 +9276,8 @@ def _session_task_registry(file: str, session_id: str,
                 if _task_active(rec):
                     rec["status"] = "unknown"
                     rec["ended_at"] = None
-        return registry, (name if _host_alive(run_dir) else "")
-    return {}, ""
+        return registry, (name if _host_alive(run_dir) else ""), run_dir
+    return {}, "", ""
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:

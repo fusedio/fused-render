@@ -835,3 +835,85 @@ def test_main_accepts_backend_everywhere_and_poll_reports_it(agent, tmp_path, ta
         fh.write(json.dumps({"type": "system", "subtype": "init",
                              "session_id": SID_COPILOT}) + "\n")
     assert agent._poll("run-1")["backend"] == "copilot"
+
+
+# ------------------------------------------------- the meter's window size
+
+def _reply(model="auto", used=1000):
+    return {"type": "assistant", "message": {
+        "role": "assistant", "model": model,
+        "content": [{"type": "text", "text": "hi"}],
+        "usage": {"input_tokens": used, "output_tokens": 5}}}
+
+
+def _out(run_dir, rows, mode="w"):
+    with open(os.path.join(run_dir, "out.jsonl"), mode) as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+
+
+def test_poll_context_carries_the_newest_copilot_window(agent, tmp_path):
+    """Gap 2: the host reports the size on init or a later status row; the
+    poll's `context` carries the newest as `window`, and keeps it once the
+    row that said it is behind the cursor."""
+    run_dir = _live_run(agent, tmp_path)
+    _out(run_dir, [
+        {"type": "system", "subtype": "init", "session_id": SID_COPILOT,
+         "context_window": 128000},
+        _reply(used=1000)])
+    ctx = agent._poll("run-1")["context"]
+    assert ctx["window"] == 128000 and ctx["input_tokens"] == 1000
+    _out(run_dir, [{"type": "system", "subtype": "status",
+                    "context_window": 200000}, _reply(used=2000)], mode="a")
+    assert agent._poll("run-1")["context"]["window"] == 200000
+    # Rows past the cursor no longer say it: the record does.
+    assert agent._run_context_window(run_dir, [_reply()]) == 200000
+    assert agent._run_context_window(run_dir, []) == 200000
+    # A subagent's row, a non-int, a bool and a zero are not the window.
+    for bad in ({"type": "system", "subtype": "status", "context_window": 9,
+                 "parent_tool_use_id": "t"},
+                {"type": "system", "subtype": "status", "context_window": "9"},
+                {"type": "system", "subtype": "status", "context_window": True},
+                {"type": "system", "subtype": "status", "context_window": 0}):
+        assert agent._row_context_window(bad) == 0
+
+
+def test_poll_context_has_no_window_until_known_and_claude_is_untouched(agent, tmp_path):
+    run_dir = _live_run(agent, tmp_path)
+    _out(run_dir, [{"type": "system", "subtype": "init",
+                    "session_id": SID_COPILOT}, _reply()])
+    assert "window" not in agent._poll("run-1")["context"]
+    assert not os.path.exists(os.path.join(run_dir, "context_window"))
+    # A Claude run: no key, no record, even if a row happened to carry one.
+    claude = os.path.join(agent.RUNS, "run-2")
+    os.makedirs(claude)
+    with open(os.path.join(claude, "meta.json"), "w") as fh:
+        json.dump({"file": "/f", "message": "m", "backend": "claude"}, fh)
+    with open(os.path.join(claude, "pid"), "w") as fh:
+        fh.write(str(os.getpid()))
+    _out(claude, [{"type": "system", "subtype": "init", "session_id": SID_CLAUDE,
+                   "context_window": 1}, _reply("claude-opus-5-5")])
+    assert "window" not in agent._poll("run-2")["context"]
+    assert not os.path.exists(os.path.join(claude, "context_window"))
+
+
+def test_history_context_carries_the_copilot_window(agent, target):
+    file, workdir = target
+    _transcript(agent, "copilot", workdir, SID_COPILOT, [
+        dict(_said("hello", workdir), uuid="u1"),
+        dict(_reply(used=4321), uuid="a1")])
+    # No run dir left: the reading has no window.
+    assert "window" not in agent._history(file, SID_COPILOT)["context"]
+    run_dir = os.path.join(agent.RUNS, "20261016-120000-aaa")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": file, "message": "hello", "resumed_from": "",
+                   "session_id": SID_COPILOT, "backend": "copilot"}, fh)
+    # A run no poll ever watched: one scan of out.jsonl, then recorded.
+    _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_COPILOT},
+                   {"type": "system", "subtype": "status", "context_window": 64000},
+                   _reply()])
+    ctx = agent._history(file, SID_COPILOT)["context"]
+    assert ctx["window"] == 64000 and ctx["input_tokens"] == 4321
+    with open(os.path.join(run_dir, "context_window")) as fh:
+        assert fh.read() == "64000"
