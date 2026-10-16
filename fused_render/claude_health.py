@@ -204,42 +204,14 @@ def _shell_probe() -> Optional[str]:
     binary somewhere no list will ever guess, and all of them work by editing
     the user's shell profile. Asking that profile is what finds them.
 
-    Ported from the learn content's check_env.py, which had been doing this
-    correctly and alone. Its two hard-won details are kept:
-
-      * PYTHONHOME/PYTHONPATH are scrubbed. The packaged app runs a bundled
-        interpreter and exports both; a child that inherits them and is not
-        that interpreter dies with "No module named 'encodings'".
-      * three flag spellings are tried. `-lic` is what picks up an interactive
-        rc file (where nvm/volta shims are usually set up), but not every shell
-        accepts the combined form, and a shell that rejects its flags prints
-        nothing rather than failing loudly.
-
     LAST RESORT, never first: it costs seconds and spawns the user's whole
     profile. Only reached when the override, PATH and every candidate missed,
     and its answer is cached like everything else here.
     """
-    shell = os.environ.get("SHELL") or "/bin/bash"
-    if not executable(shell):
-        return None
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("PYTHONHOME", "PYTHONPATH")}
-    for flags in (["-lic"], ["-l", "-c"], ["-ic"]):
-        try:
-            out = subprocess.run(
-                [shell, *flags, "command -v claude"],
-                capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
-                **SUBPROCESS_KWARGS,
-            ).stdout
-        except (OSError, subprocess.SubprocessError):
-            continue
-        for line in (out or "").splitlines():
-            # `command -v` may answer with a shell function or alias rather
-            # than a path; only an executable file is something we can spawn.
-            cand = line.strip()
-            if cand and executable(cand):
-                return cand
-    return None
+    from fused_render import login_path
+
+    path = login_path.login_path()
+    return shutil.which("claude", path=path) if path else None
 
 
 def resolve(allow_shell: bool = True) -> tuple:
@@ -1172,12 +1144,6 @@ def warm_in_background() -> None:
     thread that raised would cost the log a traceback and change nothing else.
     """
     def _run() -> None:
-        try:
-            from fused_render.claude_agent import agent_module
-
-            agent_module()._login_path()
-        except Exception:  # noqa: BLE001
-            pass
         try:
             snapshot()
         except Exception:  # noqa: BLE001 - a warm-up must never be the failure

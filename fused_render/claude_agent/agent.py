@@ -2638,65 +2638,6 @@ def _shell_prefix_path() -> str:
 _STRIPPED_PYTHON_ENV = ("PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP",
                         "PYTHONUSERBASE", "PYTHONINSPECT")
 
-_LOGIN_PATH_ENV = "FUSED_RENDER_LOGIN_PATH"
-_LOGIN_PATH_MARK = "__FUSED_RENDER_LOGIN_PATH__"
-_SYSTEM_PATH = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
-_FALLBACK_PATH_DIRS = ("/opt/homebrew/bin", "/opt/homebrew/sbin",
-                       "/usr/local/bin", "~/.local/bin")
-_login_path_lock = threading.Lock()
-_login_path_cache = None
-
-
-def _has_controlling_tty() -> bool:
-    try:
-        os.close(os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY))
-    except OSError:
-        return False
-    return True
-
-
-def _probe_login_path() -> str:
-    shell = os.environ.get("SHELL") or "/bin/zsh"
-    if not os.path.isabs(shell):
-        return ""
-    env = {k: v for k, v in os.environ.items() if k not in _STRIPPED_PYTHON_ENV}
-    env["PATH"] = os.pathsep.join(_SYSTEM_PATH)
-    script = "echo %s; /usr/bin/printenv PATH" % _LOGIN_PATH_MARK
-    attempts = ((["-l", "-c"],) if _has_controlling_tty()
-                else (["-lic"], ["-l", "-c"]))
-    for flags in attempts:
-        try:
-            out = subprocess.run(
-                [shell, *flags, script], stdin=subprocess.DEVNULL,
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", env=env, timeout=5, close_fds=False).stdout
-        except (OSError, subprocess.SubprocessError):
-            continue
-        _, found, tail = out.rpartition(_LOGIN_PATH_MARK + "\n")
-        path = tail.partition("\n")[0].strip() if found else ""
-        if path:
-            return path
-    return ""
-
-
-def _login_path() -> str:
-    global _login_path_cache
-    inherited = os.environ.get(_LOGIN_PATH_ENV)
-    if inherited is not None:
-        return inherited
-    with _login_path_lock:
-        if _login_path_cache is None:
-            _login_path_cache = _probe_login_path()
-        return _login_path_cache
-
-
-def _widen_path(path: str, login: str) -> str:
-    parts = [p for p in path.split(os.pathsep) if p]
-    head = ([p for p in login.split(os.pathsep) if p]
-            + [os.path.expanduser(p) for p in _FALLBACK_PATH_DIRS])
-    cut = next((i for i, p in enumerate(parts) if p in _SYSTEM_PATH), len(parts))
-    return os.pathsep.join(dict.fromkeys(parts[:cut] + head + parts[cut:]))
-
 
 def _spawn_env(chat_id: str = "") -> dict:
     """`os.environ`, adjusted the same way for every `claude` spawn — the
@@ -2734,9 +2675,6 @@ def _spawn_env(chat_id: str = "") -> dict:
     way — it is ANDed into the same branch — so this cannot override it."""
     env = os.environ.copy()
     env.pop("FUSED_ENV", None)
-    login = _login_path()
-    env[_LOGIN_PATH_ENV] = login
-    env["PATH"] = _widen_path(env.get("PATH", ""), login)
     # The claude CLI is node, and its hooks, MCP servers and the shell-prefix
     # wrapper run the *system* python3, which dies on the packaged app's
     # PYTHONHOME ("No module named 'encodings'") and fails every Bash command.

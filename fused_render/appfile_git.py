@@ -79,13 +79,6 @@ def _env() -> dict:
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1"}
     # No interactive ssh prompts either (passphrase, unknown host key).
     env.setdefault("GIT_SSH_COMMAND", "ssh -oBatchMode=yes")
-    # A Finder-launched .app gets a minimal PATH (/usr/bin:/bin): credential
-    # helpers configured as PATH commands (gh's `!gh auth git-credential`, a
-    # Homebrew git-credential-manager) silently fail there and https auth
-    # never happens. Widen with the usual install locations.
-    extra = ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
-    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
-    env["PATH"] = os.pathsep.join(parts + [p for p in extra if p not in parts])
     return env
 
 

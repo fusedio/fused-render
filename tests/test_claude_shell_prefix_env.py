@@ -87,22 +87,4 @@ def test_spawn_env_strips_bundle_python_vars(agent, monkeypatch):
     for env in (agent._spawn_env(), agent._spawn_env("chat-1")):
         for name in _PY_VARS:
             assert name not in env
-        assert env["PATH"].split(os.pathsep)[0] == "/opt/homebrew/bin"
-        assert env["PATH"].split(os.pathsep)[-2:] == ["/usr/bin", "/bin"]
-
-
-def test_spawn_env_puts_login_path_after_app_dirs(agent, monkeypatch):
-    monkeypatch.setenv("PATH", f"{_BUNDLE}/bin:/usr/bin:/bin:/usr/sbin:/sbin")
-    monkeypatch.delenv(agent._LOGIN_PATH_ENV, raising=False)
-    login = "/Users/me/.bun/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    calls = []
-    monkeypatch.setattr(agent, "_probe_login_path",
-                        lambda: calls.append(1) or login)
-    env = agent._spawn_env()
-    assert env["PATH"].startswith(f"{_BUNDLE}/bin:" + login + ":")
-    assert os.path.expanduser("~/.local/bin") in env["PATH"].split(os.pathsep)
-    assert env[agent._LOGIN_PATH_ENV] == login
-    monkeypatch.setenv("PATH", env["PATH"])
-    monkeypatch.setenv(agent._LOGIN_PATH_ENV, env[agent._LOGIN_PATH_ENV])
-    assert agent._spawn_env("chat-1")["PATH"] == env["PATH"]
-    assert calls == [1]
+        assert env["PATH"] == "/usr/bin:/bin"

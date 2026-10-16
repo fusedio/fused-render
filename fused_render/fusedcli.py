@@ -340,9 +340,9 @@ def export_fused_cli_env() -> str | None:
                        wrapper, exc)
         os.environ.pop(CLI_DIR_ENV, None)
         return None
-    path = os.environ.get("PATH", "")
-    if bin_dir not in path.split(os.pathsep):
-        os.environ["PATH"] = (bin_dir + os.pathsep + path) if path else bin_dir
+    rest = [p for p in os.environ.get("PATH", "").split(os.pathsep)
+            if p and p != bin_dir]
+    os.environ["PATH"] = os.pathsep.join([bin_dir, *rest])
     os.environ[CLI_DIR_ENV] = bin_dir
     return bin_dir
 

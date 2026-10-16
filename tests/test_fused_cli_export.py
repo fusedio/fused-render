@@ -106,8 +106,9 @@ def test_export_writes_an_executable_wrapper_and_publishes_it(monkeypatch, tmp_p
 def test_export_is_idempotent_on_path(monkeypatch, tmp_path):
     monkeypatch.delenv(fusedcli.CLI_DIR_ENV, raising=False)
     bin_dir = _export_with_stub(monkeypatch, tmp_path)
+    monkeypatch.setenv("PATH", os.pathsep.join(["/opt/homebrew/bin", bin_dir, "/usr/bin"]))
     _export_with_stub(monkeypatch, tmp_path)
-    assert os.environ["PATH"].split(os.pathsep).count(bin_dir) == 1
+    assert os.environ["PATH"].split(os.pathsep) == [bin_dir, "/opt/homebrew/bin", "/usr/bin"]
 
 
 def test_no_cli_unpublishes_the_var(monkeypatch):
