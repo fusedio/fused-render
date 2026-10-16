@@ -62,7 +62,11 @@ function poll(over: Partial<PollResponse> = {}): PollResponse {
 
 type Handler = (fields: Record<string, unknown>, call: number) => unknown;
 
-function make(handlers: Record<string, Handler>, schedule?: (body: unknown) => Promise<unknown>) {
+function make(
+  handlers: Record<string, Handler>,
+  schedule?: (body: unknown) => Promise<unknown>,
+  cancelSchedule?: (id: string) => Promise<unknown>,
+) {
   const counts: Record<string, number> = {};
   const run = ((action: string, fields: Record<string, unknown>) => {
     const n = (counts[action] = (counts[action] || 0) + 1) - 1;
@@ -78,6 +82,7 @@ function make(handlers: Record<string, Handler>, schedule?: (body: unknown) => P
     now: () => 1_000,
     hasPane: () => true,
     ...(schedule ? { schedule: schedule as never } : {}),
+    ...(cancelSchedule ? { cancelSchedule } : {}),
   });
   return controller;
 }
@@ -207,3 +212,98 @@ describe("a limit hit", () => {
   });
 });
 
+describe("after the limit", () => {
+  test("a reply that lands retires the limit row, its card, and the booked comeback", async () => {
+    // Turn 1 dies on the limit; turn 2 (the reader signed into another account
+    // and retried) completes. The red row above a reply that plainly arrived
+    // is a scar, not a report — it goes, the card goes, and the scheduled
+    // "Your usage limit has reset…" is cancelled rather than fired into a chat
+    // that has already moved on.
+    let turn = 0;
+    const cancelled: string[] = [];
+    const c = make(
+      {
+        start: () => ({ run_id: "r" + ++turn }),
+        poll: () =>
+          turn === 1
+            ? poll({ done: true, error: LIMIT_TEXT, quota: rejected() })
+            : poll({ done: true, text: "None found." }),
+      },
+      () => Promise.resolve({ entry: { id: "e1" } }),
+      (id) => {
+        cancelled.push(id);
+        return Promise.resolve({});
+      },
+    );
+    await c.sendMessage("any regressions?");
+    await flush();
+    expect(c.getState().turns.map((t) => t.role)).toEqual(["user", "error", "note"]);
+    await c.sendMessage("any regressions?");
+    await flush();
+    const state = c.getState();
+    expect(state.trouble).toBeNull();
+    expect(state.turns.map((t) => t.role)).toEqual(["user", "note", "user", "assistant"]);
+    expect(cancelled).toEqual(["e1"]);
+  });
+
+  test("an empty end after the limit retires nothing", async () => {
+    // No text, no error: nothing proves the limit lifted, and the server would
+    // keep the row too (no reply after it) — live and reload must agree.
+    let turn = 0;
+    const cancelled: string[] = [];
+    const c = make(
+      {
+        start: () => ({ run_id: "r" + ++turn }),
+        poll: () =>
+          turn === 1 ? poll({ done: true, error: LIMIT_TEXT, quota: rejected() }) : poll({ done: true }),
+      },
+      () => Promise.resolve({ entry: { id: "e1" } }),
+      (id) => {
+        cancelled.push(id);
+        return Promise.resolve({});
+      },
+    );
+    await c.sendMessage("go");
+    await flush();
+    await c.sendMessage("go");
+    await flush();
+    expect(c.getState().turns.map((t) => t.role)).toEqual(["user", "error", "note", "user"]);
+    expect(cancelled).toEqual([]);
+  });
+
+  test("a Claude rate-limit break (not the plan window) is kept after a reply", async () => {
+    // The trouble classifier files any Claude "rate limit" sentence as `limit`
+    // too; only the PLAN's window is a clock. A 429 is a break and stays, as
+    // agent.py `_drop_stale_limit_errors` keeps it on reload.
+    let turn = 0;
+    const c = make({
+      start: () => ({ run_id: "r" + ++turn }),
+      poll: () =>
+        turn === 1
+          ? poll({ done: true, error: "Claude API rate limit exceeded (429)" })
+          : poll({ done: true, text: "Second attempt worked." }),
+    });
+    await c.sendMessage("go");
+    await flush();
+    expect((c.getState().turns[1] as { kind?: string }).kind).toBe("limit");
+    await c.sendMessage("go");
+    await flush();
+    expect(c.getState().turns.map((t) => t.role)).toEqual(["user", "error", "user", "assistant"]);
+  });
+
+  test("a reply after an ordinary failure keeps the failure's row", async () => {
+    let turn = 0;
+    const c = make({
+      start: () => ({ run_id: "r" + ++turn }),
+      poll: () =>
+        turn === 1
+          ? poll({ done: true, error: "API Error: overloaded" })
+          : poll({ done: true, text: "Second attempt worked." }),
+    });
+    await c.sendMessage("go");
+    await flush();
+    await c.sendMessage("go");
+    await flush();
+    expect(c.getState().turns.map((t) => t.role)).toEqual(["user", "error", "user", "assistant"]);
+  });
+});

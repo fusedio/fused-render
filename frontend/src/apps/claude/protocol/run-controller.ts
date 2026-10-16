@@ -32,6 +32,7 @@
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
 import {
+  cancelScheduledMessage,
   decideThroughQueue,
   markTaskIdle,
   markTaskRunning,
@@ -60,7 +61,7 @@ import type {
   Working,
 } from "./controller-api";
 import { historyToTurns } from "./history";
-import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit } from "./quota";
+import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit, isPlanLimitText } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
 import { endActiveTasks } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
@@ -952,6 +953,43 @@ export function createChatController(deps: ControllerDeps): ChatController {
     reportTrouble(troubleFromMessage(message, fromAgent));
 
   /**
+   * A REPLY LANDED, SO THE LIMIT IS OVER. The usage-limit card is the one
+   * failure that is a clock rather than a break — "wait for the reset, then
+   * try again" — and a turn that just completed is the proof both halves are
+   * done, whatever lifted it (the reset, a switch of account, an upgrade).
+   * Left in place it reads as something still wrong above an answer that
+   * plainly arrived. So the row goes, and the card with it if it is the one
+   * still at the tail. Every other error row stays: those record what
+   * happened, and a later reply does not unhappen them. agent.py `_history`
+   * applies the same rule to a restored transcript (`_drop_stale_limit_errors`).
+   */
+  const isPlanLimit = (t: { text: string; quota?: Quota } | null | undefined) =>
+    !!t && (limitHit(t.quota) || isPlanLimitText(t.text));
+  const retireLimit = () => {
+    const turns = state.turns.filter((t) => !(t.role === "error" && t.kind === "limit" && isPlanLimit(t)));
+    const patch: Partial<ChatState> = {};
+    if (turns.length !== state.turns.length) patch.turns = turns;
+    const card = state.trouble;
+    if (card?.kind === "limit" && isPlanLimit({ text: card.message, quota: card.quota })) patch.trouble = null;
+    if (Object.keys(patch).length) emit(patch);
+    // AND THE COMEBACK IT BOOKED. The scheduled "Your usage limit has reset.
+    // Continue…" is for a chat that is still stuck; fired into one that has
+    // already gone on it is a stray prompt that redoes work. Cancelled by
+    // id, fire-and-forget: the row leaves the Tasks list on its own.
+    const sid = state.sessionId;
+    const booked = sid ? comebacks.get(sid) : undefined;
+    if (sid && booked) {
+      comebacks.delete(sid);
+      const cancel = deps.cancelSchedule ?? cancelScheduledMessage;
+      void cancel(booked)
+        .then(() => announceTasksChanged())
+        .catch((err: unknown) => {
+          console.warn("comeback cancel failed:", err instanceof Error ? err.message : err);
+        });
+    }
+  };
+
+  /**
    * THE COMEBACK AFTER A USAGE LIMIT. Claude Code's own TUI waits in the open
    * session and continues the task when the plan window reopens; a headless
    * `-p` run gets no such wait — the turn ends on the limit and the process is
@@ -975,6 +1013,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * error the ordinary way (no session to schedule on, or no target).
    */
   const scheduledRuns = new Set<string>();
+  /** session id → the comeback entry's id, for `retireLimit` to cancel. */
+  const comebacks = new Map<string, string>();
   const scheduleComeback = (runId: string, error: string, quota: Quota): boolean => {
     if (scheduledRuns.has(runId)) return true;
     const sessionId = state.sessionId;
@@ -990,7 +1030,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       session_id: sessionId,
       title: CONTINUE_TITLE,
     })
-      .then(() => {
+      .then((res: unknown) => {
+        const id = (res as { entry?: { id?: unknown } } | null)?.entry?.id;
+        if (typeof id === "string" && id) comebacks.set(sessionId, id);
         // The card's line about the scheduled follow-up, and the CLI's own
         // wait sentence as a note in the log where the failure sits.
         if (state.trouble === trouble) emit({ trouble: { ...trouble, scheduled: true } });
@@ -1859,6 +1901,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
           if (end.error && limitHit(poll.quota) && loopSeq === seat) {
             if (!scheduleComeback(runId, end.error, poll.quota)) addError(end.error);
           } else if (end.error) addError(end.error);
+          // A REPLY LANDED (text kept, a bubble on screen): the limit is over,
+          // whatever lifted it. `keepText` and not "no note": a reply that
+          // finished before a stop landed is still a reply, and an empty end
+          // is not one.
+          else if (loopSeq === seat && end.keepText && live.length) retireLimit();
           // Same guard: a superseded loop's own "Stopped." must not land in the
           // log while the newer loop's turn is the one actually streaming.
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
@@ -3809,6 +3856,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // into exactly the R4-3 shape: a finished run, repaired here, then a
         // follow-up into the host that is still holding it open.
         landedWindow = { runId, segments: probeSegs.length, text: probeText };
+        // The same "a reply landed" fact as `pollLoop`'s done branch, on the
+        // road a comeback takes when it finished while this frame was away:
+        // the limit card and its row are over, and the comeback is spent.
+        if (probeText || probeSegs.length) retireLimit();
         // A REPAIR IS NEWS THAT HAS TO BE SCROLLED TO (T:17851, P4-10). T calls
         // `scrollBottom()` here unconditionally, and the reason it must be
         // unconditional is that a repair has no `running` → `idle` edge for the

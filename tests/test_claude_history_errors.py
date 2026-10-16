@@ -14,6 +14,7 @@ carry it as `false` on a current CLI, which is why the check is `is True`.
 import importlib.util
 import json
 import os
+import time
 
 import pytest
 
@@ -146,3 +147,97 @@ def test_a_turn_that_recovered_after_an_error_shows_both(agent, transcript):
         _assistant("Second attempt worked."),
     ])
     assert [t["role"] for t in turns] == ["user", "error", "assistant"]
+
+
+# ------------------------------------------------ a limit row that is over
+
+LIMIT = "You've hit your session limit \u00b7 resets 4:50pm (Asia/Calcutta)"
+
+
+def _limit_row(resets_at=None):
+    extra = {"isApiErrorMessage": True, "apiErrorStatus": 429}
+    if resets_at is not None:
+        extra["quotaLimits"] = {"status": "rejected", "resetsAt": resets_at,
+                                "rateLimitType": "five_hour"}
+    return _assistant(LIMIT, **extra)
+
+
+def test_a_limit_the_chat_moved_past_is_not_restored(agent, transcript):
+    """The reader retried (or the comeback fired) and the next turn ran:
+    whatever lifted the limit — the reset, another account — the card's
+    "wait, then try again" is over, and above a reply it reads as a scar."""
+    turns = transcript([
+        _user("any regressions?"),
+        _limit_row(),
+        _user("any regressions?"),
+        _assistant("None found."),
+    ])
+    assert [t["role"] for t in turns] == ["user", "user", "assistant"]
+
+
+def test_a_limit_whose_reset_passed_is_not_restored(agent, transcript):
+    turns = transcript([
+        _user("go"),
+        _limit_row(resets_at=int(time.time()) - 60),
+    ])
+    assert [t["role"] for t in turns] == ["user"]
+
+
+def test_a_limit_still_binding_is_restored(agent, transcript):
+    """Nothing after it and the window not yet open: still true, still red."""
+    turns = transcript([
+        _user("go"),
+        _limit_row(resets_at=int(time.time()) + 3600),
+    ])
+    assert [t["role"] for t in turns] == ["user", "error"]
+    assert turns[-1]["quota"]["status"] == "rejected"
+
+
+def test_a_limit_with_only_a_retry_after_it_is_restored(agent, transcript):
+    """A user turn and then nothing: the retry is in flight or died writing
+    nothing, and the limit may well still bind."""
+    turns = transcript([
+        _user("go"),
+        _limit_row(resets_at=int(time.time()) + 3600),
+        _user("go"),
+    ])
+    assert [t["role"] for t in turns] == ["user", "error", "user"]
+
+
+def test_a_limit_without_a_reset_and_nothing_after_is_restored(agent, transcript):
+    """No `quotaLimits` (an older CLI) and no later turn: nothing says it is
+    over, so it is not dropped on a guess."""
+    turns = transcript([_user("go"), _limit_row()])
+    assert [t["role"] for t in turns] == ["user", "error"]
+
+
+def test_only_limit_rows_are_dropped(agent):
+    """`_drop_stale_limit_errors` leaves every other failure alone — a reply
+    after a network error does not make it not have happened."""
+    turns = [{"role": "user", "text": "go"},
+             {"role": "error", "text": "API Error: overloaded"},
+             {"role": "assistant", "text": "ok"}]
+    assert agent._drop_stale_limit_errors(turns) == turns
+
+
+def test_a_limit_followed_by_another_kind_of_failure_is_restored(agent, transcript):
+    """A retry that died on the network lifts nothing: the limit may still
+    bind, so both rows stay (only a REPLY or a newer limit row retires it)."""
+    turns = transcript([
+        _user("go"),
+        _limit_row(resets_at=int(time.time()) + 3600),
+        _user("go"),
+        _assistant("API Error: Can't reach the API server", isApiErrorMessage=True),
+    ])
+    assert [t["role"] for t in turns] == ["user", "error", "user", "error"]
+    assert "usage limit" in turns[1]["text"]
+
+
+def test_a_newer_limit_row_retires_the_older_one(agent, transcript):
+    turns = transcript([
+        _user("go"),
+        _limit_row(resets_at=int(time.time()) + 3600),
+        _user("go"),
+        _limit_row(resets_at=int(time.time()) + 3600),
+    ])
+    assert [t["role"] for t in turns] == ["user", "user", "error"]

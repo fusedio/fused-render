@@ -657,6 +657,9 @@ export interface ControllerDeps {
     session_id: string;
     title: string;
   }) => Promise<unknown>;
+  /** ADDED: cancels the comeback `schedule` posted, once a reply has landed
+   *  without it (`retireLimit`). Defaults to `cancelScheduledMessage`. */
+  cancelSchedule?: (id: string) => Promise<unknown>;
   /** ADDED: `sleep` for the 400 ms poll cadence and the follow-up wait —
    *  injectable so a test runs the loop without real time (T:16377). */
   sleep?: (ms: number) => Promise<void>;
