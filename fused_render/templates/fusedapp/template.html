@@ -287,6 +287,15 @@
     meta.textContent = bits.join(" · ");
     hero.appendChild(meta);
 
+    if (!isPreview && t.git) {
+      const warn = document.createElement("div"); warn.className = "state"; warn.dataset.tone = "warn";
+      const wb = document.createElement("b"); wb.textContent = "Unverified code from GitHub";
+      const wp = document.createElement("p");
+      wp.textContent = "This app is cloned from " + t.git.url.replace(/^https?:\/\//, "") +
+        ". Fused has not reviewed or verified it, and it can contain malicious code that runs with your access once installed. Install it only if you trust its author.";
+      warn.append(wb, wp);
+      hero.appendChild(warn);
+    }
     if (!isPreview) {
       const d = describe(t);
       const box = document.createElement("div"); box.className = "state"; box.dataset.tone = d.tone;

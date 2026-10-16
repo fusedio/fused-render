@@ -50,6 +50,7 @@ export function trustItemsFor(app: AppEntry): TrustItem[] {
 export function trustItemsForFile(file: {
   files: { path: string }[];
   metadata?: { requires_python: boolean | null } | null;
+  git?: { url: string } | null;
 }): TrustItem[] {
   const python =
     file.metadata?.requires_python ??
@@ -79,11 +80,21 @@ export function trustItemsForFile(file: {
       detail: "No Python in this file — just HTML and JavaScript in a sandboxed view.",
     });
   }
-  items.push({
-    key: "source",
-    icon: <FileArchive size={15} strokeWidth={2} />,
-    title: "App file, not from the Marketplace",
-    detail: "Nobody reviewed it. Install app files only from people you trust.",
-  });
+  items.push(
+    file.git
+      ? {
+          key: "source",
+          icon: <FileArchive size={15} strokeWidth={2} />,
+          title: "From a GitHub repo, unverified",
+          detail: "Fused has not reviewed this repo. It can contain malicious code. Install only from people you trust.",
+          tone: "caution",
+        }
+      : {
+          key: "source",
+          icon: <FileArchive size={15} strokeWidth={2} />,
+          title: "App file, not from the Marketplace",
+          detail: "Nobody reviewed it. Install app files only from people you trust.",
+        },
+  );
   return items;
 }

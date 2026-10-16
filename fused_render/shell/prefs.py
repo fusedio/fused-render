@@ -31,6 +31,9 @@ and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **marketplace_enabled** (whether the Marketplace — sidebar row and the
 /marketplace pages — is offered; opt-in, default off; see
 ``marketplace_enabled``),
+**github_link_enabled** (whether the Share sheet offers a GitHub install link
+for an app whose folder is its own pushed GitHub repo — opt-in, default off;
+see ``github_link_enabled``),
 **default_model** (the preferred Claude model as a short
 name, unset by default; see ``default_model``), **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
@@ -298,6 +301,18 @@ def marketplace_enabled() -> bool:
     every install has to opt in.
     """
     return read_prefs().get("marketplace_enabled") is True
+
+
+def github_link_enabled() -> bool:
+    """Whether the Share sheet offers its GitHub link card (default off — opt-in).
+
+    ON, the sheet shows a third card: a udf.ai link that installs the app from
+    its GitHub repo, copyable once the folder is the repo root, has a GitHub
+    remote, and has nothing unpushed (share_app.github_link_state). OFF, the
+    card is not rendered. A switch over the entry point only: GET
+    /api/share/github keeps answering. Any non-`true` stored value reads as off.
+    """
+    return read_prefs().get("github_link_enabled") is True
 
 
 def task_peek_enabled() -> bool:
@@ -689,6 +704,9 @@ def _prefs_response() -> dict:
         # Whether the Marketplace (sidebar row + /marketplace pages) is offered
         # (opt-in, default off). Not an API guard; see `marketplace_enabled`.
         "marketplace": {"enabled": marketplace_enabled()},
+        # Whether the Share sheet offers the GitHub install-link card (opt-in,
+        # default off). Not an API guard; see `github_link_enabled`.
+        "github_link": {"enabled": github_link_enabled()},
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (default ON, opt-out). `available` says whether THIS
         # process can honour it — the packaged macOS app installs the hook; a
@@ -954,6 +972,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'marketplace_enabled' must be a boolean"}, status_code=400)
             prefs["marketplace_enabled"] = value
             changed = True
+        if "github_link_enabled" in body:
+            value = body.get("github_link_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'github_link_enabled' must be a boolean"}, status_code=400)
+            prefs["github_link_enabled"] = value
+            changed = True
         if "native_windows_enabled" in body:
             value = body.get("native_windows_enabled")
             if not isinstance(value, bool):
@@ -1172,7 +1196,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
-                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', "
+                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
                           "'native_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "

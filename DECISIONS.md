@@ -7015,3 +7015,9 @@ A 6-column table in a bot reply wrapped short cells ("fused-render", "#1641") on
 
 - **Default view, not bare /render.** `FilePreviewModal` keeps the `statPath` result and frames the first `paneOfferable(st.templates)` entry (the same rule as `previewSrcFor` and the pane's `decidePane`), so a .md file shows in the md viewer instead of raw text. A folder, a file with no offerable template, or a stat without templates falls back to the bare `/render?path=` sentinel.
 - **`_noopen=1`, not `_preview=1`.** The frame is interactive but not recorded as an app open (the listing pane's D622 reasoning); `_preview=1` would disable `fused.daemon` in the framed template. "Open in new tab" uses the unflagged URL, since that is the user opening it.
+
+## D1370: Native pandoc on Apple Silicon; las declares its environment (2026-10-16, template-deps)
+
+- **pypandoc-binary skips darwin-arm64.** Its arm64 wheel (every release, 1.13 to 1.17) carries an x86_64 pandoc, which a Mac without Rosetta cannot start, so docs and latex failed with "install pypandoc wheels with included pandoc". The marker leaves the wheel everywhere else; on Apple Silicon `shared/pandoc_bin.py` downloads pandoc 3.12.1's own macOS release into `~/.fused-render/bin` behind a consent prompt, the way typst and tectonic already arrive. latex's private uv venv for pandoc is gone.
+- **docs and latex ask only when pandoc is missing.** `import` (docs) and `export` (latex) return `missing_pandoc` instead of failing; the page prompts, installs and retries, so an open with pandoc present stays one call.
+- **las follows PY-16.** `las/pyproject.toml` declares laspy[lazrs], numpy and pyproj and the reader decodes in-process, replacing the uv venv it built by hand in `~/.cache/fused-render-las`.

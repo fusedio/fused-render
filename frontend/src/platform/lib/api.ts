@@ -1361,6 +1361,11 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it, and the reader
   // (marketplace-flag.ts) treats absence as off.
   marketplace?: { enabled: boolean };
+  // Whether the Share sheet offers its GitHub install-link card (opt-in,
+  // default off — shell/prefs.py `github_link_enabled`). Gates the card, not
+  // /api/share/github. OPTIONAL: an older server answers without it, and the
+  // reader (github-link-flag.ts) treats absence as off.
+  github_link?: { enabled: boolean };
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1727,6 +1732,10 @@ export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
+}
+
+export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { github_link_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal
@@ -2258,8 +2267,20 @@ export function appfileIconUrl(path: string): string {
 /** What installing would do. `new` installs; `update` replaces an unchanged
  *  copy; the WARN states (`needs_force`) — `diverged` (copy edited since),
  *  `same`, `downgrade`, `unknown` (no install record) — need a confirmed
- *  second click; `clash` (another app holds the folder) cannot install. */
-export type AppFileState = "new" | "update" | "diverged" | "same" | "downgrade" | "unknown" | "clash";
+ *  second click; `clash` (another app holds the folder) cannot install.
+ *  A GitHub-link build (`git` set, DL-9) adds `local` (the copy has changes
+ *  of its own — update it with git) and `replace` (a file-installed copy the
+ *  clone replaces; `needs_force`). */
+export type AppFileState =
+  | "new"
+  | "update"
+  | "diverged"
+  | "same"
+  | "downgrade"
+  | "unknown"
+  | "clash"
+  | "local"
+  | "replace";
 
 /** The payload's `metadata.json`, type-checked field by field (display only). */
 export interface AppFileMetadata {
@@ -2279,11 +2300,15 @@ export interface AppFileProbe {
   /** Where the copy is, or would be (absolute, forward slashes). */
   path: string;
   installed: boolean;
-  found_by: "id" | "slug" | null;
+  found_by: "id" | "slug" | "git" | null;
   /** A keep-data uninstall left this app's `.fused/` there. */
   husk: boolean;
   state: AppFileState;
   needs_force: boolean;
+  /** A GitHub-link build (`open?git=`): installs as a clone of `url`. */
+  git?: { url: string; commit: string } | null;
+  /** The file sits in the deep-link downloads cache, not a folder of the user's. */
+  downloaded?: boolean;
   exported_at: string | null;
   installed_exported_at: string | null;
   installed_at: string | null;

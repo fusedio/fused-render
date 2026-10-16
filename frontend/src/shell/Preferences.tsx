@@ -60,6 +60,7 @@ import {
   putLivePreviewsEnabled,
   putMonitorEnabled,
   putMarketplaceEnabled,
+  putGithubLinkEnabled,
   putMenubarPinEnabled,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
@@ -88,6 +89,7 @@ import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
+import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import { publishProjectQueueEnabled, publishTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { IS_QUERY_EMBED, navigate, navigateUrl } from "@platform/lib/router";
@@ -471,6 +473,48 @@ function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
         <span>
           <b>Enable Fused app sharing</b> — replace Export with a Share button offering a public
           link or a file.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// GitHub link: a third card in the Share sheet that copies a udf.ai link
+// installing the app straight from its GitHub repo. Off by default; same
+// one-checkbox shape and publish-after-PUT as App sharing above. Only visible
+// in the sheet, so it does nothing while App sharing is off.
+function GithubLinkSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabled = prefs.github_link?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putGithubLinkEnabled(!enabled);
+      onChange(next);
+      publishGithubLinkEnabled(next.github_link?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>GitHub link sharing</h2>
+      <p className="deploy-muted">
+        Share an app whose folder is its own GitHub repository as a link that installs it
+        straight from GitHub. Offered in the Share sheet once everything is pushed. Off by default.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Enable GitHub link</b> — add a GitHub link option to the Share sheet.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1963,6 +2007,7 @@ export default function Preferences() {
                     this is the only switch for it. */}
                 {!bot && <CanvasesSection prefs={prefs} onChange={setPrefs} />}
                 {!bot && <AppSharingSection prefs={prefs} onChange={setPrefs} />}
+                {!bot && <GithubLinkSection prefs={prefs} onChange={setPrefs} />}
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 <TaskRecapSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />}
