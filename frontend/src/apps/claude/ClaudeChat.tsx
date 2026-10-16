@@ -99,7 +99,7 @@ import {
   type PaneSrcFlags,
   type TargetNoun,
 } from "./pane";
-import { useSideMaximized } from "@platform/lib/side-maximized-store";
+import { setSideMaximized, useSideMaximized } from "@platform/lib/side-maximized-store";
 import {
   AnnStrip,
   ArtStrip,
@@ -707,6 +707,11 @@ function ChatBody(props: ChatBodyProps) {
     const host = rootRef.current?.closest(".preview-side, .listing-pane-slot");
     setLeadHost((host?.querySelector(".side-header-lead") as HTMLElement | null) ?? null);
   }, [sideMaximized]);
+  // In a side pane, the ⋮ carries the pane's Full screen toggle.
+  const [inSidePane, setInSidePane] = useState(false);
+  useEffect(() => {
+    setInSidePane(!!rootRef.current?.closest(".preview-side, .listing-pane-slot"));
+  }, []);
   const inLead = (row: ReactElement) => (leadHost ? createPortal(row, leadHost) : row);
   // The noun the app-state block reads (see `paneNounRef`'s own note). Written
   // on every render rather than in an effect: the watcher pulls it lazily at
@@ -5060,6 +5065,11 @@ function ChatBody(props: ChatBodyProps) {
               // resume and nothing finished to put away. Delete stays: calling
               // the message off is exactly what a reader wants here.
               queued={queuedChat}
+              fullScreen={
+                inSidePane
+                  ? { on: sideMaximized, onToggle: () => setSideMaximized(!sideMaximized) }
+                  : undefined
+              }
             />
           </div>
         ) : null}

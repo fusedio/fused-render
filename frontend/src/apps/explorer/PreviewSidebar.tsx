@@ -349,10 +349,14 @@ export default function PreviewSidebar({
               is up, so the column has nothing to fall back for. */}
           <div className="side-header-tail">
             <SideTabs tabs={entries} active={active} onSelect={onSelect} />
-            <SideMaximizeButton
-              maximized={maximized}
-              onToggle={() => setSideMaximized(!maximized)}
-            />
+            {/* The chat carries Full screen in its own ⋮ (Kebab); the other
+                companions have no menu, so the button is theirs. */}
+            {active !== CHAT_MODE ? (
+              <SideMaximizeButton
+                maximized={maximized}
+                onToggle={() => setSideMaximized(!maximized)}
+              />
+            ) : null}
           </div>
         </div>
         {src === null ? (

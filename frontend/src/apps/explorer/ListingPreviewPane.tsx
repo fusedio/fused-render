@@ -129,7 +129,10 @@ export default function ListingPreviewPane({
       )}
       <div className="side-header-tail">
         {sideTabs}
-        <SideMaximizeButton maximized={maximized} onToggle={() => setSideMaximized(!maximized)} />
+        {/* The chat carries Full screen in its own ⋮ (Kebab). */}
+        {side !== "claude" ? (
+          <SideMaximizeButton maximized={maximized} onToggle={() => setSideMaximized(!maximized)} />
+        ) : null}
       </div>
     </div>
   );
