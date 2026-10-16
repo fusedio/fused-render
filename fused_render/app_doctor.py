@@ -924,7 +924,7 @@ def _contrib_git_row(app_dir: str) -> dict | None:
         rec = store.get(root) or {}
     except Exception:  # noqa: BLE001 — fall back to the ordinary row
         return None
-    git_upstream.note_app_opened(app_dir)  # the engine syncs on open, as ever
+    # A read: no `note_app_opened` here (opening the app already syncs it).
     if rec.get("kind") == "github":
         if rec.get("needs_merge"):
             state, detail = FAIL, ("The author's latest overlaps your changes — "

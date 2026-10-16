@@ -190,12 +190,19 @@ def test_record_install_and_finder_move_adoption(home, tmp_path):
     d = _clone(tmp_path, "x", "https://github.com/alice/x")
     rec = classify.record_install(d, "https://github.com/alice/x")
     assert rec["classified_by"] == "install" and rec["kind"] == "github"
-    store.update(d, lambda r: r.__setitem__("proposal", {"number": 9}))
+    def dirty_state(r):
+        r["proposal"] = {"number": 9}
+        r["needs_merge"] = {"onto": "x"}
+        r["backups"] = [{"ref": "refs/fused/backup/1", "at": 0, "why": "t"}]
+        r["protected"] = True
+    store.update(d, dirty_state)
     # A Finder move the server never saw.
     moved = str(tmp_path / "ws" / "app" / "x-moved")
     os.rename(d, moved)
     rec = classify.ensure(moved)
     assert rec["proposal"] == {"number": 9} and rec["classified_by"] == "install"
+    # The old folder's git state does not travel (it names its refs).
+    assert rec["needs_merge"] is None and rec["backups"] == [] and "protected" not in rec
     assert len(store.find_by_repo("alice/x")) == 1
 
 

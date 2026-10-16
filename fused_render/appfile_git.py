@@ -411,19 +411,21 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
         raise appfile.InstallNeedsConfirm(target)
 
     if state == appfile.STATE_UPDATE:
-        for args in (("fetch", "-q", "origin"), ("merge", "-q", "--ff-only", src["commit"])):
-            if args[0] == "merge" and _contrib_sources():
-                # A committed `.fused/` the contribution loop marked
-                # skip-worktree refuses any update that changes it unless
-                # fused's local copies step aside (contrib/replay.py).
-                from fused_render.contrib import replay
+        if _contrib_sources():
+            # With the contribution loop on, this update is one more writer
+            # of a repo the engine also moves: it holds the same slot (so it
+            # never meets a land, or shares `fused_aside`'s scratch dir with
+            # one), and a committed `.fused/` the loop marked skip-worktree
+            # needs fused's local copies set aside to let the update through.
+            from fused_render.contrib import replay
 
-                with replay.fused_aside(os.path.realpath(dest), src["commit"]):
-                    r = _git(*args, cwd=dest)
-            else:
-                r = _git(*args, cwd=dest)
-            if r.returncode != 0:
-                raise GitInstallError(f"git {args[0]} failed: {_err(r)}")
+            with replay.slot() as held:
+                if not held:
+                    raise GitInstallError("this app is busy updating; open the link again in a moment")
+                _update_clone(dest, src, aside=lambda: replay.fused_aside(
+                    os.path.realpath(dest), src["commit"]))
+        else:
+            _update_clone(dest, src, aside=None)
         action = "updated"
     else:
         staged = staged_clone(src)
@@ -442,6 +444,19 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
     _record_install(dest, src["url"])
     entry = os.path.join(dest, *manifest["entry"].split("/"))
     return {"action": action, "entry": entry.replace(os.sep, "/"), "pruned": [], "adopted_state": None}
+
+
+def _update_clone(dest: str, src: dict, *, aside) -> None:
+    """The fast-forward update of an installed clone: fetch, then
+    `merge --ff-only` to the link's commit (inside `aside()` when given)."""
+    for args in (("fetch", "-q", "origin"), ("merge", "-q", "--ff-only", src["commit"])):
+        if args[0] == "merge" and aside is not None:
+            with aside():
+                r = _git(*args, cwd=dest)
+        else:
+            r = _git(*args, cwd=dest)
+        if r.returncode != 0:
+            raise GitInstallError(f"git {args[0]} failed: {_err(r)}")
 
 
 def _contrib_sources() -> bool:

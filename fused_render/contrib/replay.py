@@ -573,7 +573,10 @@ def merge_tree(root, ours, theirs, *, base=None) -> dict:
 
 
 def tree_of(root, commit) -> str | None:
-    return rev(root, f"{commit}^{{tree}}") if commit else None
+    if not commit:
+        return None
+    r = git(root, "rev-parse", "--verify", "--quiet", f"{commit}^{{tree}}")
+    return out(r) or None if ok(r) else None
 
 
 def has_merges(root, upstream, head) -> bool:

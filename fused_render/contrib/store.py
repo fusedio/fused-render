@@ -62,6 +62,10 @@ RENDERED_EVENTS = frozenset({"updated-kept", "merged-back"})
 #: this long has passed since a sweep first found it so.
 ORPHAN_TTL_S = 30 * 24 * 3600
 
+#: The record fields `adopt` carries to a new folder.
+ADOPT_KEEP = ("kind", "repo", "branch", "remix_of", "proposal", "classified_by",
+              "classified_at", "owner_checked")
+
 _lock = threading.Lock()
 
 
@@ -249,17 +253,23 @@ def drop_key(k: str) -> bool:
 
 def adopt(old_key: str, app_dir: str) -> dict | None:
     """Re-key the orphaned row at `old_key` onto `app_dir` (a Finder move the
-    server never saw), atomically: answers the adopted record, or None when
-    `old_key` vanished meanwhile or `app_dir` already has a record."""
+    server never saw — or a fresh clone of the same repo), atomically:
+    answers the adopted record, or None when `old_key` vanished meanwhile or
+    `app_dir` already has a record. Only what is about the COPY'S SOURCE
+    travels (`ADOPT_KEEP`: what it follows, its classification, a proposal,
+    a remix's original); everything about the old folder's git state —
+    an overlap, backup names, the skip-worktree marker, banners — starts
+    fresh, since it may name commits and refs this folder never had."""
     try:
         new_key = key(app_dir)
         with _lock:
             data = _read()
-            rec = data["apps"].get(old_key)
-            if not isinstance(rec, dict) or new_key in data["apps"]:
+            old = data["apps"].get(old_key)
+            if not isinstance(old, dict) or new_key in data["apps"]:
                 return None
             del data["apps"][old_key]
-            rec.pop("orphaned_at", None)
+            rec = new_record(old.get("kind") or "own")
+            rec.update({k: old[k] for k in ADOPT_KEEP if k in old})
             data["apps"][new_key] = rec
             if not _write(data):
                 return None

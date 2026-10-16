@@ -256,24 +256,36 @@ def test_follower_fast_forwards_and_records_pull(env):
     assert git(bob, "for-each-ref", "refs/fused/backup/").strip() == ""
 
 
-def test_dirty_overlap_defers_then_lands(env):
+def test_dirty_overlap_is_committed_never_waits_forever(env):
+    """Uncommitted edits the update would overwrite become "Your edits" and
+    the update comes in on top: an overlap is the page's decision, a clean
+    one lands — never a silent forever-defer."""
     _all_on(env)
     bob = _bob(env)
     write(bob, "a.txt", "one\nUNSAVED\nthree\n")
     old = _head(bob)
-    tip = _alice_commit(env, "a.txt", "one\nALICE\nthree\n", "alice edits")
+    _alice_commit(env, "a.txt", "one\nALICE\nthree\n", "alice edits")
 
     result = _sync(bob)
 
-    assert result["status"] == "skipped" and result["why"] == "deferred"
-    assert _head(bob) == old
+    assert result["status"] == "skipped" and result["why"] == "needs-merge"
+    assert git(bob, "log", "-1", "--format=%s").strip() == "Your edits"
+    assert git(bob, "rev-parse", "HEAD~1").strip() == old
     assert _read(bob, "a.txt") == "one\nUNSAVED\nthree\n"
+    assert git(bob, "status", "--porcelain").strip() == ""
     assert git_upstream.sync_failures() == []
-    assert engine.status(bob)["behind"] == 1
-    # The edit goes away (saved elsewhere / reverted): the next trigger lands.
-    git(bob, "checkout", "--", "a.txt")
+    assert engine.status(bob)["state"] == "needs-merge"
+
+
+def test_dirty_edit_where_author_changes_other_lines_lands(env):
+    _all_on(env)
+    bob = _bob(env)
+    write(bob, "a.txt", "one\ntwo\nthree\nUNSAVED\n")
+    tip = _alice_commit(env, "a.txt", "ALICE\ntwo\nthree\n", "alice edits line one")
     assert _sync(bob)["status"] == "synced"
-    assert _head(bob) == tip
+    assert _read(bob, "a.txt") == "ALICE\ntwo\nthree\nUNSAVED\n"
+    git(bob, "merge-base", "--is-ancestor", tip, "HEAD")  # raises if not
+    assert engine.status(bob)["changes"] == 1
 
 
 def test_dirty_edit_elsewhere_is_carried(env):
@@ -696,8 +708,288 @@ def test_backup_refs_are_pruned_with_their_record_entries(env):
     with replay.slot() as held:
         assert held
         for _ in range(store.BACKUPS_KEEP + 4):
-            made += replay.backup_locked(bob, head, why="t", app_dir=bob)
+            refs = replay.backup_locked(bob, head)
+            replay.name_backups(bob, refs, "t", bob)
+            made += refs
     named = {b["ref"] for b in store.get(bob)["backups"]}
     present = set(git(bob, "for-each-ref", "--format=%(refname)", "refs/fused/backup/").split())
     assert len(named) == store.BACKUPS_KEEP and present == named
     assert set(made[-store.BACKUPS_KEEP:]) == named  # the newest are kept
+
+
+# ------------------------------------------------- engine review (r00–r06)
+
+
+def test_own_copy_never_republishes_what_the_author_rewrote_away(env):
+    """r01: a pushed commit the author removed with a force-push elsewhere is
+    not replayed and pushed back; the copy follows the rewrite (backed up)."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    leaked = _commit(lap, "secret.txt", "API_KEY=sk\n", "add key")
+    git(lap, "push", "-q", "origin", "main")
+    other = str(env.tmp / "other")
+    git(str(env.tmp), "clone", "-q", env.remote, other)
+    _ident(other)
+    git(other, "reset", "-q", "--hard", "HEAD~1")
+    fix = _commit(other, "index.html", "<p>v2</p>\n", "fix")
+    git(other, "push", "-q", "--force", "origin", "main")
+
+    result = _sync(lap, push=True)
+
+    assert result["status"] == "synced"
+    assert git(env.remote, "rev-parse", "refs/heads/main").strip() == fix
+    assert git(env.remote, "show", "main:secret.txt", check=False) == ""
+    assert _head(lap) == fix
+    assert leaked in git(lap, "for-each-ref", "--format=%(objectname)", "refs/fused/backup/")
+
+
+def test_own_copy_unknown_sync_point_is_a_plain_sentence(env):
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    head = _commit(lap, "mine.txt", "mine\n", "local edit")
+    _alice_commit(env, "pr.txt", "pr\n", "accepted")
+    git(lap, "update-ref", "-d", "refs/remotes/origin/main")  # nothing to trust
+    result = _sync(lap, push=True)
+    assert result["status"] == "skipped" and result["why"] == "rewritten"
+    assert _head(lap) == head
+    assert engine.merge_plan(lap) is None
+    st = engine.status(lap)
+    assert st["needs_merge"] and "Your edits are safe here" in st["needs_merge_message"]
+
+
+def test_commit_racing_the_land_is_put_back_and_pinned(env, monkeypatch):
+    """r02: a commit that lands between the check and the reset is not
+    reverted: the branch goes back to it, a backup ref pins it, the land
+    defers."""
+    _all_on(env)
+    bob = _bob(env)
+    _commit(bob, "a.txt", "one\nBOB\nthree\n", "bob edits a")
+    _alice_commit(env, "index.html", "<p>v2</p>\n", "alice v2")
+    real = replay._protect_after_move
+    raced = []
+
+    def racing(root):
+        if not raced:
+            raced.append(_commit(bob, "claude.txt", "WORK\n", "Claude: add work"))
+        return real(root)
+
+    monkeypatch.setattr(replay, "_protect_after_move", racing)
+    result = _sync(bob)
+    monkeypatch.setattr(replay, "_protect_after_move", real)
+
+    assert result["status"] == "skipped" and result["why"] == "land"
+    assert _head(bob) == raced[0]
+    assert _read(bob, "claude.txt") == "WORK\n"
+    pins = git(bob, "for-each-ref", "--format=%(objectname)", "refs/fused/backup/").split()
+    assert raced[0] in pins
+    # The next trigger brings the update in on top of it.
+    assert _sync(bob)["status"] == "synced"
+    assert _read(bob, "claude.txt") == "WORK\n" and _read(bob, "index.html") == "<p>v2</p>\n"
+
+
+def test_no_land_or_discard_while_claude_is_working(env, monkeypatch):
+    _all_on(env)
+    bob = _bob(env)
+    mine = _commit(bob, "b.txt", "bob\n", "bob change")
+    _alice_commit(env, "c.txt", "alice\n", "alice change")
+    monkeypatch.setattr(engine, "_claude_busy", lambda root: True)
+    result = _sync(bob)
+    assert result["status"] == "skipped" and result["why"] == "claude"
+    out = engine.discard(bob, withdraw=False)
+    assert out["ok"] is False and out["message"] == engine.CLAUDE_BUSY_MESSAGE
+    assert _head(bob) == mine
+    assert store.get(bob)["backups"] == []
+
+
+def test_merge_in_range_is_brought_in_by_a_merge(env):
+    """r06: a merge commit (with a hand resolution) in Bob's range is never
+    flattened away by a rebase."""
+    _all_on(env)
+    bob = _bob(env)
+    _sync(bob)
+    git(bob, "checkout", "-q", "-b", "side")
+    _commit(bob, "a.txt", "SIDE\ntwo\nthree\n", "side edit")
+    git(bob, "checkout", "-q", "main")
+    _commit(bob, "a.txt", "one\ntwo\nMAIN\n", "main edit")
+    git(bob, "merge", "-q", "side", "-m", "merge side", check=False)
+    write(bob, "a.txt", "SIDE\ntwo\nMAIN\nADDED IN THE MERGE\n")
+    git(bob, "add", "a.txt")
+    git(bob, "commit", "-q", "--amend", "--no-edit")  # a hand edit inside the merge
+    git(bob, "branch", "-q", "-D", "side")
+    tip = _alice_commit(env, "index.html", "<p>unrelated</p>\n", "alice unrelated")
+
+    assert _sync(bob)["status"] == "synced"
+    assert _read(bob, "a.txt") == "SIDE\ntwo\nMAIN\nADDED IN THE MERGE\n"
+    assert _read(bob, "index.html") == "<p>unrelated</p>\n"
+    parents = git(bob, "log", "-1", "--format=%P").split()
+    assert len(parents) == 2 and tip in parents
+
+
+def test_a_rebase_that_differs_from_the_merge_is_not_landed(env):
+    """The yardstick itself: a replayed tip whose tree is not the three-way
+    merge is reported, never landed."""
+    bob = _bob(env)
+    base = _head(bob)
+    _commit(bob, "b.txt", "bob\n", "bob change")
+    tip = _alice_commit(env, "c.txt", "alice\n", "alice change")
+    git(bob, "fetch", "-q", "origin")
+    head = _head(bob)
+    res = {}
+    wrong = git(bob, "commit-tree", f"{tip}^{{tree}}", "-p", tip, "-m", "lost bob").strip()
+    assert replay._replay_unsound(bob, base, tip, head, wrong, res) is True
+    assert res["mismatch"] and res["conflict"]
+    good = replay.replay(bob, onto=tip, upstream=base, branch=head)
+    assert good["ok"] and not replay._replay_unsound(bob, base, tip, head, good["tip"], {})
+
+
+def test_return_after_proposed_head_was_rewritten_drops_it_by_patch(env):
+    """r04: proposed_head out of HEAD's history (a Merge with Claude accept)
+    — the return keeps only what was never proposed, with no spurious
+    conflict about Bob's own merged change."""
+    _all_on(env)
+    bob = _bob(env)
+    _sync(bob)
+    _commit(bob, "a.txt", "one\nX\nthree\n", "bob c1")
+    c2 = _commit(bob, "a.txt", "one\nY\nthree\n", "bob c2")
+    later = _commit(bob, "u.txt", "later\n", "bob, not proposed")
+    rewritten = git(bob, "commit-tree", f"{c2}^{{tree}}", "-p", f"{c2}~1", "-m", "bob c2").strip()
+    git(bob, "update-ref", replay.PROPOSED_REF, rewritten)
+    squash = _alice_commit(env, "a.txt", "one\nY\nthree\n", "bob's change (squashed)")
+    _propose(bob, rewritten)
+
+    def merged(r):
+        r["proposal"]["cache"] = {"state": "merged", "merge_commit_sha": squash,
+                                  "comment": None, "checked_at": 1}
+    store.update(bob, merged)
+    assert later
+
+    assert _sync(bob)["status"] == "synced"
+    assert store.get(bob)["needs_merge"] is None
+    assert _read(bob, "u.txt") == "later\n" and _read(bob, "a.txt") == "one\nY\nthree\n"
+    assert git(bob, "log", "--format=%s", f"{squash}..HEAD").split("\n")[0] == "bob, not proposed"
+    assert engine.status(bob)["changes"] == 1
+
+
+def test_merged_proposal_with_the_loop_off_defers(env):
+    _flags(env, sources=True, changes=True)  # no loop
+    bob = _bob(env)
+    proposed = _commit(bob, "a.txt", "one\nBOB\nthree\n", "bob proposes")
+    _propose(bob, proposed)
+    squash = _alice_commit(env, "a.txt", "one\nBOB, tidied\nthree\n", "squashed (#7)")
+
+    def merged(r):
+        r["proposal"]["cache"] = {"state": "merged", "merge_commit_sha": squash,
+                                  "comment": None, "checked_at": 1}
+    store.update(bob, merged)
+    result = _sync(bob)
+    assert result["why"] == "merged-proposal"
+    assert store.get(bob)["needs_merge"] is None and _head(bob) == proposed
+
+
+def test_local_insteadof_redirect_is_refused(env):
+    """r05: one line of the repo's own config must not re-point the follow."""
+    _all_on(env)
+    bob = _bob(env)
+    head = _head(bob)
+    evil = str(env.tmp / "evil.git")
+    git(str(env.tmp), "clone", "-q", "--bare", env.remote, evil)
+    git(bob, "config", f"url.{evil}.insteadOf", URL)
+    _alice_commit(env, "c.txt", "alice\n", "alice change")
+    result = _sync(bob)
+    assert result["status"] == "skipped" and result["why"] == "redirected"
+    assert _head(bob) == head and replay.rev(bob, replay.FOLLOW_REF) is None
+    st = engine.status(bob)
+    assert st["sync_error_code"] == "redirected"
+    assert st["sync_error"] == "This app's settings point GitHub somewhere else, so fused won't update it."
+
+
+def test_ignored_file_the_update_starts_tracking_is_backed_up(env):
+    """r00/MED 9: `reset --keep` overwrites an ignored file at a path the
+    author's update newly tracks — its content must be in the backup."""
+    _all_on(env)
+    bob = _bob(env)
+    git(bob, "config", "core.excludesFile", os.devnull)
+    with open(os.path.join(bob, ".git", "info", "exclude"), "a") as f:
+        f.write(".env\n")
+    write(bob, ".env", "BOB_SECRET=1\n")
+    old = _head(bob)
+    tip = _alice_commit(env, ".env", "EXAMPLE=1\n", "add .env template")
+    assert _sync(bob)["status"] == "synced"
+    assert _head(bob) == tip
+    wips = [r for r in git(bob, "for-each-ref", "--format=%(refname)",
+                           "refs/fused/backup/").split() if r.endswith("-wip")]
+    assert wips and git(bob, "show", f"{wips[0]}:.env") == "BOB_SECRET=1\n"
+    assert git(bob, "rev-parse", f"{wips[0]}^").strip() == old
+
+
+def test_author_force_push_under_a_copy_without_changes_is_an_update(env):
+    _all_on(env)
+    bob = _bob(env)
+    _alice_commit(env, "c.txt", "c\n", "to be dropped")
+    _sync(bob)
+    git(env.alice, "reset", "-q", "--hard", "HEAD~1")
+    write(env.alice, "d.txt", "d\n")
+    git(env.alice, "add", "-A")
+    git(env.alice, "commit", "-q", "-m", "rewritten")
+    git(env.alice, "push", "-q", "--force", "origin", "main")
+    tip = _head(env.alice)
+    assert _sync(bob)["status"] == "synced"
+    assert _head(bob) == tip
+    assert store.get(bob)["events"][-1]["kind"] == "updated"
+    assert engine.status(bob)["changes"] == 0
+
+
+def test_bring_in_latest_with_auto_sync_off(env, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
+    _all_on(env)
+    bob = _bob(env)
+    _commit(bob, "b.txt", "bob\n", "bob change")
+    tip = _alice_commit(env, "c.txt", "alice\n", "alice change")
+    _sync(bob)
+    st = engine.status(bob)
+    assert st["auto_sync"] is False and st["behind"] == 1 and st["owner_checked"] is True
+    out = engine.bring_in_latest(bob)
+    assert out["ok"] is True and out["message"] == "Updated to alice's latest, your changes kept."
+    git(bob, "merge-base", "--is-ancestor", tip, "HEAD")  # raises if not
+    assert engine.status(bob)["behind"] == 0
+    assert engine.bring_in_latest(bob)["message"] == "You already have alice's latest."
+
+
+def test_the_slot_is_free_during_fetch_and_replay(env, monkeypatch):
+    """MED 7: minutes of rebase never hold the process-wide slot — only the
+    land does — and the caller's slot is held again when sync returns."""
+    _all_on(env)
+    bob = _bob(env)
+    _commit(bob, "b.txt", "bob\n", "bob change")
+    _alice_commit(env, "c.txt", "alice\n", "alice change")
+    seen = {}
+    real_replay, real_land = replay.replay, replay.land_locked
+
+    def spy_replay(*a, **k):
+        seen["replay"] = git_upstream._check_slot.locked()
+        return real_replay(*a, **k)
+
+    def spy_land(*a, **k):
+        seen["land"] = git_upstream._check_slot.locked()
+        return real_land(*a, **k)
+
+    monkeypatch.setattr(replay, "replay", spy_replay)
+    monkeypatch.setattr(replay, "land_locked", spy_land)
+    with git_upstream._mutation_slot() as held:
+        assert held
+        result = git_upstream._sync_locked(bob, action="t", push=False)
+        assert git_upstream._check_slot.locked()
+    assert result["status"] == "synced"
+    assert seen == {"replay": False, "land": True}
+
+
+def test_owns_error_falls_back_to_the_plain_sync(env, monkeypatch):
+    bob = _bob(env)
+    tip = _alice_commit(env, "c.txt", "alice\n", "alice change")
+
+    def boom(root):
+        raise RuntimeError("store unreadable")
+
+    monkeypatch.setattr(engine, "owns", boom)
+    result = _sync(bob)
+    assert result["status"] == "synced" and _head(bob) == tip

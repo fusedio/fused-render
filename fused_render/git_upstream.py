@@ -859,24 +859,32 @@ def _sync_locked(root, *, action, push):
     GitHub repo, each only with its feature flag on — is synced by
     `contrib.engine.sync` instead (same return shape, slot still held, never
     a standing failure). With every contrib flag off `owns` is False and the
-    body below runs exactly as before; an engine error is logged and the
-    sync skipped, never fallen through to a plain push of a copy the engine
-    claimed."""
+    body below runs exactly as before. Only a root `owns` actually CLAIMED
+    is skipped on an engine error (never fallen through to a plain push of a
+    copy the engine claimed); an error deciding ownership at all (an import,
+    an unreadable store) is logged and the root gets today's plain sync."""
+    _contrib = None
+    owned = False
     try:
         from fused_render.contrib import engine as _contrib
-        if _contrib.owns(root):
+        owned = _contrib.owns(root)
+    except Exception:  # noqa: BLE001 — unknown ownership reads as today's sync
+        logger.exception("contrib ownership check failed for %s", root)
+    if owned:
+        try:
             return _contrib.sync(root, action=action, push=push)
-    except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
-        logger.exception("contrib sync failed for %s", root)
-        return {"ok": True, "status": "skipped", "why": "contrib-error"}
-    try:
-        # The loop switched off after it marked `.fused/` skip-worktree:
-        # undo that once, so the plain sync below sees today's tree. Its own
-        # guard: a failure here must never cost a root the engine does not
-        # own its plain sync.
-        _contrib.settle_when_off(root)
-    except Exception:  # noqa: BLE001
-        logger.exception("contrib un-protect failed for %s", root)
+        except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
+            logger.exception("contrib sync failed for %s", root)
+            return {"ok": True, "status": "skipped", "why": "contrib-error"}
+    if _contrib is not None:
+        try:
+            # The loop switched off after it marked `.fused/` skip-worktree:
+            # undo that once, so the plain sync below sees today's tree. Its
+            # own guard: a failure here must never cost a root the engine does
+            # not own its plain sync.
+            _contrib.settle_when_off(root)
+        except Exception:  # noqa: BLE001
+            logger.exception("contrib un-protect failed for %s", root)
     return _sync_plain(root, action=action, push=push)
 
 

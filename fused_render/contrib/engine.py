@@ -528,6 +528,15 @@ def _take_github(root, rec, fol, tip) -> dict:
     if not base:
         return _out("skipped", "unrelated", **done)
     mark_tip = None
+    if set(_dirty_paths(root)) & _changed_between(root, head, tip):
+        # Uncommitted edits to files the update changes (or untracked files
+        # where it adds one): `reset --keep` would refuse every time, so the
+        # update would wait forever. They are Bob's changes — commit them
+        # ("Your edits", the Propose pathspec) and bring the update in on
+        # top like any other change of his.
+        head = _commit_edits(root, head)
+        if not head:
+            return _out("deferred", "edits", **done)
     if replay.is_ancestor(root, head, tip) or base == head:
         # No changes of Bob's: the author's tip as it is. `base == head` is
         # an author force-push under a copy with nothing of Bob's on top —
@@ -537,10 +546,6 @@ def _take_github(root, rec, fol, tip) -> dict:
         nm = rec.get("needs_merge") if isinstance(rec.get("needs_merge"), dict) else None
         if nm and nm.get("onto") == tip and nm.get("head") == head:
             return _out("needs-merge", "needs-merge", **done)
-        if set(_dirty_paths(root)) & _changed_between(root, base, tip):
-            head = _commit_edits(root, head)
-            if not head:
-                return _out("deferred", "edits", **done)
         strategy = "merge" if replay.has_merges(root, base, head) else "rebase"
         mark = None
         if strategy == "merge":

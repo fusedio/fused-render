@@ -98,7 +98,16 @@ def github_redirected(root) -> bool:
     `pushInsteadOf` whose value is a github.com prefix sends every fetch and
     push "to GitHub" somewhere else, the record's URL notwithstanding. The
     one test for both callers — this module's fetch and gh.py's fetch/push
-    (review r05). Unreadable config reads as not redirected."""
+    (review r05): gh.py's `url_rewrites` (reads `--includes` too) when it is
+    there, else the same rule here. Unreadable config reads as not
+    redirected."""
+    gh = _gh()
+    rewrites = getattr(gh, "url_rewrites", None) if gh else None
+    if rewrites is not None:
+        try:
+            return bool(rewrites(root))
+        except Exception:  # noqa: BLE001 — fall back to the local rule
+            pass
     r = gu._run(root, "config", "--local", "--get-regexp", r"^url\..*\.(push)?insteadof$")
     if not gu._ok(r):
         return False
@@ -119,7 +128,9 @@ def fetch_detail(root, follow: Follow) -> tuple[str | None, str | None]:
     (`github_redirected`). Writes only the follow ref (github kind) or
     origin's tracking ref (own); the engine serializes its own fetches per
     copy."""
-    if github_redirected(root):
+    gh = _gh()
+    rewrites = getattr(gh, "url_rewrites", None) if gh else None
+    if github_redirected(root) or (rewrites is not None and rewrites(root, follow.url)):
         import logging
 
         logging.getLogger(__name__).warning(
