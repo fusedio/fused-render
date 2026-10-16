@@ -433,10 +433,12 @@ def test_a_fresh_copilot_run_is_found_by_file_then_by_id(agent, target):
     assert agent._live_run(file, SID_COPILOT) == {"run_id": name, "backend": "copilot"}
 
 
-def test_send_keeps_the_session_id_the_copilot_host_wrote(agent, target, monkeypatch):
+def test_send_keeps_the_session_id_the_copilot_host_wrote(agent, target, home,
+                                                         monkeypatch):
     """`_send` re-records model/mode in host.json while the Copilot host may
     be rewriting it with its own session id: re-read, two keys, replace."""
     file, _ = target
+    _prefs(home, copilot_enabled=True)
     run_dir = _fresh_copilot_run(agent, file)
     path = os.path.join(run_dir, "host.json")
     real = agent._write_control_request
@@ -546,15 +548,20 @@ def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
 
-@pytest.fixture()
-def stub(monkeypatch):
-    seen = []
-
+def _recording_main(seen):
+    """A stand-in `agent.main` that records what reached it."""
     def main(action="", file="", backend="", permission_mode="", message="",
              run_id="", session_id=""):
         seen.append({"action": action, "backend": backend})
         return {"run_id": "r-1"}
     main.__signature__ = inspect.signature(main)
+    return main
+
+
+@pytest.fixture()
+def stub(monkeypatch):
+    seen = []
+    main = _recording_main(seen)
     monkeypatch.setattr(claude_agent, "agent_module",
                         lambda: types.SimpleNamespace(main=main))
     monkeypatch.setattr(gate, "_folder_busy", lambda params, body=None: "")
@@ -856,7 +863,8 @@ def _inbox_rows(run_dir):
 
 
 @pytest.fixture()
-def send_env(agent, monkeypatch):
+def send_env(agent, home, monkeypatch):
+    _prefs(home, copilot_enabled=True)    # `_send` gates on the run's agent
     cancelled = []
     monkeypatch.setattr(agent, "_cancel", lambda run_id, **kw: cancelled.append(run_id))
     monkeypatch.setattr(agent, "_join_pending_stop", lambda run_dir, timeout=None: True)
@@ -924,6 +932,61 @@ def test_a_host_without_the_field_reads_as_claude(agent, tmp_path, send_env):
         json.dump({"file": "/f", "message": "m"}, fh)
     assert agent._send("run-1", "m", model="opus") == {"sent": True}
     assert send_env == []
+
+
+def test_a_send_into_a_live_host_of_a_disabled_agent_is_refused(
+        agent, tmp_path, home, send_env):
+    """Invariant 10 on the live path: Copilot is switched off while its host
+    is up — the follow-up is refused with the gate's body and NOTHING is
+    written (no inbox row, no control request, no respawn). The request
+    naming no backend (or Claude) changes nothing: the run's agent decides."""
+    run_dir = _live_run(agent, tmp_path)
+    assert agent._send("run-1", "ok") == {"sent": True}     # on: goes through
+    before = _inbox_rows(run_dir)
+    _prefs(home, copilot_enabled=False)
+    for kw in ({}, {"model": "gpt-5.4"}, {"permission_mode": "acceptEdits"},
+               {"permission_mode": "auto"}):
+        assert agent._send("run-1", "more", **kw) == {
+            "error": "Copilot is turned off in Preferences",
+            "reason": "backend_disabled", "backend": "copilot"}, kw
+    assert _inbox_rows(run_dir) == before and send_env == []
+    with open(os.path.join(run_dir, "host.json")) as fh:
+        assert json.load(fh)["mode"] is None
+    # Claude, with Copilot off: unaffected.
+    os.rename(os.path.join(agent.RUNS, "run-1"), os.path.join(agent.RUNS, "old"))
+    _live_run(agent, tmp_path, backend="claude", model="sonnet")
+    assert agent._send("run-1", "more") == {"sent": True}
+
+
+def test_the_router_gates_a_bare_send_on_the_runs_backend(client, stub, monkeypatch,
+                                                         agent, tmp_path):
+    """A send that names no backend is gated on the RUN's (its meta.json),
+    and a send naming Claude into a Copilot run is too (invariant 8)."""
+    from fused_render.shell import prefs
+    run_dir = _live_run(agent, tmp_path)
+    module = types.SimpleNamespace(main=_recording_main(stub), RUNS=agent.RUNS,
+                                   _bad_id=agent._bad_id,
+                                   _run_backend=agent._run_backend)
+    monkeypatch.setattr(claude_agent, "agent_module", lambda: module)
+    monkeypatch.setattr(prefs, "read_prefs", lambda: {"copilot_enabled": False})
+    for backend in ("", "claude"):
+        r = client.post("/api/claude/agent", headers=FUSED,
+                        json={"action": "send", "run_id": "run-1", "message": "m",
+                              "backend": backend})
+        assert r.status_code == 400, backend
+        assert r.json()["reason"] == "backend_disabled"
+    assert stub == []
+    # Copilot on: the same bare send goes through; a run that is not on disk
+    # falls back to the request's say-so (nothing named → not gated here).
+    monkeypatch.setattr(prefs, "read_prefs", lambda: {"copilot_enabled": True})
+    r = client.post("/api/claude/agent", headers=FUSED,
+                    json={"action": "send", "run_id": "run-1", "message": "m"})
+    assert r.status_code == 200
+    monkeypatch.setattr(prefs, "read_prefs", lambda: {"copilot_enabled": False})
+    r = client.post("/api/claude/agent", headers=FUSED,
+                    json={"action": "send", "run_id": "nope", "message": "m"})
+    assert r.status_code == 200
+    assert os.path.isdir(run_dir)
 
 
 # ------------------------------------------------------------- caps (§7)

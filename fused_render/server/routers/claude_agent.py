@@ -137,16 +137,23 @@ def _app_entry_main(dir: str = "") -> dict:
 _SPAWN_ACTIONS = ("start", "send")
 
 
-def _backend_refusal(action: str, bound: dict) -> dict | None:
+def _backend_refusal(action: str, bound: dict, agent=None) -> dict | None:
     """The 400 body for a `start`/`send` the agent gate refuses, else None.
 
-    Only when the request NAMES a backend: a bare request is Claude for a
-    new chat and the session's own for a resume, both of which `_start`
-    checks itself. `backend` reaches `main` as a string (the binder's
-    str-coercion), so `""` is "not named"."""
+    A `send` is gated on the RUN's backend whenever the run is on disk — a
+    follow-up is a turn of that run's agent whatever the request says
+    (invariant 8), and a bare send to a live host of an agent switched off
+    since must not slip through. Otherwise only when the request NAMES a
+    backend: a bare `start` is Claude for a new chat and the session's own
+    for a resume, both of which `_start` checks itself (and `_send` repeats
+    the run check, for callers that never come through here — the
+    scheduler's live-host path). `backend` reaches `main` as a string (the
+    binder's str-coercion), so `""` is "not named"."""
     if action not in _SPAWN_ACTIONS:
         return None
     backend = str(bound.get("backend") or "")
+    if action == "send":
+        backend = _run_backend(agent, str(bound.get("run_id") or "")) or backend
     if not backend:
         return None
     from fused_render.agent_backends import registry
@@ -161,6 +168,20 @@ def _backend_refusal(action: str, bound: dict) -> dict | None:
                          f"{registry.get(backend).label}",
                 "reason": "unsupported", "backend": backend}
     return None
+
+
+def _run_backend(agent, run_id: str) -> str:
+    """The backend of run `run_id` off its meta.json, "" when there is no
+    such run (or no agent module that can say where runs live)."""
+    runs = getattr(agent, "RUNS", None)
+    bad_id = getattr(agent, "_bad_id", None)
+    run_backend = getattr(agent, "_run_backend", None)
+    if not (runs and bad_id and run_backend) or bad_id(run_id):
+        return ""
+    run_dir = os.path.join(runs, run_id)
+    if not os.path.isfile(os.path.join(run_dir, "meta.json")):
+        return ""
+    return str(run_backend(run_dir) or "")
 
 
 def _error_obj(exc: BaseException) -> dict:
@@ -289,14 +310,15 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
         return _error(f"{action}: {exc}")
 
     # THE AGENT GATE (docs/COPILOT_BACKEND.md D17, invariant 10). A `start`
-    # or `send` naming a backend that Preferences has switched off is a 400
+    # naming a backend that Preferences has switched off, or a `send` into a
+    # run of one (or naming one, for a run not on disk), is a 400
     # with the registry's body, BEFORE the queue gate below mints a
     # placeholder for a run that must not exist. Request-level only: `_start`
     # keeps the one check that actually stands between a request and a spawn
     # (it reads prefs.json itself), so a resume that names no backend is
     # still refused there if the session's own agent is off. Plan mode is
     # refused the same way for Copilot (§7 caps.plan_mode).
-    refused = _backend_refusal(action, bound)
+    refused = _backend_refusal(action, bound, agent)
     if refused is not None:
         return JSONResponse(refused, status_code=400)
 

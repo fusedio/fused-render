@@ -4370,6 +4370,14 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     if not isinstance(meta, dict):
         meta = {}
     backend = _meta_backend(host if host.get("backend") in BACKENDS else meta)
+    # THE PREFS GATE, on the live path too (invariant 10, D17). A follow-up
+    # into a host that is already up spawns nothing, but it is still a turn
+    # run by that agent, and Preferences turned the agent off: refused before
+    # anything is written (no inbox row, no control request, no respawn), the
+    # same body `_start` and the router answer. The host itself is left as
+    # it is; its idle reap ends it.
+    if not _backend_enabled(backend):
+        return _backend_disabled_error(backend)
     wanted = set(_attach_dirs(read_dirs))
     granted = set(host.get("read_dirs") or [])
     # Copilot takes `--model` at spawn only (D7, caps.live_model_switch): a
