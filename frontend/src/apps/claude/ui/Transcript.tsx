@@ -195,14 +195,34 @@ export const Transcript = memo(function Transcript({
     // either direction. A reader who WAS following is untouched — the flag is
     // already true and nothing here turns it off — so the fold still carries
     // them down with the new reply.
+    //
+    // …NOR THE PORT GROWING (Akshil 2026-10-16: "every time I add a reply to an
+    // ongoing convo it doesn't scroll"). The composer card folds back to one
+    // line once a send goes out, and the scrollport gains the rows the card
+    // gave up: `clientHeight` grows, `scrollHeight` does not, and a reader
+    // pinned at the tail has their `scrollTop` CLAMPED down by exactly that
+    // much. That is the mirror image of the fold above — the viewport moved,
+    // not the reader — but it came in on the `h >= lastHeight` side, read as
+    // "top < lastTop", and dropped the follow in the one moment the reader had
+    // just asked for the tail; the reply then streamed below a port that no
+    // longer followed it, until the turn's settle write caught up. A clamp has
+    // one signature a gesture never has: it leaves `scrollTop` AT THE MAXIMUM.
+    // A reader who dragged the bar or pressed a key is, by definition, no
+    // longer there — so a decrease that lands on the bottom edge is not read
+    // as one — and not as a return to the tail either: a clamp is a no-op on
+    // the flag in both directions, like the fold. (macOS rubber-banding off
+    // the bottom edge ends the same way, at the maximum, and is covered by the
+    // same read.) Geometry read in the same event, no bookkeeping to go stale.
     let lastTop = 0;
     let lastHeight = 0;
     const onScroll = () => {
       const top = wrap.scrollTop;
       const h = wrap.scrollHeight;
+      const atMax = top >= h - wrap.clientHeight - 1;
       if (h >= lastHeight) {
-        if (top < lastTop - 1) followTail.current = false;
-        else if (nearBottom()) followTail.current = true;
+        if (top < lastTop - 1) {
+          if (!atMax) followTail.current = false;
+        } else if (nearBottom()) followTail.current = true;
       }
       lastTop = top;
       lastHeight = h;
