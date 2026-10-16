@@ -2096,12 +2096,20 @@ export function ComposerCard({
             return;
           }
         }
-        // ↑ ON THE FIRST LINE WALKS BACK THROUGH THIS SESSION'S OWN PROMPTS —
-        // Claude Code's prompt history. Once more is the one before; the caret
-        // lower down is the caret's, as the parked-line pull above is.
-        const caret = ev.currentTarget?.selectionStart ?? 0;
-        if (!history?.length || text.slice(0, caret).includes("\n")) return;
+        // ↑ WALKS BACK THROUGH THIS SESSION'S OWN PROMPTS — Claude Code's
+        // prompt history. From an EMPTY box at once; from a box with words only
+        // with the caret at the very start, so inside a draft ↑ is the caret's
+        // — and on the first visual row the browser's own ↑ puts the caret at
+        // the start, so a wrapped line costs one extra press and never a
+        // mis-recall. No "first logical line" test: a soft-wrapped line has
+        // rows the text has no newline for. ONCE WALKING (words untouched
+        // since the recall), ↑/↓ keep walking wherever the caret is: a
+        // recalled multi-line message must not trap the arrows. Any edit ends
+        // the walk (`onChange`) and the arrows are the caret's again.
+        if (!history?.length) return;
         const at = histIdx.current;
+        const caret = ev.currentTarget?.selectionStart ?? 0;
+        if (at === null && text && caret !== 0) return;
         const next = at === null ? history.length - 1 : at - 1;
         ev.preventDefault();
         if (next < 0) return;
@@ -2110,14 +2118,12 @@ export function ComposerCard({
         recall(history[next]);
         return;
       }
-      // ↓ ON THE LAST LINE WALKS FORWARD AGAIN, and past the newest prompt
-      // hands back the draft ↑ took the box from. Only while walking: an idle
-      // box's ↓ is nobody's.
+      // ↓ WALKS FORWARD AGAIN, and past the newest prompt hands back the
+      // draft ↑ took the box from. Only while walking: an idle box's ↓ is
+      // nobody's, and a caret anywhere in a recalled line still walks.
       if (ev.key === "ArrowDown" && !arrowOwned) {
         const at = histIdx.current;
         if (at === null || !history) return;
-        const caret = ev.currentTarget?.selectionEnd ?? text.length;
-        if (text.slice(caret).includes("\n")) return;
         ev.preventDefault();
         if (at + 1 < history.length) {
           histIdx.current = at + 1;

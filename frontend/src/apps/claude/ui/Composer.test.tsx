@@ -2064,24 +2064,39 @@ test("↑ recalls the newest prompt, ↑ again the one before; ↓ walks back an
   expect(c.press("ArrowDown")).toBe(false);
 });
 
-test("↑ history is the caret's below the first line; ↓ is nobody's when not walking", () => {
-  const c = mount({ history: ["one"] });
-  c.type("line a\nline b");
-  // Caret at the end: on the second line, ↑ moves the caret.
-  let prevented = false;
-  act(() => {
-    c.box().props.onKeyDown({
-      key: "ArrowUp",
-      shiftKey: false,
-      currentTarget: { selectionStart: 13, selectionEnd: 13 },
-      preventDefault() {
-        prevented = true;
-      },
+test("↑ in a draft recalls only from the caret at the start; once walking, the caret does not matter", () => {
+  const press = (c: ReturnType<typeof mount>, key: string, caret: number) => {
+    let prevented = false;
+    act(() => {
+      c.box().props.onKeyDown({
+        key,
+        shiftKey: false,
+        currentTarget: { selectionStart: caret, selectionEnd: caret },
+        preventDefault() {
+          prevented = true;
+        },
+      });
     });
-  });
-  expect(prevented).toBe(false);
+    return prevented;
+  };
+  const c = mount({ history: ["one", "two\nlines"] });
+  c.type("line a\nline b");
+  // Mid-draft (any row, wrapped or not): ↑ is the caret's.
+  expect(press(c, "ArrowUp", 13)).toBe(false);
+  expect(press(c, "ArrowUp", 3)).toBe(false);
   expect(c.box().props.value).toBe("line a\nline b");
   expect(c.press("ArrowDown")).toBe(false);
+  // Caret at the very start: ↑ recalls.
+  expect(press(c, "ArrowUp", 0)).toBe(true);
+  expect(c.box().props.value).toBe("two\nlines");
+  // Walking: the caret sits at the end of a multi-line recall, and ↑/↓ still
+  // walk rather than moving between its lines.
+  expect(press(c, "ArrowUp", 9)).toBe(true);
+  expect(c.box().props.value).toBe("one");
+  expect(press(c, "ArrowDown", 1)).toBe(true);
+  expect(c.box().props.value).toBe("two\nlines");
+  expect(press(c, "ArrowDown", 2)).toBe(true);
+  expect(c.box().props.value).toBe("line a\nline b");
   // No history at all: ↑ in an empty box is still nobody's.
   const bare = mount({ history: [] });
   expect(bare.press("ArrowUp")).toBe(false);
