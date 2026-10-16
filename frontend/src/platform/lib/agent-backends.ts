@@ -323,6 +323,13 @@ export function isUnlistedEffort(effort: string | null | undefined, id: string |
   return !!effort && !backendOf(id).efforts.includes(effort);
 }
 
+/** Is this agent SWITCHED OFF, on the server's word? False until the catalog
+ *  has answered — the static rows are not a verdict — so a door to an agent
+ *  that is on never blinks out on the first frame (D17). */
+export function isBackendOff(id: string | null | undefined): boolean {
+  return current.loaded && !isBackendEnabled(id);
+}
+
 /** What a NEW chat or task opens on: the catalog's default. */
 export function defaultBackend(): string {
   return current.default;

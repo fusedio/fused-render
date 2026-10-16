@@ -142,6 +142,7 @@ import {
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import { sessionSeed } from "./ui/useRecentTasks";
+import { takenAskBackend } from "@platform/lib/pending-claude-ask";
 import type { ClassifiedCommand } from "./protocol/commands";
 import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
@@ -1929,7 +1930,15 @@ function ChatBody(props: ChatBodyProps) {
         // navigated to, so disowning it must not buy a Back entry (T:19216).
         // `history: "replace"` spelled out, not inherited: a stale identifier is
         // not a place anyone navigated to, so disowning it must buy no entry.
-        params.set({ session_id: null, run: null }, { history: "replace" });
+        // …AND THE AGENT THE ASK NAMED, when it named one ("Fix with Claude",
+        // D17): the pill's param for this new chat, and the send-time read
+        // straight away, since the send below may go before a render.
+        const askAgent = takenAskBackend(ask);
+        params.set(
+          { session_id: null, run: null, ...(askAgent ? { backend: askAgent } : {}) },
+          { history: "replace" },
+        );
+        if (askAgent) liveBackend.current = askAgent;
         setEntered(true);
         await Promise.race([detected.current!.promise, sleep(ASK_DETECTION_TIMEOUT_MS)]);
         // THE ASK IS SPENT ONCE. The host took its pending ask and cleared it

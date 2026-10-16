@@ -41,7 +41,7 @@ import { copyPendingText } from "@platform/lib/clipboard";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
 import { forgetSessionSeed } from "./useRecentTasks";
 import { useAgent } from "./agent-context";
-import { agentNamed, useAgentBackends } from "@platform/lib/agent-backends";
+import { agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 
 /** Live by the listing's own clock (T:13166-13169). */
 const RUNNING_STATES = new Set<Task["status"]>([
@@ -326,6 +326,7 @@ export function Kebab({
   // ones this menu always said, handed in as `claudeWords`.
   const agent = useAgent();
   useAgentBackends();
+  const agentOff = isBackendOff(agent.backend);
   const restingTerminal = useCallback(
     (claudeWords: string) =>
       agentNamed(agent.backend)
@@ -628,6 +629,10 @@ export function Kebab({
           aria-label="More options"
           className="c-overlay c-kebabpop w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0"
         >
+          {/* NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): the command
+              hands the chat to that agent's CLI, which is exactly what the
+              switch said not to do — the Explorer's item follows the same rule. */}
+          {!agentOff ? (<>
           {/* NOT WHILE THIS CHAT IS WAITING (`queued`): there is no session to
               continue, so the command this copies would open a conversation that
               does not exist yet. */}
@@ -653,6 +658,7 @@ export function Kebab({
               {copyLabel || "Copy command"}
             </DropdownMenuItem>
           ) : null}
+          </>) : null}
           {/* HIDDEN, not disabled, when there is no task behind the chat: a
               disabled row invites the reader to work out what would enable it,
               and the answer is not something they can act on from this menu

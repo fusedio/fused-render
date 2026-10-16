@@ -63,7 +63,7 @@ import { useChatTemplates } from "./TaskCards";
 // its own module because the native chat's top line draws the SAME block for the
 // task behind the conversation it is showing (see that file's note).
 import { TaskPeekAgent, TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
-import { agentLabel, agentNamed } from "@platform/lib/agent-backends";
+import { agentLabel, agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
@@ -420,6 +420,8 @@ export function TaskPeek({
   const key = usePeekedKey();
   const anchor = usePeekAnchor();
   const canRun = useCanRunInTerminal();
+  // The terminal rows follow the agent's switch (D17); subscribed so a flip repaints.
+  useAgentBackends();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
   // task that is not here closes the panel and drops the param instead of
   // standing open and empty; one naming a task NUMBER is rewritten to that
@@ -970,6 +972,9 @@ export function TaskPeek({
       });
       items.push("separator");
     }
+    // NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): both terminal rows
+    // hand the task to that agent's CLI. Same rule as the Explorer's item.
+    if (!isBackendOff(task.backend)) {
     items.push({
       // The agent's word once there is more than one to name (D18): the
       // command handed over is that agent's own `--resume`.
@@ -992,6 +997,7 @@ export function TaskPeek({
         disabled: !terminalHere || !task.session_id,
         onClick: () => void copyTerminalCommand(),
       });
+    }
     }
     if (filing) {
       items.push({

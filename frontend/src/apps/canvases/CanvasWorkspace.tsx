@@ -16,6 +16,7 @@
 // the next local push; the banner says so). This page never reloads the
 // workbench iframe — the hosted workbench refreshes itself on upstream
 // changes.
+import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
@@ -336,6 +337,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     window.history.replaceState(window.history.state, "", url);
   }, [fixRunId]);
 
+  useAgentBackends();
+  const claudeOff = isBackendOff("claude");
   const onFix = async () => {
     setFixBusy(true);
     setFixError(null);
@@ -428,7 +431,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         >
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <strong>{sync.error}</strong>
-            <button
+            {/* Claude's feature (D17): no door while Claude is switched off. */}
+            {!claudeOff && <button
               className="btn btn-primary"
               disabled={fixBusy || !!sync.fix_active}
               onClick={() => void onFix()}
@@ -439,7 +443,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
                 : fixBusy
                   ? "Starting…"
                   : "Fix with Claude"}
-            </button>
+            </button>}
             {fixError && <span style={{ color: "rgb(200,60,60)" }}>{fixError}</span>}
           </div>
           {sync.error_detail?.length > 0 && (

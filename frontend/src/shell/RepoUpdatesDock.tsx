@@ -42,6 +42,7 @@
 // platform/lib/router, which shell may import freely — but the
 // STAGED-PROMPT store this row writes into is explorer/lib territory, which
 // only shell-side code reaches.
+import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
@@ -383,7 +384,8 @@ export function SyncFailureRowView({
     }
   };
   const fixWithClaude = async () => {
-    stageClaudeAsk(failure.root, syncFixPrompt(failure));
+    // CLAUDE'S, by name (D17): never the catalog's default agent.
+    stageClaudeAsk(failure.root, syncFixPrompt(failure), { backend: "claude" });
     if (leaveTo) {
       // The page is about to be replaced: let the dismiss land first.
       await dismiss();
@@ -411,7 +413,11 @@ export function SyncFailureRowView({
   };
   // First action takes the head slot beside the dismiss, second the line
   // below the status; a one-action reason simply has no second line.
-  const [first, second] = syncFailureActions(failure.reason).map((a) => ({
+  // "Fix with Claude" goes with the Claude switch (D17).
+  useAgentBackends();
+  const [first, second] = syncFailureActions(failure.reason)
+    .filter((a) => a.id !== "fix" || !isBackendOff("claude"))
+    .map((a) => ({
     label: a.id === "retry" && busy ? "Retrying…" : a.label,
     onClick: handlers[a.id],
     disabled: a.id === "retry" && busy,
@@ -733,7 +739,7 @@ function RepoRowView({
       command: failure.command,
       output: failure.output,
     });
-    stageClaudeAsk(row.repo.root, prompt);
+    stageClaudeAsk(row.repo.root, prompt, { backend: "claude" });
     navigate(row.repo.root, { isDir: true });
     onDismiss();
   };
@@ -787,7 +793,7 @@ function RepoRowView({
       }}
       onDismiss={{ onClick: onDismiss, ariaLabel: `Dismiss ${row.name}` }}
       status={failure ? failure.message : repoStatusText(row)}
-      extraAction={failure ? { label: "Fix with Claude", onClick: fixWithClaude } : undefined}
+      extraAction={failure && !isBackendOff("claude") ? { label: "Fix with Claude", onClick: fixWithClaude } : undefined}
       rowClick={{
         onClick: () => {
           onDismiss();
