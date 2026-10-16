@@ -5548,8 +5548,9 @@ export interface AiProviderModel {
 /** The `provider: "apple"` tier as the catalog reports it. */
 export interface AiAppleProvider {
   available: boolean;
-  /** `loading` = the OS is still fetching Apple's model; a wait, not a refusal. */
-  state: "available" | "loading" | "unavailable";
+  /** `loading` = the OS is still fetching Apple's model; a wait, not a refusal.
+   *  `disabled` = on-device AI is switched off on this machine (Intel Macs). */
+  state: "available" | "loading" | "unavailable" | "disabled";
   reason: string | null;
   /** False on a machine whose class rules the tier out (Linux, Intel): the
    *  reason is then not something a user can act on, so a picker stays quiet. */
@@ -5561,17 +5562,25 @@ export interface AiAppleProvider {
   models: AiProviderModel[];
 }
 
+/** The `provider: "local"` tier as a whole. `disabled` on an Intel Mac, where
+ *  every runner is off; per-capability availability lives in `capabilities[]`. */
+export interface AiLocalProvider {
+  available: boolean;
+  state: "available" | "disabled";
+  reason: string | null;
+}
+
 export function getAiCatalog(): Promise<{
   capabilities: AiCatalogCapability[];
   /** Optional: an older server does not send it. */
   unsupported?: AiUnsupportedModel[];
   /** Optional: an older server does not send it. */
-  providers?: { apple?: AiAppleProvider };
+  providers?: { apple?: AiAppleProvider; local?: AiLocalProvider };
 }> {
   return getJson<{
     capabilities: AiCatalogCapability[];
     unsupported?: AiUnsupportedModel[];
-    providers?: { apple?: AiAppleProvider };
+    providers?: { apple?: AiAppleProvider; local?: AiLocalProvider };
   }>("/api/ai/catalog");
 }
 

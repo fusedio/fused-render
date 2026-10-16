@@ -59,6 +59,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import plistlib
 import re
 import shutil
@@ -86,9 +87,16 @@ logger = logging.getLogger("fused_render.update")
 # Overridable for staging/E2E tests (point a test build at a test manifest).
 # Safe to expose: the manifest must still verify against the pinned ed25519
 # key, so redirecting the URL alone cannot feed the updater different bytes.
+#
+# One manifest per arch: the Intel DMG publishes under `<prefix>-macos-x86_64/`
+# (release.yml's build-sign-notarize-release-intel). Keyed on the arch this
+# PROCESS runs as, not the chip — the Intel build under Rosetta on an Apple
+# Silicon Mac reports x86_64 and must keep updating to the Intel DMG, the one
+# its installed bundle is.
+_MANIFEST_ARCH_SUFFIX = "-x86_64" if platform.machine() == "x86_64" else ""
 MANIFEST_URL = os.environ.get(
     "FUSED_RENDER_UPDATE_MANIFEST_URL",
-    f"https://d2ic19jpchjovp.cloudfront.net/{_flavor.release_prefix()}-macos/latest.json")
+    f"https://d2ic19jpchjovp.cloudfront.net/{_flavor.release_prefix()}-macos{_MANIFEST_ARCH_SUFFIX}/latest.json")
 # "" when the flavor has no Homebrew cask (Fused Bot): `detect_method` then
 # never asks brew and every install goes the DMG way.
 CASK_NAME = _flavor.cask()

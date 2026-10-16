@@ -426,7 +426,13 @@ class Runner:
         capability whose folder is missing hands the user a Download button that
         fails at spawn while the API reports the capability ready. Advertising
         is a claim; this is the check that makes it true.
+
+        Intel Macs are refused before either half (`local_ai_disabled`),
+        whatever a row's own platform gate would say.
         """
+        disabled = local_ai_disabled()
+        if disabled:
+            return Availability(False, disabled)
         if not os.path.isfile(self.worker):
             return Availability(False, f"the {self.short} runner is not built yet")
         return self._available()
@@ -461,6 +467,27 @@ class Runner:
     @property
     def pyproject(self) -> str:
         return os.path.join(self.folder, "pyproject.toml")
+
+
+#: The one sentence every on-device tier reports on an Intel Mac — each local
+#: runner (`Runner.available`), the apple tier (`apple.host.platform_problem`)
+#: and the catalog's `providers` block (`state: "disabled"`).
+LOCAL_AI_DISABLED_REASON = "local AI is disabled on Intel Macs; it needs Apple Silicon"
+
+
+def local_ai_disabled() -> str | None:
+    """Why on-device AI is off on this machine, or None when it is not.
+
+    Darwin on x86_64 — the Intel DMG, or the app under Rosetta, where
+    `machine()` reports the process's arch, not the chip's. Several rows' own
+    gates would say yes there (the torch image row, faster-whisper), but Intel
+    macOS wheels are drying up release by release (torch has none past 2.2.2),
+    so on-device AI is off on Intel Macs as a whole rather than row by row.
+    Call time, not import time, so tests can monkeypatch `platform`.
+    """
+    if platform.system() == "Darwin" and platform.machine() == "x86_64":
+        return LOCAL_AI_DISABLED_REASON
+    return None
 
 
 def _apple_silicon() -> Availability:

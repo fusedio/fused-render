@@ -756,11 +756,51 @@ jobs:
         if: needs.detect-changes.outputs.macos_packaging == 'true'
         run: bash scripts/build_dmg.sh
 
+  # The Intel DMG (release.yml's build-sign-notarize-release-intel), smoke-built
+  # on the same packaging changes as the arm64 one above. Native Intel runner:
+  # build_dmg.sh cannot cross-compile. No Xcode step: the x86_64 build ships no
+  # Apple helper. Ad-hoc signed, not notarized, like the arm64 smoke.
+  macos-intel-dmg:
+    needs: [detect-changes, frontend]
+    if: needs.detect-changes.outputs.macos_packaging == 'true' && needs.frontend.result == 'success'
+    runs-on: macos-15-intel
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell-dist
+          path: fused_render/static/shell-dist
+
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # Same fallback as release.yml's Intel job: build_dmg.sh step 1 needs a
+      # python.org framework python under /Library/Frameworks.
+      - name: Ensure a python.org framework Python 3.12
+        run: |
+          set -euo pipefail
+          FW=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
+          if [[ ! -x "$FW" ]] || [[ -z "$("$FW" -c 'import sysconfig; print(sysconfig.get_config_var("PYTHONFRAMEWORK") or "")')" ]]; then
+            curl -fsSL "https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg" -o "$RUNNER_TEMP/python.pkg"
+            sudo installer -pkg "$RUNNER_TEMP/python.pkg" -target /
+          fi
+          "$FW" -c 'import platform, sys; print(sys.version, platform.machine())'
+
+      - name: Build the Intel DMG (smoke)
+        env:
+          FUSED_RENDER_ARCH: x86_64
+        run: bash scripts/build_dmg.sh
+
   test-status:
     name: Test Status
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [detect-changes, frontend, test-python, fused-engine, minimal-install, wheel, bundle-contents, linux-desktop, macos-desktop]
+    needs: [detect-changes, frontend, test-python, fused-engine, minimal-install, wheel, bundle-contents, linux-desktop, macos-desktop, macos-intel-dmg]
     if: always()
     steps:
       - name: Check test status
@@ -791,7 +831,7 @@ jobs:
           # macos-desktop gates on its OWN filter, so a "skipped" (filter did
           # not fire) is a legitimate pass. Truth table: success → pass,
           # skipped → pass, failure → fail, cancelled → fail.
-          for result in "${{ needs.macos-desktop.result }}"; do
+          for result in "${{ needs.macos-desktop.result }}" "${{ needs.macos-intel-dmg.result }}"; do
             if [[ "$result" != "success" && "$result" != "skipped" ]]; then
               echo "Platform desktop job did not succeed or skip: $result"
               exit 1
