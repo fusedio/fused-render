@@ -91,9 +91,11 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
     """Start a session in-process; return `agent._start`'s result dict.
 
     `backend` ("claude" | "copilot" | "") is which agent hosts the session
-    (docs/COPILOT_BACKEND.md D2); "" leaves `_start` to resolve it — a resumed
-    session's recorded backend, else the Preferences default. Always passed as
-    a keyword, so agent.py's `_start` must accept `backend=`.
+    (docs/COPILOT_BACKEND.md D2). A resume runs on the session's own backend
+    whatever this says; on a fresh chat `_start` reads "" as Claude, NOT as the
+    Preferences default — so the scheduler, which pins an entry's agent at
+    create, always passes it. Always passed as a keyword, so agent.py's
+    `_start` must accept `backend=`.
 
     `session_id` rides through because a scheduled message may target an
     EXISTING conversation ("" is a fresh one, which is all the apps API ever

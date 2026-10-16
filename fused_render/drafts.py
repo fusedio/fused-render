@@ -187,7 +187,7 @@ CHAT_TTL_SEC = 14 * 24 * 60 * 60
 #: gains fields over time and an older server must not start 400ing a newer
 #: page), and a field the client omits keeps whatever the stored draft had.
 TASK_FIELDS = ("title", "description", "target", "when", "repeat", "custom_rule",
-               "model", "effort", "permission", "attachments",
+               "model", "effort", "backend", "permission", "attachments",
                "new_task_each_run", "session_id")
 
 #: The SETTINGS half of a draft, spelled once and read from either record.
@@ -206,13 +206,13 @@ TASK_FIELDS = ("title", "description", "target", "when", "repeat", "custom_rule"
 #: because the modal has a title box of its own that a person may edit away from
 #: the first line of what they typed.
 CHAT_FORM_FIELDS = ("title", "when", "repeat", "custom_rule", "model", "effort",
-                    "permission", "target", "new_task_each_run")
+                    "backend", "permission", "target", "new_task_each_run")
 
 #: The form fields that are plain text, normalised through `_text`. The rest are
 #: pass-through json (`when`, `repeat`, `custom_rule`) or a tri-state flag
 #: (`new_task_each_run`) — the same split `_TASK_TEXT` draws, for the same
 #: fields.
-_FORM_TEXT = ("title", "model", "effort", "permission", "target")
+_FORM_TEXT = ("title", "model", "effort", "backend", "permission", "target")
 
 #: The fields that are plain text, normalised through `_text` on the way in. The
 #: rest are pass-through (`when`, `repeat`, `custom_rule`), a tri-state flag
@@ -226,7 +226,8 @@ _FORM_TEXT = ("title", "model", "effort", "permission", "target")
 #: typed. A form that arrives blank is still a delete even when it names the
 #: session it was going to — which is exactly the bargain `an empty task put
 #: keeps the chat draft` rests on (Akshil, 2026-09-11).
-_TASK_TEXT = ("title", "description", "target", "model", "effort", "permission")
+_TASK_TEXT = ("title", "description", "target", "model", "effort", "backend",
+              "permission")
 
 #: WHAT MAKES A DRAFT A DRAFT: words. Plus `attachments`, which `_empty_task`
 #: asks about separately because it is rows rather than text.
@@ -1328,8 +1329,8 @@ def _fold_into_bound(existing: dict, incoming: dict) -> dict:
     the very fact that brought these two records together, and it is the same on
     both sides by construction.
 
-    THE SETTINGS IT RECONCILES ARE `CHAT_FORM_FIELDS`, the same nine a chat
-    record now carries as its `form` and the same nine `_put_bound` patches, so
+    THE SETTINGS IT RECONCILES ARE `CHAT_FORM_FIELDS`, the same ten a chat
+    record now carries as its `form` and the same ten `_put_bound` patches, so
     a hop that lands on this path and one that lands on that one leave the
     record in the same state (design-drafts-one-record.md, §1). `version` is not
     among them and is not merged: it belongs to the KEY this write lands on, and

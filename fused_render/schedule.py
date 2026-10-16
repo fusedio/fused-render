@@ -1532,13 +1532,19 @@ def create(target: str, message: str, due=None, session_id: str = "",
     """Validate and store one scheduled message; return the stored entry.
 
     `backend` — "claude" | "copilot" | "" — is which agent runs the turn (D2),
-    stored beside `model`/`effort` and handed to `spawn_helper` by `_send`. ""
-    is "the default" and is resolved at send time, so a message scheduled with
-    no opinion follows the Preferences default of the day it fires. An unknown
-    id is a `ValueError` (the router's 400); a known one the Preferences page
-    has switched OFF is one too (D17, request-level gate) — the scheduler's own
+    stored beside `model`/`effort` and handed to `spawn_helper` by `_send`.
+    PINNED HERE, never left for send time: "" is resolved now and the entry
+    stores the answer, so a task scheduled today runs tomorrow on the agent the
+    user saw in the modal, not whatever the Preferences default is when it
+    fires. "" resolves to the agent the entry is ALREADY bound to where there
+    is one — a `session_id`'s owner (`_session_backend`), a `follow_of`
+    leader's — and to `registry.default_id()` otherwise. An unknown id is a
+    `ValueError` (the router's 400); a known one the Preferences page has
+    switched OFF is one too (D17, request-level gate) — the scheduler's own
     tick refuses the same entry again at send time, because the toggle can
-    flip between the two.
+    flip between the two. An entry stored before the field existed has no
+    `backend` key and reads as Claude (`_entry_backend`), never as the
+    default of the day.
 
     `title` and `description` are the user's own words about the work, both
     optional and both stored as given. An empty `title` is not a missing value
@@ -1741,14 +1747,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # what happened — where a refusal here would report a policy the caller
         # did not set as if the date were malformed.
 
+    from fused_render.agent_backends import registry as _registry
     backend = str(backend or "").strip()
-    if backend:
-        from fused_render.agent_backends import registry as _registry
-        if not _registry.is_known(backend):
-            raise ValueError("backend: expected one of "
-                             + ", ".join(repr(b) for b in _registry.ORDER))
-        if not _registry.is_enabled(backend):
-            raise ValueError(_registry.disabled_error(backend)["error"])
+    if backend and not _registry.is_known(backend):
+        raise ValueError("backend: expected one of "
+                         + ", ".join(repr(b) for b in _registry.ORDER))
     mode = permission_mode or _SCHEDULED_PERMISSION_MODE
     if mode not in PERMISSION_MODES:
         raise ValueError(f"permission_mode: expected one of {PERMISSION_MODES}")
@@ -1764,10 +1767,24 @@ def create(target: str, message: str, due=None, session_id: str = "",
     follow_of = str(follow_of or "").strip()
     if follow_of:
         with _lock:
-            known = any(str(e.get("id") or "") == follow_of for e in _read())
-        if not known:
+            leader = next((e for e in _read()
+                           if str(e.get("id") or "") == follow_of), None)
+        if leader is None:
             raise ValueError(
                 f"follow_of: no scheduled message with id {follow_of!r}")
+        # A follower is the next line of its leader's conversation, so it
+        # goes to the leader's agent unless the caller said otherwise.
+        backend = backend or _entry_backend(leader)
+
+    # THE PIN (see the docstring): resolved once, here, and stored. A session
+    # already belongs to an agent and a resume runs there whatever the entry
+    # says (`agent._start`), so the entry says the same thing; anything else
+    # takes the Preferences default, which is enabled by construction.
+    if not backend and session_id:
+        backend = _session_backend(session_id)
+    backend = backend or _registry.default_id()
+    if not _registry.is_enabled(backend):
+        raise ValueError(_registry.disabled_error(backend)["error"])
 
     # No vocabulary check: the one word anything writes is "chat" (the chat
     # admission), and a store that refused an unknown one would be this layer
@@ -1810,7 +1827,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # now carries the choice across instead of quietly dropping it.
         "model": str(model or ""),
         "effort": str(effort or ""),
-        # Which agent (D2) — see the docstring; validated above.
+        # Which agent (D2) — see the docstring; resolved and validated above.
         "backend": backend,
         # The user's own words, both optional and both "" by default. Read
         # through `_text` because the router hands this module the request body
@@ -2857,6 +2874,28 @@ def _ungranted_dirs(agent, run_id: str, entry: dict) -> int:
     return len([d for d in (shots_dir(),) if d not in granted])
 
 
+def _entry_backend(entry: dict) -> str:
+    """The agent an entry runs on: its stored `backend`, and Claude for an
+    entry written before the field existed — every one of those is a Claude
+    entry, so it is NOT re-resolved to the Preferences default of the day."""
+    from fused_render.agent_backends import roots
+    value = str(entry.get("backend") or "").strip()
+    return value if value in roots.BACKENDS else roots.DEFAULT_BACKEND
+
+
+def _session_backend(session_id: str) -> str:
+    """The agent that owns an existing session (`roots.backend_for_session`):
+    the session-settings record, else the root its transcript sits under,
+    else Claude. An id that is not a plain name is never globbed for."""
+    from fused_render.agent_backends import roots
+    sid = str(session_id or "").strip()
+    hint = tasks_store.session_backend(tasks_store.settings_state(), sid)
+    if hint or sid in ("", ".", "..") or not all(
+            c.isalnum() or c in "-_." for c in sid):
+        return hint or roots.DEFAULT_BACKEND
+    return roots.backend_for_session(sid)
+
+
 def _send(entry: dict) -> None:
     """Spawn one claimed entry's session and record the outcome.
 
@@ -2874,13 +2913,15 @@ def _send(entry: dict) -> None:
     # been switched off since it was stored is an error on the entry, reason
     # "<Label> disabled", and NOTHING is spawned — not a host send either, since
     # a disabled agent's sessions are read-only. One funnel, so `tick`,
-    # `dispatch_entry`, `run_now` and a re-send all meet it.
+    # `dispatch_entry`, `run_now` and a re-send all meet it. Inside the `try`:
+    # every send reads prefs.json here now, and an unreadable one is this
+    # entry's failure, not the tick's.
     from fused_render.agent_backends import registry as _registry
-    backend = str(entry.get("backend") or "")
-    if backend and not _registry.is_enabled(backend):
-        _fail(entry, f"{_registry.get(backend).label} disabled")
-        return
+    backend = _entry_backend(entry)
     try:
+        if not _registry.is_enabled(backend):
+            _fail(entry, f"{_registry.get(backend).label} disabled")
+            return
         res = _host_send(entry)
         host_sent = res is not None
         if res is None:
@@ -2891,17 +2932,16 @@ def _send(entry: dict) -> None:
             # send without images keeps the exact call shape it has always had.
             attachments = ({"extra_read_dirs": [shots_dir()]}
                            if _stored_attachments(entry) else {})
-            # `backend` rides the same way: only when the entry names one, so
-            # every Claude send keeps the exact call shape it has always had
-            # (and the test stubs that pin it).
-            if backend:
-                attachments["backend"] = backend
+            # `backend` ALWAYS rides, never "": `_start` reads "" on a fresh
+            # chat as Claude, not as the Preferences default, so the entry's
+            # pinned agent has to be said out loud every time.
             res = claude_spawn.spawn_helper(
                 entry["target"], _composed(entry),
                 entry.get("permission_mode")
                 or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "",
                 model=str(entry.get("model") or ""),
                 effort=str(entry.get("effort") or ""),
+                backend=backend,
                 **attachments)
     except Exception as exc:  # noqa: BLE001 — the reason belongs on the entry
         _fail(entry, f"failed to start session: {exc}")
@@ -3885,7 +3925,7 @@ def _materialize(now: datetime) -> None:
                 "effort": str(entry.get("effort") or ""),
                 # …and the agent with them (D2): a template's runs are that
                 # template's runs, on the agent it was set up with.
-                "backend": str(entry.get("backend") or ""),
+                "backend": _entry_backend(entry),
                 # The user's words travel with every run, like the message and
                 # the target: an occurrence is that template's run, so a list
                 # showing occurrences must be able to name it without going back
@@ -4787,8 +4827,9 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
         # bot's build is still that bot's task, and the fresh id matches
         # nothing else the bot recorded.
         bot=str(original.get("bot") or ""),
-        # And the agent (D2): a re-ask goes to the agent that was asked.
-        backend=str(original.get("backend") or ""))
+        # And the agent (D2): a re-ask goes to the agent that was asked —
+        # Claude for an original that predates the field, never the default.
+        backend=_entry_backend(original))
     # Provenance, and the ONLY link between the two rows — the original is not
     # written to, so without this nothing records that the second message is a
     # re-ask of the first. Written after creation rather than threaded through

@@ -253,11 +253,112 @@ def test_create_stores_the_backend_and_the_send_passes_it(tmp_path, monkeypatch)
     assert entry["backend"] == "copilot"
     schedule.tick()
     assert calls and calls[0]["backend"] == "copilot"
-    # A Claude send keeps the call shape it always had: no `backend` kwarg.
-    schedule.create(str(target), "again", datetime.now(timezone.utc)
-                    - timedelta(seconds=5))
+    # No opinion is the default AT CREATE, stored, and said out loud at send:
+    # `_start` reads "" as Claude, not as the Preferences default.
+    again = schedule.create(str(target), "again", datetime.now(timezone.utc)
+                            - timedelta(seconds=5))
+    assert again["backend"] == "claude"
     schedule.tick()
-    assert "backend" not in calls[1]
+    assert calls[1]["backend"] == "claude"
+
+
+def _past():
+    return datetime.now(timezone.utc) - timedelta(seconds=5)
+
+
+def _strip_backend(entry_id):
+    """Rewrite one stored entry as a pre-field one: no `backend` key at all."""
+    entries = schedule._read()
+    for e in entries:
+        if e["id"] == entry_id:
+            e.pop("backend", None)
+    schedule._write(entries)
+
+
+def test_the_backend_is_pinned_at_create_not_at_send(tmp_path, monkeypatch):
+    _enable_copilot()
+    prefs_mod.write_pref("default_backend", "copilot")
+    target = tmp_path / "p"
+    target.mkdir()
+    calls = []
+    monkeypatch.setattr(claude_spawn, "spawn_helper",
+                        lambda *a, **kw: calls.append(kw) or {"run_id": "r"})
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
+    entry = schedule.create(str(target), "go", _past())
+    assert entry["backend"] == "copilot"
+    # The default moves before the entry fires; the entry does not.
+    prefs_mod.write_pref("default_backend", "claude")
+    schedule.tick()
+    assert calls[0]["backend"] == "copilot"
+
+
+def test_a_legacy_entry_runs_on_claude_whatever_the_default(tmp_path, monkeypatch):
+    _enable_copilot()
+    target = tmp_path / "p"
+    target.mkdir()
+    calls = []
+    monkeypatch.setattr(claude_spawn, "spawn_helper",
+                        lambda *a, **kw: calls.append(kw) or {"run_id": "r"})
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
+    entry = schedule.create(str(target), "go", _past())
+    _strip_backend(entry["id"])
+    prefs_mod.write_pref("default_backend", "copilot")
+    schedule.tick()
+    assert calls[0]["backend"] == "claude"
+    # …and a re-ask of it is a Claude entry too, never the default of the day.
+    schedule._update(entry["id"], state=schedule.SENT, turn="failed",
+                     error="the turn died", claude_session_id="sess-old")
+    _strip_backend(entry["id"])
+    result = schedule.resend(entry["id"])
+    assert result["ok"] is True, result
+    assert result["entry"]["backend"] == "claude"
+
+
+def test_a_session_bound_entry_takes_the_sessions_agent(tmp_path, copilot_projects):
+    _enable_copilot()
+    target = tmp_path / "p"
+    target.mkdir()
+    prefs_mod.write_pref("default_backend", "copilot")
+    # No record and no transcript: every pre-existing session is Claude's.
+    assert schedule.create(str(target), "go", _past(),
+                           session_id="sess-old")["backend"] == "claude"
+    # The record leads; the root its transcript sits under is the fallback.
+    tasks_store.record_settings("sess-rec", backend="claude")
+    assert schedule.create(str(target), "go", _past(),
+                           session_id="sess-rec")["backend"] == "claude"
+    prefs_mod.write_pref("default_backend", "claude")
+    _write_transcript(copilot_projects, "sess-cop", str(target), [_user("hi")])
+    assert schedule.create(str(target), "go", _past(),
+                           session_id="sess-cop")["backend"] == "copilot"
+
+
+def test_a_follower_takes_its_leaders_agent(tmp_path):
+    _enable_copilot()
+    target = tmp_path / "p"
+    target.mkdir()
+    leader = schedule.create(str(target), "first", _past(), backend="copilot")
+    follower = schedule.create(str(target), "second", _past(),
+                               follow_of=leader["id"])
+    assert follower["backend"] == "copilot"
+
+
+def test_tasks_create_pins_the_default_on_the_pending_row(tmp_path, client):
+    _enable_copilot()
+    prefs_mod.write_pref("default_backend", "copilot")
+    target = tmp_path / "p"
+    target.mkdir()
+    r = client.post("/api/tasks/create", headers=FUSED,
+                    json={"prompt": "go", "target": str(target),
+                          "due": (datetime.now(timezone.utc)
+                                  + timedelta(hours=1)).isoformat()})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    stored = next(e for e in schedule.list_entries()
+                  if e["id"] == body["entry_id"])
+    assert stored["backend"] == "copilot"
+    prefs_mod.write_pref("default_backend", "claude")
+    rows = {t["key"]: t for t in client.get("/api/tasks").json()["tasks"]}
+    assert rows[body["key"]]["backend"] == "copilot"
 
 
 def test_the_tick_marks_a_disabled_backends_entry_error_without_spawning(
@@ -349,7 +450,12 @@ def test_a_copilot_default_never_reaches_fused_ai(monkeypatch):
 
 def test_the_catalog_endpoint_serves_the_registry(client, monkeypatch):
     from fused_render import claude_health
-    monkeypatch.setattr(claude_health, "summary", lambda: {"ok": True})
+    # The catalog reads the CACHED snapshot only, never a probe (`catalog`),
+    # with the cache's bookkeeping stripped.
+    monkeypatch.setattr(claude_health, "cached",
+                        lambda: {"ok": True, "fingerprint": "x"})
+    monkeypatch.setattr(claude_health, "summary",
+                        lambda: pytest.fail("the catalog must not probe"))
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude"]
     assert [b["id"] for b in body["all"]] == ["claude", "copilot"]

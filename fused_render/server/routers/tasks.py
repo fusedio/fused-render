@@ -8112,8 +8112,11 @@ def api_task_create(body: dict = Body(...),
     """Start a task from a page: `{prompt, target?, title?, model?, effort?,
     backend?, permission_mode?, due?, queue?}` -> `{entry_id, key}`.
 
-    `backend` — "claude" (default) or "copilot" — is which agent runs the task
-    (D2). A backend the Preferences page has switched off is a 400 with
+    `backend` — "claude" or "copilot" — is which agent runs the task (D2).
+    Omitted, it is the Preferences default AT CREATE: `schedule.create` pins
+    `registry.default_id()` on the entry, so the `pending:` row and the run
+    both name the agent the user saw, not the default of the day it fires. A
+    backend the Preferences page has switched off is a 400 with
     `registry.disabled_error`'s body, before anything is stored (D17).
 
     `queue: false` — THIS TASK NEVER STANDS IN THE PROJECT QUEUE (Akshil,
