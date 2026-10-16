@@ -793,6 +793,46 @@ def test_plan_mode_is_refused_for_an_agent_without_one(tmp_path):
                            permission_mode="plan")["permission_mode"] == "plan"
 
 
+def test_a_model_from_the_other_agents_list_is_refused_at_create(tmp_path, client):
+    _enable_copilot()
+    target = tmp_path / "p"
+    target.mkdir()
+    with pytest.raises(schedule.BackendRefused) as info:
+        schedule.create(str(target), "go", _past(), backend="copilot", model="opus")
+    assert info.value.body == {"error": "'opus' is a Claude model, not one Copilot runs",
+                               "reason": "unsupported", "backend": "copilot"}
+    with pytest.raises(schedule.BackendRefused):
+        schedule.create(str(target), "go", _past(), backend="claude", model="gpt-5.4")
+    # The page door answers the same body before anything is stored.
+    r = client.post("/api/tasks/create", headers=FUSED,
+                    json={"prompt": "page go", "target": str(target),
+                          "backend": "copilot", "model": "sonnet"})
+    assert r.status_code == 400, r.text
+    assert r.json()["reason"] == "unsupported"
+    assert not [e for e in schedule.list_entries() if e.get("message") == "page go"]
+    # Its own models, and ids on nobody's list, pass through as before.
+    assert schedule.create(str(target), "go", _past(), backend="copilot",
+                           model="gpt-5.4")["model"] == "gpt-5.4"
+    assert schedule.create(str(target), "go", _past(), backend="copilot",
+                           model="gpt-6-preview")["model"] == "gpt-6-preview"
+    assert schedule.create(str(target), "go", _past(), backend="claude",
+                           model="claude-opus-5-5")["model"] == "claude-opus-5-5"
+
+
+def test_the_settings_door_refuses_a_model_from_the_other_agents_list(client):
+    tasks_store.record_settings("sess-m", backend="copilot")
+    r = client.post("/api/tasks/settings", headers=FUSED,
+                    json={"session_id": "sess-m", "model": "opus"})
+    assert r.status_code == 400, r.text
+    r = client.post("/api/tasks/settings", headers=FUSED,
+                    json={"session_id": "sess-m", "model": "gpt-5.4"})
+    assert r.status_code == 200, r.text
+    # A session nothing says is anyone's reads as Claude's.
+    r = client.post("/api/tasks/settings", headers=FUSED,
+                    json={"session_id": "sess-blank", "model": "auto"})
+    assert r.status_code == 400, r.text
+
+
 def test_the_schedule_doors_disabled_refusal_is_the_whole_body(tmp_path, client):
     target = tmp_path / "p"
     target.mkdir()

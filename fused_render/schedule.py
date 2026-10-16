@@ -1829,6 +1829,12 @@ def create(target: str, message: str, due=None, session_id: str = "",
         raise BackendRefused({
             "error": f"plan mode is not available for {_registry.get(backend).label}",
             "reason": "unsupported", "backend": backend})
+    # A model another agent offers fails only when the turn spawns, with
+    # nobody watching (a scheduled task) — refused here instead, the same
+    # rule the pickers apply (`registry.foreign_model_error`).
+    foreign = _registry.foreign_model_error(backend, model)
+    if foreign is not None:
+        raise BackendRefused(foreign)
 
     # No vocabulary check: the one word anything writes is "chat" (the chat
     # admission), and a store that refused an unknown one would be this layer

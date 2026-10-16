@@ -62,6 +62,26 @@ def disabled_error(backend_id: str) -> dict:
             "reason": "backend_disabled", "backend": backend_id}
 
 
+def foreign_model_error(backend_id: str, model: str) -> Optional[dict]:
+    """The 400 body for a model that belongs to ANOTHER agent's catalog, or
+    None. The server half of the pickers' `isForeignModel`
+    (platform/lib/agent-backends.ts): a model on this agent's own list, or on
+    nobody's list, passes through unvalidated (a user may type an id the
+    catalog has not caught up with); only a model another agent offers is
+    refused, because that is a leak from a form or a page that defaulted to
+    the wrong agent, and it fails only when the turn spawns (`copilot --model
+    opus`: 'Model "opus" from --model flag is not available.')."""
+    model = str(model or "").strip()
+    own = get(backend_id)
+    if not model or model in own.model_ids():
+        return None
+    for b in BACKENDS.values():
+        if b.id != own.id and model in b.model_ids():
+            return {"error": f"{model!r} is a {b.label} model, not one {own.label} runs",
+                    "reason": "unsupported", "backend": own.id}
+    return None
+
+
 def catalog(with_health: bool = True) -> dict:
     """`GET /api/agent-backends` payload: enabled backends in ORDER, the
     default, and every backend's description under `all` (so the Preferences

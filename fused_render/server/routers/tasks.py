@@ -5987,6 +5987,16 @@ def api_task_settings(patch: SettingsPatch,
             raise HTTPException(
                 status_code=400,
                 detail=f"this conversation runs on {held}; its agent cannot change")
+    if model:
+        # A model another agent offers would be recorded and only fail on the
+        # next spawn (`registry.foreign_model_error`); the agent is the one
+        # named here, else the session's owner, else Claude (a blank record).
+        from fused_render.agent_backends import registry  # noqa: PLC0415
+        foreign = registry.foreign_model_error(
+            backend or schedule.session_owner(session_id) or registry.DEFAULT,
+            model)
+        if foreign is not None:
+            raise HTTPException(status_code=400, detail=foreign["error"])
     if not (model or effort or backend):
         raise HTTPException(status_code=400,
                             detail="nothing to record (send model, effort or backend)")
