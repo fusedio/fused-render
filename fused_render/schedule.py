@@ -2848,7 +2848,9 @@ def _host_send(entry: dict) -> dict | None:
 
     An `{"error": …}` back — the host died between `_live_host` and the write —
     is None, and the caller spawns: the host is gone, so there is nothing to
-    race, and the message is owed either way.
+    race, and the message is owed either way. The one error that is NOT is a
+    `backend_disabled` refusal: the host is alive, so it is returned as is and
+    `_send` fails the entry with it rather than spawning beside it.
 
     **The entry is marked `host_sent`**, because what this returns is not a run
     of ours: the run id is the CHAT'S session host, shared with the page, and a
@@ -2893,6 +2895,13 @@ def _host_send(entry: dict) -> dict | None:
         return None
     if isinstance(res, dict) and res.get("sent"):
         return {"run_id": run_id}
+    if isinstance(res, dict) and res.get("reason") == "backend_disabled":
+        # THE HOST IS ALIVE AND ITS AGENT IS SWITCHED OFF (D17): the refusal
+        # is the answer, handed back for `_send` to fail the entry with. None
+        # here would mean "no host" and the caller would spawn — a second CLI
+        # on a session whose host is still up, the one thing this path exists
+        # to prevent.
+        return res
     return None
 
 
