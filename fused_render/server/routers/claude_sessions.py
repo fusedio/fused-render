@@ -744,6 +744,10 @@ _RECAP_MAX_CHARS = 400
 # difference between a late recap and a hung fetch.
 _RECAP_TIMEOUT = 25.0
 
+# How long a run killed at `_RECAP_TIMEOUT` gets to be collected
+# (`_recap_reap`) before the request answers without it.
+_RECAP_REAP_TIMEOUT = 5.0
+
 # The CLI's interrupt marker, written as a USER row with a real uuid — the
 # frontend's `INTERRUPT_MARK` (protocol/wire.ts), and the two must stay in step.
 # Kept out of the tail for two reasons: it is not prose the reader said, and a
@@ -977,10 +981,22 @@ def _recap_generate(agent, file: str, session_id: str,
     except subprocess.TimeoutExpired:
         # Killed rather than left to finish: the answer is already unwanted, and
         # an abandoned `claude` would keep burning tokens for nobody.
-        proc.kill()
-        proc.communicate()
+        _recap_reap(proc)
         return ""
     return _recap_result(stdout) if proc.returncode == 0 else ""
+
+
+def _recap_reap(proc) -> None:
+    """Kill a recap run that overran and collect it — BOUNDED too: a child
+    that ignores SIGKILL's pipe close (a grandchild still holding stdout)
+    would otherwise hang the request past the timeout this exists to keep.
+    Giving up here leaves a zombie at worst; the request still answers."""
+    proc.kill()
+    try:
+        proc.communicate(timeout=_RECAP_REAP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        logger.warning("a killed recap run (pid %s) did not exit in %ss",
+                       proc.pid, _RECAP_REAP_TIMEOUT)
 
 
 #: The one tool a Copilot recap may use — a name no tool has. Verified live
@@ -1034,8 +1050,7 @@ def _recap_copilot(agent, tail: str) -> str:
         try:
             stdout, _ = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
+            _recap_reap(proc)
             return ""
         return _recap_plain(stdout) if proc.returncode == 0 else ""
     finally:

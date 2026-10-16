@@ -484,3 +484,34 @@ def test_both_recap_spawns_keep_the_posix_spawn_rule(
     assert "start_new_session" not in kw and "preexec_fn" not in kw
     for key, value in recap_mod.claude_health.SUBPROCESS_KWARGS.items():
         assert kw[key] == value
+
+
+class _HungProc:
+    """Overruns the recap timeout, and then will not be collected either."""
+    pid = 4242
+    returncode = None
+
+    def __init__(self):
+        self.killed = False
+        self.timeouts = []
+
+    def communicate(self, input=None, timeout=None):
+        self.timeouts.append(timeout)
+        raise recap_mod.subprocess.TimeoutExpired("x", timeout)
+
+    def kill(self):
+        self.killed = True
+
+
+@pytest.mark.parametrize("backend", ["claude", "copilot"])
+def test_a_killed_recap_run_that_will_not_exit_cannot_hang_the_request(
+        project, agent, monkeypatch, backend):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    proc = _HungProc()
+    monkeypatch.setattr(recap_mod.subprocess, "Popen", lambda argv, **kw: proc)
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    assert recap_mod._recap_generate(agent, target, SESSION, backend) == ""
+    assert proc.killed
+    assert proc.timeouts == [recap_mod._RECAP_TIMEOUT, recap_mod._RECAP_REAP_TIMEOUT]
