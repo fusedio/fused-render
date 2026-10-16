@@ -65,13 +65,14 @@ export type HomeCardProps = Omit<ComposerCardProps, "variant"> & {
 export function HomeCard({ name, path, worktree, ...card }: HomeCardProps) {
   const titleRef = useRef<HTMLDivElement | null>(null);
   useHomeTitleFit(titleRef, name);
+  const { backend } = useAgent();
   return (
     <>
       <div className="c-home-title" ref={titleRef}>
         {/* The real Claude mark, not the orange asterisk that stood in for it
             (Akshil, 2026-09-08). `.c-spark` still carries the accent and the
             10px of air after it, so the measured fit above is unchanged. */}
-        <AgentMark backend={useAgent().backend} className="c-spark" />
+        <AgentMark backend={backend} className="c-spark" />
         <span>{name}</span>
       </div>
       {path ? <div className="c-home-sub">{path}</div> : null}

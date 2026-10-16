@@ -146,6 +146,10 @@ export function Topbar({
   worktree,
   worktreeHint,
 }: TopbarProps) {
+  // THE AGENT'S NAME AND MARK (D18): the conversation's own, off the context.
+  // Above every early return: a header that moves from the fallback to the
+  // task branch (the row lands after the first frame) keeps one hook count.
+  const agent = useAgent();
   // Null on every row that is not waiting in a line, which is the common case.
   const line = queue ? queueCaption(queue) : null;
   // ONE ROW FOR THE RING AND THE WORDS (Bugbot, PR #1194, eighth round). The
@@ -245,9 +249,6 @@ export function Topbar({
   const label =
     shortTaskId(taskId || knownTaskId(sessionId) || "") ||
     (sessionId ? sessionId.slice(0, 8) : "");
-  // THE AGENT'S NAME AND MARK (D18): the conversation's own, off the context.
-  const agent = useAgent();
-
   return (
     <div className={"c-topbar" + (line ? " is-queued" : "")}>
       {/* THE RING TAKES THE MARK'S SEAT rather than sitting beside it: the line

@@ -1127,7 +1127,8 @@ def test_history_carries_the_backend_and_the_first_turn_notice(agent, target):
     # No transcript yet: the record speaks.
     agent._record_settings(SID_CLAUDE, backend="copilot")
     assert agent._history(file, SID_CLAUDE)["backend"] == "copilot"
-    assert agent._history(file, "55555555-5555-4555-8555-555555555555")["backend"] == "claude"
+    # Neither: no evidence, and the answer says so rather than guessing Claude.
+    assert agent._history(file, "55555555-5555-4555-8555-555555555555")["backend"] == ""
 
 
 def test_main_accepts_backend_everywhere_and_poll_reports_it(agent, tmp_path, target):

@@ -9022,10 +9022,13 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # whose folder is gone and so cannot be resolved through it.
     path = transcript or _session_transcript_path(_workdir(file), session_id)
     # WHOSE conversation this is (D18 names the agent on every surface): the
-    # root the transcript sits under is the authority; before the first row
-    # lands, the record `_start` wrote; Claude for everything older.
+    # root the transcript sits under is the authority (a Claude session older
+    # than the field sits under Claude's); before the first row lands, the
+    # record `_start` wrote. NEITHER is "" — no evidence, not a guess: the page
+    # holds the agent its opener named (the task row) until the wire names
+    # one, and a guessed "claude" here would overwrite a Copilot row's.
     backend = (_transcript_backend(path) if os.path.isfile(path)
-               else _session_backend(session_id) or DEFAULT_BACKEND)
+               else _session_backend(session_id))
     # SPEC T-1: the task registry of this session's LAST run, while its run
     # dir is still on disk — a reload shows the tasks panel it left.
     # (Skipped for a `transcript` read: `file` is then not a project folder.)

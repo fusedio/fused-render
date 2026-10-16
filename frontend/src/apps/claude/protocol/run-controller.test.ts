@@ -4428,6 +4428,47 @@ describe("the start response names the session (task status in under a second)",
       restore();
     }
   });
+
+  test("a plan left on the param goes out as the default for an agent with no plan mode (Bugbot)", async () => {
+    for (const [agentId, expected] of [
+      ["copilot", "prompt"],
+      ["claude", "plan"],
+    ] as const) {
+      const params = createMemoryParamsStore();
+      params.set({ permission: "plan" });
+      const { controller, agent } = makeController(
+        {
+          history: () => ({ turns: [], transcript: null, backend: agentId }),
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1", session_id: "s1" }),
+          poll: () => poll({ done: true, segments: [text("ok")] }),
+        },
+        params,
+      );
+      await controller.openSession("s1", { backend: agentId });
+      await controller.sendMessage("hi");
+      expect(agent.of("start")[0]!.fields.permission_mode).toBe(expected);
+    }
+  });
+
+  test("the opener's agent is a guess the session's history corrects (CodeRabbit)", async () => {
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, backend: "copilot" }),
+    });
+    // The row it was opened from said Claude; the transcript's root says Copilot.
+    await controller.openSession("s1", { backend: "claude" });
+    expect(controller.getState().backend).toBe("copilot");
+  });
+
+  test("an opener's agent stands while nothing on the wire names one", async () => {
+    // `backend: ""` is what agent.py `_history` answers for a session with no
+    // transcript on disk and no record yet — no evidence, never a guess.
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, backend: "" }),
+    });
+    await controller.openSession("s1", { backend: "copilot" });
+    expect(controller.getState().backend).toBe("copilot");
+  });
 });
 
 describe("running and idle marks can race (Bugbot #1163)", () => {

@@ -230,7 +230,7 @@ ISO `timestamp` and `session_id` (stream) / `sessionId` (transcript). Read
 | tool_call | `{type:stream_event, event:{type:content_block_start, content_block:{type:tool_use,id,name,input}}}` then `{type:assistant, message:{role:assistant, model, content:[{type:tool_use,id,name,input}], usage}}` | `{type:assistant, uuid, parentUuid, message:{...same}}` |
 | tool_call_update completed/failed | `{type:user, message:{role:user, content:[{type:tool_result, tool_use_id, content:<text>, is_error}]}}` (NOT text-only, so it never starts a turn) | same |
 | text message ends (next tool_call, or prompt reply) | `message_delta{usage:{output_tokens}}`, `message_stop`, then `{type:assistant, message:{content:[{type:text,text}], usage, model}}` | `{type:assistant, ...}` |
-| session/prompt reply | `{type:result, subtype:success|error_during_execution, is_error, result:<final text>, session_id, usage, stop_reason, num_turns}` — on EVERY stopReason incl. cancelled | `{type:system, subtype:turn_duration, durationMs}` |
+| session/prompt reply | `{type:result, subtype:success\|error_during_execution, is_error, result:<final text>, session_id, usage, stop_reason, num_turns}` — on EVERY stopReason incl. cancelled | `{type:system, subtype:turn_duration, durationMs}` |
 | usage_update{used,size} | fold into next message_start.usage (input_tokens=used); `size` also written as `context_window` on the init row (agent.py may read it for the meter — WS-C) | — |
 | session_info_update{title} | — | `{type:"ai-title", aiTitle:<title>}` |
 | JSON-RPC error / credits | `{type:assistant, isApiErrorMessage:true, message:{content:[{type:text,text:<error>}]}}` then `result is_error:true` | same assistant row |
@@ -287,7 +287,7 @@ Idle reap: 30 s with no turn open (`FUSED_CLAUDE_HOST_IDLE_REAP_SECONDS`), then
 
 ## 8. Wire changes
 
-- `POST /api/claude/agent` `start`: + `backend` ("claude" default). `send`: + `backend` (must equal the session's; ignored otherwise). `poll`: + `backend`. `defaults`: + `backend`. `history`: + `backend`. `terminal_command`: uses the session's backend.
+- `POST /api/claude/agent` `start`: + `backend` ("claude" default). `send`: + `backend` (must equal the session's; ignored otherwise). `poll`: + `backend`. `defaults`: + `backend`. `history`: + `backend` ("" when there is no transcript on disk and no record: no evidence, never a guess). `terminal_command`: uses the session's backend.
 - `/api/tasks` row: + `backend`. `/api/tasks/pulse` row: + `backend`. `/api/tasks/create`: + `backend`. `/api/tasks/{key}/send`: + `backend` (optional, validated). `/api/tasks/settings` GET/POST: + `backend`.
 - `/api/schedule` POST: + `backend`; entry field `backend`.
 - `GET /api/prefs`: + `agents: {claude: bool, copilot: bool, default: id}`. PUT: `claude_enabled`, `copilot_enabled`, `default_backend`.
