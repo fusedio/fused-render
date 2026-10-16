@@ -212,20 +212,33 @@ export const Transcript = memo(function Transcript({
     // as one — and not as a return to the tail either: a clamp is a no-op on
     // the flag in both directions, like the fold. (macOS rubber-banding off
     // the bottom edge ends the same way, at the maximum, and is covered by the
-    // same read.) Geometry read in the same event, no bookkeeping to go stale.
+    // same read.)
+    //
+    // AND THE SAME CLAMP SEEN A FRAME LATE (CodeRabbit, PR #1703): the reply
+    // can grow the log in the very frame the composer folds, and the scroll
+    // event is dispatched AFTER that layout — so by the time it runs the
+    // clamped position is no longer the maximum, and the first read alone
+    // calls it a gesture. The second signature covers that frame: the port
+    // grew since the last event and the reader WAS on the previous maximum.
+    // A reader who was not on the edge gets no such pass, so a drag up the
+    // bar after the fold still disarms.
     let lastTop = 0;
     let lastHeight = 0;
+    let lastClient = 0;
     const onScroll = () => {
       const top = wrap.scrollTop;
       const h = wrap.scrollHeight;
-      const atMax = top >= h - wrap.clientHeight - 1;
+      const c = wrap.clientHeight;
+      const atMax = top >= h - c - 1;
+      const clampedFromMax = c > lastClient && lastHeight > 0 && lastTop >= lastHeight - lastClient - 1;
       if (h >= lastHeight) {
         if (top < lastTop - 1) {
-          if (!atMax) followTail.current = false;
+          if (!atMax && !clampedFromMax) followTail.current = false;
         } else if (nearBottom()) followTail.current = true;
       }
       lastTop = top;
       lastHeight = h;
+      lastClient = c;
     };
     const followBottom = () => {
       if (followTail.current) wrap.scrollTop = wrap.scrollHeight;

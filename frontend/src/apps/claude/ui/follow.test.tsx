@@ -183,6 +183,21 @@ test("THE COMPOSER FOLDING AFTER A SEND DOES NOT DROP THE FOLLOW (Akshil 2026-10
   expect(scroller.scrollTop).toBe(1400);
 });
 
+test("…EVEN WHEN THE REPLY GREW THE LOG IN THE SAME FRAME (CodeRabbit, PR #1703)", () => {
+  const { scroller, followRef } = mount();
+  scroller.scrollTop = 700;
+  act(() => scroller.fire("scroll", {}));
+  // The port grows and clamps the reader, and the streaming reply lands more
+  // log in the same layout — so when the scroll event runs, the clamped
+  // position is already short of the new maximum.
+  scroller.clientHeight = 340;
+  scroller.scrollHeight = 1400;
+  scroller.scrollTop = 660;
+  act(() => scroller.fire("scroll", {}));
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(1400);
+});
+
 test("a drag up the bar after the port grew is still a gesture", () => {
   const { scroller, followRef } = mount();
   scroller.scrollTop = 700;
