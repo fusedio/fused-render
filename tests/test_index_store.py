@@ -665,9 +665,8 @@ def test_partial_merge_is_equivalent_to_a_full_rewrite(tmp_path):
     summary_a = compact(cfg_a, "/r",
                         _shard(tmp_path / "a", cfg_a, update, keep=keep), pa, pq)
 
-    def _force_full(con, old_parts_meta, files_dir, outside, kept, shard_src):
-        n = len(old_parts_meta)
-        return (0, n - 1)
+    def _force_full(*args, **kwargs):
+        return None  # "no partial plan" -> the full-rewrite path
 
     import fused_render.index.store as store_mod
     orig = store_mod._plan_partial_merge
@@ -986,3 +985,145 @@ def test_compact_gives_the_merge_a_temp_directory_under_the_store(
     shards = _shard(tmp_path, cfg, [("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))])
     compact(cfg, "/r", shards, pa, pq)
     assert seen["temp_dir"] == os.path.join(cfg.dir, "duckdb-tmp")
+
+
+# -- per-partition plan: non-contiguous rewrites over small partitions ---------
+
+def _hashes(cfg):
+    import hashlib
+    out = {}
+    for p in read_manifest(cfg)["partitions"]:
+        with open(os.path.join(cfg.files_dir, p["file"]), "rb") as f:
+            out[p["file"]] = (hashlib.sha256(f.read()).hexdigest(),
+                              os.stat(f.name).st_mtime_ns)
+    return out
+
+
+def _update_dirs(tmp_path, cfg, changed, n_dirs=10, root="/r"):
+    entries = [(f"/r/d{i:02d}",
+                _scanned(f"sig{i}-new", [_row(f"/r/d{i:02d}/f0.txt", size=999)],
+                         999, 500, 0)) for i in changed]
+    keep = [(f"/r/d{i:02d}", 5) for i in range(n_dirs) if i not in changed]
+    return compact(cfg, root, _shard(tmp_path, cfg, entries, keep=keep), pa, pq)
+
+
+def test_two_far_apart_folders_rewrite_only_their_own_partitions(tmp_path):
+    cfg = _build_ten_dir_store(tmp_path)
+    before = _hashes(cfg)
+    names = list(before)
+    summary = _update_dirs(tmp_path, cfg, [0, 9])
+    assert summary["merged_rewrite"] is True
+    assert summary["rewritten_partitions"] == 2
+    after = _hashes(cfg)
+    middle = names[1:9]
+    for f in middle:
+        assert after[f] == before[f]  # same filename, same bytes, same mtime
+    assert names[0] not in after and names[9] not in after
+    assert len(set(after) - set(before)) == 2
+
+
+def test_new_folder_in_a_gap_rewrites_only_its_owner_partition(tmp_path):
+    cfg = _build_ten_dir_store(tmp_path)
+    before = _hashes(cfg)
+    keep = [(f"/r/d{i:02d}", 5) for i in range(10)]
+    new_dir = [("/r/d05b", _scanned("new", [_row("/r/d05b/f0.txt")], 10, 1, 0))]
+    summary = compact(cfg, "/r", _shard(tmp_path, cfg, new_dir, keep=keep), pa, pq)
+    assert summary["rewritten_partitions"] == 1
+    after = _hashes(cfg)
+    assert len(set(before) - set(after)) == 1
+    # 5 old rows + 1 new at part_rows=5 re-split into 2 fresh files
+    assert len(set(after) - set(before)) == 2
+    assert ("/r/d05b/f0.txt", "/r/d05b", "f0.txt", "txt", 10, 100.0, 3) in _all_rows(cfg)
+    assert len(_all_rows(cfg)) == 51
+
+
+def test_deleting_a_whole_partition_drops_it_from_the_manifest(tmp_path):
+    cfg = _build_ten_dir_store(tmp_path)
+    keep = [(f"/r/d{i:02d}", 5) for i in range(10) if i != 5]
+    summary = compact(cfg, "/r", _shard(tmp_path, cfg, [], keep=keep), pa, pq)
+    m = read_manifest(cfg)
+    assert len(m["partitions"]) == 9
+    assert m["rows"] == 45 == summary["rows"]
+    assert all(p["rows"] > 0 for p in m["partitions"])
+    for p in m["partitions"]:
+        assert pq.read_metadata(os.path.join(cfg.files_dir, p["file"])).num_rows > 0
+    assert len(_all_rows(cfg)) == 45
+
+
+def test_an_oversized_old_partition_is_resplit_when_touched(tmp_path):
+    big = _cfg(tmp_path / "big", part_rows=500)
+    entries = [(f"/r/d{i}", _scanned(f"s{i}",
+                                     [_row(f"/r/d{i}/f{j:03d}.txt") for j in range(300)],
+                                     3000, i + 1, 0)) for i in range(4)]
+    compact(big, "/r", _shard(tmp_path / "big", big, entries), pa, pq)
+    before = _hashes(big)
+    assert len(before) == 3  # 1200 rows at 500 per partition
+    small = IndexConfig(dir=big.dir, part_rows=50)
+    upd = [("/r/d0", _scanned("s0b", [_row(f"/r/d0/f{j:03d}.txt", size=7)
+                                      for j in range(300)], 2100, 99, 0))]
+    keep = [(f"/r/d{i}", 300) for i in range(1, 4)]
+    summary = compact(small, "/r", _shard(tmp_path / "big", small, upd, keep=keep),
+                      pa, pq)
+    assert summary["merged_rewrite"] is True
+    after = _hashes(small)
+    assert len(set(after) & set(before)) == 2  # untouched ones carried forward
+    m = read_manifest(small)
+    assert max(p["rows"] for p in m["partitions"] if p["file"] not in before) <= 50
+    import duckdb
+    files = [os.path.join(small.files_dir, p["file"]) for p in m["partitions"]]
+    n, nd = duckdb.connect().execute(
+        "SELECT count(*), count(DISTINCT path) FROM read_parquet(?)", [files]).fetchone()
+    assert n == nd == 1200
+
+
+def test_manifest_stays_sorted_and_non_overlapping(tmp_path):
+    cfg = _build_ten_dir_store(tmp_path)
+    _update_dirs(tmp_path, cfg, [0, 9])
+    parts = read_manifest(cfg)["partitions"]
+    for a, b in zip(parts, parts[1:]):
+        assert a["max"] < b["min"]
+
+
+def test_two_rewritten_runs_get_distinct_filenames(tmp_path):
+    cfg = _build_ten_dir_store(tmp_path)
+    _update_dirs(tmp_path, cfg, [0, 9])
+    names = [p["file"] for p in read_manifest(cfg)["partitions"]]
+    assert len(names) == len(set(names)) == 10
+    on_disk = set(os.listdir(cfg.files_dir))
+    assert set(names) <= on_disk
+
+
+def test_planning_skips_partitions_outside_the_scan_root(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, part_rows=5)
+    entries = [(f"/{top}/d{i}", _scanned(f"s{top}{i}",
+                                         [_row(f"/{top}/d{i}/f{j}.txt") for j in range(5)],
+                                         50, i + 1, 0))
+               for top in ("a", "z") for i in range(3)]
+    compact(cfg, "/", _shard(tmp_path, cfg, entries), pa, pq)
+    z_files = [p["file"] for p in read_manifest(cfg)["partitions"]
+               if p["min"].startswith("/z/")]
+    assert len(z_files) == 3
+    seen = []
+    real = store_mod.background_connect
+
+    class Spy:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *a, **k):
+            seen.append(sql)
+            return self._con.execute(sql, *a, **k)
+
+        def __getattr__(self, n):
+            return getattr(self._con, n)
+
+    monkeypatch.setattr(store_mod, "background_connect",
+                        lambda *a, **k: Spy(real(*a, **k)))
+    upd = [("/a/d1", _scanned("new", [_row("/a/d1/f0.txt", size=5)], 5, 9, 0))]
+    keep = [("/a/d0", 5), ("/a/d2", 5)] + [(f"/z/d{i}", 5) for i in range(3)]
+    compact(cfg, "/a", _shard(tmp_path, cfg, upd, keep=keep), pa, pq)
+    probes = [s for s in seen if s.startswith("SELECT count(*) FROM read_parquet")
+              and " WHERE NOT (" in s and "OR " in s.split(" WHERE NOT (")[1]]
+    assert probes, "expected affected-count probes"
+    bad = [s for s in probes if any(z in s for z in z_files)]
+    assert not bad, (z_files, bad[:2], len(probes))
