@@ -1151,7 +1151,7 @@ echo "==> bundle sanity: every Mach-O carries ${ARCH}"
 ARCH_MISSES="$(find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 \
   | ARCH="$ARCH" xargs -0 -n 64 sh -c 'for f do
       case "$(head -c 4 "$f" | od -An -tx1 | tr -d " \n")" in
-        cffaedfe|cafebabe|feedfacf) ;;
+        cffaedfe|cafebabe|cafebabf|feedfacf) ;;
         *) continue ;;
       esac
       a="$(lipo -archs "$f" 2>/dev/null)" || continue
