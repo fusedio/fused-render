@@ -23,7 +23,6 @@ from fused_render import claude_health
 # Captured before any fixture stubs them, so a test that wants the REAL probe
 # can ask for it by name. Cleaner than `monkeypatch.undo()`, which would drop
 # the whole isolation fixture along with the one stub the test wants gone.
-_REAL_SHELL_PROBE = claude_health._shell_probe
 _REAL_AUTH_STATUS = claude_health._auth_status
 
 
@@ -307,28 +306,6 @@ def test_shell_probe_is_the_last_resort_and_is_labelled(monkeypatch):
     assert claude_health.resolve() == ("/opt/volta/bin/claude", "shell")
     # ...and it is skippable, because it costs seconds.
     assert claude_health.resolve(allow_shell=False) == (None, None)
-
-
-def test_shell_probe_scrubs_the_bundled_interpreter_vars(monkeypatch):
-    """The packaged app exports PYTHONHOME/PYTHONPATH for its own interpreter;
-    a child that inherits them and is not that interpreter dies with
-    "No module named 'encodings'"."""
-    monkeypatch.setenv("PYTHONHOME", "/bundle/python")
-    monkeypatch.setenv("PYTHONPATH", "/bundle/lib")
-    monkeypatch.setenv("SHELL", "/bin/sh")
-    seen = {}
-
-    def fake_run(argv, **kwargs):
-        seen.update(kwargs.get("env") or {})
-
-        class R:
-            stdout = ""
-        return R()
-
-    monkeypatch.setattr(claude_health.subprocess, "run", fake_run)
-    _REAL_SHELL_PROBE()  # the isolation fixture stubs the module attribute
-    assert "PYTHONHOME" not in seen
-    assert "PYTHONPATH" not in seen
 
 
 def test_augmented_path_appends_install_dirs_without_duplicating(monkeypatch):

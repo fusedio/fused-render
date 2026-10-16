@@ -270,10 +270,13 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     the only observable "it has stopped serving")."""
     import uvicorn
 
+    from fused_render import login_path
     from fused_render.server import (
         create_app, export_app_env, set_server_origin_env, write_server_json,
     )
     from fused_render.shell.seed import ensure_fused_dir
+
+    login_path.adopt()
 
     # The D337 workspace migration does NOT run here: it runs in `main()`,
     # before the run loop and before anything reads state (see the call site).
@@ -1575,6 +1578,10 @@ def main() -> None:
         logger.info("found live server (pid %s, port %s); reusing it", pid, port)
         webbrowser.open(f"http://127.0.0.1:{port}/")
         return
+
+    from fused_render import login_path
+
+    login_path.warm()
 
     # One-shot relocation of the workspace out of iCloud-synced ~/Documents
     # (D337) — HERE, before the run loop, not in the server thread. The

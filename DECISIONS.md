@@ -7015,3 +7015,9 @@ A 6-column table in a bot reply wrapped short cells ("fused-render", "#1641") on
 
 - **Default view, not bare /render.** `FilePreviewModal` keeps the `statPath` result and frames the first `paneOfferable(st.templates)` entry (the same rule as `previewSrcFor` and the pane's `decidePane`), so a .md file shows in the md viewer instead of raw text. A folder, a file with no offerable template, or a stat without templates falls back to the bare `/render?path=` sentinel.
 - **`_noopen=1`, not `_preview=1`.** The frame is interactive but not recorded as an app open (the listing pane's D622 reasoning); `_preview=1` would disable `fused.daemon` in the framed template. "Open in new tab" uses the unflagged URL, since that is the user opening it.
+
+## D1370: The desktop app runs with the user's login-shell PATH (2026-10-16, chat-login-shell-path)
+
+- **What.** `login_path` reads PATH from `$SHELL -l -i -c` once at launch and sets it on the app process before the server starts, so every child sees the terminal's PATH.
+- **Why.** Finder gives the app `/usr/bin:/bin:/usr/sbin:/sbin`, and Claude Code's shell snapshot exports its own PATH over `~/.zshrc`. The per-spawn dir lists this replaces (`agent._spawn_env`, `appfile_git._env`) missed bun, nvm and pyenv.
+- **PATH only.** Other login vars (PYTHONPATH, conda) would break the bundled interpreter. Fallback dirs are added only if the probe returns nothing.

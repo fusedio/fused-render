@@ -87,5 +87,4 @@ def test_spawn_env_strips_bundle_python_vars(agent, monkeypatch):
     for env in (agent._spawn_env(), agent._spawn_env("chat-1")):
         for name in _PY_VARS:
             assert name not in env
-        assert env["PATH"].split(os.pathsep)[:2] == ["/usr/bin", "/bin"]
-        assert "/opt/homebrew/bin" in env["PATH"].split(os.pathsep)
+        assert env["PATH"] == "/usr/bin:/bin"
