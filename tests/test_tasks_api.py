@@ -4401,6 +4401,94 @@ def test_create_answers_the_stored_target_and_its_folder(client, tmp_path,
     assert r.json()["under"] == str(app_dir)
 
 
+# -- a Fused Web canvas target kicks the workbench skills fetch ----------------
+#
+# Fused Web (sandbox/showcase, a separate codebase) keeps its own local canvas
+# clones at `~/Fused/canvas/<name>` and starts tasks against them through
+# `fused.tasks.create` -> this very route. The gate in `claude_agent/agent.py`
+# already hands such a session the `workbench` plugin, but only if a clone of
+# the skills is already on disk — and the only things that ever fetched it were
+# fused-render's own canvases page. A Fused Web-only user reaches this route
+# with no clone at all, so `api_task_create` has to kick the same best-effort,
+# off-thread, never-raising fetch `canvases._kick_workbench_skills` already
+# gives the canvases page.
+
+def test_create_inside_fused_web_canvas_kicks_the_workbench_skills_fetch(
+        client, tmp_path, monkeypatch):
+    from fused_render import canvases as canvases_mod
+
+    home = tmp_path / "realhome"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    kicked = []
+    monkeypatch.setattr(canvases_mod, "_kick_workbench_skills",
+                        lambda: kicked.append(1))
+
+    target = home / "Fused" / "canvas" / "my_canvas"
+    target.mkdir(parents=True)
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(target)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert kicked == [1]
+
+
+def test_create_outside_fused_web_canvas_does_not_kick_the_fetch(
+        client, tmp_path, monkeypatch):
+    from fused_render import canvases as canvases_mod
+
+    home = tmp_path / "realhome"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    kicked = []
+    monkeypatch.setattr(canvases_mod, "_kick_workbench_skills",
+                        lambda: kicked.append(1))
+
+    # Elsewhere under the ordinary workspace — not inside ~/Fused/canvas.
+    target = tmp_path / "proj"
+    target.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(target)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert kicked == []
+
+    # Nor a sibling that merely starts with the same letters.
+    evil = home / "Fused" / "canvas-evil" / "x"
+    evil.mkdir(parents=True)
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(evil)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert kicked == []
+
+
+def test_a_failing_kick_never_fails_the_create_request(client, tmp_path,
+                                                        monkeypatch):
+    """`_kick_workbench_skills` itself never raises (it only starts a thread),
+    but the call site must not assume that forever: a raise there is a bug
+    in plumbing the route owns, not a reason to fail the user's task."""
+    from fused_render import canvases as canvases_mod
+
+    home = tmp_path / "realhome"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+
+    def boom():
+        raise RuntimeError("no thread for you")
+    monkeypatch.setattr(canvases_mod, "_kick_workbench_skills", boom)
+
+    target = home / "Fused" / "canvas" / "my_canvas"
+    target.mkdir(parents=True)
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(target)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+
+
 # ------------------------------------------------------- the duties waiter
 
 

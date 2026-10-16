@@ -121,6 +121,10 @@ EXPECTED_STARTUP = [
     "_startup_warm_engine",
     "_startup_resurrect_background_apps",
     "_startup_sync_user_plugin",
+    # Added 2026-10-16: kicks the workbench skills fetch for Fused Web's
+    # `~/Fused/canvas`, if it already exists, so a task created there right
+    # after a restart usually finds the clone already on disk.
+    "_startup_kick_fused_web_workbench_skills",
     # Added 2026-09-17 (PR 2): the project queue's factory is registered here
     # explicitly. Also claims the machine-duties lease (B2) and, only for the
     # process that wins it, starts the scheduler and reconciles once so a
@@ -424,3 +428,81 @@ def test_relauncher_outlives_a_slow_but_healthy_successor():
     assert (app_mod.RELAUNCH_DEADLINE_S
             >= app_mod.QUIT_FAST_HARD_DEADLINE_S + app_mod.SERVER_READY_TIMEOUT_S + 5)
     assert app_mod.RELAUNCH_DEADLINE_S < 120
+
+
+def _grab_startup_handler(tmp_path, monkeypatch, name: str):
+    """The real handler `create_app` registers under `name`, via the same spy
+    `test_agent_backends_plumbing.py`'s `_startup_sync_user_plugin` test uses:
+    `_lifespan` is intercepted at the point `create_app` calls it, which is
+    after every `@on_startup` decorator ran, so the closures it was handed are
+    the real ones — not a copy a unit test re-derives."""
+    import asyncio
+
+    from fused_render.server import app as app_mod
+
+    captured = {}
+    real = app_mod._lifespan
+
+    def spy(startup, shutdown):
+        captured["startup"] = startup
+        return real(startup, shutdown)
+
+    monkeypatch.setattr(app_mod, "_lifespan", spy)
+    app_mod.create_app(start_dir=str(tmp_path))
+    handler, = [h for h in captured["startup"] if h.__name__ == name]
+    return handler, asyncio.run
+
+
+def test_startup_kicks_the_fused_web_workbench_fetch_when_the_folder_exists(
+        tmp_path, monkeypatch):
+    """Server startup covers the case `api_task_create`'s own kick cannot: a
+    `~/Fused/canvas` folder that already existed BEFORE this process came up,
+    so the first Fused Web task after a restart usually finds the clone
+    already on disk rather than paying for a cold one."""
+    from fused_render import canvases as canvases_mod
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    (home / "Fused" / "canvas").mkdir(parents=True)
+
+    kicked = []
+    monkeypatch.setattr(canvases_mod, "_kick_workbench_skills",
+                        lambda: kicked.append(1))
+    handler, run = _grab_startup_handler(
+        tmp_path, monkeypatch, "_startup_kick_fused_web_workbench_skills")
+    run(handler())
+    assert kicked == [1]
+
+
+def test_startup_does_not_kick_when_fused_web_canvas_is_absent(tmp_path, monkeypatch):
+    from fused_render import canvases as canvases_mod
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    # No ~/Fused/canvas folder at all.
+
+    kicked = []
+    monkeypatch.setattr(canvases_mod, "_kick_workbench_skills",
+                        lambda: kicked.append(1))
+    handler, run = _grab_startup_handler(
+        tmp_path, monkeypatch, "_startup_kick_fused_web_workbench_skills")
+    run(handler())
+    assert kicked == []
+
+
+def test_startup_kick_failure_never_fails_startup(tmp_path, monkeypatch):
+    from fused_render import canvases as canvases_mod
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    (home / "Fused" / "canvas").mkdir(parents=True)
+
+    def boom():
+        raise RuntimeError("no thread for you")
+    monkeypatch.setattr(canvases_mod, "_kick_workbench_skills", boom)
+    handler, run = _grab_startup_handler(
+        tmp_path, monkeypatch, "_startup_kick_fused_web_workbench_skills")
+    run(handler())  # must not raise

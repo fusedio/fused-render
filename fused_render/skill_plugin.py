@@ -274,6 +274,52 @@ WORKBENCH_RETRY_S = 60
 # (and would show up as an untracked file the refresh has to reason about).
 _WORKBENCH_STAMP_SUFFIX = ".fetched"
 
+
+def fused_web_canvas_root() -> str:
+    """`~/Fused/canvas` — Fused Web's (the sandbox/showcase app, a separate
+    codebase) own local canvas-clones folder, entirely outside anything this
+    server owns. Its tasks start via `fused.tasks.create` (routers/tasks.py
+    `api_task_create`) rather than a canvas push, so a target under here never
+    passes through `canvases.py` at all — but a session spawned against it
+    still has a canvas.toml CLAUDE.md naming the same `workbench:*` skills, and
+    `claude_agent/agent.py:_in_workbench_root` already gates `--plugin-dir` on
+    this path as a second root alongside `canvases_root()`.
+
+    Resolved at CALL time (`os.path.expanduser`, not module-import time), like
+    every other HOME-relative path in this app, so a test can monkeypatch HOME
+    and a real HOME change mid-process is honored.
+
+    DELIBERATELY DUPLICATED by `claude_agent.agent._fused_web_canvas_root`: that
+    module is a template (SPEC PY-15) and must not import `fused_render`, so it
+    keeps its own copy of this path and the containment rule below — the same
+    deliberate duplication `appenv.canvases_root` documents against
+    `canvases.canvases_root`."""
+    return os.path.expanduser(os.path.join("~", "Fused", "canvas"))
+
+
+def in_fused_web_canvas_root(target: str) -> bool:
+    """Whether `target` is inside `fused_web_canvas_root()`.
+
+    The ONE containment rule server-side code shares for "is this a Fused Web
+    canvas target" — `api_task_create` and the server-startup kick both call
+    this rather than re-deriving it. Same four-step rule as
+    `claude_agent.agent._path_is_inside` (abspath + realpath + normcase +
+    commonpath), so both sides of the gate fail the same way under the same
+    four conditions: a relative path, a symlinked component, a case-only
+    difference, and a sibling that merely starts with the same characters
+    (`~/Fused/canvas-evil` is NOT inside `~/Fused/canvas`). A path that cannot
+    be resolved at all is treated as OUTSIDE."""
+    if not target:
+        return False
+    try:
+        root = os.path.normcase(os.path.realpath(
+            os.path.abspath(fused_web_canvas_root())))
+        path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
+        return os.path.commonpath([root, path]) == root
+    except (OSError, ValueError):
+        return False
+
+
 # Bounded, because both run on a request path. A shallow clone of a handful of
 # markdown files is a second or two on any working network; these are the "the
 # network is a black hole" ceilings, not budgets.
