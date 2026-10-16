@@ -1060,3 +1060,52 @@ def test_history_context_carries_the_copilot_window(agent, target):
     assert ctx["window"] == 64000 and ctx["input_tokens"] == 4321
     with open(os.path.join(run_dir, "context_window")) as fh:
         assert fh.read() == "64000"
+
+
+# ------------------------------------------------ stop and generic errors
+
+def _ended_run(agent, backend, name, rows, cancelled=False, alive=True):
+    run_dir = os.path.join(agent.RUNS, name)
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": "/f", "message": "m", "resumed_from": "",
+                   "backend": backend}, fh)
+    with open(os.path.join(run_dir, "pid"), "w") as fh:
+        fh.write(str(os.getpid()) if alive else "2147483646")
+    _out(run_dir, rows)
+    if cancelled:
+        open(os.path.join(run_dir, "cancelled"), "w").close()
+    return name
+
+
+_INIT = {"type": "system", "subtype": "init", "session_id": SID_COPILOT}
+_EMPTY_ERROR = {"type": "result", "subtype": "error_during_execution",
+                "is_error": True, "result": "", "stop_reason": "cancelled"}
+_DELTA = {"type": "stream_event", "event": {
+    "type": "content_block_delta", "delta": {"type": "text_delta", "text": "x"}}}
+
+
+def test_a_stopped_copilot_turn_is_not_an_error(agent):
+    """The host answers a Stop with an `is_error` result and no text; with
+    the run cancelled, the poll says no error at all (Stop is not one)."""
+    p = agent._poll(_ended_run(agent, "copilot", "r-stop", [_INIT, _EMPTY_ERROR],
+                               cancelled=True))
+    assert p["done"] and p["cancelled"] is True and p["error"] == ""
+    # Claude's interrupted turn keeps its error; the page folds it itself.
+    p = agent._poll(_ended_run(agent, "claude", "r-stop-c", [_INIT, _EMPTY_ERROR],
+                               cancelled=True))
+    assert p["cancelled"] is True and p["error"] == "claude exited with an error"
+
+
+@pytest.mark.parametrize("backend", ["copilot", "claude"])
+def test_generic_errors_name_the_runs_agent(agent, backend):
+    """Every fallback error names the run's own CLI — Claude's strings byte
+    for byte as before."""
+    # An empty error result that is NOT a Stop is still an error, named.
+    assert agent._poll(_ended_run(agent, backend, "r-1", [_INIT, _EMPTY_ERROR])
+                       )["error"] == backend + " exited with an error"
+    # Dead without a result: unexpected exit, before or after some text.
+    assert agent._poll(_ended_run(agent, backend, "r-2", [_INIT], alive=False)
+                       )["error"] == backend + " exited unexpectedly"
+    assert agent._poll(_ended_run(agent, backend, "r-3", [_INIT, _DELTA], alive=False)
+                       )["error"] == backend + " exited before completing the reply"

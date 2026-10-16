@@ -7246,6 +7246,23 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # window (Bugbot-style review, 2026-10-14).
     echo_outstanding = os.path.exists(os.path.join(run_dir, "pending_echo"))
 
+    # The run's own first message rides back on every poll so a re-attaching
+    # page (mode switch / reload killed the poll loop, subprocess kept going)
+    # can restore the user turn it never saw. Read here, ahead of the loop:
+    # the run's backend names the agent in the loop's own fallback error, and
+    # the error rewrite and window read after it are per backend too.
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            meta = {}
+    except (OSError, json.JSONDecodeError):
+        meta = {}
+    backend = _meta_backend(meta)
+    # The CLI the generic errors below name — "claude", byte for byte, for
+    # every Claude run.
+    cli_name = "copilot" if backend == "copilot" else "claude"
+
     for row in rows:
         parsed.append(row)
         t = row.get("type")
@@ -7443,24 +7460,11 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
             if row.get("is_error"):
-                error = str(result_text or "claude exited with an error")
+                error = str(result_text or f"{cli_name} exited with an error")
                 # Only if the failure arrived DURING a retry. A retry earlier in
                 # the turn that then succeeded says nothing about why this ended.
                 gave_up = was_retrying
 
-    # The run's own first message rides back on every poll so a re-attaching
-    # page (mode switch / reload killed the poll loop, subprocess kept going)
-    # can restore the user turn it never saw. Read here, ahead of the error
-    # rewrite (per backend, `meta["backend"]`) and of the registry update
-    # below, which persists the cursor that `_run_context_window` relies on.
-    try:
-        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
-            meta = json.load(f)
-        if not isinstance(meta, dict):
-            meta = {}
-    except (OSError, json.JSONDecodeError):
-        meta = {}
-    backend = _meta_backend(meta)
     # COPILOT'S WINDOW SIZE, for the meter: onto this poll's reading as
     # `window` (no model id says it for `auto`). Claude's rows never carry
     # one and its page derives the size from the model id, so a Claude poll
@@ -7624,8 +7628,8 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                             errors="replace").read().strip()[-2000:]
             except OSError:
                 tail = ""
-        error = tail or ("claude exited before completing the reply"
-                         if text_parts else "claude exited unexpectedly")
+        error = tail or (f"{cli_name} exited before completing the reply"
+                         if text_parts else f"{cli_name} exited unexpectedly")
 
     # Both error paths above converge here: if the end arrived with a retry in
     # flight then THAT is the story and the raw text does not tell it. `retry`
@@ -7801,6 +7805,15 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # too. `_cancelled_marker_state` also backs `_stopped_last`, which needs
     # the identical staleness check off its own cursor read.
     cancelled = _cancelled_marker_state(run_dir, scan_cursor)
+    # A STOPPED COPILOT TURN IS NOT AN ERROR. Its host answers a cancel with
+    # an `is_error` result and no text (ACP's `cancelled` stopReason), which
+    # the fallback above turned into "copilot exited with an error". Claude's
+    # interrupted result carries the CLI's own words, which the page folds
+    # into "Stopped." off `cancelled`; Copilot's carries none to fold. Blanked
+    # in the ANSWER only — the commit sweep and session latch above already
+    # skipped this turn as errored, the same as they do for Claude's.
+    if cancelled and backend == "copilot":
+        error = ""
     return {"text": "" if echo_pending else text, "done": done,
             "session_id": new_session, "error": error, "backend": backend,
             "tokens": tokens_done + tokens_current, "phase": phase,
