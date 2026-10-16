@@ -1393,6 +1393,17 @@ class _Host:
             with self.lock:
                 self.sid = got
                 self.transcript_path = self._transcript_path()
+            # The session-settings record (model, effort, backend — D2)
+            # BEFORE anything names the id: no init row, transcript or
+            # registry row exists yet, so no reader can find this session
+            # without its record. Best-effort: `_poll`'s own write is the
+            # backstop, so a failure is logged and the handshake goes on.
+            try:
+                self.agent._record_settings(self.sid, self.model,
+                                            str(self.req.get("effort") or ""),
+                                            BACKEND)
+            except Exception as exc:  # noqa: BLE001
+                sys.stderr.write("copilot_host: cannot record settings: %r\n" % (exc,))
             self._write_host_json()
         with self.lock:
             self.write_init()

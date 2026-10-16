@@ -310,6 +310,16 @@ def test_first_row_is_init_with_the_session_id(start, agent):
                    "updatedAt": reg["updatedAt"], "pid": cli_pid}
 
 
+def test_a_fresh_session_is_recorded_as_copilot(start, agent):
+    """D2: Copilot's minted id gets its session-settings record — model,
+    effort, backend — from the host itself, so `_session_backend` names it
+    copilot from the first instant the id is visible anywhere."""
+    s = start()
+    assert s.sid
+    assert agent._session_backend(s.sid) == "copilot"
+    assert agent._session_settings(s.sid) == ("gpt-5.4", "medium")
+
+
 def test_the_echo_is_written_before_the_prompt_goes_out(start, agent):
     """§6.3 — the fake reads out.jsonl the instant `session/prompt` reaches
     it and finds the echo already there; while it holds the prompt open,
@@ -1243,6 +1253,51 @@ def test_a_cli_that_ignores_eof_is_killed(agent, host_mod, tmp_path, monkeypatch
     host.close()
     assert host.cli.returncode == -signal.SIGKILL
     assert any(e.get("eof") for e in _rows(log)), "stdin was closed first"
+
+
+def test_the_settings_record_precedes_every_file_naming_the_id(
+        agent, host_mod, tmp_path, monkeypatch):
+    """`_record_settings` runs after `session/new` answers and BEFORE the
+    init row, the transcript, the registry row or host.json name the id —
+    so no reader finds the session without its record."""
+    import agent_roots
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    host, run_dir, log = _host_in_process(agent, host_mod, tmp_path)
+    seen = []
+
+    def record(sid, model="", effort="", backend=""):
+        seen.append({
+            "args": (sid, model, effort, backend),
+            "out": _rows(os.path.join(run_dir, "out.jsonl")),
+            "transcripts": os.path.exists(agent_roots.projects_dir("copilot")),
+            "registry": os.path.exists(host.registry_path),
+            "host_sid": json.load(open(os.path.join(run_dir, "host.json")))["session_id"]})
+
+    monkeypatch.setattr(agent, "_record_settings", record)
+    try:
+        assert host.handshake()
+        assert len(seen) == 1
+        assert seen[0]["args"] == (host.sid, "gpt-5.4", "", "copilot")
+        assert (seen[0]["out"], seen[0]["transcripts"], seen[0]["registry"],
+                seen[0]["host_sid"]) == ([], False, False, "")
+    finally:
+        host.close()
+
+
+def test_a_settings_record_that_fails_never_fails_the_handshake(
+        agent, host_mod, tmp_path, monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    host, run_dir, log = _host_in_process(agent, host_mod, tmp_path)
+
+    def boom(*a, **k):
+        raise OSError("settings store is read-only")
+
+    monkeypatch.setattr(agent, "_record_settings", boom)
+    try:
+        assert host.handshake()
+        assert _rows(os.path.join(run_dir, "out.jsonl"))[0]["session_id"] == host.sid
+    finally:
+        host.close()
 
 
 def test_a_permission_that_throws_is_still_answered_once(
