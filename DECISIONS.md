@@ -7018,9 +7018,6 @@ A 6-column table in a bot reply wrapped short cells ("fused-render", "#1641") on
 
 ## D1370: The desktop app runs with the user's login-shell PATH (2026-10-16, chat-login-shell-path)
 
-- **What.** `login_path.warm()` starts at the top of `app.main()` and asks `$SHELL -l -i -c` for PATH once; `adopt()`, first in `_start_server_thread`, waits for it and puts it ahead of `/usr/bin` on the app process. Every child (Claude chats, bots, git credential helpers, app workers) then sees what the user's terminal sees.
-- **Why the process, not each spawn.** Finder launches inherit launchd's `/usr/bin:/bin:/usr/sbin:/sbin`, and Claude Code's shell snapshot exports its own process PATH over `~/.zshrc`. The per-spawn lists in `agent._spawn_env` (#1670) and `appfile_git._env` could only guess dirs: they missed bun, nvm and pyenv, and ran Apple's python3 over Homebrew's. Both are removed.
-- **One probe.** `claude_health._shell_probe` reads the cached login PATH instead of running its own login shell with other flags and timeout.
-- **`fused-bin` moves to the front** when the login PATH already lists it, so Homebrew's or the user's `fused` cannot shadow the wrapper.
-- **PATH only.** The rest of the login env (PYTHONPATH, VIRTUAL_ENV, conda vars) would break the bundled interpreter's children.
-- **Fallback.** Only when no PATH comes back (tcsh, a broken rc file) are `/opt/homebrew/{bin,sbin}`, `/usr/local/bin` and `~/.local/bin` added; otherwise they would make `claude_health` call a `~/.local/bin/claude` "on PATH" when the user's terminal cannot see it. A timed-out `-i` run keeps any PATH it printed and falls back to `-l -c`. `-i` is skipped under a controlling tty, so a killed probe cannot leave the terminal's foreground group dead.
+- **What.** `login_path` reads PATH from `$SHELL -l -i -c` once at launch and sets it on the app process before the server starts, so every child sees the terminal's PATH.
+- **Why.** Finder gives the app `/usr/bin:/bin:/usr/sbin:/sbin`, and Claude Code's shell snapshot exports its own PATH over `~/.zshrc`. The per-spawn dir lists this replaces (`agent._spawn_env`, `appfile_git._env`) missed bun, nvm and pyenv.
+- **PATH only.** Other login vars (PYTHONPATH, conda) would break the bundled interpreter. Fallback dirs are added only if the probe returns nothing.

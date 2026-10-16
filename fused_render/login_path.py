@@ -43,7 +43,8 @@ def probe(shell: str = "") -> str:
         except (OSError, subprocess.SubprocessError):
             return ""
         _, found, tail = out.rpartition(_MARK + "\n")
-        path = tail.partition("\n")[0].strip() if found else ""
+        line, ended, _ = tail.partition("\n")
+        path = line.strip() if found and ended else ""
         if path:
             return path
     return ""
