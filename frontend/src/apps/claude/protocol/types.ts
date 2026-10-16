@@ -870,6 +870,11 @@ export interface ContextUsage {
   output_tokens: number;
   model: string;
   compacted: boolean;
+  /** THE CONTEXT SIZE THE AGENT REPORTED, in tokens — present for a Copilot
+   *  session once its host has heard it (ACP `usage_update.size`,
+   *  docs/COPILOT_BACKEND.md §4), absent for Claude, whose window is read off
+   *  the model id (`ui/context-window`). Outranks that rule when present. */
+  window?: number;
 }
 
 /** agent.py:904 / 868,883. */

@@ -141,12 +141,19 @@ export interface ContextThresholds {
  */
 export function contextThresholds(
   model: string | null | undefined,
+  /** A window the AGENT stated (`ContextUsage.window`, a Copilot session):
+   *  taken as the model's whole window with nothing enforced, ahead of the
+   *  id rules above, which only know Claude's models. */
+  stated?: number,
 ): ContextThresholds {
-  const { window, enforced } = autoCompactWindow(model);
+  const known = typeof stated === "number" && Number.isFinite(stated) && stated > 0 ? stated : 0;
+  const { window, enforced } = known
+    ? { window: known, enforced: false }
+    : autoCompactWindow(model);
   const effective = window - OUTPUT_RESERVE;
   const compactAt = effective - COMPACT_HEADROOM;
   return {
-    model: modelWindow(model),
+    model: known || modelWindow(model),
     window,
     effective,
     compactAt,
@@ -201,7 +208,7 @@ export function usedPct(
   model: string | null | undefined,
   usage: ContextUsage | null | undefined,
 ): number {
-  const { compactAt } = contextThresholds(model);
+  const { compactAt } = contextThresholds(model, usage?.window);
   if (compactAt <= 0) return 0;
   const pct = Math.round((contextTotal(usage) / compactAt) * 100);
   return Math.min(100, Math.max(0, pct));
@@ -221,8 +228,10 @@ export type ContextLevel = "ok" | "warn" | "compact";
 export function contextLevel(
   model: string | null | undefined,
   total: number,
+  /** `ContextUsage.window`, when the agent stated one. */
+  stated?: number,
 ): ContextLevel {
-  const { compactAt, warnAt } = contextThresholds(model);
+  const { compactAt, warnAt } = contextThresholds(model, stated);
   if (!Number.isFinite(total) || total <= 0) return "ok";
   if (total >= compactAt) return "compact";
   if (total >= warnAt) return "warn";
@@ -244,11 +253,11 @@ export function warnLine(
   usage: ContextUsage | null | undefined,
 ): string {
   const total = contextTotal(usage);
-  if (contextLevel(model, total) === "ok") return "";
+  if (contextLevel(model, total, usage?.window) === "ok") return "";
   // THE SAME NUMBER THE RING SHOWS, in the CLI's two spellings: an enforced
   // window counts down to the compaction, an automatic one counts up to it.
   const pct = usedPct(model, usage);
-  return contextThresholds(model).enforced
+  return contextThresholds(model, usage?.window).enforced
     ? `${100 - pct}% until auto-compact`
     : `${pct}% context used`;
 }
@@ -286,7 +295,7 @@ export function contextHint(
   // "of 167k" and not "of 200k", because 167k is where this conversation is
   // cut, and a denominator the ring is not measured against would be the two
   // numbers all over again.
-  const { compactAt } = contextThresholds(model);
+  const { compactAt } = contextThresholds(model, usage?.window);
   const used = contextTotal(usage);
   const line = `Context: ${formatTokens(used)} of ${formatTokens(compactAt)} tokens before auto-compact (${usedPct(model, usage)}%)`;
   // AN ESTIMATE IS LABELLED AS ONE. Straight after a compaction the CLI has no
@@ -362,7 +371,7 @@ export function contextReport(
   usage: ContextUsage | null | undefined,
 ): ContextReport {
   const id = (model || "").trim();
-  const { model: modelWindow, compactAt, enforced } = contextThresholds(model);
+  const { model: modelWindow, compactAt, enforced } = contextThresholds(model, usage?.window);
   const columns = modelWindow >= WINDOW_1M ? 20 : 10;
   const rows = 10;
   const cells = columns * rows;

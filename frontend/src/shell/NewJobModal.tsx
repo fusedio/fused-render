@@ -3152,7 +3152,12 @@ export default function NewJobModal({
   // continues a session runs on THAT session's agent (`sessionAgent`, read
   // once the binding is known), and the picker stands down for it.
   const agents = useAgentBackends();
-  const [backendPick, setBackendPick] = useState(saved.backend ?? editing?.backend ?? "");
+  // AN EDIT KEEPS ITS ENTRY'S AGENT: the edit is cancel + re-create, and a
+  // create that names none is pinned to the CURRENT default — so an entry from
+  // before the field (no `backend`) is Claude's, which is all it could be.
+  const [backendPick, setBackendPick] = useState(
+    saved.backend ?? (editing ? editing.backend || "claude" : ""),
+  );
   /** The agent resolved on the latest render, for the async Claude-default
    *  reads below, which must not land a Claude pair on another agent's card. */
   const agentRef = useRef("claude");
@@ -3847,11 +3852,16 @@ export default function NewJobModal({
     };
   }, [agentSession]);
   const agentLocked = !!agentSession;
+  // The entry's own agent counts even switched off: the save then answers
+  // 400 in the banner, which is the truth, rather than quietly moving it.
+  const editingBackend = editing ? editing.backend || "claude" : "";
   // The pick counts only while its agent is switched on; a session's own
   // agent counts whatever the switch says (the server will refuse the save,
   // and say so in the banner).
   const agent = sessionAgent
-    || (backendPick && (agentLocked || isBackendEnabled(backendPick)) ? backendPick : "")
+    || (backendPick && (agentLocked || backendPick === editingBackend || isBackendEnabled(backendPick))
+      ? backendPick
+      : "")
     || agents.default;
   agentRef.current = agent;
   const runModels = taskModelsOf(agent);

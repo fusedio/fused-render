@@ -5299,6 +5299,9 @@ export function TaskBoard({
           target: action.target,
           message: action.body,
           session_id: action.sessionId,
+          // The thread's own agent (D2): a create naming none is pinned to
+          // the current default.
+          ...(task.backend ? { backend: task.backend } : {}),
           delay_seconds: 1,
           immediate: true,
         });

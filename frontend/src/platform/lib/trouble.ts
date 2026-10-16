@@ -278,7 +278,7 @@ export function troubleInstructions(ctx: TroubleContext): string {
     login: copilot
       ? [
         "Confirm the CLI runs: `copilot --version`.",
-        "Sign in: run `copilot`, then `/login`, and complete it in the browser — or `gh auth login`, which the app also honours.",
+        "Sign in: run `copilot`, then `/login`, and complete it in the browser — or sign in with `gh auth login` using a GitHub account that has Copilot access.",
         `Confirm the session works, then tell me to retry in ${displayName()}.`,
       ]
       : [

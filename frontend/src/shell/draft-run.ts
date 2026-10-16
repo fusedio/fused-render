@@ -154,6 +154,8 @@ export function boundDraftPayload(
     permission: saved.permission ?? "",
     model: saved.model ?? "",
     effort: saved.effort ?? "",
+    // The card's agent pick (D2); none = the default, as the card showed it.
+    backend: saved.backend ?? "",
     // WHERE THIS TASK IS GOING, when the draft was written out of a chat: the
     // draft restates it on every save precisely so a card nobody has open still
     // knows (drafts.TaskDraftForm.session_id). A drop is exactly that case.
@@ -260,6 +262,9 @@ export function chatDraftPayload(
     text: string;
     /** Already copied into the task-shots dir — see `carriedAttachments`. */
     attachments?: TaskAttachment[];
+    /** The conversation's agent (D2), so the create is not pinned to the
+     *  current default. */
+    backend?: string;
   },
   now: Date = new Date(),
 ): SchedulePayload | null {
@@ -281,6 +286,7 @@ export function chatDraftPayload(
     permission: "",
     model: "",
     effort: "",
+    backend: draft.backend ?? "",
     sessionId: draft.sessionId,
     newTaskEachRun: false,
     replacesEntryId: "",
@@ -394,6 +400,7 @@ async function chatBody(task: Task, sessionId: string): Promise<SchedulePayload>
     target: task.target || task.project,
     text: draft.text,
     attachments: await carriedAttachments(draft.attachments ?? []),
+    ...(task.backend ? { backend: task.backend } : {}),
   });
   if (!body) throw new Error(GONE);
   // NOTHING IS "SPENT" HERE ANY MORE (design "one record", §2). The create's own
