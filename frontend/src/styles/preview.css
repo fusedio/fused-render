@@ -420,11 +420,17 @@ html.side-reopening iframe {
    The column is lifted over the whole viewport instead of being remounted, so
    the chat keeps its state and .stat-main stays mounted underneath. No ancestor
    up to #root sets transform, filter, contain or will-change (#content only
-   animates opacity), so `fixed` resolves against the viewport. z-index 950 sits
-   below every modal overlay (deploy.css 1000, the chat's file-preview and
-   screenshot overlays 1100), so a dialog opened from inside it still covers it.
-   The folder listing's pane gets the same treatment on its slot
-   (.listing-pane-slot.maximized, explorer.css). */
+   animates opacity), so `fixed` resolves against the viewport. The folder
+   listing's pane gets the same treatment on its slot
+   (.listing-pane-slot.maximized, explorer.css).
+
+   The box covers the whole viewport, app sidebar included. The status bar
+   stays visible on top of it: where `#main` has a `.status-bar`, the rule
+   below pads the content up by `--status-bar-h`, and notifications.css lifts
+   the bar above this overlay while it is maximized. z-index 950 sits below
+   every modal overlay (deploy.css 1000, the chat's file-preview and
+   screenshot overlays 1100), so a dialog opened from inside it still covers
+   it. */
 .preview-side.maximized {
   position: fixed;
   inset: 0;
@@ -434,6 +440,9 @@ html.side-reopening iframe {
   min-width: 0;
   max-width: none;
   background: var(--bg-alt);
+}
+#main:has(> .status-bar) .preview-side.maximized {
+  padding-bottom: var(--status-bar-h);
 }
 /* Centre the chat for reading: the header row and the Git iframe stay full
    width. */
