@@ -312,9 +312,10 @@ _SIGNED_OUT_CODE = -32000
 _SIGNED_OUT_RE = re.compile(r"(?:authentication required|not logged in)\b")
 
 #: A Copilot session id. The probe deletes `session-state/<id>/` by it, so
-#: anything else — `..`, a slash — is never joined onto a path.
+#: anything else — `..`, a slash — is never joined onto a path. Either case:
+#: a UUID's hex digits may be spelled upper.
 _SESSION_ID_RE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
 
 
 def _classify(reply: dict) -> Optional[bool]:
@@ -444,9 +445,11 @@ def _sign_in(path: str) -> tuple:
     and only when there is a gh token that is not already the user's — with
     GH_TOKEN set, `gh auth token` just echoes it back — and the user has not
     set COPILOT_GITHUB_TOKEN, which the gh token would otherwise override.
-    A second probe that is not True leaves step one's False standing: without
+    A second probe that says False leaves step one's False standing: without
     `method == "gh"` the host spawns without the token, so False is the truth
-    about the spawn that will happen.
+    about the spawn that will happen. One that could not tell (a timeout)
+    makes the whole answer None — a slow probe on a gh-only machine must not
+    read as "sign in" (`_measure` then carries the last account forward).
     """
     first = _acp_probe(path, None)
     if first is not False or os.environ.get("COPILOT_GITHUB_TOKEN"):
@@ -454,9 +457,10 @@ def _sign_in(path: str) -> tuple:
     token = gh_token()
     if not token or token in _user_tokens():
         return first, False
-    if _acp_probe(path, token) is True:
-        return True, True
-    return first, False
+    second = _acp_probe(path, token)
+    if second is None:
+        return None, False
+    return (True, True) if second else (first, False)
 
 
 def signed_in(path: Optional[str] = None) -> Optional[bool]:
@@ -674,8 +678,14 @@ def _measure(allow_shell: bool = True) -> dict:
     # One ACP spawn answers "signed in?", two only when the first says no and
     # `gh` has a token to try (`_sign_in`). The token lives inside that call.
     signed, via_gh = _sign_in(path) if usable else (None, False)
+    acct = account(signed, via_gh=via_gh)
     if signed is None:
         signed = signed_in(None)
+        # A probe that could not tell is no news about the credential, so the
+        # last snapshot's account stands — above all its `method`, which is
+        # agent.py's gh-token gate. Dropping it on one slow read would spawn
+        # a gh-only machine signed out.
+        acct = (_carried_account() if usable else None) or account(signed, False)
 
     return {
         "found": usable,
@@ -686,7 +696,7 @@ def _measure(allow_shell: bool = True) -> dict:
         "outdated": outdated,
         "broken": broken,
         "signed_in": signed,
-        "account": account(signed, via_gh=via_gh),
+        "account": acct,
         "config_dir": config_dir(),
         "platform": sys.platform,
         "install_command": install_command(),
@@ -707,6 +717,18 @@ def _measure(allow_shell: bool = True) -> dict:
 def _read_cache() -> Optional[dict]:
     data = storage.read_json(_cache_path())
     return data if isinstance(data, dict) else None
+
+
+def _carried_account() -> Optional[dict]:
+    """The last snapshot's `account`, for a measure whose probe could not
+    tell. Read regardless of the fingerprint — an upgraded binary or a moved
+    PATH does not move the credential — but only from the same credential
+    store, which is what `config_dir` names."""
+    prev = _read_cache()
+    if not prev or prev.get("config_dir") != config_dir():
+        return None
+    acct = prev.get("account")
+    return dict(acct) if isinstance(acct, dict) else None
 
 
 def cached() -> Optional[dict]:

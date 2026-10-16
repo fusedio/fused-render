@@ -159,9 +159,11 @@ _FAKE_ACP = textwrap.dedent("""\
             if mode == "gh-only":
                 # no stored login: only an injected token signs this one in
                 mode = "ok" if token else "auth"
-            if mode == "ok":
+            if mode in ("ok", "upper"):
+                sid = str(uuid.uuid4())
                 print(json.dumps({{"jsonrpc": "2.0", "id": msg["id"],
-                                  "result": session(str(uuid.uuid4()))}}), flush=True)
+                                  "result": session(sid.upper() if mode == "upper" else sid)}}),
+                      flush=True)
             elif mode == "badid":
                 print(json.dumps({{"jsonrpc": "2.0", "id": msg["id"],
                                   "result": {{"sessionId": "../victim"}}}}), flush=True)
@@ -274,6 +276,12 @@ def test_the_probe_deletes_the_session_it_created(fake_acp):
     assert os.listdir(state) == [os.path.basename(mine)]
 
 
+def test_an_upper_case_session_id_is_deleted_too(fake_acp):
+    assert fake_acp("upper") is True
+    state = os.path.join(os.environ["COPILOT_HOME"], "session-state")
+    assert os.listdir(state) == []
+
+
 def test_a_session_id_that_is_not_a_uuid_is_never_joined_onto_a_path(fake_acp):
     victim = os.path.join(os.environ["COPILOT_HOME"], "victim")
     os.makedirs(victim)
@@ -364,10 +372,37 @@ def test_signed_out_falls_back_to_the_gh_token(monkeypatch):
 
 
 def test_a_gh_account_without_copilot_leaves_signed_out_standing(monkeypatch):
-    for second in (False, None):
-        signed, acct, calls, _ = _two_step(monkeypatch, first=False, second=second)
-        assert signed is False and acct is None
-        assert calls == [None, "gho_gh"]
+    signed, acct, calls, _ = _two_step(monkeypatch, first=False, second=False)
+    assert signed is False and acct is None
+    assert calls == [None, "gho_gh"]
+
+
+def test_a_second_probe_that_times_out_is_unknown_not_signed_out(monkeypatch):
+    signed, _acct, calls, _ = _two_step(monkeypatch, first=False, second=None)
+    assert signed is None
+    assert calls == [None, "gho_gh"]
+
+
+@pytest.mark.parametrize("first,second", [(False, None), (None, None)])
+def test_an_unknown_probe_carries_the_last_account_forward(tmp_path, monkeypatch,
+                                                            first, second):
+    """One slow read must not flip a gh-only machine to "Sign in", nor drop
+    `method == "gh"`, agent.py's gate for injecting the token."""
+    cli = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(cli))
+    monkeypatch.setattr(copilot_health, "probe_version", lambda p: "1.0.98")
+    monkeypatch.setattr(copilot_health, "gh_token", lambda: "gho_gh")
+    monkeypatch.setattr(copilot_health, "_acp_probe",
+                        lambda p, t: t is not None)
+    assert copilot_health.summary()["account"]["method"] == "gh"
+    monkeypatch.setattr(copilot_health, "_acp_probe",
+                        lambda p, t: first if t is None else second)
+    snap = copilot_health.summary_refreshed()
+    assert snap["signed_in"] is None
+    assert snap["account"]["method"] == "gh"
+    # ...and from the same credential store only
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "elsewhere"))
+    assert copilot_health.summary_refreshed()["account"] is None
 
 
 @pytest.mark.parametrize("first,gh,env", [
