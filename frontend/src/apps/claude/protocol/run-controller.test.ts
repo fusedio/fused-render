@@ -4390,6 +4390,44 @@ describe("the start response names the session (task status in under a second)",
       restore();
     }
   });
+
+  test("a Copilot start answering session_id \"\" takes the id from the first poll that carries it", async () => {
+    // Copilot mints its own id (docs/COPILOT_BACKEND.md), so a fresh start
+    // answers `session_id: ""` and the init row's poll is the first to name it.
+    // An empty id must never reach the url, the state or a running mark.
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      const atPoll: string[] = [];
+      const { controller } = makeController(
+        {
+          start: () => ({ run_id: "r1", session_id: "", backend: "copilot" }),
+          poll: (_f, n) => {
+            atPoll.push(params.get("session_id") || "");
+            // The first frame has no id yet; the second carries the init row's.
+            return poll({
+              done: n > 1,
+              session_id: n > 0 ? "s-copilot" : "",
+              text: "ok",
+              segments: [text("ok")],
+            });
+          },
+        },
+        params,
+      );
+      await controller.sendMessage("hi");
+      expect(atPoll[0]).toBe("");
+      expect(params.get("session_id")).toBe("s-copilot");
+      expect(controller.getState().sessionId).toBe("s-copilot");
+      expect(controller.getState().backend).toBe("copilot");
+      // Marked once, under the real id — never under "".
+      expect(marks(posts)).toEqual([
+        { session_id: "s-copilot", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
 });
 
 describe("running and idle marks can race (Bugbot #1163)", () => {
