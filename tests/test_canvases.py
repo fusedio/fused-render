@@ -906,8 +906,8 @@ def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
     seen = {}
     monkeypatch.setattr(
         claude_spawn, "spawn_helper",
-        lambda target, prompt, mode, session_id="": (
-            seen.update(target=target, prompt=prompt, mode=mode),
+        lambda target, prompt, mode, session_id="", **kw: (
+            seen.update(target=target, prompt=prompt, mode=mode, **kw),
             {"run_id": "run-77"})[1])
     monkeypatch.setattr(claude_spawn, "record_session_when_ready",
                         lambda agent, run_id, on_tick=None: None)
@@ -922,10 +922,31 @@ def test_fix_endpoint_spawns_a_primed_claude_session(harness, monkeypatch):
     # confirms the fix landed — see _fix_prompt.)
     assert seen["target"] == str(harness.root / "alpha")
     assert seen["mode"] == "auto"
+    # A canvas fix is a Claude feature: named, never the default agent.
+    assert seen["backend"] == "claude"
     for line in _VALIDATION_LINES:
         assert line in seen["prompt"]
     assert "fused workbench canvas validate" in seen["prompt"]
     assert "fused workbench canvas push ." in seen["prompt"]
+    harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
+
+
+def test_a_fix_with_claude_switched_off_is_the_disabled_400(harness, monkeypatch):
+    """`_start` refuses a disabled agent with `registry.disabled_error`'s body;
+    the fix endpoint hands that over whole as a 400, not a "failed to start"
+    500, and no fixer is marked active."""
+    from fused_render import claude_spawn
+    from fused_render.agent_backends import registry
+
+    _fail_push_with_validation(harness, monkeypatch)
+    refusal = registry.disabled_error("claude")
+    monkeypatch.setattr(claude_spawn, "spawn_helper",
+                        lambda *a, **kw: dict(refusal))
+    res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 400
+    assert res.json() == refusal
+    status = harness.client.get("/api/canvases/sync/status?name=alpha").json()
+    assert status["fix_active"] is False
     harness.client.post("/api/canvases/sync/stop", json={"name": "alpha"}, headers=GUARD)
 
 
@@ -942,7 +963,7 @@ def test_fix_active_blocks_a_concurrent_fixer_until_the_recorder_exits(harness, 
     release = threading.Event()
     monkeypatch.setattr(
         claude_spawn, "spawn_helper",
-        lambda target, prompt, mode, session_id="": {"run_id": "run-1"})
+        lambda target, prompt, mode, session_id="", **kw: {"run_id": "run-1"})
     monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
     monkeypatch.setattr(
         claude_spawn, "record_session_when_ready",
@@ -972,7 +993,7 @@ def test_fix_active_blocks_a_concurrent_fixer_until_the_recorder_exits(harness, 
     # A push still in error and no active fixer → a new fix is allowed again.
     monkeypatch.setattr(
         claude_spawn, "spawn_helper",
-        lambda target, prompt, mode, session_id="": {"run_id": "run-2"})
+        lambda target, prompt, mode, session_id="", **kw: {"run_id": "run-2"})
     res = harness.client.post("/api/canvases/fix", json={"name": "alpha"}, headers=GUARD)
     assert res.status_code == 200
     assert res.json()["run_id"] == "run-2"
@@ -989,7 +1010,7 @@ def test_fix_active_clears_even_when_the_recorder_never_sees_done(harness, monke
     _fail_push_with_validation(harness, monkeypatch)
     monkeypatch.setattr(
         claude_spawn, "spawn_helper",
-        lambda target, prompt, mode, session_id="": {"run_id": "run-1"})
+        lambda target, prompt, mode, session_id="", **kw: {"run_id": "run-1"})
 
     def _boom():
         raise RuntimeError("agent.py failed to load")

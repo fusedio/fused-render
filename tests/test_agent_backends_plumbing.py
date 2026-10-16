@@ -260,6 +260,7 @@ def test_create_stores_the_backend_and_the_send_passes_it(tmp_path, monkeypatch)
     assert again["backend"] == "claude"
     schedule.tick()
     assert calls[1]["backend"] == "claude"
+    assert calls[1]["bot"] == "", "no bot: the Claude switch applies in `_start`"
 
 
 def _past():
@@ -393,6 +394,11 @@ def test_spawn_helper_hands_backend_to_start(monkeypatch):
     assert seen["backend"] == "copilot"
     claude_spawn.spawn_helper("/tmp", "hi", "auto")
     assert seen["backend"] == ""
+    # `bot` is always passed too ("" for no bot), so `_start` can let a bot's
+    # Claude task through the Claude switch.
+    assert seen["bot"] == ""
+    claude_spawn.spawn_helper("/tmp", "hi", "auto", backend="claude", bot="bot-1")
+    assert seen["bot"] == "bot-1"
 
 
 # ------------------------------------------------------------------ prefs
@@ -549,13 +555,138 @@ def test_a_bots_task_is_claude_whatever_the_default(tmp_path, client, monkeypatc
     stored = next(e for e in schedule.list_entries()
                   if e["id"] == r.json()["entry_id"])
     assert stored["backend"] == "claude"
-    # An explicit agent still speaks for itself.
+    # Bots run on Claude: naming another agent for one is refused, whole body.
     r = client.post("/api/tasks/create", headers=FUSED,
                     json={"prompt": "go", "target": str(target), "due": due,
                           "bot": "bot-1", "backend": "copilot"})
+    assert r.status_code == 400
+    assert r.json() == {"error": "bots run on Claude", "reason": "unsupported",
+                        "backend": "copilot"}
+
+
+def test_the_user_plugin_sync_follows_the_claude_switch(tmp_path, monkeypatch):
+    """`user_plugin.start()` spawns `claude plugin install/update`: nothing of
+    Claude's starts with Claude switched off (D17)."""
+    import asyncio
+
+    from fused_render import user_plugin
+    from fused_render.server import app as app_mod
+
+    captured = {}
+    real = app_mod._lifespan
+
+    def spy(startup, shutdown):
+        captured["startup"] = startup
+        return real(startup, shutdown)
+
+    monkeypatch.setattr(app_mod, "_lifespan", spy)
+    app_mod.create_app(start_dir=str(tmp_path))
+    handler, = [h for h in captured["startup"]
+                if h.__name__ == "_startup_sync_user_plugin"]
+    started = []
+    monkeypatch.setattr(user_plugin, "start", lambda: started.append(1))
+    _claude_off()
+    asyncio.run(handler())
+    assert started == []
+    prefs_mod.write_pref("claude_enabled", True)
+    asyncio.run(handler())
+    assert started == [1]
+
+
+def test_schedule_create_pins_a_bots_task_to_claude(tmp_path):
+    _copilot_default()
+    target = tmp_path / "p"
+    target.mkdir()
+    # Omitted: Claude, never the Preferences default.
+    assert schedule.create(str(target), "go", _past(),
+                           bot="bot-1")["backend"] == "claude"
+    assert schedule.create(str(target), "go", _past(), bot="bot-1",
+                           backend="claude")["backend"] == "claude"
+    with pytest.raises(schedule.BackendRefused) as info:
+        schedule.create(str(target), "go", _past(), bot="bot-1",
+                        backend="copilot")
+    assert info.value.body == {"error": "bots run on Claude",
+                               "reason": "unsupported", "backend": "copilot"}
+
+
+def _claude_off():
+    prefs_mod.write_pref("copilot_enabled", True)
+    prefs_mod.write_pref("claude_enabled", False)
+
+
+def test_a_bots_claude_task_passes_the_claude_switch(tmp_path, client, monkeypatch):
+    """D17 / owner Q7: Bots are not gated by the Claude switch — they keep
+    using Claude. At create AND at send; a non-bot Claude task still meets
+    the gate."""
+    from fused_render.bots import store as bot_store
+    _claude_off()
+    monkeypatch.setattr(bot_store, "list_ids", lambda: ["bot-1"])
+    target = tmp_path / "p"
+    target.mkdir()
+    due = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    r = client.post("/api/tasks/create", headers=FUSED,
+                    json={"prompt": "go", "target": str(target), "due": due,
+                          "bot": "bot-1"})
+    assert r.status_code == 200, r.text
     stored = next(e for e in schedule.list_entries()
                   if e["id"] == r.json()["entry_id"])
-    assert stored["backend"] == "copilot"
+    assert stored["backend"] == "claude"
+    r = client.post("/api/tasks/create", headers=FUSED,
+                    json={"prompt": "go", "target": str(target), "due": due,
+                          "backend": "claude"})
+    assert r.status_code == 400
+    assert r.json() == registry.disabled_error("claude")
+
+    calls = []
+    monkeypatch.setattr(claude_spawn, "spawn_helper",
+                        lambda *a, **kw: calls.append(kw) or {"run_id": "r"})
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
+    # As `/api/tasks/create` stores a bot's build: pinned to Claude.
+    entry = schedule.create(str(target), "go", _past(), bot="bot-1",
+                            backend="claude")
+    schedule.tick()
+    assert calls and calls[0]["backend"] == "claude"
+    # …and the bot rides to `_start`, which lets it through the same switch.
+    assert calls[0]["bot"] == "bot-1"
+    stored = next(e for e in schedule.list_entries() if e["id"] == entry["id"])
+    assert stored["state"] != schedule.ERROR, stored
+    # An explicit "claude" from a bot passes the door with Claude off too.
+    r = client.post("/api/tasks/create", headers=FUSED,
+                    json={"prompt": "go", "target": str(target), "due": due,
+                          "bot": "bot-1", "backend": "claude"})
+    assert r.status_code == 200, r.text
+
+
+def test_a_non_bot_claude_entry_still_fails_at_send_with_claude_off(
+        tmp_path, monkeypatch):
+    target = tmp_path / "p"
+    target.mkdir()
+    entry = schedule.create(str(target), "go", _past())
+    assert entry["backend"] == "claude"
+    _claude_off()
+    spawned = []
+    monkeypatch.setattr(claude_spawn, "spawn_helper",
+                        lambda *a, **k: spawned.append(1) or {"run_id": "r"})
+    schedule.tick()
+    stored = next(e for e in schedule.list_entries() if e["id"] == entry["id"])
+    assert stored["state"] == schedule.ERROR
+    assert stored["error"] == "Claude disabled"
+    assert spawned == []
+
+
+def test_erase_finds_the_cli_store_under_copilot_home(
+        tmp_path, claude_projects, copilot_projects, client, monkeypatch):
+    target = tmp_path / "p"
+    target.mkdir()
+    path = _write_transcript(copilot_projects, "sess-copilot", str(target), [_user("two")])
+    copilot_home = tmp_path / "copilot-home"
+    (copilot_home / "session-state" / "sess-copilot").mkdir(parents=True)
+    monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
+    assert tasks_mod._copilot_session_state_dir() == str(copilot_home / "session-state")
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": "sess-copilot"})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert not (copilot_home / "session-state" / "sess-copilot").exists()
 
 
 def test_a_session_bound_message_cannot_name_another_agent(
@@ -601,6 +732,38 @@ def test_a_session_nothing_has_recorded_yet_is_nobodys_to_refuse(
     result = schedule.resend(entry["id"])
     assert result["ok"] is True, result
     assert result["entry"]["backend"] == "copilot"
+
+
+def test_the_session_owner_tries_the_targets_bucket_before_any_glob(
+        tmp_path, copilot_projects, monkeypatch):
+    """The hot paths into `create` hand the target through, so a pre-record
+    session is answered by a stat in its own bucket, never a glob over every
+    bucket; the glob stays the fallback for a session filed elsewhere."""
+    target = tmp_path / "p"
+    target.mkdir()
+    page = target / "index.html"
+    page.write_text("<html></html>")
+    _write_transcript(copilot_projects, "sess-cop", str(target), [_user("hi")])
+    real_glob = roots._shared.glob.glob
+    globbed = []
+    monkeypatch.setattr(roots._shared.glob, "glob",
+                        lambda pattern: globbed.append(pattern) or real_glob(pattern))
+    # A folder target and a file target name the same bucket.
+    assert schedule.session_owner("sess-cop", str(target)) == "copilot"
+    assert schedule.session_owner("sess-cop", str(page)) == "copilot"
+    assert globbed == []
+    # No target, or the wrong one: the glob still finds it.
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    assert schedule.session_owner("sess-cop", str(other)) == "copilot"
+    assert schedule.session_owner("sess-cop") == "copilot"
+    assert globbed
+    # `create` passes its target through.
+    globbed.clear()
+    _enable_copilot()
+    assert schedule.create(str(target), "go", _past(),
+                           session_id="sess-cop")["backend"] == "copilot"
+    assert globbed == []
 
 
 def test_a_follower_cannot_name_another_agent_than_its_leader(tmp_path):

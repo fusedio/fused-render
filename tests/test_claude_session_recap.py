@@ -172,7 +172,14 @@ def test_recap_comes_back_capped_with_the_turn_it_is_about(
     # --verbose or the CLI exits 1.
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in argv
-    tail = "User: make the tests pass\n\nAssistant: " + "x" * 900
+    # Nothing from the server's cwd (no `cwd=`, the fork rule): no settings
+    # sources (hooks, CLAUDE.md) and no MCP servers. Verified live: without
+    # these, a CLAUDE.md in the cwd steered the recap and the user's and the
+    # folder's MCP servers loaded, tools and all, despite `--tools ""`.
+    assert "--setting-sources=" in argv
+    assert "--strict-mcp-config" in argv
+    assert "--mcp-config" not in argv
+    tail ="User: make the tests pass\n\nAssistant: " + "x" * 900
     prompt = _prompt(call)
     assert prompt == recap_mod._RECAP_PROMPT % tail
     assert "<transcript>\n" + tail + "\n</transcript>" in prompt
@@ -407,6 +414,29 @@ def test_a_claude_session_recaps_nothing_with_claude_switched_off(
     _switches(monkeypatch, copilot=True)
     assert _get(client, target).json()["text"] == ""
     assert _spawns(calls) == []
+
+
+def test_a_cached_recap_is_served_without_asking_the_agent_gate(
+        client, project, calls, monkeypatch):
+    """The cache first, the agent and its switch only on a miss: serving a
+    string already computed spawns nothing, so there is nothing to gate. A
+    refusal on a miss is not cached, so switching back on recaps again."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    assert _get(client, target).json()["text"]
+    assert len(_spawns(calls)) == 1
+    monkeypatch.setattr(recap_mod, "_recap_backend",
+                        lambda *a: pytest.fail("a cache hit asked the gate"))
+    assert _get(client, target).json()["text"]
+    assert len(_spawns(calls)) == 1
+    # A miss with Claude off: "" and no spawn — and nothing stored for it.
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "claude")
+    _switches(monkeypatch, copilot=True)
+    assert _get(client, target, for_uuid="u-2").json()["text"] == ""
+    assert len(_spawns(calls)) == 1
+    _switches(monkeypatch, claude=True)
+    assert _get(client, target, for_uuid="u-2").json()["text"]
+    assert len(_spawns(calls)) == 2
 
 
 def test_a_copilot_session_recaps_nothing_with_copilot_switched_off(

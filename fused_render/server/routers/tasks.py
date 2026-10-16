@@ -6645,10 +6645,15 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
 
 
 def _copilot_session_state_dir() -> str:
-    """Copilot CLI's own per-session replay store (`~/.copilot/session-state`),
-    NOT fused's Copilot root — the CLI keeps this one, and erase is the only
-    reader. A function so a test can point it at a tmp dir."""
-    return os.path.join(os.path.expanduser("~"), ".copilot", "session-state")
+    """Copilot CLI's own per-session replay store (`<COPILOT_HOME or
+    ~/.copilot>/session-state`), NOT fused's Copilot root — the CLI keeps this
+    one, and erase is the only reader. Resolved by `copilot_health.config_dir`,
+    the one place that reads the CLI's own `COPILOT_HOME` override, so erase
+    looks where the CLI actually wrote. A function so a test can point it at a
+    tmp dir."""
+    from fused_render import copilot_health
+
+    return os.path.join(copilot_health.config_dir(), "session-state")
 
 
 def _every_rule_behind(key: str) -> list[str]:
@@ -8161,9 +8166,13 @@ def api_task_create(body: dict = Body(...),
         fields[field], refusal = _opt_str(body, field)
         if refusal is not None:
             return refusal
-    refusal = _backend_refusal(fields["backend"])
-    if refusal is not None:
-        return refusal
+    # A BOT'S TASK skips this door's agent check: bots run on Claude whatever
+    # the Claude switch says (D17, owner Q7), and `schedule.create` is the one
+    # place that says so — it pins Claude and refuses any other agent.
+    if not fields["bot"]:
+        refusal = _backend_refusal(fields["backend"])
+        if refusal is not None:
+            return refusal
     # `bot`: the id of the bot starting this task (bots/bot.py `build`), kept on
     # the entry and handed back on the row so the bot's panel can list what it
     # started. Checked for the shape of an id (`_BOT_ID_RE`) and then against
@@ -8176,10 +8185,6 @@ def api_task_create(body: dict = Body(...),
         from fused_render.bots import store as bot_store  # noqa: PLC0415
         if fields["bot"] not in bot_store.list_ids():
             return _error(f"bot: no bot {fields['bot']!r}", status=400)
-        # BOTS STAY CLAUDE (Q7): a bot's build names no agent, and the
-        # Preferences default must not hand it to another one. Claude off is
-        # then the ordinary disabled 400, said plainly.
-        fields["backend"] = fields["backend"] or "claude"
     target = fields["target"] or _page_scope(x_fused_page)[2]
     if not target:
         return _error("target: required — no target given and no X-Fused-Page "

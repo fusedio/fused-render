@@ -550,7 +550,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     @on_startup
     async def _startup_sync_user_plugin():
         from fused_render import user_plugin
+        from fused_render.agent_backends import registry
 
+        # It spawns `claude plugin install/update`: with Claude switched off
+        # in Preferences (D17) nothing of Claude's is started at all.
+        if not registry.is_enabled("claude"):
+            return
         user_plugin.start()
 
     # The project queue's dispatcher (queue_manager.py), wired EXPLICITLY.

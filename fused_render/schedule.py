@@ -1807,12 +1807,20 @@ def create(target: str, message: str, due=None, session_id: str = "",
     # Anything else takes the Preferences default, which is enabled by
     # construction.
     if session_id:
-        owner = session_owner(session_id)
+        owner = session_owner(session_id, target)
         if owner and backend and backend != owner:
             raise _mismatch(owner, "this session")
         backend = backend or owner or _registry.DEFAULT
+    # BOTS RUN ON CLAUDE (owner Q7): a bot's task never takes the Preferences
+    # default, and naming another agent for one is refused — `_bot_exempt`'s
+    # pass through the Claude switch is only ever a Claude pass.
+    if str(bot or "").strip():
+        if backend and backend != _registry.CLAUDE.id:
+            raise BackendRefused({"error": "bots run on Claude",
+                                  "reason": "unsupported", "backend": backend})
+        backend = _registry.CLAUDE.id
     backend = backend or _registry.default_id()
-    if not _registry.is_enabled(backend):
+    if not _registry.is_enabled(backend) and not _bot_exempt(backend, bot):
         raise BackendRefused(_registry.disabled_error(backend))
     # Plan mode needs a plan card to approve, which only some agents have
     # (§7 caps.plan_mode) — refused here in the words `routers/claude_agent`
@@ -2919,6 +2927,15 @@ def _entry_backend(entry: dict) -> str:
     return value if value in roots.BACKENDS else roots.DEFAULT_BACKEND
 
 
+def _bot_exempt(backend: str, bot) -> bool:
+    """A BOT's Claude task passes the Claude switch (D17, owner Q7: Bots are
+    not gated by it — they keep using Claude, and the toggle copy says so).
+    Claude only: a bot's build is pinned to Claude (`/api/tasks/create`), so
+    a bot entry naming another agent gets no pass and meets the gate as
+    anything else would. Used by both gates, `create` and `_send`."""
+    return backend == "claude" and bool(str(bot or "").strip())
+
+
 def _mismatch(owner: str, what: str) -> "BackendRefused":
     """The refusal for naming an agent other than the one `what` belongs to."""
     from fused_render.agent_backends import registry
@@ -2927,21 +2944,32 @@ def _mismatch(owner: str, what: str) -> "BackendRefused":
         "reason": "backend_mismatch", "backend": owner})
 
 
-def session_owner(session_id: str) -> str:
+def session_owner(session_id: str, target: str = "") -> str:
     """The agent the EVIDENCE says owns `session_id`: the session-settings
     record, else the root its transcript sits under — and "" when there is
     neither, which is a session nothing has started yet. An id that is not a
     plain name is never globbed for. `create` and `/api/tasks/settings` refuse
     a mismatch only against a non-empty answer; `create` fills a blank
     `backend` from it, with Claude standing in for "no evidence" (every
-    session that predates the field is a Claude one)."""
+    session that predates the field is a Claude one).
+
+    `target` (the entry's file or folder) names the BUCKET to try first —
+    `find_transcript`'s exact `<root>/<munge(workdir)>/<sid>.jsonl` stat under
+    each root — so the hot paths that reach `create` (queue admit, a task's
+    send, `/api/schedule`, the limit comeback, the New task card) answer a
+    pre-record session with a stat or two instead of a glob over every
+    bucket. The glob stays as the fallback, for a session filed elsewhere."""
     from fused_render.agent_backends import roots
     sid = str(session_id or "").strip()
     hint = tasks_store.session_backend(tasks_store.settings_state(), sid)
     if hint or sid in ("", ".", "..") or not all(
             c.isalnum() or c in "-_." for c in sid):
         return hint
-    found = roots.find_transcript(sid)
+    workdir = ""
+    if target:
+        path = os.path.abspath(os.path.expanduser(str(target)))
+        workdir = path if os.path.isdir(path) else os.path.dirname(path)
+    found = roots.find_transcript(sid, workdir or None)
     return found[0] if found else ""
 
 
@@ -2968,7 +2996,8 @@ def _send(entry: dict) -> None:
     from fused_render.agent_backends import registry as _registry
     backend = _entry_backend(entry)
     try:
-        if not _registry.is_enabled(backend):
+        if (not _registry.is_enabled(backend)
+                and not _bot_exempt(backend, entry.get("bot"))):
             _fail(entry, f"{_registry.get(backend).label} disabled")
             return
         res = _host_send(entry)
@@ -2991,6 +3020,9 @@ def _send(entry: dict) -> None:
                 model=str(entry.get("model") or ""),
                 effort=str(entry.get("effort") or ""),
                 backend=backend,
+                # A bot's Claude task passes the Claude switch in `_start`
+                # too, as it did at the gate above (`_bot_exempt`).
+                bot=str(entry.get("bot") or ""),
                 **attachments)
     except Exception as exc:  # noqa: BLE001 — the reason belongs on the entry
         _fail(entry, f"failed to start session: {exc}")

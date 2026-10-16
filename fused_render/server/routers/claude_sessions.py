@@ -956,7 +956,10 @@ def _recap_generate(agent, file: str, session_id: str,
     a `cwd=` or the default `close_fds=True` makes CPython fork()+exec instead
     of posix_spawn, and a fork with libproj resident in the server dies SIGSEGV
     before exec (D277/D292). A run with no tools never looks at the
-    filesystem, so the server's own cwd is as good as any.
+    filesystem — but the CLI still LOADS config from its cwd, which is now
+    the server's: `--setting-sources=` skips user/project/local settings
+    (hooks, CLAUDE.md) and `--strict-mcp-config` with no `--mcp-config`
+    leaves no MCP servers, so nothing of that folder reaches the run.
     """
     turns = (agent._history(file, session_id) or {}).get("turns") or []
     tail = _recap_tail(turns)
@@ -972,6 +975,11 @@ def _recap_generate(agent, file: str, session_id: str,
          "--input-format", "stream-json",
          "--max-turns", "1", "--tools", "", "--model", "haiku",
          "--output-format", "stream-json", "--verbose",
+         # NOTHING FROM THE SERVER'S CWD: with no `cwd=` (the fork rule) the
+         # run sits in the server's own folder, whose settings hooks,
+         # `.mcp.json` and CLAUDE.md would otherwise load. Single-token
+         # equals form, as `server/ai.py`'s relay spells it.
+         "--setting-sources=", "--strict-mcp-config",
          "--system-prompt", _RECAP_SYSTEM],
         env=agent._spawn_env(), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -1074,18 +1082,6 @@ def _recap(agent, file: str, session_id: str, for_uuid: str) -> str:
     endpoint decorates a screen rather than gating it, and a chat must never
     show an error because a nicety could not be computed.
     """
-    # THE SESSION'S AGENT, AND ITS SWITCH (D17): a recap is that agent's run,
-    # so an agent switched off in Preferences recaps nothing — checked before
-    # the cache, so a recap computed while it was on is not shown either.
-    try:
-        backend = _recap_backend(agent, file, session_id)
-        from fused_render.agent_backends import registry
-        if not registry.is_enabled(backend):
-            return ""
-    except Exception:  # noqa: BLE001 — see NOTHING HERE RAISES above
-        logger.warning("could not resolve the agent for a recap of %s",
-                       session_id, exc_info=True)
-        return ""
     # The FILE is part of the key, not just the session: see the cache block's
     # "KEYED ON THE FILE TOO". Canonical, so two spellings of one folder are
     # one conversation.
@@ -1104,6 +1100,27 @@ def _recap(agent, file: str, session_id: str, for_uuid: str) -> str:
         with _recap_lock:
             hit = _recap_cached(key)
         return hit if hit is not None else ""
+
+    # THE SESSION'S AGENT, AND ITS SWITCH (D17), asked only on a MISS: a
+    # cached recap is a string already computed and serving it spawns
+    # nothing, while a miss would run that agent — which an agent switched off
+    # in Preferences never does. A refusal is NOT stored, so the recap comes
+    # back the moment the agent is switched on again; the key is released and
+    # any waiter reads "" off the empty cache.
+    try:
+        backend = _recap_backend(agent, file, session_id)
+        from fused_render.agent_backends import registry
+        allowed = registry.is_enabled(backend)
+    except Exception:  # noqa: BLE001 — see NOTHING HERE RAISES above
+        logger.warning("could not resolve the agent for a recap of %s",
+                       session_id, exc_info=True)
+        backend, allowed = "", False
+    if not allowed:
+        with _recap_lock:
+            done = _recap_inflight.pop(key, None)
+        if done is not None:
+            done.set()
+        return ""
 
     try:
         text = _recap_generate(agent, file, session_id, backend)
