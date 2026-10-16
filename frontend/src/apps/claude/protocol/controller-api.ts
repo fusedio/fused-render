@@ -662,7 +662,7 @@ export interface ControllerDeps {
    *  memory of what this frame posted, so a reload or a second limit hit
    *  cannot orphan one. Defaults to `getSchedule`. */
   listSchedule?: () => Promise<{
-    entries: Array<{ id: string; session_id: string; message: string; state: string }>;
+    entries: Array<{ id: string; session_id: string; message: string; state: string; created?: string }>;
   }>;
   /** ADDED: cancels one booked comeback (`retireLimit`). Defaults to
    *  `cancelScheduledMessage`. */

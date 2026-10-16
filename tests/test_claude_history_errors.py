@@ -292,3 +292,23 @@ def test_a_bare_429_without_a_window_is_a_break_not_a_clock(agent, transcript):
     ])
     assert [t["role"] for t in turns] == ["user", "error"]
     assert "quota" not in turns[-1]
+
+
+def test_a_tool_only_turn_between_two_failures_resolves_nothing(agent, transcript):
+    """A retry that called a tool and then died again never answered: the
+    assistant turn it leaves has segments but no words, and the first
+    failure is as unresolved as the second (CodeRabbit #1699)."""
+    tool_row = {"type": "assistant",
+                "message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "Read",
+                     "input": {"file_path": "/x"}}]}}
+    turns = transcript([
+        _user("go"),
+        _assistant("API Error: overloaded", isApiErrorMessage=True),
+        _user("go"),
+        tool_row,
+        _assistant("API Error: overloaded again", isApiErrorMessage=True),
+    ])
+    roles = [t["role"] for t in turns]
+    assert roles.count("error") == 2
+    assert "overloaded" in [t for t in turns if t["role"] == "error"][0]["text"]

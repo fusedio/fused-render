@@ -62,7 +62,7 @@ function poll(over: Partial<PollResponse> = {}): PollResponse {
 
 type Handler = (fields: Record<string, unknown>, call: number) => unknown;
 
-type Entry = { id: string; session_id: string; message: string; state: string };
+type Entry = { id: string; session_id: string; message: string; state: string; created?: string };
 function make(
   handlers: Record<string, Handler>,
   schedule?: (body: unknown) => Promise<unknown>,
@@ -232,6 +232,16 @@ describe("after the limit", () => {
       { id: "sent", session_id: "s1", message: CONTINUE_PROMPT, state: "sent" },
       { id: "other", session_id: "s2", message: CONTINUE_PROMPT, state: "pending" },
       { id: "mine", session_id: "s1", message: "ship it at 5", state: "pending" },
+      // Booked AFTER this retire (a retry that hit the limit again while the
+      // list was in flight): for a chat that is stuck again, so it stays.
+      {
+        id: "newer",
+        session_id: "s1",
+        message: CONTINUE_PROMPT,
+        state: "pending",
+        created: new Date(Date.now() + 60_000).toISOString(),
+      },
+      { id: "older", session_id: "s1", message: CONTINUE_PROMPT, state: "pending", created: new Date(0).toISOString() },
     ];
     const c = make(
       {
@@ -256,7 +266,7 @@ describe("after the limit", () => {
     const state = c.getState();
     expect(state.trouble).toBeNull();
     expect(state.turns.map((t) => t.role)).toEqual(["user", "note", "user", "assistant"]);
-    expect(cancelled.sort()).toEqual(["e1", "old"]);
+    expect(cancelled.sort()).toEqual(["e1", "old", "older"]);
   });
 
   test("a comeback whose POST settles after the reply is cancelled on arrival", async () => {

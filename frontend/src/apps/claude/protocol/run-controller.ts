@@ -1004,18 +1004,30 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const sid = state.sessionId;
     if (sid) {
       retiredAt.set(sid, (retiredAt.get(sid) ?? 0) + 1);
-      void cancelComebacks(sid);
+      void cancelComebacks(sid, Date.now());
     }
   };
 
-  /** Cancel every pending comeback the server holds for `sid`, fire-and-forget. */
-  const cancelComebacks = async (sid: string) => {
+  /** Cancel every pending comeback the server held for `sid` AT THE RETIRE,
+   *  fire-and-forget. `before` is the retire's wall clock: a comeback booked
+   *  after it (a retry that hit the limit again while the list was in
+   *  flight) is for a chat that is stuck again, and stays (CodeRabbit
+   *  #1699). An entry with no readable `created` is treated as older. */
+  const cancelComebacks = async (sid: string, before: number) => {
     const list = deps.listSchedule ?? getSchedule;
     const cancel = deps.cancelSchedule ?? cancelScheduledMessage;
     try {
       const { entries } = await list();
+      const bookedAfter = (created: string | undefined) => {
+        const at = created ? Date.parse(created) : NaN;
+        return Number.isFinite(at) && at > before;
+      };
       const mine = entries.filter(
-        (e) => e.session_id === sid && e.message === CONTINUE_PROMPT && e.state === "pending",
+        (e) =>
+          e.session_id === sid &&
+          e.message === CONTINUE_PROMPT &&
+          e.state === "pending" &&
+          !bookedAfter(e.created),
       );
       await Promise.all(mine.map((e) => cancel(e.id)));
       if (mine.length) announceTasksChanged();

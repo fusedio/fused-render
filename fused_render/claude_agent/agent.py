@@ -4499,7 +4499,9 @@ def _drop_resolved_errors(turns: list, now: float = None) -> list:
 
     So an error row goes when:
 
-      * A REPLY FOLLOWS IT — any `assistant` turn later in the log.
+      * A REPLY FOLLOWS IT — an `assistant` turn WITH WORDS later in the log.
+        A tool-only turn (a retry that called a tool and then failed again)
+        answered nothing, and does not retire anything (CodeRabbit #1699).
       * IT IS THE PLAN'S LIMIT (`_is_limit_turn`) AND EITHER a newer limit row
         follows (that one is the card now) OR its reset (`quota.resets_at`,
         the CLI's own `quotaLimits` on the failed row) is behind `now`:
@@ -4515,7 +4517,9 @@ def _drop_resolved_errors(turns: list, now: float = None) -> list:
     for i, turn in enumerate(turns):
         if turn.get("role") == "error":
             later = turns[i + 1:]
-            resolved = any(t.get("role") == "assistant" for t in later)
+            resolved = any(t.get("role") == "assistant"
+                           and str(t.get("text") or "").strip()
+                           for t in later)
             if not resolved and _is_limit_turn(turn):
                 newer_limit = any(t.get("role") == "error" and _is_limit_turn(t)
                                   for t in later)
