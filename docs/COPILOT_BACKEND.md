@@ -109,7 +109,9 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   agent + spawn `--allow-tool write`; `auto` → agent + `allow_all=on`; `plan` →
   not offered for Copilot. Live: `allow_all` via `session/set_config_option
   {configId:"allow_all", value:"on"|"off"}`; acceptEdits needs respawn. A card
-  allow carrying `mode` → `set_config_option allow_all=on` after the RPC reply.
+  allow carrying mode `auto` → `set_config_option allow_all=on` after the RPC
+  reply. A card allow carrying `acceptEdits` → `allow_always` on that card only,
+  never `allow_all`; "accept edits from here" must not also let shell run unasked.
 - **D6** Host **serializes prompts**: a second `session/prompt` cancels the
   first (verified). User rows arriving mid-turn are HELD (left in `inbox/`, so
   the UI shows them undrained) and sent after the turn's `result`. `interrupt`
