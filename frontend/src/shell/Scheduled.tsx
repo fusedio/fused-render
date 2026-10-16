@@ -367,7 +367,10 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
             {ICON_PLUS}
           </button>
           {adding && available.length > 0 && (
-            <div className="schedule-view-add-menu" role="group" aria-label="Add view">
+            // `data-hint-stop`: the menu hangs over the task list, and the
+            // hint layer pierces to whatever row title sits under the pointer
+            // (platform/lib/hints.ts hintAt) unless told this surface owns it.
+            <div className="schedule-view-add-menu" role="group" aria-label="Add view" data-hint-stop>
               {available.map((v) => (
                 <button
                   key={v}

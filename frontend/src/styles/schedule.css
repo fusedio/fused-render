@@ -4756,14 +4756,29 @@ input.schedule-when-field {
   color: var(--fg-muted);
   cursor: pointer;
 }
+/* Hover is a 6% wash and nothing else. The `.prefs-section` twins are for
+   SPECIFICITY: `.prefs-section button:hover:not(:disabled)` (0,3,1) paints an
+   accent edge and a --bg-alt fill, and the divider is this button's own
+   border-left, so a bare (0,2,0) rule lost the divider to the accent on hover.
+   Same for `.prefs-section button:disabled`'s opacity, which would fade the
+   divider on the one chip that cannot be removed. */
 .schedule-view-chip-x:hover:not(:disabled),
-.schedule-view-chip-x:focus-visible {
-  background: color-mix(in srgb, var(--fg) 10%, transparent);
+.prefs-section .schedule-view-chip-x:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border-color: var(--border);
+  outline: 0;
+  color: var(--fg);
+}
+.schedule-view-chip-x:focus-visible,
+.prefs-section .schedule-view-chip-x:focus-visible {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg);
 }
 /* The glyph dims, not the element: the divider stays a full-strength rule on
    the one chip that cannot be removed. */
-.schedule-view-chip-x:disabled {
+.schedule-view-chip-x:disabled,
+.prefs-section .schedule-view-chip-x:disabled {
+  opacity: 1;
   color: color-mix(in srgb, var(--fg-muted) 35%, transparent);
   cursor: default;
 }

@@ -40,6 +40,14 @@ describe("what a point resolves to", () => {
     expect(SRC).toContain('return (el.getAttribute("data-hint") || "").trim() ? el : null;');
   });
 
+  it("stops piercing at a modal or a popover that opts in with data-hint-stop", () => {
+    // The Tasks tab editor's + menu hangs over the list; without the stop,
+    // hovering "PR" in it captioned the task row underneath (Akshil, 2026-10-16).
+    expect(SRC).toContain('if (node.closest(".modal-overlay, [data-hint-stop]")) return null;');
+    const scheduled = readFileSync(join(import.meta.dir, "../../shell/Scheduled.tsx"), "utf8");
+    expect(scheduled).toMatch(/className="schedule-view-add-menu"[^>]*data-hint-stop/);
+  });
+
   it("re-asks on a move over a pierce-through surface, because one element can span two answers", () => {
     // The row's stretched link is one continuous element: moving from the title
     // onto the empty space beside it crosses no event boundary, so a handler
