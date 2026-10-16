@@ -149,7 +149,8 @@ def test_the_macos_build_runs_on_one_macos_26_job_with_a_portable_interpreter(wo
 def test_build_dmg_refuses_a_homebrew_interpreter_for_a_release_and_guards_minos():
     src = _script()
     resolution = src.index('PORTABLE_FRAMEWORK_PYTHON="/Library/Frameworks/Python.framework')
-    homebrew = src.index('HOMEBREW_FRAMEWORK_PYTHON="/opt/homebrew/opt/')
+    # Prefix is per arch (/opt/homebrew on arm64, /usr/local on x86_64).
+    homebrew = src.index('HOMEBREW_FRAMEWORK_PYTHON="${HOMEBREW_PREFIX_GUESS}/opt/')
     assert resolution < homebrew, "the portable framework must be preferred over Homebrew's"
     assert 'FATAL: a release build needs a python.org-style framework python' in src
     assert 'MINOS_FLOOR="${FUSED_RENDER_MACOS_FLOOR:-13.0}"' in src, (
