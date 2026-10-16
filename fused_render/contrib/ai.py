@@ -220,7 +220,7 @@ _DATA_RULE = (
 _JARGON_RE = re.compile(
     r"(?:\brebas(?:e|ed|ing)\b|\bmerge\s+conflicts?\b|\bconflict\s+markers?\b|"
     r"\bgit\b|\bcommit\s+(?:hash|sha|id)\b|(?-i:\bSHA\b)|\bsha-?1\b|(?-i:\bHEAD\b)|"
-    r"(?<!-)\borigin\b(?!-)|\bpull\s+requests?\b|(?-i:\bPRs?\b)|\bfork(?:s|ed|ing)?\b)",
+    r"\bpull\s+requests?\b|(?-i:\bPRs?\b)|\bfork(?:s|ed|ing)?\b)",
     re.I)
 # Keys whose values are identifiers, not prose (a path may well say ".git").
 _NOT_PROSE = {"file", "kind", "name"}

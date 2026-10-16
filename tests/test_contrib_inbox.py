@@ -106,8 +106,31 @@ def test_list_starts_a_review_then_shows_it(world):
 def test_list_without_review_starts_nothing(world):
     propose(world["fake"], {"index.html": PAGE.replace("hello", "hey")})
     items = inbox.list(world["alice"], review=False)
-    assert items[0]["review_status"] == "pending"
+    assert items[0]["review_status"] == "none"
     assert jobs.latest(inbox._job_kind(items[0]["number"]), world["alice"]) is None
+    # The cache a background listing filled never claims "reading"…
+    assert inbox.cached(world["alice"])[0]["review_status"] == "none"
+    # …and the open page's read starts the review.
+    assert inbox.cached(world["alice"], start_reviews=True)[0]["review_status"] in (
+        "pending", "running")
+    assert settle(world["alice"], items[0]["number"])["status"] == "done"
+    assert inbox.cached(world["alice"])[0]["review_status"] == "ready"
+
+
+def test_invalidate_keeps_the_other_cards(world, monkeypatch):
+    alice = world["alice"]
+    pr = lambda n: {"number": n, "head_sha": f"{n}" * 40, "title": f"#{n}",  # noqa: E731
+                    "user": "bob", "body": ""}
+    inbox._lists["alice/x"] = (time.time(), [pr(7), pr(8)])
+    inbox.invalidate(alice, 7)  # #7 was just accepted here
+    assert [i["number"] for i in inbox.cached(alice)] == [8]
+    assert inbox.refreshing(alice)
+    calls = []
+    monkeypatch.setattr(gh, "list_open_prs", lambda repo: calls.append(repo) or [pr(8), pr(9)])
+    inbox.list(alice, review=False)  # the kept list is stale: GitHub is asked
+    assert calls == ["alice/x"]
+    assert [i["number"] for i in inbox.cached(alice)] == [8, 9]
+    assert not inbox.refreshing(alice)
 
 
 def test_ai_addressed_text_needs_a_look(world):
@@ -384,6 +407,47 @@ def _review_input(d):
 
 BASE = {"index.html": "<html><body><h1>Sine</h1></body></html>\n", "app.py": "x = 1\n",
         "app.js": "console.log(1);\n"}
+
+
+@pytest.mark.parametrize("path", ["my page.html", "café page.html", 'say "hi".html',
+                                  "tab\there.html", "a/b c/d.html"])
+@pytest.mark.parametrize("enc", ["utf16", "nul"])
+def test_unreadable_files_are_flagged_whatever_their_name(tmp_path, path, enc):
+    html = "<html><body><script>" + EVIL_JS + "</script></body></html>\n"
+    data = html.encode("utf-16") if enc == "utf16" else ("<!-- \x00 -->" + html).encode()
+    _, files, hits = _review_input(_pair(tmp_path, BASE, {path: data}))
+    assert [f["path"] for f in files if f["binary"]] == [path]
+    assert ("unreadable", "hard") in hits
+
+
+def test_sweep_never_takes_a_copy_mid_create(world, monkeypatch):
+    import threading
+
+    from fused_render.contrib import flags
+
+    monkeypatch.setattr(flags, "inbox", lambda: True)
+    path = os.path.join(trycopy.try_root(), "alice__x-99")
+    made, go = threading.Event(), threading.Event()
+
+    def creating():
+        with trycopy._lock:  # what create() holds from clone to record
+            os.makedirs(path)
+            made.set()
+            go.wait(5)
+            rec = store.new_record("scratch", repo="alice/x", classified_by="try")
+            rec["try_of"] = {"app": world["alice"], "number": 99, "head_sha": "a" * 40}
+            store.put(path, rec)
+
+    t = threading.Thread(target=creating)
+    t.start()
+    made.wait(5)
+    sweeper = threading.Thread(target=trycopy.sweep_orphans)
+    sweeper.start()
+    time.sleep(0.2)  # the sweep is now waiting on the lock
+    go.set()
+    t.join()
+    sweeper.join(10)
+    assert os.path.isdir(path)
 
 
 @pytest.mark.parametrize("name,head", [

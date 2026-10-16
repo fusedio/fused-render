@@ -168,6 +168,54 @@ def test_a_local_url_rewrite_onto_github_refuses_transfers(w, key, value):
     assert w.gh.url_rewrites(w.app)
 
 
+@pytest.mark.parametrize("setup,flagged", [
+    # worktree-scoped config (extensions.worktreeConfig)
+    ([("extensions.worktreeConfig", "true"),
+      ("--worktree", "url.https://evil.example/.insteadOf", "https://github.com/")], True),
+    # anything credential.* — git hands helpers the token on `store`
+    ([("credential.https://github.com.helper", "!evil")], True),
+    ([("credential.helper", "store")], True),
+    # URL-scoped http settings outrank our command-line generic ones
+    ([("http.https://github.com/.proxy", "http://evil:8080")], True),
+    ([("http.https://github.com/.sslVerify", "false")], True),
+    # generic deny-listed http settings
+    ([("http.sslCAInfo", "/tmp/evil-ca.pem")], True),
+    ([("http.extraHeader", "X-Evil: 1")], True),
+    # generic proxy / sslVerify are overridden on the command line, not refused
+    ([("http.proxy", "http://127.0.0.1:9")], False),
+    ([("http.sslVerify", "false")], False),
+    ([("http.https://example.com/.proxy", "http://x:1")], False),
+])
+def test_repo_config_that_could_take_the_transfer_is_refused(w, setup, flagged):
+    for args in setup:
+        git(w.app, "config", *args)
+    assert bool(w.gh.url_rewrites(w.app, "https://github.com/alice/sine.git")) is flagged
+
+
+def test_a_rewrite_pulled_in_by_an_include_is_seen(w, tmp_path):
+    extra = tmp_path / "extra.cfg"
+    extra.write_text('[url "https://evil.example/"]\n\tinsteadOf = https://github.com/\n')
+    git(w.app, "config", "include.path", str(extra))
+    assert w.gh.url_rewrites(w.app)
+
+
+def test_net_args_pin_tls_and_the_environment_proxy(monkeypatch):
+    from fused_render import github_setup
+    from fused_render.contrib import gh
+    monkeypatch.delenv(gh.FAKE_ENV, raising=False)
+    monkeypatch.setattr(github_setup, "resolve", lambda: ("/usr/bin/gh", "path"))
+    for k in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(k, raising=False)
+    args = gh.git_net_args()
+    for kv in ("http.sslVerify=true", "http.https://github.com/.sslVerify=true",
+               "http.proxy=", "http.https://github.com/.proxy="):
+        assert kv in args, kv
+    monkeypatch.setenv("https_proxy", "http://corp:3128")
+    args = gh.git_net_args()
+    assert "http.proxy=http://corp:3128" in args
+    assert "http.https://github.com/.proxy=http://corp:3128" in args
+
+
 def test_a_rewrite_of_the_exact_transfer_url_refuses_too(w):
     url = w.gh.clone_url("alice/sine")             # the fake's bare path
     git(w.app, "config", "url./tmp/elsewhere/.insteadOf", url[:-8])

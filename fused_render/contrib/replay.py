@@ -14,11 +14,14 @@ time" (§0.2), never an error.
 
 NOTHING OF BOB'S IS LOST SILENTLY (§0.2). Before `land` moves a branch off a
 tip the new one does not contain, the old tip is pinned at
-`refs/fused/backup/<unix_ms>` (and a dirty tree's `git stash create` commit
-at `…-wip`). A pure fast-forward pins nothing: its old tip stays in the new
-tip's history, so a backup would be noise in every follower's repo for every
-author push. The refs are never deleted by the engine; the record names the
-last ten.
+`refs/fused/backup/<unix_ms>-<why>` (and the uncommitted edits, untracked
+files included, at `…-wip` — `wip_commit_locked`). A pure fast-forward pins
+nothing: its old tip stays in the new tip's history, so a backup would be
+noise in every follower's repo for every author push. The record names the
+last ten; the refs themselves are NEVER deleted by the engine, with one
+exception (`prune_backups_locked`): a plain update's backup (`why` not
+`discard`/`race`, not `-wip`) older than 30 days ages out. A Discard's and a
+race's backups — the only copy of what they hold — and every `-wip` stay.
 
 COMMITTED `.fused/` (§4). A repo that tracks its own `.fused/` would show
 fused's writes there (the install stamp, `meta.json`) as edits, so tracked
@@ -198,20 +201,40 @@ def slot_released():
     a replay — and take it back before the caller's own release. Every write
     inside then takes the slot itself (`slot()`), briefly: the review's rule
     that the slot covers only backup + final check + land, never minutes of
-    rebase. The re-acquire blocks (no timeout): the caller's `finally` will
-    release, so the lock MUST be held again by then, and every holder's work
-    is bounded. Anywhere else (nested, or not held) this is a no-op."""
+    rebase. The re-acquire is BOUNDED (`_reacquire_timeout`, the same
+    budget as git_upstream's `_mutation_slot`): on a timeout the thread no
+    longer holds the slot, so it tells git_upstream (`_mark_slot_lost`) and
+    the caller's `finally` skips its release rather than freeing someone
+    else's lock. Nothing is lost by it: every tree write inside took the
+    slot itself and finished before this point, and `slot_lost()` lets the
+    caller report the stretch as deferred. Anywhere else (nested, or not
+    held) this is a no-op."""
     if _depth() != 1:
         yield
         return
     _held.depth = 0
+    _held.lost = False
     gu._check_slot.release()
     gu._drain_pending()
     try:
         yield
     finally:
-        gu._check_slot.acquire()
-        _held.depth = 1
+        if gu._check_slot.acquire(timeout=_reacquire_timeout()):
+            _held.depth = 1
+        else:
+            logger.warning("contrib: could not take the sync slot back in time")
+            gu._mark_slot_lost()
+            _held.lost = True
+
+
+def _reacquire_timeout() -> float:
+    return gu.TIMEOUT_S + 5.0
+
+
+def slot_lost() -> bool:
+    """Whether this thread's last `slot_released` could not take the slot
+    back (its caller then no longer holds it)."""
+    return getattr(_held, "lost", False)
 
 
 @contextlib.contextmanager
@@ -222,7 +245,7 @@ def slot_held():
     try:
         yield
     finally:
-        _held.depth -= 1
+        _held.depth = max(0, _depth() - 1)  # 0 already when slot_released lost it
 
 
 # ------------------------------------------------------- the .fused/ guard
@@ -359,14 +382,44 @@ def _protect_after_move(root) -> None:
 # --------------------------------------------------------------------- backups
 
 
-def _new_backup_ref(root) -> str:
+#: Backups whose `why` keeps them forever (`prune_backups_locked`).
+KEEP_FOREVER = frozenset({"discard", "race"})
+#: A plain update's backup older than this may be pruned.
+BACKUP_AGE_OUT_S = 30 * 24 * 3600
+
+
+def _new_backup_ref(root, why="update") -> str:
+    """`refs/fused/backup/<unix_ms>-<why>` (the why in the NAME, so the age-out
+    sweep can tell a Discard's backup from an update's without the record)."""
     ms = int(time.time() * 1000)
-    name = f"{BACKUP_PREFIX}{ms}"
+    tag = "".join(c if c.isalnum() or c == "-" else "-" for c in (why or "update"))
+    name = f"{BACKUP_PREFIX}{ms}-{tag}"
     n = 1
     while rev(root, name):
-        name = f"{BACKUP_PREFIX}{ms}-{n}"
+        name = f"{BACKUP_PREFIX}{ms}-{tag}-{n}"
         n += 1
     return name
+
+
+def prune_backups_locked(root, now=None) -> int:
+    """The one way a backup ref goes: a plain update's backup (not
+    `discard`/`race`, not a `-wip`, nor one whose why the name does not
+    tell) older than BACKUP_AGE_OUT_S. Caller holds the slot. Answers how
+    many went."""
+    now = time.time() if now is None else now
+    r = git(root, "for-each-ref", "--format=%(refname)", BACKUP_PREFIX)
+    gone = 0
+    for ref in (out(r).split() if ok(r) else []):
+        tail = ref[len(BACKUP_PREFIX):]
+        ms, _, why = tail.partition("-")
+        if not ms.isdigit() or not why or why.endswith("wip"):
+            continue
+        base_why = why.rsplit("-", 1)[0] if why.rsplit("-", 1)[-1].isdigit() else why
+        if base_why in KEEP_FOREVER:
+            continue
+        if now - int(ms) / 1000.0 > BACKUP_AGE_OUT_S and ok(git(root, "update-ref", "-d", ref)):
+            gone += 1
+    return gone
 
 
 # --------------------------------------------------------------- "your edits"
@@ -481,7 +534,7 @@ def wip_commit_locked(root, head, *, also=()) -> str | None:
             pass
 
 
-def backup_locked(root, tip, *, also=()) -> list[str]:
+def backup_locked(root, tip, *, why="update", also=()) -> list[str]:
     """Pin `tip` (and, when there are uncommitted edits or `also` paths, a
     `wip_commit_locked` commit of them) under `refs/fused/backup/`. Answers
     the refs written — empty when even the first could not be written, and
@@ -489,7 +542,7 @@ def backup_locked(root, tip, *, also=()) -> list[str]:
     `name_backups` does that once the move really happened, so a deferred
     move leaves no dead names behind."""
     refs = []
-    ref = _new_backup_ref(root)
+    ref = _new_backup_ref(root, why)
     if not ok(git(root, "update-ref", ref, tip)):
         return []
     refs.append(ref)
@@ -501,21 +554,13 @@ def backup_locked(root, tip, *, also=()) -> list[str]:
 
 def name_backups(root, refs, why, app_dir=None) -> None:
     """Name the refs of a move that happened on the record (newest last,
-    BACKUPS_KEEP of them) and delete every ref whose name just fell off —
-    so a copy's repo does not grow a ref per update forever. Refs the
-    record never named are left alone."""
+    BACKUPS_KEEP of them). A name that falls off the list only stops being
+    named — the ref stays (module docstring; `prune_backups_locked` is the
+    only deleter)."""
     from fused_render.contrib import store
 
-    if not refs:
-        return
-    before = _backup_refs_named(store.get(app_dir or root))
-    rec = None
-    for r in refs:
-        rec = store.add_backup(app_dir or root, r, why) or rec
-    if rec is not None:
-        for old in before - _backup_refs_named(rec):
-            if old.startswith(BACKUP_PREFIX):
-                git(root, "update-ref", "-d", old)
+    for r in refs or ():
+        store.add_backup(app_dir or root, r, why)
 
 
 def _unbackup_locked(root, refs) -> None:
@@ -560,16 +605,26 @@ def commit_edits_locked(root, message="Your edits") -> str | None:
 def merge_tree(root, ours, theirs, *, base=None) -> dict:
     """`{"supported", "clean", "tree", "files"}` for a three-way merge of
     `ours` and `theirs` (on `base`, else their merge-base)."""
-    args = ["merge-tree", "--write-tree", "--name-only", "--no-messages"]
+    # `-z`: NUL-separated, so a path is never C-quoted (core.quotePath turns
+    # `café.html` into `"caf\303\251.html"` otherwise). Output: the tree,
+    # then one conflicted path per field (repeated per stage), then an empty
+    # field closing the section.
+    args = ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z"]
     if base:
         args.append(f"--merge-base={base}")
     r = git(root, *args, ours, theirs, timeout=REPLAY_TIMEOUT_S)
     if r is None or r[0] not in (0, 1):
         return {"supported": False, "clean": False, "tree": None, "files": []}
-    lines = r[1].decode("utf-8", "replace").splitlines()
-    tree = lines[0].strip() if lines else None
-    files = list(dict.fromkeys(ln for ln in lines[1:] if ln.strip())) if r[0] == 1 else []
-    return {"supported": bool(tree), "clean": r[0] == 0, "tree": tree, "files": files}
+    fields = r[1].decode("utf-8", "replace").split("\0")
+    tree = fields[0].strip() if fields else None
+    files = []
+    if r[0] == 1:
+        for f in fields[1:]:
+            if not f:
+                break
+            files.append(f)
+    return {"supported": bool(tree), "clean": r[0] == 0, "tree": tree,
+            "files": list(dict.fromkeys(files))}
 
 
 def tree_of(root, commit) -> str | None:
@@ -861,7 +916,7 @@ def land_locked(root, *, branch, old_tip, new_tip, why, app_dir=None) -> bool:
     if new_tip != old_tip:
         clobber = clobber_paths(root, old_tip, new_tip)
         if clobber or not is_ancestor(root, old_tip, new_tip):
-            refs = backup_locked(root, old_tip, also=clobber)
+            refs = backup_locked(root, old_tip, why=why, also=clobber)
             if not refs or (clobber and not any(r.endswith("-wip") for r in refs)):
                 _unbackup_locked(root, refs)
                 return False
@@ -895,7 +950,7 @@ def _undo_race_locked(root, old_tip, new_tip, refs, app_dir, *, hard=False) -> b
     logger.warning("contrib: a commit landed in %s during an update (%s); putting it back",
                    root, moved_from)
     if moved_from:
-        pin = _new_backup_ref(root)
+        pin = _new_backup_ref(root, "race")
         if ok(git(root, "update-ref", pin, moved_from)):
             name_backups(root, [pin], "race", app_dir)
         with fused_aside(root, moved_from):
@@ -936,7 +991,7 @@ def reset_hard_locked(root, *, branch, target, why, app_dir=None) -> bool:
         return False
     untracked = {p for code, p in edits(root) if code == "??"}
     clobber = clobber_paths(root, head, target)
-    refs = backup_locked(root, head, also=clobber)
+    refs = backup_locked(root, head, why=why, also=clobber)
     if not refs or ((dirty(root) or clobber) and not any(r.endswith("-wip") for r in refs)):
         _unbackup_locked(root, refs)
         return False

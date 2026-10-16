@@ -56,6 +56,7 @@ _MAX_DIFF_BYTES = 2_000_000
 _lock = threading.Lock()
 _lists: dict = {}          # repo -> (fetched_at, [pr])
 _gens: dict = {}           # repo -> generation, bumped by `invalidate`
+_stale: set = set()        # repos whose cached list predates the last invalidate
 _waiting: set = set()      # (app_dir, number) reviews queued behind the slots
 _asked: dict = {}          # (app_dir, number) -> head the last review job read
 _review_slots = threading.BoundedSemaphore(REVIEW_SLOTS)
@@ -121,15 +122,34 @@ def _open_prs(repo: str, *, force: bool = False) -> builtins.list | None:
     with _lock:
         if _gens.get(repo, 0) == gen:
             _lists[repo] = (now, prs)
+            _stale.discard(repo)
     return prs
 
 
-def invalidate(app_dir: str) -> None:
+def invalidate(app_dir: str, number: int | None = None) -> None:
+    """The cached list is out of date (`number` was just accepted or
+    declined here). The list is KEPT — minus `number` — so the page keeps
+    every other card (and whatever was typed into it) while a fresh listing
+    runs; it is marked stale (`refreshing`) and the next `list` asks GitHub.
+    The generation bump makes a listing already in flight, which may still
+    hold `number`, answer its caller without being cached."""
     repo, _ = _repo_of(app_dir)
     if repo:
         with _lock:
-            _lists.pop(repo, None)
+            hit = _lists.get(repo)
+            if hit is not None:
+                _lists[repo] = (0.0, [p for p in hit[1] if number is None
+                                      or p.get("number") != number])
             _gens[repo] = _gens.get(repo, 0) + 1
+            _stale.add(repo)
+
+
+def refreshing(app_dir: str) -> bool:
+    """Whether the cached list predates the last `invalidate` (a fresh one
+    is due) — the page shows its cards with a loading mark meanwhile."""
+    repo, _ = _repo_of(_key(app_dir))
+    with _lock:
+        return bool(repo) and repo in _stale
 
 
 def list(app_dir: str, *, review: bool = True, force: bool = False) -> builtins.list:
@@ -153,9 +173,12 @@ def list(app_dir: str, *, review: bool = True, force: bool = False) -> builtins.
     return _items(app_dir, repo, prs, start_reviews=review)
 
 
-def cached(app_dir: str) -> builtins.list | None:
-    """The inbox from the last listing, with NO network and no reviews
-    started — for GET /api/contrib/app. None when never listed."""
+def cached(app_dir: str, *, start_reviews: bool = False) -> builtins.list | None:
+    """The inbox from the last listing, with NO network — for GET
+    /api/contrib/app. None when never listed. With `start_reviews` (the
+    page is open), a review starts for every item that has none (they queue
+    behind REVIEW_SLOTS); without it such an item reads "none", so the page
+    never shows "reading" for a review nobody started."""
     app_dir = _key(app_dir)
     repo, _ = _repo_of(app_dir)
     if repo is None:
@@ -164,7 +187,7 @@ def cached(app_dir: str) -> builtins.list | None:
         hit = _lists.get(repo)
     if hit is None:
         return None
-    return _items(app_dir, repo, hit[1], start_reviews=False)
+    return _items(app_dir, repo, hit[1], start_reviews=start_reviews)
 
 
 def _items(app_dir: str, repo: str, prs, *, start_reviews: bool) -> builtins.list:
@@ -179,7 +202,9 @@ def _items(app_dir: str, repo: str, prs, *, start_reviews: bool) -> builtins.lis
             # No review of this head yet, and none on its way.
             if start_reviews:
                 review(app_dir, number)
-            status = "pending"
+                status = "pending"
+            else:
+                status = "none"
         body = pr.get("body") or ""
         from_fused = FUSED_MARKER in body
         # The summary is Claude's own reading (the review) whenever there is
@@ -466,7 +491,8 @@ def _neutral_git(app_dir: str, *args, timeout: float = 120.0):
 
 
 def _raw_entries(raw: bytes) -> builtins.list:
-    """`diff --raw -z` → `[{"status", "path", "old_path", "mode"}]`."""
+    """`diff --raw -z --no-abbrev` → `[{"status", "path", "old_path", "mode",
+    "blob"}]` (`blob` the new content's id)."""
     parts = raw.split(b"\0")
     out, i = [], 0
     while i < len(parts):
@@ -477,6 +503,7 @@ def _raw_entries(raw: bytes) -> builtins.list:
         fields = meta[1:].split()
         status = fields[4] if len(fields) >= 5 else ""
         new_mode = fields[1] if len(fields) >= 2 else ""
+        new_blob = fields[3] if len(fields) >= 4 else ""
         if status[:1] in ("R", "C") and i + 2 < len(parts):
             old, path, i = parts[i + 1], parts[i + 2], i + 3
         else:
@@ -484,44 +511,79 @@ def _raw_entries(raw: bytes) -> builtins.list:
         if path:
             out.append({"status": status, "path": path.decode("utf-8", "replace"),
                         "old_path": old.decode("utf-8", "replace") if old else None,
-                        "mode": new_mode})
+                        "mode": new_mode, "blob": new_blob})
     return out
 
 
-def _unquote(path: bytes) -> bytes:
-    """A path as git prints it in a patch header (C-quoted when it holds a
-    quote, a backslash or a control character)."""
-    if path[:1] != b'"' or path[-1:] != b'"':
-        return path
-    import codecs
-
-    try:
-        return codecs.escape_decode(path[1:-1])[0]
-    except ValueError:
-        return path
+_TEXT_CHECK_MAX = 8 * 1024 * 1024
 
 
-def _not_text(patch: bytes) -> set:
-    """Paths whose new lines are not UTF-8 text (a NUL anywhere, or bytes
-    that do not decode) — binary files and other encodings alike."""
-    found = set()
-    for section in re.split(rb"(?m)^diff --git ", patch):
-        path, bad = None, False
-        for line in section.split(b"\n"):
-            if line.startswith(b"+++ "):
-                name = _unquote(line[4:].rstrip(b"\r"))
-                path = name[2:] if name.startswith(b"b/") else None
-            elif line.startswith(b"+") and not line.startswith(b"+++"):
-                if b"\0" in line:
-                    bad = True
-                else:
-                    try:
-                        line.decode("utf-8")
-                    except UnicodeDecodeError:
-                        bad = True
-        if path and bad:
-            found.add(path.decode("utf-8", "replace"))
-    return found
+def _not_text(app_dir: str, entries) -> set:
+    """Paths whose NEW content is not UTF-8 text (a NUL anywhere, or bytes
+    that do not decode) — binary files and other encodings alike. Read from
+    the blobs the raw entries name (`git cat-file --batch`), never by
+    matching names in the patch: git writes `+++ b/my page.html<TAB>` for a
+    name with a space and C-quotes others, and a name that fails to match is
+    a file nobody checks. A blob past _TEXT_CHECK_MAX counts as not text
+    (nobody reviews 8 MB by reading it); a missing one too."""
+    gu = _gu()
+    want = {}
+    for e in entries:
+        blob = e.get("blob") or ""
+        if e["status"][:1] == "D" or e.get("mode") == "160000" \
+                or not re.fullmatch(r"[0-9a-f]{40,64}", blob) or set(blob) == {"0"}:
+            continue
+        want.setdefault(blob, []).append(e["path"])
+    if not want:
+        return set()
+    blobs = builtins.list(want)
+
+    def batch(flag: str):
+        try:
+            return subprocess.run(
+                [gu._git_bin(), "-C", app_dir, "cat-file", flag],
+                input=("\n".join(blobs) + "\n").encode(), stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, timeout=120.0, close_fds=False,
+                env={**os.environ, **gu._ENV}).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+
+    bad = set()
+    sizes = batch("--batch-check")
+    small = []
+    for line, blob in zip((sizes or b"").decode("utf-8", "replace").splitlines(), blobs):
+        parts = line.split()
+        if len(parts) == 3 and parts[1] == "blob" and parts[2].isdigit() \
+                and int(parts[2]) <= _TEXT_CHECK_MAX:
+            small.append(blob)
+        else:
+            bad.add(blob)
+    if sizes is None:
+        bad.update(blobs)
+    blobs = small
+    data = batch("--batch") if blobs else b""
+    pos = 0
+    for blob in blobs:
+        nl = (data or b"").find(b"\n", pos)
+        if nl < 0:
+            bad.add(blob)
+            continue
+        parts = data[pos:nl].split()
+        if len(parts) != 3 or not parts[2].isdigit():
+            bad.add(blob)
+            pos = nl + 1
+            continue
+        size = int(parts[2])
+        content = data[nl + 1:nl + 1 + size]
+        pos = nl + 1 + size + 1
+        if b"\0" in content:
+            bad.add(blob)
+            continue
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError:
+            bad.add(blob)
+    return {p for blob in bad for p in want.get(blob, [])}
 
 
 def _proposal_diff(app_dir: str, number: int, base: str | None = None,
@@ -543,9 +605,10 @@ def _proposal_diff(app_dir: str, number: int, base: str | None = None,
     if not patch or patch[0] != 0 or not raw or raw[0] != 0:
         raise PlainError("Couldn't read this proposal. Try again.")
     files = _raw_entries(raw[1])
-    not_text = _not_text(patch[1])
+    not_text = _not_text(app_dir, files)
     for e in files:
         e["binary"] = e["path"] in not_text
+        e.pop("blob", None)
     # Cut far past ai.MAX_DIFF_CHARS, so a cut diff always reads as oversized.
     diff = patch[1][:_MAX_DIFF_BYTES].decode("utf-8", "replace").replace("\0", "\\0")
     return diff, files
@@ -749,4 +812,4 @@ def _cleanup(app_dir: str, number: int) -> None:
     repo, _ = _repo_of(app_dir)
     if repo:
         _prune_reviews(repo, drop=int(number))
-    invalidate(app_dir)
+    invalidate(app_dir, int(number))

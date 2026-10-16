@@ -33,7 +33,8 @@ from fused_render.server.common import _require_fused
 router = APIRouter()
 
 # trigger -> the action sentence the Fix with Claude prompt names.
-_SYNC_ACTIONS = {"claude-turn": "Auto-push after Claude commit"}
+_SYNC_ACTIONS = {"claude-turn": "Auto-push after Claude commit",
+                 "retry": "Retry after a failed send"}
 
 
 @router.get("/api/git-upstream")

@@ -281,9 +281,14 @@ def sweep_orphans() -> int:
     for name in names:
         path = os.path.join(root, name)
         try:
-            if not os.path.isdir(path) or os.path.islink(path) or not _orphaned(path):
+            if not os.path.isdir(path) or os.path.islink(path):
                 continue
+            # Decided UNDER the lock `create` holds from clone to record: a
+            # copy whose create is finishing right now has no record yet and
+            # would otherwise read as orphaned.
             with _lock:
+                if not _orphaned(path):
+                    continue
                 _remove_path(path)
             gone += 1
         except Exception:  # noqa: BLE001 — one bad entry never stops the pass

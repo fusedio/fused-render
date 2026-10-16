@@ -78,7 +78,8 @@ _queued: set[tuple[str, str]] = set()
 _classify_tried: dict[str, bool] = {}
 _counts: dict[str, int] = {}
 _inbox_kicked: dict[str, float] = {}   # key -> monotonic time of the last kick
-_inbox_tried: dict[str, bool] = {}     # key -> a listing attempt has finished
+_inbox_reached: dict[str, bool] = {}   # key -> did the last finished listing reach GitHub
+_inbox_last: dict[str, list] = {}      # key -> the last list GitHub gave, kept for display
 _queue: queue.PriorityQueue = queue.PriorityQueue()
 _seq = itertools.count()
 _workers: list[threading.Thread] = []
@@ -152,19 +153,23 @@ def inbox_count(app_dir: str) -> int:
 
 
 def note_inbox(app_dir: str, items) -> None:
-    """Record the size of an inbox list someone just fetched."""
+    """Record an inbox list GitHub just answered: its size (the card's
+    count) and the items themselves (what the page keeps showing while a
+    later listing runs)."""
     if isinstance(items, list):
         key = _key(app_dir)
         with _lock:
             _remember(_counts, key, len(items))
+            _remember(_inbox_last, key, list(items))
 
 
 def _list_inbox(app_dir: str, **kwargs) -> None:
     """`inbox.list` for the open bundle, the sweep and the page's kick. The
-    count is recorded only when the listing actually reached GitHub —
+    list is recorded only when the listing actually reached GitHub —
     `inbox.list` answers `[]` on failure too, and `cached()` staying None
     is what tells the two apart — so a failure never reads as "no
-    proposals". Either way the attempt is marked finished."""
+    proposals". Either way the attempt's outcome is recorded
+    (`_inbox_reached`: True reached GitHub, False did not)."""
     inbox = _mod("inbox")
     items = None
     try:
@@ -173,24 +178,31 @@ def _list_inbox(app_dir: str, **kwargs) -> None:
     finally:
         key = _key(app_dir)
         with _lock:
-            _remember(_inbox_tried, key, True)
+            _remember(_inbox_reached, key, isinstance(items, list))
     note_inbox(app_dir, items)
 
 
 def inbox_snapshot(app_dir: str) -> dict:
-    """The page's `inbox` (§12.1) with NO network: `{items, count, loading}`.
+    """The page's `inbox` (§12.1) with NO network:
+    `{items, count, loading, unavailable?}`.
 
-    Never listed yet → `items: [], count: 0, loading: true` and a listing is
-    kicked right away at open priority (at most once per INBOX_KICK_TTL_S);
-    `loading` stays true while that attempt — or the open bundle, which
-    lists too and so is not doubled — is queued or running. An attempt
-    that finished without reaching GitHub → `loading: false, unavailable:
-    true` — never a confident "no proposals"."""
+    Listed → the list, `loading: false`. Not listed right now (never, or
+    the cache was dropped) → a listing is kicked at open priority (at most
+    once per INBOX_KICK_TTL_S), and the answer is the LAST list GitHub gave
+    (empty if none) with `loading` true while that attempt — or the open
+    bundle, which lists too and so is not doubled — is queued or running.
+    `unavailable: true` whenever the last attempt could not reach GitHub,
+    including while a re-kick is loading, so an offline page never flickers
+    from "can't reach GitHub" to "loading" and back on every poll."""
     inbox = _mod("inbox")
-    items = inbox.cached(app_dir)
+    # The page path starts the review of any item that has none (queued
+    # behind inbox's review slots); the sweep and _list_inbox never do.
+    items = inbox.cached(app_dir, start_reviews=True)
     if isinstance(items, list):
         note_inbox(app_dir, items)
-        return {"items": items, "count": len(items), "loading": False}
+        # A list kept across an invalidate (minus the closed proposal) is
+        # shown with a loading mark until the fresh one lands.
+        return {"items": items, "count": len(items), "loading": bool(inbox.refreshing(app_dir))}
     key = _key(app_dir)
     now = time.monotonic()
     with _lock:
@@ -201,29 +213,39 @@ def inbox_snapshot(app_dir: str) -> dict:
             _remember(_inbox_kicked, key, now)
     if due:
         _submit(_P_OPEN, "inbox-open", key, lambda: _list_inbox(app_dir))
-        items = inbox.cached(app_dir)  # an inline run (tests) may have listed
+        items = inbox.cached(app_dir, start_reviews=True)  # an inline run (tests) may have listed
         if isinstance(items, list):
-            return {"items": items, "count": len(items), "loading": False}
+            return {"items": items, "count": len(items),
+                    "loading": bool(inbox.refreshing(app_dir))}
     with _lock:
-        loading = (("inbox-open", key) in _queued or ("open", key) in _queued
-                   or key not in _inbox_tried)
-    out = {"items": [], "count": 0, "loading": loading}
-    if not loading:
+        running = ("inbox-open", key) in _queued or ("open", key) in _queued
+        failed = _inbox_reached.get(key) is False
+        shown = list(_inbox_last.get(key) or [])
+    # Not failed = never tried, or the cache was dropped after a good list:
+    # either way a listing is on its way (kicked now or within the TTL).
+    out = {"items": shown, "count": len(shown), "loading": running or not failed}
+    if failed:
         out["unavailable"] = True
     return out
 
 
-def inbox_changed(app_dir: str) -> None:
+def inbox_changed(app_dir: str, number: int | None = None) -> None:
     """A proposal just left the inbox here (Accept, Decline): `inbox` has
-    dropped its cached list, so forget this app's kick throttle and finished
-    attempt — otherwise the next read would wait out INBOX_KICK_TTL_S and
-    answer `unavailable` ("can't reach GitHub") for a list that is merely
-    stale — and list again now. The page reads `loading: true` meanwhile."""
+    dropped or trimmed its cached list, so forget this app's kick throttle
+    and last outcome — otherwise the next read would wait out
+    INBOX_KICK_TTL_S and answer `unavailable` for a list that is merely
+    stale — drop `number` from the list kept for display, and list again
+    now. The page reads `loading: true` meanwhile, with the rest still
+    shown."""
     key = _key(app_dir)
     with _lock:
         _inbox_kicked.pop(key, None)
-        _inbox_tried.pop(key, None)
+        _inbox_reached.pop(key, None)
         _remember(_inbox_kicked, key, time.monotonic())
+        kept = _inbox_last.get(key)
+        if kept is not None and number is not None:
+            _remember(_inbox_last, key,
+                      [i for i in kept if not (isinstance(i, dict) and i.get("number") == number)])
     _submit(_P_OPEN, "inbox-open", key, lambda: _list_inbox(app_dir))
 
 
@@ -511,4 +533,5 @@ def _reset() -> None:
         _classify_tried.clear()
         _counts.clear()
         _inbox_kicked.clear()
-        _inbox_tried.clear()
+        _inbox_reached.clear()
+        _inbox_last.clear()

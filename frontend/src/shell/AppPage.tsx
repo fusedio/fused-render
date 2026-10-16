@@ -361,7 +361,9 @@ export default function AppPage({
   // from an app that had one, a stale link) is rewritten to the default
   // tab's address in place — so the URL, the strip and Back all agree on the
   // tab that is on screen.
-  const dropProposalsTab = contrib.settled && urlTab === "proposals" && !inboxOffered;
+  // A REAL answer only (`answered`): a read that merely failed says nothing
+  // about the inbox, and must not rewrite the address the user typed.
+  const dropProposalsTab = contrib.answered && urlTab === "proposals" && !inboxOffered;
   useEffect(() => {
     if (!dropProposalsTab) return;
     replaceSearch(appPageUrl(dir, APP_PAGE_TABS[0], peekSearch(location.search, null)));

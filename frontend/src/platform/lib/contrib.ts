@@ -103,8 +103,12 @@ export interface CopyStatus {
    *  lets fused check once and may make it "Your app". */
   owner_checked?: boolean;
   /** Own copy: a plain sentence when sending the user's edits to GitHub
-   *  failed (there is no activity-dock failure row for these apps). */
+   *  failed (there is no activity-dock failure row for these apps). Shown
+   *  as is. */
   sync_error?: string | null;
+  /** git_upstream's failure code behind `sync_error` ("auth", "rejected",
+   *  "git-failed", …) — for branching, never for display. */
+  sync_error_code?: string | null;
 }
 
 export interface ProposalView {
@@ -163,7 +167,8 @@ export interface InboxItem {
   /** The proposal's own description, as the sender wrote it. Untrusted. */
   description?: string;
   review: Review | null;
-  review_status: "pending" | "running" | "ready" | "failed";
+  /** "none": no review started yet — brief, the page's read starts one. */
+  review_status: "none" | "pending" | "running" | "ready" | "failed";
   try: TryCopy | null;
   head_sha: string;
   /** ISO timestamp from GitHub. */
@@ -457,7 +462,9 @@ export function contribBusy(c: AppContrib | null): boolean {
   const m = c.copy.merge_job?.status;
   if (m === "running" || m === "landing") return true;
   if (c.inbox?.loading) return true;
-  return !!c.inbox?.items.some((i) => i.review_status === "pending" || i.review_status === "running");
+  return !!c.inbox?.items.some(
+    (i) => i.review_status === "none" || i.review_status === "pending" || i.review_status === "running",
+  );
 }
 
 function anyFlag(f: ContribFlags): boolean {
@@ -470,6 +477,10 @@ export interface AppContribState {
   data: AppContrib | null;
   /** True once the first read for this folder has settled either way. */
   settled: boolean;
+  /** True once the SERVER has answered for this folder (an AppContrib, or a
+   *  plain `ok:false`) — unlike `settled`, a failed read never sets it. What
+   *  a decision that rewrites the URL waits for. */
+  answered: boolean;
   /** Re-read now. Resolves when the answer is painted. */
   refresh: () => Promise<void>;
 }
@@ -486,6 +497,7 @@ export function useAppContrib(dir: string | null): AppContribState {
   const [data, setData] = useState<AppContrib | null>(null);
   const [settled, setSettled] = useState(false);
   const [pending, setPending] = useState(false);
+  const [answered, setAnswered] = useState(false);
   // Generation token, AppPage's iconGenRef pattern: a folder switch (or a
   // newer read) makes every older in-flight answer stale, so app A's card can
   // never paint over app B's.
@@ -504,6 +516,7 @@ export function useAppContrib(dir: string | null): AppContribState {
         // Phase off, or not an app: nothing to show.
         setPending(false);
         setData(null);
+        setAnswered(true);
       } else if (next.pending || !next.copy) {
         // Still classifying a first open — poll again soon, show nothing yet,
         // and stay UNSETTLED: a `?_tab=proposals` link must not fall back to
@@ -513,6 +526,7 @@ export function useAppContrib(dir: string | null): AppContribState {
       } else {
         setPending(false);
         setData(next as AppContrib);
+        setAnswered(true);
       }
     } catch {
       // A failed read is not an answer: keep what is on screen.
@@ -525,6 +539,7 @@ export function useAppContrib(dir: string | null): AppContribState {
     genRef.current += 1;
     setData(null);
     setPending(false);
+    setAnswered(false);
     setSettled(!enabled);
     if (enabled) void read();
   }, [dir, enabled, read]);
@@ -571,5 +586,11 @@ export function useAppContrib(dir: string | null): AppContribState {
   const refresh = useCallback(() => (enabled ? read() : Promise.resolve()), [enabled, read]);
   // Not settled while the flags themselves are still being read: a
   // `?_tab=proposals` link must keep its tab through that window too.
-  return { data: enabled ? data : null, settled: flags !== null && settled, refresh };
+  return {
+    data: enabled ? data : null,
+    settled: flags !== null && settled,
+    // Every flag off is a real answer too: there is no inbox to offer.
+    answered: flags !== null && (!enabled || answered),
+    refresh,
+  };
 }

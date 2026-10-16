@@ -542,7 +542,7 @@ def api_contrib_inbox_accept(body: dict = Body(...), x_fused: str | None = Heade
         return t
     return _job(f"inbox-accept-{number}", t.app_dir, _mod("inbox").accept, t.app_dir, number,
                 confirm=body.get("confirm") is True,
-                after=lambda: refresh.inbox_changed(t.app_dir))
+                after=lambda: refresh.inbox_changed(t.app_dir, number))
 
 
 @router.post("/api/contrib/inbox/decline")
@@ -552,7 +552,7 @@ def api_contrib_inbox_decline(body: dict = Body(...), x_fused: str | None = Head
         return t
     out = _call("decline", _mod("inbox").decline, t.app_dir, number, _text(body, "note"))
     if out.get("ok"):
-        _safely("inbox changed", refresh.inbox_changed, t.app_dir)
+        _safely("inbox changed", refresh.inbox_changed, t.app_dir, number)
     return out
 
 

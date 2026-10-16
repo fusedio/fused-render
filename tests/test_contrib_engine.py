@@ -13,6 +13,7 @@ flags off `_sync_locked` is exactly today's.
 import json
 import os
 import sys
+import time
 
 import pytest
 
@@ -701,7 +702,10 @@ def test_auto_sync_off_owned_copy_gets_no_update_card(env, monkeypatch):
     assert git_upstream.repo_state_for(bob) is None
 
 
-def test_backup_refs_are_pruned_with_their_record_entries(env):
+def test_backup_names_fall_off_but_refs_stay_until_age_out(env):
+    """r2_04: the record names the newest BACKUPS_KEEP; no ref is deleted
+    for falling off. Only a plain update's backup older than 30 days ages
+    out — a Discard's, a race's and every -wip stay."""
     bob = _bob(env)
     head = _head(bob)
     made = []
@@ -709,12 +713,18 @@ def test_backup_refs_are_pruned_with_their_record_entries(env):
         assert held
         for _ in range(store.BACKUPS_KEEP + 4):
             refs = replay.backup_locked(bob, head)
-            replay.name_backups(bob, refs, "t", bob)
+            replay.name_backups(bob, refs, "update", bob)
             made += refs
-    named = {b["ref"] for b in store.get(bob)["backups"]}
-    present = set(git(bob, "for-each-ref", "--format=%(refname)", "refs/fused/backup/").split())
-    assert len(named) == store.BACKUPS_KEEP and present == named
-    assert set(made[-store.BACKUPS_KEEP:]) == named  # the newest are kept
+        kept = replay.backup_locked(bob, head, why="discard")
+        race = replay.backup_locked(bob, head, why="race")
+        named = {b["ref"] for b in store.get(bob)["backups"]}
+        present = set(git(bob, "for-each-ref", "--format=%(refname)",
+                          "refs/fused/backup/").split())
+        assert len(named) == store.BACKUPS_KEEP and set(made) | set(kept) | set(race) == present
+        assert replay.prune_backups_locked(bob, time.time() + 29 * 86400) == 0
+        assert replay.prune_backups_locked(bob, time.time() + 31 * 86400) == len(made)
+    left = set(git(bob, "for-each-ref", "--format=%(refname)", "refs/fused/backup/").split())
+    assert left == set(kept) | set(race)
 
 
 # ------------------------------------------------- engine review (r00–r06)
@@ -903,19 +913,42 @@ def test_local_insteadof_redirect_is_refused(env):
     assert st["sync_error"] == "This app's settings point GitHub somewhere else, so fused won't update it."
 
 
-def test_ignored_file_the_update_starts_tracking_is_backed_up(env):
-    """r00/MED 9: `reset --keep` overwrites an ignored file at a path the
-    author's update newly tracks — its content must be in the backup."""
+def test_ignored_file_the_update_would_track_is_never_overwritten(env):
+    """Decision row 8 / r2 item 10: an ignored local file at a path the
+    author's update newly tracks (a `.env`) — the update waits, with a plain
+    sentence naming the file and no Merge with Claude; renaming it lets the
+    update in."""
     _all_on(env)
     bob = _bob(env)
-    git(bob, "config", "core.excludesFile", os.devnull)
     with open(os.path.join(bob, ".git", "info", "exclude"), "a") as f:
         f.write(".env\n")
     write(bob, ".env", "BOB_SECRET=1\n")
     old = _head(bob)
     tip = _alice_commit(env, ".env", "EXAMPLE=1\n", "add .env template")
-    assert _sync(bob)["status"] == "synced"
-    assert _head(bob) == tip
+    result = _sync(bob)
+    assert result["status"] == "skipped" and result["why"] == "clobber"
+    assert _head(bob) == old and _read(bob, ".env") == "BOB_SECRET=1\n"
+    st = engine.status(bob)
+    assert st["needs_merge"] and st["merge_button"] is False
+    assert st["needs_merge_message"] == ("alice's update adds a file you already have "
+                                         "here (.env). Rename yours to get the update.")
+    assert engine.merge_plan(bob) is None
+    os.rename(os.path.join(bob, ".env"), os.path.join(bob, ".env.mine"))
+    assert _sync(bob)["status"] == "synced" and _head(bob) == tip
+    assert store.get(bob)["needs_merge"] is None
+
+
+def test_ignored_file_overwrite_fallback_is_backed_up(env):
+    """The never-happens fallback below the decision: should `land` ever be
+    asked to move over an ignored file, the file is in the backup first."""
+    bob = _bob(env)
+    with open(os.path.join(bob, ".git", "info", "exclude"), "a") as f:
+        f.write(".env\n")
+    write(bob, ".env", "BOB_SECRET=1\n")
+    old = _head(bob)
+    tip = _alice_commit(env, ".env", "EXAMPLE=1\n", "add .env template")
+    git(bob, "fetch", "-q", "origin")
+    assert replay.land(bob, branch="main", old_tip=old, new_tip=tip, why="t") is True
     wips = [r for r in git(bob, "for-each-ref", "--format=%(refname)",
                            "refs/fused/backup/").split() if r.endswith("-wip")]
     assert wips and git(bob, "show", f"{wips[0]}:.env") == "BOB_SECRET=1\n"
@@ -983,6 +1016,69 @@ def test_the_slot_is_free_during_fetch_and_replay(env, monkeypatch):
     assert seen == {"replay": False, "land": True}
 
 
+def test_slot_reacquire_is_bounded_and_never_frees_anothers_lock(env, monkeypatch):
+    """When another thread takes the slot while sync had given it up, the
+    bounded re-acquire times out, the sync reports busy, and the caller's
+    `finally` does NOT release the other thread's lock."""
+    import threading
+
+    _all_on(env)
+    bob = _bob(env)
+    head = _head(bob)
+    _alice_commit(env, "a.txt", "one\nALICE\nthree\n", "alice")
+    write(bob, "a.txt", "one\ntwo\nthree\n")  # nothing dirty, just a follower
+    monkeypatch.setattr(replay, "_reacquire_timeout", lambda: 0.2)
+    monkeypatch.setattr(engine, "_claude_busy", lambda root: True)  # defer, no land
+    taken, release = threading.Event(), threading.Event()
+    real = engine._facts
+
+    def thief():
+        git_upstream._check_slot.acquire()
+        taken.set()
+        release.wait(10)
+        git_upstream._check_slot.release()
+
+    def take_then_steal(*a, **k):
+        threading.Thread(target=thief, daemon=True).start()
+        taken.wait(5)
+        return real(*a, **k)
+
+    monkeypatch.setattr(engine, "_facts", take_then_steal)
+    result = git_upstream.sync_repo(bob, action="t", push=False)
+    try:
+        assert result["status"] == "skipped" and result["why"] == "busy"
+        assert git_upstream._check_slot.locked()  # still the thief's
+        assert _head(bob) == head
+    finally:
+        release.set()
+    deadline = time.time() + 5
+    while git_upstream._check_slot.locked() and time.time() < deadline:
+        time.sleep(0.02)
+    assert not git_upstream._check_slot.locked()
+    assert getattr(git_upstream._slot_lost, "lost", False) is False
+
+
+def test_merge_tree_names_non_ascii_conflicts_plainly(env):
+    """`merge_tree` parses `-z` output: a conflicted `café.html` comes back
+    as that name, never git's C-quoted `"caf\\303\\251.html"`."""
+    bob = _bob(env)
+    base = _head(bob)
+    write(env.alice, "café.html", "one\n")
+    git(env.alice, "add", "-A")
+    git(env.alice, "commit", "-q", "-m", "add")
+    git(env.alice, "push", "-q", "origin", "main")
+    git(bob, "pull", "-q", "--ff-only", "origin", "main")
+    base = _head(bob)
+    mine = _commit(bob, "café.html", "BOB\n", "bob")
+    tip = _alice_commit(env, "café.html", "ALICE\n", "alice")
+    git(bob, "fetch", "-q", "origin")
+    mt = replay.merge_tree(bob, tip, mine, base=base)
+    assert mt["supported"] and not mt["clean"]
+    assert mt["files"] == ["café.html"]
+    clean = replay.merge_tree(bob, tip, tip, base=base)
+    assert clean["clean"] and clean["files"] == [] and clean["tree"] == replay.tree_of(bob, tip)
+
+
 def test_owns_error_falls_back_to_the_plain_sync(env, monkeypatch):
     bob = _bob(env)
     tip = _alice_commit(env, "c.txt", "alice\n", "alice change")
@@ -993,3 +1089,159 @@ def test_owns_error_falls_back_to_the_plain_sync(env, monkeypatch):
     monkeypatch.setattr(engine, "owns", boom)
     result = _sync(bob)
     assert result["status"] == "synced" and _head(bob) == tip
+
+
+# --------------------------------------------- the decision table, row by row
+
+_F = dict(kind="github", branch="main", head="H", tip="T", base="B", tip_in_head=False,
+          head_in_tip=False, rewritten=False, claude_busy=False, job_open=False,
+          merged_proposal=False, loop=True, standing=None, blocking_edits=(), clobber=(),
+          push=False, who="alice")
+
+
+def _d(**kw):
+    return engine.decide(engine.Facts(**{**_F, **kw}))
+
+
+@pytest.mark.parametrize("facts, kind, why", [
+    # GitHub-link copy, rows 1-11 of `decide`'s table
+    (dict(claude_busy=True, job_open=True), "wait", "claude"),
+    (dict(job_open=True, merged_proposal=True), "skip", "merge-job"),
+    (dict(merged_proposal=True, standing="return"), "standing", "needs-merge"),
+    (dict(merged_proposal=True), "return", None),
+    (dict(merged_proposal=True, loop=False), "wait", "merged-proposal"),
+    (dict(tip_in_head=True, standing="needs-merge"), "noop", None),
+    (dict(standing="needs-merge", clobber=(".env",)), "standing", "needs-merge"),
+    (dict(clobber=(".env",), blocking_edits=("a",)), "blocked", "clobber"),
+    (dict(blocking_edits=("a",), head_in_tip=True), "commit-edits", None),
+    (dict(head_in_tip=True), "move", "update"),
+    (dict(base="H"), "move", "update"),
+    (dict(), "integrate", "update-kept"),
+    # own copy, rows 1-9
+    (dict(kind="own", claude_busy=True), "wait", "claude"),
+    (dict(kind="own", job_open=True), "skip", "merge-job"),
+    (dict(kind="own", tip_in_head=True, push=True), "noop", None),
+    (dict(kind="own", standing="own-sync"), "standing", "needs-merge"),
+    (dict(kind="own", clobber=(".env",)), "blocked", "clobber"),
+    (dict(kind="own", head_in_tip=True, base=None), "move", "own-sync"),
+    (dict(kind="own", base=None), "rewritten", "rewritten"),
+    (dict(kind="own", base="H", rewritten=True), "move", "own-sync"),
+    (dict(kind="own", blocking_edits=("a",)), "integrate", "own-sync"),  # never committed for
+])
+def test_decide_table(facts, kind, why):
+    a = _d(**facts)
+    assert a.kind == kind
+    if why is not None:
+        assert a.why == why
+
+
+def test_decide_events():
+    assert _d(head_in_tip=True).event == "updated"
+    assert _d().event == "updated-kept"
+    assert _d(merged_proposal=True).event == "merged-back"
+    assert _d(kind="own").event is None
+
+
+# ------------------------------------------------------- round-2 repros
+
+
+def test_r2_01_plain_fetch_never_makes_an_own_copy_rewritten(env):
+    """r2_01: an own copy with an unpushed commit, origin fast-forwarded,
+    and a NON-engine fetch first (Doctor, terminal): the published point
+    comes from the tracking ref's reflog, so it integrates normally."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    _commit(lap, "u.txt", "unpushed\n", "local work")
+    pr = _alice_commit(env, "m.txt", "merged pr\n", "Merge PR #1")
+    git(lap, "fetch", "-q", "--", "origin", "main")
+    result = _sync(lap, push=True)
+    assert result["status"] == "synced" and result["pushed"] is True
+    git(lap, "merge-base", "--is-ancestor", pr, "HEAD")  # raises if not
+    assert git(env.remote, "rev-parse", "refs/heads/main").strip() == _head(lap)
+    assert store.get(lap)["needs_merge"] is None
+
+
+def test_r2_07_busy_open_never_runs_a_plain_fetch_on_an_owned_root(env):
+    """r2_07: an app open that finds the copy busy integrating does not fall
+    back to `check_repo` (a plain fetch moving the tracking ref)."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    _commit(lap, "u.txt", "unpushed\n", "local work")
+    _alice_commit(env, "m.txt", "merged pr\n", "Merge PR #1")
+    before = replay.rev(lap, "refs/remotes/origin/main")
+    lock = engine._copy_lock(lap)
+    lock.acquire()
+    try:
+        assert git_upstream._check_slot.acquire(blocking=False)
+        git_upstream._background_check(lap, runner=lambda fn: fn())  # releases the slot
+    finally:
+        lock.release()
+    assert replay.rev(lap, "refs/remotes/origin/main") == before
+
+
+def test_r2_03_merge_in_range_does_not_ratchet_changes(env):
+    """r2_03: a merge commit with no hand resolution in Bob's range — the
+    replay is sound, so later author pushes add no merge commits and
+    `changes` stays put."""
+    _all_on(env)
+    bob = _bob(env)
+    _sync(bob)
+    git(bob, "checkout", "-q", "-b", "side")
+    _commit(bob, "a.txt", "SIDE\ntwo\nthree\n", "side edit")
+    git(bob, "checkout", "-q", "main")
+    _commit(bob, "a.txt", "one\ntwo\nMAIN\n", "main edit")
+    git(bob, "merge", "-q", "side", "-m", "merge side", check=False)
+    git(bob, "branch", "-q", "-D", "side")
+    before = engine.status(bob)["changes"]
+    assert before == 2
+    for i in range(3):
+        _alice_commit(env, f"f{i}.txt", f"{i}\n", f"alice unrelated {i}")
+        assert _sync(bob)["status"] == "synced"
+        engine._status_cache.clear()
+        assert engine.status(bob)["changes"] == before
+    assert _read(bob, "a.txt") == "SIDE\ntwo\nMAIN\n"
+    assert git(bob, "rev-list", "--merges", "--count", "HEAD").strip() == "0"
+
+
+def test_r2_05_your_edits_never_takes_a_file_only_bob_touched(env):
+    """r2_05: an uncommitted edit to Bob's OWN file, the author changing a
+    different one — nothing is committed for Bob; the edit is carried."""
+    _all_on(env)
+    bob = _bob(env)
+    _sync(bob)
+    _commit(bob, "mine.txt", "v1\n", "bob adds mine.txt")
+    write(bob, "mine.txt", "v2 half-typed\n")
+    _alice_commit(env, "index.html", "<p>alice</p>\n", "alice edits index only")
+    assert _sync(bob)["status"] == "synced"
+    assert git(bob, "log", "-1", "--format=%s").strip() == "bob adds mine.txt"
+    assert _read(bob, "mine.txt") == "v2 half-typed\n" and replay.dirty(bob)
+
+
+def test_r2_08_return_with_nothing_of_bobs_adds_no_merge_commit(env):
+    """r2_08: a merged proposal whose head is gone (an adopted record on a
+    fresh clone) on a copy already at the merged tip: no extra merge."""
+    _all_on(env)
+    merged = _alice_commit(env, "pr.txt", "bob's change, squashed\n", "Bob's proposal (#7)")
+    bob = _bob(env)
+
+    def fn(r):
+        r["proposal"] = {"repo": REPO, "number": 7, "proposed_head": "0" * 40,
+                         "cache": {"state": "merged", "merge_commit_sha": merged},
+                         "settled_seen": False}
+    store.update(bob, fn)
+    assert _sync(bob)["status"] == "synced"
+    assert _head(bob) == merged
+    assert engine.status(bob)["changes"] == 0
+
+
+def test_job_open_precedes_the_merged_proposal_return(env, monkeypatch):
+    _all_on(env)
+    bob = _bob(env)
+    proposed = _commit(bob, "b.txt", "bob\n", "bob proposes")
+    _propose(bob, proposed)
+    squash = _alice_commit(env, "b.txt", "bob\n", "squashed (#7)")
+    store.update(bob, lambda r: r["proposal"].__setitem__(
+        "cache", {"state": "merged", "merge_commit_sha": squash}))
+    monkeypatch.setattr(engine, "_job_open", lambda root: True)
+    assert _sync(bob)["why"] == "merge-job"
+    assert _head(bob) == proposed

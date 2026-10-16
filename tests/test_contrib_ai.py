@@ -286,7 +286,7 @@ def test_jargon_gets_one_retry_then_is_kept(model):
 @pytest.mark.parametrize("text,hit", [
     ("We rebased it", True), ("fixes a merge conflict", True), ("git", True),
     ("the HEAD version", True), ("opened a pull request", True), ("two PRs", True),
-    ("forked it", True), ("from origin", True),
+    ("forked it", True), ("a new origin", False),
     ("push notification", False), ("cross-origin requests", False), ("head of the list", False),
     ("a commitment", False), ("GitHub", False), ("version history", False),
 ])

@@ -53,19 +53,22 @@ import { plural, possessive } from "./words";
 
 export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string; contrib: AppContribState }) {
   const inbox = contrib.data?.inbox ?? null;
-  // Still asking — or asked, but the list has never been read from GitHub
-  // yet (a cold cache, `loading`): an empty answer then is not "no
-  // proposals", and saying so would be wrong for the seconds until the
-  // first read lands (the page polls fast meanwhile, `contribBusy`). Sized
-  // like one card so the first answer does not jump.
-  if (!inbox || (inbox.loading && inbox.items.length === 0)) {
-    return (
-      <div className="contrib-inbox" aria-busy="true">
-        <Skeleton className="h-[148px] w-full rounded-[10px]" />
-      </div>
-    );
-  }
-  if (inbox.unavailable && inbox.items.length === 0) {
+  // THE CARDS SURVIVE A RE-LIST. After an Accept or a Decline the server
+  // reads `loading` with no items while it lists again; unmounting every
+  // card then would drop another card's half-typed Decline note, its open
+  // sheet and its Try state. So while loading, the last real list stays on
+  // screen — minus the ones this page just accepted or declined.
+  const lastItems = useRef<InboxItem[]>([]);
+  const [gone, setGone] = useState<ReadonlySet<number>>(() => new Set());
+  if (inbox && !inbox.loading) lastItems.current = inbox.items;
+  const listed = inbox && inbox.loading && inbox.items.length === 0 ? lastItems.current : (inbox?.items ?? []);
+  const items = listed.filter((i) => !gone.has(i.number));
+  const settledGone = (n: number) => setGone((g) => new Set(g).add(n));
+
+  // Can't reach GitHub: said as such, even while a listing is retrying —
+  // never the bare skeleton (which reads as "almost there") and never an
+  // empty inbox.
+  if (inbox?.unavailable && items.length === 0) {
     return (
       <div className="contrib-inbox">
         <Empty className="contrib-inbox-empty">
@@ -80,7 +83,19 @@ export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string
       </div>
     );
   }
-  if (inbox.items.length === 0) {
+  // Still asking — or asked, but the list has never been read from GitHub
+  // yet (a cold cache, `loading`): an empty answer then is not "no
+  // proposals", and saying so would be wrong for the seconds until the
+  // first read lands (the page polls fast meanwhile, `contribBusy`). Sized
+  // like one card so the first answer does not jump.
+  if (!inbox || (inbox.loading && items.length === 0)) {
+    return (
+      <div className="contrib-inbox" aria-busy="true">
+        <Skeleton className="h-[148px] w-full rounded-[10px]" />
+      </div>
+    );
+  }
+  if (items.length === 0) {
     return (
       <div className="contrib-inbox">
         <Empty className="contrib-inbox-empty">
@@ -100,12 +115,18 @@ export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string
   return (
     <div className="contrib-inbox">
       <p className="contrib-inbox-count">
-        {plural(inbox.items.length, "proposal")} for {slug}
+        {plural(items.length, "proposal")} for {slug}
       </p>
       <ul className="contrib-inbox-list">
-        {inbox.items.map((item) => (
+        {items.map((item) => (
           <li key={item.number}>
-            <InboxCard dir={dir} slug={slug} item={item} refresh={contrib.refresh} />
+            <InboxCard
+              dir={dir}
+              slug={slug}
+              item={item}
+              refresh={contrib.refresh}
+              onSettled={() => settledGone(item.number)}
+            />
           </li>
         ))}
       </ul>
@@ -120,11 +141,15 @@ function InboxCard({
   slug,
   item,
   refresh,
+  onSettled,
 }: {
   dir: string;
   slug: string;
   item: InboxItem;
   refresh: () => Promise<void>;
+  /** Accepted or declined here: the list drops it without waiting for the
+   *  re-list (which may briefly still name it). */
+  onSettled: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -137,7 +162,8 @@ function InboxCard({
   const signal = useUnmountSignal();
 
   const review = item.review_status === "ready" ? item.review : null;
-  const reading = item.review_status === "pending" || item.review_status === "running";
+  const reading =
+    item.review_status === "none" || item.review_status === "pending" || item.review_status === "running";
   const flagged = review?.verdict === "look";
   const who = item.author;
 
@@ -310,6 +336,7 @@ function InboxCard({
                   if (r.ok) {
                     setMustConfirm(false);
                     notify({ title: okMessage(r, `Accepted. ${possessive(who)} change is in ${slug}.`), tone: "info" });
+                    onSettled();
                   } else if (r.reason === "confirm" && !confirmLook) {
                     // Ask — once — with the flagged wording; no error line.
                     setMustConfirm(true);
@@ -352,6 +379,7 @@ function InboxCard({
                     setAsk(null);
                     setError(null);
                     notify({ title: okMessage(answer, `Declined. ${who} has been told.`), tone: "info" });
+                    onSettled();
                   }
                 }}
               >
@@ -426,6 +454,16 @@ function ClampedText({ text }: { text: string }) {
 }
 
 function ReviewBlock({ item, busy, onRetry }: { item: InboxItem; busy: boolean; onRetry: () => void }) {
+  // "none": no review started yet — brief, since opening the page starts
+  // one. A still mark (nothing is running yet), said as what WILL happen.
+  if (item.review_status === "none") {
+    return (
+      <div className="contrib-review is-reading" role="status">
+        <ClaudeMark />
+        <span>Claude will read this proposal before anything runs.</span>
+      </div>
+    );
+  }
   if (item.review_status === "pending" || item.review_status === "running") {
     return (
       <div className="contrib-review is-reading" role="status">

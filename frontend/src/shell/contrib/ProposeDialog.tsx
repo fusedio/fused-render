@@ -130,10 +130,13 @@ export function ProposeDialog({
       return;
     }
     if (r.reason === "aborted") return;
-    if (r.reason === "signed-out") {
-      setRecheck(true);
-      setRetry(!retried.current);
+    // The first "signed out" runs the sign-in step and retries once. A
+    // second one, after that retry, is not sent round again: the server's
+    // own sentence is shown in the form, and pressing again is the user's.
+    if (r.reason === "signed-out" && !retried.current) {
       retried.current = true;
+      setRecheck(true);
+      setRetry(true);
       setPhase("signin");
       return;
     }

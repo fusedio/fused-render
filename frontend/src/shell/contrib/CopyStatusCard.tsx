@@ -80,7 +80,7 @@ import { ProposeDialog } from "./ProposeDialog";
 import { RemixDialog } from "./RemixDialog";
 import { SignInSheet } from "./SignInSheet";
 import { QuietAction, StatusStrip } from "./StatusStrip";
-import { atStart, authorOf, editCount, elapsed, plural, possessive, syncErrorSentence } from "./words";
+import { atStart, authorOf, editCount, elapsed, plural, possessive } from "./words";
 
 type Dialog = null | "propose" | "propose-again" | "remix" | "discard" | "withdraw" | "direct";
 
@@ -562,21 +562,24 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
             line, the user's to act on; signing in re-checks (refresh). */}
         {copy.owner_checked === false && (
           <div className="contrib-strip-inline is-quiet">
-            <span>Sign in to GitHub so fused can tell whether this app is yours.</span>
+            <span>
+              {signedIn
+                ? "Fused hasn't checked whether this app is yours yet."
+                : "Sign in to GitHub so fused can tell whether this app is yours."}
+            </span>
             <QuietAction
               disabled={!!busy}
-              onClick={() =>
-                setSignIn({
-                  doing: "check whether this app is yours",
-                  again: () =>
-                    void act("owner", async () => {
-                      await refreshContrib(dir);
-                      return { ok: true };
-                    }),
-                })
-              }
+              onClick={() => {
+                const check = () =>
+                  void act("owner", async () => {
+                    await refreshContrib(dir);
+                    return { ok: true };
+                  });
+                if (signedIn) check();
+                else setSignIn({ doing: "check whether this app is yours", again: check });
+              }}
             >
-              Sign in
+              {busy === "owner" ? "Checking…" : signedIn ? "Check whether this app is yours" : "Sign in"}
             </QuietAction>
           </div>
         )}
@@ -625,7 +628,7 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
       <StatusStrip
         tone="attention"
         icon={<TriangleAlert />}
-        sentence={syncErrorSentence(view.message)}
+        sentence={view.message}
         detail="Your edits are safe here."
         primary={
           <Button
@@ -817,9 +820,19 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
             <AlertDialogAction
               disabled={busy === "withdraw"}
               onClick={() =>
-                void confirmThen(
-                  () => act("withdraw", () => withdrawProposal(dir), "withdraw your proposal"),
-                  (ok) => ok && notify({ title: "Proposal withdrawn.", tone: "info" }),
+                void confirmThen(() =>
+                  act(
+                    "withdraw",
+                    // The toast lives in the action, so the retry after a
+                    // sign-in (which runs `fn` again, not this handler) says
+                    // it too.
+                    async () => {
+                      const r = await withdrawProposal(dir);
+                      if (r.ok) notify({ title: okMessage(r, "Proposal withdrawn."), tone: "info" });
+                      return r;
+                    },
+                    "withdraw your proposal",
+                  ),
                 )
               }
             >
@@ -851,9 +864,18 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
               variant="destructive"
               disabled={busy === "direct"}
               onClick={() =>
-                void confirmThen(
-                  () => act("direct", () => pushToMain(dir), `update ${possessive(author)} app`),
-                  (ok) => ok && notify({ title: `Your edits are in ${possessive(author)} app.`, tone: "info" }),
+                void confirmThen(() =>
+                  act(
+                    "direct",
+                    async () => {
+                      const r = await pushToMain(dir);
+                      if (r.ok) {
+                        notify({ title: okMessage(r, `Your edits are in ${possessive(author)} app.`), tone: "info" });
+                      }
+                      return r;
+                    },
+                    `update ${possessive(author)} app`,
+                  ),
                 )
               }
             >

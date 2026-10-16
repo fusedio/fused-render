@@ -490,20 +490,31 @@ def _origin_default_branch(gu, root: str) -> str | None:
     return None
 
 
-def _github_copy_repo(path: str) -> str | None:
-    """The AUTHOR's `owner/name` when the folder at `path` is a GitHub-link
-    copy (contribution loop on, contrib record kind "github"), else None —
-    the loop off, no record, any other kind, or the store unreadable (then
-    today's behaviour answers). The record lives outside the folder, so no
-    file in the repo can make a copy look like the user's own."""
+def _github_copy_repo(path: str, *, nested: bool = True) -> str | None:
+    """The AUTHOR's `owner/name` when the folder at `path` is — or, with
+    `nested`, sits anywhere inside — a GitHub-link copy (contribution loop
+    on, contrib record kind "github"), else None: the loop off, no record,
+    any other kind, or the store unreadable (then today's behaviour
+    answers). Nested matters for the upload refusal: an app folder inside
+    Bob's copy of Alice's repo is still Alice's code. One store read for the
+    whole walk. The record lives outside the folder, so no file in the repo
+    can make a copy look like the user's own."""
     try:
         from fused_render.contrib import flags, store
 
         if not flags.sources():
             return None
-        record = store.get(path)
-        if record and record.get("kind") == "github" and record.get("repo"):
-            return record["repo"]
+        records = store.all() or {}
+        here = store.key(path)
+        while True:
+            record = records.get(here)
+            if (isinstance(record, dict) and record.get("kind") == "github"
+                    and record.get("repo") and os.path.isdir(here)):
+                return record["repo"]
+            parent = os.path.dirname(here)
+            if not nested or parent == here:
+                return None
+            here = parent
     except Exception:  # noqa: BLE001 — never worse than today's checks
         logger.warning("contrib: reading the install source failed for %s", path, exc_info=True)
     return None
@@ -515,11 +526,13 @@ GITHUB_COPY_REFUSAL = "This app came from someone else's GitHub — share its Gi
 
 
 def _contributor_link(path: str, copy_status: dict | None = None) -> dict | None:
-    """The author's link for a GitHub-link copy, or None (`_github_copy_repo`).
-    `changes` is the engine's local count of this copy's own edits (no
-    network) — from `copy_status` when the caller already has it (the app
-    page's read does), else one `engine.status`."""
-    repo = _github_copy_repo(path)
+    """The author's link for a GitHub-link copy — the copy itself, never a
+    folder nested in one (that link would install the whole repo) — or None
+    (`_github_copy_repo`). `changes` counts what the link does NOT carry:
+    the engine's local count of this copy's own edits, plus one for
+    uncommitted edits (no network) — from `copy_status` when the caller
+    already has it (the app page's read does), else one `engine.status`."""
+    repo = _github_copy_repo(path, nested=False)
     if repo is None:
         return None
     try:
@@ -527,7 +540,8 @@ def _contributor_link(path: str, copy_status: dict | None = None) -> dict | None
             from fused_render.contrib import engine
 
             copy_status = engine.status(path)
-        changes = int((copy_status or {}).get("changes") or 0)
+        changes = (int((copy_status or {}).get("changes") or 0)
+                   + (1 if (copy_status or {}).get("dirty") else 0))
     except Exception:  # noqa: BLE001 — the count is a hint, the link stands
         logger.warning("contrib: change count failed for %s", path, exc_info=True)
         changes = 0

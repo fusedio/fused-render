@@ -106,7 +106,8 @@ def env(tmp_path, monkeypatch):
     ns.inbox = stub("inbox",
                     list=lambda d, review=True, force=False: (
                         calls.append(("ilist", review)) or [{"number": 7}]),
-                    cached=lambda d: [{"number": 7, "title": "x"}], invalidate=lambda d: None,
+                    cached=lambda d, **_: [{"number": 7, "title": "x"}], invalidate=lambda d: None,
+                    refreshing=lambda d: False,
                     review=lambda d, n: "rv-1",
                     try_open=lambda d, n, confirm=False: {"ok": True, "path": "/p", "url": "/u",
                                                           "confirm": confirm},
@@ -369,7 +370,7 @@ def test_an_accept_refusal_fails_its_job(env):
 def test_after_decline_or_accept_the_inbox_reloads_not_unavailable(env, monkeypatch):
     mine = env.app("mine", kind="own", repo="bob/mine")
     lists = [[{"number": 7}, {"number": 8}]]
-    env.inbox.cached = lambda d: lists[-1] if lists else None
+    env.inbox.cached = lambda d, **_: lists[-1] if lists else None
     env.inbox.list = lambda d, review=True, force=False: lists.append([{"number": 8}]) or lists[-1]
 
     def decline(d, n, note=""):
@@ -381,13 +382,15 @@ def test_after_decline_or_accept_the_inbox_reloads_not_unavailable(env, monkeypa
     # wait out the throttle and answer "unavailable".
     key = store.key(mine)
     refresh._inbox_kicked[key] = refresh.time.monotonic()
-    refresh._inbox_tried[key] = True
+    refresh._inbox_reached[key] = False
+    refresh._inbox_last[key] = [{"number": 7}, {"number": 8}]
     queued = []
     monkeypatch.setattr(refresh, "_submit", lambda prio, what, k, fn: queued.append((what, fn)) or True)
     assert _post(env, "inbox/decline", path=mine, number=7)["ok"] is True
     assert [w for w, _ in queued] == ["inbox-open"]  # listed again at once
     snap = refresh.inbox_snapshot(mine)
     assert snap["loading"] is True and "unavailable" not in snap
+    assert snap["items"] == [{"number": 8}]  # the rest stays shown, the declined one gone
     queued[0][1]()
     assert refresh.inbox_snapshot(mine) == {"items": [{"number": 8}], "count": 1, "loading": False}
 
@@ -485,7 +488,7 @@ def _never_listed_inbox(env, reaches_github):
         return listed[-1] if listed else []
 
     env.inbox.list = list_
-    env.inbox.cached = lambda d: listed[-1] if listed else None
+    env.inbox.cached = lambda d, **_: listed[-1] if listed else None
     return asked
 
 
@@ -515,6 +518,50 @@ def test_an_inbox_github_never_answered_is_unavailable_not_empty(env):
     assert store.key(mine) not in refresh._counts  # no confident zero on the card either
 
 
+def test_the_page_starts_reviews_and_marks_a_kept_list_refreshing(env):
+    mine = env.app("m", kind="own", repo="bob/m")
+    asked, state = [], {"refreshing": True}
+    env.inbox.cached = lambda d, start_reviews=False: asked.append(start_reviews) or [{"number": 7}]
+    env.inbox.refreshing = lambda d: state["refreshing"]
+    assert refresh.inbox_snapshot(mine) == {"items": [{"number": 7}], "count": 1, "loading": True}
+    assert asked == [True]  # the page path starts reviews
+    state["refreshing"] = False
+    assert refresh.inbox_snapshot(mine)["loading"] is False
+    asked.clear()
+    refresh.sweep_once()
+    assert True not in asked  # the sweep never does
+
+
+def test_an_offline_rekick_keeps_unavailable_and_the_last_list(env, monkeypatch):
+    mine = env.app("m", kind="own", repo="bob/m")
+    online = {"up": True}
+    listed = []
+
+    def list_(d, review=True, force=False):
+        if online["up"]:
+            listed.append([{"number": 9}])
+        return listed[-1] if listed else []
+
+    env.inbox.list = list_
+    env.inbox.cached = lambda d, **_: listed[-1] if listed else None
+    assert refresh.inbox_snapshot(mine)["items"] == [{"number": 9}]  # one good list
+    listed.clear()  # the cache is dropped and GitHub goes away
+    online["up"] = False
+    # Until the throttle lets the next kick through, a dropped cache reads
+    # as loading (a listing is due), not as offline.
+    assert refresh.inbox_snapshot(mine)["loading"] is True
+    refresh._inbox_kicked.clear()
+    first = refresh.inbox_snapshot(mine)  # kicked inline: fails
+    assert first == {"items": [{"number": 9}], "count": 1, "loading": False, "unavailable": True}
+    # The next kick (throttle expired) is queued: loading AND still unavailable.
+    refresh._inbox_kicked.clear()
+    monkeypatch.setattr(refresh, "_submit", lambda prio, what, k, fn: refresh._queued.add(
+        (what, k)) or True)
+    again = refresh.inbox_snapshot(mine)
+    assert again == {"items": [{"number": 9}], "count": 1, "loading": True, "unavailable": True}
+    refresh._queued.clear()
+
+
 def test_github_checking_until_first_measured(env, monkeypatch):
     from fused_render import github_setup
     monkeypatch.setattr(github_setup, "cached_summary", lambda: None)
@@ -538,8 +585,23 @@ def test_contributor_share_link(env):
     state = share_app.github_link_state(d)
     assert state["ok"] is True and state["code"] == "contributor"
     assert (state["repo"], state["changes"]) == ("alice/x", 2)
+    # Uncommitted edits are one more thing the author's link doesn't carry.
+    dirty = share_app.github_link_state(d, copy_status={"changes": 2, "dirty": True})
+    assert dirty["changes"] == 3
+    # A folder nested inside the copy is still the author's code: no Fused
+    # upload, but no contributor link either (it would install the whole repo).
+    nested = os.path.join(d, "sub")
+    os.mkdir(nested)
+    assert share_app._github_copy_repo(nested) == "alice/x"
+    assert share_app._contributor_link(nested) is None
     env.flags["sources"] = False
     assert share_app.github_link_state(d)["code"] == "not_repo"  # today's checks
+    assert share_app._github_copy_repo(nested) is None
+
+
+def test_a_retry_sync_is_labelled(monkeypatch):
+    from fused_render.server.routers import git_upstream as gu_router
+    assert gu_router._SYNC_ACTIONS["retry"] == "Retry after a failed send"
 
 
 # -- the listing ----------------------------------------------------------------

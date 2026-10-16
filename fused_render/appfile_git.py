@@ -448,14 +448,29 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
 
 def _update_clone(dest: str, src: dict, *, aside) -> None:
     """The fast-forward update of an installed clone: fetch, then
-    `merge --ff-only` to the link's commit (inside `aside()` when given)."""
-    for args in (("fetch", "-q", "origin"), ("merge", "-q", "--ff-only", src["commit"])):
+    `merge --ff-only` to the link's commit. With the contribution loop on
+    (`aside` given): the merge runs inside `aside()`, only the FOLLOWED
+    branch is fetched (not every branch the author ever pushed), and git's
+    own words go to the log, never to the install page — a plain sentence
+    does (§0.1)."""
+    fetch = ("fetch", "-q", "origin")
+    if aside is not None:
+        from fused_render.contrib import classify
+
+        branch = classify._local_default_branch(os.path.realpath(dest))
+        if branch:
+            fetch = ("fetch", "-q", "--", "origin", branch)
+    for args in (fetch, ("merge", "-q", "--ff-only", src["commit"])):
         if args[0] == "merge" and aside is not None:
             with aside():
                 r = _git(*args, cwd=dest)
         else:
             r = _git(*args, cwd=dest)
         if r.returncode != 0:
+            if aside is not None:
+                logger.warning("install update of %s: git %s failed: %s", dest, args[0], _err(r))
+                raise GitInstallError("Couldn't update this app right now. Check your "
+                                      "connection and open the link again.")
             raise GitInstallError(f"git {args[0]} failed: {_err(r)}")
 
 

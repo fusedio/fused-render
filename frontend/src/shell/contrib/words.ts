@@ -48,21 +48,6 @@ export function elapsed(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** `copy.sync_error` is git_upstream's failure CODE ("auth", "rejected",
- *  "git-failed"…), never shown as is: a code becomes a sentence here, and
- *  anything that already reads as a sentence passes through. */
-export function syncErrorSentence(code: string): string {
-  if (/\s/.test(code.trim())) return code;
-  switch (code) {
-    case "auth":
-      return "GitHub didn't accept your sign-in, so your latest edits weren't sent.";
-    case "rejected":
-      return "GitHub turned down your latest edits.";
-    default:
-      return "Your latest edits didn't reach GitHub.";
-  }
-}
-
 /** The progress steps of sending a proposal, keyed by the job's `step`. */
 export const SEND_STEPS: { key: string; label: string }[] = [
   { key: "copy", label: "Making your copy on GitHub…" },

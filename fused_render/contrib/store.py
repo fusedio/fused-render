@@ -399,8 +399,9 @@ def ack(app_dir: str, kind: str) -> dict | None:
 
 
 def add_backup(app_dir: str, ref: str, why: str) -> dict | None:
-    """Name one backup ref on the record (capped at BACKUPS_KEEP; the ref
-    itself is never deleted by the engine)."""
+    """Name one backup ref on the record (capped at BACKUPS_KEEP). A name
+    falling off the list never deletes the ref — only replay's age-out of
+    plain update backups does (`replay.prune_backups_locked`)."""
     entry = {"ref": ref, "at": time.time(), "why": why}
 
     def fn(rec):

@@ -438,6 +438,41 @@ def test_merge_sessions_are_not_tasks(home, monkeypatch):
     assert tasks._merge_session({"path": None}) is False
 
 
+def test_step_the_author_also_made_is_dropped_not_lost(tmp_path, home):
+    """Bob's commit makes an edit the author ALSO made, inside a bigger
+    change (different patch-id): git drops it as empty on replay. That is a
+    correct merge, not a lost change."""
+    bob = tmp_path / "bobe"
+    bob.mkdir()
+    git(bob, "init", "-q", "-b", "main")
+    write(bob / "index.html", "<p>hello</p>\n")
+    write(bob / "other.txt", "same\n")
+    git(bob, "add", "-A")
+    git(bob, "commit", "-q", "-m", "base")
+    base = git(bob, "rev-parse", "HEAD")
+    git(bob, "checkout", "-q", "-b", "author")
+    write(bob / "index.html", "<p>hello world</p>\n")
+    write(bob / "other.txt", "same\nX\n")
+    git(bob, "commit", "-q", "-am", "author: world + X")
+    onto = git(bob, "rev-parse", "HEAD")
+    git(bob, "checkout", "-q", "main")
+    write(bob / "other.txt", "same\nX\n")
+    git(bob, "commit", "-q", "-am", "bob: X (author made it too)")
+    write(bob / "index.html", "<p>hello there</p>\n")
+    git(bob, "commit", "-q", "-am", "Make the greeting friendlier")
+
+    def resolver(wt, files, context):
+        write(os.path.join(wt, "index.html"), "<p>hello there, world</p>\n")
+        return {"ok": True, "summary": "Kept both."}
+
+    jid = merge_job.start(str(bob), purpose="needs-merge", onto=onto, upstream=base,
+                          resolver=resolver)
+    assert wait(jid)["status"] == "ready"
+    assert merge_job.accept(jid)["ok"]
+    assert git(bob, "rev-list", "--count", f"{onto}..HEAD") == "1"
+    assert read(bob / "other.txt") == "same\nX\n"
+
+
 def test_resolver_that_drops_a_change_fails(overlap):
     """Claude skipping the user's step leaves `onto` with no markers: the
     count check is what refuses that as "combined"."""
@@ -534,6 +569,32 @@ def test_mark_follows_its_commit_through_the_rebase(tmp_path, home, monkeypatch)
     mark_tip = landed["mark_tip"]
     assert git(bob, "log", "-1", "--format=%s", mark_tip) == "proposed edit"
     assert git(bob, "rev-parse", "HEAD~1") == mark_tip
+
+
+def test_non_ascii_overlap_passes_the_path_check(tmp_path, home):
+    bob = tmp_path / "bobu"
+    bob.mkdir()
+    git(bob, "init", "-q", "-b", "main")
+    write(bob / "café.html", "a\n")
+    git(bob, "add", "-A")
+    git(bob, "commit", "-q", "-m", "base")
+    base = git(bob, "rev-parse", "HEAD")
+    git(bob, "checkout", "-q", "-b", "author")
+    write(bob / "café.html", "author\n")
+    git(bob, "commit", "-q", "-am", "author")
+    onto = git(bob, "rev-parse", "HEAD")
+    git(bob, "checkout", "-q", "main")
+    write(bob / "café.html", "bob\n")
+    git(bob, "commit", "-q", "-am", "bob")
+
+    def resolver(wt, files, context):
+        assert files == ["café.html"]
+        write(os.path.join(wt, "café.html"), "both\n")
+        return {"ok": True, "summary": "s"}
+
+    jid = merge_job.start(str(bob), purpose="needs-merge", onto=onto, upstream=base,
+                          resolver=resolver)
+    assert wait(jid)["status"] == "ready"
 
 
 def test_changes_outside_the_overlap_fail_the_job(overlap):

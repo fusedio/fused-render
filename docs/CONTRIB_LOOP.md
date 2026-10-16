@@ -268,8 +268,15 @@ def sync(root, *, action, push) -> dict   # same return shape as git_upstream._s
 #    conflict → record.needs_merge (no tree change, no failure row);
 #    proposal merged & contained (A4, flags.loop()) → return_to_following().
 #    Never pushes anywhere. auto_sync_enabled() False → fetch + status only.
-#  own kind with repo: today's ff/push, but diverged → replay local commits onto
-#    origin tip, land, push; overlap → needs_merge (purpose "own-sync").
+#  own kind with repo: today's ff/push, but diverged → replay ONLY the commits
+#    this machine never pushed (`<synced>..HEAD`; synced = the latest of
+#    refs/fused/base and origin's tracking ref read BEFORE the fetch that HEAD
+#    contains) onto origin's tip, land, push. synced == HEAD (all published,
+#    GitHub rewrote) → follow origin's tip (old tip backed up). synced unknown or
+#    not in HEAD, or merges in range over a rewritten origin → needs_merge
+#    (own-sync, rewritten: true, plain sentence; merge_plan None): nothing
+#    replayed or pushed. Overlap → needs_merge (purpose "own-sync"). A commit the
+#    author removed from GitHub is never re-published.
 def status(root) -> CopyStatus            # NO network, cheap, for the page/cards
 def discard(root, *, withdraw: bool) -> dict   # backup (incl. wip), reset --hard follow tip; withdraw → proposals.withdraw
 def push_to_main(root) -> dict            # collaborator only (gh.can_push): integrate first, push HEAD to follow branch on the author's repo, record base

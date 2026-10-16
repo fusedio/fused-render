@@ -514,8 +514,38 @@ def _mutation_slot():
         yield acquired
     finally:
         if acquired:
-            _check_slot.release()
+            _release_check_slot()
             _drain_pending()
+
+
+# The contrib engine gives a held slot up mid-sync and takes it back with a
+# bound (contrib/replay.py `slot_released`). When that re-acquire times out,
+# this thread no longer holds the lock — someone else does — so its holder's
+# `finally` must not release it. Per thread, set only by that path.
+_slot_lost = threading.local()
+
+
+def _mark_slot_lost():
+    _slot_lost.lost = True
+
+
+def _engine_owns(root):
+    """Whether the contrib engine syncs `root` (its `owns`, a store read).
+    False on any error — today's behaviour."""
+    try:
+        from fused_render.contrib import engine as _contrib
+        return _contrib.owns(root)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _release_check_slot():
+    """Release the slot this thread took — unless the engine already lost
+    it while this thread held it (`_mark_slot_lost`)."""
+    if getattr(_slot_lost, "lost", False):
+        _slot_lost.lost = False
+        return
+    _check_slot.release()
 
 
 _BUSY_REFUSAL = (
@@ -1118,23 +1148,30 @@ def _background_check(path, runner=None):
                                       push=False)
                 if result.get("state"):
                     _record(result["state"])
-                elif result["status"] == "skipped":
+                elif result["status"] == "skipped" and not _engine_owns(root):
                     # No remote / other branch / unreadable: the plain check
-                    # still feeds the Switch card and App Doctor.
+                    # still feeds the Switch card and App Doctor. Never for
+                    # a root the contrib engine owns, whatever it skipped
+                    # for (busy, integrating, mid-operation): a plain fetch
+                    # there moves refs the engine reads behind its back.
                     _record(check_repo(root))
-            elif _follows_author(root):
-                # Auto-sync off: the engine only fetches the author's latest
-                # (its own follow ref, by the record's URL) for the page's
-                # status — no tree move, and no Update card (`_record`).
-                _sync_locked(root, action="Check on app open", push=False)
-                with _state_lock:
-                    _state.pop(root, None)  # one recorded before the loop took over
+            elif _engine_owns(root):
+                # Auto-sync off: the engine only fetches (the author's latest
+                # by the record's URL, or the own copy's origin) for the
+                # page's status — no tree move, and no Update card for a
+                # GitHub-link copy (`_record`).
+                result = _sync_locked(root, action="Check on app open", push=False)
+                if result.get("state"):
+                    _record(result["state"])
+                if _follows_author(root):
+                    with _state_lock:
+                        _state.pop(root, None)  # one recorded before the loop took over
             else:
                 _record(check_repo(root))
     except Exception:  # noqa: BLE001 — best-effort housekeeping
         logger.exception("git-upstream check failed for %s", path)
     finally:
-        _check_slot.release()
+        _release_check_slot()
         _drain_pending(runner)
 
 
@@ -1223,7 +1260,10 @@ def force_check(path, *, _runner=None):
         try:
             with _checked_lock:
                 _checked[root] = time.time()
-            _record(check_repo(root))
+            if not _engine_owns(root):
+                # An engine-owned root is fetched by the engine only (its
+                # Doctor row reads the engine's state, not this cache).
+                _record(check_repo(root))
         except Exception:  # noqa: BLE001 — best-effort, exactly like note_app_opened
             logger.exception("git-upstream forced check failed for %s", path)
         finally:

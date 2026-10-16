@@ -242,15 +242,15 @@ def _clean_merge(root: str, ours: str, theirs: str, message: str) -> str | None:
     """The merge commit of `ours` + `theirs` when they do not overlap (built
     with `merge-tree --write-tree` + `commit-tree`, nothing checked out);
     None when they overlap; "" when git could not answer."""
-    res = _git(root, "merge-tree", "--write-tree", "--no-messages", ours, theirs,
-               timeout=120.0)
-    if res is None or res[0] not in (0, 1):
-        _log_git("merge-tree", res)
+    from fused_render.contrib import replay
+
+    mt = replay.merge_tree(root, ours, theirs)
+    if not mt["supported"]:
+        logger.warning("merge job: merge-tree gave no answer in %s", root)
         return ""
-    if res[0] == 1:
+    if not mt["clean"]:
         return None
-    tree = res[1].split("\n", 1)[0].strip()
-    made = _git(root, *_commit_args(root), "commit-tree", tree, "-p", ours, "-p", theirs,
+    made = _git(root, *_commit_args(root), "commit-tree", mt["tree"], "-p", ours, "-p", theirs,
                 "-m", message)
     if not _ok(made) or not _out(made):
         _log_git("commit-tree", made)
@@ -258,14 +258,73 @@ def _clean_merge(root: str, ours: str, theirs: str, message: str) -> str | None:
     return _out(made)
 
 
-def _expected_commits(root: str, onto: str, tip: str, upstream: str) -> int | None:
-    """How many of the user's changes (`upstream..tip`) a replay onto `onto`
-    must keep: all but those `onto` already has (`git cherry` "-"), which
-    the rebase drops by design."""
-    res = _git(root, "cherry", onto, tip, upstream)
-    if not _ok(res):
-        return None
-    return sum(1 for ln in res[1].splitlines() if ln.startswith("+"))
+def _commit_idents(root: str, rng: str) -> list:
+    """`[(sha, (author, email, author date, message))]` for `rng`, oldest
+    first, merges left out. A rebase keeps all four, so they name a commit
+    across its re-creation."""
+    fmt = "--format=%H%x00%an%x00%ae%x00%ad%x00%B%x01"
+    res = _git(root, "log", "--reverse", "--no-merges", "--date=raw", fmt, rng,
+               timeout=60.0)
+    out = []
+    for chunk in (res[1].split("\x01") if _ok(res) else []):
+        fields = chunk.strip("\n").split("\0", 4)
+        if len(fields) == 5:
+            out.append((fields[0], tuple(fields[1:])))
+    return out
+
+
+def _change_present(root: str, commit: str, trees) -> bool:
+    """Whether `commit`'s own change is already in one of `trees`: its
+    patch reverse-applies cleanly there (checked in a scratch index, nothing
+    touched)."""
+    patch = _git(root, "diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv",
+                 f"{commit}^", commit, timeout=60.0)
+    if not _ok(patch):
+        return False
+    if not patch[1].strip():
+        return True  # it never changed anything
+    import tempfile
+
+    from fused_render import git_upstream
+
+    for tree in trees:
+        with tempfile.TemporaryDirectory(prefix="fused-merge-check-") as tmp:
+            env = {**os.environ, **git_upstream._ENV,
+                   "GIT_INDEX_FILE": os.path.join(tmp, "index")}
+            try:
+                if subprocess.run([_git_bin(), "-C", root, "read-tree", tree], env=env,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  stdin=subprocess.DEVNULL, timeout=60.0,
+                                  close_fds=False).returncode != 0:
+                    continue
+                if subprocess.run([_git_bin(), "-C", root, "apply", "--cached", "--check",
+                                   "-R", "-"], env=env, input=patch[1].encode(),
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  timeout=60.0, close_fds=False).returncode == 0:
+                    return True
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+    return False
+
+
+def _changes_kept(job: dict, new_tip: str) -> bool:
+    """Every one of the user's changes survived the replay. A step is
+    either in the result (re-created: same author, date and message) or it
+    was dropped — and a drop is only right when its change is already there
+    (the author made the same edit, alone or inside a bigger change: git's
+    `--empty=drop`) or when this module skipped it itself (the combined step
+    came out empty). A step dropped any other way — Claude running `rebase
+    --skip` on an overlap — means a change was lost. Not a commit count: a
+    count cannot tell a legitimate drop from a lost one."""
+    root = job["root"]
+    kept = {ident for _sha, ident in _commit_idents(root, f"{job['onto']}..{new_tip}")}
+    for sha, ident in _commit_idents(root, f"{job['upstream']}..{job['old_tip']}"):
+        if ident in kept or sha in job["skipped"]:
+            continue
+        if not _change_present(root, sha, (job["onto"], new_tip)):
+            logger.warning("merge job %s: the change of %s was lost", job["id"], sha[:12])
+            return False
+    return True
 
 
 # ------------------------------------------------------------------ jobs
@@ -366,7 +425,7 @@ def start(app_dir: str, *, purpose: str, onto: str, upstream: str,
                "mode": mode, "mark": mark, "mark_tip": None,
                "status": "running", "summary": "", "files": [], "error": None,
                "started_at": time.time(), "ended_at": None, "run_ids": [],
-               "cancel": False, "expected": None, "skips": 0}
+               "cancel": False, "skipped": set()}
         _jobs[job_id] = job
     threading.Thread(target=_run, args=(job, resolver or claude_resolver),
                      daemon=True, name="contrib-merge-job").start()
@@ -456,7 +515,6 @@ def _run_inner(job: dict, resolver) -> None:
     if job["mode"] == "rebase":
         from fused_render.contrib import replay
 
-        job["expected"] = _expected_commits(root, job["onto"], old_tip, job["upstream"])
         res = replay.replay(root, onto=job["onto"], upstream=job["upstream"],
                             branch=branch, job_id=job["id"]) or {}
         if res.get("ok") and res.get("tip"):
@@ -574,9 +632,11 @@ def _advance(job: dict) -> bool:
         return True  # done, or stopped on the next step's overlap
     if _in_progress(wt, "rebase") and _ok(_git(wt, "diff", "--cached", "--quiet", "HEAD")):
         # The combined step changed nothing on top of the author's version.
+        step = _out(_git(wt, "rev-parse", "--verify", "-q", "REBASE_HEAD"))
         res = _git(wt, "rebase", "--skip", env=_NO_EDITOR, timeout=120.0)
         if _ok(res) or _unmerged(wt):
-            job["skips"] += 1
+            if step:
+                job["skipped"].add(step)
             return True
         return False
     _log_git("rebase --continue", res)
@@ -618,15 +678,8 @@ def _result_sound(job: dict, new_tip: str) -> bool:
         if not _ok(_git(wt, "merge-base", "--is-ancestor", sha, new_tip)):
             logger.warning("merge job %s: result lost %s", job["id"], sha)
             return False
-    if job["mode"] == "rebase" and job["expected"] is not None:
-        # Every change of the user's must still be there: a step dropped by
-        # anyone but this module's own empty-step skip (Claude running
-        # `rebase --skip`, say) would otherwise read as "combined".
-        got = _out(_git(wt, "rev-list", "--count", f"{job['onto']}..{new_tip}"))
-        if not got.isdigit() or int(got) + job["skips"] < job["expected"]:
-            logger.warning("merge job %s: %s of %s changes kept (%s skipped)",
-                           job["id"], got, job["expected"], job["skips"])
-            return False
+    if job["mode"] == "rebase" and not _changes_kept(job, new_tip):
+        return False
     res = _git(wt, "diff", "--no-color", "--no-ext-diff", job["onto"], new_tip,
                timeout=120.0)
     if not _ok(res):
@@ -642,38 +695,28 @@ def _result_sound(job: dict, new_tip: str) -> bool:
 def _expected_merge(job: dict) -> tuple[str, set] | None:
     """`(tree, conflicted paths)` of the plain three-way merge the job's
     result must agree with outside the overlapping files: for a merge
-    `HEAD + onto`, for a rebase `onto + HEAD` on the base `upstream`. None
-    when git cannot say (`--merge-base` is git 2.40+; without it a rebase
-    is checked only when `upstream` IS the merge base anyway)."""
+    `HEAD + onto`, for a rebase `replay.expected_tree` (`onto + HEAD` on the
+    base `upstream`). None when git cannot say (`--merge-base` is git 2.40+;
+    without it a rebase is checked only when `upstream` IS the merge base
+    anyway)."""
+    from fused_render.contrib import replay
+
     root = job["root"]
-    args = ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z"]
     if job["mode"] == "merge":
-        args += [job["old_tip"], job["onto"]]
+        mt = replay.merge_tree(root, job["old_tip"], job["onto"])
     else:
-        args_mb = args + [f"--merge-base={job['upstream']}", job["onto"], job["old_tip"]]
-        res = _git(root, *args_mb, timeout=120.0)
-        if res is not None and res[0] in (0, 1):
-            return _parse_merge_tree(res[1])
-        mb = _out(_git(root, "merge-base", job["onto"], job["old_tip"]))
-        if mb != _out(_git(root, "rev-parse", job["upstream"])):
-            logger.info("merge job %s: no --merge-base; path check skipped", job["id"])
-            return None
-        args += [job["onto"], job["old_tip"]]
-    res = _git(root, *args, timeout=120.0)
-    if res is None or res[0] not in (0, 1):
-        _log_git("merge-tree", res)
+        mt = replay.expected_tree(root, upstream=job["upstream"], onto=job["onto"],
+                                  head=job["old_tip"])
+        if not mt["supported"]:
+            if replay.rev(root, job["upstream"]) != _out(
+                    _git(root, "merge-base", job["onto"], job["old_tip"])):
+                logger.info("merge job %s: no --merge-base; path check skipped", job["id"])
+                return None
+            mt = replay.merge_tree(root, job["onto"], job["old_tip"])
+    if not mt["supported"]:
+        logger.warning("merge job %s: merge-tree gave no answer", job["id"])
         return None
-    return _parse_merge_tree(res[1])
-
-
-def _parse_merge_tree(out: str) -> tuple[str, set]:
-    parts = out.split("\0")
-    conflicted = set()
-    for p in parts[1:]:
-        if not p:
-            break
-        conflicted.add(p)
-    return parts[0].strip(), conflicted
+    return mt["tree"], set(mt["files"])
 
 
 def _only_overlaps_changed(job: dict, new_tip: str, touched: list) -> bool:
@@ -703,20 +746,9 @@ def _map_mark(job: dict) -> str | None:
     mark, root = job["mark"], job["root"]
     if job["mode"] == "merge":
         return mark
-    fmt = "--format=%H%x00%an%x00%ae%x00%ad%x00%B%x01"
-
-    def commits(rng):
-        res = _git(root, "log", "--reverse", "--date=raw", fmt, rng, timeout=60.0)
-        out = []
-        for chunk in (res[1].split("\x01") if _ok(res) else []):
-            fields = chunk.strip("\n").split("\0", 4)
-            if len(fields) == 5:
-                out.append((fields[0], tuple(fields[1:])))
-        return out
-
-    new = {ident: sha for sha, ident in commits(f"{job['onto']}..{job['new_tip']}")}
+    new = {ident: sha for sha, ident in _commit_idents(root, f"{job['onto']}..{job['new_tip']}")}
     found = None
-    for sha, ident in commits(f"{job['upstream']}..{mark}"):
+    for _sha, ident in _commit_idents(root, f"{job['upstream']}..{mark}"):
         if ident in new:
             found = new[ident]
     return found or job["onto"]

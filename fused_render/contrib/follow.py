@@ -108,13 +108,16 @@ def github_redirected(root) -> bool:
             return bool(rewrites(root))
         except Exception:  # noqa: BLE001 — fall back to the local rule
             pass
-    r = gu._run(root, "config", "--local", "--get-regexp", r"^url\..*\.(push)?insteadof$")
-    if not gu._ok(r):
-        return False
-    for line in gu._out(r).splitlines():
-        _key, _, value = line.partition(" ")
-        if value.strip().lower().startswith(_GITHUB_PREFIXES):
-            return True
+    # `--local --includes` AND `--worktree` (`.git/config.worktree`, which git
+    # applies once `extensions.worktreeConfig` is on — review r2_02).
+    for scope in (("--local", "--includes"), ("--worktree",)):
+        r = gu._run(root, "config", *scope, "--get-regexp", r"^url\..*\.(push)?insteadof$")
+        if not gu._ok(r):
+            continue
+        for line in gu._out(r).splitlines():
+            _key, _, value = line.partition(" ")
+            if value.strip().lower().startswith(_GITHUB_PREFIXES):
+                return True
     return False
 
 
