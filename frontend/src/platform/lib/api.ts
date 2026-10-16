@@ -3387,6 +3387,11 @@ export interface Task {
    *  from the disk — answered by the build, which stats every target anyway,
    *  so no window has to stat it again (2026-10-09). */
   folder_missing?: boolean;
+  /** The GitHub `owner/repo` the folder's `origin` points at, "" when it is
+   *  not a GitHub checkout — stamped by the server (routers/tasks.py
+   *  `_repo_slug`) for the PR view's repository groups and their links.
+   *  Optional: older servers and pulse rows do not carry it. */
+  repo?: string;
   /** A short digest of the row's content, stamped by the server. The 20 s
    *  floor read keeps the row object it already holds when the digest reads
    *  the same (tasksPulse.reuseUnchangedRows). */

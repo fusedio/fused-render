@@ -83,6 +83,8 @@ import {
   firstLine,
   groupByColumn,
   groupRows,
+  groupSize,
+  flattenGroups,
   heldMessages,
   hasDraft,
   isChatDraftTask,
@@ -2205,7 +2207,7 @@ export function TaskList({
     () => (groupBy ? groupRows(sorted, groupBy, home, now) : null),
     [sorted, groupBy, home, now],
   );
-  const rows = useMemo(() => (groups ? groups.flatMap((g) => g.rows) : sorted), [groups, sorted]);
+  const rows = useMemo(() => (groups ? flattenGroups(groups) : sorted), [groups, sorted]);
   // Which sections are folded (the grouped views only; see groupFrames).
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(readCollapsedGroups);
   /**
@@ -6317,6 +6319,10 @@ function writeCollapsedGroups(set: Set<string>) {
 }
 
 const ICON_GROUP_CHEVRON = icon(<path d="m9 18 6-6-6-6" />, 12);
+// lucide `external-link`, for a heading that is also a door (the PR view).
+const ICON_GROUP_LINK = icon(
+  <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>, 12);
 
 /** The grouped views' frames (Akshil, 2026-10-16): one bordered
  *  `.tasks-list-frame` per section under a heading that FOLDS it, every row
@@ -6332,49 +6338,86 @@ function groupFrames(
   setCollapsed: (next: Set<string>) => void,
 ) {
   const keyOf = (g: TaskGroup) => `${by}:${g.key}`;
-  const allFolded = groups.every((g) => collapsed.has(keyOf(g)));
+  // Every heading at every depth — the PR view nests pull requests under
+  // their repository, and Collapse all folds both levels.
+  const all: TaskGroup[] = [];
+  const collect = (g: TaskGroup) => {
+    all.push(g);
+    for (const c of g.groups ?? []) collect(c);
+  };
+  for (const g of groups) collect(g);
+  const allFolded = all.every((g) => collapsed.has(keyOf(g)));
   const toggleAll = () => {
     const next = new Set(collapsed);
-    for (const g of groups) {
+    for (const g of all) {
       if (allFolded) next.delete(keyOf(g));
       else next.add(keyOf(g));
     }
     setCollapsed(next);
   };
-  let start = 0;
-  return groups.map((g, gi) => {
-    const from = start;
-    start += g.rows.length;
+  // The FLAT index runs through nested sections in drawing order, the same
+  // order `flattenGroups` gave the List its `rows`.
+  const counter = { next: 0 };
+  const draw = (g: TaskGroup, depth: number, first: boolean): React.ReactNode => {
     const k = keyOf(g);
     const open = !collapsed.has(k);
-    const headId = `tasks-group-${by}-${gi}`;
+    const headId = `tasks-group-${by}-${k.replace(/[^\w-]+/g, "_")}`;
+    const own = open ? g.rows.map((t) => rowAt(t, counter.next++)) : (counter.next += g.rows.length, null);
+    const kids = g.groups ?? [];
+    const inner = open ? kids.map((c) => draw(c, depth + 1, false)) : (counter.next += kids.reduce((n, c) => n + groupSize(c), 0), null);
     return (
-      <section key={g.key} className="tasks-group" aria-labelledby={headId} data-collapsed={open ? "0" : "1"}>
+      <section
+        key={g.key}
+        className="tasks-group"
+        aria-labelledby={headId}
+        data-collapsed={open ? "0" : "1"}
+        data-depth={depth}
+      >
         <h3 className="tasks-group-head">
-          <button
-            type="button"
-            id={headId}
-            className="tasks-group-toggle"
-            aria-expanded={open}
-            onClick={() => {
-              const next = new Set(collapsed);
-              if (open) next.add(k);
-              else next.delete(k);
-              setCollapsed(next);
-            }}
-          >
-            {ICON_GROUP_CHEVRON}
-            {g.label}
-            <span className="tasks-group-count">{g.rows.length}</span>
-          </button>
-          {gi === 0 && groups.length > 1 && (
+          {/* Toggle and link travel together at the start; the all-toggle
+              sits alone at the end (the head is space-between). */}
+          <span className="tasks-group-lead">
+            <button
+              type="button"
+              id={headId}
+              className="tasks-group-toggle"
+              aria-expanded={open}
+              onClick={() => {
+                const next = new Set(collapsed);
+                if (open) next.add(k);
+                else next.delete(k);
+                setCollapsed(next);
+              }}
+            >
+              {ICON_GROUP_CHEVRON}
+              {g.label}
+              <span className="tasks-group-count">{groupSize(g)}</span>
+            </button>
+            {/* The heading's own door: the PR on GitHub. Beside the toggle, not
+                inside it — a press on the word folds, a press on the mark opens. */}
+            {g.href && (
+              <a
+                className="tasks-group-link"
+                href={g.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={g.href}
+                aria-label={`Open ${g.label} on GitHub`}
+              >
+                {ICON_GROUP_LINK}
+              </a>
+            )}
+          </span>
+          {first && all.length > 1 && (
             <button type="button" className="tasks-groups-all" onClick={toggleAll}>
               {allFolded ? "Expand all" : "Collapse all"}
             </button>
           )}
         </h3>
-        {open && <div className="tasks-list-frame">{g.rows.map((t, i) => rowAt(t, from + i))}</div>}
+        {own && own.length > 0 && <div className="tasks-list-frame">{own}</div>}
+        {inner && inner.length > 0 && <div className="tasks-group-children">{inner}</div>}
       </section>
     );
-  });
+  };
+  return groups.map((g, gi) => draw(g, 0, gi === 0));
 }

@@ -5073,6 +5073,110 @@ def _folder_missing(project: object, target: object) -> bool:
         return False
 
 
+# ---- which GitHub repository a task's folder is in --------------------------
+# The Tasks page's PR view (2026-10-16) groups rows by repository, then by pull
+# request, and links each heading to github.com — so every row carries the
+# `owner/repo` slug of its folder's `origin` remote. Read off `.git/config`
+# directly (no subprocess: a listing build touches hundreds of rows), through a
+# worktree's `.git` file and its `commondir`, and cached per folder for a
+# minute: remotes do not change between two polls.
+_REPO_CACHE: dict = {}
+_REPO_CACHE_TTL_S = 60.0
+_REPO_CACHE_LOCK = threading.Lock()
+
+
+def _git_common_dir(folder: str):
+    """The common git dir for `folder` (walking up), or None outside a repo."""
+    cur = os.path.abspath(folder)
+    for _ in range(64):
+        dot = os.path.join(cur, ".git")
+        try:
+            if os.path.isdir(dot):
+                gitdir = dot
+            elif os.path.isfile(dot):
+                with open(dot, encoding="utf-8", errors="replace") as fh:
+                    head = fh.read(4096).strip()
+                if not head.startswith("gitdir:"):
+                    return None
+                gitdir = head[len("gitdir:"):].strip()
+                if not os.path.isabs(gitdir):
+                    gitdir = os.path.normpath(os.path.join(cur, gitdir))
+            else:
+                parent = os.path.dirname(cur)
+                if parent == cur:
+                    return None
+                cur = parent
+                continue
+            common = os.path.join(gitdir, "commondir")
+            if os.path.isfile(common):
+                with open(common, encoding="utf-8", errors="replace") as fh:
+                    rel = fh.read(4096).strip()
+                if rel:
+                    gitdir = rel if os.path.isabs(rel) else os.path.normpath(os.path.join(gitdir, rel))
+            return gitdir
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+_GITHUB_URL = re.compile(
+    r"^(?:https?://|ssh://)?(?:[\w.-]+@)?github\.com[:/]+([\w.-]+)/([\w.-]+?)(?:\.git)?/?$",
+    re.IGNORECASE,
+)
+
+
+def _github_slug(url: str) -> str:
+    """`owner/repo` for a GitHub remote URL of any spelling, else ""."""
+    m = _GITHUB_URL.match((url or "").strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else ""
+
+
+def _repo_slug_uncached(folder: str) -> str:
+    common = _git_common_dir(folder)
+    if not common:
+        return ""
+    try:
+        with open(os.path.join(common, "config"), encoding="utf-8", errors="replace") as fh:
+            text = fh.read(65536)
+    except (OSError, ValueError):
+        return ""
+    section = ""
+    first_url = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            section = line.lower()
+            continue
+        if not line.lower().startswith("url"):
+            continue
+        _, _, value = line.partition("=")
+        value = value.strip()
+        if section == '[remote "origin"]':
+            return _github_slug(value)
+        if section.startswith("[remote ") and not first_url:
+            first_url = value
+    return _github_slug(first_url)
+
+
+def _repo_slug(folder: object) -> str:
+    """The GitHub `owner/repo` the folder's remote points at, "" when there is
+    none (not a repo, no remote, not GitHub). Cached per folder for a minute."""
+    path = str(folder or "")
+    if not path:
+        return ""
+    now = time.monotonic()
+    with _REPO_CACHE_LOCK:
+        hit = _REPO_CACHE.get(path)
+        if hit and now - hit[0] < _REPO_CACHE_TTL_S:
+            return hit[1]
+    slug = _repo_slug_uncached(path)
+    with _REPO_CACHE_LOCK:
+        if len(_REPO_CACHE) > 4096:
+            _REPO_CACHE.clear()
+        _REPO_CACHE[path] = (now, slug)
+    return slug
+
+
 def _row_hash(row: dict) -> str:
     """A short digest of a row's content, for the page's "is this the row I
     already hold" test. Field order is the build's own and stable, so the plain
@@ -5244,6 +5348,9 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # narrowed build carry them too. The hash is of the row WITHOUT itself.
     for row in rows:
         row["folder_missing"] = _folder_missing(row.get("project"), row.get("target"))
+        # `repo`: the PR view's "which repository" (and its link), read once
+        # here rather than by every window.
+        row["repo"] = _repo_slug(row.get("project") or row.get("target"))
         row["row_hash"] = _row_hash(row)
     # The Current apps desk (current_apps.py) learns about NEW tasks here —
     # the one place every task on the machine passes, whatever started it.

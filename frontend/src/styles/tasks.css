@@ -2934,6 +2934,38 @@ button.tasks-draft-pill.is-on:focus-visible {
   font-weight: 500;
   opacity: 0.8;
 }
+/* A heading's link mark (the PR view): quiet beside the word, lit on hover. */
+.tasks-group-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--fg-muted);
+}
+.tasks-group-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.tasks-group-link:hover,
+.tasks-group-link:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+/* Nested sections (repository → pull requests) step in and read smaller. */
+.tasks-group-children {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 14px;
+}
+.tasks-group[data-depth="1"] .tasks-group-head {
+  font-weight: 500;
+  letter-spacing: 0;
+}
 /* Collapse all / Expand all, at the right end of the FIRST heading's line. */
 .tasks-groups-all,
 .prefs-section .tasks-groups-all {

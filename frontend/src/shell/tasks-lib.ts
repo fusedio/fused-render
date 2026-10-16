@@ -5705,18 +5705,56 @@ export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
 export interface TaskGroup {
   key: string;
   label: string;
+  /** This section's own rows — empty on a section that only holds `groups`. */
   rows: Task[];
+  /** Where the heading links (the PR view: the pull request on GitHub). */
+  href?: string;
+  /** Nested sections (the PR view: a repository's pull requests). */
+  groups?: TaskGroup[];
+}
+
+/** Every row under a list of sections, depth-first, in drawing order — the
+ *  flat list the List's indices, keys and fold state are about. */
+export function flattenGroups(groups: TaskGroup[]): Task[] {
+  const out: Task[] = [];
+  const walk = (g: TaskGroup) => {
+    out.push(...g.rows);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  for (const g of groups) walk(g);
+  return out;
+}
+
+/** How many rows a section holds, its nested sections included. */
+export function groupSize(g: TaskGroup): number {
+  return g.rows.length + (g.groups ?? []).reduce((n, c) => n + groupSize(c), 0);
+}
+
+/** The pull request a task's words name, WITH the repository it is in: the
+ *  `owner/repo` out of a GitHub link when the words carry one, else the one the
+ *  server read off the task's folder (`Task.repo`), else null. */
+export function prRefOf(task: Task): { number: number; repo: string | null } | null {
+  const text = prText(task);
+  const linked = /github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?\/pull\/(\d{1,6})\b/i.exec(text);
+  if (linked) return { number: Number(linked[2]), repo: linked[1] };
+  const n = prOfTask(task);
+  if (n === null) return null;
+  return { number: n, repo: (task.repo || "").trim() || null };
 }
 
 /** The pull request a task's words name — "#1234", "PR 1234" or a GitHub
  *  `/pull/1234` link in its title, description or latest message — or null. */
-export function prOfTask(task: Task): number | null {
-  const text = [
+function prText(task: Task): string {
+  return [
     task.title,
     task.description,
     task.last_message?.text ?? "",
     task.last_reply ?? "",
   ].join("\n");
+}
+
+export function prOfTask(task: Task): number | null {
+  const text = prText(task);
   // Named first ("PR 1203", "PR #1203", a /pull/1203 link), then a bare
   // "#1203" — two digits, no leading zero, so "#2" in a numbered step and "#000" in a
   // colour do not become pull requests. `[ \t]*`, never `\s*`: the fields are
@@ -5784,13 +5822,50 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
       return a.label.localeCompare(b.label);
     });
   }
+  // PR: REPOSITORY, then pull request (Akshil, 2026-10-16) — a section per
+  // repo, A→Z, each holding one section per PR, highest number first, with
+  // the heading linking to the PR on GitHub. Rows naming a PR in a folder with
+  // no known GitHub remote sit under "Unknown repository" (no links); rows
+  // naming no PR at all come last, under "No PR".
+  const NONE = "\u0000none";
+  const UNKNOWN = "\u0000unknown";
+  const repos = new Map<string, Map<number, Task[]>>();
   for (const task of rows) {
-    const n = prOfTask(task);
-    put(n === null ? "\u0000none" : String(n), n === null ? "No PR" : `PR #${n}`, task);
+    const ref = prRefOf(task);
+    if (!ref) {
+      put(NONE, "No PR", task);
+      continue;
+    }
+    const r = ref.repo ?? UNKNOWN;
+    let prs = repos.get(r);
+    if (!prs) {
+      prs = new Map();
+      repos.set(r, prs);
+    }
+    const list = prs.get(ref.number);
+    if (list) list.push(task);
+    else prs.set(ref.number, [task]);
   }
-  return [...groups.values()].sort((a, b) => {
-    if (a.key === "\u0000none") return 1;
-    if (b.key === "\u0000none") return -1;
-    return Number(b.key) - Number(a.key);
-  });
+  const out: TaskGroup[] = [...repos.keys()]
+    .sort((a, b) => {
+      if (a === UNKNOWN) return 1;
+      if (b === UNKNOWN) return -1;
+      return a.localeCompare(b);
+    })
+    .map((repo) => ({
+      key: `repo:${repo === UNKNOWN ? "?" : repo}`,
+      label: repo === UNKNOWN ? "Unknown repository" : repo,
+      rows: [],
+      groups: [...repos.get(repo)!.entries()]
+        .sort((a, b) => b[0] - a[0])
+        .map(([n, list]) => ({
+          key: `pr:${repo === UNKNOWN ? "?" : repo}#${n}`,
+          label: `#${n}`,
+          rows: list,
+          ...(repo === UNKNOWN ? {} : { href: `https://github.com/${repo}/pull/${n}` }),
+        })),
+    }));
+  const none = groups.get(NONE);
+  if (none) out.push(none);
+  return out;
 }

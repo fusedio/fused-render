@@ -42,10 +42,13 @@ import {
   DEFAULT_VIEW_TABS,
   GROUP_VIEWS,
   TASK_VIEWS,
+  flattenGroups,
   groupOfView,
   groupRows,
+  groupSize,
   parseViewTabs,
   prOfTask,
+  prRefOf,
   canRunNow,
   cancelIntent,
   carryMarkToHeld,
@@ -11301,10 +11304,30 @@ describe("groupRows", () => {
     expect(g.map((x) => x.label)).toEqual(["~/a", "~/b", "No folder"]);
     expect(g[0]?.rows.map((r) => r.key)).toEqual(["b", "d"]);
   });
-  it("by PR: the number the words name, highest first, PR-less rows last", () => {
+  it("by PR: repository first, then pull request, each heading linked (Akshil, 2026-10-16)", () => {
+    // a + d name #1203 in a folder whose remote the server read; b carries a
+    // full GitHub link to another repo; c names no PR.
+    const g = groupRows(rows.map((r) => (r.key === "c" || r.key === "b" ? r : { ...r, repo: "fusedio/fused-render" })), "pr", "", NOW);
+    expect(g.map((x) => x.label)).toEqual(["fusedio/fused-render", "x/y", "No PR"]);
+    expect(g[0]?.groups?.map((x) => [x.label, x.href, x.rows.map((r) => r.key)])).toEqual([
+      ["#1203", "https://github.com/fusedio/fused-render/pull/1203", ["a", "d"]],
+    ]);
+    expect(g[1]?.groups?.map((x) => [x.label, x.href])).toEqual([["#77", "https://github.com/x/y/pull/77"]]);
+    expect(g[2]?.rows.map((r) => r.key)).toEqual(["c"]);
+    // The flat order the List draws, repositories A→Z and PRs highest first.
+    expect(flattenGroups(g).map((r) => r.key)).toEqual(["a", "d", "b", "c"]);
+    expect(groupSize(g[0]!)).toBe(2);
+  });
+  it("by PR: a folder with no GitHub remote files its PRs under Unknown repository, unlinked", () => {
     const g = groupRows(rows, "pr", "", NOW);
-    expect(g.map((x) => x.label)).toEqual(["PR #1203", "PR #77", "No PR"]);
-    expect(g[0]?.rows.map((r) => r.key)).toEqual(["a", "d"]);
+    expect(g.map((x) => x.label)).toEqual(["x/y", "Unknown repository", "No PR"]);
+    expect(g[1]?.groups?.map((x) => [x.label, x.href ?? null])).toEqual([["#1203", null]]);
+  });
+  it("prRefOf: a GitHub link names its own repo, a bare number takes the folder's", () => {
+    expect(prRefOf(row({ title: "https://github.com/a/b/pull/12", repo: "c/d" }))).toEqual({ number: 12, repo: "a/b" });
+    expect(prRefOf(row({ title: "fix #34", repo: "c/d" }))).toEqual({ number: 34, repo: "c/d" });
+    expect(prRefOf(row({ title: "fix #34" }))).toEqual({ number: 34, repo: null });
+    expect(prRefOf(row({ title: "nothing" }))).toBeNull();
   });
   it("reads a PR out of the latest message too", () => {
     expect(prOfTask(row({ title: "x", last_message: { role: "assistant", text: "opened #99", at: 1 } }))).toBe(99);
