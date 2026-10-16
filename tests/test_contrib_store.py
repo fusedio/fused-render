@@ -104,7 +104,7 @@ def test_events_cap_and_ack(home, tmp_path):
     d.mkdir()
     store.put(str(d), store.new_record("github", repo="alice/x", branch="main"))
     for _ in range(store.EVENTS_KEEP + 3):
-        store.add_event(str(d), "updated", who="alice")
+        store.add_event(str(d), "updated-kept", who="alice")
     events = store.get(str(d))["events"]
     assert len(events) == store.EVENTS_KEEP and not any(e["seen"] for e in events)
     store.ack(str(d), "event")
@@ -214,3 +214,57 @@ def test_fused_dir_row_is_gated_and_reports_tracked_paths(home, tmp_path):
     assert row["state"] == "fail" and row["severity"] == "warning"
     assert [f["path"] for f in row["findings"]] == [".fused/meta.json"]
     assert app_doctor.report_one(d, "fused-dir-committed")["state"] == "fail"
+
+
+# ----------------------------------------------------- lifecycle housekeeping
+
+
+def test_unrendered_event_never_hides_a_banner(home, tmp_path):
+    d = tmp_path / "a"
+    d.mkdir()
+    store.put(str(d), store.new_record("github", repo="alice/x", branch="main"))
+    store.add_event(str(d), "updated-kept", who="alice")
+    store.add_event(str(d), "discarded", who="alice")  # newer, never drawn
+    assert store.get(str(d))["events"][-1]["seen"] is True
+    assert engine._event(store.get(str(d)))["kind"] == "updated-kept"
+
+
+def test_orphan_rows_drop_after_thirty_days(home, tmp_path):
+    gone, here = tmp_path / "gone", tmp_path / "here"
+    here.mkdir()
+    store.put(str(gone), store.new_record("own"))
+    store.put(str(here), store.new_record("own"))
+    assert store.sweep_orphans(now=1000.0) == 0
+    assert store.get_raw(store.key(str(gone)))["orphaned_at"] == 1000.0
+    assert "orphaned_at" not in store.get(str(here))
+    assert store.sweep_orphans(now=1000.0 + store.ORPHAN_TTL_S - 1) == 0
+    assert store.sweep_orphans(now=1000.0 + store.ORPHAN_TTL_S + 1) == 1
+    assert store.get_raw(store.key(str(gone))) is None
+    assert store.get(str(here)) is not None
+
+
+def test_flags_memo_follows_the_file(home):
+    assert flags.sources() is False
+    _prefs(home, contrib_sources_enabled=True)
+    assert flags.sources() is True
+    from fused_render.shell import prefs
+
+    prefs.write_pref("contrib_sources_enabled", False)
+    assert flags.sources() is False
+
+
+def test_org_role_is_asked_once_per_owner(home, tmp_path, monkeypatch):
+    calls = []
+
+    class FakeGh:
+        @staticmethod
+        def org_role(org):
+            calls.append(org)
+            return "member"
+
+    monkeypatch.setattr(classify, "_role_cache", {})
+    monkeypatch.setattr(classify, "_identity", lambda: {"login": "bob"})
+    monkeypatch.setattr(classify, "_gh", lambda: FakeGh)
+    for n in ("a", "b", "c"):
+        classify.ensure(_clone(tmp_path, n, f"https://github.com/acme/{n}"))
+    assert calls == ["acme"]

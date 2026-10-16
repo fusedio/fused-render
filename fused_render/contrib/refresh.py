@@ -349,12 +349,30 @@ def _safely(what: str, fn, *args, **kwargs):
         return None
 
 
+def _recheck_identity(app_dir: str) -> None:
+    """Before a forced refresh classifies a copy whose ownership was never
+    checked (classified while signed out): ask GitHub who the user is NOW,
+    past `gh.identity`'s 10-minute cache and `github_setup`'s snapshot — the
+    page's "Sign in so fused can tell whether this app is yours" ends in
+    exactly this refresh, and a cached "signed out" would make the
+    `classify.ensure` that follows re-check against nobody."""
+    record = _mod("store").get(app_dir)
+    if not record or record.get("kind") != "github" or record.get("owner_checked"):
+        return
+    _safely("identity refresh", _mod("gh").identity, refresh=True)
+    from fused_render import github_setup
+
+    _safely("github status refresh", github_setup.summary_refreshed)
+
+
 def _refresh_app(app_dir: str, *, force: bool) -> None:
     """The open bundle: classify, then each refresh its phase and the
     record's kind allow. Runs on a worker (or the POST /refresh thread)."""
     flags = _mod("flags")
     if not flags.sources() or not os.path.isdir(app_dir):
         return
+    if force:
+        _recheck_identity(app_dir)
     record = _safely("classify", _mod("classify").ensure, app_dir)
     if not isinstance(record, dict):
         return
@@ -394,16 +412,22 @@ def refresh_now(app_dir: str) -> bool:
     """POST /api/contrib/refresh: run the bundle NOW on the calling thread,
     forcing the modules past their own throttles, at most once per app per
     FORCE_TTL_S. False when throttled (the caller still answers ok: the
-    cached state it reads next is at most 10 s old)."""
+    cached state it reads next is at most 10 s old) — except the ownership
+    re-check, which runs regardless: it is what a sign-in that just finished
+    is waiting on, and it costs one GitHub call."""
     key = _key(app_dir)
     now = time.monotonic()
     with _lock:
         last = _last_force.get(key)
-        if last is not None and now - last < FORCE_TTL_S:
-            return False
-        _remember(_last_force, key, now)
-        # A forced check is also an open's worth of freshness.
-        _remember(_last_open, key, now)
+        throttled = last is not None and now - last < FORCE_TTL_S
+        if not throttled:
+            _remember(_last_force, key, now)
+            # A forced check is also an open's worth of freshness.
+            _remember(_last_open, key, now)
+    if throttled:
+        _recheck_identity(app_dir)
+        _safely("classify", _mod("classify").ensure, app_dir)
+        return False
     _refresh_app(app_dir, force=True)
     return True
 

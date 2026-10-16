@@ -88,10 +88,43 @@ def _ssh_url(url: str) -> str:
     return "git@github.com:" + url.split("github.com/", 1)[1] + ".git"
 
 
+_GITHUB_PREFIXES = ("https://github.com", "http://github.com", "git@github.com",
+                    "ssh://git@github.com", "github.com", "https://www.github.com")
+
+
+def github_redirected(root) -> bool:
+    """Whether this repo's OWN config (`.git/config`, which anything running
+    in the app folder can write) re-points GitHub: a `url.<x>.insteadOf` or
+    `pushInsteadOf` whose value is a github.com prefix sends every fetch and
+    push "to GitHub" somewhere else, the record's URL notwithstanding. The
+    one test for both callers — this module's fetch and gh.py's fetch/push
+    (review r05). Unreadable config reads as not redirected."""
+    r = gu._run(root, "config", "--local", "--get-regexp", r"^url\..*\.(push)?insteadof$")
+    if not gu._ok(r):
+        return False
+    for line in gu._out(r).splitlines():
+        _key, _, value = line.partition(" ")
+        if value.strip().lower().startswith(_GITHUB_PREFIXES):
+            return True
+    return False
+
+
+REDIRECTED_MESSAGE = ("This app's settings point GitHub somewhere else, "
+                      "so fused won't update it.")
+
+
 def fetch_detail(root, follow: Follow) -> tuple[str | None, str | None]:
     """`(tip, reason)`: the fetched tip, or None with git_upstream's failure
-    class (`offline` | `auth` | `git-failed`). The caller holds the slot (a
-    fetch writes refs)."""
+    class (`offline` | `auth` | `git-failed`) or `redirected`
+    (`github_redirected`). Writes only the follow ref (github kind) or
+    origin's tracking ref (own); the engine serializes its own fetches per
+    copy."""
+    if github_redirected(root):
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "contrib: %s re-points github.com in its own git config; not fetching", root)
+        return None, "redirected"
     if follow.via_origin:
         r = gu._run(root, "fetch", "--", "origin", follow.branch)
     elif _gh() is not None:

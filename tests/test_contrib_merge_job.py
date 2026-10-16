@@ -474,8 +474,84 @@ def test_public_shape(overlap):
                           resolver=resolve_with("<p>x</p>\n"))
     job = wait(jid)
     assert set(job) == {"id", "app_dir", "status", "summary", "files", "error",
-                        "purpose", "started_at"}
+                        "purpose", "strategy", "started_at"}
+    assert job["strategy"] == "rebase"
     assert job["app_dir"] == os.path.realpath(bob) and job["started_at"] <= time.time()
+
+
+def test_merge_strategy_for_needs_merge_keeps_history(overlap):
+    bob, onto, base = overlap
+    mine = git(bob, "rev-parse", "HEAD")
+    seen = {}
+
+    def resolver(wt, files, context):
+        seen.update(context)
+        write(os.path.join(wt, "index.html"), "<p>both</p>\n")
+        return {"ok": True, "summary": "s"}
+
+    jid = merge_job.start(bob, purpose="needs-merge", onto=onto, upstream=base,
+                          strategy="merge", resolver=resolver)
+    job = wait(jid)
+    assert job["status"] == "ready" and job["strategy"] == "merge"
+    assert seen["first"] == "your version of the app"
+    assert merge_job.accept(jid)["ok"]
+    assert git(bob, "log", "-1", "--format=%P").split() == [mine, onto]
+    assert git(bob, "log", "-1", "--format=%s") == "Bring in the author's latest"
+
+
+def test_mark_follows_its_commit_through_the_rebase(tmp_path, home, monkeypatch):
+    from fused_render.contrib import engine
+
+    bob = tmp_path / "bobm"
+    bob.mkdir()
+    git(bob, "init", "-q", "-b", "main")
+    write(bob / "a.txt", "a\n")
+    write(bob / "b.txt", "b\n")
+    git(bob, "add", "-A")
+    git(bob, "commit", "-q", "-m", "base")
+    base = git(bob, "rev-parse", "HEAD")
+    git(bob, "checkout", "-q", "-b", "author")
+    write(bob / "a.txt", "a-author\n")
+    git(bob, "commit", "-q", "-am", "author")
+    onto = git(bob, "rev-parse", "HEAD")
+    git(bob, "checkout", "-q", "main")
+    write(bob / "a.txt", "a-bob\n")
+    git(bob, "commit", "-q", "-am", "proposed edit")
+    mark = git(bob, "rev-parse", "HEAD")
+    write(bob / "b.txt", "b-bob\n")
+    git(bob, "commit", "-q", "-am", "later edit")
+    landed = {}
+    monkeypatch.setattr(engine, "merge_landed", lambda root, **kw: landed.update(kw))
+
+    def resolver(wt, files, context):
+        write(os.path.join(wt, "a.txt"), "a-both\n")
+        return {"ok": True, "summary": "s"}
+
+    jid = merge_job.start(str(bob), purpose="needs-merge", onto=onto, upstream=base,
+                          mark=mark, resolver=resolver)
+    assert wait(jid)["status"] == "ready"
+    assert merge_job.accept(jid)["ok"]
+    mark_tip = landed["mark_tip"]
+    assert git(bob, "log", "-1", "--format=%s", mark_tip) == "proposed edit"
+    assert git(bob, "rev-parse", "HEAD~1") == mark_tip
+
+
+def test_changes_outside_the_overlap_fail_the_job(overlap):
+    """Claude edited a file that did not overlap AND moved on by itself, so
+    the per-round put-back never ran: the final check against a plain merge
+    refuses it."""
+    bob, onto, base = overlap
+
+    def sneaky(wt, files, context):
+        write(os.path.join(wt, "index.html"), "<p>both</p>\n")
+        write(os.path.join(wt, "other.txt"), "sneaky\n")
+        git(wt, "add", "-A")
+        git(wt, "-c", "core.editor=true", "rebase", "--continue")
+        return {"ok": True, "summary": "s"}
+
+    jid = merge_job.start(bob, purpose="needs-merge", onto=onto, upstream=base,
+                          resolver=sneaky)
+    assert wait(jid)["status"] == "failed"
 
 
 def test_merge_variant_clean_builds_commit_without_worktree(tmp_path, home):

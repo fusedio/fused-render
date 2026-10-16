@@ -98,6 +98,10 @@ export interface CopyStatus {
   /** False when the automatic-update preference is off: the author's
    *  updates then wait for the user's "Bring them in". */
   auto_sync?: boolean;
+  /** False: classified without a GitHub identity (signed out at install),
+   *  so whether the app is the user's own is not known yet — signing in
+   *  lets fused check once and may make it "Your app". */
+  owner_checked?: boolean;
   /** Own copy: a plain sentence when sending the user's edits to GitHub
    *  failed (there is no activity-dock failure row for these apps). */
   sync_error?: string | null;

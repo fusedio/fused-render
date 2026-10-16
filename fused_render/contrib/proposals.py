@@ -387,10 +387,48 @@ def _is_open(p: dict | None) -> bool:
     return bool(p) and (p.get("cache") or {}).get("state", "open") == "open"
 
 
-def _branch_name(root) -> str:
+def _slug(root) -> str:
     from fused_render import app_id
-    slug = app_id.kebab(os.path.basename(root.rstrip("/")))[:40].strip("-") or "app"
-    return f"fused-{slug}-{time.strftime('%Y%m%d-%H%M', time.gmtime())}"
+    return app_id.kebab(os.path.basename(root.rstrip("/")))[:40].strip("-") or "app"
+
+
+def _branch_name(root) -> str:
+    """`fused-<slug>-<yyyymmdd-hhmm>-<4 hex>`: the random tail keeps two
+    copies with the same folder name sending in the same minute from ever
+    sharing (and force-pushing over) one branch."""
+    import secrets
+    return (f"fused-{_slug(root)}-{time.strftime('%Y%m%d-%H%M', time.gmtime())}"
+            f"-{secrets.token_hex(2)}")
+
+
+def _adoptable(root, record, repo: str, fork: str) -> dict | None:
+    """The open proposal on GitHub that THIS copy may send to instead of
+    opening a new one — never one that belongs to another copy of the same
+    app on this machine (two folders, one GitHub account, one fork):
+      * the record still names a head branch (its proposal settled, then was
+        reopened on GitHub): exactly that branch's open proposal;
+      * no proposal on record (lost): the newest open proposal from Bob's
+        copy carrying fused's marker, sent from a folder of this name, that
+        no OTHER record on this machine claims (same repo + number)."""
+    p = record.get("proposal") if isinstance(record.get("proposal"), dict) else None
+    owner = gh.split_full(fork)[0]
+    if p and p.get("head_branch"):
+        pr = gh.find_open_pr(repo, owner, p["head_branch"])
+        return pr if pr and (pr.get("head_repo") or "").lower() == fork.lower() else None
+    claimed = set()
+    for key, rec in (_store().all() or {}).items():
+        q = rec.get("proposal") if isinstance(rec, dict) else None
+        if key != root and isinstance(q, dict) and (q.get("repo") or "").lower() == repo.lower():
+            claimed.add(q.get("number"))
+    prefix = f"fused-{_slug(root)}-"
+    for pr in gh.list_open_prs(repo):          # newest first
+        if (gh.same_login(pr.get("user"), owner)
+                and (pr.get("head_repo") or "").lower() == fork.lower()
+                and gh.PROPOSAL_MARKER in (pr.get("body") or "")
+                and (pr.get("head_branch") or "").startswith(prefix)
+                and pr.get("number") not in claimed):
+            return pr
+    return None
 
 
 def _body(description: str, note: str | None, login: str) -> str:
@@ -595,9 +633,7 @@ def send(app_dir, *, title: str, description: str, note: str | None = None,
     _say(step, "copy")
     fork = gh.ensure_fork(repo)
     fork_owner = gh.split_full(fork)[0]
-    adopt = gh.find_open_pr(repo, fork_owner)
-    if adopt and not (adopt.get("head_repo") or "").lower() == fork.lower():
-        adopt = None
+    adopt = _adoptable(root, record, repo, fork)
 
     _say(step, "send")
     tip, base = prepare(root, record, me)
@@ -605,21 +641,23 @@ def send(app_dir, *, title: str, description: str, note: str | None = None,
         raise PlainError("There's nothing to send yet. Ask Claude for a change first.")
 
     if adopt:
-        # The record was lost but GitHub still has Bob's open proposal from
-        # this app: send to it rather than opening a second one. Commits
-        # someone else added there are kept (same path as Update).
+        # GitHub still has this copy's open proposal (record lost, or a
+        # settled one reopened): send to it rather than opening a second
+        # one. Commits someone else added there are kept (same path as Update).
         head_branch = adopt["head_branch"]
-        tip = _keep_their_edits(root, record, tip, pushed=None, remote=adopt.get("head_sha"),
+        old = record.get("proposal") if isinstance(record.get("proposal"), dict) else {}
+        pushed = old.get("pushed_head") if old.get("head_branch") == head_branch else None
+        tip = _keep_their_edits(root, record, tip, pushed=pushed, remote=adopt.get("head_sha"),
                                 fork=fork, head_branch=head_branch)
         _push(root, tip, fork, head_branch, lease=adopt.get("head_sha") or "")
         _say(step, "open")
         pr = adopt
     else:
         head_branch = _branch_name(root)
-        # Bob's own fresh branch in his own copy: overwriting is safe (a
-        # same-minute retry after a failed send reuses the name).
+        # A brand-new name (random tail): leased on "must not exist yet", so
+        # nothing in the contribution loop ever force-pushes blind.
         try:
-            gh.push(root, tip, fork, head_branch, force=True)
+            gh.push(root, tip, fork, head_branch, lease="")
         except gh.GitHubError as exc:
             raise _plain_push_error(exc, record)
         _say(step, "open")

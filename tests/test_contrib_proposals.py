@@ -128,6 +128,53 @@ def test_lost_record_adopts_the_open_proposal(w):
     assert w.gh.get_pr("alice/sine", 1)["head_sha"] == git(w.app, "rev-parse", "HEAD")
 
 
+def test_a_second_copy_never_adopts_the_first_copys_proposal(w, tmp_path):
+    from fused_render.contrib import follow, replay
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    # Copy 2 of the same app (same folder name), same machine, same account.
+    (tmp_path / "apps2").mkdir()
+    two = str(tmp_path / "apps2" / "sine")
+    git(tmp_path / "apps2", "clone", "-q", "https://github.com/alice/sine", two)
+    rec = w.store.new_record("github", repo="alice/sine", branch="main")
+    w.store.put(two, rec)
+    two = w.store.key(two)
+    follow.fetch(two, follow.for_record(rec))
+    git(two, "update-ref", replay.BASE_REF, git(two, "rev-parse", "refs/fused/follow"))
+    claude_commit(two, {"app.py": APP_PY_LOUD}, "louder")
+    view = _p().send(two, title="Louder", description="d")
+    assert view["number"] == 2
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _proposal(w)["pushed_head"]
+
+
+def test_branch_names_carry_a_random_tail(w):
+    import re
+    a, b = _p()._branch_name(w.app), _p()._branch_name(w.app)
+    assert re.fullmatch(r"fused-sine-\d{8}-\d{4}-[0-9a-f]{4}", a) and a != b
+
+
+@pytest.mark.parametrize("key,value", [
+    ("url.https://evil.example/.insteadOf", "https://github.com/"),
+    ("url.https://evil.example/.pushInsteadOf", "git@github.com:"),
+])
+def test_a_local_url_rewrite_onto_github_refuses_transfers(w, key, value):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    git(w.app, "config", key, value)
+    sha = git(w.app, "rev-parse", "HEAD")
+    with pytest.raises(w.gh.GitHubError) as e:
+        w.gh.push(w.app, sha, "bob/sine", "x", lease="")
+    assert e.value.reason == "forbidden" and "nothing was sent" in e.value.message
+    assert w.gh.fetch(w.app, "alice/sine", "+refs/heads/main:refs/fused/x") is False
+    assert w.gh.url_rewrites(w.app)
+
+
+def test_a_rewrite_of_the_exact_transfer_url_refuses_too(w):
+    url = w.gh.clone_url("alice/sine")             # the fake's bare path
+    git(w.app, "config", "url./tmp/elsewhere/.insteadOf", url[:-8])
+    assert w.gh.url_rewrites(w.app, url)
+    assert w.gh.fetch(w.app, "alice/sine", "+refs/heads/main:refs/fused/x") is False
+
+
 def test_signed_out_is_reason_signed_out(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     w.fake.sign_out()
@@ -136,6 +183,47 @@ def test_signed_out_is_reason_signed_out(w):
         _send(w)
     assert e.value.reason == "signed-out"
     assert "git" not in e.value.message.lower().split()
+
+
+def test_offline_identity_is_cached_for_gated_posts_but_not_for_strict(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    w.gh.forget_identity()
+    w.fake.fail_next("user", "offline", times=5)
+
+    def asks():
+        return w.fake.state()["calls"].count("user")
+
+    assert _p().preflight(w.app)["reason"] == "offline"
+    n = asks()
+    assert _p().preflight(w.app)["reason"] == "offline"         # from cache
+    assert w.gh.identity() is None and asks() == n
+    with pytest.raises(w.gh.GitHubError):
+        w.gh.identity(strict=True)                               # re-asks
+    assert asks() == n + 1
+
+
+def test_withdraw_waits_for_a_send_in_flight(w):
+    import threading
+    from fused_render.contrib import jobs
+    from fused_render.contrib.jobs import PlainError
+    gate = threading.Event()
+    job = jobs.start("propose-send", w.app, lambda: gate.wait(10) and {})
+    try:
+        with pytest.raises(PlainError, match="still being sent") as e:
+            _p().withdraw(w.app)
+        assert e.value.reason == "busy"
+    finally:
+        gate.set()
+        jobs.wait(job)
+    assert _p().withdraw(w.app) == {"ok": True}
+
+
+def test_disabled_wording(w, monkeypatch):
+    from fused_render.contrib import flags, remix
+    monkeypatch.setattr(flags, "_raw", lambda: dict.fromkeys(
+        ("sources", "changes", "inbox", "loop", "remix"), False))
+    assert _p().preflight(w.app)["message"] == "This isn't turned on."
+    assert remix.start_draft(w.app)["message"] == "This isn't turned on."
 
 
 def test_fork_name_collision_uses_the_name_github_picked(w):

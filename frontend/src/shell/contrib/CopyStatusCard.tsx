@@ -50,6 +50,7 @@ import {
   okMessage,
   plainMessage,
   pushToMain,
+  refreshContrib,
   updateCopy,
   retrySync,
   runJob,
@@ -556,6 +557,29 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
       >
         {/* Both apply: the waiting updates ride under the changes as their
             own slim line — the changes stay the strip's one decision. */}
+        {/* Classified while signed out: maybe this app is the user's own,
+            and these edits would simply go to their own app. One quiet
+            line, the user's to act on; signing in re-checks (refresh). */}
+        {copy.owner_checked === false && (
+          <div className="contrib-strip-inline is-quiet">
+            <span>Sign in to GitHub so fused can tell whether this app is yours.</span>
+            <QuietAction
+              disabled={!!busy}
+              onClick={() =>
+                setSignIn({
+                  doing: "check whether this app is yours",
+                  again: () =>
+                    void act("owner", async () => {
+                      await refreshContrib(dir);
+                      return { ok: true };
+                    }),
+                })
+              }
+            >
+              Sign in
+            </QuietAction>
+          </div>
+        )}
         {waitingUpdates(c) && (
           <div className="contrib-strip-inline">
             <span>{bringSentence}</span>
@@ -659,12 +683,22 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
 
   // A confirm's button: an action refused because another one is running
   // keeps the confirm open (nothing happened yet); anything else closes it.
-  const confirmThen = async (run: () => Promise<"busy" | boolean>, after?: (ok: boolean) => void) => {
+  // With `keepOnRefusal`, a refusal keeps it open too, the server's sentence
+  // shown inside it (Discard: "Claude is still working on this app…" — the
+  // user's next move is to wait and press again, not to start over).
+  const confirmThen = async (
+    run: () => Promise<"busy" | boolean>,
+    after?: (ok: boolean) => void,
+    keepOnRefusal = false,
+  ) => {
     const r = await run();
-    if (r === "busy") return;
+    if (r === "busy" || (r === false && keepOnRefusal)) return;
     setDialog(null);
     after?.(r);
   };
+  // The error sentence lives in ONE place: inside an open confirm that kept
+  // itself open for it, else under the card.
+  const errorInDialog = dialog === "discard" && !!error;
 
   return (
     <>
@@ -672,7 +706,7 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
         <div className="contrib-stack">
           {notice}
           {strip}
-          {error && (
+          {error && !errorInDialog && (
             <p className="contrib-error" role="alert">
               {error}
             </p>
@@ -719,6 +753,7 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
           if (!o && busy !== "discard") {
             setDialog(null);
             setWithdrawToo(false);
+            setError(null);
           }
         }}
       >
@@ -736,6 +771,11 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
               <span>Also withdraw my proposal</span>
             </label>
           )}
+          {errorInDialog && (
+            <p className="contrib-error" role="alert">
+              {error}
+            </p>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy === "discard"}>Keep my changes</AlertDialogCancel>
             <AlertDialogAction
@@ -748,6 +788,7 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
                     setWithdrawToo(false);
                     if (ok) notify({ title: `Back on ${possessive(author)} version.`, tone: "info" });
                   },
+                  true,
                 )
               }
             >

@@ -301,6 +301,27 @@ def test_from_fused_summary_is_the_description(world):
     assert item["description"] == "Makes the greeting friendlier."
 
 
+def test_accept_when_already_merged_is_success(world, monkeypatch):
+    alice, fake = world["alice"], world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "yo")})
+    jobs.wait(inbox.review(alice, pr["number"]))
+    assert inbox.accept(alice, pr["number"])["merged"] is True
+    again = inbox.accept(alice, pr["number"])  # a second click
+    assert again["ok"] is True and again["message"] == inbox.ALREADY_ACCEPTED
+    # Merged by someone else between our read and our merge call.
+    pr2 = propose(fake, {"app.py": "x = 9\n"}, title="Two")
+    jobs.wait(inbox.review(alice, pr2["number"]))
+
+    def race(full, number, *, sha, method):
+        fake.merge(full, number, "merge")
+        raise gh.GitHubError("conflict", status=405, detail="not open")
+
+    monkeypatch.setattr(gh, "merge_pr", race)
+    res = inbox.accept(alice, pr2["number"])
+    assert res["ok"] is True and res["message"] == inbox.ALREADY_ACCEPTED
+    assert world["syncs"] == [alice, alice, alice]
+
+
 def test_accept_on_look_needs_confirm(world):
     alice, fake = world["alice"], world["fake"]
     pr = propose(fake, {"app.py": "import subprocess\n"})

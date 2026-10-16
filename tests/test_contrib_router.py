@@ -241,14 +241,15 @@ def test_a_github_failure_fails_the_job_with_its_plain_sentence(env):
 
 
 def test_an_unexpected_exception_never_reaches_the_page(env):
-    d = env.app("a")
+    d = env.app("a", proposal={"number": 1, "cache": {"state": "open"}})
 
     def withdraw(app_dir):
         raise RuntimeError("fatal: refusing to merge unrelated histories")
 
     env.proposals.withdraw = withdraw
     out = _post(env, "propose/withdraw", path=d)
-    assert out["ok"] is False and "fatal" not in out["message"]
+    assert out == {"ok": False, "reason": "failed", "message": "Something went wrong. Try again."}
+    assert out["message"] == jobs.GENERIC_MESSAGE
 
 
 def test_a_remix_may_withdraw_but_not_update(env):
@@ -259,6 +260,16 @@ def test_a_remix_may_withdraw_but_not_update(env):
     settled = env.app("s", proposal={"number": 3, "cache": {"state": "merged"}})
     assert _post(env, "propose/withdraw", path=settled)["reason"] == "no-proposal"
     assert _post(env, "propose/withdraw", path=env.app("n"))["reason"] == "no-proposal"
+
+
+def test_update_copy_answers_the_engine(env):
+    d = env.app("a")
+    env.engine.bring_in_latest = lambda app_dir: {"ok": True, "message": "Up to date."}
+    assert _post(env, "update-copy", path=d) == {"ok": True, "message": "Up to date."}
+    own = env.app("m", kind="own", repo="bob/m")
+    assert _post(env, "update-copy", path=own)["reason"] == "not-allowed"
+    env.flags["changes"] = False
+    assert _post(env, "update-copy", path=d)["reason"] == "disabled"
 
 
 def test_discard_and_push_main_answer_the_engine(env):
@@ -277,9 +288,12 @@ def test_merge_start_follows_the_engine_plan(env):
     started = []
     env.merge_job.start = lambda app_dir, **kw: started.append(kw) or "mj-9"
     env.engine.merge_plan = lambda app_dir: {"purpose": "needs-merge", "onto": "aaa",
-                                             "upstream": "bbb", "files": ["x"]}
+                                             "upstream": "bbb", "strategy": "rebase",
+                                             "mark": "m1", "files": ["x"], "resolver": "no"}
     assert _post(env, "merge/start", path=d) == {"ok": True, "job": "mj-9"}
-    assert started == [{"purpose": "needs-merge", "onto": "aaa", "upstream": "bbb"}]
+    # Every key merge_job.start takes is passed through; bookkeeping keys are not.
+    assert started == [{"purpose": "needs-merge", "onto": "aaa", "upstream": "bbb",
+                        "strategy": "rebase", "mark": "m1"}]
     # An own app's overlap is the inbox phase's own-sync merge.
     own = env.app("c", kind="own", repo="bob/c")
     env.engine.merge_plan = lambda app_dir: {"purpose": "own-sync", "onto": "c1", "upstream": "c0"}
@@ -350,6 +364,40 @@ def test_an_accept_refusal_fails_its_job(env):
     out = _job(env, _post(env, "inbox/accept", path=d, number=7)["job"])
     assert (out["status"], out["message"], out["reason"]) == (
         "failed", "This proposal is no longer open.", "closed")
+
+
+def test_after_decline_or_accept_the_inbox_reloads_not_unavailable(env, monkeypatch):
+    mine = env.app("mine", kind="own", repo="bob/mine")
+    lists = [[{"number": 7}, {"number": 8}]]
+    env.inbox.cached = lambda d: lists[-1] if lists else None
+    env.inbox.list = lambda d, review=True, force=False: lists.append([{"number": 8}]) or lists[-1]
+
+    def decline(d, n, note=""):
+        lists.clear()  # inbox.invalidate: the cached list is gone
+        return {"ok": True}
+
+    env.inbox.decline = decline
+    # A recent failed kick on record: without the reset, the next read would
+    # wait out the throttle and answer "unavailable".
+    key = store.key(mine)
+    refresh._inbox_kicked[key] = refresh.time.monotonic()
+    refresh._inbox_tried[key] = True
+    queued = []
+    monkeypatch.setattr(refresh, "_submit", lambda prio, what, k, fn: queued.append((what, fn)) or True)
+    assert _post(env, "inbox/decline", path=mine, number=7)["ok"] is True
+    assert [w for w, _ in queued] == ["inbox-open"]  # listed again at once
+    snap = refresh.inbox_snapshot(mine)
+    assert snap["loading"] is True and "unavailable" not in snap
+    queued[0][1]()
+    assert refresh.inbox_snapshot(mine) == {"items": [{"number": 8}], "count": 1, "loading": False}
+
+    # Accept: the reset runs when the job ends, refusal or not.
+    queued.clear()
+    env.inbox.accept = lambda d, n, confirm=False: lists.clear() or {"ok": True}
+    job = _post(env, "inbox/accept", path=mine, number=8)["job"]
+    jobs.wait(job)
+    assert jobs.get(job)["app_dir"] == key  # keyed on the store's spelling
+    assert [w for w, _ in queued] == ["inbox-open"]
 
 
 def test_accept_passes_confirm_through(env):
@@ -558,9 +606,49 @@ def test_open_refreshes_by_kind_and_flag_throttled(env):
 
 def test_forced_refresh_is_rate_limited(env):
     d = env.app("a", proposal={"number": 1, "cache": {"state": "open"}})
-    assert _post(env, "refresh", path=d) == {"ok": True, "refreshed": True}
+    assert _post(env, "refresh", path=d) == {"ok": True, "refreshed": True, "kind": "github"}
     assert ("prefresh", True) in env.calls
-    assert _post(env, "refresh", path=d) == {"ok": True, "refreshed": False}
+    assert _post(env, "refresh", path=d) == {"ok": True, "refreshed": False, "kind": "github"}
+
+
+def test_refresh_rechecks_ownership_with_a_fresh_identity(env, monkeypatch):
+    """Classified while signed out (owner_checked False); the user signs in
+    as the repo's owner and the page refreshes: the copy becomes theirs —
+    on the throttled path too."""
+    from fused_render import github_setup
+    who = {"login": None}
+    asked = []
+
+    def identity(refresh=False, **_):
+        asked.append(refresh)
+        if refresh:
+            who["login"] = "alice"  # the sign-in that just finished
+        return {"login": who["login"]} if who["login"] else None
+
+    env.stub("gh", identity=identity)
+    monkeypatch.setattr(github_setup, "summary_refreshed", lambda: asked.append("status") or {})
+
+    def ensure(app_dir, **_):  # classify's one-time upgrade, against gh's answer
+        rec = store.get(app_dir)
+        if rec["kind"] == "github" and not rec["owner_checked"] and who["login"]:
+            rec.update(owner_checked=True,
+                       kind="own" if rec["repo"].startswith(who["login"] + "/") else "github")
+            store.put(app_dir, rec)
+        return store.get(app_dir)
+
+    env.classify.ensure = ensure
+    env.flags.update(changes=False, inbox=False)  # sources alone allows it
+    d = env.app("a", owner_checked=False)
+    assert _post(env, "refresh", path=d) == {"ok": True, "refreshed": True, "kind": "own"}
+    assert asked == [True, "status"]
+    # Throttled: the re-check still runs.
+    who["login"] = None  # signed out again until this refresh asks afresh
+    other = env.app("b", owner_checked=False, repo="carol/b")
+    refresh._last_force[store.key(other)] = refresh.time.monotonic()
+    asked.clear()
+    assert _post(env, "refresh", path=other) == {"ok": True, "refreshed": False, "kind": "github"}
+    assert asked == [True, "status"]
+    assert store.get(other)["owner_checked"] is True
 
 
 def test_sweep_counts_without_starting_reviews(env):

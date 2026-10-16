@@ -320,6 +320,10 @@
   color: var(--fg);
 }
 
+.contrib-strip-inline.is-quiet {
+  color: var(--fg-muted);
+}
+
 /* "More" opened it: the whole comment. */
 .contrib-quote.is-open {
   display: block;

@@ -250,7 +250,8 @@ def test_follower_fast_forwards_and_records_pull(env):
     assert _head(bob) == tip
     assert [p["count"] for p in git_upstream.recent_pulls()] == [1]
     st = engine.status(bob)
-    assert st["state"] == "following" and st["event"]["kind"] == "updated"
+    assert st["state"] == "following" and st["event"] is None
+    assert store.get(bob)["events"][-1]["kind"] == "updated"  # stored, born seen
     # A fast-forward loses nothing, so it pins nothing.
     assert git(bob, "for-each-ref", "refs/fused/backup/").strip() == ""
 
@@ -330,7 +331,7 @@ def test_discard_backs_up_commits_and_edits(env):
     assert git(bob, "rev-parse", f"{wip}^").strip() == mine
     files = git(bob, "ls-tree", "-r", "--name-only", wip).split()
     assert "__pycache__/x.pyc" not in files and ".fused/data/db.json" not in files
-    assert engine.status(bob)["event"]["kind"] == "discarded"
+    assert store.get(bob)["events"][-1]["kind"] == "discarded"
     assert engine.status(bob)["state"] == "following"
     assert engine.status(bob)["dirty"] is False
 
@@ -359,7 +360,7 @@ def test_two_copies_of_one_repo_keep_their_own_state(env):
     _sync(two)
     assert engine.status(one)["changes"] == 1
     assert engine.status(two)["changes"] == 0
-    assert engine.status(two)["event"]["kind"] == "updated"
+    assert store.get(two)["events"][-1]["kind"] == "updated"
     assert len(store.find_by_repo(REPO)) == 2
 
 
@@ -686,3 +687,17 @@ def test_auto_sync_off_owned_copy_gets_no_update_card(env, monkeypatch):
 
     git_upstream.force_check(bob, _runner=lambda fn: fn())
     assert git_upstream.repo_state_for(bob) is None
+
+
+def test_backup_refs_are_pruned_with_their_record_entries(env):
+    bob = _bob(env)
+    head = _head(bob)
+    made = []
+    with replay.slot() as held:
+        assert held
+        for _ in range(store.BACKUPS_KEEP + 4):
+            made += replay.backup_locked(bob, head, why="t", app_dir=bob)
+    named = {b["ref"] for b in store.get(bob)["backups"]}
+    present = set(git(bob, "for-each-ref", "--format=%(refname)", "refs/fused/backup/").split())
+    assert len(named) == store.BACKUPS_KEEP and present == named
+    assert set(made[-store.BACKUPS_KEEP:]) == named  # the newest are kept

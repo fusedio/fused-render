@@ -49,6 +49,7 @@ REVIEW_SLOTS = 2
 #: Review files kept per repo (newest first); a closed proposal's go at once.
 REVIEWS_KEEP = 50
 FUSED_MARKER = "<!-- fused:proposal v1 -->"
+ALREADY_ACCEPTED = "Already accepted."
 _FETCH_TIMEOUT_S = 60.0
 _MAX_DIFF_BYTES = 2_000_000
 
@@ -631,7 +632,7 @@ def accept(app_dir: str, number: int, *, confirm: bool = False) -> dict:
         raise
     author = pr.get("user") or "the sender"
     if pr.get("merged"):
-        return _after_accept(app_dir, number, "This proposal is already merged.")
+        return _after_accept(app_dir, number, ALREADY_ACCEPTED)
     if pr.get("state") != "open":
         _cleanup(app_dir, number)
         return {"ok": False, "reason": "closed", "message": "This proposal is no longer open."}
@@ -657,6 +658,10 @@ def accept(app_dir: str, number: int, *, confirm: bool = False) -> dict:
     except Exception as exc:  # noqa: BLE001
         if not _gh_error(exc):
             raise
+        if _merged_now(repo, number):
+            # Merged meanwhile — an earlier click, a second page, or on
+            # github.com. That is what was asked for.
+            return _after_accept(app_dir, number, ALREADY_ACCEPTED)
         reason = getattr(exc, "reason", "failed")
         if reason == "conflict" and getattr(exc, "status", None) == 409:
             # The sender added to it between our read and the merge (the
@@ -696,6 +701,13 @@ def _why_unreviewed(app_dir: str, repo: str, number: int, head: str,
     if heads:
         return f"{author} changed this proposal since Claude read it. " + then
     return "Claude needs to read this proposal first. Accept it once that's done."
+
+
+def _merged_now(repo: str, number: int) -> bool:
+    try:
+        return bool(_mod("gh").get_pr(repo, number).get("merged"))
+    except Exception:  # noqa: BLE001 — unknown is "not merged": report the refusal
+        return False
 
 
 def _after_accept(app_dir: str, number: int, message: str) -> dict:

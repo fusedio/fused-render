@@ -58,15 +58,16 @@ from dataclasses import dataclass
 from fastapi import APIRouter, Body, Header
 
 from fused_render.contrib import refresh
+from fused_render.contrib.jobs import GENERIC_MESSAGE
 from fused_render.server.common import _require_fused
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# The jobs registry's own generic sentence, so a failed job and a refused
-# request read the same.
-_GENERIC = "Something went wrong. Try again."
+# The jobs registry's own generic sentence (a light, dependency-free module),
+# so a failed job and a refused request read the same.
+_GENERIC = GENERIC_MESSAGE
 
 
 def _mod(name: str):
@@ -371,6 +372,17 @@ def api_contrib_discard(body: dict = Body(...), x_fused: str | None = Header(def
     return _call("discard", _mod("engine").discard, t.app_dir, withdraw=withdraw)
 
 
+@router.post("/api/contrib/update-copy")
+def api_contrib_update_copy(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Bring the author's latest into this copy now, keeping its changes
+    (`engine.bring_in_latest` — the same integrate auto-sync runs, on
+    demand). The engine answers `{ok, reason?, message}` in plain words."""
+    t = _gate(body, x_fused, "changes", ("github",))
+    if not isinstance(t, _Target):
+        return t
+    return _call("update copy", _mod("engine").bring_in_latest, t.app_dir)
+
+
 @router.post("/api/contrib/push-main")
 def api_contrib_push_main(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """The collaborator's deliberate "publish straight to the author's app";
@@ -381,6 +393,11 @@ def api_contrib_push_main(body: dict = Body(...), x_fused: str | None = Header(d
     return _call("push-main", _mod("engine").push_to_main, t.app_dir)
 
 
+# What of engine.merge_plan's answer merge_job.start takes — passed through
+# by name, so a plan key the engine adds for its own bookkeeping (`files`)
+# never breaks the call, and nothing but these ever reaches it (`resolver`
+# stays the job's default).
+_MERGE_PLAN_KEYS = ("purpose", "onto", "upstream", "strategy", "mark")
 # The phase that offers each kind of merge.
 _MERGE_PHASE = {"needs-merge": "changes", "return": "changes",
                 "own-sync": "inbox", "original": "remix"}
@@ -402,8 +419,8 @@ def api_contrib_merge_start(body: dict = Body(...), x_fused: str | None = Header
     if not _phase_on(_MERGE_PHASE[plan["purpose"]]):
         return _disabled()
     try:
-        job = _mod("merge_job").start(t.app_dir, purpose=plan["purpose"],
-                                      onto=plan["onto"], upstream=plan["upstream"])
+        job = _mod("merge_job").start(
+            t.app_dir, **{k: plan[k] for k in _MERGE_PLAN_KEYS if k in plan})
     except Exception as e:  # noqa: BLE001
         return _failure(e, "merge start")
     return {"ok": True, "job": job}
@@ -445,17 +462,23 @@ def api_contrib_merge_discard(body: dict = Body(...), x_fused: str | None = Head
 
 @router.post("/api/contrib/refresh")
 def api_contrib_refresh(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Check GitHub now (the proposal's state, the inbox), at most once per
-    app per 10 s. `refreshed: false` means the last check is that recent;
-    the page re-reads GET /api/contrib/app either way."""
-    t = _gate(body, x_fused, ("changes", "inbox"))
+    """Check GitHub now — who the user is when this copy's ownership was
+    never checked (it may turn out to be theirs: the page's "Sign in so
+    fused can tell whether this app is yours" ends here), the proposal's
+    state, the inbox — the bundle at most once per app per 10 s, the
+    ownership re-check every time. Gated on sources alone: each piece is
+    gated by its own phase inside. `refreshed: false` means the last full
+    check is that recent; `kind` is the record's kind afterwards. The page
+    re-reads GET /api/contrib/app either way."""
+    t = _gate(body, x_fused, "sources")
     if not isinstance(t, _Target):
         return t
     try:
         ran = refresh.refresh_now(t.app_dir)
     except Exception as e:  # noqa: BLE001
         return _failure(e, "refresh")
-    return {"ok": True, "refreshed": ran}
+    record = _mod("store").get(t.app_dir) or t.record
+    return {"ok": True, "refreshed": ran, "kind": record.get("kind")}
 
 
 # -- mutations: A3 the author's inbox ----------------------------------------------

@@ -75,6 +75,10 @@ BUSY_MESSAGE = ("Your app is busy, or has unsaved edits in the same files. "
                 "Try keeping the merge again in a moment.")
 CLEAN_MERGE_SUMMARY = "No overlap with your changes — both fit together as they are."
 MERGE_MESSAGE = "Bring in the original's latest"
+_MERGE_MESSAGES = {"original": MERGE_MESSAGE,
+                   "own-sync": "Combine with the version saved on GitHub",
+                   "needs-merge": "Bring in the author's latest",
+                   "return": "Bring in the author's latest"}
 _MARKER_RE = re.compile(r"^(?:<{7}|>{7}|\|{7})(?: |$)", re.M)
 
 _lock = threading.Lock()
@@ -234,7 +238,7 @@ def _cleanup(worktree: str | None) -> None:
         replay.cleanup(worktree)
 
 
-def _clean_merge(root: str, ours: str, theirs: str) -> str | None:
+def _clean_merge(root: str, ours: str, theirs: str, message: str) -> str | None:
     """The merge commit of `ours` + `theirs` when they do not overlap (built
     with `merge-tree --write-tree` + `commit-tree`, nothing checked out);
     None when they overlap; "" when git could not answer."""
@@ -247,7 +251,7 @@ def _clean_merge(root: str, ours: str, theirs: str) -> str | None:
         return None
     tree = res[1].split("\n", 1)[0].strip()
     made = _git(root, *_commit_args(root), "commit-tree", tree, "-p", ours, "-p", theirs,
-                "-m", MERGE_MESSAGE)
+                "-m", message)
     if not _ok(made) or not _out(made):
         _log_git("commit-tree", made)
         return ""
@@ -271,7 +275,7 @@ def _public(job: dict) -> dict:
     return {"id": job["id"], "app_dir": job["root"], "status": job["status"],
             "summary": job["summary"], "files": list(job["files"]),
             "error": job["error"], "purpose": job["purpose"],
-            "started_at": job["started_at"]}
+            "strategy": job["mode"], "started_at": job["started_at"]}
 
 
 def _prune_locked(now: float) -> list:
@@ -334,10 +338,21 @@ def _canon(app_dir: str) -> str:
 
 
 def start(app_dir: str, *, purpose: str, onto: str, upstream: str,
+          strategy: str | None = None, mark: str | None = None,
           resolver=None) -> str:
-    """Start (or return the running/ready) merge job for `app_dir`."""
+    """Start (or return the open) merge job for `app_dir`.
+
+    `strategy` "rebase" replays the user's commits `upstream..HEAD` onto
+    `onto`; "merge" merges `onto` into HEAD (history kept — the engine asks
+    for it when the user's commits are already published). None = "merge"
+    for purpose "original", else "rebase". `mark` is a commit among the
+    user's (a proposal's `proposed_head`): the job reports where it landed
+    (`mark_tip`) so the engine can move the proposal's record with it."""
     if purpose not in PURPOSES:
         raise ValueError(f"unknown purpose {purpose!r}")
+    if strategy not in (None, "rebase", "merge"):
+        raise ValueError(f"unknown strategy {strategy!r}")
+    mode = strategy or ("merge" if purpose == "original" else "rebase")
     _housekeep()
     root = _canon(app_dir)
     with _lock:
@@ -348,7 +363,7 @@ def start(app_dir: str, *, purpose: str, onto: str, upstream: str,
         job = {"id": job_id, "root": root, "purpose": purpose, "onto": onto,
                "upstream": upstream, "branch": None, "old_tip": None,
                "new_tip": None, "worktree": None,
-               "mode": "merge" if purpose == "original" else "rebase",
+               "mode": mode, "mark": mark, "mark_tip": None,
                "status": "running", "summary": "", "files": [], "error": None,
                "started_at": time.time(), "ended_at": None, "run_ids": [],
                "cancel": False, "expected": None, "skips": 0}
@@ -420,6 +435,8 @@ def _run(job: dict, resolver) -> None:
     except Exception:  # noqa: BLE001 — a job never takes the thread down silently
         logger.exception("merge job %s crashed", job["id"])
         _finish(job, "failed", error=FAILED_MESSAGE)
+    if job["status"] == "ready" and job["mark"]:
+        job["mark_tip"] = _map_mark(job)
     if job["status"] in ("failed", "discarded"):
         wt, job["worktree"] = job["worktree"], None
         _cleanup(wt)
@@ -434,7 +451,7 @@ def _run_inner(job: dict, resolver) -> None:
         return
     job["branch"], job["old_tip"] = branch, old_tip
     deadline = job["started_at"] + MAX_SECONDS
-    sides = _sides(root, job["purpose"])
+    sides = _sides(root, job["purpose"], job["mode"])
 
     if job["mode"] == "rebase":
         from fused_render.contrib import replay
@@ -453,7 +470,7 @@ def _run_inner(job: dict, resolver) -> None:
             return
         job["worktree"] = res["worktree"]
     else:
-        clean = _clean_merge(root, old_tip, job["onto"])
+        clean = _clean_merge(root, old_tip, job["onto"], _MERGE_MESSAGES[job["purpose"]])
         if clean == "":
             _finish(job, "failed", error=FAILED_MESSAGE)
             return
@@ -534,7 +551,8 @@ def _run_inner(job: dict, resolver) -> None:
             return
 
     new_tip = _out(_git(job["worktree"], "rev-parse", "HEAD"))
-    if not new_tip or not _result_sound(job, new_tip):
+    if not new_tip or not _result_sound(job, new_tip) \
+            or not _only_overlaps_changed(job, new_tip, touched):
         _finish(job, "failed", error=FAILED_MESSAGE)
         return
     job["new_tip"] = new_tip
@@ -570,7 +588,7 @@ def _commit_merge(job: dict) -> bool:
     if not _in_progress(wt, "merge"):
         return True
     res = _git(wt, *_commit_args(wt), "commit", "-q", "--no-verify", "-m",
-               MERGE_MESSAGE, env=_NO_EDITOR)
+               _MERGE_MESSAGES[job["purpose"]], env=_NO_EDITOR)
     if not _ok(res):
         _log_git("merge commit", res)
     return _ok(res)
@@ -621,6 +639,89 @@ def _result_sound(job: dict, new_tip: str) -> bool:
     return True
 
 
+def _expected_merge(job: dict) -> tuple[str, set] | None:
+    """`(tree, conflicted paths)` of the plain three-way merge the job's
+    result must agree with outside the overlapping files: for a merge
+    `HEAD + onto`, for a rebase `onto + HEAD` on the base `upstream`. None
+    when git cannot say (`--merge-base` is git 2.40+; without it a rebase
+    is checked only when `upstream` IS the merge base anyway)."""
+    root = job["root"]
+    args = ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z"]
+    if job["mode"] == "merge":
+        args += [job["old_tip"], job["onto"]]
+    else:
+        args_mb = args + [f"--merge-base={job['upstream']}", job["onto"], job["old_tip"]]
+        res = _git(root, *args_mb, timeout=120.0)
+        if res is not None and res[0] in (0, 1):
+            return _parse_merge_tree(res[1])
+        mb = _out(_git(root, "merge-base", job["onto"], job["old_tip"]))
+        if mb != _out(_git(root, "rev-parse", job["upstream"])):
+            logger.info("merge job %s: no --merge-base; path check skipped", job["id"])
+            return None
+        args += [job["onto"], job["old_tip"]]
+    res = _git(root, *args, timeout=120.0)
+    if res is None or res[0] not in (0, 1):
+        _log_git("merge-tree", res)
+        return None
+    return _parse_merge_tree(res[1])
+
+
+def _parse_merge_tree(out: str) -> tuple[str, set]:
+    parts = out.split("\0")
+    conflicted = set()
+    for p in parts[1:]:
+        if not p:
+            break
+        conflicted.add(p)
+    return parts[0].strip(), conflicted
+
+
+def _only_overlaps_changed(job: dict, new_tip: str, touched: list) -> bool:
+    """Every path outside the overlapping files must be exactly what a plain
+    merge gives: Claude may change only what overlapped."""
+    expected = _expected_merge(job)
+    if expected is None:
+        return True
+    tree, conflicted = expected
+    res = _git(job["root"], "diff", "--name-only", "--no-renames", "-z", tree, new_tip,
+               timeout=120.0)
+    if not _ok(res):
+        return False
+    allowed = conflicted | set(touched)
+    stray = [p for p in res[1].split("\0") if p and p not in allowed]
+    if stray:
+        logger.warning("merge job %s: changed outside the overlap: %s", job["id"], stray[:10])
+    return not stray
+
+
+def _map_mark(job: dict) -> str | None:
+    """Where the job's `mark` (one of the user's commits) is in the result.
+    A merge keeps it as is. A rebase re-creates it: found by its author,
+    author date and message, which a rebase keeps; when its step was
+    dropped (its change was already there), the nearest earlier surviving
+    step stands in, else `onto`."""
+    mark, root = job["mark"], job["root"]
+    if job["mode"] == "merge":
+        return mark
+    fmt = "--format=%H%x00%an%x00%ae%x00%ad%x00%B%x01"
+
+    def commits(rng):
+        res = _git(root, "log", "--reverse", "--date=raw", fmt, rng, timeout=60.0)
+        out = []
+        for chunk in (res[1].split("\x01") if _ok(res) else []):
+            fields = chunk.strip("\n").split("\0", 4)
+            if len(fields) == 5:
+                out.append((fields[0], tuple(fields[1:])))
+        return out
+
+    new = {ident: sha for sha, ident in commits(f"{job['onto']}..{job['new_tip']}")}
+    found = None
+    for sha, ident in commits(f"{job['upstream']}..{mark}"):
+        if ident in new:
+            found = new[ident]
+    return found or job["onto"]
+
+
 def _combine_summaries(parts: list) -> str:
     from fused_render.contrib.ai import plain
 
@@ -641,11 +742,12 @@ def _file_words(files: list) -> str:
     return ", ".join(names[:-1]) + " and " + names[-1]
 
 
-def _sides(root: str, purpose: str) -> dict:
+def _sides(root: str, purpose: str, mode: str = "") -> dict:
     """Who is on each side of the markers, in words. In a rebase the first
     side ("ours") is the version being built on — the author's latest — and
-    the second is the user's change being replayed; a merge (remix) is the
-    other way round."""
+    the second is the user's change being replayed; a merge is the other way
+    round (ours = the user's version, HEAD)."""
+    mode = mode or ("merge" if purpose == "original" else "rebase")
     owner = ""
     try:
         from fused_render.contrib import store
@@ -663,11 +765,9 @@ def _sides(root: str, purpose: str) -> dict:
             else "the original app's latest version"
     else:
         theirs = f"{owner}'s latest version" if owner else "the author's latest version"
-    if purpose == "original":
-        first, second = "your version of the app", theirs
-    else:
-        first, second = theirs, ("your edits that are not on GitHub yet"
-                                 if purpose == "own-sync" else "your change")
+    mine = "your edits that are not on GitHub yet" if purpose == "own-sync" else (
+        "your version of the app" if mode == "merge" else "your change")
+    first, second = (mine, theirs) if mode == "merge" else (theirs, mine)
     return {"first": first, "second": second,
             "theirs_short": (f"{owner}'s latest" if owner and purpose != "own-sync"
                              else theirs)}
@@ -727,8 +827,9 @@ def _after_land(job: dict) -> None:
     remix bring-in schedules the sync that sends the result to GitHub)."""
     from fused_render.contrib import engine
 
+    extra = {"mark_tip": job["mark_tip"]} if job["mark"] else {}
     engine.merge_landed(job["root"], purpose=job["purpose"], old_tip=job["old_tip"],
-                        new_tip=job["new_tip"])
+                        new_tip=job["new_tip"], **extra)
 
 
 def discard(job_id: str) -> dict:
