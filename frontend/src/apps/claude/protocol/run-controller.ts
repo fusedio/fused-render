@@ -85,6 +85,7 @@ import type {
   Quota,
   RetryInfo,
   RunIdResponse,
+  Segment,
   SendResponse,
   SkillRow,
   StartResponse,
@@ -976,6 +977,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *
    * The plan limit has one more thing to undo: the comeback it booked.
    */
+  /** Did this reply SAY anything? A tool-only turn (a retry that called a
+   *  tool and died again) answered nothing and resolves nothing — the same
+   *  rule as agent.py `_drop_resolved_errors` (CodeRabbit #1699). */
+  const hasWords = (text: string, segs: Segment[]) =>
+    !!text.trim() || segs.some((sg) => sg.kind === "text" && !!(sg.text || "").trim());
   const isPlanLimit = (t: { text: string; quota?: Quota } | null | undefined) =>
     !!t && (limitHit(t.quota) || isPlanLimitText(t.text));
   const retireErrors = () => {
@@ -1085,7 +1091,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if ((retiredAt.get(sessionId) ?? 0) !== retiredMark) {
           const id = (res as { entry?: { id?: unknown } } | null)?.entry?.id;
           const cancel = deps.cancelSchedule ?? cancelScheduledMessage;
-          if (typeof id === "string" && id) void cancel(id).then(() => announceTasksChanged());
+          if (typeof id === "string" && id) {
+            void cancel(id)
+              .then(() => announceTasksChanged())
+              .catch((err: unknown) => {
+                addNote(
+                  "Could not cancel the follow-up: " + (err instanceof Error ? err.message : String(err)),
+                  "\u25f7",
+                );
+              });
+          }
           return;
         }
         // The card's line about the scheduled follow-up, and the CLI's own
@@ -1960,7 +1975,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // rows reported is over. `keepText` and not "no note": a reply that
           // finished before a stop landed is still a reply, and an empty end
           // is not one.
-          else if (loopSeq === seat && end.keepText && live.length) retireErrors();
+          else if (loopSeq === seat && end.keepText && live.length && hasWords(fullText, segs)) retireErrors();
           // Same guard: a superseded loop's own "Stopped." must not land in the
           // log while the newer loop's turn is the one actually streaming.
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
@@ -3914,7 +3929,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // The same "a reply landed" fact as `pollLoop`'s done branch, on the
         // road a comeback takes when it finished while this frame was away:
         // the red rows are over, and a limit's comeback is spent.
-        if (probeText || probeSegs.length) retireErrors();
+        if (hasWords(probeText, probeSegs)) retireErrors();
         // A REPAIR IS NEWS THAT HAS TO BE SCROLLED TO (T:17851, P4-10). T calls
         // `scrollBottom()` here unconditionally, and the reason it must be
         // unconditional is that a repair has no `running` → `idle` edge for the

@@ -392,3 +392,36 @@ describe("after the limit", () => {
     expect(c.getState().turns.map((t) => t.role)).toEqual(["user", "error", "user", "error"]);
   });
 });
+
+describe("a tool-only reply", () => {
+  test("retires nothing — it answered nothing", async () => {
+    let turn = 0;
+    let listed = 0;
+    const c = make(
+      {
+        start: () => ({ run_id: "r" + ++turn }),
+        poll: () =>
+          turn === 1
+            ? poll({ done: true, error: LIMIT_TEXT, quota: rejected() })
+            : poll({
+                done: true,
+                segments: [
+                  { kind: "tool", id: "t1", name: "Read", detail: "/x", status: "done" } as never,
+                ],
+              }),
+      },
+      () => Promise.resolve({ entry: { id: "e1" } }),
+      undefined,
+      () => {
+        listed++;
+        return Promise.resolve({ entries: [] });
+      },
+    );
+    await c.sendMessage("go");
+    await flush();
+    await c.sendMessage("go");
+    await flush();
+    expect(c.getState().turns.filter((t) => t.role === "error").length).toBe(1);
+    expect(listed).toBe(0);
+  });
+});
