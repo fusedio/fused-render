@@ -81,7 +81,7 @@ import {
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
 import { terminalHint } from "@platform/lib/terminalFocus";
-import { composeOutgoing, formatAnnotations, type AnnotationWire } from "./protocol/wire";
+import { composeOutgoing, formatAnnotations, isInterruptMark, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
   AppPane,
@@ -4070,6 +4070,22 @@ function ChatBody(props: ChatBodyProps) {
       ),
     [state.inbox, state.queued, state.turns],
   );
+  /**
+   * THE COMPOSER'S ↑ HISTORY: this session's own prompts, oldest first, as
+   * Claude Code's prompt history walks them. The CLI's interrupt marker is a
+   * user row but not a prompt anyone typed, and a line sent twice in a row is
+   * one step, not two.
+   */
+  const promptHistory = useMemo(() => {
+    const out: string[] = [];
+    for (const t of state.turns) {
+      if (t.role !== "user") continue;
+      const words = t.text;
+      if (!words.trim() || isInterruptMark(words)) continue;
+      if (out[out.length - 1] !== words) out.push(words);
+    }
+    return out;
+  }, [state.turns]);
   const claimedNext = nextClaim !== null && nextClaim === sched.recGen;
   const waitFacts = useMemo(
     () => waitingFacts(sched.rec, admitAhead, claimedNext),
@@ -4525,6 +4541,7 @@ function ChatBody(props: ChatBodyProps) {
       queuedCount: outboxCount,
       notSentCount,
       onPullQueued,
+      history: promptHistory,
       onSendNow,
       onPaste,
       // The chip row is ABOVE the control row and changes the composer's height,
@@ -4574,6 +4591,7 @@ function ChatBody(props: ChatBodyProps) {
       outboxCount,
       notSentCount,
       onPullQueued,
+      promptHistory,
       onSendNow,
       urlTick,
       attach.items,
