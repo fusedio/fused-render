@@ -431,12 +431,18 @@ def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
     )
 
 
-def start() -> None:
+def start() -> bool:
     """Start one watcher thread per configured root. Idempotent — a second
     call while already running is a no-op, the same convention every other
     singleton start in this codebase follows (e.g. `start_index_job_bridge`). Never starts anything a test can see: tests
     build apps without running lifespan, so this is only ever called from
     `create_app`'s startup handler.
+
+    Returns True when at least one watcher thread is running (or already
+    was), False when none could be started — in which case the module is
+    left un-started (`_stop_event` None again) so a later call retries, and
+    the index owner lease (`index_owner`) is given back rather than held by
+    a process that watches nothing.
 
     Never raises. `_lifespan` (app.py) awaits every startup handler with no
     try, so a raise here would stop the whole server from booting over an
@@ -450,7 +456,7 @@ def start() -> None:
 
     _armed = True
     if _stop_event is not None:
-        return
+        return True
 
     stop = threading.Event()
     _stop_event = stop
@@ -464,7 +470,8 @@ def start() -> None:
     except Exception:
         logger.exception("index watch: could not determine which roots to "
                          "watch; the live watcher will not run")
-        return
+        _stop_event = None
+        return False
 
     for root in roots:
         try:
@@ -476,6 +483,10 @@ def start() -> None:
         except Exception:
             logger.exception("index watch: could not start a watcher for "
                              "%s; the other roots are unaffected", root)
+    if not _threads:
+        _stop_event = None
+        return False
+    return True
 
 
 def is_armed() -> bool:

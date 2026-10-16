@@ -317,11 +317,18 @@ def duties_dir() -> str:
     return branch_dir(STATE_DIR)
 
 
-def _open_lease_file(name: str):
-    """Open (creating if needed) `name`'s lease file in `duties_dir()` WITHOUT
-    EVER TRUNCATING IT (`"a+"`): a rival process may already hold the lock
-    by the time this runs. Always returns the handle seeked to 0."""
-    return _open_lockfile(os.path.join(duties_dir(), name))
+def _open_lease_file(name: str, *, machine_wide: bool = False):
+    """Open (creating if needed) `name`'s lease file WITHOUT EVER TRUNCATING
+    IT (`"a+"`): a rival process may already hold the lock by the time this
+    runs. Always returns the handle seeked to 0.
+
+    In `duties_dir()` (per branch ref) by default — the scheduler's lease
+    follows the store it guards. `machine_wide=True` puts it in `STATE_DIR`
+    itself regardless of branch: the index watcher lease exists to elect ONE
+    watcher per Mac across the installed app and every dev server, which a
+    per-branch file cannot do (each server would simply own its own)."""
+    base = STATE_DIR if machine_wide else duties_dir()
+    return _open_lockfile(os.path.join(base, name))
 
 
 def acquire_lease_blocking(name: str) -> None:
@@ -359,7 +366,7 @@ def acquire_lease_blocking(name: str) -> None:
         _lease_handles[name] = handle
 
 
-def try_acquire_lease(name: str) -> bool:
+def try_acquire_lease(name: str, *, machine_wide: bool = False) -> bool:
     """Claim `name`'s lease WITHOUT waiting: True when this process now holds
     it (or already did — idempotent, same as `acquire_lease_blocking`), False
     when another open file description holds it. Unlike the blocking claim,
@@ -369,7 +376,7 @@ def try_acquire_lease(name: str) -> bool:
     with _lease_lock:
         if name in _lease_handles:
             return True
-        handle = _open_lease_file(name)
+        handle = _open_lease_file(name, machine_wide=machine_wide)
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:

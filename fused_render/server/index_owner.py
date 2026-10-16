@@ -101,7 +101,9 @@ def _state_dir() -> str:
 def _default_try_acquire(name: str) -> bool:
     from fused_render import tasks_store
 
-    return tasks_store.try_acquire_lease(name)
+    # machine_wide: one watcher per Mac, so the lock must not follow the
+    # branch the way the scheduler's duties lease does (tasks_store.duties_dir).
+    return tasks_store.try_acquire_lease(name, machine_wide=True)
 
 
 def _default_release(name: str) -> None:
@@ -219,12 +221,13 @@ class OwnerLoop:
                 self._idle.clear()
         if callback is None:
             return delay
+        ok = False
         try:
-            self._safe(callback)
+            ok = self._safe(callback)
         finally:
             with self._lock:
                 try:
-                    after()
+                    after(ok)
                 finally:
                     self._idle.set()
         return delay
@@ -242,7 +245,7 @@ class OwnerLoop:
         logger.info("index owner: a preferred process asked for the watcher; "
                     "handing it over")
 
-        def after():
+        def after(_ok):
             # `stop()` may have dropped it already while on_release ran.
             #
             # Accepted overlap: `on_release` (index_watch.stop) asks the
@@ -269,9 +272,17 @@ class OwnerLoop:
             self._remove_own_preempt()
             logger.info("index owner: this process owns the index watcher")
 
-            def after():
+            def after(ok):
                 if self.stop_event.is_set():
                     # stop() raced the callback: do not keep the lease.
+                    self._drop_lease()
+                elif not ok:
+                    # on_acquire raised or returned False (index_watch.start
+                    # found no root to watch): a holder that watches nothing
+                    # would block every other server for its lifetime. Give
+                    # the lease back and retry with backoff.
+                    logger.warning("index owner: watcher did not start; "
+                                   "releasing the lease to retry")
                     self._drop_lease()
 
             return HOLD_POLL_S, self.on_acquire, after
@@ -287,11 +298,14 @@ class OwnerLoop:
         return delay
 
     @staticmethod
-    def _safe(fn) -> None:
+    def _safe(fn) -> bool:
+        """Run a callback; True unless it raised or returned exactly False
+        (a callback returning None counts as success)."""
         try:
-            fn()
+            return fn() is not False
         except Exception:  # noqa: BLE001 - the owner loop must never die
             logger.exception("index owner: callback failed")
+            return False
 
     def run(self) -> None:
         self._loop_ident = threading.get_ident()

@@ -249,7 +249,11 @@ def test_a_failing_callback_does_not_kill_the_loop(state_dir):
 
     loop = OwnerLoop(boom, boom, preferred=False, sleep=lambda s: None,
                      pid_alive=lambda p: True, pid=ME)
-    assert loop.tick() == HOLD_POLL_S and loop.owned
+    # The loop survives the raise; a failed on_acquire hands the lease back
+    # (see test_a_raising_on_acquire_gives_the_lease_back) so a later tick
+    # can retry instead of holding a lease that watches nothing.
+    assert loop.tick() == HOLD_POLL_S and not loop.owned
+    assert loop.tick() > 0  # still ticking
 
 
 def test_ensure_owner_waiter_is_idempotent_and_stop_waiter_releases(
@@ -346,3 +350,46 @@ def test_flag_off_stops_the_waiter_and_restarts_the_watcher(
 def test_flag_off_without_a_waiter_is_a_noop(fake_watch):
     index_owner.on_flag_changed(False)
     assert fake_watch.log == []
+
+
+def test_the_watcher_lease_stays_machine_wide_on_a_branch(state_dir, monkeypatch):
+    """main nests the scheduler's duties lease per branch ref (#1697); the
+    watcher lease must NOT follow, or every dev server would own its own
+    watcher and the whole 'one watcher per Mac' point is lost."""
+    from fused_render import _branch
+
+    monkeypatch.setattr(_branch, "_CACHED_REF", "agent-202610")
+    assert tasks_store.duties_dir() != str(state_dir)  # nesting is in effect
+    assert index_owner._default_try_acquire(LEASE_NAME) is True
+    try:
+        assert os.path.exists(os.path.join(str(state_dir), LEASE_NAME))
+        assert not os.path.exists(os.path.join(tasks_store.duties_dir(), LEASE_NAME))
+    finally:
+        tasks_store.release_lease(LEASE_NAME)
+
+
+def test_a_failed_on_acquire_gives_the_lease_back(state_dir):
+    """CodeRabbit on #1700: index_watch.start() can find no root to watch;
+    a holder that watches nothing must not keep the lease for life."""
+    calls = Calls()
+    loop = OwnerLoop(lambda: False, calls.release, preferred=False,
+                     sleep=lambda s: None, pid_alive=lambda p: True, pid=ME)
+    loop.tick()
+    assert loop.owned is False
+    assert not os.path.exists(os.path.join(str(state_dir), index_owner.OWNER_FILE))
+    # The lease is free again: a rival can take it.
+    rival = _lease_rival.hold(os.path.join(str(state_dir), LEASE_NAME))
+    try:
+        assert rival is not None
+    finally:
+        _lease_rival.release(rival)
+
+
+def test_a_raising_on_acquire_gives_the_lease_back(state_dir):
+    def boom():
+        raise RuntimeError("no roots")
+
+    loop = OwnerLoop(boom, lambda: None, preferred=False,
+                     sleep=lambda s: None, pid_alive=lambda p: True, pid=ME)
+    loop.tick()
+    assert loop.owned is False
