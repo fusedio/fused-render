@@ -237,6 +237,7 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
     if (!answer || answer.pending !== true || !mounted.current) return;
     if (now() - startedAt >= POLL_CAP_MS) return;
     if (pollTimer.current) clearTimeout(pollTimer.current);
+    const scheduledAt = now();
     pollTimer.current = setTimeout(() => {
       pollTimer.current = null;
       const o = latest.current;
@@ -244,7 +245,11 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
       if (!o.enabled || !o.file || !o.sessionId) return;
       const hidden = (doc ?? (typeof globalThis.document !== "undefined" ? globalThis.document : null))?.hidden;
       if (o.running || hidden || o.hasDraft() || (o.root && !recapRootVisible(o.root()))) {
-        take(asked, answer, now()); // gated this tick: keep waiting; waiting here does not spend the cap
+        // Gated this tick: keep waiting. The cap is PAUSED for exactly the
+        // time this tick spent gated — the deadline slides by that much and no
+        // more — so a gate never hands the anchor a fresh budget (CodeRabbit,
+        // PR #1696): eligible time already spent stays spent.
+        take(asked, answer, startedAt + (now() - scheduledAt));
         return;
       }
       const read = o.fetchRecap ?? defaultFetchRecap;

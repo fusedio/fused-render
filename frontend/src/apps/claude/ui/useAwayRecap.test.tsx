@@ -366,6 +366,25 @@ test("pending: false stops it; the cap stops it; an anchor change stops it", asy
   await sleep(30);
   expect(capped.calls.length).toBe(n);
 
+  // A gate PAUSES the cap, it does not restart it: 14 min of eligible polling,
+  // then a long gated stretch, then 2 more eligible minutes — over the 15 min
+  // cap, so the poll must stop rather than run on a fresh window.
+  const gated = harness({ eager: true, pollMs: 5, answer: PENDING });
+  await act(async () => {});
+  gated.clock.t += 840_000;
+  await sleep(30);
+  await gated.set({ running: true });
+  gated.clock.t += 3_600_000;
+  await sleep(30);
+  const duringGate = gated.calls.length;
+  await gated.set({ running: false });
+  gated.clock.t += 120_000;
+  await sleep(30);
+  const afterGate = gated.calls.length;
+  await sleep(30);
+  expect(gated.calls.length).toBe(afterGate); // stopped: budget was spent before the gate
+  expect(afterGate - duringGate).toBeLessThanOrEqual(1);
+
   const moved = harness({ eager: true, pollMs: 5, answer: PENDING });
   await act(async () => {});
   await moved.set({ forUuid: "u2", running: true });
