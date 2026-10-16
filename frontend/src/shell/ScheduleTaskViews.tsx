@@ -69,7 +69,7 @@ import {
   EMPTY_FILTERS,
   EMPTY_LIST_MEMORY,
   LANE_CHOICE_KEY,
-  LIST_MEMORY_KEY,
+  listMemoryKey,
   UNREAD_LABEL,
   basename,
   cancelIntent,
@@ -84,6 +84,9 @@ import {
   filtersForView,
   firstLine,
   groupByColumn,
+  groupRows,
+  groupSize,
+  flattenGroups,
   heldMessages,
   hasDraft,
   isChatDraftTask,
@@ -159,6 +162,8 @@ import type {
   QueueCaption,
   QueueOverride,
   TaskFilters,
+  TaskGroup,
+  TaskGroupBy,
   TaskRunIntent,
 } from "./tasks-lib";
 import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingFolders";
@@ -1960,17 +1965,17 @@ const WRITE_DEBOUNCE_MS = 150;
  * preference, and a week-old offset restored into a list of different rows is a
  * surprise rather than a memory. A blocked store costs the memory, never the
  * page — the read runs during first render. */
-function readListMemory(): ListMemory {
+function readListMemory(key: string): ListMemory {
   try {
-    return parseListMemory(sessionStorage.getItem(LIST_MEMORY_KEY));
+    return parseListMemory(sessionStorage.getItem(key));
   } catch {
     return EMPTY_LIST_MEMORY;
   }
 }
 
-function writeListMemory(memory: ListMemory): void {
+function writeListMemory(key: string, memory: ListMemory): void {
   try {
-    sessionStorage.setItem(LIST_MEMORY_KEY, JSON.stringify(memory));
+    sessionStorage.setItem(key, JSON.stringify(memory));
   } catch {
     // best-effort; a full or blocked store never breaks the list
   }
@@ -2038,9 +2043,14 @@ export function TaskList({
   draftOn = false,
   floored = false,
   emptyLabel = "Nothing to show here.",
+  groupBy = null,
 }: {
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
   tasks: Task[];
+  /** Cut the list into sections — by day, folder or pull request (the Time /
+   *  Project / PR views, tasks-lib.groupRows). null ⇒ the plain List. Rows keep
+   *  the List's order inside every section. */
+  groupBy?: TaskGroupBy | null;
   /** A queue verb landed here: paint the claim over the row until the server's
    * own answer arrives (tasks-lib.QueueOverride). The page holds the claims —
    * see TaskBoard's own note for why they must outlive this component. */
@@ -2129,7 +2139,10 @@ export function TaskList({
   //
   // Read once, into a ref, because both halves of the memory are initial state:
   // re-reading it later would fight the writes below.
-  const memory = useRef<ListMemory>(readListMemory());
+  // Per view: the grouped lists order the rows differently, so an offset
+  // from one is a wrong place in another (Bugbot, #1704).
+  const memoryKey = listMemoryKey(groupBy);
+  const memory = useRef<ListMemory>(readListMemory(memoryKey));
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(memory.current.expanded),
   );
@@ -2207,7 +2220,16 @@ export function TaskList({
   // resolution the rows print anyway — so this re-sorts sixty times an hour, not
   // once a second.
   const now = useNow();
-  const rows = useMemo(() => sortForList(tasks, now), [tasks, now]);
+  const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);
+  // The grouped views cut the sorted list into sections and draw them one frame
+  // each; `rows` stays the flat, in-order list every index below is about.
+  const groups = useMemo(
+    () => (groupBy ? groupRows(sorted, groupBy, home, now) : null),
+    [sorted, groupBy, home, now],
+  );
+  const rows = useMemo(() => (groups ? flattenGroups(groups) : sorted), [groups, sorted]);
+  // Which sections are folded (the grouped views only; see groupFrames).
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(readCollapsedGroups);
   /**
    * THE ROWS' REACT KEYS, and the reason they are not `task.key` any more.
    *
@@ -2540,14 +2562,14 @@ export function TaskList({
     if (writeTimer.current !== null) clearTimeout(writeTimer.current);
     writeTimer.current = window.setTimeout(() => {
       writeTimer.current = null;
-      writeListMemory(memory.current);
+      writeListMemory(memoryKey, memory.current);
     }, WRITE_DEBOUNCE_MS);
   };
   useEffect(
     () => () => {
       if (writeTimer.current !== null) {
         clearTimeout(writeTimer.current);
-        writeListMemory(memory.current);
+        writeListMemory(memoryKey, memory.current);
       }
     },
     [],
@@ -2649,6 +2671,60 @@ export function TaskList({
     return <p className="schedule-tv-empty">{emptyLabel}</p>;
   }
 
+  // ONE ROW, by its flat index — shared by the plain frame and the grouped
+  // frames so the two can never draw a row differently.
+  const rowAt = (task: Task, ix: number) => (
+      <TaskRow
+        key={rowKeys[ix]}
+        // DRAWN IN FULL OR AS A PLACEHOLDER (the fold, above). Pinned open
+        // whatever the band says: an expanded row (its height is its
+        // thread's, and a row restored open from memory was never measured),
+        // the peeked and selected rows (the halo and the "where you were"
+        // wash must not vanish under the reader), and the row the keyboard
+        // is on.
+        folded={
+          (observed.current
+            ? !revealed.has(rowKeys[ix] ?? task.key)
+            : ix < seedFrom || ix >= seedFrom + REVEAL_SEED)
+          && !expanded.has(task.key)
+          && peeked !== task.key
+          && selected !== task.key
+          && focusedKey !== (rowKeys[ix] ?? task.key)
+        }
+        height={heights.current.get(rowKeys[ix] ?? task.key) ?? closedHeight.current}
+        rowKey={rowKeys[ix] ?? task.key}
+        onNode={onNode}
+        task={task}
+        home={home}
+        showProject={showProject}
+        folderMissing={missing?.has(taskFolder(task)) ?? false}
+        open={expanded.has(task.key)}
+        peekOn={peekOn}
+        peeked={peeked === task.key}
+        selected={selected === task.key}
+        onSelect={selectRow}
+        onToggle={toggleRow}
+        onRetry={retryRow}
+        loaded={loaded[task.key]}
+        loading={!!loading[task.key]}
+        error={errors[task.key]}
+        onEditEntry={editEntry}
+        onOpenDraft={openDraft}
+        onOpenBoundDraft={openBoundDraft}
+        onReload={reloadRows}
+        onQueued={queued}
+        onPickProject={pickProject}
+        pinned={pinnedProjects.includes(task.project)}
+        onPickDraft={pickDraft}
+        draftOn={draftOn}
+        read={read}
+        onRead={clear}
+        onReadAll={clearAll}
+        onUnreadAll={restoreAll}
+        onSettleAll={settleAll}
+      />
+  );
+
   return (
     <>
       {/* `data-fit` is how many of the row's meta marks have had to go for the
@@ -2657,7 +2733,7 @@ export function TaskList({
           stylesheet does the hiding; this only says how far down the ladder we
           are. */}
       <div
-        className="tasks-list"
+        className={"tasks-list" + (groups ? " is-grouped" : "")}
         ref={listRef}
         {...(peekOn ? { "data-fit": fit.level } : {})}
         // …AND WHAT THE ROWS WOULD NEED IF NOTHING FOLDED, which is what the
@@ -2688,7 +2764,6 @@ export function TaskList({
           nodes, the floored pane's horizontal-bar clearance — and because the
           Explorer's Claude side panel renders it on its own, where it still
           draws the border itself (apps/claude/ui/Lists.tsx). */}
-      <div className="tasks-list-frame">
       {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortForList): Upcoming,
           In Progress, Needs attention, Blocked, Done, Archive — the Board's own
           lanes read left to right, and inside each the lane's own order (drafts
@@ -2712,58 +2787,14 @@ export function TaskList({
           List (`useStable`, `useReadSet`); the one prop that still moves for
           every row at once is `read`, on a read action, which is rare and
           wanted. */}
-      {rows.map((task, ix) => (
-        <TaskRow
-          key={rowKeys[ix]}
-          // DRAWN IN FULL OR AS A PLACEHOLDER (the fold, above). Pinned open
-          // whatever the band says: an expanded row (its height is its
-          // thread's, and a row restored open from memory was never measured),
-          // the peeked and selected rows (the halo and the "where you were"
-          // wash must not vanish under the reader), and the row the keyboard
-          // is on.
-          folded={
-            (observed.current
-              ? !revealed.has(rowKeys[ix] ?? task.key)
-              : ix < seedFrom || ix >= seedFrom + REVEAL_SEED)
-            && !expanded.has(task.key)
-            && peeked !== task.key
-            && selected !== task.key
-            && focusedKey !== (rowKeys[ix] ?? task.key)
-          }
-          height={heights.current.get(rowKeys[ix] ?? task.key) ?? closedHeight.current}
-          rowKey={rowKeys[ix] ?? task.key}
-          onNode={onNode}
-          task={task}
-          home={home}
-          showProject={showProject}
-          folderMissing={missing?.has(taskFolder(task)) ?? false}
-          open={expanded.has(task.key)}
-          peekOn={peekOn}
-          peeked={peeked === task.key}
-          selected={selected === task.key}
-          onSelect={selectRow}
-          onToggle={toggleRow}
-          onRetry={retryRow}
-          loaded={loaded[task.key]}
-          loading={!!loading[task.key]}
-          error={errors[task.key]}
-          onEditEntry={editEntry}
-          onOpenDraft={openDraft}
-          onOpenBoundDraft={openBoundDraft}
-          onReload={reloadRows}
-          onQueued={queued}
-          onPickProject={pickProject}
-          pinned={pinnedProjects.includes(task.project)}
-          onPickDraft={pickDraft}
-          draftOn={draftOn}
-          read={read}
-          onRead={clear}
-          onReadAll={clearAll}
-          onUnreadAll={restoreAll}
-          onSettleAll={settleAll}
-        />
-      ))}
-      </div>
+      {groups && groupBy ? (
+        groupFrames(groups, rowAt, groupBy, collapsedGroups, (next) => {
+          setCollapsedGroups(next);
+          writeCollapsedGroups(next);
+        })
+      ) : (
+        <div className="tasks-list-frame">{rows.map(rowAt)}</div>
+      )}
       </div>
     </>
   );
@@ -6288,4 +6319,130 @@ function TaskCard({
       )}
     </div>
   );
+}
+
+/** Where the grouped views remember which sections are folded — one set for
+ *  all three, keyed `<view>:<group>` so Time's "Today" and Project's folders
+ *  never collide. localStorage: a fold is a reading preference, like the view. */
+const GROUPS_COLLAPSED_KEY = "fused-render:tasks-groups-collapsed";
+
+function readCollapsedGroups(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(GROUPS_COLLAPSED_KEY) || "[]");
+    return new Set(Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeCollapsedGroups(set: Set<string>) {
+  try {
+    localStorage.setItem(GROUPS_COLLAPSED_KEY, JSON.stringify([...set]));
+  } catch {
+    // A blocked store forgets the folds; the fold itself still happens.
+  }
+}
+
+const ICON_GROUP_CHEVRON = icon(<path d="m9 18 6-6-6-6" />, 12);
+// lucide `external-link`, for a heading that is also a door (the PR view).
+const ICON_GROUP_LINK = icon(
+  <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>, 12);
+
+/** The grouped views' frames (Akshil, 2026-10-16): one bordered
+ *  `.tasks-list-frame` per section under a heading that FOLDS it, every row
+ *  drawn by the List's own `rowAt` at its FLAT index so keys, fold state and
+ *  heights are the same ones the plain List keeps. The first heading's line
+ *  also carries Collapse all / Expand all, at its right end — on the row the
+ *  reader is already looking at, costing no row of its own. */
+function groupFrames(
+  groups: TaskGroup[],
+  rowAt: (task: Task, ix: number) => React.ReactNode,
+  by: TaskGroupBy,
+  collapsed: ReadonlySet<string>,
+  setCollapsed: (next: Set<string>) => void,
+) {
+  const keyOf = (g: TaskGroup) => `${by}:${g.key}`;
+  // Every heading at every depth — the PR view nests pull requests under
+  // their repository, and Collapse all folds both levels.
+  const all: TaskGroup[] = [];
+  const collect = (g: TaskGroup) => {
+    all.push(g);
+    for (const c of g.groups ?? []) collect(c);
+  };
+  for (const g of groups) collect(g);
+  const allFolded = all.every((g) => collapsed.has(keyOf(g)));
+  const toggleAll = () => {
+    const next = new Set(collapsed);
+    for (const g of all) {
+      if (allFolded) next.delete(keyOf(g));
+      else next.add(keyOf(g));
+    }
+    setCollapsed(next);
+  };
+  // The FLAT index runs through nested sections in drawing order, the same
+  // order `flattenGroups` gave the List its `rows`.
+  const counter = { next: 0 };
+  const draw = (g: TaskGroup, depth: number, first: boolean): React.ReactNode => {
+    const k = keyOf(g);
+    const open = !collapsed.has(k);
+    const headId = `tasks-group-${by}-${k.replace(/[^\w-]+/g, "_")}`;
+    const own = open ? g.rows.map((t) => rowAt(t, counter.next++)) : (counter.next += g.rows.length, null);
+    const kids = g.groups ?? [];
+    const inner = open ? kids.map((c) => draw(c, depth + 1, false)) : (counter.next += kids.reduce((n, c) => n + groupSize(c), 0), null);
+    return (
+      <section
+        key={g.key}
+        className="tasks-group"
+        aria-labelledby={headId}
+        data-collapsed={open ? "0" : "1"}
+        data-depth={depth}
+      >
+        <h3 className="tasks-group-head">
+          {/* Toggle and link travel together at the start; the all-toggle
+              sits alone at the end (the head is space-between). */}
+          <span className="tasks-group-lead">
+            <button
+              type="button"
+              id={headId}
+              className="tasks-group-toggle"
+              aria-expanded={open}
+              onClick={() => {
+                const next = new Set(collapsed);
+                if (open) next.add(k);
+                else next.delete(k);
+                setCollapsed(next);
+              }}
+            >
+              {ICON_GROUP_CHEVRON}
+              {g.label}
+              <span className="tasks-group-count">{groupSize(g)}</span>
+            </button>
+            {/* The heading's own door: the PR on GitHub. Beside the toggle, not
+                inside it — a press on the word folds, a press on the mark opens. */}
+            {g.href && (
+              <a
+                className="tasks-group-link"
+                href={g.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={g.href}
+                aria-label={`Open ${g.label} on GitHub`}
+              >
+                {ICON_GROUP_LINK}
+              </a>
+            )}
+          </span>
+          {first && all.length > 1 && (
+            <button type="button" className="tasks-groups-all" onClick={toggleAll}>
+              {allFolded ? "Expand all" : "Collapse all"}
+            </button>
+          )}
+        </h3>
+        {own && own.length > 0 && <div className="tasks-list-frame">{own}</div>}
+        {inner && inner.length > 0 && <div className="tasks-group-children">{inner}</div>}
+      </section>
+    );
+  };
+  return groups.map((g, gi) => draw(g, 0, gi === 0));
 }

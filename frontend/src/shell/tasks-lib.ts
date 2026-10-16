@@ -1483,7 +1483,64 @@ export function isExpanded(expanded: Set<string>, key: string): boolean {
 // bookmark while saying nothing at all.
 
 /** Which of the page's four views is up. */
-export type TaskView = "list" | "board" | "calendar" | "cards";
+export type TaskView = "list" | "board" | "calendar" | "cards" | TaskGroupBy;
+
+/** The three GROUPED LISTS (Akshil, 2026-10-16): the List's own rows, in the
+ *  List's own order, cut into sections by when they last moved, by the folder
+ *  they belong to, or by the pull request their words name. Each is a view of
+ *  its own in the switcher so a reader can keep one a click away. */
+export type TaskGroupBy = "time" | "project" | "pr";
+export const GROUP_VIEWS: TaskGroupBy[] = ["time", "project", "pr"];
+
+/** The switcher's DEFAULT tabs — what a fresh browser shows (Akshil,
+ *  2026-10-16: List and Board only; Cards, Calendar and the grouped lists are
+ *  a `+` away in the editor). Also what an unreadable store falls back to. */
+export const DEFAULT_VIEW_TABS: TaskView[] = ["list", "board"];
+
+/** Every view the switcher's `+` can add, in the order the menu lists them. */
+export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
+
+/** The word each view wears on its tab (and in the editor's chips). */
+export const VIEW_LABELS: Record<TaskView, string> = {
+  list: "List",
+  board: "Board",
+  cards: "Cards",
+  calendar: "Calendar",
+  time: "Time",
+  project: "Project",
+  pr: "PR",
+};
+
+/** Where the switcher's chosen tabs live (a JSON array of view names). */
+export const VIEW_TABS_KEY = "fused-render:scheduled-view-tabs";
+
+/** `time` / `project` / `pr` for a grouped list, null for every other view. */
+export function groupOfView(view: TaskView): TaskGroupBy | null {
+  return (GROUP_VIEWS as string[]).includes(view) ? (view as TaskGroupBy) : null;
+}
+
+/**
+ * The tabs a stored value names — untrusted input (an older build, a hand
+ * edit), so every name is checked against TASK_VIEWS, duplicates fold, and an
+ * empty or unreadable answer is the default set rather than no tabs at all.
+ */
+export function parseViewTabs(raw: string | null | undefined): TaskView[] {
+  if (!raw) return DEFAULT_VIEW_TABS;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return DEFAULT_VIEW_TABS;
+  }
+  if (!Array.isArray(parsed)) return DEFAULT_VIEW_TABS;
+  const out: TaskView[] = [];
+  for (const v of parsed) {
+    if (typeof v === "string" && (TASK_VIEWS as string[]).includes(v) && !out.includes(v as TaskView)) {
+      out.push(v as TaskView);
+    }
+  }
+  return out.length ? out : DEFAULT_VIEW_TABS;
+}
 
 /** The query key that carries it. */
 export const VIEW_PARAM = "view";
@@ -1492,7 +1549,7 @@ export const VIEW_PARAM = "view";
  * read by the parser below and by the test that holds the switcher's buttons to
  * it — a view that exists in the union and not here is a view a link cannot
  * reach, which is exactly the bug a second hand-written list invites. */
-export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
+export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "time", "project", "pr"];
 
 /**
  * The view a URL asks for, or `fallback` when it asks for nothing this page
@@ -1567,6 +1624,13 @@ export function opensElsewhere(e: {
 
 /** The key the List's per-tab memory lives under. */
 export const LIST_MEMORY_KEY = "fused-render:tasks-list-memory";
+
+/** The memory row for one list view: the plain List keeps the original key,
+ *  each grouped view (Time / Project / PR) gets its own, since an offset in
+ *  one ordering is a wrong place in another (Bugbot, #1704). */
+export function listMemoryKey(by: TaskGroupBy | null): string {
+  return by ? `${LIST_MEMORY_KEY}:${by}` : LIST_MEMORY_KEY;
+}
 
 export type ListMemory = {
   /** Task keys the reader had open. Keys that no longer exist simply never match
@@ -5631,4 +5695,177 @@ export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
     messages: [],
     provisional: true,
   }));
+}
+
+// ---- the grouped lists ---------------------------------------------------------
+// Time / Project / PR (Akshil, 2026-10-16) are the List cut into sections. The
+// rows keep `sortForList`'s order inside every section; only the cut is new.
+
+/** One section of a grouped list. */
+export interface TaskGroup {
+  key: string;
+  label: string;
+  /** This section's own rows — empty on a section that only holds `groups`. */
+  rows: Task[];
+  /** Where the heading links (the PR view: the pull request on GitHub). */
+  href?: string;
+  /** Nested sections (the PR view: a repository's pull requests). */
+  groups?: TaskGroup[];
+}
+
+/** Every row under a list of sections, depth-first, in drawing order — the
+ *  flat list the List's indices, keys and fold state are about. */
+export function flattenGroups(groups: TaskGroup[]): Task[] {
+  const out: Task[] = [];
+  const walk = (g: TaskGroup) => {
+    out.push(...g.rows);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  for (const g of groups) walk(g);
+  return out;
+}
+
+/** How many rows a section holds, its nested sections included. */
+export function groupSize(g: TaskGroup): number {
+  return g.rows.length + (g.groups ?? []).reduce((n, c) => n + groupSize(c), 0);
+}
+
+/** The pull request a task's words name, WITH the repository it is in: the
+ *  `owner/repo` out of a GitHub link when the words carry one, else the one the
+ *  server read off the task's folder (`Task.repo`), else null. */
+export function prRefOf(task: Task): { number: number; repo: string | null } | null {
+  const text = prText(task);
+  const linked = /github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?\/pull\/(\d{1,6})\b/i.exec(text);
+  if (linked) return { number: Number(linked[2]), repo: linked[1] };
+  const n = prOfTask(task);
+  if (n === null) return null;
+  return { number: n, repo: (task.repo || "").trim() || null };
+}
+
+/** The pull request a task's words name — "#1234", "PR 1234" or a GitHub
+ *  `/pull/1234` link in its title, description or latest message — or null. */
+function prText(task: Task): string {
+  return [
+    task.title,
+    task.description,
+    task.last_message?.text ?? "",
+    task.last_reply ?? "",
+  ].join("\n");
+}
+
+export function prOfTask(task: Task): number | null {
+  const text = prText(task);
+  // Named first ("PR 1203", "PR #1203", a /pull/1203 link), then a bare
+  // "#1203" — two digits, no leading zero, so "#2" in a numbered step and "#000" in a
+  // colour do not become pull requests. `[ \t]*`, never `\s*`: the fields are
+  // joined with newlines, and a title ending in "PR" must not borrow the next
+  // line's leading number (review, 2026-10-16).
+  const named = /(?:\/pull\/|\bPRs?[ \t]*#?[ \t]*)(\d{1,6})\b/i.exec(text);
+  if (named) return Number(named[1]);
+  const bare = /(?<![\w#])#([1-9]\d{1,5})\b/.exec(text);
+  return bare ? Number(bare[1]) : null;
+}
+
+/** Which day-bucket a moment falls in, newest first in the order below. */
+const TIME_BUCKETS = ["Later", "Last hour", "Today", "Yesterday", "This week", "Earlier", "No date"] as const;
+
+function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
+  // THE ROW'S OWN STAMP (taskWhen) — the moment its time cell prints — so a row
+  // reading "2d ago" can never sit under Today.
+  const w = taskWhen(task, now);
+  if (w.kind === "next") return "Later";
+  if (w.kind === "none" || !w.at) return "No date";
+  const when = new Date(w.at * 1000);
+  if (now - when.getTime() <= 60 * 60 * 1000) return "Last hour";
+  // CALENDAR days (dayDelta), not 24-hour windows back from midnight: across
+  // a DST change a day is 23 or 25 hours and an hour of rows fell under the
+  // wrong heading (Bugbot, #1704).
+  const delta = dayDelta(when, new Date(now));
+  if (delta >= 0) return "Today";
+  if (delta === -1) return "Yesterday";
+  if (delta >= -6) return "This week";
+  return "Earlier";
+}
+
+/**
+ * Cut `rows` (already in list order) into sections. Rows never re-sort inside a
+ * section; sections order by what the cut means — the last hour, then days
+ * newest first; folders
+ * A→Z with the folderless last, pull requests highest number first with the
+ * PR-less rows last.
+ */
+export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number = Date.now()): TaskGroup[] {
+  const groups = new Map<string, TaskGroup>();
+  const put = (key: string, label: string, task: Task) => {
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, label, rows: [] };
+      groups.set(key, g);
+    }
+    g.rows.push(task);
+  };
+  if (by === "time") {
+    for (const task of rows) {
+      const b = timeBucketOf(task, now);
+      put(b, b, task);
+    }
+    return TIME_BUCKETS.map((b) => groups.get(b)).filter((g): g is TaskGroup => !!g);
+  }
+  if (by === "project") {
+    for (const task of rows) {
+      const p = (task.project || "").trim();
+      put(p || "\u0000none", p ? tildePath(p, home) : "No folder", task);
+    }
+    return [...groups.values()].sort((a, b) => {
+      if (a.key === "\u0000none") return 1;
+      if (b.key === "\u0000none") return -1;
+      return a.label.localeCompare(b.label);
+    });
+  }
+  // PR: REPOSITORY, then pull request (Akshil, 2026-10-16) — a section per
+  // repo, A→Z, each holding one section per PR, highest number first, with
+  // the heading linking to the PR on GitHub. Rows naming a PR in a folder with
+  // no known GitHub remote sit under "Unknown repository" (no links); rows
+  // naming no PR at all come last, under "No PR".
+  const NONE = "\u0000none";
+  const UNKNOWN = "\u0000unknown";
+  const repos = new Map<string, Map<number, Task[]>>();
+  for (const task of rows) {
+    const ref = prRefOf(task);
+    if (!ref) {
+      put(NONE, "No PR", task);
+      continue;
+    }
+    const r = ref.repo ?? UNKNOWN;
+    let prs = repos.get(r);
+    if (!prs) {
+      prs = new Map();
+      repos.set(r, prs);
+    }
+    const list = prs.get(ref.number);
+    if (list) list.push(task);
+    else prs.set(ref.number, [task]);
+  }
+  const out: TaskGroup[] = [...repos.keys()]
+    .sort((a, b) => {
+      if (a === UNKNOWN) return 1;
+      if (b === UNKNOWN) return -1;
+      return a.localeCompare(b);
+    })
+    .map((repo) => ({
+      key: `repo:${repo === UNKNOWN ? "?" : repo}`,
+      label: repo === UNKNOWN ? "Unknown repository" : repo,
+      rows: [],
+      groups: [...repos.get(repo)!.entries()]
+        .sort((a, b) => b[0] - a[0])
+        .map(([n, list]) => ({
+          key: `pr:${repo === UNKNOWN ? "?" : repo}#${n}`,
+          label: `#${n}`,
+          rows: list,
+          ...(repo === UNKNOWN ? {} : { href: `https://github.com/${repo}/pull/${n}` }),
+        })),
+    }));
+  const none = groups.get(NONE);
+  if (none) out.push(none);
+  return out;
 }
