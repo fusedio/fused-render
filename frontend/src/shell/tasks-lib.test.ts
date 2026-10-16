@@ -15,6 +15,8 @@ import type { BoardColumn } from "./schedule-lib";
 import {
   laneCountLabel,
   laneSplitAt,
+  LIST_MEMORY_KEY,
+  listMemoryKey,
   LANE_SPLIT_LABEL,
   messageState,
   ALL_MESSAGES,
@@ -7682,7 +7684,7 @@ describe("what the List remembers between visits", () => {
     expect(open.slice(0, open.indexOf("\n  };"))).toContain("onSelect(task.key);");
     // Stored beside the scroll and the open rows, in the same sessionStorage
     // row, so all three are restored by the one read on mount.
-    expect(LIST).toContain("const memory = useRef<ListMemory>(readListMemory());");
+    expect(LIST).toContain("const memory = useRef<ListMemory>(readListMemory(memoryKey));");
     // THE SAME FILL AS HOVER, and nothing else. The first cut used
     // `--row-bg-active` plus a 2px accent rule, which on a page whose accent is
     // a bright lime made one row in ninety look like a dialog's default button
@@ -7705,9 +7707,15 @@ describe("what the List remembers between visits", () => {
   it("restores the open rows and the scroll from THIS tab only", () => {
     // sessionStorage: "where I was a moment ago" is true for this sitting, and a
     // week-old offset restored into different rows is a surprise, not a memory.
-    expect(VIEWS).toContain("sessionStorage.getItem(LIST_MEMORY_KEY)");
-    expect(VIEWS).toContain("sessionStorage.setItem(LIST_MEMORY_KEY");
-    expect(VIEWS).not.toContain("localStorage.getItem(LIST_MEMORY_KEY)");
+    expect(VIEWS).toContain("sessionStorage.getItem(key)");
+    expect(VIEWS).toContain("sessionStorage.setItem(key, JSON.stringify(memory))");
+    expect(VIEWS).not.toContain("localStorage.getItem(key)");
+    // One row per list view: the plain List keeps the original key, each
+    // grouped view its own, and the page mounts one TaskList per view.
+    expect(LIST).toContain("const memoryKey = listMemoryKey(groupBy);");
+    expect(listMemoryKey(null)).toBe(LIST_MEMORY_KEY);
+    expect(new Set(GROUP_VIEWS.map(listMemoryKey)).size).toBe(GROUP_VIEWS.length);
+    expect(GROUP_VIEWS.map(listMemoryKey)).not.toContain(LIST_MEMORY_KEY);
     expect(LIST).toContain("new Set(memory.current.expanded)");
     // The list's own scroller, not the window's — which is also why this cannot
     // fight the chat's msg-anchor scroll on the other page.

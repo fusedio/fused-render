@@ -4656,10 +4656,14 @@ input.schedule-when-field {
 }
 /* HOVER-ONLY (Akshil, 2026-10-16): the cog is furniture, not a view, so it
    keeps its slot (opacity, never display — the row must not shift) and shows
-   while the pointer is on the toolbar or the key reaches it. */
-.schedule-toolbar .schedule-view-edit {
-  opacity: 0;
-  transition: opacity 120ms ease;
+   while the pointer is on the toolbar or the key reaches it. Only where
+   there IS a hover: a touch screen has none, so there it stays visible
+   (CodeRabbit, #1704). */
+@media (hover: hover) {
+  .schedule-toolbar .schedule-view-edit {
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
 }
 .schedule-toolbar:hover .schedule-view-edit,
 .schedule-toolbar:focus-within .schedule-view-edit,
@@ -4687,7 +4691,7 @@ input.schedule-when-field {
   align-items: center;
   gap: 2px;
   height: 30px;
-  padding: 0 4px 0 0;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
@@ -4740,9 +4744,15 @@ input.schedule-when-field {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 4px;
+  /* A 1px rule between the view and its remove, the chip's full height
+     (Akshil, 2026-10-16): the chip has no vertical padding, so 100% is
+     edge to edge, and the right corners follow the chip's inner radius. */
+  box-sizing: border-box;
+  width: 22px;
+  height: 100%;
+  margin-left: 2px;
+  border-left: 1px solid var(--border);
+  border-radius: 0 5px 5px 0;
   color: var(--fg-muted);
   cursor: pointer;
 }
@@ -4751,8 +4761,10 @@ input.schedule-when-field {
   background: color-mix(in srgb, var(--fg) 10%, transparent);
   color: var(--fg);
 }
+/* The glyph dims, not the element: the divider stays a full-strength rule on
+   the one chip that cannot be removed. */
 .schedule-view-chip-x:disabled {
-  opacity: 0.35;
+  color: color-mix(in srgb, var(--fg-muted) 35%, transparent);
   cursor: default;
 }
 .schedule-view-add {

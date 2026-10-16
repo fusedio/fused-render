@@ -1625,6 +1625,13 @@ export function opensElsewhere(e: {
 /** The key the List's per-tab memory lives under. */
 export const LIST_MEMORY_KEY = "fused-render:tasks-list-memory";
 
+/** The memory row for one list view: the plain List keeps the original key,
+ *  each grouped view (Time / Project / PR) gets its own, since an offset in
+ *  one ordering is a wrong place in another (Bugbot, #1704). */
+export function listMemoryKey(by: TaskGroupBy | null): string {
+  return by ? `${LIST_MEMORY_KEY}:${by}` : LIST_MEMORY_KEY;
+}
+
 export type ListMemory = {
   /** Task keys the reader had open. Keys that no longer exist simply never match
    * a row, so a stale entry costs nothing and needs no pruning. */
@@ -5732,14 +5739,13 @@ function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
   if (w.kind === "none" || !w.at) return "No date";
   const when = new Date(w.at * 1000);
   if (now - when.getTime() <= 60 * 60 * 1000) return "Last hour";
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
-  const start = today.getTime();
-  const day = 24 * 60 * 60 * 1000;
-  const t = when.getTime();
-  if (t >= start) return "Today";
-  if (t >= start - day) return "Yesterday";
-  if (t >= start - 6 * day) return "This week";
+  // CALENDAR days (dayDelta), not 24-hour windows back from midnight: across
+  // a DST change a day is 23 or 25 hours and an hour of rows fell under the
+  // wrong heading (Bugbot, #1704).
+  const delta = dayDelta(when, new Date(now));
+  if (delta >= 0) return "Today";
+  if (delta === -1) return "Yesterday";
+  if (delta >= -6) return "This week";
   return "Earlier";
 }
 

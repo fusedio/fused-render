@@ -67,7 +67,7 @@ import {
   EMPTY_FILTERS,
   EMPTY_LIST_MEMORY,
   LANE_CHOICE_KEY,
-  LIST_MEMORY_KEY,
+  listMemoryKey,
   UNREAD_LABEL,
   basename,
   cancelIntent,
@@ -1943,17 +1943,17 @@ const WRITE_DEBOUNCE_MS = 150;
  * preference, and a week-old offset restored into a list of different rows is a
  * surprise rather than a memory. A blocked store costs the memory, never the
  * page — the read runs during first render. */
-function readListMemory(): ListMemory {
+function readListMemory(key: string): ListMemory {
   try {
-    return parseListMemory(sessionStorage.getItem(LIST_MEMORY_KEY));
+    return parseListMemory(sessionStorage.getItem(key));
   } catch {
     return EMPTY_LIST_MEMORY;
   }
 }
 
-function writeListMemory(memory: ListMemory): void {
+function writeListMemory(key: string, memory: ListMemory): void {
   try {
-    sessionStorage.setItem(LIST_MEMORY_KEY, JSON.stringify(memory));
+    sessionStorage.setItem(key, JSON.stringify(memory));
   } catch {
     // best-effort; a full or blocked store never breaks the list
   }
@@ -2117,7 +2117,10 @@ export function TaskList({
   //
   // Read once, into a ref, because both halves of the memory are initial state:
   // re-reading it later would fight the writes below.
-  const memory = useRef<ListMemory>(readListMemory());
+  // Per view: the grouped lists order the rows differently, so an offset
+  // from one is a wrong place in another (Bugbot, #1704).
+  const memoryKey = listMemoryKey(groupBy);
+  const memory = useRef<ListMemory>(readListMemory(memoryKey));
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(memory.current.expanded),
   );
@@ -2537,14 +2540,14 @@ export function TaskList({
     if (writeTimer.current !== null) clearTimeout(writeTimer.current);
     writeTimer.current = window.setTimeout(() => {
       writeTimer.current = null;
-      writeListMemory(memory.current);
+      writeListMemory(memoryKey, memory.current);
     }, WRITE_DEBOUNCE_MS);
   };
   useEffect(
     () => () => {
       if (writeTimer.current !== null) {
         clearTimeout(writeTimer.current);
-        writeListMemory(memory.current);
+        writeListMemory(memoryKey, memory.current);
       }
     },
     [],

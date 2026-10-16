@@ -245,8 +245,13 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
   const [over, setOver] = useState<TaskView | null>(null);
   const dropOn = (target: TaskView) => {
     if (!dragging || dragging === target) return;
+    // Lands on the TARGET's slot either way: carried rightward it goes after
+    // the target, leftward before it — removing first and inserting before the
+    // target made a move right onto the next chip a no-op and the last slot
+    // unreachable (Bugbot, #1704).
+    const to = tabs.indexOf(target);
     const next = tabs.filter((t) => t !== dragging);
-    next.splice(next.indexOf(target), 0, dragging);
+    next.splice(to, 0, dragging);
     onChange(next);
   };
   // Focus lands on the first chip when the strip opens: the cog that opened it
@@ -647,8 +652,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // left rather than keep showing a view no button names. Only when it was
     // on the row to begin with — a view reached by URL alone (`?view=pr`) was
     // never in the draft, and Done with nothing changed must not move it
-    // (review, 2026-10-16).
-    if (!tabsDraft.includes(view) && tabs.includes(view)) pickView(tabsDraft[0]);
+    // (review, 2026-10-16). Asked of the view the editor OPENED on, not of
+    // the saved row: a chip press previews any draft view, so add PR, preview
+    // it, remove it, Done must not keep a PR view no button names (CodeRabbit,
+    // #1704).
+    const reachedByUrlOnly = view === viewBeforeEdit.current && !tabs.includes(view);
+    if (!tabsDraft.includes(view) && !reachedByUrlOnly) pickView(tabsDraft[0]);
     refocusCog();
   };
   // null = closed; a Date = open, prefilled (from a calendar slot click);
@@ -1539,6 +1548,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             />
           ) : (
             <TaskList
+              // One instance PER VIEW (Bugbot, #1704): List, Time, Project and
+              // PR order the rows differently, so a shared instance carried the
+              // scroll offset, the reveal band and the list memory across a
+              // switch and landed mid-list on the wrong tasks. Each view keeps
+              // its own memory (tasks-lib.listMemoryKey).
+              key={view}
               tasks={shown}
               // Time / Project / PR are this List cut into sections.
               groupBy={groupOfView(view)}
