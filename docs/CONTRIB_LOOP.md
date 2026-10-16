@@ -6,6 +6,11 @@ code and this file disagree about what exists today, trust the code and tell
 the TL. When this file and the handoff disagree about behaviour, the handoff
 wins and the TL fixes this file.
 
+> **v2 (2026-10-16 audit): §16 is the authoritative git model.** It supersedes
+> §0.6, §5, §6, §8 (send/update/return mechanics), §11 (remix identity/push),
+> §12.3 (mutations → one action route) and §13 where they disagree. Audit +
+> owner decisions: https://claude.ai/artifact/9cKiwha1mdXfXwWVv9DNG3
+
 Personas: **Alice** owns the repo (author). **Bob** installed her app from a
 GitHub link (contributor). A **collaborator** has push rights but is a
 contributor by default.
@@ -563,3 +568,297 @@ flags off → `_sync_locked` behaves exactly as before.
   `reset-refused` (was one `land`); `replay.land_locked` answers that reason
   or None. `gh.url_rewrites` raises `GitHubError("failed")` when the repo's
   config cannot be read (fail closed).
+
+## 16. v2 git model (2026-10-16) — AUTHORITATIVE
+
+Why: the audit (artifact above; 67 repros in the session scratchpad) found the
+v1 model pushes a contributor's work to the author when a flag is off, leaks
+`.fused/` when A1 is turned off, silently stops the author's pushes, keeps two
+copies of "the author's latest", and rebases Bob's commits on every author
+push (14 mechanisms exist only for that). v2 replaces the git layer; GitHub
+calls, review, Try, inbox, remix UI mostly stay.
+
+### 16.0 Principles (every workstream)
+
+- **P1 Kind decides git behaviour; flags gate UI.** A record's `kind` alone
+  decides how a folder syncs. Flags only show/hide UI and the network polls
+  that exist only to feed that UI (inbox sweep, proposal refresh needs a
+  proposal, which needs A2 UI). With a `github` record the engine syncs the
+  folder whatever the flags — BUT a state that needs a button must never be
+  created while its button is hidden: with `flags.changes()` off a `github`
+  copy only fetches and fast-forwards (§16.3 rows 1–4, 8, 9; anything else is
+  a silent `skipped`, tree untouched). Rows 5–7, 10, 11 run only with
+  `flags.changes()` on. The never-push rule (P2) is unconditional.
+- **P2 A `github` copy never pushes on its own.** No automatic code path pushes
+  it anywhere. Enforced twice: git_upstream's intercept hands every `github`
+  record to the engine and NEVER falls back to `_sync_plain` (an engine error
+  is `skipped`), and the install/classification sets
+  `remote.origin.pushurl = no-push://fused` (removed when the kind becomes
+  `own`). Pushes to GitHub for a `github` copy happen only from explicit user
+  actions, by URL, via `gh.push`.
+- **P3 One upstream.** The author's latest lives in git's normal
+  `refs/remotes/origin/<branch>`, fetched BY THE RECORD'S URL (url_rewrites
+  guard + pinned TLS/proxy kept, `github` kind only). `refs/fused/follow`,
+  `refs/fused/base`, `refs/fused/proposed`, `refs/fused/origin-seen` are
+  deleted on the first v2 sync of a repo and never written again; the same
+  first sync clears a v1 `needs_merge` (any record without `v: 2`), maps v1
+  `backups` entries into activity lines, and stamps the record `v: 2`.
+- **P4 Merge, never rebase, a `github` copy.** Bob's commits keep their ids
+  forever, except ONE credit rewrite before the first send (§16.5).
+- **P5 `own` = today's auto-sync** (`git_upstream._sync_plain`, unchanged)
+  plus one fix for the `diverged` case (§16.7). The engine never owns an own
+  copy.
+- **P6 Automatic is fine; magic is not (owner).** Every automatic move writes
+  one Activity line (§16.9) — with Undo when it moved something away. Every
+  automatic move also exists as a button. Every stuck or failed state names
+  the problem in plain words and offers at least one fix button; no state
+  ever needs a terminal.
+- **P7** §0.1 (no git words), §0.2 (backup before any move that drops a
+  commit or edit; `reset --keep`), §0.3 (scratch worktrees), §0.7, §0.8, §0.9
+  still hold. §0.6 is REPLACED by P1.
+- **P8 Claude busy gates tree moves only**, never a push. "Busy" =
+  `session_liveness.transcript_turn_open(path, now, interrupt_closes=True)`
+  (reads the last message; correct for headless runs), not
+  `transcript_running`.
+- **P9 git versions.** `merge-tree --write-tree` needs git ≥ 2.38; older git
+  does the same merge in a scratch worktree (`merge --no-commit`), same result.
+
+### 16.1 Kind, binding, identity, push guard (WS-G)
+
+- `classify.kind_of(root) -> "github"|"own"|"scratch"|None` — store read +
+  binding check, no network, any flags, memoised 30 s per root. Unchecked
+  migration records count as `github` (unknown owner never pushes).
+- **Binding.** Records gain `root_commit` (a root commit of HEAD at
+  classification). `kind_of`/`store.get` treat a record as absent when
+  `git cat-file -e <root_commit>` fails (a different repo now lives at the
+  path); the record is dropped and the folder reclassified in the background.
+  Bind on `root_commit` ONLY: `.git/config` never decides what a copy follows
+  (§5). An origin URL that disagrees with a `github` record is reset to the
+  record's URL (+ an activity line "Pointed this copy back at <repo>"); for an
+  `own` record origin is the author's own to change. Remix updates the
+  record's `repo` BEFORE it touches `origin`. A fresh install
+  (`appfile_git._place`) drops any record at that path first. Adoption after a
+  Finder move requires the same root commit. Records without `root_commit`
+  (v1) get it filled on first read.
+- **Identity.** For `github` copies, classification sets repo-local
+  `user.name`/`user.email` = GitHub name (or login) + noreply email when the
+  identity is known (install, sign-in, `ensure`). `app_git` commits in a
+  `github` copy use that identity (not `Fused <apps@fused.io>`), and Claude-turn
+  commits carry `Co-authored-by: Claude <noreply@anthropic.com>`. Engine and
+  proposal commits use the same identity. Unknown identity → Fused identity
+  (credited once at first send, §16.5).
+- **Push guard** `classify.ensure_push_guard(root, kind)`: set/unset
+  `remote.origin.pushurl` per P2. Called on classification, kind change,
+  remix publish.
+- **`.fused/`**: never un-protected (delete `settle_when_off`); tracked
+  `.fused/` paths are skip-worktree for any `github`/`own` record; every
+  `app_git` / Claude-turn `add` excludes `.fused` by pathspec.
+- **Migration**: folders with no record are classified only when A1 is on
+  (as v1). Link installs record at install whatever the flags (as v1).
+- **Store** (`store.py`) record additions: `root_commit`, `activity` (§16.9),
+  `skip_tip` (Keep mine), `own_state` (§16.7). Proposal: `sent` (replaces
+  `proposed_head`/`pushed_head`; v1 records map `pushed_head or proposed_head`
+  → `sent`), `checked_tip`. Drop `backups` list (backups live in activity).
+
+### 16.2 Fetch (WS-C, `follow.py`)
+
+`follow.fetch(root, fol) -> (tip|None, reason|None)`:
+`git fetch --no-tags <record url> +refs/heads/<b>:refs/remotes/origin/<b>`
+(url_rewrites guard first, reasons as v1). `follow.tip(root, fol)` reads
+`refs/remotes/origin/<b>`. Own copies are not fetched here (git_upstream
+fetches `origin` as today).
+
+### 16.3 `github` copy sync — the v2 table (WS-C, `engine.py`)
+
+`engine.sync(root, *, action, push)` (intercept, slot held) and
+`engine.bring_in(root)` (the button; same table, user=True). Steps: fetch; if
+a proposal is open/unsettled and `tip != proposal.checked_tip` →
+`proposals.refresh(force=True)` OUTSIDE the slot first (so a merged proposal
+is known before the tip is merged in); gather facts; `decide`; execute.
+`auto_sync_enabled()` False → fetch + status only (buttons still work).
+
+| # | situation | action | activity |
+|---|---|---|---|
+| 1 | Claude turn open in the folder | wait (button answers "Claude is still working…") | — |
+| 2 | Merge with Claude job open | skip | — |
+| 3 | needs_merge recorded for this (tip, HEAD) | standing | — |
+| 4 | `skip_tip == tip` (Keep mine) and not user | skip | — |
+| 5 | an untracked/ignored local file is a path the tip adds | blocked → fix **Move my file aside and update** | — |
+| 6 | uncommitted tracked edits to files `merge-base..tip` changes | commit those paths as "Your edits" (Bob's identity), decide again | "Saved your edit to <file> so <who>'s update could come in" |
+| 7 | proposal merged (GitHub) and its merge commit ⊆ tip | **return**: new = tip + cherry-pick of `rev-list --reverse --first-parent --no-merges HEAD ^sent ^tip` (scratch worktree); none → tip. Conflict → needs_merge `return`. Land with backup | "<who> merged your change. You're on <who>'s latest version." (+ "N edits kept") · Undo |
+| 8 | tip ⊆ HEAD | noop | — |
+| 9 | HEAD ⊆ tip | fast-forward (`reset --keep tip`) | "Got <who>'s latest: <subjects>" |
+| 10 | tree(HEAD) == tree(tip) | move to tip (backup) | "Got <who>'s latest" · Undo |
+| 11 | otherwise | `merge-tree --write-tree HEAD tip`: clean → merge commit (parents HEAD, tip; "Bring in <who>'s latest"; Bob's identity) landed by `reset --keep` (HEAD is its parent: nothing dropped). Conflict → needs_merge `update` (files), tree untouched | "Brought in <who>'s <subjects>, your changes kept" |
+
+Status derived (no network): `changes_files = git diff --name-only tip HEAD`
+∪ dirty tracked paths (never untracked); state `following` when empty.
+`unproposed = rev-list --count --first-parent --no-merges HEAD ^sent ^tip`
+(+1 when dirty tracked). Precedence for the page: needs-merge > merged >
+declined (until seen) > proposed > changes > following.
+
+Fix actions (engine, each writes activity): `keep_mine(root)` (sets
+`skip_tip`, clears needs_merge; Bring in still offered), `use_theirs(root)`
+(backup incl. wip, `reset --hard tip`, clears needs_merge — "Use <who>'s
+version"), `move_aside(root)` (moves the colliding files to
+`<home>/contrib/aside/<key>/<ms>/…`, activity line with Restore, then
+`bring_in`), `go_back_main(root)` (another branch checked out → checkout the
+default branch when clean; dirty → plain sentence), `discard(root, *,
+withdraw)`, `restore(root, activity_id)` (backup current first, then
+`reset --keep` / re-place aside files), `push_to_main(root)` (collaborator;
+§16.6).
+
+Backups: only for moves that can drop something (rows 7, 10, use_theirs,
+discard, restore, credit rewrite): `refs/fused/backup/<ms>-<why>[-wip]`,
+referenced from the activity line. Never auto-deleted while referenced;
+activity capped at 50 (backups of dropped lines pruned after 30 days).
+
+### 16.4 Merge with Claude (WS-C, `merge_job.py`)
+
+Merge-only, one resolution: `start(app_dir, *, purpose, ours, theirs)` with
+purpose `update`|`return`|`proposal`|`own-sync`|`original`. In a scratch
+worktree at `ours`: `git merge --no-commit theirs` → Claude resolves markers in
+the conflicted files only → server verifies (no markers, no unmerged paths,
+nothing outside the conflicted files changed vs merge-tree's result) → commit
+(parents ours, theirs, Bob's identity) → `ready`. `accept` lands via
+`reset --keep` (ours is the parent). `return` uses the same merge (tip into
+HEAD) — the tree diff vs tip then holds only Bob's remaining edits.
+`own-sync` lands and then pushes (author). `proposal` lands and Update pushes.
+Rebase mode, `_map_mark`, flipped sides: deleted.
+
+### 16.5 Proposals (WS-P, `proposals.py`)
+
+- **Busy gate**: send/update/withdraw/remix/discard refuse while a Claude turn
+  is open (plain sentence) — P8.
+- **Send** `send(app_dir, *, title, description, note, include=[])`: sign-in;
+  refuse when one is open; commit dirty tracked + the untracked files the user
+  ticked in the dialog (`include`, paths relative to the app; the dialog lists
+  untracked files unticked); **credit once**: if `sent` is None, re-create
+  every Fused-authored commit in `HEAD ^tip` with Bob's identity + one Claude
+  trailer (parents mapped, merges included), land with backup; then
+  ensure_fork, push HEAD to a NEW branch `fused-<slug>-<yyyymmdd-hhmm>-<4hex>`
+  (no force), open PR, record `sent = HEAD`, `checked_tip = tip`.
+- **Update** `update(app_dir)`: refuse when tree(HEAD) == tree(tip) ("Your copy
+  matches <who>'s latest — there's nothing to send.") and when nothing is new
+  (`unproposed == 0` and the PR head == `sent`); commit dirty tracked; fetch
+  the PR head into `refs/fused/pr-head`; if it is not ⊆ HEAD (maintainer edits,
+  GitHub's Update branch) → merge it into HEAD (merge-tree clean → land;
+  conflict → merge_job `proposal`); push HEAD to the branch WITHOUT force
+  (rejected → "Something changed on GitHub in the meantime. Try again.");
+  `sent = HEAD`. Credit rewrite never runs after the first send.
+- **Withdraw**: close PR (comment), delete the fork branch best-effort, clear.
+- **Refresh**: as v1 (GitHub is truth); stops polling a settled proposal,
+  including on remixes.
+- **Collaborator push_to_main** (engine calls `proposals.settle_direct`):
+  bring in first (must land clean), push HEAD to the author's branch by URL
+  without force, close an open proposal with "Published directly", activity.
+- Deleted: `prepare`'s repeated credit, `stale()` tree compare, `pushed_head`,
+  `_keep_their_edits` rebase, `_pin_proposed_locked`, patch-id paths.
+
+### 16.6 Inbox + remix (WS-P)
+
+- Inbox item gains `fits: bool|None` (GitHub `mergeable`, cached) and actions
+  **Ask <sender> to update** (`inbox.ask_update(app_dir, number, note)`:
+  comment; the sender's next refresh shows "<who> asked you to update your
+  proposal" with Update) and **Merge with Claude** (`inbox.merge_start`:
+  fetch PR head + Alice's tip, merge_job purpose `proposal` in Alice's repo
+  scratch, on accept push the merge onto the PR head branch via maintainer
+  edits — `gh.push` to the head repo, no force; then re-review).
+- Accept as v1, then `git_upstream.sync_repo(root, push=True)` (own path,
+  §16.7, no engine).
+- Remix publish: identity commits as Bob; `kind` → own; origin → Bob's repo;
+  `ensure_push_guard(root, "own")`; remote `original`. Bring in the original
+  stays manual (it publishes).
+
+### 16.7 Own copies — divergence fix (WS-O, new `contrib/ownsync.py`)
+
+`git_upstream._sync_plain` is unchanged except its diverged branch (ff-only
+refused with ahead > 0) for a root whose `kind_of` is `own`: it calls
+`ownsync.resolve(root, action=, push=)` (slot held) instead of recording a
+`diverged` failure.
+
+- `R` = reflog values of `refs/remotes/origin/<b>` (old and new sides) +
+  current tip. `U` = `git rev-list HEAD --not <tip> <R…>` (never-published
+  commits; one process). `X` = `merge-base --independent` of the R values
+  HEAD contains. **ok** iff every X ⊆ tip.
+- ok, U non-empty, no merges in U → pick U onto tip (scratch), clean → land,
+  push (not busy-gated; the land is). U has merges → merge tip into HEAD
+  instead. Conflict → `own_state = needs-merge` → Merge with Claude
+  (`own-sync`).
+- not ok (rewound, rewritten, unrelated history) or X empty (no reflog) →
+  `own_state = github-changed`: nothing moves; fixes **Use the version on
+  GitHub** (backup incl. wip, `reset --keep`/`--hard` tip), **Put my edits on
+  top** (pick exactly U onto tip — never re-publishes a removed commit — then
+  push; REFUSED with a sentence when U contains a merge, since a merge would
+  carry the removed commits back), **Publish mine over it** (confirm;
+  `push --force-with-lease=<b>:<tip>`).
+- Uncommitted tracked edits overlapping the incoming side → `own_state =
+  edits` naming the files, fix **Save my edits and continue** (commit those
+  paths as the author, then resolve again).
+- Manual buttons: `publish_now(root)` (= `sync_repo(push=True)`),
+  `check_now(root)`, and the three above. `ownsync.status(root) -> {state,
+  unpublished:int, github_new:int, files:[…], message}` (no network).
+- The A3 engine takeover of own apps is deleted (`owns` for own kinds,
+  `refs/fused/origin-seen`, `_synced`, reflog ordering).
+
+### 16.8 git_upstream + install page + git panel (WS-G)
+
+- `_sync_locked`: `kind_of(root) == "github"` → `engine.sync` (never plain);
+  everything else → `_sync_plain` (own diverged hook above). Delete
+  `follows_author` uses: the old Update/Switch card stays hidden for `github`
+  kind via `kind_of`. Delete `_contrib_owns`/settle paths.
+- Install page (`appfile_git.probe/install`, `appfile.install_target`,
+  `templates/fusedapp/template.html`, `apps/marketplace/FusedFilePage.tsx`):
+  for an installed `github`-kind copy the state comes from `engine.status`;
+  "Get the latest" calls `engine.bring_in`; with changes the page says "You
+  have your own changes in this app. Open it to bring in <who>'s latest."; a
+  colliding local file names the file. No git words anywhere on the page.
+- Git panel (`templates/git/ops.py` + its UI): Push hidden/refused with a plain
+  sentence for `github` kind. Explorer ↑N marks need no change (P3).
+- App Doctor: `github` copies → "Open app page"; own `github-changed`/`edits`
+  rows → the page's fix buttons.
+
+### 16.9 Activity + actions API (WS-A, router + new `contrib/actions.py`)
+
+- `store.add_activity(app_dir, kind, text, *, backup=None, aside=None) -> id`;
+  `store.activity(app_dir) -> [{id, at, kind, text, undo: bool}]` newest
+  first, 50 kept. Every engine/ownsync/proposal move writes one.
+- `actions.for_app(app_dir) -> {panel, actions}` is the ONE place that decides
+  which buttons exist: `panel = {kind, repo, who, last_checked, state,
+  sentence, files, unproposed, unpublished, github_new}`, `actions = [{id,
+  label, primary, confirm?: sentence, danger?}]`. Ids: `check`, `bring-in`,
+  `merge-claude`, `keep-mine`, `use-theirs`, `move-aside`, `go-back-main`,
+  `propose`, `update-proposal`, `withdraw`, `remix`, `discard`, `push-main`,
+  `publish-now`, `use-github`, `put-on-top`, `publish-over`, `save-edits`,
+  `sign-in`, `retry`. Buttons are filtered by flags (P1) here and only here.
+- `GET /api/contrib/app` gains `panel`, `actions`, `activity`. New
+  `POST /api/contrib/action {path, action, confirm?, args?}` dispatches every
+  id (long ones → `{ok, job}`), `POST /api/contrib/restore {path, id}`.
+  Existing routes stay as thin aliases until the frontend moves.
+- `last_checked` = time of the last successful fetch (engine/git_upstream).
+
+### 16.10 Frontend (WS-F)
+
+One **Source panel** at the top of Overview replacing CopyStatusCard's state
+strip: sentence + files + the server's `actions` (primary first, confirm
+sheet when `confirm`), "checked 3 min ago · Check now", and an **Activity**
+disclosure listing the activity lines with Undo/Restore. Propose dialog lists
+untracked files as unticked checkboxes (`include`). Inbox items show "No
+longer fits" + Ask to update / Merge with Claude. Install page wording per
+§16.8. Never invent a button the server did not send.
+
+### 16.11 Ownership (v2 workstreams; agents do not commit)
+
+| WS | files |
+|---|---|
+| WS-C core | `contrib/engine.py`, `contrib/follow.py`, `contrib/replay.py`, `contrib/merge_job.py`, `tests/test_contrib_engine.py`, `tests/test_contrib_merge_job.py` |
+| WS-G guards | `contrib/store.py`, `contrib/classify.py`, `contrib/flags.py`, `git_upstream.py`, `app_git.py`, `claude_agent/agent.py` (commit pathspec/identity only), `appfile_git.py`, `appfile.py` (install-state only), `app_doctor.py`, `templates/git/ops.py`, `templates/fusedapp/template.html`, `tests/test_contrib_store.py` + touched existing suites |
+| WS-O own | `contrib/ownsync.py` (new), `tests/test_contrib_ownsync.py` |
+| WS-P proposals | `contrib/proposals.py`, `contrib/inbox.py`, `contrib/remix.py`, `contrib/gh.py`, `contrib/contributors.py`, `contrib/trycopy.py`, `tests/test_contrib_{proposals,inbox,remix}.py` |
+| WS-A api | `server/routers/contrib.py`, `contrib/actions.py` (new), `server/routers/apps.py` (card field), `tests/test_contrib_router.py`, `tests/test_contrib_actions.py` |
+| WS-F frontend | `frontend/src/platform/lib/contrib.ts`, `frontend/src/shell/contrib/*`, `frontend/src/styles/contrib.css`, `frontend/src/apps/marketplace/FusedFilePage.tsx`, git panel UI file for Push |
+
+Cross-WS calls use exactly the names in §16.1–16.9. Need something another
+WS owns → message that WS (and the TL). Tests: real temp repos + FakeGitHub,
+`-n0`; port every audit repro (scratchpad `audit-{user,author,contrib}/`) that
+describes a v1 bug as a test asserting the FIXED behaviour.
