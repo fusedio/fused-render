@@ -71,9 +71,14 @@ SIGNED_OUT = "--signed-out" in ARGS
 LATE_COMMANDS = "--late-commands" in ARGS
 COMMANDS_AFTER_REPLY = "--commands-after-reply" in ARGS
 IGNORE_EOF = "--ignore-eof" in ARGS
+IGNORE_CANCEL = "--ignore-cancel" in ARGS        # a prompt that never stops
+PERM_AFTER_CANCEL = "--perm-after-cancel" in ARGS
+REPLAY_GAP = "--replay-gap" in ARGS
 CHECK_ECHO = _flag("--check-echo")
 DUMP_ENV = _flag("--dump-env")
 TEXT = _flag("--text", "Hello")
+if "--surrogate" in ARGS:
+    TEXT += "\ud83d"   # half an emoji: what a chunk boundary can leave
 TOOL_KIND = _flag("--tool-kind", "execute")
 TOOL_TITLE = _flag("--tool-title", "Run ls")
 COMMANDS = [{"name": "help"}, {"name": "model"}]
@@ -127,6 +132,12 @@ def _text(kind, text):
 def _load(rid):
     """The replay a real `session/load` streams before its reply — prompts,
     answers, and the rest a turn leaves (thoughts, a tool, usage)."""
+    if REPLAY_GAP:
+        # A prompt whose turn left no text (a tool, nothing said), then the
+        # next prompt: two turns, never one prompt "q0q1".
+        _text("user_message_chunk", "gap q0")
+        _update("tool_call", toolCallId="gap", title="Run ls", kind="execute",
+                status="completed", rawInput={"command": "ls"})
     for i in range(REPLAY):
         _text("user_message_chunk", "replayed q%d" % (i + 1))
         _text("agent_thought_chunk", "thinking about q%d" % (i + 1))
@@ -270,10 +281,13 @@ def _prompt(rid, params):
         if PERMS:
             _ask(PERMS)
         if BLOCK_UNTIL:
-            while not os.path.exists(BLOCK_UNTIL) and not _cancel.is_set() \
-                    and not _eof.is_set():
+            while not os.path.exists(BLOCK_UNTIL) and not _eof.is_set() \
+                    and (IGNORE_CANCEL or not _cancel.is_set()):
                 time.sleep(0.05)
         if _cancel.is_set():
+            if PERM_AFTER_CANCEL:
+                # Winding down still asks: a card raised mid-cancel.
+                _ask(1)
             _reply(rid, {"stopReason": "cancelled"})
             return
         if WITH_ERROR:

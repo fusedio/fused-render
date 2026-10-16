@@ -86,7 +86,8 @@ class Session:
     """One host subprocess against the fake, with the files it writes."""
 
     def __init__(self, agent, tmp_path, resume=False, fake_args=(), env=None,
-                 transcript_seed=None, cli_mode=None, messages=()):
+                 transcript_seed=None, cli_mode=None, messages=(),
+                 seed_bucket=None):
         import agent_roots  # importable once agent.py seeded the shared dir
         self.agent = agent
         # A resume names its session; a fresh one learns it off the init row,
@@ -102,8 +103,13 @@ class Session:
         with open(os.path.join(self.run_dir, "meta.json"), "w") as fh:
             json.dump({"resumed_from": self._sid, "file": self.cwd,
                        "backend": "copilot"}, fh)
-        self.bucket = os.path.join(agent_roots.projects_dir("copilot"),
-                                   agent_roots.munge(self.cwd))
+        # Where this session's transcript lives: the cwd's own bucket, or —
+        # `seed_bucket`, a resume whose transcript is elsewhere (a moved
+        # folder) — that one.
+        self.cwd_bucket = os.path.join(agent_roots.projects_dir("copilot"),
+                                       agent_roots.munge(self.cwd))
+        self.bucket = os.path.join(agent_roots.projects_dir("copilot"), seed_bucket) \
+            if seed_bucket else self.cwd_bucket
         self.registry_dir = agent_roots.sessions_dir("copilot")
         if transcript_seed:
             os.makedirs(os.path.dirname(self.transcript), exist_ok=True)
@@ -359,6 +365,12 @@ def test_every_prompt_ends_in_exactly_one_result(start, agent):
     assert len(finals) == 1
     assert finals[0]["message"]["content"] == [{"type": "text", "text": "Hello world!"}]
     assert finals[0]["message"]["usage"]["input_tokens"] == 1234
+    # L16: the reply's `outputTokens` rides the last message's delta + row.
+    assert finals[0]["message"]["usage"]["output_tokens"] == 7
+    deltas = [r for r in rows if r.get("type") == "stream_event"
+              and r["event"]["type"] == "message_delta"]
+    assert deltas[-1]["event"]["usage"]["output_tokens"] == 7
+    assert result["usage"]["output_tokens"] == 7
     # Every row is stamped.
     assert all(r.get("timestamp", "").endswith("Z") for r in rows)
 
@@ -408,9 +420,8 @@ def test_a_tool_call_becomes_the_claude_tool_rows(start, agent):
     assert block["name"] == "Bash"
     assert block["input"]["command"] == "ls -la"
     assert block["input"]["description"] == "list files"
-    assert block["input"]["_acp"] == {"kind": "execute", "title": "Run ls",
-                                      "raw": {"command": "ls -la",
-                                              "description": "list files"}}
+    # L11: kind + title only — a mapped kind's input already says the rest.
+    assert block["input"]["_acp"] == {"kind": "execute", "title": "Run ls"}
     tool_rows = [r for r in rows if r.get("type") == "assistant"
                  and r["message"]["content"][0]["type"] == "tool_use"]
     assert len(tool_rows) == 1 and tool_rows[0]["message"]["content"] == [block]
@@ -448,8 +459,7 @@ def test_tool_mapping_table(host_mod, tmp_path):
     assert m("read", "Read", {"path": "a.py"}, [], "")[:1] == ("Read",)
     assert m("read", "Read", {}, [{"path": "b.py"}], "")[1]["file_path"] == "b.py"
     assert m("fetch", "Fetch", {"url": "https://x"}, [], "") == (
-        "WebFetch", {"url": "https://x",
-                     "_acp": {"kind": "fetch", "title": "Fetch", "raw": {"url": "https://x"}}})
+        "WebFetch", {"url": "https://x", "_acp": {"kind": "fetch", "title": "Fetch"}})
     name, inp = m("search", "Search", {"pattern": "foo", "path": "src"}, [], "")
     assert (name, inp["pattern"], inp["path"]) == ("Grep", "foo", "src")
     name, inp = m("edit", "Create", {"path": "fresh.txt", "content": "x"}, [], str(tmp_path))
@@ -459,8 +469,15 @@ def test_tool_mapping_table(host_mod, tmp_path):
     assert (name, inp["file_path"], inp["diff"]) == ("Edit", "there.txt", "d")
     name, inp = m("other", "fused_approvals-app_state", {"reason": "look"}, [], "")
     assert name == "mcp__fused_approvals__app_state" and inp["reason"] == "look"
+    # An unmapped kind keeps Copilot's own input under `_acp.raw`.
+    assert inp["_acp"] == {"kind": "other", "title": "fused_approvals-app_state",
+                           "raw": {"reason": "look"}}
     assert m("other", "github-list_issues", {}, [], "")[0] == "github-list_issues"
     assert m("", "", None, None, "")[0] == "tool"
+    # Every mapping carries `_acp` with the kind and title it came from.
+    for kind in ("execute", "read", "fetch", "search", "edit", "think"):
+        acp = m(kind, "T", {}, [], str(tmp_path))[1]["_acp"]
+        assert (acp["kind"], acp["title"]) == (kind, "T")
 
 
 def test_a_second_prompt_waits_for_the_first_result(start, agent):
@@ -688,11 +705,12 @@ def test_an_unanswered_card_denies_itself_after_the_timeout(start):
 
 
 def test_an_interrupt_cancels_the_turn_and_answers_once(start, agent):
-    """The Stop button's road: `session/cancel` at once, every open card
-    rejected exactly once, the result on the cancelled reply, then the
-    `control_response` `_await_control_response` waits for. The transcript
-    ends on Claude Code's own stop marker, which the tasks readers already
-    read as a closed turn."""
+    """The Stop button's road: `session/cancel` and the `control_response`
+    `_await_control_response` waits for, both at once (M3: as Claude
+    answers it); every open card rejected exactly once; the result on the
+    cancelled reply, carrying no reply text (M1). The transcript ends on
+    Claude Code's own stop marker, which the tasks readers already read as
+    a closed turn."""
     s = start(fake_args=["--perm"])
     assert _wait_for(lambda: len(s.out()) >= 1)
     s.say("clean")
@@ -703,14 +721,20 @@ def test_an_interrupt_cancels_the_turn_and_answers_once(start, agent):
     resp = agent._await_control_response(s.run_dir, rid, timeout=10.0,
                                          start_offset=offset)
     assert resp == {"still_queued": []}
-    results = s.results()
+    results = s.wait_results(1)
     assert len(results) == 1
     assert results[0]["is_error"] is True
     assert results[0]["stop_reason"] == "cancelled"
+    # M1: the reply streamed "Hello world" before the stop; an error
+    # result must not carry it, or `_poll` reads the prose as the error.
+    assert results[0]["result"] == ""
     rows = s.out()
-    assert [r["type"] for r in rows[-2:]] == ["result", "control_response"]
-    assert rows[-1]["response"] == {"request_id": rid, "subtype": "success",
-                                    "response": {"still_queued": []}}
+    kinds = [r["type"] for r in rows]
+    answer = kinds.index("control_response")
+    assert answer < kinds.index("result")
+    assert rows[answer]["response"] == {"request_id": rid, "subtype": "success",
+                                        "response": {"still_queued": []}}
+    assert rows[-1]["type"] == "result"
     # `control_response` is not a turn row: the run reads closed.
     assert agent._turn_state(s.run_dir) == (False, False)
     assert any(e.get("msg", {}).get("method") == "session/cancel" for e in s.fake())
@@ -846,7 +870,7 @@ def test_signed_out_is_an_api_error_and_a_clean_exit(start, agent):
     required" (verified live): the readers' failure shape — init, an
     `isApiErrorMessage` row naming it, an error result — then a clean exit
     that leaves no transcript for the tasks scan to list."""
-    s = start(fake_args=["--signed-out"])
+    s = start(fake_args=["--signed-out"], messages=["hi"])
     _assert_failed_start(s, agent, "Authentication required")
     assert "session/new" in s.methods_seen()
     assert "session/prompt" not in s.methods_seen()
@@ -857,7 +881,7 @@ def test_a_session_id_flag_beside_acp_fails_loudly(start, agent):
     on stderr). An argv that still carries it must not read as a session
     that is merely slow: init, then an error result quoting the CLI's own
     stderr and exit code, then the host is gone."""
-    s = start(fake_args=["--session-id", str(uuid.uuid4())])
+    s = start(fake_args=["--session-id", str(uuid.uuid4())], messages=["hi"])
     _assert_failed_start(s, agent, "'--acp' cannot be used with '--session-id <id>'")
     assert "(code 2)" in s.results()[0]["result"]
     assert s.fake() == []   # it never read a byte
@@ -881,6 +905,9 @@ def _assert_failed_start(s, agent, needle):
     assert not os.path.exists(s.bucket)   # no transcript at all
     assert not os.path.exists(os.path.join(s.run_dir, "host.json"))
     assert not os.path.isdir(s.registry_dir) or not os.listdir(s.registry_dir)
+    # M7: the opening message is retired, not left queued on a dead run.
+    assert s.inbox_pending() == []
+    assert len(os.listdir(os.path.join(s.run_dir, "inbox", "done"))) == 1
 
 
 def test_auto_mode_turns_allow_all_on_before_the_first_prompt(start):
@@ -982,6 +1009,133 @@ def test_the_cli_gets_copilots_env_not_claudes(start):
     assert env["COPILOT_GITHUB_TOKEN"] == "test-token"
 
 
+def test_a_stop_that_kills_the_transport_reads_as_a_stop(start, agent):
+    """M2: `_cancel`'s tree-kill (or a respawning `_send`) drops `cancelled`
+    and then kills the CLI. That death is the user's Stop: the transcript
+    ends on the interrupt mark, not an API-error row, and out.jsonl still
+    gets its one result."""
+    s = start(fake_args=["--die"])
+    assert _wait_for(lambda: len(s.out()) >= 1)
+    open(os.path.join(s.run_dir, "cancelled"), "w").close()
+    s.say("go")
+    results = s.wait_results(1)
+    assert results[0]["is_error"] is True and results[0]["stop_reason"] == "cancelled"
+    assert results[0]["result"] == ""
+    assert not any(r.get("isApiErrorMessage") for r in s.out())
+    tx = s.tx()
+    assert not any(r.get("isApiErrorMessage") for r in tx)
+    assert tasks_store.is_interrupt_mark(tasks_store.first_text(
+        [r for r in tx if r["type"] == "user"][-1]["message"]["content"]))
+    assert not session_liveness.transcript_turn_open(s.transcript, time.time())
+
+
+def test_a_cancel_copilot_never_answers_is_settled_by_the_host(start, agent):
+    """M3: the interrupt is answered at once, and a prompt that ignores the
+    cancel is settled by the host after the grace (result `cancelled`, the
+    interrupt mark) and the CLI killed — never left open for `_cancel`'s
+    5 s wait to tree-kill."""
+    gate = os.path.join(agent.RUNS, "never")
+    s = start(fake_args=["--block-until", gate, "--ignore-cancel"],
+              env={"FUSED_COPILOT_HOST_CANCEL_GRACE_SECONDS": "0.6"})
+    s.say("go")
+    assert _wait_for(lambda: s.prompts_seen())
+    offset = os.path.getsize(os.path.join(s.run_dir, "out.jsonl"))
+    asked = time.monotonic()
+    rid = s.control("interrupt")
+    assert agent._await_control_response(s.run_dir, rid, timeout=5.0,
+                                         start_offset=offset) == {"still_queued": []}
+    assert time.monotonic() - asked < 2.0, "answered at once, not after the grace"
+    assert not s.results()
+    results = s.wait_results(1, timeout=10)
+    assert len(results) == 1 and results[0]["stop_reason"] == "cancelled"
+    assert s.proc.wait(timeout=15) == 0
+    cli_pid = int(open(os.path.join(s.run_dir, "pid")).read())
+    assert _wait_for(lambda: not agent._pid_alive(str(cli_pid)), timeout=5)
+    assert tasks_store.is_interrupt_mark(tasks_store.first_text(
+        [r for r in s.tx() if r["type"] == "user"][-1]["message"]["content"]))
+    assert len(s.results()) == 1
+
+
+def test_a_card_raised_while_cancelling_is_refused_at_once(start, agent):
+    """L6: Copilot asks once more while unwinding a cancel — answered
+    `reject_once` at once, no card ever written for the page to draw."""
+    gate = os.path.join(agent.RUNS, "never")
+    s = start(fake_args=["--block-until", gate, "--perm-after-cancel"])
+    s.say("go")
+    assert _wait_for(lambda: s.prompts_seen())
+    s.control("interrupt")
+    results = s.wait_results(1)
+    assert results[0]["stop_reason"] == "cancelled"
+    asked = [e["sent"]["id"] for e in s.fake()
+             if (e.get("sent") or {}).get("method") == "session/request_permission"]
+    assert len(asked) == 1
+    answers = _perm_answers(s, asked[0])
+    assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-no"]
+    assert s.perm_requests() == []
+
+
+def test_lone_surrogates_survive_both_directions(start, agent):
+    """M4: half an emoji in the prompt and in a streamed chunk. Every line
+    is ASCII-escaped JSON, so nothing raises and every reader parses it."""
+    s = start(fake_args=["--surrogate"])
+    s.say("hi \ud83d")
+    results = s.wait_results(1)
+    assert results[0]["is_error"] is False
+    assert results[0]["result"] == "Hello\ud83d world!"
+    echo = next(r for r in s.out() if agent._starts_new_turn(r))
+    assert echo["message"]["content"][0]["text"] == "hi \ud83d"
+    sent = s.prompts_seen()[0]["msg"]["params"]["prompt"][0]["text"]
+    assert sent == "hi \ud83d"
+    for path in (os.path.join(s.run_dir, "out.jsonl"), s.transcript):
+        with open(path, "rb") as fh:
+            fh.read().decode("ascii")   # escaped, never raw
+    assert tasks_store._parse_head(s.transcript)[2] == "hi \ud83d"
+    p = agent._poll(os.path.basename(s.run_dir))
+    assert p["text"] == "Hello\ud83d world!"
+
+
+def test_accept_edits_on_a_card_is_that_cards_allow_always(start):
+    """M8 (D5 narrowed): "allow, accept edits" answers allow_always on THIS
+    card and never turns allow_all on — only `auto` does."""
+    s = start(fake_args=["--perm"])
+    s.say("clean")
+    assert _wait_for(lambda: s.perm_requests())
+    s.decide(s.perm_requests()[0]["id"], decision="allow", scope="once",
+             mode="acceptEdits")
+    s.wait_results(1)
+    answers = _perm_answers(s, _perm_rpc_id(s))
+    assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-always"]
+    assert s.config_values() == ["off"]   # the spawn's own, nothing after
+
+
+def test_a_resume_writes_to_the_transcript_it_already_has(start):
+    """M9: a session whose transcript sits in another bucket (its folder was
+    moved) is continued THERE, never split into a second file under the
+    new cwd's bucket."""
+    seed = [{"type": "user", "timestamp": "2026-10-16T10:00:01.000Z",
+             "message": {"role": "user", "content": [{"type": "text", "text": "replayed q1"}]},
+             "uuid": "u1", "parentUuid": None, "entrypoint": "sdk-cli"},
+            {"type": "assistant", "timestamp": "2026-10-16T10:00:02.000Z",
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "a1"}]},
+             "uuid": "a1", "parentUuid": "u1"}]
+    s = start(resume=True, transcript_seed=seed, seed_bucket="-old-place")
+    s.say("more")
+    s.wait_results(1)
+    assert [r["message"]["content"][0]["text"] for r in s.tx()
+            if r["type"] == "user"] == ["replayed q1", "more"]
+    assert not os.path.exists(s.cwd_bucket)
+
+
+def test_replayed_prompts_with_no_reply_between_stay_two_turns(start):
+    """L10: a replayed prompt whose turn said nothing (a tool, no text) is
+    closed by the next non-prompt update — the next prompt is its own."""
+    s = start(resume=True, fake_args=["--replay", "1", "--replay-gap"])
+    assert _wait_for(lambda: len(s.tx()) >= 4)
+    time.sleep(0.2)
+    assert [r["message"]["content"][0]["text"] for r in s.tx()
+            if r["type"] == "user"] == ["gap q0", "replayed q1"]
+
+
 # ------------------------------------------------- the host, in process
 #
 # The two reap edges a subprocess cannot hit on cue: driven against the same
@@ -1047,6 +1201,38 @@ def test_a_cli_that_ignores_eof_is_killed(agent, host_mod, tmp_path, monkeypatch
     host.close()
     assert host.cli.returncode == -signal.SIGKILL
     assert any(e.get("eof") for e in _rows(log)), "stdin was closed first"
+
+
+def test_a_permission_that_throws_is_still_answered_once(
+        agent, host_mod, tmp_path, monkeypatch):
+    """M5: anything going wrong while a card is built (here the tool
+    mapping raises) answers the RPC `cancelled`, once — Copilot is never
+    left blocked on a request nobody will answer."""
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+
+    def boom(*a, **k):
+        raise RuntimeError("mapping exploded")
+
+    monkeypatch.setattr(host_mod, "_map_tool", boom)
+    host, run_dir, log = _host_in_process(agent, host_mod, tmp_path, ["--perm"])
+    try:
+        assert host.handshake()
+        host.send_prompt("clean")
+
+        def answers():
+            asked = [e["sent"]["id"] for e in _rows(log)
+                     if (e.get("sent") or {}).get("method") == "session/request_permission"]
+            return [e["msg"] for e in _rows(log) if asked
+                    and e.get("msg", {}).get("id") == asked[0] and "method" not in e["msg"]]
+
+        assert _wait_for(lambda: answers())
+        assert _wait_for(lambda: not host.turn_open)
+        assert [a["result"] for a in answers()] == [{"outcome": {"outcome": "cancelled"}}]
+        assert host.pending_perm == {}
+        assert not os.path.isdir(os.path.join(run_dir, "perm")) or \
+            not os.listdir(os.path.join(run_dir, "perm"))
+    finally:
+        host.close()
 
 
 # ------------------------------------------------- permission_server flag

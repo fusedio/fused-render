@@ -64,6 +64,7 @@ import importlib.util
 import itertools
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -97,16 +98,16 @@ _HANDSHAKE_SECONDS = float(
 # prompt back — a reply that never comes must not wedge the session.
 _EXIT_WAIT_SECONDS = 5.0
 _CONFIG_WAIT_SECONDS = 5.0
+# How long a cancelled prompt may take to answer before the host stops
+# waiting: it settles the turn itself and kills the CLI (`_reap_cancel`).
+_CANCEL_GRACE_SECONDS = float(
+    os.environ.get("FUSED_COPILOT_HOST_CANCEL_GRACE_SECONDS", "15"))
 _AGENT_MODE = "https://agentclientprotocol.com/protocol/session-modes#agent"
 # The permission wait mirrors permission_server.py: same env knob, same poll,
 # same write window — the card on the other side is the same card.
 _PERM_WAIT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
 _PERM_POLL = 0.15
 _DECISION_WRITE_WINDOW = 2.0
-# Mirrors SWITCHABLE_MODES in agent.py / permission_server.py. Never
-# `bypassPermissions`; for Copilot both switchable modes mean `allow_all=on`
-# (D5), so the set only gates WHETHER the switch happens.
-_SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
 _UNSUPPORTED = "unsupported by copilot"
 # Claude Code's own stop marker, as the tasks readers spell it
 # (tasks_store._INTERRUPT_MARKS). Written to the transcript on a cancelled
@@ -331,7 +332,10 @@ class _Peer:
         self._reader.start()
 
     def _send(self, msg: dict) -> bool:
-        data = (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
+        # ASCII-escaped, like every line this host writes: a lone surrogate
+        # (half an emoji, cut by a chunk boundary or a paste) is valid JSON
+        # as `\ud83d` and raises as raw UTF-8.
+        data = (json.dumps(msg) + "\n").encode("ascii")
         with self._write_lock:
             try:
                 self.cli.stdin.write(data)
@@ -424,14 +428,15 @@ def _first_path(raw: dict, locations) -> str:
 def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "") -> tuple:
     """`(name, input)` for one ACP tool call, per D14: the Claude tool name the
     chat already has a card and a chip for, with the fields that card reads,
-    plus `_acp: {kind, title, raw}` so nothing Copilot said is lost. An MCP
-    tool reached through `--additional-mcp-config` surfaces as
+    plus `_acp: {kind, title}` (and `raw`, the call's own input, only for a
+    kind with no Claude twin — a mapped one already carries every field it
+    has). An MCP tool reached through `--additional-mcp-config` surfaces as
     `<server>-<tool>`; fused's own server becomes `mcp__fused_approvals__<tool>`
     (the name agent.py pre-allows and `_segments_from_rows` strips)."""
     raw = raw if isinstance(raw, dict) else ({} if raw is None else {"value": raw})
     kind = str(kind or "")
     title = str(title or "")
-    acp = {"kind": kind, "title": title, "raw": raw}
+    acp = {"kind": kind, "title": title}
     name = _KIND_TO_TOOL.get(kind)
     if kind == "execute":
         inp = {"command": str(raw.get("command") or raw.get("cmd") or title),
@@ -458,6 +463,7 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "") -> tupl
                "path": str(raw.get("path") or _first_path(raw, locations) or "")}
     else:
         inp = dict(raw)
+        acp["raw"] = raw
         mcp = ""
         for cand in (title, raw.get("name"), raw.get("tool"), raw.get("toolName")):
             if isinstance(cand, str) and cand.startswith(_MCP_PREFIX):
@@ -493,7 +499,7 @@ def _tool_output_text(update: dict) -> str:
         if isinstance(raw, str):
             parts.append(raw)
         elif raw is not None:
-            parts.append(json.dumps(raw, ensure_ascii=False))
+            parts.append(json.dumps(raw))
     return "\n".join(parts)
 
 
@@ -573,8 +579,13 @@ class _Host:
         self.replay_turns = []
         self.replay_user = None
         self.replay_agent = []
-        self.interrupts = []          # control request ids awaiting the cancelled reply
-        self.pending_perm = {}        # rpc id -> {"perm_id", "done": Event, "answered"}
+        self.replay_gap = False       # a non-prompt update since the last prompt chunk
+        # The Stop road (§5): set when `session/cancel` goes out, cleared when
+        # the turn ends. `cancel_deadline` is when a cancelled prompt that
+        # never answered is settled by the host itself (`_reap_cancel`).
+        self.cancelling = False
+        self.cancel_deadline = None
+        self.pending_perm = {}        # rpc id -> {"perm_id", "done": Event, "options"}
         self.slash_commands = []
         self.commands_dirty = False   # the list moved after the init row
         self.results = 0              # result rows written so far
@@ -591,9 +602,17 @@ class _Host:
     # ------------------------------------------------------------ writers
 
     def _transcript_path(self) -> str:
-        """`<projects>/<munge(cwd)>/<sid>.jsonl`, "" while the id is unknown."""
+        """`<projects>/<munge(cwd)>/<sid>.jsonl`, "" while the id is unknown.
+        A resume continues the transcript it already has, in whatever bucket
+        that is (a relocated folder's session keeps its old bucket until the
+        move rewrites it): the tasks readers know a session by ONE file, and a
+        second, fresh one under the new cwd would split its history."""
         if not self.sid:
             return ""
+        if self.resume and not self.agent._bad_id(self.sid):
+            found = agent_roots.find_transcript(self.sid, self.cwd)
+            if found and found[0] == BACKEND:
+                return found[1]
         return os.path.join(agent_roots.projects_dir(BACKEND),
                             agent_roots.munge(self.cwd), self.sid + ".jsonl")
 
@@ -602,7 +621,9 @@ class _Host:
             return
         row.setdefault("session_id", self.sid)
         row["timestamp"] = _now_iso()
-        self._out.write((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+        # `ensure_ascii` on (the default): see `_Peer._send`. The readers
+        # json.loads every line, so the escape is invisible to them.
+        self._out.write((json.dumps(row) + "\n").encode("ascii"))
         self._out.flush()
 
     def _emit_tx(self, row: dict) -> None:
@@ -620,7 +641,7 @@ class _Host:
         if self._tx is None:
             _private_dirs(os.path.dirname(self.transcript_path))
             self._tx = _append_private(self.transcript_path)
-        self._tx.write((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+        self._tx.write((json.dumps(row) + "\n").encode("ascii"))
         self._tx.flush()
 
     def _usage(self) -> dict:
@@ -694,10 +715,12 @@ class _Host:
             "message": {"role": "assistant", "model": self.model,
                         "content": [], "usage": self._usage()}}})
 
-    def _close_message(self) -> None:
+    def _close_message(self, output_tokens: int = 0) -> None:
         """End the streamed message: `message_delta`, `message_stop`, then the
         finalized `assistant` row the transcript keeps (and `_poll` reads
-        the usage off)."""
+        the usage off). `output_tokens` is known only for the turn's LAST
+        message — the prompt reply's usage, folded in by `_finish_turn`;
+        ACP reports none per message."""
         if not self.msg_open:
             return
         self.msg_open = False
@@ -706,7 +729,7 @@ class _Host:
         self.text_parts, self.thinking_parts = [], []
         self._emit_out({"type": "stream_event", "event": {
             "type": "message_delta", "delta": {"stop_reason": "end_turn"},
-            "usage": {"output_tokens": 0}}})
+            "usage": {"output_tokens": output_tokens}}})
         self._emit_out({"type": "stream_event", "event": {"type": "message_stop"}})
         content = []
         if thinking:
@@ -716,8 +739,10 @@ class _Host:
         if not content:
             return
         self.turn_messages += 1
+        usage = self._usage()
+        usage["output_tokens"] = output_tokens
         message = {"role": "assistant", "model": self.model,
-                   "content": content, "usage": self._usage()}
+                   "content": content, "usage": usage}
         self._emit_out({"type": "assistant", "message": message})
         self._emit_tx({"type": "assistant", "message": message,
                        "isMeta": False, "isSidechain": False})
@@ -809,25 +834,62 @@ class _Host:
                 self.turn_open = False
                 self.msg_open = False
                 self.text_parts, self.thinking_parts = [], []
+                # Tool ids are per turn: a later card naming one must not be
+                # dressed in a finished call's input.
+                self.tools = {}
+                self.cancelling = False
+                self.cancel_deadline = None
                 self._write_registry("idle")
                 _post_event(self.run_dir, "turn_ended", at=time.time(),
                             pid=self.cli.pid, session_id=self.sid)
 
+    def _write_interrupt_mark(self) -> None:
+        """The stop button's own last word in the transcript, so the tasks
+        readers say "Interrupted by you" and read the turn as closed."""
+        self._emit_tx({"type": "user", "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": _INTERRUPT_MARK}]},
+            "entrypoint": "sdk-cli", "isMeta": False, "isSidechain": False})
+        self.tail_closed = True
+
     def _finish_turn(self, rpc: _Rpc) -> None:
-        self._close_message()
+        reply = rpc.result if rpc.error is None and isinstance(rpc.result, dict) else {}
+        usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
+
+        def n(key):
+            v = usage.get(key)
+            return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+        # The reply's output count rides the turn's last message (L16), the
+        # only per-turn number ACP gives — a poll mid-turn still reads 0.
+        self._close_message(output_tokens=n("outputTokens"))
         duration_ms = int((time.monotonic() - self.turn_started) * 1000)
         result = {"type": "result", "session_id": self.sid, "backend": BACKEND,
                   "num_turns": self.turn_messages, "duration_ms": duration_ms,
                   "usage": self._usage()}
-        if rpc.error is not None:
+        died = rpc.error is not None and \
+            rpc.error.get("message") in ("copilot exited", "copilot is not running")
+        if died and os.path.exists(os.path.join(self.run_dir, "cancelled")):
+            # The transport died BECAUSE the user stopped it (`_cancel`'s
+            # tree-kill drops `cancelled` first; a respawning `_send` does
+            # too): a stop, not a failure. The transcript says so the way
+            # an answered cancel does; out.jsonl still gets its result.
+            self._write_interrupt_mark()
+            result.update({"subtype": "error_during_execution", "is_error": True,
+                           "result": "", "stop_reason": "cancelled"})
+        elif rpc.error is not None:
             # D13: an API/credits failure is an assistant row the readers
             # already know (`isApiErrorMessage`), then an error result.
             text = str(rpc.error.get("message") or "copilot refused the prompt")
             data = rpc.error.get("data")
             if data:
                 text += " — " + (data if isinstance(data, str)
-                                 else json.dumps(data, ensure_ascii=False))
-            if rpc.error.get("message") in ("copilot exited", "copilot is not running"):
+                                 else json.dumps(data))
+            if died:
+                try:
+                    self.cli.wait(timeout=1)   # EOF can beat the exit status
+                except subprocess.TimeoutExpired:
+                    pass
                 tail = _err_tail(self.run_dir)
                 text = "copilot exited (code %s)%s" % (
                     self.cli.poll(), (": " + tail) if tail else "")
@@ -843,27 +905,15 @@ class _Host:
             result.update({"subtype": "error_during_execution", "is_error": True,
                            "result": text, "stop_reason": "error"})
         else:
-            reply = rpc.result if isinstance(rpc.result, dict) else {}
             stop = str(reply.get("stopReason") or "end_turn")
-            usage = reply.get("usage")
-            if isinstance(usage, dict):
-                def n(key):
-                    v = usage.get(key)
-                    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+            if usage:
                 result["usage"] = {
                     "input_tokens": n("inputTokens"),
                     "output_tokens": n("outputTokens"),
                     "cache_read_input_tokens": n("cachedReadTokens"),
                     "cache_creation_input_tokens": n("cachedWriteTokens")}
             if stop == "cancelled":
-                # The stop button's own last word, so the tasks readers say
-                # "Interrupted by you" and read the turn as closed.
-                self._emit_tx({"type": "user", "message": {
-                    "role": "user",
-                    "content": [{"type": "text", "text": _INTERRUPT_MARK}]},
-                    "entrypoint": "sdk-cli", "isMeta": False,
-                    "isSidechain": False})
-                self.tail_closed = True
+                self._write_interrupt_mark()
             elif not self.tail_closed:
                 # A reply that ended on a tool call: close the transcript's
                 # turn with an assistant row carrying no `tool_use`, which is
@@ -875,8 +925,13 @@ class _Host:
                     "isMeta": False, "isSidechain": False})
                 self.tail_closed = True
             ok = stop == "end_turn"
+            # `result` is the REPLY only on success. On an error result
+            # `_poll` shows `result` as the error and runs the account/limit
+            # matchers over it — over a stopped reply's prose, they would
+            # fire on whatever the model happened to be saying.
             result.update({"subtype": "success" if ok else "error_during_execution",
-                           "is_error": not ok, "result": self.turn_text or "",
+                           "is_error": not ok,
+                           "result": (self.turn_text or "") if ok else "",
                            "stop_reason": stop})
         self._emit_tx({"type": "system", "subtype": "turn_duration",
                        "durationMs": duration_ms, "isMeta": False,
@@ -884,11 +939,6 @@ class _Host:
         self._emit_out(result)
         self.result_written = True
         self.results += 1
-        # The interrupts this reply answers. AFTER the result: a
-        # `control_response` is in `_NOT_A_TURN_ROW`, so it may follow one.
-        for rid in self.interrupts:
-            self._control_response(rid, {"still_queued": []})
-        self.interrupts = []
 
     # ------------------------------------------------------- notifications
 
@@ -900,6 +950,8 @@ class _Host:
             return
         kind = str(update.get("sessionUpdate") or "")
         with self.lock:
+            if self.replaying and kind != "user_message_chunk":
+                self.replay_gap = True
             if kind == "agent_message_chunk":
                 self._on_chunk("text", self._chunk_text(update))
             elif kind == "agent_thought_chunk":
@@ -968,9 +1020,14 @@ class _Host:
                                 "context_window": self.context_window})
 
     def _replay_user(self, text: str) -> None:
-        if self.replay_user is not None and self.replay_agent:
+        """A replayed prompt chunk. Chunks of ONE prompt arrive back to back;
+        anything else between two (`replay_gap`: a thought, a tool, a reply
+        with no text) means the first prompt's turn is over, so the two never
+        merge into one."""
+        if self.replay_user is not None and (self.replay_agent or self.replay_gap):
             self.replay_turns.append((self.replay_user, "".join(self.replay_agent)))
             self.replay_user, self.replay_agent = None, []
+        self.replay_gap = False
         self.replay_user = (self.replay_user or "") + text
 
     def backfill_replay(self) -> None:
@@ -1052,6 +1109,29 @@ class _Host:
         return True
 
     def _serve_permission(self, rid, params: dict) -> None:
+        """One `session/request_permission`, on its own thread. REGISTERED
+        FIRST and the whole body guarded: whatever goes wrong in here (a
+        malformed call, a disk error), the RPC is still answered — once,
+        `cancelled` — and Copilot is never left blocked on it (invariant 6)."""
+        options = params.get("options")
+        entry = {"perm_id": "", "done": threading.Event(), "options": options}
+        with self.lock:
+            self.pending_perm[rid] = entry
+            stopping = self.cancelling and self.turn_open
+        try:
+            if stopping:
+                # Raised while the turn is being cancelled (L6): no card for
+                # a tool the user has already said stop to.
+                self._answer_perm(rid, _permission_outcome(options, {"decision": "deny"}))
+                return
+            self._park_permission(rid, params, entry)
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write("copilot_host: permission request failed: %r\n" % (exc,))
+            if self._answer_perm(rid, {"outcome": {"outcome": "cancelled"}}) \
+                    and entry["perm_id"]:
+                _post_card(self.run_dir, "card_cleared", entry["perm_id"])
+
+    def _park_permission(self, rid, params: dict, entry: dict) -> None:
         call = params.get("toolCall")
         call = call if isinstance(call, dict) else {}
         tid = str(call.get("toolCallId") or "")
@@ -1062,12 +1142,9 @@ class _Host:
             name, inp = _map_tool(call.get("kind"), call.get("title"),
                                   call.get("rawInput"), call.get("locations"),
                                   self.cwd)
-        options = params.get("options")
+        options = entry["options"]
         perm_id = self._perm_id()
         _private_dirs(self.perm_dir)
-        entry = {"perm_id": perm_id, "done": threading.Event(), "options": options}
-        with self.lock:
-            self.pending_perm[rid] = entry
         try:
             _write_atomic(os.path.join(self.perm_dir, perm_id + ".req.json"), {
                 "id": perm_id, "tool": name, "input": inp,
@@ -1076,18 +1153,27 @@ class _Host:
             sys.stderr.write("copilot_host: cannot park permission: %r\n" % (exc,))
             self._answer_perm(rid, _permission_outcome(options, {"decision": "deny"}))
             return
+        # Named only once the card is on disk: `reject_pending` writes its
+        # deny next to it, and must not invent a card that was never raised.
+        entry["perm_id"] = perm_id
         # Announce BEFORE blocking, as permission_server does: the card is
         # on screen now and the queue must hear it before the human answers.
         _post_card(self.run_dir, "card_raised", perm_id)
         decision = self._await_decision(entry)
         if decision is None:
             return  # answered elsewhere (a cancel), card already cleared
+        mode = decision.get("mode") if decision.get("decision") == "allow" else None
+        if mode == "acceptEdits":
+            # D5, narrowed (TL 2026-10-16): "allow, and accept edits" is
+            # THIS card's allow_always — Copilot stops asking for this tool
+            # — never the session-wide allow_all, which would wave through
+            # every shell command too.
+            decision = dict(decision, scope="session")
         if self._answer_perm(rid, _permission_outcome(options, decision)):
             # Only the answer that won announces the card gone: a cancel
             # that beat it here has posted its own `card_cleared`.
             _post_card(self.run_dir, "card_cleared", perm_id)
-            if decision.get("decision") == "allow" \
-                    and decision.get("mode") in _SWITCHABLE_MODES:
+            if mode == "auto":
                 # "…and stop asking" (D5): after the RPC reply, so the tool
                 # that asked runs first and everything after it is allowed.
                 self.peer.request("session/set_config_option", {
@@ -1135,16 +1221,18 @@ class _Host:
         with self.lock:
             items = list(self.pending_perm.items())
         for rid, entry in items:
-            res_path = os.path.join(self.perm_dir, entry["perm_id"] + ".res.json")
-            try:
-                fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump({"decision": "deny", "reason": reason}, fh)
-            except OSError:
-                pass  # already decided by the page; the verdict below still stands
+            perm_id = entry["perm_id"]   # "" while the card is not on disk yet
+            if perm_id:
+                res_path = os.path.join(self.perm_dir, perm_id + ".res.json")
+                try:
+                    fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        json.dump({"decision": "deny", "reason": reason}, fh)
+                except OSError:
+                    pass  # already decided by the page; the verdict below still stands
             if self._answer_perm(rid, _permission_outcome(
-                    entry["options"], {"decision": "deny"})):
-                _post_card(self.run_dir, "card_cleared", entry["perm_id"])
+                    entry["options"], {"decision": "deny"})) and perm_id:
+                _post_card(self.run_dir, "card_cleared", perm_id)
 
     # -------------------------------------------------------------- inbox
 
@@ -1215,24 +1303,40 @@ class _Host:
         subtype = str(request.get("subtype") or "")
         if subtype == "interrupt":
             with self.lock:
-                if not self.turn_open:
-                    # Nothing to cancel; `_await_control_response` wants its
-                    # answer inside 5 s or it tree-kills the session.
-                    self._control_response(request_id, {"still_queued": []})
-                    return
-                # Registered BEFORE the cancel goes out: a reply racing it
-                # answers this id from `_finish_turn`, and the late cancel
-                # then reaches an idle session, which is harmless.
-                self.interrupts.append(request_id)
-            self.peer.notify("session/cancel", {"sessionId": self.sid})
-            self.reject_pending("cancelled")
+                cancel = self.turn_open
+                if cancel:
+                    # Set BEFORE the cancel goes out, so a card Copilot
+                    # raises while it winds down is refused at once.
+                    self.cancelling = True
+                    self.cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
+            if cancel:
+                self.peer.notify("session/cancel", {"sessionId": self.sid})
+                self.reject_pending("cancelled")
+            # Answered NOW, as Claude answers it: the cancel is delivered,
+            # and `_await_control_response` tree-kills a session that is
+            # silent for 5 s — which a Copilot still unwinding a tool would
+            # be. The turn's `result` follows on the cancelled reply, or
+            # from `_reap_cancel` if that reply never comes. Nothing reaches
+            # the CLI's own queue (held follow-ups stay in inbox/, which
+            # `_cancel_run` empties), so there is nothing `still_queued`.
+            with self.lock:
+                self._control_response(request_id, {"still_queued": []})
         elif subtype == "set_permission_mode":
             mode = str(request.get("mode") or "")
+
+            def answered(rpc, request_id=request_id):
+                # After Copilot's own answer (L14): the switch is either
+                # in effect or reported as refused, never assumed.
+                with self.lock:
+                    if rpc.error is None:
+                        self._control_response(request_id, {})
+                    else:
+                        self._control_response(request_id, error=str(
+                            rpc.error.get("message") or "set_config_option failed"))
+
             self.peer.request("session/set_config_option", {
                 "sessionId": self.sid, "configId": "allow_all",
-                "value": "on" if mode == "auto" else "off"})
-            with self.lock:
-                self._control_response(request_id, {})
+                "value": "on" if mode == "auto" else "off"}, on_done=answered)
         else:
             with self.lock:
                 self._control_response(request_id, error=_UNSUPPORTED)
@@ -1343,7 +1447,29 @@ class _Host:
                             "is_error": True, "result": text, "stop_reason": "error",
                             "num_turns": 0, "usage": self._usage(),
                             "backend": BACKEND})
+        self._retire_inbox()
         return False
+
+    def _retire_inbox(self) -> None:
+        """A run that never came up retires its user entries to `inbox/done/`:
+        nothing will ever send them, and an undrained entry is what the page
+        draws as a queued bubble on a dead run. The opening prompt is not
+        lost — `_start` keeps it as `meta.message`."""
+        inbox = os.path.join(self.run_dir, "inbox")
+        done = os.path.join(inbox, "done")
+        try:
+            names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
+        except OSError:
+            return
+        for name in names:
+            src = os.path.join(inbox, name)
+            if _read_json(src).get("type") != "user":
+                continue
+            try:
+                _private_dirs(done)
+                os.replace(src, os.path.join(done, name))
+            except OSError:
+                pass
 
     def run(self) -> None:
         """Drain, watch, reap — session_host's `_reap_loop` for this host.
@@ -1374,6 +1500,7 @@ class _Host:
         `reaping`, until it is idle at all — or the CLI is gone."""
         idle_since = None
         while self.cli.poll() is None and not self.peer.dead.is_set():
+            self._reap_cancel()
             held = self.drain_inbox()
             with self.lock:
                 busy = self.turn_open or held or bool(self.pending_perm)
@@ -1386,6 +1513,28 @@ class _Host:
             elif time.monotonic() - idle_since >= _IDLE_REAP_SECONDS:
                 return
             time.sleep(_DRAIN_INTERVAL_SECONDS)
+
+    def _reap_cancel(self) -> None:
+        """A cancelled prompt Copilot never answered (`_CANCEL_GRACE_SECONDS`
+        after `session/cancel`): the turn is settled HERE as the cancel it
+        was — so the page's Stop ends in a `result` whatever the CLI does —
+        and the CLI is killed, since a session that ignores a cancel cannot
+        be trusted with the next prompt. Its reply, if one ever comes, finds
+        the turn closed and is dropped (`_on_prompt_reply`)."""
+        with self.lock:
+            due = self.turn_open and self.cancel_deadline is not None \
+                and time.monotonic() >= self.cancel_deadline
+        if not due:
+            return
+        sys.stderr.write("copilot_host: cancelled prompt unanswered after %gs; "
+                         "killing copilot\n" % _CANCEL_GRACE_SECONDS)
+        rpc = _Rpc("session/prompt")
+        rpc.result = {"stopReason": "cancelled"}
+        self._on_prompt_reply(rpc)
+        try:
+            self.cli.kill()
+        except OSError:
+            pass
 
     def _remove_host_json(self) -> None:
         try:
@@ -1453,6 +1602,10 @@ def main() -> None:
         os.setsid()
     except OSError:
         pass
+    # A SIGTERM (a tree-kill's first signal) unwinds as SystemExit, so
+    # `_Host.run`'s finally still runs `close()`: the open turn gets its
+    # result, every card its answer, the registry row its removal.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     _close_inherited_fds()
     req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     run_dir = req["run_dir"]
