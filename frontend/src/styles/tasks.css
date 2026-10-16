@@ -2867,3 +2867,93 @@ button.tasks-draft-pill.is-on:focus-visible {
 .tasks-row > .tasks-act {
   margin-block: calc((var(--tasks-rail-w) - 22px) / 2);
 }
+
+/* ---- the grouped lists (Time / Project / PR, 2026-10-16) ---------------------
+   The scroller loses its one border and each section draws its own frame under
+   a small heading — the Board's lane headers, laid down a column. */
+.schedule-page .schedule-main > .tasks-list.is-grouped {
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.tasks-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.tasks-group-head {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* The all-toggle sits at the far end: space-between, not an auto margin —
+     the row tests hold this sheet to ONE auto margin, the task row's. */
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+}
+/* The heading IS the fold's button: chevron, word, count. Reset, then the
+   heading's own type, so it reads as a heading that happens to press. */
+.tasks-group-toggle,
+.prefs-section .tasks-group-toggle {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 2px 2px;
+  border-radius: 4px;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.tasks-group-toggle:hover,
+.tasks-group-toggle:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.tasks-group-toggle:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 1px;
+}
+.tasks-group-toggle > svg {
+  flex: 0 0 auto;
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+.tasks-group[data-collapsed="1"] .tasks-group-toggle > svg {
+  transform: rotate(0deg);
+}
+.tasks-group-count {
+  font-weight: 500;
+  opacity: 0.8;
+}
+/* Collapse all / Expand all, at the right end of the FIRST heading's line. */
+.tasks-groups-all,
+.prefs-section .tasks-groups-all {
+  all: unset;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font: inherit;
+  font-weight: 500;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.tasks-groups-all:hover,
+.tasks-groups-all:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.schedule-page .schedule-main > .tasks-list.is-grouped {
+  gap: 12px;
+}
+.tasks-group > .tasks-list-frame {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}

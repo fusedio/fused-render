@@ -4621,3 +4621,196 @@ input.schedule-when-field {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- the view tab editor (Akshil, 2026-10-16) -------------------------------
+   The switcher's door sits right after the row it edits and takes over the
+   row's auto margin, so the filters and + New task stay where they are. While
+   the editor is up it IS the toolbar: chips for every tab, each with its own
+   remove, a + that offers what is not on the row, Cancel / Done at the end. */
+.schedule-toolbar .schedule-view-seg:has(+ .schedule-view-edit) {
+  margin-right: 0;
+}
+.schedule-toolbar .schedule-view-edit,
+.prefs-section .schedule-toolbar .schedule-view-edit {
+  margin-right: auto;
+  /* Tucked in beside the switcher (Akshil, 2026-10-16: "bring it a bit
+     close"): eats half the toolbar's 12px gap. */
+  margin-left: -6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  min-width: 0;
+  /* No outline, no fill: a bare glyph, not a fifth segment. */
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-muted);
+  flex: 0 0 auto;
+}
+.schedule-toolbar .schedule-view-edit:hover:not(:disabled),
+.prefs-section .schedule-toolbar .schedule-view-edit:hover:not(:disabled) {
+  color: var(--fg);
+  border: 0;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+/* HOVER-ONLY (Akshil, 2026-10-16): the cog is furniture, not a view, so it
+   keeps its slot (opacity, never display — the row must not shift) and shows
+   while the pointer is on the toolbar or the key reaches it. */
+.schedule-toolbar .schedule-view-edit {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.schedule-toolbar:hover .schedule-view-edit,
+.schedule-toolbar:focus-within .schedule-view-edit,
+.schedule-toolbar .schedule-view-edit:focus-visible {
+  opacity: 1;
+}
+
+.schedule-view-editor {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.schedule-view-editor-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.schedule-view-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 30px;
+  padding: 0 4px 0 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  font-size: 13px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.schedule-view-chip[draggable] {
+  cursor: grab;
+}
+.schedule-view-chip.is-dragging {
+  opacity: 0.4;
+}
+/* The drop target: an accent edge on the side the carried chip lands on. */
+.schedule-view-chip.is-over {
+  box-shadow: -2px 0 0 0 var(--accent, var(--fg));
+}
+/* The chip whose view is showing wears the switcher's own active fill. */
+.schedule-view-chip.is-active {
+  background: var(--bg-alt);
+  color: var(--fg);
+}
+.schedule-view-chip-pick,
+.prefs-section .schedule-view-chip-pick {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 4px 0 10px;
+  border-radius: 5px 0 0 5px;
+  color: inherit;
+  cursor: pointer;
+}
+.schedule-view-chip-pick:hover,
+.schedule-view-chip-pick:focus-visible {
+  color: var(--fg);
+}
+.schedule-view-chip-pick:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: -2px;
+}
+.schedule-view-chip-pick > svg {
+  flex: 0 0 auto;
+  color: inherit;
+}
+.schedule-view-chip-x,
+.prefs-section .schedule-view-chip-x {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.schedule-view-chip-x:hover:not(:disabled),
+.schedule-view-chip-x:focus-visible {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  color: var(--fg);
+}
+.schedule-view-chip-x:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.schedule-view-add {
+  position: relative;
+}
+.schedule-view-add-btn,
+.prefs-section .schedule-view-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 8px;
+  min-width: 0;
+}
+.schedule-view-add-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  min-width: 240px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+.schedule-view-add-item,
+.prefs-section .schedule-view-add-item {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.schedule-view-add-item:hover,
+.schedule-view-add-item:focus-visible {
+  background: var(--bg-alt);
+}
+.schedule-view-add-item > svg {
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+}
+.schedule-view-add-hint {
+  margin-left: auto;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.schedule-view-editor-end {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}

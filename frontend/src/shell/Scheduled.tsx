@@ -81,6 +81,9 @@ import type { ChatDraft } from "@platform/lib/drafts";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
+  ICON_CLOCK,
+  ICON_FOLDER,
+  ICON_PLUS,
   ICON_VIEW_BOARD,
   ICON_VIEW_CALENDAR,
   ICON_VIEW_CARDS,
@@ -107,8 +110,13 @@ import {
   useTasksFeeder,
 } from "./tasksPulse";
 import {
+  DEFAULT_VIEW_TABS,
   TASK_VIEWS,
+  VIEW_LABELS,
+  VIEW_TABS_KEY,
   applyQueueOverrides,
+  groupOfView,
+  parseViewTabs,
   expireQueueOverrides,
   isChatDraftTask,
   NO_QUEUE_OVERRIDES,
@@ -172,6 +180,216 @@ const POLL_MS = 20000;
 // too. One page, one memory — a per-app key would make the same control forget
 // on every other app.
 const VIEW_KEY = "fused-render:scheduled-view";
+
+// The switcher's glyphs, one per view — the four the page always had
+// (ScheduleCalendar) and the three grouped lists' (lucide `clock`, `folder`,
+// `git-pull-request`), at the same 14px.
+const svg = (paths: React.ReactNode) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {paths}
+  </svg>
+);
+const ICON_PR = svg(
+  <><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" />
+    <path d="M13 6h3a2 2 0 0 1 2 2v7" /><line x1="6" y1="9" x2="6" y2="21" /></>,
+);
+// lucide `settings` (the cog): the tab editor's door, beside the switcher.
+// Hover-only (Akshil, 2026-10-16) — schedule.css fades it in with the toolbar.
+const ICON_TUNE = svg(
+  <><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+    <circle cx="12" cy="12" r="3" /></>,
+);
+const ICON_X = svg(<><path d="M18 6 6 18" /><path d="m6 6 12 12" /></>);
+const VIEW_ICONS: Record<TaskView, React.ReactNode> = {
+  list: ICON_VIEW_LIST,
+  board: ICON_VIEW_BOARD,
+  cards: ICON_VIEW_CARDS,
+  calendar: ICON_VIEW_CALENDAR,
+  time: ICON_CLOCK,
+  project: ICON_FOLDER,
+  pr: ICON_PR,
+};
+/** What the `+` menu says a grouped view does, under its name. */
+const VIEW_HINTS: Partial<Record<TaskView, string>> = {
+  time: "List grouped by day",
+  project: "List grouped by folder",
+  pr: "List grouped by pull request",
+};
+
+/**
+ * THE TAB EDITOR (Akshil, 2026-10-16): the switcher's row, taken over. Every
+ * current tab as a chip with its own remove, a `+` that offers every view not
+ * yet on the row (the three grouped lists, and any of the four a person took
+ * off), and Cancel / Done at the right end. Edits land in `tabs` (the page's
+ * draft) and only Done writes them anywhere.
+ */
+function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
+  tabs: TaskView[];
+  /** The view the page is showing — a chip's press previews its view below
+   *  (Akshil, 2026-10-16), so the row keeps saying which one is up. */
+  active: TaskView;
+  onPick: (view: TaskView) => void;
+  onChange: (tabs: TaskView[]) => void;
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const available = TASK_VIEWS.filter((v) => !tabs.includes(v));
+  const addRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  // DRAG TO REORDER (Akshil, 2026-10-16): native HTML5 drag on the chips. The
+  // chip being carried and the one under the pointer; the drop splices the
+  // first in at the second's place.
+  const [dragging, setDragging] = useState<TaskView | null>(null);
+  const [over, setOver] = useState<TaskView | null>(null);
+  const dropOn = (target: TaskView) => {
+    if (!dragging || dragging === target) return;
+    const next = tabs.filter((t) => t !== dragging);
+    next.splice(next.indexOf(target), 0, dragging);
+    onChange(next);
+  };
+  // Focus lands on the first chip when the strip opens: the cog that opened it
+  // is gone from the page, and focus falling to the body meant Tab restarted
+  // from the top of the document.
+  useEffect(() => {
+    stripRef.current?.querySelector<HTMLElement>(".schedule-view-chip-pick")?.focus();
+  }, []);
+  // The + menu closes on a press anywhere outside it — pointerdown, not blur:
+  // WebKit does not focus a button on click, so a blur-based close fired on the
+  // mousedown and unmounted the item before its click could land.
+  useEffect(() => {
+    if (!adding) return;
+    const onDown = (e: PointerEvent) => {
+      if (!addRef.current?.contains(e.target as Node)) setAdding(false);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [adding]);
+  // Escape = Cancel (or close the + menu first), wherever focus is: a removed
+  // chip takes the focus with it, so a listener on the strip alone missed the
+  // key right after the most natural edit.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      if (adding) setAdding(false);
+      else onCancel();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [adding, onCancel]);
+  return (
+    <div className="schedule-view-editor" role="group" aria-label="Edit views" ref={stripRef}>
+      <div className="schedule-view-editor-tabs">
+        {tabs.map((v) => (
+          <span
+            key={v}
+            className={
+              "schedule-view-chip"
+              + (active === v ? " is-active" : "")
+              + (dragging === v ? " is-dragging" : "")
+              + (over === v && dragging !== v ? " is-over" : "")
+            }
+            data-view={v}
+            draggable
+            title="Drag to reorder"
+            onDragStart={(e) => {
+              setDragging(v);
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", v);
+            }}
+            onDragEnd={() => {
+              setDragging(null);
+              setOver(null);
+            }}
+            onDragOver={(e) => {
+              if (!dragging) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (over !== v) setOver(v);
+            }}
+            onDragLeave={() => {
+              if (over === v) setOver(null);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              dropOn(v);
+              setDragging(null);
+              setOver(null);
+            }}
+          >
+            {/* The chip's face is a press: it shows that view below while the
+                row is being edited, and Done keeps whatever is up. */}
+            <button
+              type="button"
+              className="schedule-view-chip-pick"
+              aria-pressed={active === v}
+              title={`Show ${VIEW_LABELS[v]}`}
+              onClick={() => onPick(v)}
+            >
+              {VIEW_ICONS[v]}
+              <span className="schedule-view-chip-lbl">{VIEW_LABELS[v]}</span>
+            </button>
+            <button
+              type="button"
+              className="schedule-view-chip-x"
+              aria-label={`Remove ${VIEW_LABELS[v]}`}
+              title={tabs.length <= 1 ? "Keep at least one view" : "Remove"}
+              disabled={tabs.length <= 1}
+              onClick={(e) => {
+                // Hand focus to the next chip before this one unmounts.
+                const chip = e.currentTarget.closest(".schedule-view-chip");
+                const next = (chip?.nextElementSibling ?? chip?.previousElementSibling) as HTMLElement | null;
+                next?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+                onChange(tabs.filter((t) => t !== v));
+              }}
+            >
+              {ICON_X}
+            </button>
+          </span>
+        ))}
+        <div className="schedule-view-add" ref={addRef}>
+          <button
+            type="button"
+            className="btn btn-secondary schedule-view-add-btn"
+            aria-label="Add view"
+            aria-expanded={adding}
+            disabled={!available.length}
+            title={available.length ? "Add view" : "Every view is on the row"}
+            onClick={() => setAdding((a) => !a)}
+          >
+            {ICON_PLUS}
+          </button>
+          {adding && available.length > 0 && (
+            <div className="schedule-view-add-menu" role="group" aria-label="Add view">
+              {available.map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  className="schedule-view-add-item"
+                  data-view={v}
+                  onClick={() => {
+                    onChange([...tabs, v]);
+                    setAdding(false);
+                  }}
+                >
+                  {VIEW_ICONS[v]}
+                  <span className="schedule-view-add-name">{VIEW_LABELS[v]}</span>
+                  {VIEW_HINTS[v] && <span className="schedule-view-add-hint">{VIEW_HINTS[v]}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="schedule-view-editor-end">
+        <button type="button" className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+        <button type="button" className="btn btn-primary" onClick={onDone}>Done</button>
+      </div>
+    </div>
+  );
+}
 
 // How far ahead a deep link's prefilled time lands. The form's own default is
 // +1h, which is a planning answer; a link says "I want to set this up now", so
@@ -384,6 +602,55 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // `?view=board` comes through here rather than needing a subscription.
     return viewFromSearch(location.search, saved);
   });
+  // WHICH TABS THE SWITCHER SHOWS (Akshil, 2026-10-16) — the reader's own
+  // row, remembered per browser; the four defaults until they edit it.
+  const [tabs, setTabs] = useState<TaskView[]>(() => {
+    try {
+      return parseViewTabs(localStorage.getItem(VIEW_TABS_KEY));
+    } catch {
+      return DEFAULT_VIEW_TABS;
+    }
+  });
+  // The editor's draft: null while the row is a switcher, the tabs-in-progress
+  // while it is being edited. Cancel drops it; Done makes it `tabs`.
+  const [tabsDraft, setTabsDraft] = useState<TaskView[] | null>(null);
+  // The view that was up when the editor opened: chips PREVIEW their view
+  // while editing (Akshil, 2026-10-16), Done keeps what is showing, Cancel
+  // puts this one back.
+  const viewBeforeEdit = useRef<TaskView>(view);
+  const openTabs = () => {
+    viewBeforeEdit.current = view;
+    setTabsDraft(tabs);
+  };
+  // Focus back on the cog once the strip is gone, so Tab carries on from
+  // where the reader was rather than from the top of the document.
+  const refocusCog = () => {
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(".schedule-view-edit")?.focus();
+    });
+  };
+  const cancelTabs = () => {
+    setTabsDraft(null);
+    if (view !== viewBeforeEdit.current) pickView(viewBeforeEdit.current);
+    refocusCog();
+  };
+  const finishTabs = () => {
+    if (!tabsDraft) return;
+    setTabs(tabsDraft);
+    try {
+      localStorage.setItem(VIEW_TABS_KEY, JSON.stringify(tabsDraft));
+    } catch {
+      // A blocked store forgets the row; the edit itself still lands.
+    }
+    setTabsDraft(null);
+    // The view that was up was just taken OFF the row: land on the first tab
+    // left rather than keep showing a view no button names. Only when it was
+    // on the row to begin with — a view reached by URL alone (`?view=pr`) was
+    // never in the draft, and Done with nothing changed must not move it
+    // (review, 2026-10-16).
+    if (!tabsDraft.includes(view) && tabs.includes(view)) pickView(tabsDraft[0]);
+    refocusCog();
+  };
   // null = closed; a Date = open, prefilled (from a calendar slot click);
   // "blank" = open from the New task button, prefilled with "in an hour".
   const [creating, setCreating] = useState<Date | "blank" | null>(null);
@@ -1128,48 +1395,41 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 controls in the app wear `.schedule-form-seg` (the calendar's
                 range, the modal's Ends), so the shared class cannot name this
                 one. Styling still hangs off `.schedule-form-seg`. */}
+            {tabsDraft ? (
+              <ViewTabsEditor
+                tabs={tabsDraft}
+                active={view}
+                onPick={pickView}
+                onChange={setTabsDraft}
+                onCancel={cancelTabs}
+                onDone={finishTabs}
+              />
+            ) : (<>
             <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
-              <button type="button"
-                      data-view="list"
-                      title="List"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
-                      aria-pressed={view === "list"}
-                      onClick={() => pickView("list")}>
-                {ICON_VIEW_LIST}
-                <span className="schedule-fit-lbl">List</span>
-              </button>
-              <button type="button"
-                      data-view="board"
-                      title="Board"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
-                      aria-pressed={view === "board"}
-                      onClick={() => pickView("board")}>
-                {ICON_VIEW_BOARD}
-                <span className="schedule-fit-lbl">Board</span>
-              </button>
-              {/* Before the calendar (Akshil, 2026-09-03): the first three
-                  answer "what is there" and "what is happening right now",
-                  and the calendar is the drill-down for the scheduled subset —
-                  the same argument that made List the default. */}
-              <button type="button"
-                      data-view="cards"
-                      title="Cards"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "cards" ? " is-active" : "")}
-                      aria-pressed={view === "cards"}
-                      onClick={() => pickView("cards")}>
-                {ICON_VIEW_CARDS}
-                <span className="schedule-fit-lbl">Cards</span>
-              </button>
-              <button type="button"
-                      data-view="calendar"
-                      title="Calendar"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
-                      aria-pressed={view === "calendar"}
-                      onClick={() => pickView("calendar")}>
-                {ICON_VIEW_CALENDAR}
-                <span className="schedule-fit-lbl">Calendar</span>
-              </button>
+              {/* The row is the reader's own (`tabs`); a view reached by URL that
+                  is not on it is drawn at the end for as long as it is up, so
+                  the active state always has a button to sit on. */}
+              {(tabs.includes(view) ? tabs : [...tabs, view]).map((v) => (
+                <button type="button"
+                        key={v}
+                        data-view={v}
+                        title={VIEW_LABELS[v]}
+                        className={"btn btn-secondary schedule-view-btn" + (view === v ? " is-active" : "")}
+                        aria-pressed={view === v}
+                        onClick={() => pickView(v)}>
+                  {VIEW_ICONS[v]}
+                  <span className="schedule-fit-lbl">{VIEW_LABELS[v]}</span>
+                </button>
+              ))}
             </div>
+            {/* The tab editor's door: right beside the row it edits. */}
+            <button type="button"
+                    className="btn btn-secondary schedule-view-edit"
+                    title="Edit views"
+                    aria-label="Edit views"
+                    onClick={openTabs}>
+              {ICON_TUNE}
+            </button>
             {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
                 used to be hidden on the calendar, on the argument that it
                 answers "when" and a week with tasks filtered out of it is a week
@@ -1201,6 +1461,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                     onClick={() => openForm("blank", null)}>
               +<span className="schedule-fit-lbl"> New task</span>
             </button>
+            </>)}
           </div>
 
           {/* No chip row under the toolbar: each filter menu already carries its
@@ -1279,6 +1540,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           ) : (
             <TaskList
               tasks={shown}
+              // Time / Project / PR are this List cut into sections.
+              groupBy={groupOfView(view)}
               home={home}
               missing={missing}
               // The rows NEVER fold their marks while the panel is up

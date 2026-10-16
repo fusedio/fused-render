@@ -1483,7 +1483,64 @@ export function isExpanded(expanded: Set<string>, key: string): boolean {
 // bookmark while saying nothing at all.
 
 /** Which of the page's four views is up. */
-export type TaskView = "list" | "board" | "calendar" | "cards";
+export type TaskView = "list" | "board" | "calendar" | "cards" | TaskGroupBy;
+
+/** The three GROUPED LISTS (Akshil, 2026-10-16): the List's own rows, in the
+ *  List's own order, cut into sections by when they last moved, by the folder
+ *  they belong to, or by the pull request their words name. Each is a view of
+ *  its own in the switcher so a reader can keep one a click away. */
+export type TaskGroupBy = "time" | "project" | "pr";
+export const GROUP_VIEWS: TaskGroupBy[] = ["time", "project", "pr"];
+
+/** The switcher's DEFAULT tabs — what a fresh browser shows (Akshil,
+ *  2026-10-16: List and Board only; Cards, Calendar and the grouped lists are
+ *  a `+` away in the editor). Also what an unreadable store falls back to. */
+export const DEFAULT_VIEW_TABS: TaskView[] = ["list", "board"];
+
+/** Every view the switcher's `+` can add, in the order the menu lists them. */
+export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
+
+/** The word each view wears on its tab (and in the editor's chips). */
+export const VIEW_LABELS: Record<TaskView, string> = {
+  list: "List",
+  board: "Board",
+  cards: "Cards",
+  calendar: "Calendar",
+  time: "Time",
+  project: "Project",
+  pr: "PR",
+};
+
+/** Where the switcher's chosen tabs live (a JSON array of view names). */
+export const VIEW_TABS_KEY = "fused-render:scheduled-view-tabs";
+
+/** `time` / `project` / `pr` for a grouped list, null for every other view. */
+export function groupOfView(view: TaskView): TaskGroupBy | null {
+  return (GROUP_VIEWS as string[]).includes(view) ? (view as TaskGroupBy) : null;
+}
+
+/**
+ * The tabs a stored value names — untrusted input (an older build, a hand
+ * edit), so every name is checked against TASK_VIEWS, duplicates fold, and an
+ * empty or unreadable answer is the default set rather than no tabs at all.
+ */
+export function parseViewTabs(raw: string | null | undefined): TaskView[] {
+  if (!raw) return DEFAULT_VIEW_TABS;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return DEFAULT_VIEW_TABS;
+  }
+  if (!Array.isArray(parsed)) return DEFAULT_VIEW_TABS;
+  const out: TaskView[] = [];
+  for (const v of parsed) {
+    if (typeof v === "string" && (TASK_VIEWS as string[]).includes(v) && !out.includes(v as TaskView)) {
+      out.push(v as TaskView);
+    }
+  }
+  return out.length ? out : DEFAULT_VIEW_TABS;
+}
 
 /** The query key that carries it. */
 export const VIEW_PARAM = "view";
@@ -1492,7 +1549,7 @@ export const VIEW_PARAM = "view";
  * read by the parser below and by the test that holds the switcher's buttons to
  * it — a view that exists in the union and not here is a view a link cannot
  * reach, which is exactly the bug a second hand-written list invites. */
-export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
+export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "time", "project", "pr"];
 
 /**
  * The view a URL asks for, or `fallback` when it asks for nothing this page
@@ -5631,4 +5688,103 @@ export function provisionalTasks(rows: TaskPulseTask[]): Task[] {
     messages: [],
     provisional: true,
   }));
+}
+
+// ---- the grouped lists ---------------------------------------------------------
+// Time / Project / PR (Akshil, 2026-10-16) are the List cut into sections. The
+// rows keep `sortForList`'s order inside every section; only the cut is new.
+
+/** One section of a grouped list. */
+export interface TaskGroup {
+  key: string;
+  label: string;
+  rows: Task[];
+}
+
+/** The pull request a task's words name — "#1234", "PR 1234" or a GitHub
+ *  `/pull/1234` link in its title, description or latest message — or null. */
+export function prOfTask(task: Task): number | null {
+  const text = [
+    task.title,
+    task.description,
+    task.last_message?.text ?? "",
+    task.last_reply ?? "",
+  ].join("\n");
+  // Named first ("PR 1203", "PR #1203", a /pull/1203 link), then a bare
+  // "#1203" — two digits, no leading zero, so "#2" in a numbered step and "#000" in a
+  // colour do not become pull requests. `[ \t]*`, never `\s*`: the fields are
+  // joined with newlines, and a title ending in "PR" must not borrow the next
+  // line's leading number (review, 2026-10-16).
+  const named = /(?:\/pull\/|\bPRs?[ \t]*#?[ \t]*)(\d{1,6})\b/i.exec(text);
+  if (named) return Number(named[1]);
+  const bare = /(?<![\w#])#([1-9]\d{1,5})\b/.exec(text);
+  return bare ? Number(bare[1]) : null;
+}
+
+/** Which day-bucket a moment falls in, newest first in the order below. */
+const TIME_BUCKETS = ["Later", "Last hour", "Today", "Yesterday", "This week", "Earlier", "No date"] as const;
+
+function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
+  // THE ROW'S OWN STAMP (taskWhen) — the moment its time cell prints — so a row
+  // reading "2d ago" can never sit under Today.
+  const w = taskWhen(task, now);
+  if (w.kind === "next") return "Later";
+  if (w.kind === "none" || !w.at) return "No date";
+  const when = new Date(w.at * 1000);
+  if (now - when.getTime() <= 60 * 60 * 1000) return "Last hour";
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const start = today.getTime();
+  const day = 24 * 60 * 60 * 1000;
+  const t = when.getTime();
+  if (t >= start) return "Today";
+  if (t >= start - day) return "Yesterday";
+  if (t >= start - 6 * day) return "This week";
+  return "Earlier";
+}
+
+/**
+ * Cut `rows` (already in list order) into sections. Rows never re-sort inside a
+ * section; sections order by what the cut means — the last hour, then days
+ * newest first; folders
+ * A→Z with the folderless last, pull requests highest number first with the
+ * PR-less rows last.
+ */
+export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number = Date.now()): TaskGroup[] {
+  const groups = new Map<string, TaskGroup>();
+  const put = (key: string, label: string, task: Task) => {
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, label, rows: [] };
+      groups.set(key, g);
+    }
+    g.rows.push(task);
+  };
+  if (by === "time") {
+    for (const task of rows) {
+      const b = timeBucketOf(task, now);
+      put(b, b, task);
+    }
+    return TIME_BUCKETS.map((b) => groups.get(b)).filter((g): g is TaskGroup => !!g);
+  }
+  if (by === "project") {
+    for (const task of rows) {
+      const p = (task.project || "").trim();
+      put(p || "\u0000none", p ? tildePath(p, home) : "No folder", task);
+    }
+    return [...groups.values()].sort((a, b) => {
+      if (a.key === "\u0000none") return 1;
+      if (b.key === "\u0000none") return -1;
+      return a.label.localeCompare(b.label);
+    });
+  }
+  for (const task of rows) {
+    const n = prOfTask(task);
+    put(n === null ? "\u0000none" : String(n), n === null ? "No PR" : `PR #${n}`, task);
+  }
+  return [...groups.values()].sort((a, b) => {
+    if (a.key === "\u0000none") return 1;
+    if (b.key === "\u0000none") return -1;
+    return Number(b.key) - Number(a.key);
+  });
 }

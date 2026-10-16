@@ -36,7 +36,14 @@ import {
   CARD_LANES,
   cardKey,
   cardsForTasks,
+  BASE_VIEWS,
+  DEFAULT_VIEW_TABS,
+  GROUP_VIEWS,
   TASK_VIEWS,
+  groupOfView,
+  groupRows,
+  parseViewTabs,
+  prOfTask,
   canRunNow,
   cancelIntent,
   carryMarkToHeld,
@@ -7707,7 +7714,7 @@ describe("what the List remembers between visits", () => {
     // `data-fit` rides a conditional spread — it exists only while the side
     // peek's flag is on (shell/task-peek-flag.ts), so an opted-out page renders
     // the scroller exactly as it always did.
-    expect(LIST).toContain('<div\n        className="tasks-list"\n        ref={listRef}');
+    expect(LIST).toContain('<div\n        className={"tasks-list" + (groups ? " is-grouped" : "")}\n        ref={listRef}');
     expect(LIST).toContain('{...(peekOn ? { "data-fit": fit.level } : {})}');
     expect(LIST).toContain("onScroll={onScroll}");
     expect(LIST).toContain("el.scrollTop = top;");
@@ -8083,16 +8090,19 @@ describe("the tasks toolbar", () => {
     // Icon AND label. An icon-only switcher for the page's most central control
     // trades recognition for guessing (design-principles §4), and three short words
     // of near-identical weight were a block of text you had to read.
-    for (const [icon, label] of [
-      ["ICON_VIEW_LIST", "List"],
-      ["ICON_VIEW_BOARD", "Board"],
-      ["ICON_VIEW_CALENDAR", "Calendar"],
+    // Since the tab editor (2026-10-16) the row is drawn from `tabs`, one button
+    // per view name, each pairing the view's glyph (VIEW_ICONS) with its word
+    // (VIEW_LABELS) — the pairing is unchanged, it is just said once.
+    expect(PAGE).toMatch(
+      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">\{VIEW_LABELS\[v\]\}<\/span>/,
+    );
+    for (const [view, icon] of [
+      ["list", "ICON_VIEW_LIST"],
+      ["board", "ICON_VIEW_BOARD"],
+      ["cards", "ICON_VIEW_CARDS"],
+      ["calendar", "ICON_VIEW_CALENDAR"],
     ]) {
-      // The word is in a `.schedule-fit-lbl` span so a narrow toolbar can fold
-      // it to the glyph alone (shell/row-fit.ts); the pairing is unchanged.
-      expect(PAGE).toMatch(
-        new RegExp(`\\{${icon}\\}\\s*\\n\\s*<span className="schedule-fit-lbl">${label}</span>`),
-      );
+      expect(PAGE).toContain(`${view}: ${icon},`);
     }
     // Drawn by the same helper as every other glyph on the page, so the switcher
     // cannot drift to a second icon size — they are exported from the file that
@@ -8422,12 +8432,16 @@ describe("sortForList: the page's one order", () => {
     // `now` is a dep since 2026-09-15 — half of what `sortForList` decides is "is
     // this scheduled for LATER", which goes stale with the clock and nothing else.
     expect(VIEWS).toContain(
-      "const rows = useMemo(() => sortForList(tasks, now), [tasks, now]);",
+      "const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);",
     );
+    // The plain List draws straight off that order, with nothing between the
+    // rows. The grouped views (Time / Project / PR, 2026-10-16) are the one
+    // OPT-IN exception: a reader who put a grouped tab on the row asked for the
+    // cut, and `rows` is still the sorted list, flattened in section order.
+    expect(VIEWS).toContain('<div className="tasks-list-frame">{rows.map(rowAt)}</div>');
+    expect(VIEWS).toContain("groupBy ? groupRows(sorted, groupBy, home, now) : null");
     // The index rides along ONLY so the row can take its React key from
-    // `taskListKeys` (the queue's identity rule); the rows themselves are still
-    // drawn straight off the sorted list, in its order, with nothing between them.
-    expect(VIEWS).toContain("{rows.map((task, ix) => (");
+    // `taskListKeys` (the queue's identity rule).
     expect(VIEWS).toContain("key={rowKeys[ix]}");
   });
 });
@@ -8983,12 +8997,17 @@ describe("the Cards view's frame", () => {
   });
 
   it("is the fourth segment of the switcher, and the page renders it", () => {
-    expect(SCHEDULED).toContain('data-view="cards"');
     // Cards sits BEFORE the calendar, in the switcher and in TASK_VIEWS alike
-    // (Akshil, 2026-09-03).
-    expect(SCHEDULED.indexOf('data-view="cards"')).toBeLessThan(SCHEDULED.indexOf('data-view="calendar"'));
-    expect(TASK_VIEWS).toEqual(["list", "board", "cards", "calendar"]);
-    expect(SCHEDULED).toContain('pickView("cards")');
+    // (Akshil, 2026-09-03). The switcher maps DEFAULT_VIEW_TABS in order.
+    expect(BASE_VIEWS.indexOf("cards")).toBeLessThan(BASE_VIEWS.indexOf("calendar"));
+    // The four the page always had lead TASK_VIEWS and ARE the default row;
+    // the three grouped lists (Time / Project / PR, 2026-10-16) follow.
+    expect(TASK_VIEWS.slice(0, 4)).toEqual(["list", "board", "cards", "calendar"]);
+    // List and Board only, by default (Akshil, 2026-10-16); the rest are a `+` away.
+    expect(DEFAULT_VIEW_TABS).toEqual(["list", "board"]);
+    // The switcher draws its row from `tabs` (one button per view name), so
+    // the literal per-view button is gone; the VIEW_ICONS map names every view.
+    expect(SCHEDULED).toContain("cards: ICON_VIEW_CARDS");
     expect(SCHEDULED).toContain('view === "cards" ? (');
     // The same filtered set every other view is handed.
     expect(SCHEDULED).toContain("<TaskCards");
@@ -11196,5 +11215,83 @@ describe("cardTitleLine — reply fallback is plain words", () => {
     });
     expect(cardTitleLine({ status: "done", recap: null, last_reply: "## 1.  Done   it" }).text)
       .toBe("1. Done it");
+  });
+});
+
+
+// ---- the view tab editor (Akshil, 2026-10-16) ---------------------------------
+
+describe("parseViewTabs", () => {
+  it("falls back to the default row on nothing, junk or an empty list", () => {
+    expect(parseViewTabs(null)).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs("")).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs("not json")).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs('{"a":1}')).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs("[]")).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs('["nope"]')).toEqual(DEFAULT_VIEW_TABS);
+  });
+  it("keeps only names TASK_VIEWS knows, once each, in the stored order", () => {
+    expect(parseViewTabs('["pr","list","pr","bogus","time"]')).toEqual(["pr", "list", "time"]);
+  });
+  it("names the three grouped lists and nothing else as groups", () => {
+    for (const v of GROUP_VIEWS) expect(groupOfView(v)).toBe(v);
+    for (const v of BASE_VIEWS) expect(groupOfView(v)).toBeNull();
+    expect(TASK_VIEWS).toEqual([...BASE_VIEWS, ...GROUP_VIEWS]);
+    for (const v of DEFAULT_VIEW_TABS) expect(BASE_VIEWS).toContain(v);
+  });
+});
+
+describe("groupRows", () => {
+  const NOW = Date.parse("2026-10-16T15:00:00");
+  const sec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  // No messages, so the row's own stamp (taskWhen) is `last_active` — the one
+  // clock these fixtures set.
+  const row = (over: Partial<Task>): Task => task({ messages: [], ...over }, 0);
+  const rows: Task[] = [
+    row({ key: "a", project: "/Users/me/b", title: "Fix #1203", last_active: sec("2026-10-16T09:00:00") }),
+    row({ key: "b", project: "/Users/me/a", title: "see https://github.com/x/y/pull/77", last_active: sec("2026-10-15T09:00:00") }),
+    row({ key: "c", project: "", title: "plain", last_active: sec("2026-10-12T09:00:00") }),
+    row({ key: "d", project: "/Users/me/a", title: "PR 1203 follow-up", last_active: sec("2026-09-01T09:00:00") }),
+  ];
+  it("by time: newest bucket first, rows in their list order inside", () => {
+    const g = groupRows(rows, "time", "", NOW);
+    expect(g.map((x) => x.label)).toEqual(["Today", "Yesterday", "This week", "Earlier"]);
+    expect(g.map((x) => x.rows.map((r) => r.key))).toEqual([["a"], ["b"], ["c"], ["d"]]);
+  });
+  it("by time: the last sixty minutes are their own bucket, ahead of Today", () => {
+    const g = groupRows(
+      [row({ key: "h", last_active: Math.floor(NOW / 1000) - 20 * 60 }), rows[0]!],
+      "time", "", NOW,
+    );
+    expect(g.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([["Last hour", ["h"]], ["Today", ["a"]]]);
+  });
+  it("by time: a run scheduled for later is Later, whatever it last did", () => {
+    const g = groupRows(
+      [row({ key: "z", status: "upcoming", next_run: Math.floor(NOW / 1000) + 3600, next_run_entry: "e1", last_active: sec("2026-10-16T09:00:00") })],
+      "time", "", NOW,
+    );
+    expect(g.map((x) => x.label)).toEqual(["Later"]);
+  });
+  it("by project: folders A→Z under ~, the folderless last", () => {
+    const g = groupRows(rows, "project", "/Users/me", NOW);
+    expect(g.map((x) => x.label)).toEqual(["~/a", "~/b", "No folder"]);
+    expect(g[0]?.rows.map((r) => r.key)).toEqual(["b", "d"]);
+  });
+  it("by PR: the number the words name, highest first, PR-less rows last", () => {
+    const g = groupRows(rows, "pr", "", NOW);
+    expect(g.map((x) => x.label)).toEqual(["PR #1203", "PR #77", "No PR"]);
+    expect(g[0]?.rows.map((r) => r.key)).toEqual(["a", "d"]);
+  });
+  it("reads a PR out of the latest message too", () => {
+    expect(prOfTask(row({ title: "x", last_message: { role: "assistant", text: "opened #99", at: 1 } }))).toBe(99);
+    expect(prOfTask(row({ title: "nothing here" }))).toBeNull();
+  });
+  it("names a PR, not any number near a hash (review, 2026-10-16)", () => {
+    // A title ending in "PR" must not borrow the next field's leading number.
+    expect(prOfTask(row({ title: "merge the PR", description: "1. Done it" }))).toBeNull();
+    // One digit after a bare # is a step or a colour, not a pull request.
+    expect(prOfTask(row({ title: "Step #2 of the plan, colour #000" }))).toBeNull();
+    // A named PR wins over an earlier bare number.
+    expect(prOfTask(row({ title: "Issue #55 blocks PR #1203" }))).toBe(1203);
   });
 });
