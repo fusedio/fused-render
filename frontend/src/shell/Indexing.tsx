@@ -12,6 +12,7 @@ import {
   getIndexConfig,
   putIndexConfig,
   putIndexingEnabled,
+  putIndexLowImpactEnabled,
   putRankedSearchEnabled,
   runIndexQuery,
   startIndexScan,
@@ -119,6 +120,52 @@ export function RankedSearchToggle({
         <span>
           <b>Rank search results by relevance.</b> Turning this off lists matches
           shallowest-first, then alphabetically, instead of best-match-first.
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </>
+  );
+}
+
+// Same shape as `RankedSearchToggle`; greyed out while indexing itself is off,
+// since there is no background work to quiet.
+export function LowImpactToggle({
+  prefs,
+  onChange,
+}: {
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const lowImpact = prefs.indexing.low_impact;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putIndexLowImpactEnabled(!lowImpact));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <label className="prefs-radio">
+        <input
+          type="checkbox"
+          checked={lowImpact}
+          disabled={busy || !prefs.indexing.enabled}
+          onChange={toggle}
+        />
+        <span>
+          <b>Low-impact indexing.</b> Keeps the index quiet on a busy Mac: one watcher
+          per machine, longer waits before rescans, one worker at a time, and only the
+          changed chunks rewritten. Search results may lag a minute or two.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -235,6 +282,7 @@ export function IndexingPanel({
           unchanged folders cost one check each, so that is usually a second or two.
         </p>
         <RankedSearchToggle prefs={prefs} onChange={onChange} />
+        <LowImpactToggle prefs={prefs} onChange={onChange} />
         {!status && <SkeletonLines rows={2} label="Loading index status" />}
         {status && (
           <p className="deploy-muted">

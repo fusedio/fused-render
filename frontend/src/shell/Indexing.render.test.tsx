@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import type { Prefs } from "@platform/lib/api";
-import { RankedSearchToggle } from "@shell/Indexing";
+import { LowImpactToggle, RankedSearchToggle } from "@shell/Indexing";
 
 function fakePrefs(ranked: boolean): Prefs {
   return { indexing: { enabled: true, ranked } } as unknown as Prefs;
@@ -116,6 +116,66 @@ describe("RankedSearchToggle", () => {
         reader.unmount();
       });
     });
+});
+
+function lowImpactPrefs(lowImpact: boolean, enabled = true): Prefs {
+  return { indexing: { enabled, ranked: true, low_impact: lowImpact } } as unknown as Prefs;
+}
+
+describe("LowImpactToggle", () => {
+  async function mountLow(prefs: Prefs, onChange: (p: Prefs) => void) {
+    let box!: ReactTestRenderer;
+    await act(async () => {
+      box = create(createElement(LowImpactToggle, { prefs, onChange }));
+    });
+    return box;
+  }
+
+  test("renders unchecked by default and enabled", async () => {
+    const box = await mountLow(lowImpactPrefs(false), () => {});
+    const input = box.root.findByType("input");
+    expect(input.props.checked).toBe(false);
+    expect(input.props.disabled).toBe(false);
+    await act(async () => box.unmount());
+  });
+
+  test("clicking writes index_low_impact_enabled=true and re-renders checked", async () => {
+    const fetchSaved = globalThis.fetch;
+    globalThis.fetch = ((url: string | URL, init?: RequestInit) => {
+      putCalls.push({ body: JSON.parse(String(init?.body)) });
+      return Promise.resolve(
+        new Response(JSON.stringify(lowImpactPrefs(true)), { status: 200 }),
+      );
+    }) as typeof fetch;
+    try {
+      let current = lowImpactPrefs(false);
+      let box!: ReactTestRenderer;
+      const render = () =>
+        createElement(LowImpactToggle, {
+          prefs: current,
+          onChange: (p: Prefs) => {
+            current = p;
+            box.update(render());
+          },
+        });
+      await act(async () => {
+        box = create(render());
+      });
+      await act(async () => box.root.findByType("input").props.onChange({}));
+      expect(putCalls).toHaveLength(1);
+      expect(putCalls[0].body).toEqual({ index_low_impact_enabled: true });
+      expect(box.root.findByType("input").props.checked).toBe(true);
+      await act(async () => box.unmount());
+    } finally {
+      globalThis.fetch = fetchSaved;
+    }
+  });
+
+  test("is disabled while indexing itself is off", async () => {
+    const box = await mountLow(lowImpactPrefs(false, false), () => {});
+    expect(box.root.findByType("input").props.disabled).toBe(true);
+    await act(async () => box.unmount());
+  });
 });
 
 // IndexingPanel's scanning-line arithmetic (the reused-vs-files fold) used to
