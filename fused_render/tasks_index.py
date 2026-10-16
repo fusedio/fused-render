@@ -109,7 +109,11 @@ def _prune() -> None:
     """Remove other stamps' files nobody has written to in `PRUNE_AFTER_S`,
     the pre-2026-10-16 single `tasks-index.sqlite` included. Age is the
     newest of the file and its -wal/-shm: in WAL mode a live writer touches
-    the -wal, not the main file, until a checkpoint."""
+    the -wal, not the main file, until a checkpoint. A still-running server
+    that has saved nothing in that long can lose its file under it; nothing
+    holds a connection between calls, so its next `save` opens a fresh file
+    (`row is None` in `_connect`, `_saved` cleared) and the save after that
+    backfills, one cold write and never a wrong row."""
     mine = os.path.basename(path())
     cutoff = time.time() - PRUNE_AFTER_S
     try:
