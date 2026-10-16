@@ -533,15 +533,43 @@ def _valid_engine_choice(capability: str, code: str) -> str | None:
     return None
 
 
+#: Process-level switch for file indexing, same shape as `FUSED_RENDER_CALLS`
+#: (calls.enabled_override): unset → the preference decides; an off-word
+#: ("0", "false", "no", "off") forces indexing off; any other value forces it
+#: on. The force-ON side exists for dev runs, which default OFF (below).
+INDEXING_ENV = "FUSED_RENDER_INDEXING"
+
+
+def indexing_override() -> bool | None:
+    raw = os.environ.get(INDEXING_ENV)
+    if raw is None:
+        return None
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def is_dev_run() -> bool:
+    """A `scripts/dev.sh` server (it exports FUSED_RENDER_DEV=1; nothing in a
+    packaged app ever sets it — routers/config.py reports the same bit as
+    `dev`). pytest does not set it, so test defaults are untouched."""
+    return os.environ.get("FUSED_RENDER_DEV") == "1"
+
+
 def indexing_enabled() -> bool:
-    """Whether background file-index scanning may run at all (default ON).
+    """Whether background file-index scanning may run at all (default ON
+    for the installed app, default OFF for a dev run).
 
     Mirrors `calls_enabled()`'s idiom: absence and any non-`false` stored
     value both read as enabled, so a preference file that predates this
-    setting — every existing install — keeps scanning exactly as before. No
-    env override, unlike `calls_enabled`'s `FUSED_RENDER_CALLS`: there is no
-    operational reason to force this off outside the app the way there is
-    for the call log.
+    setting — every existing install — keeps scanning exactly as before.
+
+    Dev runs (`is_dev_run`) default OFF with NO stored preference: every
+    worktree server used to watch the whole home dir and compact the index
+    alongside the installed app, which is what put a 10-core Mac at load
+    ~500 and the desktop app past its boot cutoff (2026-10-16 diagnostics).
+    A dev server that needs the index opts in — Preferences → Indexing
+    (stores `indexing_enabled: true`) or `FUSED_RENDER_INDEXING=1` for the
+    process — and the stored preference still wins over the dev default, so
+    a developer who turned it on stays on across restarts.
 
     Turning this off does not delete the on-disk index or stop
     `/api/index/rank` from answering it — only new scans are refused. Every
@@ -550,7 +578,13 @@ def indexing_enabled() -> bool:
     per call, same as `reader_enabled`, so a toggle applies to the very next
     one with no server restart.
     """
-    return read_prefs().get("indexing_enabled") is not False
+    override = indexing_override()
+    if override is not None:
+        return override
+    stored = read_prefs().get("indexing_enabled")
+    if stored is None and is_dev_run():
+        return False
+    return stored is not False
 
 
 def git_auto_sync_enabled() -> bool:

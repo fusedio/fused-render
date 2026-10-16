@@ -11,6 +11,8 @@ import os
 
 from fastapi.testclient import TestClient
 
+import pytest
+
 import fused_render.shell.prefs as prefs_mod
 from fused_render.ai import registry as ai_registry
 from fused_render.server import create_app
@@ -1643,3 +1645,45 @@ def test_low_impact_toggle_on_a_test_app_starts_nothing(tmp_path, monkeypatch):
                       headers=FUSED).status_code == 200
     assert not index_owner.waiter_running()
     client.put("/api/prefs", json={"index_low_impact_enabled": False}, headers=FUSED)
+
+
+# -- dev runs default indexing OFF (2026-10-16) ----------------------------------
+
+def test_a_dev_run_defaults_indexing_off_until_opted_in(tmp_path, monkeypatch):
+    monkeypatch.delenv(prefs_mod.INDEXING_ENV, raising=False)
+    client, home = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_RENDER_DEV", "1")
+    assert prefs_mod.is_dev_run() is True
+    # No stored preference: a dev.sh server does not index the home dir.
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is False
+    # Opting in through Preferences stores the key, which outranks the dev default.
+    assert client.put("/api/prefs", json={"indexing_enabled": True}, headers=FUSED).json()[
+        "indexing"
+    ]["enabled"] is True
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is True
+    # And off stays off, dev or not.
+    assert client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED).json()[
+        "indexing"
+    ]["enabled"] is False
+
+
+def test_a_packaged_run_is_unaffected_by_the_dev_default(tmp_path, monkeypatch):
+    monkeypatch.delenv(prefs_mod.INDEXING_ENV, raising=False)
+    monkeypatch.delenv("FUSED_RENDER_DEV", raising=False)
+    client, _home = _client(tmp_path, monkeypatch)
+    assert prefs_mod.is_dev_run() is False
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is True
+
+
+@pytest.mark.parametrize("raw,expect", [("1", True), ("yes", True), ("", True),
+                                        ("0", False), ("off", False), ("False", False)])
+def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
+        tmp_path, monkeypatch, raw, expect):
+    client, _home = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_RENDER_DEV", "1")
+    monkeypatch.setenv(prefs_mod.INDEXING_ENV, raw)
+    assert prefs_mod.indexing_override() is expect
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is expect
+    # A stored preference does not beat the process-level switch.
+    client.put("/api/prefs", json={"indexing_enabled": not expect}, headers=FUSED)
+    assert prefs_mod.indexing_enabled() is expect
