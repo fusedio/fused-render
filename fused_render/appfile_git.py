@@ -96,10 +96,10 @@ def _git(*args: str, cwd: str | None = None, timeout: int = TIMEOUT_S) -> subpro
     from fused_render.shell import git_tools
 
     env = _env()
-    cmd = [git_tools.git_bin()] + (["-C", cwd] if cwd else []) + list(args)
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, env=env,
-                              timeout=timeout, close_fds=False)
+        return subprocess.run([git_tools.git_bin(), *(["-C", cwd] if cwd else []), *args],
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", env=env, timeout=timeout, close_fds=False)
     except FileNotFoundError:
         raise GitInstallError("git is required to install from a GitHub link; "
                               "install it from the Tools step in onboarding")
