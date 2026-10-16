@@ -67,6 +67,14 @@ def _wait_for(predicate, timeout=15.0, interval=0.05):
     return predicate()
 
 
+NOTICE = "Handled by GitHub Copilot · model gpt-5.4"
+
+
+def _reply(segments):
+    """The reply's own segments, without a new session's D18 notice."""
+    return [sg for sg in segments if sg["kind"] != "notice"]
+
+
 def _rows(path):
     try:
         with open(path, encoding="utf-8") as fh:
@@ -325,6 +333,36 @@ def test_the_echo_is_written_before_the_prompt_goes_out(start, agent):
     s.wait_results(1)
 
 
+def test_the_first_poll_of_a_new_session_shows_the_d18_notice(start, agent):
+    """D18 LIVE: "Handled by GitHub Copilot · model <id>" is on the first
+    poll of a NEW session, mid-turn — written right after the echo, so the
+    echo still opens the turn, the notice moves no turn state, and the
+    `result` closes it as before. Once only: turn two has none, nor does a
+    resume."""
+    gate = os.path.join(agent.RUNS, "gate-notice")
+    s = start(fake_args=["--block-until", gate])
+    s.say("hi")
+    assert _wait_for(lambda: s.prompts_seen())
+    rows = s.out()
+    echo = next(i for i, r in enumerate(rows) if agent._starts_new_turn(r))
+    assert rows[echo + 1]["subtype"] == "task_notification"
+    assert rows[echo + 1]["summary"] == NOTICE
+    assert agent._turn_state(s.run_dir) == (True, False)
+    p = agent._poll(os.path.basename(s.run_dir))
+    assert not p["done"]
+    assert [(sg["kind"], sg["text"]) for sg in p["segments"]][:1] == [("notice", NOTICE)]
+    open(gate, "w").close()
+    s.wait_results(1)
+    assert agent._turn_state(s.run_dir) == (False, False)
+    p = agent._poll(os.path.basename(s.run_dir))
+    assert p["done"] and p["text"] == "Hello world!"
+    s.say("two")
+    s.wait_results(2)
+    assert [r["summary"] for r in s.out()
+            if r.get("subtype") == "task_notification"] == [NOTICE]
+    assert agent._turn_state(s.run_dir) == (False, False)
+
+
 def test_every_prompt_ends_in_exactly_one_result(start, agent):
     """§6.2, and the whole of the streamed shape `_poll` parses."""
     s = start()
@@ -360,7 +398,9 @@ def test_every_prompt_ends_in_exactly_one_result(start, agent):
     # Deltas, then the finalized assistant row with the same text.
     turn_rows = rows[rows.index(next(r for r in rows if agent._starts_new_turn(r))):]
     segments = agent._segments_from_rows(turn_rows)
-    assert [(sg["kind"], sg["text"]) for sg in segments] == [("text", "Hello world!")]
+    # A NEW session's first turn opens on the D18 notice, then the reply.
+    assert [(sg["kind"], sg["text"]) for sg in segments] == \
+        [("notice", NOTICE), ("text", "Hello world!")]
     finals = [r for r in rows if r.get("type") == "assistant"]
     assert len(finals) == 1
     assert finals[0]["message"]["content"] == [{"type": "text", "text": "Hello world!"}]
@@ -400,7 +440,7 @@ def test_every_prompt_ends_in_exactly_one_result(start, agent):
     assert (p["done"], p["text"], p["session_id"], p["error"]) == \
         (True, "Hello world!", s.sid, "")
     assert [(sg["kind"], sg["text"]) for sg in p["segments"]] == \
-        [("text", "Hello world!")]
+        [("notice", NOTICE), ("text", "Hello world!")]
 
 
 def test_a_tool_call_becomes_the_claude_tool_rows(start, agent):
@@ -433,7 +473,7 @@ def test_a_tool_call_becomes_the_claude_tool_rows(start, agent):
                    "content": "a.txt\nb.txt", "is_error": False}
     assert not agent._starts_new_turn(results[0])
     turn_rows = rows[rows.index(next(r for r in rows if agent._starts_new_turn(r))):]
-    segments = agent._segments_from_rows(turn_rows)
+    segments = _reply(agent._segments_from_rows(turn_rows))
     kinds = [sg["kind"] for sg in segments]
     assert kinds == ["text", "tool", "text"], segments
     assert segments[1]["name"] == "Bash" and segments[1]["output"] == "a.txt\nb.txt"
@@ -443,9 +483,9 @@ def test_a_tool_call_becomes_the_claude_tool_rows(start, agent):
     assert s.results()[0]["num_turns"] == 3
     p = agent._poll(os.path.basename(s.run_dir))
     assert p["done"] and p["error"] == ""
-    assert [sg["kind"] for sg in p["segments"]] == ["text", "tool", "text"]
-    assert p["segments"][1]["name"] == "Bash"
-    assert p["segments"][1]["output"] == "a.txt\nb.txt"
+    assert [sg["kind"] for sg in _reply(p["segments"])] == ["text", "tool", "text"]
+    assert _reply(p["segments"])[1]["name"] == "Bash"
+    assert _reply(p["segments"])[1]["output"] == "a.txt\nb.txt"
     # The transcript carries the same three rows and ends closed.
     tx = s.tx()
     assert [r["type"] for r in tx if r["type"] in ("user", "assistant")] == \
@@ -589,6 +629,8 @@ def test_a_resume_replays_into_the_transcript_and_never_into_out(start, agent):
     # A prompt after the resume still works and still hits out.jsonl.
     s.say("more")
     s.wait_results(1)
+    # A resume owes no D18 notice, live or in the transcript.
+    assert not any(r.get("subtype") == "task_notification" for r in s.out())
     assert [r["message"]["content"][0]["text"] for r in s.tx() if r["type"] == "user"] == \
         ["replayed q1", "replayed q2", "more"]
     # The backfilled transcript is one the tasks readers parse, and closed.
@@ -970,7 +1012,7 @@ def test_thinking_streams_as_thinking_deltas(start, agent):
     s.wait_results(1)
     rows = s.out()
     turn_rows = rows[next(i for i, r in enumerate(rows) if agent._starts_new_turn(r)):]
-    kinds = [sg["kind"] for sg in agent._segments_from_rows(turn_rows)]
+    kinds = [sg["kind"] for sg in _reply(agent._segments_from_rows(turn_rows))]
     assert kinds[0] == "thinking" and "text" in kinds
     final = [r for r in rows if r.get("type") == "assistant"][0]
     assert final["message"]["content"][0] == {"type": "thinking",

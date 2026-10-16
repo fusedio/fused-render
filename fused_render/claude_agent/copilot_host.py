@@ -593,6 +593,7 @@ class _Host:
         self.started = False          # handshake done, init row written
         self.closed = False           # files closed; late notifications dropped
         self.pending_title = ""
+        self.notice_pending = False   # D18 notice owed to out.jsonl's first turn
         self.tools = {}               # toolCallId -> (name, input)
         self._ids = itertools.count(1)
         peer.on_notification = self._on_notification
@@ -670,12 +671,16 @@ class _Host:
         self._emit_out(row)
         self.commands_dirty = False
 
+    def _notice_row(self) -> dict:
+        return {"type": "system", "subtype": "task_notification",
+                "summary": "Handled by GitHub Copilot · model %s" % self.model,
+                "backend": BACKEND, "model": self.model}
+
     def write_first_turn_notice(self) -> None:
-        """D18: the transcript's own record that Copilot answers here."""
-        self._emit_tx({"type": "system", "subtype": "task_notification",
-                       "summary": "Handled by GitHub Copilot · model %s" % self.model,
-                       "backend": BACKEND, "model": self.model,
-                       "isMeta": False, "isSidechain": False})
+        """D18: the transcript's own record that Copilot answers here — its
+        first row. The LIVE copy waits for the first echo (`send_prompt`)."""
+        self._emit_tx(dict(self._notice_row(), isMeta=False, isSidechain=False))
+        self.notice_pending = True
 
     # ------------------------------------------------------------- the turn
 
@@ -697,6 +702,16 @@ class _Host:
                 self.write_init()
             self._emit_out({"type": "user", "message": {
                 "role": "user", "content": [{"type": "text", "text": text}]}})
+            if self.notice_pending:
+                # D18 LIVE: the same row into out.jsonl, so the first poll
+                # draws it (`_segments_from_rows` makes a `system/
+                # task_notification` a notice chip). Right AFTER the echo,
+                # never before: the echo is what opens the turn and lifts
+                # `pending_echo`; inside the turn this row moves nothing —
+                # `idle` is already False, it carries no `task_id` for the
+                # task registry, and the `result` still closes the turn.
+                self._emit_out(self._notice_row())
+                self.notice_pending = False
             self._emit_tx({"type": "user", "message": {
                 "role": "user", "content": [{"type": "text", "text": text}]},
                 "entrypoint": "sdk-cli", "isMeta": False, "isSidechain": False})
