@@ -1293,6 +1293,27 @@ def test_acquire_lease_blocking_creates_the_lease_file(state_dir):
     assert os.path.exists(os.path.join(state_dir, "duties"))
 
 
+def test_the_lease_nests_under_the_branch_ref(state_dir, monkeypatch):
+    """A worktree server (FUSED_RENDER_BRANCH set) must win its OWN lease —
+    the scheduler's store is per branch (`storage.home_dir()`), so a lease
+    shared with the desktop app left every branch's immediate task
+    `upcoming` for ever. Baseline (no ref) stays exactly `STATE_DIR`."""
+    from fused_render import _branch
+
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "Feat/X")
+    assert tasks_store.duties_dir() == os.path.join(
+        str(state_dir), "branches", "feat-x")
+    tasks_store.acquire_lease_blocking("duties")
+    assert os.path.exists(os.path.join(tasks_store.duties_dir(), "duties"))
+    assert not os.path.exists(os.path.join(state_dir, "duties"))
+
+    tasks_store.reset_leases_for_tests()
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "")
+    assert tasks_store.duties_dir() == str(state_dir)
+
+
 def test_a_lease_released_by_reset_can_be_won_again(state_dir):
     tasks_store.acquire_lease_blocking("duties")
     tasks_store.reset_leases_for_tests()

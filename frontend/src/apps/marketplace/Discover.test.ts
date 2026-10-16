@@ -100,8 +100,8 @@ describe("CatalogFooter", () => {
       );
       return out;
     };
-    expect(text(20261015123)).toContain("catalog ");
-    expect(text(null)).not.toContain("catalog ");
-    expect(text("")).not.toContain("catalog ");
+    expect(text(20261015123)).toContain(" · catalog ");
+    expect(text(null)).not.toContain(" · catalog ");
+    expect(text("")).not.toContain(" · catalog ");
   });
 });

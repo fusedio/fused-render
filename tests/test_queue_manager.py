@@ -3256,3 +3256,21 @@ def test_load_stats_the_handle_it_actually_read_not_the_path_afterward(state):
     # `_refresh_if_stale` notice and reload.
     current = qm._stat_tuple(index_path)
     assert m._loaded_stat != current
+
+
+def test_the_index_nests_under_the_branch_ref(state, monkeypatch):
+    """The queue index follows the lease (`tasks_store.duties_dir()`): a branch
+    leader and the desktop app must never pump one shared line."""
+    from fused_render import _branch
+
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "Feat/X")
+    qm.reset_for_tests(None)
+    world = idle_world()
+    m = world.manager()
+    m.started(F1, "a", "run-a", "sess-a")
+    m.enqueue(F1, "b")
+    nested = state / "branches" / "feat-x" / qm.INDEX_FILE
+    assert nested.exists()
+    assert not (state / qm.INDEX_FILE).exists()
+

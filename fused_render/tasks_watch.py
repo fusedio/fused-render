@@ -1220,7 +1220,7 @@ def _store_paths() -> list[str]:
     from fused_render import queue_manager, schedule
 
     return [schedule.store_path(),
-            os.path.join(tasks_store.STATE_DIR, queue_manager.INDEX_FILE)]
+            os.path.join(tasks_store.duties_dir(), queue_manager.INDEX_FILE)]
 
 
 #: Per-path content signature of the stores whose file also changes for reasons
