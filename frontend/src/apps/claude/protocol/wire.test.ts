@@ -25,6 +25,7 @@ import {
   stripAnnBlock,
   stripAppStateBlock,
   stripBlocks,
+  stripTerminalHintBlock,
   stripPaneBlock,
   type AnnotationWire,
   type PaneShotWire,
@@ -50,6 +51,22 @@ describe("composeOutgoing / stripBlocks are exact inverses", () => {
     // Deliberately the WRONG order, which is what broke stripAnnBlock once.
     const out = [notes, shots, appState, "words"].join("\n\n");
     expect(stripBlocks(out)).toBe("words");
+  });
+
+  test("a server-written terminal-hint is machinery, not the user's words", () => {
+    // agent.py's `_with_terminal_hint` slots the hint AFTER the app-state block
+    // and BEFORE the words; the inbox row and the CLI's echo carry it back as-is.
+    const hint =
+      "<terminal-hint>The user's focused terminal is claude:abc (claude); last command `ls`; " +
+      "last activity 4s ago. Metadata only: call terminal_read to see its contents.</terminal-hint>";
+    expect(stripBlocks([appState, hint, "give me test url"].join("\n\n"))).toBe("give me test url");
+    expect(stripBlocks(hint + "\n\nhello")).toBe("hello");
+    expect(stripTerminalHintBlock(hint)).toBe("");
+    // A wordless send that carried only pictures still names what it carried.
+    const shots = paneShotBlock([{ kind: "image", view: "/tmp/a.png" }], "preview");
+    expect(stripBlocks([appState, shots, hint].join("\n\n"))).toBe(stripBlocks([appState, shots].join("\n\n")));
+    // Position-independent like the other three strips (T:10466).
+    expect(stripBlocks("why does <terminal-hint>x</terminal-hint> show?")).toBe("why does show?");
   });
 
   test("empty blocks are dropped, not joined", () => {
