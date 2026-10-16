@@ -124,10 +124,17 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   under `/api/copilot/{health, health/refresh, install, login, login/cancel}`,
   same snapshot keys as `claude_health.summary()`. Signed-in probe = spawn
   `copilot --acp --disable-builtin-mcps`, `initialize`, `session/new`; an
-  `auth_required`-class JSON-RPC error → signed out. **Login substitute (Q5,
-  owner: yes):** if `gh auth token` yields a token, the spawn env sets
-  `COPILOT_GITHUB_TOKEN` to it (Copilot documents precedence over stored creds);
-  the health probe reports `account.method = "gh"` in that case.
+  JSON-RPC error `-32000 "Authentication required"` (verified) → signed out.
+  **gh CLI as a fallback login (Q5, owner: yes), two-step:** the health probe
+  first runs WITHOUT an injected token (stored `copilot login`, or a token the
+  user exported). Only if that reads signed out, and `gh auth token` yields a
+  token the user did not already export, a second probe runs with it as
+  `COPILOT_GITHUB_TOKEN`. `account.method` records which worked: `copilot` |
+  `token` | `gh`. The chat host injects the gh token **only** when the cached
+  snapshot says `gh`, and never overrides a user-set `COPILOT_GITHUB_TOKEN`, so
+  the snapshot is the authority and a working `copilot login` is never
+  overridden by a gh account. A probe that times out keeps the previous
+  snapshot's `account` and reports `signed_in: null`, never "Sign in".
 - **D11** `GET /api/agent-backends` → `registry.catalog()`:
   `{"backends":[<enabled, in order>], "default": id, "all":[<every backend>]}`,
   each `{id,label,enabled,models[{id,label}],default_model,efforts,modes,caps{...},health}`.
