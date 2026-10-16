@@ -82,9 +82,13 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   Lives in: run `meta.json` + `host.json`; `session_settings.json` record
   `{sid: {model, effort, backend}}`; scheduler entry (beside `model`/`effort`);
   task row on the wire; `start`/`send`/`/api/tasks/create`/`/api/schedule` bodies;
-  `tasks-index.sqlite` head cache (from the transcript's root). Session id is a
-  fused-minted uuid4 for both (Claude already gets `--session-id`; Copilot takes
-  `--session-id` too). There is **no task table**.
+  the task row derives it from the transcript root at scan time. **Session id:**
+  Claude's is fused-minted (`--session-id uuid4`). Copilot's is **Copilot's own**,
+  from the `session/new` reply: `--acp` and `--session-id` are mutually exclusive
+  (verified 2026-10-16: the CLI refuses to start). So a fresh Copilot `_start`
+  returns `session_id: ""`, and the id is learned from the host's init row by
+  `_poll`, the same path Claude used before `--session-id`. The settings record is
+  written when that id is first recorded. There is **no task table**.
 - **D3** Copilot transcript is **written by the host**, Claude transcript shape,
   under `copilot_dir()/projects/<munge(cwd)>/<sid>.jsonl`; live registry under
   `copilot_dir()/sessions/<pid>.json` (`{sessionId, cwd, status: busy|idle,
@@ -180,7 +184,7 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
 
 ```
 copilot --acp --no-auto-update
-        [--session-id <uuid>]                       # new session; a resume does session/load after initialize
+        # never --session-id: --acp refuses it; Copilot mints the id in session/new; a resume does session/load
         --model <id> --reasoning-effort <effort>
         --plugin-dir <run_dir>/plugin --agent fused:fused
         --additional-mcp-config @<run_dir>/mcp.json    # only when a pane (app_state) or terminal origin exists
