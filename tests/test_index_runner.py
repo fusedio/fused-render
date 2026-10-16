@@ -96,6 +96,23 @@ def test_start_carries_the_low_impact_pref_into_the_spec(tmp_path, spawned,
     assert spec["low_impact"] is True
 
 
+@pytest.mark.parametrize("exc", [PermissionError, IsADirectoryError])
+def test_start_survives_an_unreadable_low_impact_pref(tmp_path, spawned,
+                                                      monkeypatch, exc):
+    """A prefs.json that raises costs the flag, never the scan."""
+    from fused_render.shell import prefs
+
+    def boom():
+        raise exc("prefs.json")
+
+    monkeypatch.setattr(prefs, "index_low_impact_enabled", boom)
+    cfg = _cfg(tmp_path)
+    started = runner.start(cfg, str(tmp_path))
+    spec = json.load(open(os.path.join(cfg.runs_dir, started["run_id"], "spec.json")))
+    assert spec["low_impact"] is False
+    assert len(spawned) == 1
+
+
 def test_start_expands_and_canonicalizes_the_root(tmp_path, spawned):
     cfg = _cfg(tmp_path)
     sub = tmp_path / "sub"
