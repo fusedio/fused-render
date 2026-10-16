@@ -183,9 +183,15 @@ def test_copilot_account_text_names_copilots_fix_and_claudes_is_unchanged(agent)
     for raw in ("auth_required", "premium request quota hit"):
         text = agent._account_error(raw, "copilot")
         assert "claude" not in text.lower()
-        assert "#troubleshooting-login" not in text and "#troubleshooting-limit" not in text
-    assert "`copilot login`" in agent._account_error("auth_required", "copilot")
-    assert "Preferences → Agents" in agent._account_error("auth_required", "copilot")
+        # No guide link at all: the site has no Copilot section to open.
+        assert "http" not in text and "Help:" not in text
+    assert agent._account_error("auth_required", "copilot") == (
+        "GitHub Copilot isn't signed in. Sign in from Preferences → Agents "
+        "(or run `copilot login` in a terminal), then start a new chat here. "
+        "(auth_required)")
+    assert agent._account_error("premium request quota hit", "copilot") == (
+        "Your GitHub Copilot plan's request budget was reached. Wait for it to "
+        "reset, or upgrade the plan, then try again. (premium request quota hit)")
     # Claude's, byte for byte.
     assert agent._account_error("/login") == (
         "Claude Code isn't logged in. Open a terminal, run `claude`, type /login "

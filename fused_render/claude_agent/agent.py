@@ -5088,10 +5088,10 @@ def _account_error(error: str, backend: str = "") -> str:
     low = error.lower()
     if any(m in low for m in _ACCOUNT_ERROR_MARKERS[backend]):
         if backend == "copilot":
-            return ("GitHub Copilot isn't signed in. Run `copilot login` in a "
-                    "terminal (or check Copilot in Preferences → Agents), then "
-                    "start a new chat here. Help: %s-copilot-login (%s)"
-                    % (GUIDE_URL, error))
+            # No guide link: the troubleshooting page has no Copilot panel.
+            return ("GitHub Copilot isn't signed in. Sign in from Preferences "
+                    "→ Agents (or run `copilot login` in a terminal), then "
+                    "start a new chat here. (%s)" % error)
         return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
                 "type /login and finish the sign-in, then start a new chat "
                 "here. Help: %s-login (%s)" % (GUIDE_URL, error))
@@ -5099,7 +5099,7 @@ def _account_error(error: str, backend: str = "") -> str:
         if backend == "copilot":
             return ("Your GitHub Copilot plan's request budget was reached. "
                     "Wait for it to reset, or upgrade the plan, then try again. "
-                    "Help: %s-copilot-limit (%s)" % (GUIDE_URL, error))
+                    "(%s)" % error)
         return ("Your Claude plan's usage limit was reached. Wait for it to "
                 "reset, or upgrade the plan, then try again. Help: %s-limit (%s)"
                 % (GUIDE_URL, error))
