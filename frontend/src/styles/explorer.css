@@ -28,14 +28,9 @@
 :root {
   --topbar-h: 48px;
   --topbar-pad-y: 8px;
-  /* `.status-bar`'s own height (notifications.css), shared here so a fixed
-     overlay inside `#main` (the maximized preview/listing panes below) can
-     pad its content up by this much instead of running content under the
-     bar. Unused wherever `#main` renders no status bar at all (embed mode,
-     App.tsx's `!IS_EMBED` guard) — see the `:has()` rules on
-     `.preview-side.maximized` / `.listing-pane-slot.maximized` that key off
-     the bar's actual presence rather than duplicating that guard's condition
-     here. */
+  /* `.status-bar`'s height (notifications.css). The maximized preview and
+     listing panes pad their content up by it when `#main` has a status bar
+     (not in embed mode). */
   --status-bar-h: 22px;
 }
 
@@ -1163,10 +1158,9 @@
 
 /* FULL SCREEN for the folder pane (lib/side-maximized-store): the slot is lifted
    over the viewport, see `.preview-side.maximized` in preview.css for the why
-   (z-index, fixed containing block, the `inset: 0` + content `padding-bottom`
-   split that keeps the status bar visible and clear in embed mode). The
-   slot's inline flex-basis is a percentage, hence !important; the seam is
-   hidden because there is nothing beside it. */
+   (z-index, fixed containing block, the status-bar padding). The slot's inline
+   flex-basis is a percentage, hence !important; the seam is hidden because
+   there is nothing beside it. */
 .listing-pane-slot.maximized {
   position: fixed;
   inset: 0;

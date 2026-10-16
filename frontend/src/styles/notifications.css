@@ -174,13 +174,10 @@
   border-top: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
 }
-/* The Claude sidebar / folder pane's full-screen overlay (preview.css,
-   explorer.css) is `z-index: 950` and reaches the window's bottom edge, so it
-   would otherwise paint over this bar. While one is maximized, lift the bar
-   above it — `z-index: 960` is still well short of any modal overlay
-   (deploy.css 1000, the chat's overlays 1100), so a dialog still covers the
-   bar, and well short of this bar's own `.dl-panel` (2001), which keeps
-   opening above everything regardless. */
+/* The full-screen pane overlay (preview.css, explorer.css) is z-index 950 and
+   reaches the window's bottom edge. While one is up, the bar sits above it;
+   960 stays below the modal overlays (1000, 1100), and the bar's `.dl-panel`
+   (2001) still opens above everything. */
 #main:has(.preview-side.maximized, .listing-pane-slot.maximized) > .status-bar {
   z-index: 960;
 }

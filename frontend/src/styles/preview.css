@@ -424,21 +424,13 @@ html.side-reopening iframe {
    listing's pane gets the same treatment on its slot
    (.listing-pane-slot.maximized, explorer.css).
 
-   `inset: 0` always, covering the full viewport including the app sidebar's
-   bottom edge — the sidebar is not otherwise covered by this overlay, so
-   stopping the overlay's own box short of the window's bottom left the
-   sidebar's last 22px (its Settings row, version badge) peeking out under a
-   cut-off corner, which read as a layout bug. Instead, where `#main` carries
-   a `.status-bar`, the `:has()` rule below pads the CONTENT up by
-   `--status-bar-h` so no chat content sits under the bar, while the
-   overlay's own background still runs flush to the window's bottom edge
-   beneath it. `#main`'s `.status-bar` is itself lifted above this overlay
-   for the duration (z-index 960 while a pane is maximized, see the rule on
-   `.status-bar` in notifications.css) so it stays visible and clickable; its
-   `.dl-panel` popovers clear that easily (2001, notifications.css). Either
-   way, z-index 950 sits below every modal overlay (deploy.css 1000, the
-   chat's file-preview and screenshot overlays 1100), so a dialog opened from
-   inside it still covers it. */
+   The box covers the whole viewport, app sidebar included. The status bar
+   stays visible on top of it: where `#main` has a `.status-bar`, the rule
+   below pads the content up by `--status-bar-h`, and notifications.css lifts
+   the bar above this overlay while it is maximized. z-index 950 sits below
+   every modal overlay (deploy.css 1000, the chat's file-preview and
+   screenshot overlays 1100), so a dialog opened from inside it still covers
+   it. */
 .preview-side.maximized {
   position: fixed;
   inset: 0;

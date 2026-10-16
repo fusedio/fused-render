@@ -1,11 +1,10 @@
 /* The background-tasks strip (SPEC T-5, ui/TasksPanel.tsx).
 
    It rides the COMPOSER'S column, like `.c-schedblock` above it: same 720px
-   measure and 20px gutter. A quiet text row, not a boxed panel — no border or
-   fill on the head or the opened list, so it reads as part of the pane rather
-   than a control floating on it. Collapsed it is one line; opened, the rows
-   sit directly under the head and cap at a third of the pane and scroll — the
-   transcript above keeps the rest. */
+   measure and 20px gutter. A plain text row with no border or fill, on the
+   head or the opened list. Collapsed it is one line; opened, the rows sit
+   under the head, cap at a third of the pane and scroll — the transcript
+   above keeps the rest. */
 .chat-root .chat-tasks {
   flex-shrink: 0;
   max-width: 720px;
