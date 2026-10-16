@@ -1,12 +1,26 @@
-"""The contribution loop's record store (docs/CONTRIB_LOOP.md §3).
+"""The contribution loop's record store (docs/CONTRIB_LOOP.md §3, §16.1).
 
 ONE FILE, OUTSIDE EVERY APP: `<home>/contrib/apps.json`,
-`{"version": 1, "apps": {<key>: Record}}`. What a copy follows, who owns it
+`{"version": 2, "apps": {<key>: Record}}`. What a copy follows, who owns it
 and the proposal it has open are facts about THIS MACHINE'S copy, decided by
 fused — never by a file in the repo. The repo is the author's to write (a
 committed `.fused/` included), and anything that read its own install source
 out of the folder would let the app (or the author) re-point where Bob's
-changes go. Nothing here reads the app folder beyond `os.path.isdir`.
+changes go. Nothing here reads the app folder beyond `os.path.isdir` and
+one git question, the binding below.
+
+BOUND TO A ROOT COMMIT (§16.1). A record names `root_commit`, a root commit
+of HEAD when it was classified. `get` treats a record as absent — and drops
+it — when that commit is not in the repo at the path any more (`git
+cat-file -e` answers "missing" in a repo): a different repository now lives
+there (deleted and re-cloned, replaced, a new app of the same name), and
+everything the record says about the old one — what it follows, a proposal,
+an overlap — would be applied to a stranger. Only a definite "missing"
+drops: git not running, or the folder no longer a repo at all, keeps the
+row. A v1 record without `root_commit` gets it filled on its first read.
+The answer is memoised per folder on the folder's and its `.git`'s inode, so
+a re-clone at the same path is seen at once and an unchanged repo costs a
+stat.
 
 KEYED BY FOLDER, realpath'd. Two copies of one repo on one machine are two
 records (`find_by_repo` lists both), and every caller — git_upstream's repo
@@ -31,6 +45,7 @@ from __future__ import annotations
 import copy
 import logging
 import os
+import secrets
 import threading
 import time
 
@@ -38,14 +53,17 @@ from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
 
-VERSION = 1
+VERSION = 2
+#: The record schema stamp (§16.0 P3): a record without it is a v1 record,
+#: which `migrate_v2` converts on its repo's first v2 sync.
+RECORD_V = 2
 
 #: Newest last; the page says each once. Ten is far more than one copy
 #: accumulates between two visits.
 EVENTS_KEEP = 10
-#: The record's list of backup refs (the refs themselves stay in the repo —
-#: see replay.land); ten names the recent ones for a restore UI.
-BACKUPS_KEEP = 10
+#: Activity lines kept (§16.9) — newest last on disk, newest first served.
+#: A backup ref only a dropped line named is the engine's to prune later.
+ACTIVITY_KEEP = 50
 
 EVENT_KINDS = frozenset({
     "updated", "updated-kept", "merged-back", "declined", "merge-accepted",
@@ -64,7 +82,11 @@ ORPHAN_TTL_S = 30 * 24 * 3600
 
 #: The record fields `adopt` carries to a new folder.
 ADOPT_KEEP = ("kind", "repo", "branch", "remix_of", "proposal", "classified_by",
-              "classified_at", "owner_checked")
+              "classified_at", "owner_checked", "root_commit")
+
+#: How long a binding answer is trusted for an unchanged folder (its memo
+#: key already changes on a re-clone; this only bounds a stale object DB).
+BIND_TTL_S = 30.0
 
 _lock = threading.Lock()
 
@@ -102,23 +124,137 @@ def _write(data: dict) -> bool:
 
 
 def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
-               classified_by: str = "migration", owner_checked: bool = True) -> dict:
-    """A fresh Record with every §3 field present (callers never have to
-    `.get` a field into existence)."""
+               classified_by: str = "migration", owner_checked: bool = True,
+               root_commit: str | None = None) -> dict:
+    """A fresh Record with every §3/§16.1 field present (callers never have
+    to `.get` a field into existence)."""
     return {
+        "v": RECORD_V,
         "kind": kind,
         "repo": repo,
         "branch": branch,
         "classified_by": classified_by,
         "classified_at": time.time(),
         "owner_checked": owner_checked,
+        "root_commit": root_commit,
         "remix_of": None,
         "proposal": None,
         "events": [],
         "needs_merge": None,
         "original_update": None,
-        "backups": [],
+        "activity": [],
+        "skip_tip": None,
+        "own_state": None,
     }
+
+
+def _view(rec: dict) -> dict:
+    """What a reader sees: `rec` (a copy) with every v2 field present, and a
+    v1 proposal's `pushed_head or proposed_head` read as `sent` (§16.1) — no
+    reader has to know which schema wrote the row. Nothing persists here;
+    `migrate_v2` does that."""
+    for name, default in (("root_commit", None), ("activity", []),
+                          ("skip_tip", None), ("own_state", None)):
+        rec.setdefault(name, default)
+    p = rec.get("proposal")
+    if isinstance(p, dict):
+        if "sent" not in p:
+            p["sent"] = p.get("pushed_head") or p.get("proposed_head")
+        p.setdefault("checked_tip", None)
+    return rec
+
+
+# --------------------------------------------------------------------- binding
+
+_bind_lock = threading.Lock()
+_bind_memo: dict = {}  # key -> (folder stamp, root_commit, at, bound: bool | None)
+
+
+def _git(path, *args, timeout=10.0):
+    from fused_render import git_upstream as gu
+
+    return gu._run(path, *args, timeout=timeout)
+
+
+def root_commit_of(path: str) -> str | None:
+    """A root commit of HEAD in the repo at `path` (the lowest-sorting one
+    when a history has several, so every reader picks the same), or None —
+    not a repo, no commits yet, git unavailable."""
+    from fused_render import git_upstream as gu
+
+    r = _git(path, "rev-list", "--max-parents=0", "HEAD")
+    if not gu._ok(r):
+        return None
+    roots = sorted(ln for ln in gu._out(r).split() if len(ln) >= 40)
+    return roots[0] if roots else None
+
+
+def _folder_stamp(k: str):
+    """What changes when a different repo moves in at `k`: the folder's own
+    inode, and its `.git`'s (dir, or a worktree's file) inode + mtime."""
+    try:
+        st = os.stat(k)
+    except OSError:
+        return None
+    try:
+        g = os.stat(os.path.join(k, ".git"))
+        return (st.st_ino, g.st_ino, g.st_mtime_ns)
+    except OSError:
+        return (st.st_ino, None, None)
+
+
+def _bound(k: str, root_commit: str) -> bool | None:
+    """True when `root_commit` is in the repo at `k`, False when that repo
+    definitely lacks it (`cat-file -e` exit 1), None when git cannot say
+    (not a repo any more, git missing, timed out). Memoised (module
+    docstring)."""
+    stamp = _folder_stamp(k)
+    now = time.time()
+    with _bind_lock:
+        hit = _bind_memo.get(k)
+    if hit and hit[0] == stamp and hit[1] == root_commit and now - hit[2] < BIND_TTL_S:
+        return hit[3]
+    r = _git(k, "cat-file", "-e", root_commit)
+    ans = None if r is None else True if r[0] == 0 else False if r[0] == 1 else None
+    with _bind_lock:
+        _bind_memo[k] = (stamp, root_commit, now, ans)
+    return ans
+
+
+def _forget_binding(k: str) -> None:
+    with _bind_lock:
+        _bind_memo.pop(k, None)
+
+
+def _bind(k: str, rec: dict) -> dict | None:
+    """`rec` when it is still about the repo at `k`; None, after dropping
+    the row, when it is not; a v1 row gets its `root_commit` filled (module
+    docstring). Git runs OUTSIDE the store lock; the drop and the fill are
+    compare-and-set against the row as read."""
+    rc = rec.get("root_commit")
+    if rc:
+        if _bound(k, rc) is False:
+            with _lock:
+                data = _read()
+                cur = data["apps"].get(k)
+                if isinstance(cur, dict) and cur.get("root_commit") == rc:
+                    del data["apps"][k]
+                    _write(data)
+            logger.info("contrib store: %s now holds a different repository; "
+                        "dropped its record", k)
+            _forget_binding(k)
+            return None
+        return rec
+    found = root_commit_of(k)
+    if found:
+        with _lock:
+            data = _read()
+            cur = data["apps"].get(k)
+            if isinstance(cur, dict) and not cur.get("root_commit"):
+                cur["root_commit"] = found
+                _write(data)
+        rec["root_commit"] = found
+    return rec
 
 
 # ----------------------------------------------------------------------- reads
@@ -126,15 +262,20 @@ def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
 
 def get(app_dir: str) -> dict | None:
     """The record for `app_dir`, or None — none recorded, the store
-    unreadable, or the folder no longer exists (the row is kept for
-    adoption; module docstring). A copy: mutating it changes nothing."""
+    unreadable, the folder no longer exists (the row is kept for adoption;
+    module docstring), or a different repository lives there now (the row
+    is dropped: "BOUND TO A ROOT COMMIT"). A copy: mutating it changes
+    nothing."""
     try:
         k = key(app_dir)
         if not os.path.isdir(k):
             return None
         with _lock:
             rec = _read()["apps"].get(k)
-        return copy.deepcopy(rec) if isinstance(rec, dict) else None
+        if not isinstance(rec, dict):
+            return None
+        rec = _bind(k, copy.deepcopy(rec))
+        return _view(rec) if rec is not None else None
     except Exception:  # noqa: BLE001
         logger.exception("contrib store: get failed for %s", app_dir)
         return None
@@ -180,6 +321,7 @@ def find_by_repo(repo: str) -> list:
 def put(app_dir: str, record: dict) -> bool:
     try:
         k = key(app_dir)
+        _forget_binding(k)
         with _lock:
             data = _read()
             data["apps"][k] = copy.deepcopy(record)
@@ -195,6 +337,7 @@ def create(app_dir: str, record: dict) -> bool:
     False when one existed (or the write failed)."""
     try:
         k = key(app_dir)
+        _forget_binding(k)
         with _lock:
             data = _read()
             if isinstance(data["apps"].get(k), dict):
@@ -231,6 +374,7 @@ def update(app_dir: str, fn) -> dict | None:
 def drop(app_dir: str) -> bool:
     try:
         k = key(app_dir)
+        _forget_binding(k)
         with _lock:
             data = _read()
             if data["apps"].pop(k, None) is None:
@@ -399,14 +543,130 @@ def ack(app_dir: str, kind: str) -> dict | None:
 
 
 def add_backup(app_dir: str, ref: str, why: str) -> dict | None:
-    """Name one backup ref on the record (capped at BACKUPS_KEEP). A name
-    falling off the list never deletes the ref — only replay's age-out of
-    plain update backups does (`replay.prune_backups_locked`)."""
-    entry = {"ref": ref, "at": time.time(), "why": why}
+    """v1's backup list, kept only as a shim for callers not yet moved to
+    `add_activity`: the ref is named by one activity line instead (§16.1
+    "Drop backups list")."""
+    add_activity(app_dir, "backup", "Saved a copy of your work before changing it.",
+                 backup=ref)
+    return get(app_dir)
+
+
+# -------------------------------------------------------------------- activity
+
+
+def add_activity(app_dir: str, kind: str, text: str, *, backup=None, aside=None) -> str | None:
+    """Append one Activity line (§16.9) — a plain-words sentence (§0.1) for
+    something fused did to this copy — and answer its id (None when there is
+    no record, or the write failed). `backup` (a backup ref, or a list of
+    them: a tip and its `-wip`) and/or `aside` (where moved-aside files
+    went) make the line undoable, and a ref a line names is never pruned
+    (`referenced_backups`). Capped at ACTIVITY_KEEP."""
+    entry = {"id": f"{int(time.time() * 1000)}-{secrets.token_hex(3)}",
+             "at": time.time(), "kind": str(kind), "text": str(text),
+             "backup": backup, "aside": aside, "restored_at": None}
 
     def fn(rec):
-        backups = rec.get("backups") if isinstance(rec.get("backups"), list) else []
-        backups.append(entry)
-        rec["backups"] = backups[-BACKUPS_KEEP:]
+        lines = rec.get("activity") if isinstance(rec.get("activity"), list) else []
+        lines.append(entry)
+        rec["activity"] = lines[-ACTIVITY_KEEP:]
 
-    return update(app_dir, fn)
+    return entry["id"] if update(app_dir, fn) is not None else None
+
+
+def _undoable(e: dict) -> bool:
+    return bool(e.get("backup") or e.get("aside")) and not e.get("restored_at")
+
+
+def activity(app_dir: str) -> list:
+    """`[{id, at, kind, text, undo}]`, newest first (§16.9). `undo`: the line
+    names a backup or set-aside files and was not restored already."""
+    rec = get(app_dir)
+    lines = rec.get("activity") if rec and isinstance(rec.get("activity"), list) else []
+    return [{"id": e.get("id"), "at": e.get("at"), "kind": e.get("kind"),
+             "text": e.get("text"), "undo": _undoable(e)}
+            for e in reversed(lines) if isinstance(e, dict)]
+
+
+def activity_entry(app_dir: str, activity_id: str) -> dict | None:
+    """The whole stored line `activity_id` (`backup`, `aside`,
+    `restored_at` included) — what `engine.restore` acts on. A copy."""
+    rec = get(app_dir)
+    for e in (rec or {}).get("activity") or []:
+        if isinstance(e, dict) and e.get("id") == activity_id:
+            return copy.deepcopy(e)
+    return None
+
+
+def mark_restored(app_dir: str, activity_id: str) -> bool:
+    """Line `activity_id` was undone: it stays (it is history), without Undo."""
+    hit = []
+
+    def fn(rec):
+        for e in rec.get("activity") or []:
+            if isinstance(e, dict) and e.get("id") == activity_id:
+                e["restored_at"] = time.time()
+                hit.append(True)
+
+    return update(app_dir, fn) is not None and bool(hit)
+
+
+def referenced_backups(app_dir: str) -> set:
+    """Every backup ref an activity line still names — what the engine's
+    backup pruning must never delete."""
+    rec = get(app_dir)
+    refs: set = set()
+    for e in (rec or {}).get("activity") or []:
+        b = e.get("backup") if isinstance(e, dict) else None
+        for r in (b if isinstance(b, list) else [b]):
+            if isinstance(r, str) and r:
+                refs.add(r)
+    return refs
+
+
+# ------------------------------------------------------------------ v1 -> v2
+
+
+#: The private refs v1 kept beside the branch: deleted on a repo's first v2
+#: sync (§16.0 P3, `classify.settle_locked`) and never written again.
+V1_REFS = ("refs/fused/follow", "refs/fused/base", "refs/fused/proposed",
+           "refs/fused/origin-seen")
+
+
+def migrate_v2(app_dir: str) -> tuple[dict | None, bool]:
+    """Convert a v1 record in place (§16.0 P3, §16.1): clear `needs_merge`
+    (it named v1's rebase state), turn each `backups` entry into an activity
+    line naming the ref, map the proposal's `pushed_head or proposed_head`
+    to `sent` (+ `checked_tip`), drop the v1-only fields, stamp `v: 2`.
+    Answers `(record, migrated)` — `migrated` is False for a record already
+    v2 (or no record). The caller deletes V1_REFS when it is True."""
+    did = []
+
+    def fn(rec):
+        if rec.get("v") == RECORD_V:
+            return
+        did.append(True)
+        rec["needs_merge"] = None
+        lines = rec.get("activity") if isinstance(rec.get("activity"), list) else []
+        for b in rec.pop("backups", None) or []:
+            if isinstance(b, dict) and isinstance(b.get("ref"), str):
+                at = b.get("at") if isinstance(b.get("at"), (int, float)) else time.time()
+                lines.append({"id": f"{int(at * 1000)}-{secrets.token_hex(3)}",
+                              "at": at, "kind": "backup",
+                              "text": "Saved a copy of your work before an update.",
+                              "backup": b["ref"], "aside": None, "restored_at": None})
+        lines.sort(key=lambda e: e.get("at") or 0)
+        rec["activity"] = lines[-ACTIVITY_KEEP:]
+        p = rec.get("proposal")
+        if isinstance(p, dict):
+            if "sent" not in p:
+                p["sent"] = p.get("pushed_head") or p.get("proposed_head")
+            p.setdefault("checked_tip", None)
+            p.pop("pushed_head", None)
+            p.pop("proposed_head", None)
+        rec.pop("protected", None)
+        for name, default in (("root_commit", None), ("skip_tip", None), ("own_state", None)):
+            rec.setdefault(name, default)
+        rec["v"] = RECORD_V
+
+    rec = update(app_dir, fn)
+    return (_view(rec) if rec is not None else None), bool(did)

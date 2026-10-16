@@ -775,7 +775,9 @@ Rebase mode, `_map_mark`, flipped sides: deleted.
 `git_upstream._sync_plain` is unchanged except its diverged branch (ff-only
 refused with ahead > 0) for a root whose `kind_of` is `own`: it calls
 `ownsync.resolve(root, action=, push=)` (slot held) instead of recording a
-`diverged` failure.
+`diverged` failure. Only with `flags.sources()` on (every own fix button is
+gated by it, P1); off → resolve answers "not handled" and today's `diverged`
+failure row is recorded unchanged.
 
 - `R` = reflog values of `refs/remotes/origin/<b>` (old and new sides) +
   current tip. `U` = `git rev-list HEAD --not <tip> <R…>` (never-published

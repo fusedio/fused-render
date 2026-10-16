@@ -182,12 +182,67 @@ export interface InboxItem {
   head_sha: string;
   /** ISO timestamp from GitHub. */
   created_at: string;
+  /** False: the proposal no longer fits on the app as it is now (GitHub's
+   *  own check, cached). Null/absent = not known. */
+  fits?: boolean | null;
 }
 
 export interface Contributor {
   login: string | null;
   name: string;
   commits: number;
+}
+
+// ---- v2: the Source panel (§16.9) --------------------------------------------
+//
+// The server decides EVERYTHING the panel says and offers: one sentence, the
+// files it is about, and the buttons in order. The page renders what it is
+// sent and nothing more — no button is ever derived on this side.
+
+export interface SourcePanel {
+  kind: "github" | "own" | "scratch";
+  /** "alice/x". */
+  repo: string | null;
+  /** The name every sentence uses (the author's login, or the user's own). */
+  who: string | null;
+  /** Epoch seconds of the last successful check against GitHub; null = never. */
+  last_checked: number | null;
+  /** For branching only (busy polls); the words are `sentence`. */
+  state: string;
+  sentence: string;
+  /** A quieter second line, when the server has one. */
+  detail?: string | null;
+  /** App-relative paths the sentence is about. */
+  files: string[];
+  unproposed: number;
+  unpublished: number;
+  github_new: number;
+  /** App-relative files the Propose dialog offers unticked (never sent
+   *  unless the user ticks them). */
+  untracked?: string[];
+}
+
+export interface ContribAction {
+  id: string;
+  label: string;
+  primary: boolean;
+  /** A sentence to confirm with before running; absent = run on the click. */
+  confirm?: string | null;
+  /** The confirm sheet's button, when the server names it. */
+  confirm_label?: string | null;
+  danger?: boolean;
+}
+
+export interface ActivityLine {
+  id: string;
+  /** Epoch seconds. */
+  at: number;
+  kind: string;
+  text: string;
+  /** Something moved away and can come back: offers Undo / Restore. */
+  undo: boolean;
+  /** "Undo" or "Restore" when the server names it. */
+  undo_label?: string | null;
 }
 
 export interface AppContrib {
@@ -204,6 +259,10 @@ export interface AppContrib {
    *  step checks for itself). */
   github: { signed_in: boolean; login: string | null; checking?: boolean };
   share_url: string | null;
+  /** v2 (§16.9): absent from an older server — the panel then shows nothing. */
+  panel?: SourcePanel | null;
+  actions?: ContribAction[];
+  activity?: ActivityLine[];
 }
 
 /** What `GET /api/contrib/app` actually answers: the AppContrib above with
@@ -304,8 +363,12 @@ async function post<T extends ContribAnswer>(route: string, body: Record<string,
 export const ackContrib = (path: string, kind: "event" | "settled") =>
   post<ContribAnswer>("ack", { path, kind });
 export const startProposalDraft = (path: string) => post<JobStarted>("propose/draft", { path });
-export const sendProposal = (path: string, v: { title: string; description: string; note: string }) =>
-  post<JobStarted>("propose/send", { path, ...v });
+/** `include`: the untracked files the user ticked (app-relative) — nothing
+ *  untracked goes out unless it is named here. */
+export const sendProposal = (
+  path: string,
+  v: { title: string; description: string; note: string; include?: string[] },
+) => post<JobStarted>("propose/send", { path, ...v });
 export const updateProposal = (path: string) => post<JobStarted>("propose/update", { path });
 export const withdrawProposal = (path: string) => post<ContribAnswer>("propose/withdraw", { path });
 export const discardChanges = (path: string, withdraw: boolean) =>
@@ -332,6 +395,24 @@ export const startRemixDraft = (path: string) => post<JobStarted>("remix/draft",
 export const publishRemix = (path: string, v: { name: string; credit: string }) =>
   post<JobStarted>("remix/publish", { path, ...v });
 export const bringInOriginal = (path: string) => post<JobStarted>("remix/bring-in", { path });
+
+/** v2's one action route (§16.9): every button the server sent, by its id.
+ *  `confirm`: the user said yes to the action's confirm sentence. Answers
+ *  `{ok, job?}` — a long action hands back a jobs.py job to poll — or a
+ *  refusal; `reason:"confirm"` asks for the confirm first. */
+export const runAction = (
+  path: string,
+  action: string,
+  opts: { confirm?: boolean; args?: Record<string, unknown> } = {},
+) =>
+  post<JobStarted>("action", {
+    path,
+    action,
+    ...(opts.confirm ? { confirm: true } : {}),
+    ...(opts.args ? { args: opts.args } : {}),
+  });
+/** Undo / Restore one activity line (§16.9). */
+export const restoreActivity = (path: string, id: string) => post<ContribAnswer>("restore", { path, id });
 
 /** Retry sending an own app's edits to GitHub (`copy.sync_error`): the same
  *  background sync the app's own changes trigger (POST /api/git-upstream

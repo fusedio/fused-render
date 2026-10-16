@@ -247,11 +247,15 @@ def api_contrib_app(path: str = ""):
     pending = record is None or bool((copy or {}).get("pending"))
     out = {"ok": True, "flags": flags, "pending": pending, "copy": copy,
            "proposal": None, "inbox": None, "contributors": None,
-           "github": refresh.github_identity(), "share_url": None}
+           "github": refresh.github_identity(), "share_url": None,
+           "panel": None, "actions": [], "activity": []}
     if pending:
+        out.update(_panel(app_dir, copy=copy, proposal=None, pending=True))
         return out
     out["share_url"] = _share_url(app_dir, copy)
     out["proposal"] = _safely("proposal", _mod("proposals").view, app_dir)
+    out.update(_panel(app_dir, copy=copy, proposal=out["proposal"]))
+    out["activity"] = _safely("activity", _actions().activity, app_dir) or []
     if flags.get("inbox") and refresh.own_with_repo(record):
         out["inbox"] = _safely("inbox", refresh.inbox_snapshot, app_dir) or {
             "items": [], "count": 0, "loading": False, "unavailable": True}
