@@ -574,6 +574,22 @@ def auto_download_updates_enabled() -> bool:
     return read_prefs().get("auto_download_updates") is True
 
 
+def index_low_impact_enabled() -> bool:
+    """Whether the file index runs in *low-impact* mode (default OFF — opt-in
+    like `task_recap_titles_enabled`).
+
+    On, the index trades freshness for a quiet machine: one watcher owner per
+    Mac (a machine-wide lease the installed :1777 app wins), longer and
+    load-aware rescan floors, one scan worker at a time at a lower priority,
+    watcher events dropped for search-hidden dot-folders and the app's own
+    support dir, the startup scan deferred until after the server is ready,
+    and compaction rewriting only the touched partitions. Read per call —
+    the gate acts on the next trigger, no restart needed, except the worker
+    which receives it through its run spec (`index/runner.py`).
+    """
+    return read_prefs().get("index_low_impact_enabled") is True
+
+
 def ranked_search_enabled() -> bool:
     """Whether index-backed search orders hits by relevance score (default ON
     — D720). Off means the SQL branch that drops scoring entirely: hits come
@@ -808,7 +824,8 @@ def _prefs_response() -> dict:
         # Whether background file-index scanning may run (default ON), and
         # whether index-backed search orders hits by relevance score (default
         # ON — D720; off is `depth ASC, rel ASC` instead of scored).
-        "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled()},
+        "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled(),
+                     "low_impact": index_low_impact_enabled()},
         # Whether app-made git commits are auto-pushed and behind repos are
         # auto fast-forwarded on app open (default ON).
         "git": {"auto_sync": git_auto_sync_enabled()},
@@ -1172,6 +1189,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["ranked_search_enabled"] = value
             changed = True
+        if "index_low_impact_enabled" in body:
+            value = body.get("index_low_impact_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'index_low_impact_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["index_low_impact_enabled"] = value
+            changed = True
         if "git_auto_sync_enabled" in body:
             value = body.get("git_auto_sync_enabled")
             if not isinstance(value, bool):
@@ -1295,6 +1319,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'lan_enabled', "
                           "'default_model', 'claude_enabled', 'copilot_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
+                          "'index_low_impact_enabled', "
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "
                           "'calls_params', 'calls_retention_days', "
