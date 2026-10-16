@@ -14,9 +14,10 @@ SAME two shapes under a root fused owns:
 Same bucket layout, same munge rule, same row fields the tasks readers parse
 — so every reader that used to open ONE projects dir opens the list this
 module returns and otherwise does not change. The root a transcript sits
-under is the authority on which backend owns the session: a session id is
-minted by fused for both backends (uuid4), so nothing about the id itself
-says which one it is.
+under is the authority on which backend owns the session: both kinds of id
+are uuids (fused mints Claude's with --session-id; Copilot mints its own in
+session/new, because --acp refuses --session-id), so nothing about the id
+itself says which one it is.
 
 Stdlib only, never imports `fused_render` (this file is loaded BY PATH from
 `claude_agent/agent.py`, the two session hosts and the test suite, in

@@ -178,7 +178,7 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   notice row "Handled by GitHub Copilot · model <id>" (host emits a
   `system/task_notification` row); agent mark on task rows/board/peek/cards
   wall/recents; New Task modal agent picker first + summary "Copilot will run
-  this task in <folder>"; notifications "Copilot finished: <title>"; terminal
+  this task in <folder>"; notifications keep the task title and say "Copilot finished" on the detail line; terminal
   item "Continue with Copilot in terminal". Copilot mark = fused-drawn glyph +
   word, **never the GitHub Copilot logo**.
 
@@ -314,7 +314,14 @@ request_permission shape + options; `--plugin-dir`+`--agent plugin:name`,
 `--additional-mcp-config @file` (tool reached as `<server>-<tool>`), `--model`
 under `--acp`; `set_config_option allow_all`, `set_mode`; second prompt cancels
 first; MCP via session/new never attaches; no `ask_user`; `copilot --resume=<sid>`
-resumes an ACP session; events.jsonl finals only; `preToolUse` hook deny shape.
+resumes an ACP session; events.jsonl finals only; `preToolUse` hook deny shape;
+`--acp` refuses `--session-id` (CLI exits); signed-out `session/new` →
+`-32000 "Authentication required"`; `--available-tools=` with an EMPTY value
+keeps every tool (a never-matching name removes them); `session/load` replays
+each prompt text byte-identical, machinery blocks included, so the backfill's
+text match never duplicates a fused turn (checked with a live-app-state +
+terminal-hint prompt and two resumes: 3 user rows). End-to-end through
+`agent.py` (start, live send, permission card, Stop, resume, history): 22/22.
 
 Assumed (design absorbs each): signed-out ACP error code (fallback: `-p "ping"`
 20 s probe); `COPILOT_GITHUB_TOKEN` as login substitute; Copilot error texts;
