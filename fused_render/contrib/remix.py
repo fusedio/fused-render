@@ -180,7 +180,7 @@ def draft(app_dir) -> dict:
     summary = ""
     if base:
         summary = re.sub(r"(?m)^Claude: ", "", p._out(p._git(
-            root, "log", "--reverse", "--format=%s", f"{base}..HEAD")))
+            root, "log", "--reverse", "--no-merges", "--format=%s", f"{base}..HEAD")))
     me = gh.identity() or {}
     from fused_render.contrib import ai
     return ai.draft_remix_credit(original=record["repo"], author=me.get("login") or "",

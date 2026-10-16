@@ -573,6 +573,24 @@ def test_credit_keeps_other_peoples_commits(w):
     assert _p().credit(w.app, base, tip, me) == tip
 
 
+def test_credit_keeps_a_merge_in_bobs_range_as_a_merge(w):
+    base = git(w.app, "rev-parse", "HEAD")
+    claude_commit(w.app, {"a.txt": "1\n"}, "one")
+    git(w.app, "checkout", "-q", "-b", "side", base)
+    claude_commit(w.app, {"b.txt": "2\n"}, "two")
+    git(w.app, "checkout", "-q", "main")
+    git(w.app, "-c", "user.name=Fused", "-c", "user.email=apps@fused.io",
+        "merge", "-q", "--no-ff", "-m", "Claude: combine", "side")
+    head = git(w.app, "rev-parse", "HEAD")
+    me = w.gh.identity()
+    tip = _p().credit(w.app, base, head, me)
+    assert git(w.app, "rev-parse", f"{tip}^{{tree}}") == git(w.app, "rev-parse", f"{head}^{{tree}}")
+    assert len(git(w.app, "rev-list", "--parents", "-n1", tip).split()) == 3   # still a merge
+    authors = set(git(w.app, "log", "--format=%an", f"{base}..{tip}").splitlines())
+    assert authors == {"Bob"}
+    assert _p().credit(w.app, base, tip, me) == tip                          # idempotent
+
+
 # ----------------------------------------------------------------- gh.py
 
 

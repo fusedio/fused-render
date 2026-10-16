@@ -467,11 +467,13 @@ def _run_env(root, env, *args, timeout=gu.TIMEOUT_S):
     """`git -C root …` with extra environment (a temporary index)."""
     import subprocess
 
-    kwargs = gu._popen_kwargs()
-    kwargs["env"] = {**kwargs["env"], **env}
+    # gu._popen_kwargs() spelled out: test_git_posix_spawn reads these kwargs
+    # statically, and close_fds=False keeps CPython on posix_spawn.
     try:
         proc = subprocess.run([gu._git_bin(), "-C", root, *args], stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, timeout=timeout, **kwargs)
+                              stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                              env={**os.environ, **gu._ENV, **env}, timeout=timeout,
+                              close_fds=False)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
     return proc.returncode, proc.stdout, proc.stderr

@@ -389,10 +389,14 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
           sentence="Claude couldn't combine the two versions."
           detail={job.error || "Nothing changed in your copy."}
           primary={
-            <Button onClick={() => void onRetryMerge(job)} disabled={!!busy}>
-              {spin("merge")}
-              Try again
-            </Button>
+            // No retry where the server says Claude cannot merge this one
+            // (`merge_button: false`): it would only answer nothing-to-merge.
+            (original || copy.merge_button !== false) && (
+              <Button onClick={() => void onRetryMerge(job)} disabled={!!busy}>
+                {spin("merge")}
+                Try again
+              </Button>
+            )
           }
           secondary={
             <QuietAction onClick={() => void onDiscardMerge(job)} disabled={!!busy}>
@@ -407,20 +411,27 @@ export function CopyStatusCard({ dir, slug, contrib }: { dir: string; slug: stri
     // repo — the engine's "own-sync" — reads the same; only a GitHub-link
     // copy has an author to name.
     const ownApp = copy.kind === "own";
+    // Some overlaps are not Claude's to merge (`merge_button: false`): the
+    // server's own sentence says what the user can do instead, and there is
+    // no button — it clears by itself once they have.
+    const canMerge = copy.merge_button !== false;
     strip = (
       <StatusStrip
         tone="attention"
         icon={<GitCompareArrows />}
         sentence={
-          ownApp ? "Your edits and the latest on GitHub changed the same parts." : `${Author} changed the same parts you did.`
+          copy.needs_merge_message ||
+          (ownApp ? "Your edits and the latest on GitHub changed the same parts." : `${Author} changed the same parts you did.`)
         }
         detail={
-          proposal
-            ? "Your copy stays as it is. Merge first, then update your proposal."
-            : "Your copy stays as it is until you merge."
+          !canMerge
+            ? "Your copy stays as it is meanwhile."
+            : proposal
+              ? "Your copy stays as it is. Merge first, then update your proposal."
+              : "Your copy stays as it is until you merge."
         }
         primary={
-          <Button onClick={() => void onMerge()} disabled={!!busy}>
+          canMerge && <Button onClick={() => void onMerge()} disabled={!!busy}>
             {busy === "merge" ? (
               <Loader2 data-icon="inline-start" className="animate-spin" />
             ) : (

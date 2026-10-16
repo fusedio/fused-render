@@ -22,6 +22,7 @@ remote is theirs to change, and `refs/remotes/origin/<branch>` is the tip.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -76,11 +77,18 @@ def for_record(record) -> Follow | None:
     return None
 
 
-def _gh():
+def _gh_module():
+    """gh.py itself, or None when it cannot be imported."""
     try:
         from fused_render.contrib import gh
-    except ImportError:
+    except Exception:  # noqa: BLE001
         return None
+    return gh
+
+
+def _gh():
+    """gh.py when it has a `fetch` to use, else None."""
+    gh = _gh_module()
     return gh if callable(getattr(gh, "fetch", None)) else None
 
 
@@ -88,37 +96,30 @@ def _ssh_url(url: str) -> str:
     return "git@github.com:" + url.split("github.com/", 1)[1] + ".git"
 
 
-_GITHUB_PREFIXES = ("https://github.com", "http://github.com", "git@github.com",
-                    "ssh://git@github.com", "github.com", "https://www.github.com")
-
-
-def github_redirected(root) -> bool:
-    """Whether this repo's OWN config (`.git/config`, which anything running
-    in the app folder can write) re-points GitHub: a `url.<x>.insteadOf` or
-    `pushInsteadOf` whose value is a github.com prefix sends every fetch and
-    push "to GitHub" somewhere else, the record's URL notwithstanding. The
-    one test for both callers — this module's fetch and gh.py's fetch/push
-    (review r05): gh.py's `url_rewrites` (reads `--includes` too) when it is
-    there, else the same rule here. Unreadable config reads as not
-    redirected."""
-    gh = _gh()
+def github_redirected(root, url=None) -> bool:
+    """Whether this repo's OWN config re-points or re-credentials a GitHub
+    transfer — `.git/config`, what it includes, `.git/config.worktree`: all
+    writable by anything running in the app folder. ONE test for every
+    caller, gh.py's `url_rewrites` (insteadOf/pushInsteadOf aimed at
+    github.com or prefixing `url`, any credential.* key, URL-scoped and
+    deny-listed http.* keys — reviews r05, r2_02). FAILS CLOSED: gh.py
+    missing, or the check itself failing, reads as redirected — a fetch the
+    guard could not vouch for does not run."""
+    gh = _gh_module()
     rewrites = getattr(gh, "url_rewrites", None) if gh else None
-    if rewrites is not None:
-        try:
-            return bool(rewrites(root))
-        except Exception:  # noqa: BLE001 — fall back to the local rule
-            pass
-    # `--local --includes` AND `--worktree` (`.git/config.worktree`, which git
-    # applies once `extensions.worktreeConfig` is on — review r2_02).
-    for scope in (("--local", "--includes"), ("--worktree",)):
-        r = gu._run(root, "config", *scope, "--get-regexp", r"^url\..*\.(push)?insteadof$")
-        if not gu._ok(r):
-            continue
-        for line in gu._out(r).splitlines():
-            _key, _, value = line.partition(" ")
-            if value.strip().lower().startswith(_GITHUB_PREFIXES):
-                return True
-    return False
+    if rewrites is None:
+        logging.getLogger(__name__).warning(
+            "contrib: no GitHub config guard available for %s; refusing", root)
+        return True
+    try:
+        hits = rewrites(root, url)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("contrib: GitHub config guard failed for %s", root)
+        return True
+    if hits:
+        logging.getLogger(__name__).warning(
+            "contrib: %s's own git config redirects GitHub: %s", root, hits)
+    return bool(hits)
 
 
 REDIRECTED_MESSAGE = ("This app's settings point GitHub somewhere else, "
@@ -131,13 +132,7 @@ def fetch_detail(root, follow: Follow) -> tuple[str | None, str | None]:
     (`github_redirected`). Writes only the follow ref (github kind) or
     origin's tracking ref (own); the engine serializes its own fetches per
     copy."""
-    gh = _gh()
-    rewrites = getattr(gh, "url_rewrites", None) if gh else None
-    if github_redirected(root) or (rewrites is not None and rewrites(root, follow.url)):
-        import logging
-
-        logging.getLogger(__name__).warning(
-            "contrib: %s re-points github.com in its own git config; not fetching", root)
+    if github_redirected(root, follow.url):
         return None, "redirected"
     if follow.via_origin:
         r = gu._run(root, "fetch", "--", "origin", follow.branch)
@@ -150,12 +145,17 @@ def fetch_detail(root, follow: Follow) -> tuple[str | None, str | None]:
             return None, "offline"
         return tip(root, follow), None
     else:
+        # Only where gh.py's fetch is unavailable but its guard ran (a test
+        # seam): still with gh's transfer options (`git_net_args` pins
+        # http.sslVerify/proxy and the credential helper).
+        gh = _gh_module()
+        net = tuple(gh.git_net_args()) if gh and hasattr(gh, "git_net_args") else ()
         refspec = f"+refs/heads/{follow.branch}:{follow.ref}"
         args = ("fetch", "--no-tags", "--no-write-fetch-head", "--")
-        r = gu._run(root, *args, follow.url, refspec)
+        r = gu._run(root, *net, *args, follow.url, refspec)
         if not gu._ok(r) and r is not None and any(
                 m in gu._text(r).lower() for m in _AUTH_MARKERS):
-            r = gu._run(root, "-c", "core.sshCommand=ssh -oBatchMode=yes",
+            r = gu._run(root, *net, "-c", "core.sshCommand=ssh -oBatchMode=yes",
                         *args, _ssh_url(follow.url), refspec)
     if not gu._ok(r):
         return None, gu._classify(r)

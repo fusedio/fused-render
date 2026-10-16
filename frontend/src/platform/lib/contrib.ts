@@ -86,6 +86,15 @@ export interface CopyStatus {
   /** Edits made after the proposal was last sent. */
   unproposed: number;
   needs_merge: boolean;
+  /** Whether "Merge with Claude" can resolve the overlap. False for the
+   *  overlaps Claude cannot merge (a file of the user's the author's update
+   *  would take over; an own copy whose GitHub history was rewritten): the
+   *  page then shows `needs_merge_message` and no button. Absent = true. */
+  merge_button?: boolean;
+  /** The plain sentence for this overlap, when the server has a specific
+   *  one ("alice's update adds a file you already have here (.env). Rename
+   *  yours to get the update."). */
+  needs_merge_message?: string | null;
   merge_job: MergeJobView | null;
   /** Newest unacknowledged event under 24 h old. */
   event: ContribEvent | null;

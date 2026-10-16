@@ -787,7 +787,7 @@ def _execute(root, rec, fol, f: Facts, a: Action):
         return _return(root, rec, fol, f.head, f.tip)
     if a.kind == "noop":
         _after_settle(root, f, landed=False)
-        return _push_if_asked(root, f, pulled=0, status="noop")
+        return _push_if_asked(root, f, fol.url, pulled=0, status="noop")
 
     # move | integrate
     mark_tip = None
@@ -811,7 +811,7 @@ def _execute(root, rec, fol, f: Facts, a: Action):
     if a.event:
         store.add_event(root, a.event, who=f.who)
     _after_settle(root, f, landed=True)
-    return _push_if_asked(root, f, pulled=behind, status="synced",
+    return _push_if_asked(root, f, fol.url, pulled=behind, status="synced",
                           had_changes=a.kind == "integrate")
 
 
@@ -862,7 +862,7 @@ def _after_settle(root, f: Facts, *, landed):
             gu._run(root, "update-ref", replay.BASE_REF, f.tip)
 
 
-def _push_if_asked(root, f: Facts, *, pulled, status, had_changes=False) -> dict:
+def _push_if_asked(root, f: Facts, url, *, pulled, status, had_changes=False) -> dict:
     """An own copy, push asked, HEAD has what GitHub lacks: today's plain
     push (never forced). Every other case: the outcome as it is."""
     done = {"branch": f.branch, "tip": f.tip}
@@ -873,7 +873,7 @@ def _push_if_asked(root, f: Facts, *, pulled, status, had_changes=False) -> dict
     head = replay.rev(root, "HEAD")
     pushed = False
     if head and not replay.is_ancestor(root, head, f.tip):
-        if follow.github_redirected(root):
+        if follow.github_redirected(root, url):
             _note_sync_error(root, "redirected")
             return _out("skipped", "redirected", pulled=pulled, **done)
         r = gu._run(root, "push", "--", "origin", f.branch)
@@ -1273,7 +1273,7 @@ def push_to_main(root) -> dict:
                     "message": f"{who}'s latest isn't in your copy yet; try again in a moment."}
         if head == tip:
             return {"ok": True, "message": "Nothing to send."}
-        if follow.github_redirected(root):
+        if follow.github_redirected(root, fol.url):
             return {"ok": False, "reason": "redirected", "message": follow.REDIRECTED_MESSAGE}
         try:
             gh.push(root, head, rec["repo"], fol.branch)

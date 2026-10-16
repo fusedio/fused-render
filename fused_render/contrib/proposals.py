@@ -250,19 +250,16 @@ def credit(root, base: str, head: str, ident: dict) -> str:
         commits.append(parts)
     if not commits:
         return head
-    if any(len(c[1].split()) != 1 for c in commits):
-        # A merge inside Bob's range never comes from the engine (it only
-        # rebases); a hand-made one cannot be re-parented commit by commit.
-        # Send the same content as ONE credited commit instead.
-        tree = _out(_git(root, "rev-parse", f"{head}^{{tree}}"))
-        return _commit_tree(root, tree, base, with_trailer("Your changes"),
-                            author=(ident["name"], ident["email"], None),
-                            committer=(ident["name"], ident["email"], None))
-    parent_map = {}
-    new = base
+    # Merges are re-created too, every parent mapped: the engine can leave
+    # one in Bob's range (an unsound replay of a hand resolution keeps the
+    # merge), and squashing the whole range to dodge it would throw away
+    # Bob's history and the authorship of everyone else in it. A parent
+    # outside the range (the base, the author's side of a merge) maps to
+    # itself; `--topo-order --reverse` visits every parent before its child.
+    parent_map: dict[str, str] = {}
     for sha, parents, tree, an, ae, ad, cn, ce, cd, body in commits:
-        old_parent = parents.split()[0]
-        parent = parent_map.get(old_parent, old_parent)
+        old_parents = parents.split()
+        new_parents = [parent_map.get(x, x) for x in old_parents]
         if ae.strip().lower() == FUSED_EMAIL:
             author = (ident["name"], ident["email"], ad)
             committer = (ident["name"], ident["email"], cd)
@@ -270,17 +267,19 @@ def credit(root, base: str, head: str, ident: dict) -> str:
             changed = True
         else:
             author, committer, message = (an, ae, ad), (cn, ce, cd), body
-            changed = parent != old_parent
-        if not changed:
-            new = sha
-        else:
-            new = _commit_tree(root, tree, parent, message, author=author, committer=committer)
-        parent_map[sha] = new
-    return new
+            changed = new_parents != old_parents
+        parent_map[sha] = (_commit_tree(root, tree, new_parents, message, author=author,
+                                        committer=committer) if changed else sha)
+    tip = _rev(root, head)
+    return parent_map.get(tip, tip) if tip else head
 
 
-def _commit_tree(root, tree, parent, message, *, author, committer) -> str:
-    """`git commit-tree` with an explicit identity and dates (None = now)."""
+def _commit_tree(root, tree, parents, message, *, author, committer) -> str:
+    """`git commit-tree` with an explicit identity and dates (None = now);
+    `parents` is one sha or a list (a merge)."""
+    parent_args = []
+    for p in ([parents] if isinstance(parents, str) else parents):
+        parent_args += ["-p", p]
     import subprocess
 
     env = {**os.environ, **_gu()._ENV,
@@ -293,7 +292,7 @@ def _commit_tree(root, tree, parent, message, *, author, committer) -> str:
     try:
         res = subprocess.run(
             [_gu()._git_bin(), "-C", root, "commit-tree", "--no-gpg-sign", tree,
-             "-p", parent, "-F", "-"],
+             *parent_args, "-F", "-"],
             input=message, capture_output=True, text=True, encoding="utf-8",
             errors="replace", env=env, close_fds=False, timeout=30,
         )
@@ -527,7 +526,7 @@ def stale(root, p: dict) -> bool:
 
 
 def _range_text(root, base: str) -> tuple[str, str, str]:
-    log = _git(root, "log", "--reverse", "--format=%s%n%b", f"{base}..HEAD")
+    log = _git(root, "log", "--reverse", "--no-merges", "--format=%s%n%b", f"{base}..HEAD")
     stat = _git(root, "diff", "--stat", base, "--", ".", ":(exclude).fused")
     diff = _git(root, "diff", base, "--", ".", ":(exclude).fused")
     raw = diff[1].decode("utf-8", "replace") if _ok(diff) else ""
@@ -575,7 +574,7 @@ def draft(app_dir) -> dict:
     log, stat, diff = _range_text(root, base)
     if not stat.strip():
         raise PlainError("There's nothing to send yet. Ask Claude for a change first.")
-    first = _out(_git(root, "log", "--reverse", "--format=%ct", f"{base}..HEAD")).split()
+    first = _out(_git(root, "log", "--reverse", "--no-merges", "--format=%ct", f"{base}..HEAD")).split()
     since = float(first[0]) if first else None
     me = gh.identity()
     from fused_render.contrib import ai
