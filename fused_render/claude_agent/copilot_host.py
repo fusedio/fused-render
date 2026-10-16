@@ -1215,11 +1215,11 @@ class _Host:
         perm_id = self._perm_id()
         _private_dirs(self.perm_dir)
         # The card goes up UNDER THE LOCK, and only if nothing answered this
-        # request first: `reject_pending` snapshots `pending_perm` under the
-        # same lock, so it sees either no card (and the request already
-        # answered, so none is raised) or a card on disk with its id — never
-        # the gap in between, which left a raised card with no deny and no
-        # `card_cleared`.
+        # request first. `reject_pending` answers (setting `done` under the
+        # same lock) and only THEN reads `perm_id`: so either the card parked
+        # first and the cancel finds its id — deny on disk, `card_cleared` —
+        # or the cancel came first and no card is ever raised. Never a card
+        # with no deny and no `card_cleared`.
         with self.lock:
             if entry["done"].is_set():
                 return  # answered while this was being built (a cancel, close)
@@ -1233,8 +1233,10 @@ class _Host:
                 parked = False
             if parked:
                 entry["perm_id"] = perm_id
-                # Announce BEFORE blocking, as permission_server does — and
-                # before any `card_cleared` a cancel could post for it.
+                # Announce BEFORE blocking, as permission_server does. Each
+                # post is its own thread, so the queue may hear a racing
+                # cancel's `card_cleared` first; what this lock guarantees is
+                # that a card raised here always GETS one.
                 _post_card(self.run_dir, "card_raised", perm_id)
         if not parked:
             self._answer_perm(rid, _permission_outcome(options, {"decision": "deny"}))
@@ -1302,18 +1304,26 @@ class _Host:
         with self.lock:
             items = list(self.pending_perm.items())
         for rid, entry in items:
-            perm_id = entry["perm_id"]   # "" while the card is not on disk yet
-            if perm_id:
-                res_path = os.path.join(self.perm_dir, perm_id + ".res.json")
-                try:
-                    fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                        json.dump({"decision": "deny", "reason": reason}, fh)
-                except OSError:
-                    pass  # already decided by the page; the verdict below still stands
-            if self._answer_perm(rid, _permission_outcome(
-                    entry["options"], {"decision": "deny"})) and perm_id:
-                _post_card(self.run_dir, "card_cleared", perm_id)
+            if not self._answer_perm(rid, _permission_outcome(
+                    entry["options"], {"decision": "deny"})):
+                continue  # answered already (the page, a racing cancel)
+            # perm_id read only NOW: `_answer_perm` set `done` under the lock,
+            # and `_park_permission` checks `done` under that lock before it
+            # parks — so from here no card can appear, and the id is final:
+            # the card that is on disk, or "" for one that never will be. Read
+            # at the snapshot instead, a card parked in between was orphaned
+            # with no deny and no `card_cleared`.
+            perm_id = entry["perm_id"]
+            if not perm_id:
+                continue
+            res_path = os.path.join(self.perm_dir, perm_id + ".res.json")
+            try:
+                fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump({"decision": "deny", "reason": reason}, fh)
+            except OSError:
+                pass  # the page decided in this instant; the verdict sent stands
+            _post_card(self.run_dir, "card_cleared", perm_id)
 
     # -------------------------------------------------------------- inbox
 

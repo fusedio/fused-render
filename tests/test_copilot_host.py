@@ -1391,6 +1391,63 @@ def test_a_cancel_landing_before_the_card_is_written_raises_no_card(
         host.close()
 
 
+def test_a_card_parked_after_the_cancels_snapshot_is_still_cleared(
+        agent, host_mod, tmp_path, monkeypatch):
+    """The other side of the same race (PR #1695): `reject_pending` has
+    snapshotted the request while its card was not yet on disk, and the card
+    parks before the cancel answers. Forced: the park is held in the tool
+    mapping until the cancel's `_answer_perm` is about to run, and that
+    waits for the card. The cancel must still find it — a deny on disk and
+    a `card_cleared` for the id `card_raised` announced — and Copilot gets
+    exactly one reject."""
+    import threading
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    host, run_dir, log = _host_in_process(agent, host_mod, tmp_path, ["--perm"])
+    posts = []
+    monkeypatch.setattr(host_mod, "_post_card",
+                        lambda run_dir, kind, req_id: posts.append((kind, req_id)))
+    go = threading.Event()
+    real_map = host_mod._map_tool
+
+    def held_map(*a, **k):
+        assert go.wait(10)
+        return real_map(*a, **k)
+
+    monkeypatch.setattr(host_mod, "_map_tool", held_map)
+    real_answer = host._answer_perm
+    first = []
+
+    def answer_after_the_park(rid, outcome):
+        if not first:
+            first.append(rid)
+            entry = host.pending_perm[rid]
+            assert entry["perm_id"] == ""      # snapshotted before the card
+            go.set()                            # ...now let it park
+            assert _wait_for(lambda: entry["perm_id"], timeout=10)
+        return real_answer(rid, outcome)
+
+    host._answer_perm = answer_after_the_park
+    try:
+        assert host.handshake()
+        host.send_prompt("clean")
+        assert _wait_for(lambda: host.pending_perm)
+        host.reject_pending("cancelled")
+        assert _wait_for(lambda: not host.turn_open)
+        raised = [i for k, i in posts if k == "card_raised"]
+        assert len(raised) == 1
+        assert ("card_cleared", raised[0]) in posts
+        res = json.load(open(os.path.join(run_dir, "perm", raised[0] + ".res.json")))
+        assert res == {"decision": "deny", "reason": "cancelled"}
+        asked = [e["sent"]["id"] for e in _rows(log)
+                 if (e.get("sent") or {}).get("method") == "session/request_permission"]
+        answers = [e["msg"] for e in _rows(log)
+                   if e.get("msg", {}).get("id") == asked[0] and "method" not in e["msg"]]
+        assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-no"]
+    finally:
+        go.set()
+        host.close()
+
+
 def test_a_permission_that_throws_is_still_answered_once(
         agent, host_mod, tmp_path, monkeypatch):
     """M5: anything going wrong while a card is built (here the tool
