@@ -129,13 +129,23 @@ def test_candidate_list_names_only_copilot():
 
 _FAKE_ACP = textwrap.dedent("""\
     #!{python}
-    import json, os, sys, time
+    import json, os, sys, time, uuid
     mode = os.environ.get("FAKE_COPILOT_MODE", "ok")
     assert sys.argv[1:] == ["--acp", "--no-auto-update", "--disable-builtin-mcps"], sys.argv
-    # record the env the probe handed us, minus the value of any token
+    token = os.environ.get("COPILOT_GITHUB_TOKEN")
+    # record what the probe handed us (the tests' tokens are dummies), and our
+    # pid so a test can check the probe reaped us
     with open(os.environ["FAKE_COPILOT_LOG"], "w") as f:
-        json.dump({{"token_set": bool(os.environ.get("COPILOT_GITHUB_TOKEN")),
+        json.dump({{"token_set": bool(token), "token": token, "pid": os.getpid(),
                    "cwd": os.getcwd()}}, f)
+
+    def session(sid):
+        # 1.0.98 persists every ACP session here; the probe must delete it
+        state = os.path.join(os.environ["COPILOT_HOME"], "session-state", sid)
+        os.makedirs(state, exist_ok=True)
+        open(os.path.join(state, "events.jsonl"), "w").close()
+        return {{"sessionId": sid, "configOptions": []}}
+
     for line in sys.stdin:
         msg = json.loads(line)
         if msg["method"] == "initialize":
@@ -146,9 +156,19 @@ _FAKE_ACP = textwrap.dedent("""\
                 time.sleep(60)
             print(json.dumps({{"jsonrpc": "2.0", "method": "session/update",
                               "params": {{"update": {{"sessionUpdate": "x"}}}}}}), flush=True)
+            if mode == "gh-only":
+                # no stored login: only an injected token signs this one in
+                mode = "ok" if token else "auth"
             if mode == "ok":
                 print(json.dumps({{"jsonrpc": "2.0", "id": msg["id"],
-                                  "result": {{"sessionId": "s1", "configOptions": []}}}}), flush=True)
+                                  "result": session(str(uuid.uuid4()))}}), flush=True)
+            elif mode == "badid":
+                print(json.dumps({{"jsonrpc": "2.0", "id": msg["id"],
+                                  "result": {{"sessionId": "../victim"}}}}), flush=True)
+            elif mode == "entitled":
+                print(json.dumps({{"jsonrpc": "2.0", "id": msg["id"],
+                                  "error": {{"code": -32603, "message":
+                                            "You are not authorized to use this Copilot feature"}}}}), flush=True)
             elif mode == "auth":
                 print(json.dumps({{"jsonrpc": "2.0", "id": msg["id"],
                                   "error": {{"code": -32000, "message": "Authentication required"}}}}), flush=True)
@@ -199,11 +219,39 @@ def test_unparseable_output_is_unknown(fake_acp):
     assert fake_acp("garbage") is None
 
 
+def test_an_entitlement_error_is_unknown_not_signed_out(fake_acp):
+    """"not authorized to use Copilot" is a seat problem; "sign in" would loop."""
+    assert fake_acp("entitled") is None
+
+
+@pytest.mark.parametrize("code,message,want", [
+    (-32000, "Authentication required", False),
+    (-32000, "", False),
+    (-32603, "Authentication required", False),
+    (-32603, "  Not logged in. Run copilot login.", False),
+    (-32603, "You are not authorized to use this Copilot feature", None),
+    (-32603, "authorized only for org members", None),
+    (-32603, "author field missing", None),
+    (-32603, "bad design", None),
+    (-32603, "process got signal 15", None),
+    (-32603, "login service unavailable", None),
+])
+def test_only_the_anchored_signed_out_error_classifies_false(code, message, want):
+    reply = {"id": 2, "error": {"code": code, "message": message}}
+    assert copilot_health._classify(reply) is want
+
+
+def _assert_reaped(pid):
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 def test_a_hung_server_is_unknown_and_is_killed(fake_acp, monkeypatch):
     monkeypatch.setattr(copilot_health, "_ACP_TIMEOUT_S", 1.5)
     t0 = time.time()
     assert fake_acp("hang") is None
     assert time.time() - t0 < 10  # bounded by the timeout + the kill wait
+    _assert_reaped(fake_acp.log()["pid"])
 
 
 def test_the_probe_cleans_up_its_tempdir_and_child(fake_acp, tmp_path):
@@ -213,6 +261,30 @@ def test_the_probe_cleans_up_its_tempdir_and_child(fake_acp, tmp_path):
     assert fake_acp("ok") is True
     after = set(glob.glob(os.path.join(tempfile.gettempdir(), "fused-copilot-probe-*")))
     assert after <= before
+    _assert_reaped(fake_acp.log()["pid"])
+
+
+def test_the_probe_deletes_the_session_it_created(fake_acp):
+    """Every `session/new` persists `session-state/<uuid>/`, which `copilot
+    --resume` would list; the probe's must not outlive it. Only that one."""
+    state = os.path.join(os.environ["COPILOT_HOME"], "session-state")
+    mine = os.path.join(state, "0b9d5a1e-6f2c-4c1a-9f3e-2d7b8c4a5e61")
+    os.makedirs(mine)
+    assert fake_acp("ok") is True
+    assert os.listdir(state) == [os.path.basename(mine)]
+
+
+def test_a_session_id_that_is_not_a_uuid_is_never_joined_onto_a_path(fake_acp):
+    victim = os.path.join(os.environ["COPILOT_HOME"], "victim")
+    os.makedirs(victim)
+    assert fake_acp("badid") is True
+    assert os.path.isdir(victim)
+
+
+def test_a_user_set_copilot_token_is_never_overridden(fake_acp, monkeypatch):
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "user_tok")
+    assert fake_acp("ok", token="gho_gh") is True
+    assert fake_acp.log()["token"] == "user_tok"
 
 
 def test_the_gh_token_reaches_the_child_and_nothing_else(fake_acp):
@@ -245,13 +317,80 @@ def test_gh_token_is_never_in_the_snapshot(fake_acp, monkeypatch):
     monkeypatch.setenv("PATH", os.path.dirname(fake_acp.path))
     monkeypatch.setattr(copilot_health, "gh_token", lambda: "gho_secret")
     monkeypatch.setattr(copilot_health, "probe_version", lambda p: "1.0.98")
-    monkeypatch.setenv("FAKE_COPILOT_MODE", "ok")
+    monkeypatch.setenv("FAKE_COPILOT_MODE", "gh-only")
     snap = copilot_health.summary_refreshed()
     assert snap["signed_in"] is True
     assert snap["account"]["method"] == "gh"
     assert "gho_secret" not in json.dumps(snap)
-    assert "gho_secret" not in (copilot_health._cache_path() and
-                                open(copilot_health._cache_path()).read())
+    with open(copilot_health._cache_path()) as f:
+        assert "gho_secret" not in f.read()
+
+
+# The two-step probe: stored creds (or the user's own token) first, the gh
+# token only after a definite False. `_acp_probe` is recorded, not spawned.
+
+
+def _two_step(monkeypatch, first, second=None, gh="gho_gh"):
+    calls, gh_calls = [], []
+
+    def probe(path, token):
+        calls.append(token)
+        return first if token is None else second
+
+    monkeypatch.setattr(copilot_health, "_acp_probe", probe)
+    monkeypatch.setattr(copilot_health, "gh_token",
+                        lambda: gh_calls.append(1) or gh)
+    signed, via_gh = copilot_health._sign_in("/x/copilot")
+    return signed, copilot_health.account(signed, via_gh), calls, gh_calls
+
+
+def test_a_working_stored_login_never_asks_gh(monkeypatch):
+    signed, acct, calls, gh_calls = _two_step(monkeypatch, first=True)
+    assert signed is True and acct["method"] == "copilot"
+    assert calls == [None] and gh_calls == []
+
+
+def test_a_working_user_token_is_method_token(monkeypatch):
+    monkeypatch.setenv("GH_TOKEN", "user_tok")
+    signed, acct, calls, gh_calls = _two_step(monkeypatch, first=True)
+    assert signed is True and acct["method"] == "token"
+    assert calls == [None] and gh_calls == []
+
+
+def test_signed_out_falls_back_to_the_gh_token(monkeypatch):
+    signed, acct, calls, _ = _two_step(monkeypatch, first=False, second=True)
+    assert signed is True and acct["method"] == "gh"
+    assert calls == [None, "gho_gh"]
+
+
+def test_a_gh_account_without_copilot_leaves_signed_out_standing(monkeypatch):
+    for second in (False, None):
+        signed, acct, calls, _ = _two_step(monkeypatch, first=False, second=second)
+        assert signed is False and acct is None
+        assert calls == [None, "gho_gh"]
+
+
+@pytest.mark.parametrize("first,gh,env", [
+    (False, None, {}),                                # no gh token
+    (None, "gho_gh", {}),                             # unknown is not False
+    (False, "gho_gh", {"COPILOT_GITHUB_TOKEN": "u"}),  # theirs wins, gh never asked
+    (False, "gho_gh", {"GH_TOKEN": "gho_gh"}),        # gh just echoes GH_TOKEN
+])
+def test_no_second_probe(monkeypatch, first, gh, env):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    signed, acct, calls, gh_calls = _two_step(monkeypatch, first=first,
+                                              second=True, gh=gh)
+    assert calls == [None] and signed is first
+    if "COPILOT_GITHUB_TOKEN" in env:
+        assert gh_calls == []
+
+
+def test_signed_in_runs_the_same_two_steps(monkeypatch):
+    monkeypatch.setattr(copilot_health, "_acp_probe",
+                        lambda p, t: t is not None)
+    monkeypatch.setattr(copilot_health, "gh_token", lambda: "gho_gh")
+    assert copilot_health.signed_in("/x/copilot") is True
 
 
 def test_signed_in_from_an_env_token_when_the_cli_is_missing(monkeypatch):
@@ -337,6 +476,22 @@ def test_an_upgraded_binary_or_a_moved_home_invalidates_the_cache(tmp_path, monk
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "elsewhere"))
     copilot_health.summary()
     assert len(calls) == 3
+
+
+def test_a_token_variable_appearing_invalidates_the_cache(tmp_path, monkeypatch):
+    cli = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(cli))
+    calls = []
+    monkeypatch.setattr(copilot_health, "probe_version",
+                        lambda p: calls.append(p) or "1.0.98")
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
+    assert copilot_health.summary()["account"]["method"] == "copilot"
+    monkeypatch.setenv("GH_TOKEN", "gho_user_value")
+    assert copilot_health.summary()["account"]["method"] == "token"
+    assert len(calls) == 2
+    with open(copilot_health._cache_path()) as f:
+        disk = f.read()
+    assert "GH_TOKEN" in disk and "gho_user_value" not in disk
 
 
 def test_refresh_re_probes_and_a_corrupt_cache_is_tolerated(tmp_path, monkeypatch):
@@ -427,6 +582,7 @@ def test_login_runs_the_cli_and_re_probes_on_a_clean_exit(tmp_path, monkeypatch)
     assert rec["in_flight"] is True and rec["detail"] is None
     login = copilot_login._active
     assert login.settled.wait(10)
+    assert login.proc.stdin.closed
     assert copilot_login.status()["in_flight"] is False
     assert copilot_login.status()["error"] is None
     assert probes == [1]

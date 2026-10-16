@@ -17,7 +17,7 @@ shown; the device code IS shown, because the user has to type it somewhere.
 **The gh token is stripped from the child's env.** `copilot login` honours
 COPILOT_GITHUB_TOKEN/GH_TOKEN/GITHUB_TOKEN and uses one instead of opening a
 browser — the opposite of what pressing "Sign in" means. The health probe
-injects the gh token (D10) and this module deliberately does not.
+falls back to the gh token (D10) and this module deliberately does not.
 
 **Success is never inferred from the exit code.** A clean exit re-measures the
 health snapshot; whether the sign-in took is the ACP probe's answer.
@@ -182,6 +182,12 @@ def _run(login: _Login) -> None:
             code = -1
         finally:
             watchdog.cancel()
+            # The PIPE start() opened for the device flow; nothing writes it.
+            try:
+                if login.proc.stdin is not None:
+                    login.proc.stdin.close()
+            except (OSError, ValueError):
+                pass
 
         if login.timed_out:
             login.error = (f"the sign-in was not finished within "

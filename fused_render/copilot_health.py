@@ -23,6 +23,16 @@ result; none answers `{"code": -32000, "message": "Authentication required"}`).
 There is no `copilot doctor` either, so `doctor` is always None and the install
 method is a path guess.
 
+**The snapshot is the authority on which credential a spawn uses.** The probe
+runs in two steps (see `_sign_in`): the CLI's own credentials first — a
+`copilot login`, or a token the USER put in the environment — and only when
+that says signed out, a second probe with `gh auth token`'s answer as
+COPILOT_GITHUB_TOKEN. `account.method` records which step answered, and the
+host (claude_agent/agent.py) injects the gh token ONLY when the cached
+snapshot's `account.method == "gh"`. So a `gh` account without Copilot access
+never shadows a working `copilot login`, and a healthy machine never shells
+out to `gh` at all: the second probe costs a spawn only when the first is False.
+
 **Nothing here raises.** Same doctrine as the Claude module: a health report
 that 500s is worth less than one that says "I could not tell".
 """
@@ -30,6 +40,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -255,13 +266,14 @@ def config_dir() -> str:
 
 # --- the credential, and whose it is ------------------------------------------
 #
-# Copilot has three ways to be signed in and the host uses them in this order:
-# a token in COPILOT_GITHUB_TOKEN (then GH_TOKEN, GITHUB_TOKEN), else the
-# credential `copilot login` stored. D10 adds the fused twist: when `gh` is
-# signed in, the host puts `gh auth token`'s answer into COPILOT_GITHUB_TOKEN,
-# so a machine with no Copilot login and a working `gh` still works. The probe
-# below therefore has to run WITH that token, or it reports "signed out" on
-# exactly the machines the substitute exists for.
+# Copilot has three ways to be signed in and reads them in this order: a token
+# in COPILOT_GITHUB_TOKEN (then GH_TOKEN, GITHUB_TOKEN), else the credential
+# `copilot login` stored. D10 adds the fused twist: when those leave Copilot
+# signed out and `gh` is signed in, `gh auth token`'s answer goes into
+# COPILOT_GITHUB_TOKEN, so a machine with no Copilot login and a working `gh`
+# still works. It is a FALLBACK, never a precedence: a user-set
+# COPILOT_GITHUB_TOKEN is never overridden, and a stored login that works is
+# never shadowed by a gh account that has no Copilot seat.
 
 #: The env names Copilot reads a token from, in its own precedence order.
 TOKEN_ENV = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
@@ -291,14 +303,56 @@ def gh_token() -> Optional[str]:
     return token or None
 
 
+#: What `session/new` answers with a credential missing (observed on 1.0.98:
+#: `{"code": -32000, "message": "Authentication required"}`). The message is
+#: matched ANCHORED: a substring test on "auth"/"sign" also matches "not
+#: authorized to use Copilot" — an entitlement error, which a sign-in does not
+#: fix — and "design", "signal", "author".
+_SIGNED_OUT_CODE = -32000
+_SIGNED_OUT_RE = re.compile(r"(?:authentication required|not logged in)\b")
+
+#: A Copilot session id. The probe deletes `session-state/<id>/` by it, so
+#: anything else — `..`, a slash — is never joined onto a path.
+_SESSION_ID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _classify(reply: dict) -> Optional[bool]:
+    """A `session/new` reply → True / False / None-unknown. Only the signed-out
+    error is False; every other error is None, because False is what puts
+    "sign in" in front of the user and a sign-in cannot fix those."""
+    if "result" in reply:
+        return True
+    error = reply.get("error")
+    if not isinstance(error, dict):
+        return None
+    text = str(error.get("message") or "").strip().lower()
+    if error.get("code") == _SIGNED_OUT_CODE or _SIGNED_OUT_RE.match(text):
+        return False
+    return None
+
+
+def _forget_session(reply: dict) -> None:
+    """Delete the session the probe's `session/new` created. Copilot persists
+    every ACP session under `session-state/<id>/` (verified live), so without
+    this each health read leaves one behind for `copilot --resume` to list."""
+    result = reply.get("result")
+    sid = result.get("sessionId") if isinstance(result, dict) else None
+    if isinstance(sid, str) and _SESSION_ID_RE.fullmatch(sid):
+        shutil.rmtree(os.path.join(config_dir(), "session-state", sid),
+                      ignore_errors=True)
+
+
 def _acp_probe(path: str, token: Optional[str]) -> Optional[bool]:
     """Ask the CLI's ACP server for a session — True / False / None-unknown.
 
-    `initialize` then `session/new` on a throwaway cwd. A `result` on the
-    second id is a credential that works; a JSON-RPC error that says so
-    (-32000, or a message mentioning auth/login/sign) is signed out; anything
-    else — timeout, a dead child, output we could not parse — is None, because
-    "could not tell" must never render as "sign in".
+    `initialize` then `session/new` on a throwaway cwd; `_classify` reads the
+    reply. Timeout, a dead child, output we could not parse — all None,
+    because "could not tell" must never render as "sign in". A session that
+    was created is deleted again once the child is reaped.
+
+    `token` goes into COPILOT_GITHUB_TOKEN unless the user already set that
+    name: theirs is the credential Copilot will use, so it is the one probed.
 
     PLAIN `proc.kill()`, NOT A PROCESS GROUP. `start_new_session=True` forces
     CPython off posix_spawn onto fork()+exec, and this runs in the server, where
@@ -308,7 +362,8 @@ def _acp_probe(path: str, token: Optional[str]) -> Optional[bool]:
     child does not. No `cwd=` for the same reason; the tempdir travels only in
     the RPC params.
     """
-    extra = {"COPILOT_GITHUB_TOKEN": token} if token else None
+    extra = ({"COPILOT_GITHUB_TOKEN": token}
+             if token and not os.environ.get("COPILOT_GITHUB_TOKEN") else None)
     workdir = tempfile.mkdtemp(prefix="fused-copilot-probe-")
     proc = None
     answer: list = []
@@ -371,17 +426,37 @@ def _acp_probe(path: str, token: Optional[str]) -> Optional[bool]:
         shutil.rmtree(workdir, ignore_errors=True)
     if not answer:
         return None
-    reply = answer[0]
-    if "result" in reply:
-        return True
-    error = reply.get("error")
-    if not isinstance(error, dict):
-        return None
-    text = str(error.get("message") or "").lower()
-    if error.get("code") == -32000 or any(
-            w in text for w in ("auth", "login", "sign")):
-        return False
-    return None
+    # After the reap, never before: a live child could still write the dir.
+    _forget_session(answer[0])
+    return _classify(answer[0])
+
+
+def _user_tokens() -> list:
+    """The token values the USER put in the environment, in TOKEN_ENV order."""
+    return [v for v in ((os.environ.get(n) or "").strip() for n in TOKEN_ENV) if v]
+
+
+def _sign_in(path: str) -> tuple:
+    """`(signed, via_gh)` — the two-step probe the module docstring describes.
+
+    Step one probes the CLI's own credentials (stored login, or a user-set
+    token, which stays in the env). Only a definite False goes on to step two,
+    and only when there is a gh token that is not already the user's — with
+    GH_TOKEN set, `gh auth token` just echoes it back — and the user has not
+    set COPILOT_GITHUB_TOKEN, which the gh token would otherwise override.
+    A second probe that is not True leaves step one's False standing: without
+    `method == "gh"` the host spawns without the token, so False is the truth
+    about the spawn that will happen.
+    """
+    first = _acp_probe(path, None)
+    if first is not False or os.environ.get("COPILOT_GITHUB_TOKEN"):
+        return first, False
+    token = gh_token()
+    if not token or token in _user_tokens():
+        return first, False
+    if _acp_probe(path, token) is True:
+        return True, True
+    return first, False
 
 
 def signed_in(path: Optional[str] = None) -> Optional[bool]:
@@ -389,27 +464,27 @@ def signed_in(path: Optional[str] = None) -> Optional[bool]:
 
     Tri-state like claude_health.signed_in and for the same reason: False is
     what puts "sign in" in front of the user, so only the CLI may say it.
-    With a runnable CLI the ACP probe is the answer; without one, a token in
-    the environment is positive evidence, and absence of one is nothing.
+    With a runnable CLI the two-step probe is the answer; without one, a
+    token in the environment is positive evidence, and absence of one is
+    nothing.
     """
     if path:
-        token = gh_token()
-        answer = _acp_probe(path, token)
+        answer, _via_gh = _sign_in(path)
         if answer is not None:
             return answer
-    for name in TOKEN_ENV:
-        if (os.environ.get(name) or "").strip():
-            return True
-    return None
+    return True if _user_tokens() else None
 
 
 def account(signed: Optional[bool], via_gh: bool) -> Optional[dict]:
     """WHO is signed in, in the shape the wizard's "Signed in" row reads:
     `{method, email, org, plan}`. Copilot's ACP tells us nothing about the
     account, so the three identity fields are always None; `method` says
-    which credential the host will spawn with — "gh" when `gh auth token`
-    supplies it (D10), "token" for one the user put in the environment,
-    "copilot" for the CLI's own stored login.
+    which credential the host will spawn with, and agent.py reads it to decide
+    whether to inject the gh token:
+
+      * "token"   — a token the user put in the environment, and it works;
+      * "copilot" — no such token; the CLI's stored `copilot login` works;
+      * "gh"      — neither works and the gh-token probe did (`_sign_in`).
     """
     if signed is not True:
         return None
@@ -559,16 +634,21 @@ def _cache_path() -> str:
 
 def _fingerprint(path: Optional[str]) -> str:
     """What must be unchanged for a cached snapshot to still be true. COPILOT_HOME
-    is in it because it moves the credential store, which moves `signed_in`."""
+    is in it because it moves the credential store, which moves `signed_in`;
+    the NAMES of the set token variables because one appearing or vanishing
+    moves `signed_in` and `account.method` (never the values — this string is
+    written to disk)."""
     stamp = ""
     if path:
         try:
             stamp = str(os.stat(path).st_mtime_ns)
         except OSError:
             stamp = "missing"
+    tokens = ",".join(n for n in TOKEN_ENV if (os.environ.get(n) or "").strip())
     return "\x1f".join([str(_CACHE_VERSION), os.environ.get(BIN_ENV, ""),
                         os.environ.get("PATH", ""),
-                        os.environ.get("COPILOT_HOME", ""), path or "", stamp])
+                        os.environ.get("COPILOT_HOME", ""), tokens,
+                        path or "", stamp])
 
 
 def _measure(allow_shell: bool = True) -> dict:
@@ -591,11 +671,9 @@ def _measure(allow_shell: bool = True) -> dict:
             on_shell_path = _shell_probe() is not None
     fix = path_fix(path) if (usable and on_shell_path is False) else None
 
-    # ONE ACP spawn answers "signed in?"; WITH the gh token the host would
-    # supply, so the answer describes the spawn that will actually happen.
-    # The token is held for the length of this call and no longer.
-    token = gh_token() if usable else None
-    signed = _acp_probe(path, token) if usable else None
+    # One ACP spawn answers "signed in?", two only when the first says no and
+    # `gh` has a token to try (`_sign_in`). The token lives inside that call.
+    signed, via_gh = _sign_in(path) if usable else (None, False)
     if signed is None:
         signed = signed_in(None)
 
@@ -608,7 +686,7 @@ def _measure(allow_shell: bool = True) -> dict:
         "outdated": outdated,
         "broken": broken,
         "signed_in": signed,
-        "account": account(signed, via_gh=token is not None),
+        "account": account(signed, via_gh=via_gh),
         "config_dir": config_dir(),
         "platform": sys.platform,
         "install_command": install_command(),
