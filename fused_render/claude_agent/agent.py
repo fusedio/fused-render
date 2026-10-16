@@ -741,7 +741,7 @@ def _plugin_argv(target: str | None = None) -> list:
             for arg in ("--plugin-dir", root)]
 
 
-def _fused_cli_note() -> str:
+def _fused_cli_note(backend: str = "") -> str:
     """The prompt paragraph disclosing the `fused` CLI, or "" when the server
     exported no wrapper (D334) — same rule as every other disclosure here: a
     tool the model is never told about is a tool it never calls, and a prompt
@@ -767,9 +767,15 @@ def _fused_cli_note() -> str:
     to race, and a session that never pushes leaves its work unpublished until
     it ends), and `canvas push` inside a clone is intercepted into the guarded
     server-side push. Telling a session not to push now means telling it to
-    finish blind."""
+    finish blind.
+
+    `backend="copilot"` drops the closing pointer to the clone's CLAUDE.md:
+    that file is Claude Code's project memory, and naming it to Copilot sends
+    it to instructions written for a different agent (D18)."""
     if not _fused_cli_dir():
         return ""
+    if backend == "copilot":
+        return _fused_cli_note().replace(_CANVAS_CLAUDE_MD, "")
     return (
         " The `fused` CLI is on PATH: use it when the user asks to push, "
         "pull or otherwise work with Fused (canvases, UDFs — e.g. `fused "
@@ -787,9 +793,13 @@ def _fused_cli_note() -> str:
         "canvases, fused-render holds its own auto-push while you work and "
         "routes `fused workbench canvas push .` through its sync manager, "
         "which merges concurrent workbench edits first: publish a coherent "
-        "change set with that command and read the errors it prints back. "
-        "See that folder's CLAUDE.md for the details."
+        "change set with that command and read the errors it prints back."
+        + _CANVAS_CLAUDE_MD
     )
+
+
+# The `_fused_cli_note` sentence only Claude gets (see its docstring).
+_CANVAS_CLAUDE_MD = " See that folder's CLAUDE.md for the details."
 
 
 def _origin_note() -> str:
@@ -2895,14 +2905,16 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     return cmd
 
 
-def _appended_prompt(file: str, pane: bool) -> str:
+def _appended_prompt(file: str, pane: bool, backend: str = "") -> str:
     """The prompt BOTH backends get appended for this target — the shape
     `_claude_argv`'s comment above picks (file / app folder / ordinary
     folder) plus the machine-wide notes. One function so Claude's
     `--append-system-prompt` and Copilot's generated agent file (D8) can never
-    say different things about the same target."""
+    say different things about the same target — except where a sentence is
+    about Claude Code itself (`_fused_cli_note`'s `backend`)."""
     return ((_split_system_prompt(file, pane) if os.path.isdir(file)
-             else _system_prompt(file)) + _fused_cli_note() + _origin_note())
+             else _system_prompt(file)) + _fused_cli_note(backend)
+            + _origin_note())
 
 
 # The plugin root a Copilot session is handed (D8): its manifest, the one
@@ -2947,7 +2959,7 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
     # `<server>-<tool>` (docs/COPILOT_BACKEND.md §10, verified), and a prompt
     # announcing a name the roster does not carry is the exact failure D235
     # exists to prevent.
-    body = _appended_prompt(file, pane).replace(
+    body = _appended_prompt(file, pane, "copilot").replace(
         f"mcp__{PERMISSION_SERVER}__", f"{PERMISSION_SERVER}-")
     with _private_open(os.path.join(agents, "fused.agent.md")) as fh:
         fh.write("---\nname: fused\ndescription: fused-render chat context "
@@ -5076,10 +5088,10 @@ def _account_error(error: str, backend: str = "") -> str:
     low = error.lower()
     if any(m in low for m in _ACCOUNT_ERROR_MARKERS[backend]):
         if backend == "copilot":
-            return ("GitHub Copilot isn't signed in. Open a terminal, run "
-                    "`copilot`, type /login and finish the sign-in (or sign in "
-                    "with `gh auth login`), then start a new chat here. "
-                    "Help: %s-copilot-login (%s)" % (GUIDE_URL, error))
+            return ("GitHub Copilot isn't signed in. Run `copilot login` in a "
+                    "terminal (or check Copilot in Preferences → Agents), then "
+                    "start a new chat here. Help: %s-copilot-login (%s)"
+                    % (GUIDE_URL, error))
         return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
                 "type /login and finish the sign-in, then start a new chat "
                 "here. Help: %s-login (%s)" % (GUIDE_URL, error))
@@ -6326,7 +6338,15 @@ _COMMAND_SCAN_CAP = 500   # files per folder walk; a menu, not an index
 _COMMAND_DIR_CAP = 200    # directories per folder walk
 
 
-def _commands_state_path(workdir: str) -> str:
+def _commands_state_path(workdir: str, backend: str = "") -> str:
+    """The folder's last-announced command list, PER BACKEND: Claude's and
+    Copilot's menus are different lists, and one file per folder would hand a
+    Copilot chat the commands a Claude chat there last announced. Copilot's
+    sit one level down (`commands/copilot/<munge>`), which no munged cwd can
+    collide with (a munge always starts with `-`); Claude's path is the one
+    it always was."""
+    if backend == "copilot":
+        return _state_file(_COMMANDS_STATE, "copilot", _munge(workdir))
     return _state_file(_COMMANDS_STATE, _munge(workdir))
 
 
@@ -6379,9 +6399,10 @@ def _capture_commands(run_dir: str, row: dict) -> None:
             return
         try:
             with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
-                target = str((json.load(fh) or {}).get("file") or "")
+                run_meta = json.load(fh) or {}
+            target = str(run_meta.get("file") or "")
         except (OSError, ValueError, AttributeError):
-            target = ""
+            run_meta, target = {}, ""
         workdir = _workdir(os.path.abspath(target)) if target \
             else str(row.get("cwd") or "")
         unchanged = {k: v for k, v in prev.items() if k not in ("at", "cwd")} == cap
@@ -6390,7 +6411,7 @@ def _capture_commands(run_dir: str, row: dict) -> None:
         if not unchanged:
             _write_json_atomic(cap_path, cap)
         if workdir:
-            state_path = _commands_state_path(workdir)
+            state_path = _commands_state_path(workdir, _meta_backend(run_meta))
             if unchanged and os.path.exists(state_path):
                 return
             _write_json_atomic(state_path, cap)
@@ -6540,7 +6561,7 @@ def _disk_agents(workdir: str) -> list:
     return names
 
 
-def _commands(file: str) -> dict:
+def _commands(file: str, backend: str = "", session_id: str = "") -> dict:
     """SPEC C-2: the command menu for a target.
 
     `{"commands": [{"name", "description", "source"}], "agents": [names],
@@ -6548,13 +6569,25 @@ def _commands(file: str) -> dict:
     CLI itself announced for this folder (the state file `_poll` keeps),
     with descriptions merged in from the disk scan by name; `from: "disk"` is
     the scan alone plus the built-in table, for a folder no session has
-    spoken in yet. Names in `terminal_slash_commands` are dropped."""
+    spoken in yet. Names in `terminal_slash_commands` are dropped.
+
+    PER BACKEND (D18): the named session's own (`_backend_for_session`),
+    else `backend`, else Claude. A Copilot menu is only what Copilot itself
+    announced: the disk scan reads Claude Code's `.claude/` folders and the
+    built-in table is Claude Code's commands (its `/init` writes a
+    CLAUDE.md), neither of which a Copilot chat can run."""
     file = os.path.abspath(file)
     workdir = _workdir(file)
-    disk = _disk_commands(workdir)
+    if session_id and not _bad_id(session_id):
+        backend = _backend_for_session(session_id, workdir,
+                                       hint=_session_backend(session_id))
+    elif backend not in BACKENDS:
+        backend = DEFAULT_BACKEND
+    disk = _disk_commands(workdir) if backend != "copilot" else {}
+    builtins = _BUILTIN_COMMANDS if backend != "copilot" else {}
     state = None
     try:
-        with open(_commands_state_path(workdir), encoding="utf-8") as fh:
+        with open(_commands_state_path(workdir, backend), encoding="utf-8") as fh:
             state = json.load(fh)
     except (OSError, ValueError):
         state = None
@@ -6572,22 +6605,23 @@ def _commands(file: str) -> dict:
             if found:
                 desc, source = found["description"], found["source"]
             else:
-                desc = _BUILTIN_COMMANDS.get(name, "")
+                desc = builtins.get(name, "")
                 source = skill_src.get(name) or (
-                    "builtin" if name in _BUILTIN_COMMANDS else "cli")
+                    "builtin" if name in builtins else "cli")
             commands.append({"name": name, "description": desc,
                              "source": source})
         return {"commands": commands,
                 "agents": _str_list(state.get("agents")),
                 "stale": bool(state.get("stale")), "from": "cli"}
     commands = [dict(v) for v in disk.values()]
-    for name, desc in _BUILTIN_COMMANDS.items():
+    for name, desc in builtins.items():
         if name not in disk:
             commands.append({"name": name, "description": desc,
                              "source": "builtin"})
     return {"commands": [{"name": c["name"], "description": c["description"],
                           "source": c["source"]} for c in commands],
-            "agents": _disk_agents(workdir), "stale": False, "from": "disk"}
+            "agents": _disk_agents(workdir) if backend != "copilot" else [],
+            "stale": False, "from": "disk"}
 
 
 # --------------------------------------------------------------- task output
@@ -10072,7 +10106,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         # The composer's slash-command menu (SPEC C-2).
         if not file:
             return {"error": "missing target file (no _file param?)"}
-        return _commands(file)
+        # Per agent: the session's own when one is named, else `backend`.
+        return _commands(file, backend, session_id)
     if action == "task_output":
         # A shell/monitor task's output, asked of the live CLI (SPEC T-3).
         return _task_output(run_id, task_id)

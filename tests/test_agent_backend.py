@@ -25,6 +25,8 @@ import importlib.util
 import inspect
 import json
 import os
+import pathlib
+import re
 import sys
 import textwrap
 import types
@@ -174,6 +176,93 @@ def test_account_errors_are_worded_per_backend(agent):
     # Claude's wording never fires on Copilot's markers, and vice versa.
     assert agent._account_error("ai credits exhausted", "claude") == "ai credits exhausted"
     assert agent._account_error("invalid api key", "copilot") == "invalid api key"
+
+
+def test_copilot_account_text_names_copilots_fix_and_claudes_is_unchanged(agent):
+    """D18: a Copilot run never reads Claude's sign-in fix or link."""
+    for raw in ("auth_required", "premium request quota hit"):
+        text = agent._account_error(raw, "copilot")
+        assert "claude" not in text.lower()
+        assert "#troubleshooting-login" not in text and "#troubleshooting-limit" not in text
+    assert "`copilot login`" in agent._account_error("auth_required", "copilot")
+    assert "Preferences → Agents" in agent._account_error("auth_required", "copilot")
+    # Claude's, byte for byte.
+    assert agent._account_error("/login") == (
+        "Claude Code isn't logged in. Open a terminal, run `claude`, type /login "
+        "and finish the sign-in, then start a new chat here. Help: "
+        "https://render.fused.io/#troubleshooting-login (/login)")
+    assert agent._account_error("usage limit reached") == (
+        "Your Claude plan's usage limit was reached. Wait for it to reset, or "
+        "upgrade the plan, then try again. Help: "
+        "https://render.fused.io/#troubleshooting-limit (usage limit reached)")
+
+
+_CLAUDE_ONLY = re.compile(r"\bClaude\b|CLAUDE\.md|AskUserQuestion|ExitPlanMode|"
+                          r"EnterWorktree|\bSkill\b|mcp__")
+
+
+def test_the_copilot_agent_file_never_speaks_claude(agent, home, tmp_path, monkeypatch):
+    """fused.agent.md is Copilot's system prompt: no "you are Claude", no
+    CLAUDE.md, no Claude-only tool names — for every target shape, with every
+    machine-wide note switched on. Claude's own prompt keeps its sentence."""
+    canvases = tmp_path / "canvases"
+    clone = canvases / "c1"
+    clone.mkdir(parents=True)
+    (clone / "index.html").write_text("<html></html>")
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "cli"))
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    monkeypatch.setattr(agent, "_custom_env", lambda origin, file: None)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    page = tmp_path / "page.html"
+    page.write_text("<html></html>")
+    for i, (target, pane) in enumerate(((str(page), True), (str(clone), True),
+                                         (str(plain), False))):
+        run_dir = tmp_path / ("run%d" % i)
+        run_dir.mkdir()
+        md = (pathlib.Path(agent._copilot_plugin_dir(str(run_dir), target, pane))
+              / "agents" / "fused.agent.md").read_text()
+        assert not _CLAUDE_ONLY.search(md), (target, _CLAUDE_ONLY.search(md))
+    # Claude's prompt is byte-identical: the sentence is still there for it.
+    note = agent._fused_cli_note()
+    assert note.endswith(" See that folder's CLAUDE.md for the details.")
+    assert agent._fused_cli_note("copilot") == note[:-len(agent._CANVAS_CLAUDE_MD)]
+    assert agent._appended_prompt(str(clone), True).endswith(
+        note + agent._origin_note())
+
+
+def test_the_command_menu_is_per_backend(agent, target, tmp_path, monkeypatch):
+    """A Copilot chat's menu is what Copilot announced — never Claude's
+    `.claude/` commands or its built-ins (whose /init writes a CLAUDE.md) —
+    and a Copilot init row does not overwrite the folder's Claude menu."""
+    file, workdir = target
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    cmd_dir = tmp_path / "proj" / ".claude" / "commands"
+    cmd_dir.mkdir(parents=True)
+    (cmd_dir / "deploy.md").write_text("Deploy it\n")
+    claude_menu = agent._commands(file)
+    names = {c["name"] for c in claude_menu["commands"]}
+    assert {"deploy", "init"} <= names
+    # Nothing announced yet: a Copilot menu is empty, not Claude's.
+    assert agent._commands(file, "copilot")["commands"] == []
+    # A Copilot run's init row lands in Copilot's own state.
+    run_dir = os.path.join(agent.RUNS, "r-cmd")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": file, "message": "m", "backend": "copilot"}, fh)
+    agent._capture_commands(run_dir, {"type": "system", "subtype": "init",
+                             "slash_commands": ["plan", "init"]})
+    menu = agent._commands(file, "copilot")
+    assert [c["name"] for c in menu["commands"]] == ["plan", "init"]
+    assert all(c["description"] == "" and c["source"] == "cli" for c in menu["commands"])
+    assert menu["agents"] == []
+    # The session names its own backend whatever `backend` says.
+    _transcript(agent, "copilot", workdir, SID_COPILOT, [_said("b", workdir)])
+    assert agent.main("commands", file=file, session_id=SID_COPILOT,
+                      backend="claude") == menu
+    # Claude's menu is untouched by the Copilot row.
+    assert agent._commands(file) == claude_menu
 
 
 # ---------------------------------------------------- backend resolution (D2)
@@ -551,7 +640,7 @@ def test_copilot_argv_composition(agent, target, home, tmp_path, monkeypatch):
     assert agent_md.startswith("---\nname: fused\n")
     # Same prompt as Claude's --append-system-prompt, with the pane tool in
     # Copilot's MCP spelling (`<server>-<tool>`, §10).
-    assert agent._appended_prompt(file, True).replace(
+    assert agent._appended_prompt(file, True, "copilot").replace(
         "mcp__fused_approvals__", "fused_approvals-") in agent_md
     assert "fused_approvals-app_state" in agent_md
     assert "mcp__fused_approvals__" not in agent_md
