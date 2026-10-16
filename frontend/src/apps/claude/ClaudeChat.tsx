@@ -154,6 +154,7 @@ import {
   queueEnabled,
   queueFlagReady,
   useProjectQueueEnabled,
+  useTaskRecapTitlesEnabled,
 } from "./feature-flag";
 import { WaitingCard, WaitingRow } from "./ui/Waiting";
 import { copyToTaskShots } from "./ui/SchedButton";
@@ -4662,6 +4663,10 @@ function ChatBody(props: ChatBodyProps) {
    *  the ref is null on the render that binds the listeners and only the check
    *  runs late enough to have it. */
   const recapRoot = useCallback(() => rootRef.current, [rootRef]);
+  // With the Tasks recap titles on, the fold also shows on open (see
+  // `useAwayRecap` `eager`); off, only after an absence. Subscribed, so
+  // toggling it in Preferences reaches an open chat (storage broadcast).
+  const recapEager = useTaskRecapTitlesEnabled();
   const away = useAwayRecap({
     file,
     sessionId: state.sessionId,
@@ -4673,6 +4678,7 @@ function ChatBody(props: ChatBodyProps) {
     // above). The Preferences switch that used to sit in front of these left
     // on 2026-09-21 — the recap is simply on.
     enabled: inChat && !!props.recap,
+    eager: recapEager,
     root: recapRoot,
   });
   // The task number this session is (`#session`, T:12696 showSession). Read here

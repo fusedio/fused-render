@@ -125,6 +125,14 @@ export interface AwayRecapOptions extends AwayRecapEnv {
   /** Whether this mount is one the recap applies to at all — a conversation
    *  the reader opened, not the landing or an embed. */
   enabled: boolean;
+  /**
+   * ALSO RECAP ON OPEN (prefs `task_recap.enabled`, the Tasks recap titles).
+   * With it on, a chat that is not mid-turn asks once per position as soon as
+   * it has one, instead of waiting for an absence. Off (the default) is the
+   * away-only behaviour above, untouched. The server call is cheap when the
+   * Tasks listing already stored the recap (`_recap` reads the store first).
+   */
+  eager?: boolean;
   /** Override for `AWAY_MS`; tests pass 0. */
   awayMs?: number;
   /**
@@ -278,6 +286,40 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
     // Bound once per env, never per render: a listener torn down and re-added
     // mid-absence would forget the clock it was keeping.
   }, [view, doc, now]);
+
+  // THE EAGER ASK (`eager`): the same read and the same fold, on open and on
+  // each new position rather than on a return. Its own once-per-position set,
+  // so a failed or empty answer is not re-bought on every render; `spent` (a
+  // dismissed or already-shown fold) still wins. Not mid-turn, and not in a
+  // chat nobody can see — the one page-wide gate it keeps.
+  const eagerAsked = useRef(new Set<string>());
+  const { eager, enabled, file, sessionId, running } = opts;
+  useEffect(() => {
+    if (!eager || !enabled || !file || !sessionId || !forUuid || running) return;
+    if (eagerAsked.current.has(forUuid) || spent.current.has(forUuid)) return;
+    if (failures.current >= MAX_FAILURES || inflight.current) return;
+    const o = latest.current;
+    // Not under a half-typed message, like the away path.
+    if (o.hasDraft()) return;
+    if (o.root && !recapRootVisible(o.root())) return;
+    eagerAsked.current.add(forUuid);
+    const asked = forUuid;
+    inflight.current = true;
+    const read = o.fetchRecap ?? defaultFetchRecap;
+    void read(file, sessionId, asked)
+      .then((answer) => {
+        inflight.current = false;
+        spent.current.add(asked);
+        const text = (answer && answer.text ? answer.text : "").trim();
+        const fresh = latest.current;
+        if (!text || fresh.forUuid !== asked || fresh.running) return;
+        setRecap({ text, forUuid: asked });
+      })
+      .catch(() => {
+        inflight.current = false;
+        failures.current += 1;
+      });
+  }, [eager, enabled, file, sessionId, forUuid, running]);
 
   // THE AUTO-DISMISS, and the late-answer drop, in one expression: the fold is
   // only ever drawn against the position it was written about.

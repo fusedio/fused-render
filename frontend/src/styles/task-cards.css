@@ -615,3 +615,9 @@
   background: color-mix(in srgb, var(--error) 12%, transparent);
   border-color: color-mix(in srgb, var(--error) 32%, transparent);
 }
+
+/* Same rule as .tasks-title.is-recap (tasks.css): a recap title at weight 100, deliberately
+   (Akshil, 2026-10-16). */
+.task-card-title.is-recap {
+  font-weight: 100;
+}

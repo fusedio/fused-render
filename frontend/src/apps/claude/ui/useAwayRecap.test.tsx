@@ -80,6 +80,7 @@ interface Knobs {
   running?: boolean;
   draft?: string;
   enabled?: boolean;
+  eager?: boolean;
   awayMs?: number;
   answer?: RecapResponse | Error;
   /** The mount's box. Visible unless a test says otherwise. */
@@ -112,6 +113,7 @@ function harness(initial: Knobs = {}, count = 1) {
       running: knobs.running ?? false,
       hasDraft: () => (knobs.draft ?? "").trim().length > 0,
       enabled: knobs.enabled ?? true,
+      ...(knobs.eager === undefined ? {} : { eager: knobs.eager }),
       ...(knobs.awayMs === undefined ? {} : { awayMs: knobs.awayMs }),
       root: () => (knobs.root === undefined ? ON_SCREEN : knobs.root),
       fetchRecap: read as never,
@@ -281,4 +283,48 @@ test("two chats on one page, one return, ONE model call", async () => {
   const h = harness({}, 2);
   await h.away();
   expect(h.calls.length).toBe(1);
+});
+
+// ---- THE EAGER ASK (prefs task_recap.enabled): the fold on open, not only on return.
+
+test("eager: asks once on mount and shows the fold; flag off asks nothing", async () => {
+  const off = harness();
+  await act(async () => {});
+  expect(off.calls).toEqual([]);
+
+  const h = harness({ eager: true });
+  await act(async () => {});
+  expect(h.calls).toEqual([["/w/app.py", "s1", "u1"]]);
+  expect(h.recap()?.text).toBe(ANSWER.text);
+  await h.set({});
+  expect(h.calls.length).toBe(1);
+});
+
+test("eager: not mid-turn, and asks when the turn ends; again on a new anchor", async () => {
+  const h = harness({ eager: true, running: true });
+  await act(async () => {});
+  expect(h.calls).toEqual([]);
+
+  await h.set({ running: false });
+  await act(async () => {});
+  expect(h.calls.length).toBe(1);
+
+  await h.set({ forUuid: "u2" });
+  await act(async () => {});
+  expect(h.calls.map((c) => c[2])).toEqual(["u1", "u2"]);
+});
+
+test("eager: an empty answer shows nothing and is not re-asked", async () => {
+  const h = harness({ eager: true, answer: { text: "", for_uuid: "u1", at: "" } });
+  await act(async () => {});
+  expect(h.calls.length).toBe(1);
+  expect(h.recap()).toBe(null);
+  await h.set({});
+  expect(h.calls.length).toBe(1);
+});
+
+test("eager: not under a half-typed message", async () => {
+  const h = harness({ eager: true, draft: "half a thought" });
+  await act(async () => {});
+  expect(h.calls).toEqual([]);
 });
