@@ -60,6 +60,7 @@ Every state change happens under one lock; every write to the CLI's stdin
 under another. Fork-safety is session_host's argument verbatim: this is a
 bare interpreter the server never forks into.
 """
+import difflib
 import importlib.util
 import itertools
 import json
@@ -120,6 +121,7 @@ _INTERRUPT_MARK = "[Request interrupted by user]"
 _KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
                  "search": "Grep"}
 _MCP_PREFIX = "fused_approvals-"
+_EDIT_TOOLS = frozenset({"Edit", "Write"})
 _FD_CLOSE_CAP = 65536
 
 _EVENT_PATH = "/api/tasks/queue/event"
@@ -425,7 +427,25 @@ def _first_path(raw: dict, locations) -> str:
     return ""
 
 
-def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "") -> tuple:
+def _unified_diff(diffs: list) -> str:
+    """ACP `diff` content entries as one unified diff, HEADER-FREE (no
+    `---`/`+++` lines — the chat's diff view draws hunks, and the path is
+    already the card's `file_path`). "" when there are none."""
+    out = []
+    for d in diffs:
+        old = str(d.get("oldText") or "")
+        new = str(d.get("newText") or "")
+        lines = difflib.unified_diff(old.splitlines(keepends=True),
+                                     new.splitlines(keepends=True), n=3)
+        for line in lines:
+            if line.startswith(("--- ", "+++ ")):
+                continue
+            out.append(line if line.endswith("\n") else line + "\n")
+    return "".join(out)
+
+
+def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
+              content=None) -> tuple:
     """`(name, input)` for one ACP tool call, per D14: the Claude tool name the
     chat already has a card and a chip for, with the fields that card reads,
     plus `_acp: {kind, title}` (and `raw`, the call's own input, only for a
@@ -442,18 +462,26 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "") -> tupl
         inp = {"command": str(raw.get("command") or raw.get("cmd") or title),
                "description": str(raw.get("description") or title)}
     elif kind == "edit":
-        path = _first_path(raw, locations)
+        diffs = [c for c in (content if isinstance(content, list) else [])
+                 if isinstance(c, dict) and c.get("type") == "diff"]
+        path = _first_path(raw, locations) or next(
+            (str(d["path"]) for d in diffs if isinstance(d.get("path"), str) and d["path"]), "")
         full = path if os.path.isabs(path) else os.path.join(cwd or "", path)
         if path and not os.path.exists(full):
             name = "Write"
             inp = {"file_path": path,
                    "content": str(raw.get("content") or raw.get("newText")
-                                  or raw.get("new_text") or "")}
+                                  or raw.get("new_text")
+                                  or "".join(str(d.get("newText") or "") for d in diffs))}
         else:
             name = "Edit"
+            # The diff the card shows is what the user approves: from the
+            # call's input when it has one, else from the ACP `content`
+            # diff entries (`{type:"diff", path, oldText, newText}` — how
+            # Copilot usually sends an edit), never an empty one.
             inp = {"file_path": path,
                    "diff": str(raw.get("diff") or raw.get("newText")
-                               or raw.get("new_text") or "")}
+                               or raw.get("new_text") or _unified_diff(diffs))}
     elif kind == "read":
         inp = {"file_path": _first_path(raw, locations)}
     elif kind == "fetch":
@@ -531,6 +559,12 @@ def _permission_outcome(options, decision: dict) -> dict:
     oid = _pick_option(options, kinds)
     if not oid:
         return {"outcome": {"outcome": "cancelled"}}
+    if kinds[0] == "allow_once" and not _pick_option(options, ("allow_once",)):
+        # The only allow on offer is WIDER than the one the user gave. The
+        # narrowest offered is still the answer (refusing a tool the user
+        # allowed would be worse), but never silently.
+        sys.stderr.write("copilot_host: no allow_once offered; answering "
+                         "allow_always for a once-only allow\n")
     return {"outcome": {"outcome": "selected", "optionId": oid}}
 
 
@@ -567,6 +601,7 @@ class _Host:
         # Turn state (§5 of the contract).
         self.turn_open = False
         self.turn_started = 0.0
+        self.turn_started_at = 0.0
         self.turn_text = None         # text of the last closed text message
         self.turn_messages = 0        # assistant messages this turn (num_turns)
         self.tail_closed = True       # transcript's last row is a text assistant row
@@ -591,6 +626,7 @@ class _Host:
         self.results = 0              # result rows written so far
         self.result_written = False   # this prompt's result is on disk
         self.started = False          # handshake done, init row written
+        self.closing = False          # close() began: no new cards
         self.closed = False           # files closed; late notifications dropped
         self.pending_title = ""
         self.notice_pending = False   # D18 notice owed to out.jsonl's first turn
@@ -693,6 +729,7 @@ class _Host:
         with self.lock:
             self.turn_open = True
             self.turn_started = time.monotonic()
+            self.turn_started_at = time.time()   # wall clock, against file mtimes
             self.turn_text = None
             self.turn_messages = 0
             self.tail_closed = False
@@ -791,7 +828,7 @@ class _Host:
         tid = str(update.get("toolCallId") or "")
         name, inp = _map_tool(update.get("kind"), update.get("title"),
                               update.get("rawInput"), update.get("locations"),
-                              self.cwd)
+                              self.cwd, update.get("content"))
         self.tools[tid] = (name, inp)
         block = {"type": "tool_use", "id": tid, "name": name, "input": inp}
         self._emit_out({"type": "stream_event", "event": {
@@ -867,6 +904,17 @@ class _Host:
             "entrypoint": "sdk-cli", "isMeta": False, "isSidechain": False})
         self.tail_closed = True
 
+    def _stopped_this_turn(self) -> bool:
+        """Whether `run_dir/cancelled` was dropped DURING this turn. The
+        marker outlives the Stop that wrote it (nothing removes it), so one
+        older than this prompt is an earlier turn's, and a crash now is a
+        crash — not a Stop the user never pressed."""
+        try:
+            return os.path.getmtime(os.path.join(self.run_dir, "cancelled")) \
+                >= self.turn_started_at
+        except OSError:
+            return False
+
     def _finish_turn(self, rpc: _Rpc) -> None:
         reply = rpc.result if rpc.error is None and isinstance(rpc.result, dict) else {}
         usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
@@ -884,7 +932,7 @@ class _Host:
                   "usage": self._usage()}
         died = rpc.error is not None and \
             rpc.error.get("message") in ("copilot exited", "copilot is not running")
-        if died and os.path.exists(os.path.join(self.run_dir, "cancelled")):
+        if died and self._stopped_this_turn():
             # The transport died BECAUSE the user stopped it (`_cancel`'s
             # tree-kill drops `cancelled` first; a respawning `_send` does
             # too): a stop, not a failure. The transcript says so the way
@@ -1132,11 +1180,12 @@ class _Host:
         entry = {"perm_id": "", "done": threading.Event(), "options": options}
         with self.lock:
             self.pending_perm[rid] = entry
-            stopping = self.cancelling and self.turn_open
+            stopping = self.closing or (self.cancelling and self.turn_open)
         try:
             if stopping:
-                # Raised while the turn is being cancelled (L6): no card for
-                # a tool the user has already said stop to.
+                # Raised while the turn is being cancelled (L6), or while the
+                # host is closing: no card for a tool the user has already
+                # said stop to, nor one nobody will be left to clear.
                 self._answer_perm(rid, _permission_outcome(options, {"decision": "deny"}))
                 return
             self._park_permission(rid, params, entry)
@@ -1151,39 +1200,56 @@ class _Host:
         call = call if isinstance(call, dict) else {}
         tid = str(call.get("toolCallId") or "")
         known = self.tools.get(tid)
-        if known is not None and not call.get("rawInput"):
+        if known is not None and not call.get("rawInput") and not call.get("content"):
             name, inp = known
         else:
-            name, inp = _map_tool(call.get("kind"), call.get("title"),
+            # The card's own call wins; what it leaves out (often the kind
+            # and title on a permission's `toolCall`) comes from the
+            # `tool_call` that announced it.
+            seen = known[1].get("_acp", {}) if known is not None else {}
+            name, inp = _map_tool(call.get("kind") or seen.get("kind"),
+                                  call.get("title") or seen.get("title"),
                                   call.get("rawInput"), call.get("locations"),
-                                  self.cwd)
+                                  self.cwd, call.get("content"))
         options = entry["options"]
         perm_id = self._perm_id()
         _private_dirs(self.perm_dir)
-        try:
-            _write_atomic(os.path.join(self.perm_dir, perm_id + ".req.json"), {
-                "id": perm_id, "tool": name, "input": inp,
-                "tool_use_id": tid, "created_at": time.time()})
-        except OSError as exc:
-            sys.stderr.write("copilot_host: cannot park permission: %r\n" % (exc,))
+        # The card goes up UNDER THE LOCK, and only if nothing answered this
+        # request first: `reject_pending` snapshots `pending_perm` under the
+        # same lock, so it sees either no card (and the request already
+        # answered, so none is raised) or a card on disk with its id — never
+        # the gap in between, which left a raised card with no deny and no
+        # `card_cleared`.
+        with self.lock:
+            if entry["done"].is_set():
+                return  # answered while this was being built (a cancel, close)
+            try:
+                _write_atomic(os.path.join(self.perm_dir, perm_id + ".req.json"), {
+                    "id": perm_id, "tool": name, "input": inp,
+                    "tool_use_id": tid, "created_at": time.time()})
+                parked = True
+            except OSError as exc:
+                sys.stderr.write("copilot_host: cannot park permission: %r\n" % (exc,))
+                parked = False
+            if parked:
+                entry["perm_id"] = perm_id
+                # Announce BEFORE blocking, as permission_server does — and
+                # before any `card_cleared` a cancel could post for it.
+                _post_card(self.run_dir, "card_raised", perm_id)
+        if not parked:
             self._answer_perm(rid, _permission_outcome(options, {"decision": "deny"}))
             return
-        # Named only once the card is on disk: `reject_pending` writes its
-        # deny next to it, and must not invent a card that was never raised.
-        entry["perm_id"] = perm_id
-        # Announce BEFORE blocking, as permission_server does: the card is
-        # on screen now and the queue must hear it before the human answers.
-        _post_card(self.run_dir, "card_raised", perm_id)
         decision = self._await_decision(entry)
         if decision is None:
             return  # answered elsewhere (a cancel), card already cleared
         mode = decision.get("mode") if decision.get("decision") == "allow" else None
         if mode == "acceptEdits":
-            # D5, narrowed (TL 2026-10-16): "allow, and accept edits" is
-            # THIS card's allow_always — Copilot stops asking for this tool
-            # — never the session-wide allow_all, which would wave through
-            # every shell command too.
-            decision = dict(decision, scope="session")
+            # D5, narrowed (TL 2026-10-16): "allow, and accept edits" WIDENS
+            # EDITS ONLY. On an edit card it is that card's allow_always —
+            # Copilot stops asking for edits — and never the session-wide
+            # allow_all; on any other card (a shell command) it is a plain
+            # allow_once, whatever scope the card sent.
+            decision = dict(decision, scope="session" if name in _EDIT_TOOLS else "once")
         if self._answer_perm(rid, _permission_outcome(options, decision)):
             # Only the answer that won announces the card gone: a cancel
             # that beat it here has posted its own `card_cleared`.
@@ -1569,6 +1635,12 @@ class _Host:
             pass
 
     def close(self) -> None:
+        # `closing` first, under the lock: a request arriving from here on is
+        # refused without a card (`_serve_permission`), and every one already
+        # registered is in the snapshot `reject_pending` takes next — which
+        # writes each raised card's deny and posts its `card_cleared`.
+        with self.lock:
+            self.closing = True
         self.reject_pending("cancelled")
         with self.lock:
             if self.turn_open:

@@ -517,6 +517,20 @@ def test_tool_mapping_table(host_mod, tmp_path):
     (tmp_path / "there.txt").write_text("old")
     name, inp = m("edit", "Edit", {"path": "there.txt", "diff": "d"}, [], str(tmp_path))
     assert (name, inp["file_path"], inp["diff"]) == ("Edit", "there.txt", "d")
+    # M2: an existing file edited with the change ONLY in ACP `content` —
+    # the card's diff is built from it (header-free unified diff), never "".
+    diff = [{"type": "diff", "path": "there.txt",
+             "oldText": "a\nb\nc\n", "newText": "a\nB\nc\n"}]
+    name, inp = m("edit", "Edit", {}, [], str(tmp_path), diff)
+    assert (name, inp["file_path"]) == ("Edit", "there.txt")
+    assert inp["diff"].startswith("@@ ")
+    assert "-b\n+B\n" in inp["diff"]
+    assert not any(ln.startswith(("--- ", "+++ ")) for ln in inp["diff"].splitlines())
+    # ...and a new file from the same shape is a Write of its `newText`.
+    name, inp = m("edit", "Create", {}, [], str(tmp_path),
+                  [{"type": "diff", "path": "brand_new.txt", "oldText": None,
+                    "newText": "hello\n"}])
+    assert (name, inp["file_path"], inp["content"]) == ("Write", "brand_new.txt", "hello\n")
     name, inp = m("other", "fused_approvals-app_state", {"reason": "look"}, [], "")
     assert name == "mcp__fused_approvals__app_state" and inp["reason"] == "look"
     # An unmapped kind keeps Copilot's own input under `_acp.raw`.
@@ -1066,10 +1080,12 @@ def test_a_stop_that_kills_the_transport_reads_as_a_stop(start, agent):
     and then kills the CLI. That death is the user's Stop: the transcript
     ends on the interrupt mark, not an API-error row, and out.jsonl still
     gets its one result."""
-    s = start(fake_args=["--die"])
-    assert _wait_for(lambda: len(s.out()) >= 1)
-    open(os.path.join(s.run_dir, "cancelled"), "w").close()
+    s = start(fake_args=["--block-until", os.path.join(agent.RUNS, "never")])
     s.say("go")
+    assert _wait_for(lambda: s.prompts_seen())
+    # `_cancel`'s order: the marker DURING the turn, then the tree-kill.
+    open(os.path.join(s.run_dir, "cancelled"), "w").close()
+    os.kill(int(open(os.path.join(s.run_dir, "pid")).read()), signal.SIGKILL)
     results = s.wait_results(1)
     assert results[0]["is_error"] is True and results[0]["stop_reason"] == "cancelled"
     assert results[0]["result"] == ""
@@ -1146,18 +1162,58 @@ def test_lone_surrogates_survive_both_directions(start, agent):
     assert p["text"] == "Hello\ud83d world!"
 
 
-def test_accept_edits_on_a_card_is_that_cards_allow_always(start):
-    """M8 (D5 narrowed): "allow, accept edits" answers allow_always on THIS
-    card and never turns allow_all on — only `auto` does."""
-    s = start(fake_args=["--perm"])
-    s.say("clean")
+def test_accept_edits_on_an_edit_card_is_that_cards_allow_always(start):
+    """M8 (D5 narrowed): "allow, accept edits" on an EDIT card answers
+    allow_always on that card and never turns allow_all on — only `auto`
+    does. The card is Copilot's usual edit shape: no diff in `rawInput`,
+    the change as a `content` diff entry (M2), and the card shows it."""
+    s = start(fake_args=["--perm-edit", "there.txt"])
+    with open(os.path.join(s.cwd, "there.txt"), "w") as fh:
+        fh.write("one\ntwo\nthree\n")
+    s.say("change it")
     assert _wait_for(lambda: s.perm_requests())
-    s.decide(s.perm_requests()[0]["id"], decision="allow", scope="once",
-             mode="acceptEdits")
+    card = s.perm_requests()[0]
+    assert card["tool"] == "Edit" and card["input"]["file_path"] == "there.txt"
+    assert "-two\n+2\n" in card["input"]["diff"]
+    s.decide(card["id"], decision="allow", scope="once", mode="acceptEdits")
     s.wait_results(1)
     answers = _perm_answers(s, _perm_rpc_id(s))
     assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-always"]
     assert s.config_values() == ["off"]   # the spawn's own, nothing after
+
+
+def test_accept_edits_on_a_shell_card_is_allow_once(start):
+    """L3: acceptEdits widens EDITS only. On a Bash card it is a plain
+    allow_once, even if the card said "for the session"."""
+    s = start(fake_args=["--perm"])
+    s.say("clean")
+    assert _wait_for(lambda: s.perm_requests())
+    assert s.perm_requests()[0]["tool"] == "Bash"
+    s.decide(s.perm_requests()[0]["id"], decision="allow", scope="session",
+             mode="acceptEdits")
+    s.wait_results(1)
+    answers = _perm_answers(s, _perm_rpc_id(s))
+    assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-once"]
+    assert s.config_values() == ["off"]
+
+
+def test_an_old_cancelled_marker_does_not_turn_a_crash_into_a_stop(start):
+    """L5: `cancelled` outlives the Stop that wrote it. One from before this
+    prompt began means this death is a crash: the API-error row, not the
+    interrupt mark."""
+    s = start(fake_args=["--die"])
+    assert _wait_for(lambda: len(s.out()) >= 1)
+    marker = os.path.join(s.run_dir, "cancelled")
+    open(marker, "w").close()
+    old = time.time() - 60
+    os.utime(marker, (old, old))
+    s.say("go")
+    results = s.wait_results(1)
+    assert results[0]["stop_reason"] == "error"
+    assert results[0]["result"].startswith("copilot exited (code 3)")
+    assert any(r.get("isApiErrorMessage") for r in s.tx())
+    assert not any(tasks_store.is_interrupt_mark(tasks_store.first_text(
+        r["message"]["content"])) for r in s.tx() if r["type"] == "user")
 
 
 def test_a_resume_writes_to_the_transcript_it_already_has(start):
@@ -1296,6 +1352,41 @@ def test_a_settings_record_that_fails_never_fails_the_handshake(
     try:
         assert host.handshake()
         assert _rows(os.path.join(run_dir, "out.jsonl"))[0]["session_id"] == host.sid
+    finally:
+        host.close()
+
+
+def test_a_cancel_landing_before_the_card_is_written_raises_no_card(
+        agent, host_mod, tmp_path, monkeypatch):
+    """M1: a cancel (`reject_pending`) that lands after the request is
+    registered but before its card is on disk answers it, and the card is
+    then never raised — no `.req.json` for the page to draw, no
+    `card_raised` with no `card_cleared` to follow it."""
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    host, run_dir, log = _host_in_process(agent, host_mod, tmp_path, ["--perm"])
+    posts = []
+    monkeypatch.setattr(host_mod, "_post_card",
+                        lambda run_dir, kind, req_id: posts.append((kind, req_id)))
+    real_map = host_mod._map_tool
+
+    def map_then_cancel(*a, **k):
+        out = real_map(*a, **k)
+        host.reject_pending("cancelled")   # the gap the race lived in
+        return out
+
+    monkeypatch.setattr(host_mod, "_map_tool", map_then_cancel)
+    try:
+        assert host.handshake()
+        host.send_prompt("clean")
+        assert _wait_for(lambda: not host.turn_open)
+        asked = [e["sent"]["id"] for e in _rows(log)
+                 if (e.get("sent") or {}).get("method") == "session/request_permission"]
+        answers = [e["msg"] for e in _rows(log)
+                   if e.get("msg", {}).get("id") == asked[0] and "method" not in e["msg"]]
+        assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-no"]
+        perm = os.path.join(run_dir, "perm")
+        assert not os.path.isdir(perm) or not os.listdir(perm)
+        assert posts == []
     finally:
         host.close()
 

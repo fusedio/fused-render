@@ -63,7 +63,8 @@ SESSION_ID = ""   # minted by session/new, adopted by session/load
 BLOCK_UNTIL = _flag("--block-until")
 REPLAY = int(_flag("--replay", "1"))
 WITH_TOOL = "--tool" in ARGS
-PERMS = int(_flag("--perms", "1" if "--perm" in ARGS else "0"))
+PERM_EDIT = _flag("--perm-edit")   # the card is an edit of this (relative) path
+PERMS = int(_flag("--perms", "1" if ("--perm" in ARGS or PERM_EDIT) else "0"))
 WITH_ERROR = "--error" in ARGS
 WITH_THOUGHT = "--think" in ARGS
 DIE = "--die" in ARGS
@@ -229,11 +230,20 @@ def _ask(n):
     for i in range(n):
         pid = next(_ids)
         ids.append(pid)
+        call = {"toolCallId": "call-perm" + ("-%d" % i if i else ""),
+                "title": "Run rm", "kind": "execute",
+                "rawInput": {"command": "rm -rf build"}}
+        if PERM_EDIT:
+            # How Copilot sends an edit: no diff in rawInput, the change
+            # as an ACP `diff` content entry.
+            call = {"toolCallId": "call-perm", "title": "Edit " + PERM_EDIT,
+                    "kind": "edit", "locations": [{"path": PERM_EDIT}],
+                    "content": [{"type": "diff", "path": PERM_EDIT,
+                                 "oldText": "one\ntwo\nthree\n",
+                                 "newText": "one\n2\nthree\n"}]}
         _send({"jsonrpc": "2.0", "id": pid, "method": "session/request_permission",
                "params": {"sessionId": SESSION_ID,
-                          "toolCall": {"toolCallId": "call-perm" + ("-%d" % i if i else ""),
-                                       "title": "Run rm", "kind": "execute",
-                                       "rawInput": {"command": "rm -rf build"}},
+                          "toolCall": call,
                           "options": [
                               {"optionId": "o-once", "name": "Allow",
                                "kind": "allow_once"},
