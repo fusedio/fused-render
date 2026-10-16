@@ -390,6 +390,43 @@ def lan_enabled() -> bool:
     return read_prefs().get("lan_enabled") is True
 
 
+#: The two agent switches (D17, docs/COPILOT_BACKEND.md). Claude Code is on
+#: unless a stored `false` turns it off; Copilot is off unless a stored `true`
+#: turns it on. Asymmetric defaults on purpose — "Claude by default" is the
+#: owner's rule — and `put_prefs` refuses the write that would clear both.
+AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled"}
+VALID_DEFAULT_BACKENDS = ("claude", "copilot")
+
+
+def backend_enabled(backend: str) -> bool:
+    """Whether `backend` ("claude" | "copilot") may start chats and tasks.
+    Unknown backend reads as off. See `agent_backends.registry.enabled_ids`
+    for the never-empty guarantee this feeds."""
+    key = AGENT_BACKEND_KEYS.get(backend)
+    if key is None:
+        return False
+    value = read_prefs().get(key)
+    if backend == "claude":
+        return value is not False
+    return value is True
+
+
+def claude_enabled() -> bool:
+    return backend_enabled("claude")
+
+
+def copilot_enabled() -> bool:
+    return backend_enabled("copilot")
+
+
+def default_backend() -> str:
+    """The agent new chats and tasks start from, as stored — `"claude"` when
+    unset or junk. Whether it is ENABLED is the registry's question
+    (`agent_backends.registry.default_id`), which re-points to an enabled one."""
+    value = read_prefs().get("default_backend")
+    return value if value in VALID_DEFAULT_BACKENDS else "claude"
+
+
 def default_model() -> str:
     """The user's preferred Claude model, as a short name — `""` when unset.
 
