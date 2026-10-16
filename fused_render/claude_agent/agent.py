@@ -3174,12 +3174,36 @@ def _commit_turn(file: str, message: str) -> None:
     if not git_bin or not os.path.isabs(git_bin):
         return
 
+    identity = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
+
     def git(*args):
         return subprocess.run(
-            [git_bin, "-C", repo_dir, "-c", "user.name=Fused",
-             "-c", "user.email=apps@fused.io", *args],
+            [git_bin, "-C", repo_dir, *identity, *args],
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
+
+    # `.fused/` excluded by PATHSPEC as well as by info/exclude below: an
+    # ignore rule never hides a TRACKED file's edits, and a repo that commits
+    # `.fused/` would otherwise carry this machine's state into the turn's
+    # commit (docs/CONTRIB_LOOP.md §16.1). Mirrors app_git._scope_specs.
+    specs = [spec, ":(exclude,literal)" + ("" if spec == "." else
+                                           spec.removeprefix(":(literal)") + "/") + ".fused"]
+    # A GitHub-link copy (the contribution loop marks it `fused.kind=github`
+    # in the repo's own config, and sets the user's GitHub identity there):
+    # the turn commits as the user, crediting Claude in a trailer, instead of
+    # as Fused. The marker only picks an identity — never where anything
+    # goes. Mirrors app_git._identity_for.
+    trailer = ""
+    try:
+        def local(key):
+            r = git("config", "--local", "--get", key)
+            return r.stdout.strip() if r.returncode == 0 else ""
+        if repo_dir == app_dir and local("fused.kind") == "github":
+            trailer = "\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+            if local("user.name") and local("user.email"):
+                identity = []
+    except Exception:
+        pass
 
     try:
         # The two sidecar patterns are a LEGACY defense: nothing writes those
@@ -3206,11 +3230,11 @@ def _commit_turn(file: str, message: str) -> None:
             if missing:
                 with open(exclude, "a", encoding="utf-8") as fh:
                     fh.write("\n".join(missing) + "\n")
-        if git("add", "-A", "--", spec).returncode != 0:
+        if git("add", "-A", "--", *specs).returncode != 0:
             return
-        if git("diff", "--cached", "--quiet", "--", spec).returncode == 0:
+        if git("diff", "--cached", "--quiet", "--", *specs).returncode == 0:
             return  # nothing to commit (turn changed no files under this app)
-        git("commit", "-q", "-m", subject, "--", spec)
+        git("commit", "-q", "-m", subject + trailer, "--", *specs)
     except Exception:
         pass
     finally:

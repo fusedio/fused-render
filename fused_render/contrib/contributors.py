@@ -62,7 +62,8 @@ def _tip(root: str, record: dict | None) -> str | None:
         except Exception:  # noqa: BLE001 — a missing follow ref is "unknown yet"
             logger.debug("contributors: no follow tip for %s", root, exc_info=True)
             tip = None
-        return tip or rev("refs/fused/follow")
+        branch = (record or {}).get("branch")
+        return tip or (rev(f"refs/remotes/origin/{branch}") if branch else None)
     branch = (record or {}).get("branch") or gu._current_branch(root)
     return (rev(f"refs/remotes/origin/{branch}") if branch else None) or rev("HEAD")
 

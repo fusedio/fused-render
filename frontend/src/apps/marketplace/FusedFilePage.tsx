@@ -278,7 +278,7 @@ function describe(t: AppFileProbe): StateView {
           <>
             This file ({when(t.exported_at)}) is newer than what you installed ({when(t.installed_exported_at)}), but {n}{" "}
             installed file{n === 1 ? "" : "s"} differ from the install. Overwriting replaces them; {keeps} The previous
-            state is in the copy's git history.
+            state stays in the app's history.
           </>
         ),
         list: t.changed,
@@ -321,7 +321,7 @@ function describe(t: AppFileProbe): StateView {
         title: "Installed copy of unknown version",
         body: (
           <>
-            A copy is at {at} but it carries no install record (a clone, a copy by hand, or an export without a date), so
+            A copy is at {at} but it carries no install record (a copy by hand, or an export without a date), so
             this file cannot be compared with it. Overwriting replaces its files; {keeps}
           </>
         ),
@@ -341,12 +341,30 @@ function describe(t: AppFileProbe): StateView {
   return { callout: true, tone: "warn", title: "Unknown state", body: String(t.state), status: "—", statusCaption: "" };
 }
 
-/** A GitHub-link build (SPEC §26 DL-9) installs as a git clone of the repo —
- *  the vanilla template's describeGit. */
-function describeGit(t: AppFileProbe, git: { url: string; commit: string }): StateView {
+/** What the probe says about a GitHub-link build beyond its url. `who` and
+ *  `collision` come from the installed copy's own status (§16.8) when the
+ *  server sends them; an older server sends neither. */
+type GitLink = { url: string; commit: string; who?: string | null; collision?: string[] | null };
+
+/** The name the page uses for the app's author: the server's, else the
+ *  owner half of the repo ("github.com/alice/x" → "alice"). */
+function linkAuthor(git: GitLink): string {
+  if (git.who) return git.who;
+  const owner = repoLabel(git.url).split("/")[1];
+  return owner || "the author";
+}
+
+function possessive(name: string): string {
+  return name.endsWith("s") ? `${name}'` : `${name}'s`;
+}
+
+/** A GitHub-link build (SPEC §26 DL-9) installs as a copy that follows the
+ *  author's repo. No git words anywhere (§0.1, §16.8): "follows", "latest",
+ *  "your own changes" — never clone, commit, pull or push. */
+function describeGit(t: AppFileProbe, git: GitLink): StateView {
   const at = <code title={t.path}>{tail(t.path)}</code>;
   const repo = <code>{repoLabel(git.url)}</code>;
-  const commit = <code>{git.commit.slice(0, 7)}</code>;
+  const who = linkAuthor(git);
   switch (t.state) {
     case "new":
       return {
@@ -355,21 +373,21 @@ function describeGit(t: AppFileProbe, git: { url: string; commit: string }): Sta
         title: "Not installed yet",
         body: (
           <>
-            Install clones {repo} into {at}. The app stays a git clone of the repo: it keeps pulling the author's changes,
-            and you can push yours or open a pull request.
+            Install puts the app at {at}, following {repo}: {possessive(who)} updates come in on their own, and edits you
+            make stay in your copy until you propose them to {who}.
           </>
         ),
         status: "Not installed",
-        statusCaption: "Ready to clone",
+        statusCaption: "Ready to install",
       };
     case "update":
       return {
         callout: true,
         tone: "ok",
         title: "Update available",
-        body: <>The installed clone can fast-forward to {commit}, the newest commit on {repo}.</>,
+        body: <>{repo} has a newer version. Your copy has no changes of its own, so it can take {possessive(who)} latest as is.</>,
         status: "Update",
-        statusCaption: "Newer commit",
+        statusCaption: "Newer version",
       };
     case "same":
       return {
@@ -378,54 +396,71 @@ function describeGit(t: AppFileProbe, git: { url: string; commit: string }): Sta
         title: "This version is installed",
         body: (
           <>
-            {at} is a clone of {repo} at {commit} or newer.
+            {at} follows {repo} and has {possessive(who)} latest version.
           </>
         ),
         status: "Installed",
         statusCaption: "Up to date",
       };
-    case "local":
-      return t.found_by === "git"
-        ? {
-            callout: true,
-            tone: "warn",
-            title: "Your copy has changes of its own",
-            body: (
-              <>
-                {at} has commits or edits that are not in {repo}, so it is not updated from here. Update it with git (git
-                pull), or ask Claude.
-              </>
-            ),
-            status: "Edited",
-            statusCaption: "Local changes",
-          }
-        : {
-            callout: true,
-            tone: "warn",
-            title: "Your copy was edited since it was installed",
-            body: (
-              <>
-                {at} holds this app installed from a .fused file, and these files changed since. Rename or uninstall it,
-                then open the link again.
-              </>
-            ),
-            list: t.changed,
-            status: "Edited",
-            statusCaption: "Local changes",
-          };
+    case "local": {
+      if (t.found_by !== "git") {
+        return {
+          callout: true,
+          tone: "warn",
+          title: "Your copy was edited since it was installed",
+          body: (
+            <>
+              {at} holds this app installed from a .fused file, and these files changed since. Rename or uninstall it,
+              then open the link again.
+            </>
+          ),
+          list: t.changed,
+          status: "Edited",
+          statusCaption: "Local changes",
+        };
+      }
+      const collision = git.collision ?? [];
+      if (collision.length > 0) {
+        const n = collision.length;
+        return {
+          callout: true,
+          tone: "warn",
+          title: n === 1 ? "A file of yours is in the way" : "Files of yours are in the way",
+          body: (
+            <>
+              {possessive(who)} latest adds {n === 1 ? "a file" : `${n} files`} you already have in this app (
+              {collision.slice(0, 3).join(", ")}
+              {n > 3 ? ", …" : ""}). Open the app to move {n === 1 ? "yours" : "them"} aside and bring in{" "}
+              {possessive(who)} latest.
+            </>
+          ),
+          list: collision,
+          status: "Edited",
+          statusCaption: n === 1 ? "A file in the way" : `${n} files in the way`,
+        };
+      }
+      return {
+        callout: true,
+        tone: "warn",
+        title: "Your copy has changes of its own",
+        body: <>You have your own changes in this app. Open it to bring in {possessive(who)} latest.</>,
+        status: "Edited",
+        statusCaption: "Your changes",
+      };
+    }
     case "replace":
       return {
         callout: true,
         tone: "warn",
-        title: "Installed without git",
+        title: "Installed, but not from this link",
         body: (
           <>
-            {at} holds this app, but not as a git clone. Replacing it clones {repo} in its place and keeps its data
-            (.fused) and environment (.venv); the old folder goes to the Trash.
+            {at} holds this app, but it does not follow {repo}. Replacing it puts {possessive(who)} version in its place
+            and keeps its data (.fused) and environment (.venv); the old folder goes to the Trash.
           </>
         ),
         status: "Installed",
-        statusCaption: "Not a clone",
+        statusCaption: "Not following",
       };
     case "clash":
       return {
@@ -449,7 +484,7 @@ function repoLabel(url: string): string {
 function primaryLabel(t: AppFileProbe): string {
   switch (t.state) {
     case "replace":
-      return "Replace with git clone";
+      return "Replace";
     case "update":
       return "Update";
     case "diverged":
@@ -624,7 +659,7 @@ export function FusedFilePage({ path }: { path: string }) {
     pill = installedEntry
       ? { state: "open", onClick: () => openEntry(installedEntry) }
       : t.git
-        ? { state: "disabled", label: "Installed", title: "This commit is already installed" }
+        ? { state: "disabled", label: "Installed", title: "This version is already installed" }
         : { state: "caution", label, onClick: () => setPhase({ kind: "armed" }) };
     note = <>Installed{shortDate(t.exported_at) ? <> · exported {shortDate(t.exported_at)}</> : null}</>;
   } else if (t.needs_force) {
@@ -633,7 +668,7 @@ export function FusedFilePage({ path }: { path: string }) {
       t.state === "diverged" ? (
         <span className="is-warn">Installed · edited locally</span>
       ) : t.state === "replace" ? (
-        <span className="is-warn">Installed · not a git clone</span>
+        <span className="is-warn">Installed · not from this link</span>
       ) : t.state === "downgrade" ? (
         <span className="is-warn">Older than installed</span>
       ) : (
@@ -820,7 +855,7 @@ export function FusedFilePage({ path }: { path: string }) {
       />
       {t.git && (
         <StatusCallout tone="warn" title="Unverified code from GitHub">
-          This app is cloned from <code>{repoLabel(t.git.url)}</code>. Fused has not reviewed or verified it, and it can
+          This app comes from <code>{repoLabel(t.git.url)}</code>. Fused has not reviewed or verified it, and it can
           contain malicious code that runs with your access once installed. Install it only if you trust its author.
         </StatusCallout>
       )}

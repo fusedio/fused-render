@@ -4,10 +4,14 @@
 //            (platform/ui/GitHubSignIn), inline, then straight on.
 //   form     a title and a description Claude drafts from your conversation
 //            (skeletons sized like the fields while it writes), both editable,
-//            plus an optional note to the author. The draft NEVER gates
-//            sending: "Write it myself" drops the skeletons at once, a failed
-//            draft says so quietly and leaves the fields empty, and a draft
-//            that lands late fills only the fields the user has not touched.
+//            plus an optional note to the author, and the copy's NEW files
+//            as checkboxes, every one unticked: a new file goes out only
+//            when the user ticks it (`include`), so a stray notes file or a
+//            key never leaves by default. The draft NEVER gates sending:
+//            "Write it myself" drops the skeletons at once, a failed draft
+//            says so quietly and leaves the fields empty, and a draft that
+//            lands late fills only the fields the user has not touched.
+//            Sent as the panel's `propose` action (POST /api/contrib/action).
 //   sending  the job's steps in plain words; the sheet will not close.
 //   sent     a check, one sentence, the link to the proposal.
 //
@@ -16,14 +20,15 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 import {
+  runAction,
   runJob,
   useUnmountSignal,
-  sendProposal,
   startProposalDraft,
   type ProposalDraft,
   type SentProposal,
 } from "@platform/lib/contrib";
 import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Field, FieldGroup, FieldLabel } from "@platform/shadcn/ui/field";
 import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
@@ -42,6 +47,7 @@ export function ProposeDialog({
   author,
   signedIn,
   again,
+  untracked = [],
   onClose,
   onSent,
 }: {
@@ -50,6 +56,8 @@ export function ProposeDialog({
   signedIn: boolean;
   /** "Propose again" after a decline — same sheet, its own title. */
   again?: boolean;
+  /** New files in the copy (app-relative), offered unticked. */
+  untracked?: string[];
   onClose: () => void;
   /** After a successful send, so the page re-reads its state. */
   onSent: () => void;
@@ -70,6 +78,7 @@ export function ProposeDialog({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [note, setNote] = useState("");
+  const [include, setInclude] = useState<ReadonlySet<string>>(() => new Set());
   const touched = useRef({ title: false, description: false });
   const [step, setStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -119,7 +128,15 @@ export function ProposeDialog({
     setError(null);
     setStep(null);
     const r = await runJob<SentProposal>(
-      sendProposal(dir, { title: title.trim(), description: description.trim(), note: note.trim() }),
+      runAction(dir, "propose", {
+        args: {
+          title: title.trim(),
+          description: description.trim(),
+          note: note.trim(),
+          // Only files still offered, in the order listed.
+          include: untracked.filter((f) => include.has(f)),
+        },
+      }),
       { signal: signal(), onTick: (j) => live.current && setStep(j.step ?? null) },
     );
     if (!live.current) return;
@@ -261,6 +278,33 @@ export function ProposeDialog({
               onChange={(e) => setNote(e.target.value)}
             />
           </Field>
+          {untracked.length > 0 && (
+            <fieldset className="contrib-include">
+              <legend className="contrib-include-legend">
+                New files <span className="font-normal text-muted-foreground">(sent only if you tick them)</span>
+              </legend>
+              <ul className="contrib-include-list">
+                {untracked.map((f) => (
+                  <li key={f}>
+                    <label className="contrib-check">
+                      <Checkbox
+                        checked={include.has(f)}
+                        onCheckedChange={(v) =>
+                          setInclude((cur) => {
+                            const next = new Set(cur);
+                            if (v === true) next.add(f);
+                            else next.delete(f);
+                            return next;
+                          })
+                        }
+                      />
+                      <code className="contrib-include-file">{f}</code>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            </fieldset>
+          )}
         </FieldGroup>
         {error && (
           <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">

@@ -1,59 +1,59 @@
 """The tree primitives every contrib mutation is built from
-(docs/CONTRIB_LOOP.md §0.2, §0.3, §6.2): replay in a scratch worktree, land
-the result with a backup, clean up — plus the mutation slot and the
-committed-`.fused/` guard they share.
+(docs/CONTRIB_LOOP.md §0.2, §0.3, §16): merge in memory (or in a scratch
+worktree), land a result with a backup, clean up — plus the mutation slot
+and the committed-`.fused/` guard they share.
 
-THE REAL APP FOLDER NEVER HAS A REBASE IN FLIGHT (§0.3). `replay` runs
-`git rebase` inside a scratch `git worktree` under `<home>/contrib/work/<id>/`
+v2 (§16): a GitHub-link copy is MERGED, never rebased. Nothing here rewrites
+a commit of Bob's except `pick`, which A4's return uses to re-apply exactly
+the edits he made after sending (and the credit rewrite in proposals.py).
+The v1 rebase machinery — `replay`, the base/proposed/origin-seen refs, the
+split replay and its soundness check — is gone; the four v1 ref names stay
+below only so the first v2 sync can delete them (`V1_REFS`).
+
+THE REAL APP FOLDER NEVER HAS A MERGE IN FLIGHT (§0.3). A three-way merge
+runs in memory (`git merge-tree --write-tree`, git >= 2.38; `--merge-base`
+>= 2.40) or, on an older git, in a scratch `git worktree` under
+`<home>/contrib/work/<id>/` (`_merge_tree_scratch`: same answer, same shape)
 — outside the workspace, so `app_git.commit` and the Claude-turn sweep never
-commit there, and a conflict stops THAT tree, never Bob's. Only a finished
-tip leaves it, through `land`, which moves Bob's branch with
-`git reset --keep`: it refuses (rather than clobbers) when an uncommitted
-edit overlaps what the move would change, and a refusal is "defer, try next
-time" (§0.2), never an error.
+commit there. Only a finished commit leaves it, through `land`, which moves
+the branch with `git reset --keep`: it refuses (rather than clobbers) when an
+uncommitted edit overlaps what the move would change, and a refusal is
+"defer, try next time" (§0.2), never an error.
 
 NOTHING OF BOB'S IS LOST SILENTLY (§0.2). Before `land` moves a branch off a
-tip the new one does not contain, the old tip is pinned at
-`refs/fused/backup/<unix_ms>-<why>` (and the uncommitted edits, untracked
-files included, at `…-wip` — `wip_commit_locked`). A pure fast-forward pins
-nothing: its old tip stays in the new tip's history, so a backup would be
-noise in every follower's repo for every author push. The record names the
-last ten; the refs themselves are NEVER deleted by the engine, with one
-exception (`prune_backups_locked`): a plain update's backup (`why` not
-`discard`/`race`, not `-wip`) older than 30 days ages out. A Discard's and a
-race's backups — the only copy of what they hold — and every `-wip` stay.
+tip the new one does not contain — or over a local file the new tip adds —
+the old tip is pinned at `refs/fused/backup/<unix_ms>-<why>` (and the
+uncommitted edits, untracked files included, at `…-wip` —
+`wip_commit_locked`). A fast-forward or a merge commit whose first parent is
+HEAD pins nothing: the old tip stays in the new tip's history. `land` answers
+the ref it wrote so the engine can name it on the Activity line that offers
+Undo. The refs are NEVER deleted while an activity line references them;
+`prune_backups_locked` drops only unreferenced ones older than 30 days.
 
 COMMITTED `.fused/` (§4). A repo that tracks its own `.fused/` would show
 fused's writes there (the install stamp, `meta.json`) as edits, so tracked
-`.fused/*` paths get git's skip-worktree bit (`protect_locked`). That hides
-them from `status` — but it does NOT let a tree move through: verified on
-git 2.39–2.50, `merge --ff-only`, `reset --keep` AND `reset --hard` all
-refuse with "Entry '.fused/…' not uptodate" the moment the author's update
-changes a file whose local copy fused has rewritten. So every tree move runs
-inside `fused_aside`: the worktree copies of tracked `.fused/` paths are
-renamed into `<gitdir>/fused-aside/` (same filesystem, no copy), the move
-runs, and they are renamed back over whatever git checked out. Machine state
-wins locally; the index carries the author's version, hidden by the bit. A
-crash between the two renames is recovered by the next `fused_aside` or
-`protect_locked`, which restore any leftover first.
+`.fused/*` paths get git's skip-worktree bit (`protect_locked`) — and keep it
+(§16.1: never un-protected). That hides them from `status` — but it does NOT
+let a tree move through: verified on git 2.39–2.50, `merge --ff-only`,
+`reset --keep` AND `reset --hard` all refuse with "Entry '.fused/…' not
+uptodate" the moment the author's update changes a file whose local copy
+fused has rewritten. So every tree move runs inside `fused_aside`: the
+worktree copies of tracked `.fused/` paths are renamed into
+`<gitdir>/fused-aside/` (same filesystem, no copy), the move runs, and they
+are renamed back over whatever git checked out. Machine state wins locally;
+the index carries the author's version, hidden by the bit. A crash between
+the two renames is recovered by the next `fused_aside` or `protect_locked`.
 
 THE SLOT (§0.9). Every write to a real app repo holds
 `git_upstream._check_slot`, the same process-wide lock auto-sync's fetches
-use, so two git writers never meet in one repo. It is a plain `Lock`: a
-thread that already holds it and acquires again would wait out the bounded
-timeout and then refuse. `slot()` makes the nesting EXPLICIT instead of
-guessed: the one entry point that is called with the slot already held
-(`engine.sync`, from git_upstream's intercept) wraps its body in
-`slot_held()`, and every `slot()` inside that on the same thread is then a
-no-op that answers True. Every other entry point (a router-triggered
-discard, a merge job's accept) acquires it for real. Network calls to GitHub
-never run under it (§0.9); a `git fetch` does, because it writes refs.
-
-`replay` itself does not need the slot: it never touches the real
-branch, index or worktree — only the shared object store (safe under
-concurrent writers) and the scratch worktree's own admin dir. That is what
-lets a Merge with Claude job keep its worktree for minutes without blocking
-every other sync on the machine.
+use, so two git writers never meet in one repo. It is a plain `Lock`;
+`slot()` makes nesting EXPLICIT: the one entry point called with the slot
+already held (`engine.sync`, from git_upstream's intercept) wraps its body in
+`slot_held()`, and every `slot()` inside that on the same thread is a no-op
+that answers True. `slot_released` gives it up for a long stretch (a Claude
+refresh, a merge) and takes it back, bounded. Merges and picks need no slot:
+they write only objects (safe under concurrent writers) and a scratch
+worktree's own admin dir.
 
 Subprocess discipline is git_upstream's (`_run`: absolute git, `-C`,
 `close_fds=False`, non-interactive env, bounded timeout).
@@ -72,39 +72,36 @@ from fused_render import git_upstream as gu
 
 logger = logging.getLogger(__name__)
 
+# v1 private refs (§16.0 P3): deleted on the first v2 sync of a repo and
+# never written again. Named here only for that cleanup.
 FOLLOW_REF = "refs/fused/follow"
-#: The follow tip HEAD currently sits on — what Bob's changes are "on top
-#: of". Advanced by `land` whenever the landed tip contains the follow tip;
-#: the engine replays `<base>..HEAD`, so an author's force-push never turns
-#: their own old commits into Bob's changes.
 BASE_REF = "refs/fused/base"
-#: An own copy's tracking ref as it stood BEFORE the engine's fetch, pinned
-#: forward-only at each own sync (`engine._pin_origin_seen`): the published
-#: point a missing or truncated reflog would otherwise forget.
-ORIGIN_SEEN_REF = "refs/fused/origin-seen"
-BACKUP_PREFIX = "refs/fused/backup/"
 PROPOSED_REF = "refs/fused/proposed"
+ORIGIN_SEEN_REF = "refs/fused/origin-seen"
+V1_REFS = (FOLLOW_REF, BASE_REF, PROPOSED_REF, ORIGIN_SEEN_REF)
 
-#: A rebase may lazily fetch blobs (installs are `--filter=blob:none`
-#: clones) and replays several commits: more headroom than one fetch.
+BACKUP_PREFIX = "refs/fused/backup/"
+
+#: A merge may lazily fetch blobs (installs are `--filter=blob:none`
+#: clones): more headroom than one fetch.
 REPLAY_TIMEOUT_S = 180.0
 
-# Config for every rebase/commit the engine runs: no hooks (the user's global
-# hooks are not ours to fire for a background replay), no signing prompt, no
-# autostash (the scratch tree is clean by construction), zdiff3 markers (what
-# a Merge with Claude job reads), no rerere replaying a stale resolution.
-_REPLAY_CONFIG = (
+# Config for every merge/commit fused runs: no hooks (the user's global hooks
+# are not ours to fire for a background merge), no signing prompt, zdiff3
+# markers (what a Merge with Claude job reads), no rerere replaying a stale
+# resolution, no gc mid-flight.
+COMMIT_CONFIG = (
     "-c", "core.hooksPath=" + os.devnull,
     "-c", "commit.gpgsign=false",
-    "-c", "rebase.autoStash=false",
-    "-c", "rebase.updateRefs=false",
-    "-c", "rebase.autoSquash=false",
     "-c", "merge.conflictStyle=zdiff3",
     "-c", "rerere.enabled=false",
     "-c", "gc.auto=0",
 )
 
 _FUSED_IDENTITY = ("-c", "user.name=Fused", "-c", "user.email=apps@fused.io")
+
+#: Tests flip this to exercise the old-git path on a new git.
+_FORCE_SCRATCH_MERGE = False
 
 
 # ------------------------------------------------------------------- git bits
@@ -125,6 +122,8 @@ def out(result) -> str:
 
 def rev(root, spec) -> str | None:
     """The commit `spec` names, or None."""
+    if not spec:
+        return None
     r = git(root, "rev-parse", "--verify", "--quiet", f"{spec}^{{commit}}")
     sha = out(r) if ok(r) else ""
     return sha or None
@@ -137,21 +136,38 @@ def is_ancestor(root, a, b) -> bool:
     return ok(git(root, "merge-base", "--is-ancestor", a, b))
 
 
-def count(root, rng) -> int | None:
-    r = git(root, "rev-list", "--count", rng)
+def count(root, *spec) -> int | None:
+    r = git(root, "rev-list", "--count", *spec)
     try:
         return int(out(r)) if ok(r) else None
     except ValueError:
         return None
 
 
+def tree_of(root, commit) -> str | None:
+    if not commit:
+        return None
+    r = git(root, "rev-parse", "--verify", "--quiet", f"{commit}^{{tree}}")
+    return (out(r) or None) if ok(r) else None
+
+
+def names(result) -> list[str]:
+    """The NUL-separated paths of a `-z` listing."""
+    if not ok(result):
+        return []
+    return [p for p in result[1].decode("utf-8", "replace").split("\0") if p]
+
+
 def identity_args(root) -> tuple:
-    """Committer identity for a replay: the repo's own when it has one (a
-    rebase rewrites the committer, and Bob's machine usually knows Bob),
-    else the `Fused` identity app_git commits with — a fresh machine with no
-    git identity must still be able to replay."""
-    if out(git(root, "config", "--get", "user.email")):
-        return ()
+    """Committer (and author) identity for every commit fused makes in a
+    copy: the repo-LOCAL `user.name`/`user.email` classification sets for a
+    `github` copy (Bob's GitHub name + noreply, §16.1), else the `Fused`
+    identity app_git commits with. Never the machine's global identity — a
+    work laptop's `bob@corp.example` must not ride into a proposal."""
+    email = out(git(root, "config", "--local", "--get", "user.email"))
+    name = out(git(root, "config", "--local", "--get", "user.name"))
+    if email and name:
+        return ("-c", f"user.name={name}", "-c", f"user.email={email}")
     return _FUSED_IDENTITY
 
 
@@ -201,18 +217,15 @@ def slot(*, block: bool = True):
 @contextlib.contextmanager
 def slot_released():
     """Inside `slot_held` at its top level (git_upstream's caller holds the
-    raw lock on THIS thread): give the slot up for a long stretch — a fetch,
-    a replay — and take it back before the caller's own release. Every write
-    inside then takes the slot itself (`slot()`), briefly: the review's rule
-    that the slot covers only backup + final check + land, never minutes of
-    rebase. The re-acquire is BOUNDED (`_reacquire_timeout`, the same
-    budget as git_upstream's `_mutation_slot`): on a timeout the thread no
-    longer holds the slot, so it tells git_upstream (`_mark_slot_lost`) and
-    the caller's `finally` skips its release rather than freeing someone
-    else's lock. Nothing is lost by it: every tree write inside took the
-    slot itself and finished before this point, and `slot_lost()` lets the
-    caller report the stretch as deferred. Anywhere else (nested, or not
-    held) this is a no-op."""
+    raw lock on THIS thread): give the slot up for a long stretch — a
+    GitHub refresh, a merge — and take it back before the caller's own
+    release. Every write inside takes the slot itself (`slot()`), briefly.
+    The re-acquire is BOUNDED (the budget of git_upstream's
+    `_mutation_slot`): on a timeout the thread no longer holds the slot, so
+    it tells git_upstream (`_mark_slot_lost`) and the caller's `finally`
+    skips its release rather than freeing someone else's lock; `slot_lost()`
+    lets the caller report the stretch as deferred. Anywhere else (nested,
+    or not held) this is a no-op."""
     if _depth() != 1:
         yield
         return
@@ -223,16 +236,12 @@ def slot_released():
     try:
         yield
     finally:
-        if gu._check_slot.acquire(timeout=_reacquire_timeout()):
+        if gu._check_slot.acquire(timeout=gu.TIMEOUT_S + 5.0):
             _held.depth = 1
         else:
             logger.warning("contrib: could not take the sync slot back in time")
             gu._mark_slot_lost()
             _held.lost = True
-
-
-def _reacquire_timeout() -> float:
-    return gu.TIMEOUT_S + 5.0
 
 
 def slot_lost() -> bool:
@@ -259,10 +268,8 @@ def _tracked_fused(root) -> list[tuple[str, str]]:
     """`[(tag, path)]` for every tracked path under `.fused/` (`ls-files -v`
     tags: `S` = skip-worktree already set)."""
     r = git(root, "ls-files", "-v", "-z", "--", ".fused")
-    if not ok(r):
-        return []
     entries = []
-    for item in r[1].decode("utf-8", "replace").split("\0"):
+    for item in names(r):
         if len(item) > 2 and item[1] == " ":
             entries.append((item[0], item[2:]))
     return entries
@@ -301,10 +308,7 @@ def _target_fused(root, target) -> list[str]:
     """The `.fused/` paths commit `target` tracks."""
     if not target:
         return []
-    r = git(root, "ls-tree", "-r", "-z", "--name-only", target, "--", ".fused")
-    if not ok(r):
-        return []
-    return [p for p in r[1].decode("utf-8", "replace").split("\0") if p]
+    return names(git(root, "ls-tree", "-r", "-z", "--name-only", target, "--", ".fused"))
 
 
 @contextlib.contextmanager
@@ -342,7 +346,7 @@ def fused_aside(root, target=None):
 def protect_locked(root) -> int:
     """Set skip-worktree on every tracked `.fused/` path that lacks it; the
     caller holds the slot (it writes the index). Answers how many were newly
-    protected. Restores a crashed `fused_aside` first."""
+    protected. Restores a crashed `fused_aside` first. Never undone (§16.1)."""
     _restore_aside(root, _aside_dir(root))
     todo = [p for tag, p in _tracked_fused(root) if tag != "S"]
     if not todo:
@@ -351,90 +355,23 @@ def protect_locked(root) -> int:
     if not ok(r):
         logger.warning("contrib: skip-worktree failed in %s: %s", root, gu._text(r))
         return 0
-    # The record remembers that the bits are ours, so switching the loop off
-    # can take them back (`unprotect_locked`).
-    from fused_render.contrib import store
-
-    store.update(root, lambda rec: rec.__setitem__("protected", True))
-    return len(todo)
-
-
-def unprotect_locked(root) -> int:
-    """Clear skip-worktree on every tracked `.fused/` path — the loop was
-    switched off, and with it off `git status` must report exactly what it
-    did before (§0.6). The caller holds the slot. Answers how many."""
-    _restore_aside(root, _aside_dir(root))
-    todo = [p for tag, p in _tracked_fused(root) if tag == "S"]
-    if todo:
-        r = git(root, "update-index", "--no-skip-worktree", "--", *todo)
-        if not ok(r):
-            logger.warning("contrib: clearing skip-worktree failed in %s: %s", root, gu._text(r))
-            return 0
     return len(todo)
 
 
 def _protect_after_move(root) -> None:
     try:
-        from fused_render.contrib import flags
-
-        if flags.sources():
-            protect_locked(root)
+        protect_locked(root)
     except Exception:  # noqa: BLE001 — housekeeping; the next sync redoes it
         logger.exception("contrib: protect after move failed for %s", root)
-
-
-# --------------------------------------------------------------------- backups
-
-
-#: Backups whose `why` keeps them forever (`prune_backups_locked`).
-KEEP_FOREVER = frozenset({"discard", "race"})
-#: A plain update's backup older than this may be pruned.
-BACKUP_AGE_OUT_S = 30 * 24 * 3600
-
-
-def _new_backup_ref(root, why="update") -> str:
-    """`refs/fused/backup/<unix_ms>-<why>` (the why in the NAME, so the age-out
-    sweep can tell a Discard's backup from an update's without the record)."""
-    ms = int(time.time() * 1000)
-    tag = "".join(c if c.isalnum() or c == "-" else "-" for c in (why or "update"))
-    name = f"{BACKUP_PREFIX}{ms}-{tag}"
-    n = 1
-    while rev(root, name):
-        name = f"{BACKUP_PREFIX}{ms}-{tag}-{n}"
-        n += 1
-    return name
-
-
-def prune_backups_locked(root, now=None) -> int:
-    """The one way a backup ref goes: a plain update's backup (not
-    `discard`/`race`, not a `-wip`, nor one whose why the name does not
-    tell) older than BACKUP_AGE_OUT_S. Caller holds the slot. Answers how
-    many went."""
-    now = time.time() if now is None else now
-    r = git(root, "for-each-ref", "--format=%(refname)", BACKUP_PREFIX)
-    gone = 0
-    for ref in (out(r).split() if ok(r) else []):
-        tail = ref[len(BACKUP_PREFIX):]
-        ms, _, why = tail.partition("-")
-        if not ms.isdigit() or not why or why.endswith("wip"):
-            continue
-        base_why = why.rsplit("-", 1)[0] if why.rsplit("-", 1)[-1].isdigit() else why
-        if base_why in KEEP_FOREVER:
-            continue
-        if now - int(ms) / 1000.0 > BACKUP_AGE_OUT_S and ok(git(root, "update-ref", "-d", ref)):
-            gone += 1
-    return gone
 
 
 # --------------------------------------------------------------- "your edits"
 #
 # ONE definition of Bob's uncommitted edits, shared by the engine (status's
-# `dirty`, the update precheck, the Discard backup) and proposals.py ("Your
-# edits", the commit a Propose sends): edits to tracked files AND untracked
-# files git does not ignore (a file Bob made by hand is part of what runs,
-# D16), minus fused's machine state and app_git._GITIGNORE's generated set —
-# excluded here even when the app's own .gitignore forgets them (keep in
-# step with that list).
+# `dirty`, the update precheck, the Discard backup) and proposals.py: edits
+# to tracked files AND untracked files git does not ignore, minus fused's
+# machine state and app_git._GITIGNORE's generated set — excluded here even
+# when the app's own .gitignore forgets them (keep in step with that list).
 
 EDITS_EXCLUDE = (
     ":(exclude).fused", ":(exclude).venv", ":(exclude,glob)**/__pycache__/**",
@@ -463,6 +400,12 @@ def edits(root) -> list[tuple[str, str]]:
     return found
 
 
+def tracked_edits(root) -> list[str]:
+    """Paths of uncommitted edits to TRACKED files (staged or not, a staged
+    new file included) — never an untracked file (§16.3 status, row 6)."""
+    return [p for code, p in edits(root) if code != "??"]
+
+
 def dirty(root) -> bool:
     return bool(edits(root))
 
@@ -484,19 +427,54 @@ def _run_env(root, env, *args, timeout=gu.TIMEOUT_S):
 
 
 def clobber_paths(root, head, target) -> list[str]:
-    """Paths `target` adds over `head` that exist in the working tree as
-    UNTRACKED files — ignored ones included (a `.env`, a data file): a
+    """Paths `target` adds over `head` that exist in the working tree but
+    are not tracked — ignored ones included (a `.env`, a data file): a
     `reset --keep`/`--hard` to `target` overwrites an ignored file without
-    asking, so these must be in the backup before the move. `.fused/` is
-    left to `fused_aside`."""
+    asking. Row 5 of the engine's table; `.fused/` is left to `fused_aside`."""
     if not head or not target:
         return []
     r = git(root, "diff", "--name-only", "-z", "--diff-filter=A", head, target, "--",
             ".", ":(exclude).fused")
+    staged = set(names(git(root, "diff", "--cached", "--name-only", "-z")))
+    return [p for p in names(r)
+            if p not in staged and os.path.lexists(os.path.join(root, p))]
+
+
+def commit_edits_locked(root, paths, message="Your edits") -> str | None:
+    """Commit the uncommitted edits to `paths` — the ones standing in an
+    update's way (the engine's row 6), NEVER the rest of the tree: an
+    untracked `creds.json` only Bob made, or anything else he staged, stays
+    out (`commit --only`, literal pathspecs). Bob's identity
+    (`identity_args`). Caller holds the slot. Answers the new HEAD, or None
+    (nothing to commit / git refused)."""
+    wanted = set(paths or ())
+    paths = [p for _code, p in edits(root) if p in wanted]
+    if not paths:
+        return None
+    if not ok(git(root, "--literal-pathspecs", "add", "-A", "--", *paths,
+                  timeout=REPLAY_TIMEOUT_S)):
+        return None
+    r = git(root, "--literal-pathspecs", *COMMIT_CONFIG, *identity_args(root), "commit",
+            "--only", "--no-verify", "-q", "-m", message, "--", *paths)
     if not ok(r):
-        return []
-    return [p for p in r[1].decode("utf-8", "replace").split("\0")
-            if p and os.path.lexists(os.path.join(root, p))]
+        logger.warning("contrib: committing edits in %s failed: %s", root, gu._text(r))
+        return None
+    return rev(root, "HEAD")
+
+
+# --------------------------------------------------------------------- backups
+
+
+def _new_backup_ref(root, why="update") -> str:
+    """`refs/fused/backup/<unix_ms>-<why>` (the why in the NAME)."""
+    ms = int(time.time() * 1000)
+    tag = "".join(c if c.isalnum() or c == "-" else "-" for c in (why or "update"))
+    name = f"{BACKUP_PREFIX}{ms}-{tag}"
+    n = 1
+    while rev(root, name):
+        name = f"{BACKUP_PREFIX}{ms}-{tag}-{n}"
+        n += 1
+    return name
 
 
 def wip_commit_locked(root, head, *, also=()) -> str | None:
@@ -506,8 +484,7 @@ def wip_commit_locked(root, head, *, also=()) -> str | None:
     None when there is nothing to hold. Built through a TEMPORARY index (a
     copy of the real one, so staged state and skip-worktree bits carry
     over): the real index, the working tree and the shared stash stack are
-    never touched, unlike `git stash -u`, which would also remove the files
-    it saves."""
+    never touched, unlike `git stash -u`."""
     if not edits(root) and not also:
         return None
     gitdir = gu._real_gitdir(root)
@@ -528,7 +505,7 @@ def wip_commit_locked(root, head, *, also=()) -> str | None:
                                     timeout=REPLAY_TIMEOUT_S)):
             return None
         tree = out(_run_env(root, env, "write-tree"))
-        if not tree or tree == out(git(root, "rev-parse", f"{head}^{{tree}}")):
+        if not tree or tree == tree_of(root, head):
             return None
         commit = out(git(root, *identity_args(root), "commit-tree", tree, "-p", head,
                          "-m", "Backup of uncommitted edits"))
@@ -542,11 +519,9 @@ def wip_commit_locked(root, head, *, also=()) -> str | None:
 
 def backup_locked(root, tip, *, why="update", also=()) -> list[str]:
     """Pin `tip` (and, when there are uncommitted edits or `also` paths, a
-    `wip_commit_locked` commit of them) under `refs/fused/backup/`. Answers
-    the refs written — empty when even the first could not be written, and
-    the caller must then not move the branch. NOT yet named on the record:
-    `name_backups` does that once the move really happened, so a deferred
-    move leaves no dead names behind."""
+    `wip_commit_locked` commit of them at `<ref>-wip`) under
+    `refs/fused/backup/`. Answers the refs written — empty when even the
+    first could not be written, and the caller must then not move."""
     refs = []
     ref = _new_backup_ref(root, why)
     if not ok(git(root, "update-ref", ref, tip)):
@@ -558,65 +533,57 @@ def backup_locked(root, tip, *, why="update", also=()) -> list[str]:
     return refs
 
 
-def name_backups(root, refs, why, app_dir=None) -> None:
-    """Name the refs of a move that happened on the record (newest last,
-    BACKUPS_KEEP of them). A name that falls off the list only stops being
-    named — the ref stays (module docstring; `prune_backups_locked` is the
-    only deleter)."""
-    from fused_render.contrib import store
-
-    for r in refs or ():
-        store.add_backup(app_dir or root, r, why)
-
-
 def _unbackup_locked(root, refs) -> None:
     """Take back the refs of a move that did not happen."""
     for r in refs:
         git(root, "update-ref", "-d", r)
 
 
-def _backup_refs_named(rec) -> set:
-    return {b.get("ref") for b in (rec or {}).get("backups") or []
-            if isinstance(b, dict) and isinstance(b.get("ref"), str)}
+#: Backups whose `why` keeps them forever (the pin of a commit that raced an
+#: update in: nothing names it, and it may be the only copy of that commit).
+KEEP_FOREVER = frozenset({"race"})
+#: An unreferenced backup older than this may be pruned (§16.3).
+BACKUP_AGE_OUT_S = 30 * 24 * 3600
 
 
-def commit_edits_locked(root, paths, message="Your edits") -> str | None:
-    """Commit the uncommitted edits to `paths` — the ones standing in an
-    update's way (engine `blocking_edits`), NEVER the rest of the tree: an
-    untracked `creds.json` only Bob made, or anything he staged, stays out
-    (`commit --only`, literal pathspecs). Committed, they ride the replay
-    like the rest of Bob's changes. Caller holds the slot. Answers the new
-    HEAD, or None (nothing to commit / git refused)."""
-    wanted = set(paths or ())
-    paths = [p for _code, p in edits(root) if p in wanted]
-    if not paths:
-        return None
-    if not ok(git(root, "--literal-pathspecs", "add", "-A", "--", *paths,
-                  timeout=REPLAY_TIMEOUT_S)):
-        return None
-    r = git(root, "--literal-pathspecs", *_REPLAY_CONFIG, *identity_args(root), "commit",
-            "--only", "--no-verify", "-q", "-m", message, "--", *paths)
-    if not ok(r):
-        logger.warning("contrib: committing edits in %s failed: %s", root, gu._text(r))
-        return None
-    return rev(root, "HEAD")
+def prune_backups_locked(root, keep=(), now=None) -> int:
+    """The one way a backup ref goes: not in `keep` (the refs an Activity
+    line still references — a `-wip` rides with its tip), not a race pin,
+    and older than BACKUP_AGE_OUT_S. Caller holds the slot. Answers how many
+    went."""
+    now = time.time() if now is None else now
+    keep = set(keep or ())
+    keep |= {k + "-wip" for k in keep}
+    r = git(root, "for-each-ref", "--format=%(refname)", BACKUP_PREFIX)
+    gone = 0
+    for ref in (out(r).split() if ok(r) else []):
+        if ref in keep:
+            continue
+        tail = ref[len(BACKUP_PREFIX):]
+        ms, _, why = tail.partition("-")
+        if not ms.isdigit():
+            continue
+        if why.endswith("-wip"):
+            why = why[:-4]
+        if why.rsplit("-", 1)[-1].isdigit():
+            why = why.rsplit("-", 1)[0]
+        if why in KEEP_FOREVER:
+            continue
+        if now - int(ms) / 1000.0 > BACKUP_AGE_OUT_S and ok(git(root, "update-ref", "-d", ref)):
+            gone += 1
+    return gone
 
 
 # ------------------------------------------------------------- tree merges
 #
-# `git merge-tree --write-tree` (git >= 2.38; `--merge-base` >= 2.40) merges
-# in memory: no worktree, no index. It is the yardstick a finished rebase is
-# held to (`expected_tree`) and the whole of the MERGE strategy
-# (`merge_into`) and of `pick`. A git too old for it answers
-# `supported: False` and the engine takes the conservative road
-# (needs-merge, or defer).
+# `git merge-tree --write-tree` merges in memory: no worktree, no index. A
+# git too old for it (< 2.38, or < 2.40 for `--merge-base`) does the same
+# merge in a scratch worktree (§16.0 P9) — same result, same answer shape.
 
 
-def merge_tree(root, ours, theirs, *, base=None) -> dict:
-    """`{"supported", "clean", "tree", "files"}` for a three-way merge of
-    `ours` and `theirs` (on `base`, else their merge-base)."""
-    # `-z`: NUL-separated, so a path is never C-quoted (core.quotePath turns
-    # `café.html` into `"caf\303\251.html"` otherwise). Output: the tree,
+def _merge_tree_mem(root, ours, theirs, base):
+    """`merge-tree --write-tree`'s answer, or None when this git cannot."""
+    # `-z`: NUL-separated, so a path is never C-quoted. Output: the tree,
     # then one conflicted path per field (repeated per stage), then an empty
     # field closing the section.
     args = ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z"]
@@ -624,43 +591,95 @@ def merge_tree(root, ours, theirs, *, base=None) -> dict:
         args.append(f"--merge-base={base}")
     r = git(root, *args, ours, theirs, timeout=REPLAY_TIMEOUT_S)
     if r is None or r[0] not in (0, 1):
-        return {"supported": False, "clean": False, "tree": None, "files": []}
+        return None
     fields = r[1].decode("utf-8", "replace").split("\0")
     tree = fields[0].strip() if fields else None
+    if not tree:
+        return None
     files = []
     if r[0] == 1:
         for f in fields[1:]:
             if not f:
                 break
             files.append(f)
-    return {"supported": bool(tree), "clean": r[0] == 0, "tree": tree,
+    return {"supported": True, "clean": r[0] == 0, "tree": tree,
             "files": list(dict.fromkeys(files))}
 
 
-def tree_of(root, commit) -> str | None:
-    if not commit:
-        return None
-    r = git(root, "rev-parse", "--verify", "--quiet", f"{commit}^{{tree}}")
-    return out(r) or None if ok(r) else None
-
-
-def has_merges(root, upstream, head) -> bool:
-    """Whether `upstream..head` holds a merge commit — a rebase would
-    flatten it and drop whatever the merge itself carried. Unknown reads as
-    yes (the merge strategy never loses one)."""
-    r = git(root, "rev-list", "--merges", "--count", f"{upstream}..{head}")
+def add_worktree(root, at, name=None) -> str | None:
+    """A scratch worktree of `root` checked out (detached) at `at`, under
+    `work_dir()`; its path, or None. The caller `cleanup`s it."""
+    path = os.path.join(work_dir(), name or uuid.uuid4().hex)
+    if os.path.exists(path):
+        cleanup(path)
     try:
-        return int(out(r)) > 0 if ok(r) else True
-    except ValueError:
-        return True
+        os.makedirs(work_dir(), exist_ok=True)
+    except OSError:
+        return None
+    git(root, "worktree", "prune")
+    added = git(root, "worktree", "add", "--detach", "-q", path, at, timeout=REPLAY_TIMEOUT_S)
+    if not ok(added):
+        logger.warning("contrib: worktree add failed in %s: %s", root, gu._text(added))
+        cleanup(path)
+        return None
+    return path
+
+
+def unmerged(worktree) -> list[str]:
+    return list(dict.fromkeys(names(git(worktree, "diff", "--name-only", "--diff-filter=U",
+                                        "-z"))))
+
+
+def _merge_tree_scratch(root, ours, theirs, base):
+    """The same three-way merge in a scratch worktree, for an old git:
+    `merge-recursive <base> -- HEAD <theirs>` (a plain `merge --no-commit`
+    when no base is named), every path added, `write-tree` — markers and
+    all, like merge-tree's tree."""
+    wt = add_worktree(root, ours)
+    res = {"supported": False, "clean": False, "tree": None, "files": []}
+    if not wt:
+        return res
+    try:
+        if base:
+            r = git(wt, *COMMIT_CONFIG, "merge-recursive", base, "--", "HEAD", theirs,
+                    timeout=REPLAY_TIMEOUT_S)
+        else:
+            r = git(wt, *COMMIT_CONFIG, *identity_args(root), "merge", "--no-commit",
+                    "--no-ff", "-q", theirs, timeout=REPLAY_TIMEOUT_S)
+        if r is None:
+            return res
+        files = unmerged(wt)
+        if not ok(r) and not files:
+            logger.warning("contrib: scratch merge failed in %s: %s", root, gu._text(r))
+            return res
+        if not ok(git(wt, "add", "-A", timeout=REPLAY_TIMEOUT_S)):
+            return res
+        tree = out(git(wt, "write-tree"))
+        if tree:
+            res.update(supported=True, clean=not files, tree=tree, files=files)
+        return res
+    finally:
+        cleanup(wt)
+
+
+def merge_tree(root, ours, theirs, *, base=None) -> dict:
+    """`{"supported", "clean", "tree", "files"}` for a three-way merge of
+    `ours` and `theirs` (on `base`, else their merge-base). `supported`
+    False only when neither way could answer."""
+    if not _FORCE_SCRATCH_MERGE:
+        mem = _merge_tree_mem(root, ours, theirs, base)
+        if mem is not None:
+            return mem
+    return _merge_tree_scratch(root, ours, theirs, base)
 
 
 def merge_into(root, *, head, onto, message) -> dict:
-    """The MERGE strategy: a merge commit with parents `head` and `onto`,
-    built in memory. `{"ok", "tip", "conflict", "files", "supported"}`."""
+    """A merge commit with parents `head` and `onto` (§16.3 row 11), built
+    without touching the folder, as Bob (`identity_args`).
+    `{"ok", "tip", "conflict", "files", "supported"}`."""
     mt = merge_tree(root, head, onto)
     res = {"ok": False, "tip": None, "conflict": False, "files": mt["files"],
-           "supported": mt["supported"], "mark_tip": None}
+           "supported": mt["supported"]}
     if not mt["supported"]:
         return res
     if not mt["clean"]:
@@ -674,16 +693,19 @@ def merge_into(root, *, head, onto, message) -> dict:
 
 
 def pick(root, *, onto, commits) -> dict:
-    """Re-apply exactly `commits` (oldest first) onto `onto`, in memory — a
-    rebase of a hand-picked list (A4's return drops the commits the author
-    already took, by patch-id). Each keeps its author and message; one that
-    becomes empty is dropped. `{"ok", "tip", "conflict", "files",
-    "supported"}`."""
+    """Re-apply exactly `commits` (oldest first) onto `onto` — A4's return
+    (§16.3 row 7) keeps only the edits made after sending. Each is the
+    three-way merge a cherry-pick does (its parent as the base), in memory
+    or in scratch (`merge_tree`), never in the real folder; each keeps its
+    author, date and message; one whose change is already there comes out
+    empty and is dropped. `{"ok", "tip", "conflict", "files", "supported",
+    "kept"}` — `kept` the number of commits that survived."""
     cur = rev(root, onto)
     res = {"ok": False, "tip": None, "conflict": False, "files": [], "supported": True,
-           "mark_tip": None}
+           "kept": 0}
     if not cur:
         return res
+    kept = 0
     for c in commits:
         parent = rev(root, f"{c}^")
         mt = merge_tree(root, cur, c, base=parent)
@@ -708,147 +730,16 @@ def pick(root, *, onto, commits) -> dict:
         cur = out(made) if ok(made) else None
         if not cur:
             return res
-    res.update(ok=True, tip=cur)
+        kept += 1
+    res.update(ok=True, tip=cur, kept=kept)
     return res
 
 
-def expected_tree(root, *, upstream, onto, head) -> dict:
-    """What replaying `upstream..head` onto `onto` MUST produce: the
-    three-way merge of `onto` and `head` on `upstream` (`merge_tree`)."""
-    return merge_tree(root, onto, head, base=upstream)
-
-
-# ---------------------------------------------------------------------- replay
-
-
-def _wt_gitdir(worktree) -> str | None:
-    r = git(worktree, "rev-parse", "--absolute-git-dir")
-    return out(r) if ok(r) else None
-
-
-def _rebase_in_flight(worktree) -> bool:
-    d = _wt_gitdir(worktree)
-    return bool(d) and any(os.path.isdir(os.path.join(d, s))
-                           for s in ("rebase-merge", "rebase-apply"))
-
-
-def _unmerged(worktree) -> list[str]:
-    r = git(worktree, "diff", "--name-only", "--diff-filter=U", "-z")
-    if not ok(r):
-        return []
-    return [p for p in r[1].decode("utf-8", "replace").split("\0") if p]
-
-
-def _rebase(worktree, root, onto, upstream, target):
-    return git(worktree, *_REPLAY_CONFIG, *identity_args(root), "rebase",
-               "--no-autosquash", "--empty=drop", "--onto", onto, upstream, target,
-               timeout=REPLAY_TIMEOUT_S)
-
-
-def replay(root, *, onto, upstream, branch, job_id=None, mark=None) -> dict:
-    """Rebase the commits `upstream..<branch>` onto `onto` inside a scratch
-    worktree (§6.2). `branch` is a branch name or a commit.
-
-    Answers `{"ok", "tip", "conflict", "worktree", "files", "commits",
-    "mark_tip"}`: `tip` is the replayed tip (on ok); `commits` the replayed
-    commits oldest first; `worktree` is kept (rebase stopped in it) ONLY when
-    a conflict happened and `job_id` was given — the merge job resolves and
-    continues there and calls `cleanup` itself. Every other outcome cleans
-    the worktree up before returning.
-
-    `mark` (a commit inside `upstream..<branch>`, engine-only) splits the
-    replay in two — `upstream..mark`, then `mark..<branch>` on top — so the
-    caller learns exactly where `mark` landed (`mark_tip`): how the engine
-    carries a proposal's `proposed_head` across an auto-integrate. Ignored
-    with `job_id` (a job resolving a stopped first half would never replay
-    the second) or when it is not between the two."""
-    result = {"ok": False, "tip": None, "conflict": False, "worktree": None,
-              "files": [], "commits": [], "mark_tip": None}
-    target = rev(root, branch)
-    onto_sha, upstream_sha = rev(root, onto), rev(root, upstream)
-    if not (target and onto_sha and upstream_sha):
-        return result
-    # `mark` at either end needs no split: it lands on `onto` (nothing of
-    # it was replayed) or on the replayed tip.
-    mark = rev(root, mark) if (mark and job_id is None) else None
-    mark_end = None
-    if mark in (upstream_sha, target):
-        mark_end, mark = mark, None
-    elif mark and not (is_ancestor(root, upstream_sha, mark) and is_ancestor(root, mark, target)):
-        mark = None
-
-    path = os.path.join(work_dir(), job_id or uuid.uuid4().hex)
-    if os.path.exists(path):
-        cleanup(path)
-    try:
-        os.makedirs(work_dir(), exist_ok=True)
-    except OSError:
-        return result
-    git(root, "worktree", "prune")
-    added = git(root, "worktree", "add", "--detach", path, target, timeout=REPLAY_TIMEOUT_S)
-    if not ok(added):
-        logger.warning("contrib replay: worktree add failed in %s: %s", root, gu._text(added))
-        cleanup(path)
-        return result
-
-    keep = False
-    try:
-        stages = [(onto_sha, upstream_sha, mark), (None, mark, target)] if mark \
-            else [(onto_sha, upstream_sha, target)]
-        mark_tip = None
-        for stage_onto, stage_up, stage_target in stages:
-            stage_onto = stage_onto or mark_tip
-            r = _rebase(path, root, stage_onto, stage_up, stage_target)
-            if not ok(r):
-                files = _unmerged(path)
-                if _rebase_in_flight(path) and files:
-                    result.update(conflict=True, files=files)
-                    if job_id is not None:
-                        keep = True
-                        result["worktree"] = path
-                        return result
-                else:
-                    logger.warning("contrib replay: rebase failed in %s: %s", root, gu._text(r))
-                git(path, "rebase", "--abort")
-                return result
-            if stage_target == mark:
-                mark_tip = rev(path, "HEAD")
-        tip = rev(path, "HEAD")
-        if not tip or _rebase_in_flight(path):
-            return result
-        if mark_end is not None:
-            mark_tip = onto_sha if mark_end == upstream_sha else tip
-        if job_id is None and _replay_unsound(root, upstream_sha, onto_sha, target, tip, result):
-            return result
-        listing = git(path, "rev-list", "--reverse", f"{onto_sha}..{tip}")
-        result.update(ok=True, tip=tip, mark_tip=mark_tip,
-                      commits=out(listing).split() if ok(listing) else [])
-        return result
-    finally:
-        if not keep:
-            cleanup(path)
-
-
-def _replay_unsound(root, upstream, onto, target, tip, result) -> bool:
-    """A clean rebase is held to `expected_tree` before anyone may land it:
-    a rebase silently flattens a merge commit in the range (and whatever
-    hand resolution it carried), so a tip whose tree is not the three-way
-    merge of the same two sides is NOT "your changes kept" — it is a
-    decision for the page (`conflict` + `mismatch`). A git too old for
-    `merge-tree --merge-base` can only trust a range with no merges."""
-    exp = expected_tree(root, upstream=upstream, onto=onto, head=target)
-    if exp["supported"]:
-        bad = not exp["clean"] or exp["tree"] != tree_of(root, tip)
-    else:
-        bad = has_merges(root, upstream, target)
-    if bad:
-        logger.info("contrib replay in %s: result differs from the three-way merge", root)
-        result.update(conflict=True, mismatch=True, files=exp["files"])
-    return bad
+# ------------------------------------------------------------ scratch trees
 
 
 def cleanup(worktree) -> None:
-    """Remove a scratch worktree (rebase in flight or not) and prune its
+    """Remove a scratch worktree (a merge in flight or not) and prune its
     registration. Never raises."""
     if not worktree:
         return
@@ -868,15 +759,14 @@ def cleanup(worktree) -> None:
 
 def sweep(ttl_s: float = 48 * 3600) -> int:
     """Drop scratch worktrees older than `ttl_s` (a crash's leftovers; a
-    merge job keeps its own for 24 h at most). Their repos' registrations
-    are pruned by the next `replay` there. Answers how many went."""
+    merge job keeps its own for 24 h at most). Answers how many went."""
     gone = 0
     try:
-        names = os.listdir(work_dir())
+        listing = os.listdir(work_dir())
     except OSError:
         return 0
     cutoff = time.time() - ttl_s
-    for name in names:
+    for name in listing:
         p = os.path.join(work_dir(), name)
         try:
             if os.path.isdir(p) and not os.path.islink(p) and os.path.getmtime(p) < cutoff:
@@ -890,42 +780,39 @@ def sweep(ttl_s: float = 48 * 3600) -> int:
 # ------------------------------------------------------------------------ land
 
 
-def land(root, *, branch, old_tip, new_tip, why, app_dir=None) -> bool:
-    """Move `branch` (checked out in `root`) from `old_tip` to `new_tip`
-    (§6.2): backup, then `git reset --keep` under the slot. False — and
-    nothing moved — when the slot is busy, HEAD is not on `branch`, the
-    branch moved meanwhile, an operation is in flight, or an uncommitted
-    edit overlaps the move. Advances `refs/fused/base` when `new_tip`
-    contains the follow tip, and re-protects `.fused/` afterwards."""
+def land(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str | None]:
+    """Move `branch` (checked out in `root`) from `old_tip` to `new_tip`:
+    backup when the move can drop something, then `git reset --keep` under
+    the slot. `(None, backup_ref|None)` when it moved; else `(why, None)`
+    and nothing moved — `slot-busy` or `land_locked`'s reasons."""
     with slot() as held:
         if not held:
-            return False
-        return land_locked(root, branch=branch, old_tip=old_tip, new_tip=new_tip,
-                           why=why, app_dir=app_dir) is None
+            return "slot-busy", None
+        return land_locked(root, branch=branch, old_tip=old_tip, new_tip=new_tip, why=why)
 
 
-def land_locked(root, *, branch, old_tip, new_tip, why, app_dir=None) -> str | None:
-    """`land`'s body; the caller holds the slot. None when the branch moved
-    to `new_tip`, else why nothing moved: `moved` (the branch is not at
-    `old_tip`, or a commit raced in), `in-progress` (a merge/rebase/… in
-    flight) or `reset-refused` (the backup or `reset --keep` failed — an
-    uncommitted edit overlapping the move, typically).
+def land_locked(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str | None]:
+    """`land`'s body; the caller holds the slot. `(None, backup)` when the
+    branch moved to `new_tip` (`backup` None for a move that keeps the old
+    tip in history and overwrites no local file), else `(reason, None)`:
+    `moved` (the branch is not at `old_tip`, or a commit raced in),
+    `in-progress` (an operation in flight) or `reset-refused` (the backup or
+    `reset --keep` failed — an uncommitted edit overlapping the move).
 
     THE RACE (review r02). Nothing that commits into an app folder — a Claude
     turn's own `git commit`, app_git's sweep — holds the slot, so a commit
-    can land between the "branch still at old_tip" check below and the
-    `reset --keep`. reset then moves from THAT commit, reverting its files,
-    and only the reflog would remember it. So after the reset, `ORIG_HEAD`
-    (the tip reset actually moved from) is compared with `old_tip`: a
-    mismatch pins it under `refs/fused/backup/` and resets straight back to
-    it — the exact state the racing writer left — and the land defers."""
+    can land between the "branch still at old_tip" check and the `reset
+    --keep`. reset then moves from THAT commit, and only the reflog would
+    remember it. So after the reset `ORIG_HEAD` is compared with `old_tip`:
+    a mismatch pins it under `refs/fused/backup/` and resets straight back
+    to it, and the land defers."""
     if gu._current_branch(root) != branch or rev(root, f"refs/heads/{branch}") != old_tip:
-        return "moved"
+        return "moved", None
     if gu._operation_in_flight(root) is not None:
-        return "in-progress"
+        return "in-progress", None
     new_tip = rev(root, new_tip)
     if not new_tip:
-        return "moved"
+        return "moved", None
     refs = []
     if new_tip != old_tip:
         clobber = clobber_paths(root, old_tip, new_tip)
@@ -933,31 +820,28 @@ def land_locked(root, *, branch, old_tip, new_tip, why, app_dir=None) -> str | N
             refs = backup_locked(root, old_tip, why=why, also=clobber)
             if not refs or (clobber and not any(r.endswith("-wip") for r in refs)):
                 _unbackup_locked(root, refs)
-                return "reset-refused"
+                return "reset-refused", None
         # The S bit is what makes a set-aside `.fused/` file invisible to
         # `reset --keep`; without it the file reads as a local deletion and
-        # the move refuses. Callers outside `engine.sync` (a merge job's
-        # accept, the return) have not protected yet.
+        # the move refuses.
         _protect_after_move(root)
         with fused_aside(root, new_tip):
             moved = git(root, "reset", "--keep", new_tip, timeout=REPLAY_TIMEOUT_S)
         if not ok(moved):
-            # Nothing moved: the backup pins a tip that is still the branch.
             _unbackup_locked(root, refs)
             logger.info("contrib land deferred in %s: %s", root, gu._text(moved))
-            return "reset-refused"
-        if not _undo_race_locked(root, old_tip, new_tip, refs, app_dir):
-            return "moved"
-    name_backups(root, refs, why, app_dir)
-    advance_base_locked(root, new_tip)
+            return "reset-refused", None
+        if not _undo_race_locked(root, old_tip, refs):
+            return "moved", None
     _protect_after_move(root)
-    return None
+    return None, (refs[0] if refs else None)
 
 
-def _undo_race_locked(root, old_tip, new_tip, refs, app_dir, *, hard=False) -> bool:
-    """True when the reset to `new_tip` really moved from `old_tip`. Else a
-    commit raced in (land_locked's docstring): pin it, put the branch back
-    on it, take back the planned backups, answer False (defer)."""
+def _undo_race_locked(root, old_tip, refs, *, hard=False) -> bool:
+    """True when the reset really moved from `old_tip`. Else a commit raced
+    in (land_locked's docstring): pin it, put the branch back on it, take
+    back the planned backups (a hard reset keeps them: their `-wip` is the
+    only copy of the edits it dropped), answer False (defer)."""
     moved_from = rev(root, "ORIG_HEAD")
     if moved_from == old_tip:
         return True
@@ -965,67 +849,51 @@ def _undo_race_locked(root, old_tip, new_tip, refs, app_dir, *, hard=False) -> b
                    root, moved_from)
     if moved_from:
         pin = _new_backup_ref(root, "race")
-        if ok(git(root, "update-ref", pin, moved_from)):
-            name_backups(root, [pin], "race", app_dir)
+        git(root, "update-ref", pin, moved_from)
         with fused_aside(root, moved_from):
             back = git(root, "reset", "--keep", moved_from, timeout=REPLAY_TIMEOUT_S)
         if not ok(back):
             logger.error("contrib: could not put %s back on %s (pinned at %s): %s",
                          root, moved_from, pin, gu._text(back))
-            name_backups(root, refs, "race", app_dir)  # keep everything
             return False
-    if hard:
-        # A hard reset already dropped the uncommitted edits: their only
-        # copy is the planned backup's -wip, which therefore stays.
-        name_backups(root, refs, "race", app_dir)
-    else:
+    if not hard:
         _unbackup_locked(root, refs)
     return False
 
 
-def advance_base_locked(root, tip) -> None:
-    """Point `refs/fused/base` at the follow tip when `tip` contains it."""
-    follow = rev(root, FOLLOW_REF)
-    if follow and is_ancestor(root, follow, tip) and rev(root, BASE_REF) != follow:
-        git(root, "update-ref", BASE_REF, follow)
-
-
-def reset_hard_locked(root, *, branch, target, why, app_dir=None) -> bool:
-    """Discard's move (§6.4): back up HEAD and every uncommitted edit
-    (untracked files included), then `reset --hard target` and remove the
-    untracked files the backup holds — "your edits" are exactly what
-    `edits()` names, so a Discard leaves nothing of Bob's behind and nothing
-    unsaved. Ignored files (`.venv`, caches) and `.fused/` are never touched.
-    Refuses — nothing moved — when there are edits the backup failed to
-    capture. The one place a real folder is hard-reset."""
+def reset_hard_locked(root, *, branch, target, why) -> tuple[bool, str | None]:
+    """Use-theirs / Discard / Restore's move: back up HEAD and every
+    uncommitted edit (untracked files included), then `reset --hard target`
+    and remove the untracked files the backup holds — "your edits" are
+    exactly what `edits()` names, so nothing of Bob's is left behind and
+    nothing unsaved. Ignored files (`.venv`, caches) and `.fused/` are never
+    touched. Refuses — nothing moved — when there are edits the backup
+    failed to capture. `(ok, backup_ref)`; the caller holds the slot."""
     head = rev(root, "HEAD")
     if gu._current_branch(root) != branch or not head:
-        return False
+        return False, None
     if gu._operation_in_flight(root) is not None:
-        return False
+        return False, None
     untracked = {p for code, p in edits(root) if code == "??"}
     clobber = clobber_paths(root, head, target)
     refs = backup_locked(root, head, why=why, also=clobber)
     if not refs or ((dirty(root) or clobber) and not any(r.endswith("-wip") for r in refs)):
         _unbackup_locked(root, refs)
-        return False
-    _protect_after_move(root)  # see land_locked
+        return False, None
+    _protect_after_move(root)
     with fused_aside(root, target):
         moved = git(root, "reset", "--hard", target, timeout=REPLAY_TIMEOUT_S)
     if not ok(moved):
         logger.warning("contrib: reset --hard failed in %s: %s", root, gu._text(moved))
-        name_backups(root, refs, why, app_dir)  # a failed hard reset may be partial
-        return False
-    if not _undo_race_locked(root, head, target, refs, app_dir, hard=True):
-        return False
-    name_backups(root, refs, why, app_dir)
+        return False, refs[0]  # a failed hard reset may be partial: the backup stays
+    if not _undo_race_locked(root, head, refs, hard=True):
+        return False, refs[0]
     # Only paths STILL untracked: one the target now tracks is the author's.
     still = {p for code, p in edits(root) if code == "??"}
     for rel in sorted(untracked & still):
         _remove_untracked(root, rel)
-    advance_base_locked(root, target)
     _protect_after_move(root)
-    return True
+    return True, refs[0]
 
 
 def _remove_untracked(root, rel) -> None:
@@ -1040,4 +908,4 @@ def _remove_untracked(root, rel) -> None:
             os.rmdir(parent)
             parent = os.path.dirname(parent)
     except OSError:
-        logger.warning("contrib: could not remove %s after discard", path, exc_info=True)
+        logger.warning("contrib: could not remove %s", path, exc_info=True)

@@ -107,6 +107,9 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #: The marker every proposal body sent from fused ends with (contract §8), so
 #: a proposal whose local record was lost can still be recognised on GitHub.
 PROPOSAL_MARKER = "<!-- fused:proposal v1 -->"
+#: The marker the author's "Ask <sender> to update" comment carries (§16.6),
+#: so the sender's refresh can tell that request from any other comment.
+ASK_UPDATE_MARKER = "<!-- fused:ask-update v1 -->"
 
 
 class GitHubError(PlainError):
@@ -625,8 +628,10 @@ def open_pr(full: str, *, title: str, body: str, head: str, base: str) -> dict:
 def get_pr(full: str, number: int) -> dict:
     """`{number, url, state, merged, merge_commit_sha, head_sha, head_repo,
     head_branch, base_branch, user, title, body, created_at, closed_at,
-    maintainer_can_modify}`. `state` is "open" | "closed"; `merged` says which
-    kind of closed. `merge_commit_sha` is None unless merged (GitHub fills it
+    maintainer_can_modify, mergeable}`. `state` is "open" | "closed"; `merged`
+    says which kind of closed. `mergeable` is GitHub's own answer to "does it
+    still fit the base": True | False | None (not computed yet — GitHub starts
+    computing on this very read; listings never carry it). `merge_commit_sha` is None unless merged (GitHub fills it
     with a throwaway test-merge commit while a PR is open — never trust that)."""
     return _backend().get_pull(_full(full), int(number))
 
@@ -667,6 +672,15 @@ def close_pr(full: str, number: int, *, comment: str | None = None) -> None:
 
 def comment(full: str, number: int, body: str) -> None:
     _backend().add_comment(_full(full), int(number), body)
+
+
+def delete_branch(full: str, branch: str) -> bool:
+    """Delete `branch` of `full` on GitHub (Withdraw tidying Bob's copy).
+    True when it is gone — already gone counts. Raises `GitHubError` for
+    anything else; callers treat it as best-effort."""
+    if not _BRANCH_RE.match(branch or ""):
+        return False
+    return _backend().delete_branch(_full(full), branch)
 
 
 def create_repo(name: str, *, description: str, private: bool = False) -> str:
@@ -772,6 +786,7 @@ def _pr_out(raw: dict) -> dict:
         "created_at": raw.get("created_at"),
         "closed_at": raw.get("closed_at"),
         "maintainer_can_modify": bool(raw.get("maintainer_can_modify")),
+        "mergeable": raw.get("mergeable") if isinstance(raw.get("mergeable"), bool) else None,
     }
 
 
@@ -906,6 +921,15 @@ class _Real:
 
     def add_comment(self, full: str, number: int, body: str) -> None:
         self._api("POST", f"repos/{full}/issues/{number}/comments", {"body": body})
+
+    def delete_branch(self, full: str, branch: str) -> bool:
+        try:
+            self._api("DELETE", f"repos/{full}/git/refs/heads/{branch}")
+        except GitHubError as exc:
+            if exc.reason == "not-found" or exc.status == 422:
+                return True
+            raise
+        return True
 
     def create_repo(self, name: str, *, description: str, private: bool) -> str:
         data = self._api("POST", "user/repos", {
@@ -1142,6 +1166,30 @@ class FakeGitHub:
             if body is not None:
                 pr["body"] = body
 
+    def update_branch(self, full: str, number: int, *, as_login: str | None = None) -> str:
+        """GitHub's "Update branch" button on an open pull request: a merge
+        of the base branch INTO the head branch, on the head repo (maintainer
+        edits). Returns the new head."""
+        with self._txn() as st:
+            pr = dict(self._pr_row(st, full, number))
+            row = self._repo_row_st(st, full)
+        who = as_login or row["owner"]
+        self.add_user(who)
+        head_bare = self.bare_path(pr["head_repo"])
+        self._g(head_bare, "fetch", "-q", self.bare_path(full),
+                f"+refs/heads/{pr['base']}:refs/fake/base", check=False)
+        head = self.tip(pr["head_repo"], pr["head_branch"])
+        base_tip = self._g(head_bare, "rev-parse", "refs/fake/base").stdout.strip()
+        tree = self._merge_tree(head_bare, head, base_tip)
+        new = self._commit_tree(head_bare, tree, [head, base_tip],
+                                f"Merge branch '{pr['base']}' into {pr['head_branch']}\n",
+                                author=(who, self.email_of(who)),
+                                committer=("GitHub", "noreply@github.com"))
+        self._g(head_bare, "update-ref", f"refs/heads/{pr['head_branch']}", new, head)
+        self._g(head_bare, "update-ref", "-d", "refs/fake/base", check=False)
+        self.after_push(pr["head_repo"], pr["head_branch"])
+        return new
+
     def close(self, full: str, number: int) -> None:
         with self._txn() as st:
             pr = self._pr_row(st, full, number)
@@ -1332,7 +1380,21 @@ class FakeGitHub:
             self._call(st, "get_pull")
             self._visible(st, full)
             pr = dict(self._pr_row(st, full, number))
-        return self._pr_public(full, pr)
+        out = self._pr_public(full, pr)
+        out["mergeable"] = self._mergeable(full, pr) if pr["state"] == "open" else None
+        return out
+
+    def _mergeable(self, full: str, pr: dict) -> bool | None:
+        """GitHub's `mergeable`: does the head still merge cleanly into the
+        base branch's tip."""
+        bare = self.bare_path(full)
+        base_tip = self.tip(full, pr["base"])
+        head = self._g(bare, "rev-parse", "-q", "--verify",
+                       f"refs/pull/{pr['number']}/head", check=False).stdout.strip()
+        if not base_tip or not head:
+            return None
+        res = self._g(bare, "merge-tree", "--write-tree", base_tip, head, check=False)
+        return res.returncode == 0
 
     def open_pull(self, full: str, *, title: str, body: str, head: str, base: str) -> dict:
         head_owner, head_branch = head.split(":", 1)
@@ -1421,6 +1483,14 @@ class FakeGitHub:
             self._visible(st, full)
             self._pr_row(st, full, number)["comments"].append(
                 {"author": me, "body": body, "at": _iso_now()})
+
+    def delete_branch(self, full: str, branch: str) -> bool:
+        with self._txn() as st:
+            self._call(st, "delete_branch")
+            self._me(st)
+            self._visible(st, full)
+        self._g(self.bare_path(full), "update-ref", "-d", f"refs/heads/{branch}", check=False)
+        return True
 
     def create_repo(self, name: str, *, description: str, private: bool) -> str:
         with self._txn() as st:

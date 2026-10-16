@@ -24,8 +24,21 @@ ACCEPT requires a review of the proposal's CURRENT head, merges with that
 head as GitHub's `sha` guard (GitHub refuses if the contributor sent more
 since), using the first method the repo allows (merge > squash > rebase),
 then syncs the author's own copy right away through `git_upstream.sync_repo`
-(the engine owns it: her unsent edits are replayed on top and sent), and
-throws away the Try copy.
+(her own-copy sync, §16.7: her unsent edits go on top and are published),
+and throws away the Try copy.
+
+NO LONGER FITS (§16.6). Each item carries `fits` — GitHub's own `mergeable`
+for the proposal against her latest (None while GitHub has not worked it
+out), read per proposal with the listing and cached alongside it. Two ways
+out besides Decline: **Ask <sender> to update** (`ask_update`: a comment
+carrying `gh.ASK_UPDATE_MARKER`, which the sender's next refresh shows with
+an Update button) and **Merge with Claude** (`merge_start`): her latest is
+merged into the proposal in a scratch worktree of HER repo (merge_job
+purpose "proposal"), and keeping the result (`merge_accepted`) pushes that
+merge onto the proposal's own branch through maintainer edits — never
+force, never into her folder — after which the new head is reviewed again
+like any other change to a proposal. Her copy only takes the work when she
+accepts the proposal.
 """
 
 from __future__ import annotations
@@ -59,6 +72,8 @@ _gens: dict = {}           # repo -> generation, bumped by `invalidate`
 _stale: set = set()        # repos whose cached list predates the last invalidate
 _waiting: set = set()      # (app_dir, number) reviews queued behind the slots
 _asked: dict = {}          # (app_dir, number) -> head the last review job read
+_fits: dict = {}           # (repo, number) -> (read_at, head, mergeable)
+_merges: dict = {}         # merge job id -> the proposal it combines (merge_start)
 _review_slots = threading.BoundedSemaphore(REVIEW_SLOTS)
 
 
@@ -170,7 +185,34 @@ def list(app_dir: str, *, review: bool = True, force: bool = False) -> builtins.
     except Exception:  # noqa: BLE001
         logger.exception("inbox: try-copy sweep failed for %s", app_dir)
     _prune_reviews(repo, open_numbers)
+    for pr in prs:
+        if isinstance(pr.get("number"), int):
+            _fits_for(repo, pr["number"], pr.get("head_sha"), network=True)
     return _items(app_dir, repo, prs, start_reviews=review)
+
+
+def _fits_for(repo: str, number: int, head, *, network: bool) -> bool | None:
+    """GitHub's `mergeable` for proposal `number` at `head`, cached
+    LIST_TTL_S (it changes when either side moves). Without `network`, the
+    cached answer for this head only. None = not known (yet)."""
+    key = (repo, int(number))
+    with _lock:
+        hit = _fits.get(key)
+    if hit and hit[1] == head and (not network or time.time() - hit[0] < LIST_TTL_S):
+        return hit[2]
+    if not network:
+        return None
+    try:
+        pr = _mod("gh").get_pr(repo, number)
+    except Exception as exc:  # noqa: BLE001 — unknown, not "doesn't fit"
+        if not _gh_error(exc):
+            logger.exception("inbox: reading proposal %s of %s failed", number, repo)
+        return hit[2] if hit and hit[1] == head else None
+    value = pr.get("mergeable") if isinstance(pr.get("mergeable"), bool) else None
+    if value is not None:   # GitHub computes it lazily: ask again next time
+        with _lock:
+            _fits[key] = (time.time(), pr.get("head_sha"), value)
+    return value if pr.get("head_sha") == head else None
 
 
 def cached(app_dir: str, *, start_reviews: bool = False) -> builtins.list | None:
@@ -222,6 +264,7 @@ def _items(app_dir: str, repo: str, prs, *, start_reviews: bool) -> builtins.lis
         out.append({
             "number": number, "url": pr.get("url") or "", "title": pr.get("title") or "",
             "author": pr.get("user") or "", "from_fused": from_fused,
+            "fits": _fits_for(repo, number, head, network=False),
             "summary": summary, "summary_source": source, "description": description,
             "review": review_obj, "review_status": status,
             "try": ({"status": try_state["status"], "path": try_state["path"],
@@ -743,7 +786,7 @@ def accept(app_dir: str, number: int, *, confirm: bool = False) -> dict:
                 "message": "GitHub didn't merge this proposal. Try again."}
     return _after_accept(app_dir, number,
                          f"Merged. {author} will see it, and everyone who follows "
-                         "this app gets it next time they open it.")
+                         "this app gets it next time they open it.", author)
 
 
 def _why_unreviewed(app_dir: str, repo: str, number: int, head: str,
@@ -773,7 +816,16 @@ def _merged_now(repo: str, number: int) -> bool:
         return False
 
 
-def _after_accept(app_dir: str, number: int, message: str) -> dict:
+def _activity(app_dir: str, kind: str, text: str) -> None:
+    try:
+        _mod("store").add_activity(app_dir, kind, text)
+    except Exception:  # noqa: BLE001 — the line is decoration of a move that happened
+        logger.exception("inbox: activity line failed for %s", app_dir)
+
+
+def _after_accept(app_dir: str, number: int, message: str, author: str | None = None) -> dict:
+    if author:
+        _activity(app_dir, "inbox-accepted", f"Accepted {author}'s proposal")
     _cleanup(app_dir, number)
     synced = False
     try:
@@ -800,6 +852,153 @@ def decline(app_dir: str, number: int, note: str = "") -> dict:
                 "message": _plain_gh(exc)}
     _cleanup(app_dir, number)
     return {"ok": True, "message": "Declined."}
+
+
+# ------------------------------------------------- no longer fits (§16.6)
+
+
+def _open_pr(app_dir: str, number: int) -> tuple[str | None, dict | None, dict | None]:
+    """`(repo, pr, refusal)` for an open proposal on the author's app."""
+    repo, _ = _repo_of(app_dir)
+    if repo is None:
+        return None, None, {"ok": False, "reason": "not-own",
+                            "message": "This app has no proposals."}
+    try:
+        pr = _mod("gh").get_pr(repo, number)
+    except Exception as exc:  # noqa: BLE001
+        if not _gh_error(exc):
+            raise
+        return repo, None, {"ok": False, "reason": getattr(exc, "reason", "failed"),
+                            "message": _plain_gh(exc)}
+    if pr.get("state") != "open" or pr.get("merged"):
+        return repo, None, {"ok": False, "reason": "closed",
+                            "message": "This proposal is no longer open."}
+    return repo, pr, None
+
+
+ASK_DEFAULT = ("Could you update your proposal? It no longer fits with my latest "
+               "version.")
+
+
+def ask_update(app_dir: str, number: int, note: str = "") -> dict:
+    """Ask the sender to update proposal `number`: one comment carrying
+    `gh.ASK_UPDATE_MARKER` (their refresh offers Update)."""
+    app_dir = _key(app_dir)
+    repo, pr, refusal = _open_pr(app_dir, number)
+    if refusal:
+        return refusal
+    gh = _mod("gh")
+    author = pr.get("user") or "the sender"
+    text = " ".join((note or "").split())[:2000] or ASK_DEFAULT
+    try:
+        gh.comment(repo, number, f"{text}\n\n{gh.ASK_UPDATE_MARKER}")
+    except Exception as exc:  # noqa: BLE001
+        if not _gh_error(exc):
+            raise
+        return {"ok": False, "reason": getattr(exc, "reason", "failed"),
+                "message": _plain_gh(exc)}
+    _activity(app_dir, "inbox-asked", f"Asked {author} to update their proposal")
+    return {"ok": True, "message": f"Asked {author} to update it."}
+
+
+def merge_start(app_dir: str, number: int) -> dict:
+    """Merge with Claude for a proposal that no longer fits: her latest on
+    GitHub merged into the proposal's head, in a scratch worktree of her
+    repo. `{ok, job}` (a merge job, polled like any Merge with Claude) or
+    `{ok, message}` when it already fits."""
+    app_dir = _key(app_dir)
+    repo, pr, refusal = _open_pr(app_dir, number)
+    if refusal:
+        return refusal
+    author = pr.get("user") or "the sender"
+    if not pr.get("head_repo") or not pr.get("maintainer_can_modify"):
+        return {"ok": False, "reason": "forbidden",
+                "message": f"{author} didn't allow changes to this proposal. "
+                           f"Ask {author} to update it instead."}
+    head = pr.get("head_sha") or ""
+    try:
+        fetched = _fetch_pr(app_dir, repo, number, pr.get("base_branch")
+                            or _repo_of(app_dir)[1].get("branch") or "main")
+    except PlainError as exc:
+        return {"ok": False, "reason": "offline", "message": exc.message}
+    if fetched != head:
+        return {"ok": False, "reason": "moved",
+                "message": f"{author} just changed this proposal. Try again."}
+    gu = _gu()
+    n = int(number)
+    base = gu._out(gu._run(app_dir, "rev-parse", "--verify", "-q",
+                           f"refs/fused/pr/{n}-base^{{commit}}"))
+    if not base:
+        return {"ok": False, "reason": "offline",
+                "message": "Couldn't download your latest version from GitHub. Try again."}
+    if _mod("replay").is_ancestor(app_dir, base, head):
+        return {"ok": True, "message": "This proposal already has your latest version."}
+    job = _mod("merge_job").start(app_dir, purpose="proposal", ours=head, theirs=base,
+                                  land=False)
+    with _lock:
+        _merges[job] = {"repo": repo, "number": n, "author": author, "head": head,
+                        "head_repo": pr["head_repo"], "head_branch": pr["head_branch"]}
+    return {"ok": True, "job": job}
+
+
+def merge_accept(app_dir: str, job_id: str) -> dict:
+    """Keep the combination `merge_start` made (the page's Keep): the merge
+    job hands back the merged commit without touching her folder
+    (`land=False`), and `merge_accepted` sends it."""
+    with _lock:
+        info = _merges.get(job_id)
+    if not info:
+        return {"ok": False, "reason": "stale",
+                "message": "This merge is no longer waiting for you."}
+    tip = info.get("tip")   # kept, sending it failed last time: send again
+    if not tip:
+        out = _mod("merge_job").accept(job_id) or {}
+        if not out.get("ok"):
+            return out
+        tip = out.get("tip")
+        with _lock:
+            info["tip"] = tip
+    return merge_accepted(app_dir, {"id": job_id, "tip": tip})
+
+
+def merge_accepted(app_dir: str, job: dict) -> dict:
+    """The author kept Claude's combination (`merge_job.accept` of a job
+    `merge_start` made): send it onto the proposal's own branch — a plain
+    push, never force — and read the new version again."""
+    app_dir = _key(app_dir)
+    with _lock:
+        info = _merges.get((job or {}).get("id"))
+    tip = (job or {}).get("new_tip") or (job or {}).get("tip")
+    if not info or not tip:
+        return {"ok": False, "reason": "stale",
+                "message": "This merge is no longer waiting for you."}
+    gh = _mod("gh")
+    author = info["author"]
+    try:
+        gh.push(app_dir, tip, info["head_repo"], info["head_branch"])
+    except Exception as exc:  # noqa: BLE001
+        if not _gh_error(exc):
+            raise
+        if getattr(exc, "reason", None) == "conflict":
+            with _lock:   # combined with a version that is gone: start over
+                _merges.pop(job.get("id"), None)
+            return {"ok": False, "reason": "moved",
+                    "message": f"{author} changed this proposal meanwhile. "
+                               "Merge with Claude again."}
+        return {"ok": False, "reason": getattr(exc, "reason", "failed"),
+                "message": _plain_gh(exc)}
+    with _lock:
+        _merges.pop(job.get("id"), None)
+        _fits.pop((info["repo"], info["number"]), None)
+    _activity(app_dir, "inbox-merged",
+              f"Combined {author}'s proposal with your latest version")
+    invalidate(app_dir)
+    try:
+        review(app_dir, info["number"])
+    except Exception:  # noqa: BLE001 — the next listing starts it anyway
+        logger.exception("inbox: re-review after merge failed for %s", app_dir)
+    return {"ok": True, "message": f"Done. {author}'s proposal now fits your latest "
+                                   "version. Claude is reading it again."}
 
 
 def _cleanup(app_dir: str, number: int) -> None:

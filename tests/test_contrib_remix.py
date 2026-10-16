@@ -185,8 +185,41 @@ def test_overlapping_original_goes_to_a_merge_job(w, monkeypatch):
     monkeypatch.setattr(merge_job, "start", fake_start)
     assert _r().bring_in(w.app) == {"ok": True, "job": "job-1"}
     assert seen["purpose"] == "original"
-    assert seen["onto"] == w.fake.tip("alice/sine")
-    assert seen["upstream"] == git(w.app, "rev-parse", "HEAD")
+    assert seen["theirs"] == w.fake.tip("alice/sine")
+    assert seen["ours"] == git(w.app, "rev-parse", "HEAD")
+
+
+def test_publish_switches_record_first_and_lifts_the_guard_on_bobs_repo_only(w, monkeypatch):
+    """§16.6: the record says `own` + Bob's repo BEFORE origin changes; the
+    no-push guard leaves origin (Bob's repo) and stays on `original`."""
+    from fused_render.contrib import classify
+    assert git(w.app, "config", "--get", "remote.origin.pushurl") == classify.NO_PUSH_URL
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    seen = []
+    real = _r()._repoint_locked
+
+    def spy(root, **kw):
+        rec = w.store.get(root)
+        seen.append((rec["kind"], rec["repo"]))
+        return real(root, **kw)
+
+    monkeypatch.setattr(_r(), "_repoint_locked", spy)
+    _publish(w)
+    assert seen == [("own", "bob/sine-remix")]
+    assert git(w.app, "config", "--get", "remote.origin.pushurl", check=False) == ""
+    assert git(w.app, "config", "--get", "remote.original.pushurl") == classify.NO_PUSH_URL
+    assert "remixed" in [a["kind"] for a in w.store.activity(w.app)]
+
+
+def test_publish_refuses_while_claude_works(w, monkeypatch):
+    from fused_render.contrib import proposals
+    from fused_render.contrib.jobs import PlainError
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    monkeypatch.setattr(proposals, "claude_busy", lambda root: True)
+    with pytest.raises(PlainError) as e:
+        _publish(w)
+    assert e.value.reason == "claude"
+    assert w.store.get(w.app)["kind"] == "github" and "bob/sine-remix" not in w.fake.state()["repos"]
 
 
 def test_restamp_replaces_only_the_id():

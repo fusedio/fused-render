@@ -1078,10 +1078,18 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
                 state = STATE_DOWNGRADE
 
     git = _git_target(manifest)
+    git_copy = None
     if git is not None:
         dest, found_by, husk, state, changed, other_name = _git_state(
             git, dest, found_by, husk, state, stamp, other_name, light)
         installed = found_by is not None
+        if found_by == "git" and not light:
+            # A GitHub-link copy's page words come from the contribution
+            # engine (docs/CONTRIB_LOOP.md §16.8): whose latest, which of
+            # the user's files are in its way. None for any other clone.
+            from fused_render import appfile_git
+
+            git_copy = appfile_git.copy_view(dest)
 
     files = []
     total = 0
@@ -1103,6 +1111,7 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         "state": state,
         "needs_force": state in WARN_STATES or state == STATE_REPLACE,
         "git": git,
+        "copy": git_copy,
         "downloaded": _is_download(fused_path),
         "exported_at": incoming_at,
         "installed_exported_at": (stamp or {}).get("exported_at") if stamp else None,

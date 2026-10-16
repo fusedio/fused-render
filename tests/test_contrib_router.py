@@ -80,19 +80,22 @@ def env(tmp_path, monkeypatch):
         return store.get(app_dir)
 
     ns = types.SimpleNamespace(home=home, ws=ws, flags=on, calls=calls, stub=stub)
-    ns.classify = stub("classify", ensure=ensure)
+    ns.classify = stub("classify", ensure=ensure,
+                       kind_of=lambda d, **_: (store.get(d) or {}).get("kind"))
     ns.engine = stub("engine", status=lambda d: {"kind": "github", "state": "changes",
                                                    "changes": 2, "unproposed": 1,
+                                                   "changes_files": ["a.py", "b.py"],
                                                    "needs_merge": False, "merge_job": None,
                                                    "can_push": False, "pending": False},
                      discard=lambda d, withdraw=False: {"ok": True, "withdrew": withdraw},
                      push_to_main=lambda d: {"ok": False, "reason": "forbidden",
                                              "message": "Propose them instead."},
-                     merge_plan=lambda d: None)
+                     bring_in=_boom, merge_plan=lambda d: None)
     draft = _started("propose-draft")
     ns.proposals = stub("proposals",
                         refresh=lambda d, force=False: calls.append(("prefresh", force)),
                         view=lambda d: {"number": 4, "state": "waiting"},
+                        untracked=lambda d: ["new.csv"],
                         start_draft=lambda d: draft(d, lambda: {"title": "T", "description": "D"}),
                         start_send=_boom, start_update=_boom,
                         withdraw=lambda d: {"ok": True})
@@ -103,6 +106,14 @@ def env(tmp_path, monkeypatch):
                            list=lambda d: [{"login": "bob", "name": "Bob", "commits": 2}])
     ns.merge_job = stub("merge_job", get=lambda i: None, current=lambda d: None,
                         start=_boom, accept=_boom, discard=_boom)
+    ns.ownsync = stub("ownsync", status=lambda d: {"state": "published", "unpublished": 0,
+                                                   "github_new": 0, "files": [],
+                                                   "message": "Saved on GitHub.", "fixes": []},
+                      start_merge=lambda d: {"ok": False,
+                                             "message": "There's nothing to combine right now."},
+                      check_now=_boom, publish_now=_boom,
+                      use_github=_boom, put_on_top=_boom, publish_over=_boom,
+                      save_edits=_boom)
     ns.inbox = stub("inbox",
                     list=lambda d, review=True, force=False: (
                         calls.append(("ilist", review)) or [{"number": 7}]),
@@ -265,7 +276,7 @@ def test_a_remix_may_withdraw_but_not_update(env):
 
 def test_update_copy_answers_the_engine(env):
     d = env.app("a")
-    env.engine.bring_in_latest = lambda app_dir: {"ok": True, "message": "Up to date."}
+    env.engine.bring_in = lambda app_dir: {"ok": True, "message": "Up to date."}
     assert _post(env, "update-copy", path=d) == {"ok": True, "message": "Up to date."}
     own = env.app("m", kind="own", repo="bob/m")
     assert _post(env, "update-copy", path=own)["reason"] == "not-allowed"
@@ -278,6 +289,238 @@ def test_discard_and_push_main_answer_the_engine(env):
     assert _post(env, "discard", path=d) == {"ok": True, "withdrew": False}
     assert _post(env, "discard", path=d, withdraw=True)["withdrew"] is True
     assert _post(env, "push-main", path=d)["reason"] == "forbidden"
+
+
+# -- v2: the one action route ---------------------------------------------------
+
+
+def _v2(state="changes", **over):
+    """A v2 engine.status for a GitHub-link copy."""
+    files = ["a.py"] if state == "changes" else []
+    s = {"kind": "github", "state": state, "who": "alice", "author": "alice",
+         "repo": "alice/x", "behind": 0, "changes_files": files, "changes": len(files),
+         "dirty": False, "unproposed": 0, "needs_merge": state == "needs-merge",
+         "needs_merge_purpose": "update" if state == "needs-merge" else None,
+         "needs_merge_files": [], "merge_job": None, "blocked_files": [],
+         "kept_mine": False, "off_default": False, "claude_busy": False,
+         "last_checked": 5.0, "sync_error": None, "sync_error_code": None,
+         "can_push": False, "pending": False}
+    s.update(over)
+    return s
+
+
+def _act(env, d, action, **body):
+    return _post(env, "action", path=d, action=action, **body)
+
+
+def test_action_gate(env):
+    d = env.app("a")
+    r = env.client.post("/api/contrib/action", json={"path": d, "action": "check"})
+    assert r.status_code == 403
+    assert _post(env, "action", path="/nowhere", action="check")["reason"] == "not-an-app"
+    assert _act(env, d, "fly")["reason"] == "unknown-action"
+    env.flags["sources"] = False
+    assert _act(env, d, "check")["reason"] == "disabled"
+
+
+def test_action_must_be_offered_right_now(env):
+    """Flags, kind and state decide in actions.for_app only: an id it does
+    not offer is refused, whatever the client posts."""
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("following")
+    for wrong in ("propose", "publish-now", "use-github", "merge-claude", "discard"):
+        out = _act(env, d, wrong, args={"title": "T"})
+        assert out == {"ok": False, "reason": "not-offered",
+                       "message": "That isn't available right now."}, wrong
+    env.engine.status = lambda app_dir: _v2("changes")
+    env.flags["changes"] = False  # P1: changes off hides Propose and Discard
+    assert _act(env, d, "propose", args={"title": "T"})["reason"] == "not-offered"
+    assert _act(env, d, "discard", confirm=True)["reason"] == "not-offered"
+
+
+def test_confirm_is_required_for_a_confirm_button(env):
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("changes")
+    seen = []
+    env.engine.discard = lambda app_dir, withdraw=False: seen.append(withdraw) or {"ok": True}
+    out = _act(env, d, "discard")
+    assert out["ok"] is False and out["reason"] == "confirm"
+    assert "Activity" in out["message"] and seen == []
+    assert _act(env, d, "discard", confirm=True) == {"ok": True}
+    assert seen == [False]
+    job = _act(env, d, "discard", confirm=True, args={"withdraw": True})["job"]
+    assert _job(env, job)["status"] == "done" and seen[-1] is True
+
+
+def test_propose_args(env):
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("changes")
+    sent = []
+    env.proposals.start_send = lambda app_dir, **kw: sent.append(kw) or {"ok": True, "job": "p1"}
+    assert _act(env, d, "propose", args={})["reason"] == "missing"
+    for bad in (["../x"], ["/etc/passwd"], "a.py", [""], [3]):
+        assert _act(env, d, "propose", args={"title": "T", "include": bad})["reason"] \
+            == "missing", bad
+    assert sent == []
+    assert _act(env, d, "propose", args={"title": " T ", "description": "D",
+                                         "include": ["data/new.csv"]}) == {"ok": True,
+                                                                           "job": "p1"}
+    assert sent == [{"title": "T", "description": "D", "note": "", "include": ["data/new.csv"]}]
+    _act(env, d, "propose", args={"title": "T"})
+    assert "include" not in sent[-1]  # nothing ticked: the v1 call shape
+
+
+def test_long_actions_are_jobs(env):
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("following", behind=2)
+    ran = []
+    env.engine.bring_in = lambda app_dir: ran.append("bring_in") or {"ok": True, "message": "In."}
+    out = _act(env, d, "bring-in")
+    assert out["ok"] is True and _job(env, out["job"])["result"] == {"ok": True, "message": "In."}
+    env.engine.bring_in = lambda app_dir: {"ok": False, "reason": "busy",
+                                           "message": "Claude is still working on this app."}
+    job = _job(env, _act(env, d, "bring-in")["job"])
+    assert job["status"] == "failed" and job["reason"] == "busy"
+    assert job["message"] == "Claude is still working on this app."
+
+
+def test_quick_fixes_answer_inline(env):
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("needs-merge", needs_merge_files=["a"])
+    env.engine.keep_mine = lambda app_dir: {"ok": True, "message": "Kept yours."}
+    assert _act(env, d, "keep-mine") == {"ok": True, "message": "Kept yours."}
+    env.engine.use_theirs = lambda app_dir: {"ok": True}
+    assert _act(env, d, "use-theirs")["reason"] == "confirm"
+    assert _act(env, d, "use-theirs", confirm=True) == {"ok": True}
+
+
+def test_merge_claude_starts_the_planned_merge(env):
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("needs-merge")
+    started = []
+    env.engine.merge_plan = lambda app_dir: {"purpose": "update", "ours": "h", "theirs": "t",
+                                             "onto": "t", "files": ["a"]}
+
+    def start(app_dir, *, purpose, ours, theirs, resolver=None):
+        started.append((purpose, ours, theirs))
+        return "mj-2"
+
+    env.merge_job.start = start
+    assert _act(env, d, "merge-claude") == {"ok": True, "job": "mj-2", "merge": True}
+    assert started == [("update", "h", "t")]
+    env.engine.merge_plan = lambda app_dir: None
+    assert _act(env, d, "merge-claude")["reason"] == "nothing-to-merge"
+
+
+def test_own_app_fixes_dispatch_to_ownsync(env):
+    d = env.app("m", kind="own", repo="bob/m")
+    stuck = {"state": "github-changed", "unpublished": 1, "github_new": 2, "files": [],
+             "message": "Choose which version to keep.",
+             "fixes": ["use-github", "put-on-top", "publish-over"]}
+    env.ownsync.status = lambda app_dir: dict(stuck)
+    ran = []
+    env.ownsync.put_on_top = lambda app_dir: ran.append("top") or {"ok": True}
+    env.ownsync.publish_over = lambda app_dir: ran.append("over") or {"ok": True}
+    env.flags.update(changes=False, inbox=False, loop=False, remix=False)  # P5: still fixable
+    assert _job(env, _act(env, d, "put-on-top")["job"])["status"] == "done"
+    assert _act(env, d, "publish-over")["reason"] == "confirm"
+    assert _job(env, _act(env, d, "publish-over", confirm=True)["job"])["status"] == "done"
+    assert ran == ["top", "over"]
+    assert _act(env, d, "propose", args={"title": "T"})["reason"] == "not-offered"
+    # Merge with Claude for an own app is ownsync's own start.
+    stuck.update(state="needs-merge", fixes=["merge-claude"])
+    env.ownsync.start_merge = lambda app_dir: {"ok": True, "job": "mj-o"}
+    assert _act(env, d, "merge-claude") == {"ok": True, "job": "mj-o", "merge": True}
+
+
+def test_check_now(env, monkeypatch):
+    kicked, synced = [], []
+    monkeypatch.setattr(refresh, "refresh_now", lambda app_dir: kicked.append(app_dir) or True)
+    from fused_render import git_upstream
+    monkeypatch.setattr(git_upstream, "sync_repo",
+                        lambda root, *, action, push: synced.append((action, push))
+                        or {"ok": True, "status": "noop"})
+    own = env.app("m", kind="own", repo="bob/m")
+    env.ownsync.check_now = lambda app_dir: {"ok": True, "message": "Up to date."}
+    assert _job(env, _act(env, own, "check")["job"])["result"] == {"ok": True,
+                                                                    "message": "Up to date."}
+    assert kicked == [own] and synced == []
+    # A GitHub-link copy: the sync auto-sync runs (the engine's table),
+    # never pushing — and its own words stay in the log.
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("following")
+    assert _job(env, _act(env, d, "check")["job"])["result"] == {"ok": True}
+    assert synced == [("Check now", False)] and kicked == [own, d]
+    monkeypatch.setattr(git_upstream, "sync_repo",
+                        lambda root, **_: {"ok": False, "reason": "diverged",
+                                           "message": "fatal: Not possible to fast-forward"})
+    job = _job(env, _act(env, d, "check")["job"])
+    assert job["status"] == "failed" and job["message"] == "Couldn't check right now. Try again."
+
+
+def test_a_broken_resolver_still_checks(env, monkeypatch):
+    """P6 holds when actions.for_app itself fails: GET shows Check now and
+    the action route accepts exactly that."""
+    d = env.app("a")
+    monkeypatch.setattr(sys.modules["fused_render.contrib.actions"], "for_app", _boom)
+    out = env.client.get("/api/contrib/app", params={"path": d}).json()
+    assert [a["id"] for a in out["actions"]] == ["check"]
+    monkeypatch.setattr(refresh, "refresh_now", lambda app_dir: True)
+    from fused_render import git_upstream
+    monkeypatch.setattr(git_upstream, "sync_repo", lambda root, **_: {"ok": True})
+    assert _job(env, _act(env, d, "check")["job"])["status"] == "done"
+    assert _act(env, d, "discard", confirm=True)["reason"] == "not-offered"
+
+
+def test_sign_in_is_the_pages_own_flow(env, monkeypatch):
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("changes")
+    from fused_render import github_setup
+    monkeypatch.setattr(github_setup, "cached_summary",
+                        lambda: {"signed_in": False, "account": None, "stale": False})
+    assert _act(env, d, "sign-in") == {"ok": True, "dialog": "sign-in"}
+    assert _act(env, d, "propose", args={"title": "T"})["reason"] == "not-offered"
+
+
+def test_restore_only_an_offered_undo(env, monkeypatch):
+    d = env.app("a")
+    lines = [{"id": "a1", "at": 1, "kind": "update", "text": "Got alice's latest",
+              "undo": True},
+             {"id": "a2", "at": 0, "kind": "saved", "text": "Saved your edit", "undo": False}]
+    monkeypatch.setattr(store, "activity", lambda app_dir: list(lines), raising=False)
+    restored = []
+    env.engine.restore = lambda app_dir, line: restored.append(line) or {"ok": True}
+    for bad in ("a2", "zz", ""):
+        assert _post(env, "restore", path=d, id=bad)["reason"] == "not-offered"
+    assert _post(env, "restore", path=d, id="a1") == {"ok": True}
+    assert restored == ["a1"]
+
+
+def test_app_read_carries_panel_actions_activity(env, monkeypatch):
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("changes", behind=1)
+    line = {"id": "a1", "at": 1, "kind": "update", "text": "Got alice's latest", "undo": True}
+    monkeypatch.setattr(store, "activity", lambda app_dir: [line], raising=False)
+    out = env.client.get("/api/contrib/app", params={"path": d}).json()
+    assert out["panel"]["state"] == "changes" and out["panel"]["who"] == "alice"
+    assert out["panel"]["last_checked"] == 5.0
+    assert out["panel"]["untracked"] == ["new.csv"]  # for the Propose dialog
+    assert [a["id"] for a in out["actions"]] == ["propose", "remix", "discard", "bring-in",
+                                                 "check"]
+    assert out["activity"] == [line]
+    # A broken resolver still answers a panel with Check now (P6).
+    monkeypatch.setattr(sys.modules["fused_render.contrib.actions"], "for_app", _boom)
+    out = env.client.get("/api/contrib/app", params={"path": d}).json()
+    assert out["panel"]["state"] == "unknown"
+    assert [a["id"] for a in out["actions"]] == ["check"]
+
+
+def test_unrecorded_app_reads_a_pending_panel(env):
+    d = env.app("new", kind=None)
+    env.engine.status = lambda app_dir: {"pending": True}
+    out = env.client.get("/api/contrib/app", params={"path": d}).json()
+    assert out["pending"] is True and out["panel"]["state"] == "pending"
+    assert out["actions"] == [] and out["activity"] == []
 
 
 # -- merges and jobs ------------------------------------------------------------
@@ -295,12 +538,11 @@ def test_merge_start_follows_the_engine_plan(env):
     # Every key merge_job.start takes is passed through; bookkeeping keys are not.
     assert started == [{"purpose": "needs-merge", "onto": "aaa", "upstream": "bbb",
                         "strategy": "rebase", "mark": "m1"}]
-    # An own app's overlap is the inbox phase's own-sync merge.
+    # An own app's overlap is ownsync's to start, offered whenever the panel is.
     own = env.app("c", kind="own", repo="bob/c")
-    env.engine.merge_plan = lambda app_dir: {"purpose": "own-sync", "onto": "c1", "upstream": "c0"}
+    env.ownsync.start_merge = lambda app_dir: {"ok": True, "job": "mj-own"}
     env.flags["changes"] = False
-    assert _post(env, "merge/start", path=own)["ok"] is True
-    assert started[-1]["purpose"] == "own-sync"
+    assert _post(env, "merge/start", path=own) == {"ok": True, "job": "mj-own"}
     env.engine.merge_plan = lambda app_dir: {"purpose": "needs-merge", "onto": "a", "upstream": "b"}
     assert _post(env, "merge/start", path=d)["reason"] == "disabled"
 

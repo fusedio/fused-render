@@ -134,7 +134,7 @@ import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { peekSearch } from "./task-peek-store";
 import { useAppContrib, type AppContribState } from "@platform/lib/contrib";
 import { SourceLine } from "./contrib/SourceLine";
-import { CopyStatusCard } from "./contrib/CopyStatusCard";
+import { SourcePanel } from "./contrib/SourcePanel";
 import { Contributors } from "./contrib/Contributors";
 import { ProposalsTab } from "./contrib/ProposalsTab";
 
@@ -254,15 +254,16 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // prefix alone, which gets the wrong FILENAME whenever the app's entry
     // was renamed since that commit.
     //
-    // THE CONTRIBUTION LOOP sits above the frame (shell/contrib/): where this
-    // copy stands against its author — one sentence, at most one button — and
-    // the contributors line. Live only: a past version picked in the version
-    // picker is not the copy those sentences are about.
+    // THE CONTRIBUTION LOOP sits above the frame (shell/contrib/): the Source
+    // panel — where this copy stands against where it came from, the server's
+    // buttons, its activity — and the contributors line. Live only: a past
+    // version picked in the version picker is not the copy those sentences
+    // are about.
     render: (ctx) => (
       <>
         {ctx.snapshot.sha === null && (
           <>
-            <CopyStatusCard dir={ctx.dir} slug={ctx.slug} contrib={ctx.contrib} />
+            <SourcePanel dir={ctx.dir} slug={ctx.slug} contrib={ctx.contrib} />
             <Contributors contrib={ctx.contrib.data} />
           </>
         )}

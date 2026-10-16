@@ -13,12 +13,12 @@ The flow keeps the install page as the one gate (AF-14):
    the install page (name, readme, icon, state).
 2. Install (appfile.install_app_file → ``install``): the staged clone is
    MOVED into ``app/<slug>``, still on the repo's default branch (owner
-   call): git_upstream's auto-sync keeps fast-forwarding it, so the user
-   keeps pulling the author's changes. Claude's per-turn commits land on that
-   branch too and auto-sync tries to push them; without push rights that
-   fails as a standing sync failure, and setting up a fork + PR from there is
-   Claude's to help with. (With push rights the push goes straight to the
-   source — accepted.)
+   call), and recorded as a GitHub-link copy outside the folder (contrib/
+   classify.record_install, whatever the feature flags): the contribution
+   engine keeps bringing the author's latest in, and the copy never pushes on
+   its own (docs/CONTRIB_LOOP.md §16.0 P2) — the user's changes leave the
+   machine only as a proposal. (The author's own repo, once signed in,
+   reclassifies as an own copy and auto-syncs as ever.)
 
 The repo's own files are never edited: the app id (the page's
 ``fused-app-id``, else one derived from the repo by appfetch) lives in the
@@ -256,11 +256,60 @@ def _dirty(repo_dir: str) -> bool:
     return r.returncode != 0 or bool(_out(r))
 
 
+def _kind(app_dir: str) -> str | None:
+    """The contribution loop's recorded kind of the copy (docs/CONTRIB_LOOP.md
+    §16.1) — None when there is no record, or it cannot be read."""
+    try:
+        from fused_render.contrib import classify
+
+        return classify.kind_of(os.path.realpath(app_dir))
+    except Exception:  # noqa: BLE001 — no record readable: today's install
+        return None
+
+
+def copy_view(app_dir: str) -> dict | None:
+    """For a GitHub-link copy (§16.8): what the install page says about it,
+    off `engine.status` (no network) — ``{who, changes: [paths], blocked:
+    [paths]}``; None for any other folder."""
+    if _kind(app_dir) != "github":
+        return None
+    try:
+        from fused_render.contrib import engine
+
+        st = engine.status(os.path.realpath(app_dir))
+    except Exception:  # noqa: BLE001 — the page falls back to the plain words
+        logger.exception("install page: copy status failed for %s", app_dir)
+        return None
+    return {"who": st.get("who") or "the author",
+            "changes": list(st.get("changes_files") or [])[:12],
+            "blocked": list(st.get("blocked_files") or [])[:12],
+            "needs_merge": bool(st.get("needs_merge"))}
+
+
+def _probe_github(app_dir: str, src: dict, head: str) -> str:
+    """`probe` for a GitHub-link copy: the engine's view decides (§16.8) —
+    any change of the user's (or an overlap waiting) is ``local``, which the
+    page answers with "open it"; otherwise ``update`` when the author's
+    latest (or the link's commit) is not in the copy yet."""
+    from fused_render.contrib import engine
+
+    st = engine.status(os.path.realpath(app_dir))
+    if (st.get("changes") or st.get("needs_merge") or st.get("changes_files")
+            or st.get("blocked_files")):
+        return "local"
+    if st.get("behind"):
+        return "update"
+    if _git("merge-base", "--is-ancestor", src["commit"], head, cwd=app_dir, timeout=60).returncode == 0:
+        return "same"
+    return "update"
+
+
 def probe(app_dir: str, src: dict, *, light: bool = False) -> str:
     """``same`` | ``update`` | ``local`` for the clone at ``app_dir`` against
     the link's commit. Read-only: the ancestry is asked of the staged clone
     when it is there (it has the new commit), else of the installed one.
-    ``light`` (a card peek, D396) answers off HEAD alone: one git call."""
+    ``light`` (a card peek, D396) answers off HEAD alone: one git call. A
+    GitHub-link copy's answer comes from the engine (`_probe_github`)."""
     head = _head(app_dir)
     if head is None:
         return "local"
@@ -268,6 +317,12 @@ def probe(app_dir: str, src: dict, *, light: bool = False) -> str:
         return "same"
     if light:
         return "update"
+    if _kind(app_dir) == "github":
+        try:
+            return _probe_github(app_dir, src, head)
+        except Exception:  # noqa: BLE001 — unknown reads as "open it"
+            logger.exception("install page: probe failed for %s", app_dir)
+            return "local"
     # Auto-sync fast-forwards the clone on its own, so it may already be past
     # the link's commit: nothing to install then either.
     if _git("merge-base", "--is-ancestor", src["commit"], head, cwd=app_dir, timeout=60).returncode == 0:
@@ -393,12 +448,16 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
     if state == appfile.STATE_CLASH:
         raise GitInstallError(f"{target['path']} already holds a different app "
                               f"({target['other_name']}); rename or uninstall it first")
+    kind = _kind(dest) if target.get("found_by") == "git" else None
     if state == appfile.STATE_LOCAL:
         if target.get("found_by") == "git":
+            if kind == "github":
+                # The engine keeps the copy on the author's latest with the
+                # user's changes kept (§16.8); the app page is where to look.
+                who = (copy_view(dest) or {}).get("who") or "the author"
+                raise GitInstallError("You have your own changes in this app. Open it to "
+                                      f"bring in {who}'s latest.")
             if _contrib_sources():
-                # The contribution loop keeps the copy on the author's latest
-                # with the user's changes on top by itself; there is nothing
-                # for the user to run, only something to look at.
                 raise GitInstallError("You already have this app with your own changes. "
                                       "Open it to see them.")
             raise GitInstallError(f"{target['path']} has changes of its own; update it with git "
@@ -410,13 +469,23 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
     if state == appfile.STATE_REPLACE and not force:
         raise appfile.InstallNeedsConfirm(target)
 
-    if state == appfile.STATE_UPDATE:
-        if _contrib_sources():
-            # With the contribution loop on, this update is one more writer
-            # of a repo the engine also moves: it holds the same slot (so it
-            # never meets a land, or shares `fused_aside`'s scratch dir with
-            # one), and a committed `.fused/` the loop marked skip-worktree
-            # needs fused's local copies set aside to let the update through.
+    if state == appfile.STATE_UPDATE and kind == "github":
+        # "Get the latest" on a GitHub-link copy IS the engine's Bring in
+        # (§16.8): the same table as every automatic update, its words plain.
+        from fused_render.contrib import engine
+
+        res = engine.bring_in(os.path.realpath(dest))
+        if not res.get("ok") or res.get("needs_merge"):
+            raise GitInstallError(res.get("message") or "Couldn't update this app right now. "
+                                  "Open it to see why.")
+        action = "updated"
+    elif state == appfile.STATE_UPDATE:
+        if kind is not None or _contrib_sources():
+            # A recorded copy (or the loop on): this update is one more
+            # writer of a repo the loop also touches — it holds the same slot,
+            # and a committed `.fused/` the loop marked skip-worktree (any
+            # recorded copy, §16.1) needs fused's local copies set aside to
+            # let the update through.
             from fused_render.contrib import replay
 
             with replay.slot() as held:
@@ -435,6 +504,11 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
             raise GitInstallError("this app file does not match the repository it names; "
                                   "open the GitHub link again")
         _place(staged, dest, park_existing=state == appfile.STATE_REPLACE or bool(target.get("husk")))
+        # A fresh clone at `dest`: whatever record the folder had (a copy
+        # deleted in Finder and installed again, a husk's old app) names
+        # another repo's history — its proposal, overlap and activity are
+        # not this clone's (§16.1).
+        _drop_record(dest)
         action = "installed"
     shutil.rmtree(_staging_root(src["url"]), ignore_errors=True)
 
@@ -483,12 +557,21 @@ def _contrib_sources() -> bool:
         return False
 
 
+def _drop_record(dest: str) -> None:
+    try:
+        from fused_render.contrib import store
+
+        store.drop(dest)
+    except Exception:  # noqa: BLE001 — record_install replaces it anyway
+        logger.exception("could not drop the old install record of %s", dest)
+
+
 def _record_install(dest: str, url: str) -> None:
     """Record the install source OUTSIDE the folder (contrib/store.py,
-    docs/CONTRIB_LOOP.md §4) and, with the contribution loop on, mark a
-    committed `.fused/` skip-worktree so the stamp and `meta.json` just
-    written never read as edits. Written whatever the flags (the record is
-    invisible); never fails the install that already landed."""
+    docs/CONTRIB_LOOP.md §4, §16.1) and settle the copy's guards — a
+    committed `.fused/` marked skip-worktree so the stamp and `meta.json`
+    just written never read as edits, and the push guard. Whatever the
+    flags; never fails the install that already landed."""
     try:
         from fused_render.contrib import classify
 

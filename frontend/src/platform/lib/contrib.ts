@@ -231,6 +231,9 @@ export interface ContribAction {
   /** The confirm sheet's button, when the server names it. */
   confirm_label?: string | null;
   danger?: boolean;
+  /** The sheet (or flow) the page opens for this button instead of
+   *  posting at once: "propose", "remix", "sign-in". */
+  dialog?: string | null;
 }
 
 export interface ActivityLine {
@@ -363,12 +366,8 @@ async function post<T extends ContribAnswer>(route: string, body: Record<string,
 export const ackContrib = (path: string, kind: "event" | "settled") =>
   post<ContribAnswer>("ack", { path, kind });
 export const startProposalDraft = (path: string) => post<JobStarted>("propose/draft", { path });
-/** `include`: the untracked files the user ticked (app-relative) — nothing
- *  untracked goes out unless it is named here. */
-export const sendProposal = (
-  path: string,
-  v: { title: string; description: string; note: string; include?: string[] },
-) => post<JobStarted>("propose/send", { path, ...v });
+export const sendProposal = (path: string, v: { title: string; description: string; note: string }) =>
+  post<JobStarted>("propose/send", { path, ...v });
 export const updateProposal = (path: string) => post<JobStarted>("propose/update", { path });
 export const withdrawProposal = (path: string) => post<ContribAnswer>("propose/withdraw", { path });
 export const discardChanges = (path: string, withdraw: boolean) =>
@@ -391,6 +390,12 @@ export const acceptProposal = (path: string, number: number, confirm = false) =>
   post<JobStarted>("inbox/accept", { path, number, confirm });
 export const declineProposal = (path: string, number: number, note: string) =>
   post<ContribAnswer>("inbox/decline", { path, number, note });
+/** A proposal that no longer fits (`fits: false`): ask its sender to bring
+ *  it up to date, with an optional note (§16.6). */
+export const askToUpdate = (path: string, number: number, note: string) =>
+  post<ContribAnswer>("inbox/ask-update", { path, number, note });
+/** …or have Claude merge it onto the app's latest here (§16.6) → a job. */
+export const startInboxMerge = (path: string, number: number) => post<JobStarted>("inbox/merge", { path, number });
 export const startRemixDraft = (path: string) => post<JobStarted>("remix/draft", { path });
 export const publishRemix = (path: string, v: { name: string; credit: string }) =>
   post<JobStarted>("remix/publish", { path, ...v });
@@ -399,13 +404,15 @@ export const bringInOriginal = (path: string) => post<JobStarted>("remix/bring-i
 /** v2's one action route (§16.9): every button the server sent, by its id.
  *  `confirm`: the user said yes to the action's confirm sentence. Answers
  *  `{ok, job?}` — a long action hands back a jobs.py job to poll — or a
- *  refusal; `reason:"confirm"` asks for the confirm first. */
+ *  refusal; `reason:"confirm"` asks for the confirm first. `merge: true`
+ *  marks a merge job (Merge with Claude): its progress and review ride on
+ *  `copy.merge_job`, not on the job poll. */
 export const runAction = (
   path: string,
   action: string,
   opts: { confirm?: boolean; args?: Record<string, unknown> } = {},
 ) =>
-  post<JobStarted>("action", {
+  post<JobStarted & { merge?: boolean }>("action", {
     path,
     action,
     ...(opts.confirm ? { confirm: true } : {}),

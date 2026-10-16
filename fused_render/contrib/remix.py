@@ -27,7 +27,19 @@ nothing is published half-way under his name with the record pointing at it.
 The remix's `origin` becomes Bob's repo (auto-sync pushes his later edits
 there, as for any app of his own) and the original stays reachable as the
 remote `original`. The record becomes `own` with `remix_of`; an open proposal
-stays on the record and keeps being followed (`proposals.refresh`).
+stays on the record and keeps being followed (`proposals.refresh`) until it
+settles — a merged one on a remix never returns, so it settles at merged.
+
+IDENTITY AND THE SWITCH (§16.6). Everything published is Bob's: tracked
+edits are committed as him, and the same credit-once rewrite a first Send
+runs (`proposals._prepare`) puts his name on Fused-authored commits first.
+The switch to `own` happens under the slot in one stretch, RECORD FIRST:
+the record's `repo`/`kind` change before `origin` does (§16.1: the record,
+never `.git/config`, says what a copy is), then `origin` is re-pointed, then
+`classify.ensure_push_guard(root, "own")` lifts the no-push guard — which
+the rename carried to `original`, so the original stays never-push. No sync
+can run in between and see a `github` record whose origin is Bob's, or an
+`own` record still able to push to Alice.
 
 BRING IN THE ORIGINAL is a MERGE, never a rebase: the remix's history is
 published. `check_original` (background, on open) fetches the original's
@@ -176,11 +188,11 @@ def draft(app_dir) -> dict:
     """`{name, credit}` suggestions for the remix dialog (§11)."""
     root, record = _source_record(app_dir)
     p = _p()
-    base = p.base_of(root, record)
+    tip = p.tip_of(root, record)
     summary = ""
-    if base:
+    if tip:
         summary = re.sub(r"(?m)^Claude: ", "", p._out(p._git(
-            root, "log", "--reverse", "--no-merges", "--format=%s", f"{base}..HEAD")))
+            root, "log", "--reverse", "--no-merges", "--format=%s", "HEAD", f"^{tip}")))
     me = gh.identity() or {}
     from fused_render.contrib import ai
     return ai.draft_remix_credit(original=record["repo"], author=me.get("login") or "",
@@ -290,6 +302,14 @@ def _push_remix(root, tip: str, full: str, branch: str, name: str) -> None:
         raise
 
 
+def _push_guard(root) -> None:
+    try:
+        from fused_render.contrib import classify
+        classify.ensure_push_guard(root, "own")
+    except Exception:  # noqa: BLE001 — classification re-applies it
+        logger.exception("remix: push guard for %s failed", root)
+
+
 def publish(app_dir, *, name: str, credit: str, step=None) -> dict:
     """Publish Bob's version as his own app (§11). Answers `{repo, url,
     share_url}`; `step(key)` hears "create" → "send"."""
@@ -299,6 +319,7 @@ def publish(app_dir, *, name: str, credit: str, step=None) -> dict:
         raise PlainError("Add a line crediting the original app.")
     root, record = _source_record(app_dir)
     p = _p()
+    p._gate(root)
     me = p._require_identity()
     original, branch = record["repo"], record["branch"]
     try:
@@ -313,11 +334,13 @@ def publish(app_dir, *, name: str, credit: str, step=None) -> dict:
     full = _target_repo(name, original, me["login"], private)
 
     p._say(step, "send")
-    p.prepare(root, record, me)
+    follow_tip = p.tip_of(root, record, fetch=True)
+    p._prepare(root, record, me, tip=follow_tip)
     replay = _replay()
     with replay.slot() as held:
         if not held:
             raise PlainError("Your app is busy updating. Try again in a moment.")
+        p._gate(root)
         tip = _remix_commit_locked(root, name=name, credit=credit, original=original, me=me)
     if not tip:
         raise PlainError("Couldn't prepare your remix. Try again.")
@@ -325,31 +348,27 @@ def publish(app_dir, *, name: str, credit: str, step=None) -> dict:
     local_branch = gu._current_branch(root) or branch
     _push_remix(root, tip, full, local_branch, name)
 
-    follow_tip = None
-    try:
-        from fused_render.contrib import follow
-        f = follow.for_record(record)
-        follow_tip = follow.tip_or_origin(root, f) if f is not None else None
-    except Exception:  # noqa: BLE001
-        logger.debug("remix: no follow tip for %s", root, exc_info=True)
-    with replay.slot() as held:
-        if not held:
-            raise PlainError("Your app is busy updating. Try again in a moment.")
-        _repoint_locked(root, full=full, original=original, branch=local_branch,
-                        follow_tip=follow_tip)
     now = time.time()
 
     def become_own(rec):
         rec.update(kind="own", repo=full, branch=local_branch, classified_by="remix",
                    classified_at=now, owner_checked=True,
                    remix_of={"repo": original, "branch": branch},
-                   needs_merge=None, original_update=None)
+                   needs_merge=None, original_update=None, skip_tip=None)
 
-    _store().update(root, become_own)
+    with replay.slot() as held:
+        if not held:
+            raise PlainError("Your app is busy updating. Try again in a moment.")
+        # Record first, then origin, then the guard (module docstring).
+        _store().update(root, become_own)
+        _repoint_locked(root, full=full, original=original, branch=local_branch,
+                        follow_tip=follow_tip)
+        _push_guard(root)
     try:
         _store().add_event(root, "remixed", who=me["login"])
     except Exception:  # noqa: BLE001
         logger.exception("remix: event failed for %s", root)
+    p._activity(root, "remixed", f"Published your version as your own app, {full}")
     url = f"https://github.com/{full}"
     # The GitHub link IS the share link (handoff A1/A5: people who install
     # it are GitHub-link users of Bob's repo).
@@ -415,8 +434,8 @@ def bring_in(app_dir) -> dict:
         _store().update(root, lambda rec: rec.update(original_update=None))
         return {"ok": True, "message": f"Your remix already has {owner}'s latest."}
     from fused_render.contrib import merge_job
-    return {"ok": True, "job": merge_job.start(root, purpose="original", onto=tip,
-                                               upstream=head)}
+    return {"ok": True, "job": merge_job.start(root, purpose="original", ours=head,
+                                               theirs=tip)}
 
 
 # ------------------------------------------------------------ job wrappers

@@ -902,40 +902,56 @@ def _repo_health_check(app_dir: str) -> dict:
     return row
 
 
+#: An own copy's stuck states (docs/CONTRIB_LOOP.md §16.7, `own_state`) and
+#: what the row says; the fix buttons are the app page's.
+_OWN_STATE_DETAIL = {
+    "github-changed": ("The version on GitHub changed in a way Fused can't combine on its "
+                       "own — open the app page to choose what to keep."),
+    "edits": ("Edits you haven't saved overlap the latest version on GitHub — open the "
+              "app page to save them and continue."),
+    "needs-merge": ("Your changes and the latest version on GitHub overlap — open the "
+                    "app page to combine them."),
+}
+
+
 def _contrib_git_row(app_dir: str) -> dict | None:
-    """The `git` row for a folder the contribution engine syncs
-    (docs/CONTRIB_LOOP.md §6), or None for every other folder (the row
+    """The `git` row for a recorded copy of the contribution loop
+    (docs/CONTRIB_LOOP.md §16.8), or None for every other folder (the row
     above, unchanged). A GitHub-link copy has no "unpushed" or "behind" in
-    the git sense — its changes are kept on top of the author's latest on
-    purpose, and the engine brings updates in itself — so the row says that
-    in plain words, and carries `behind`/`ahead` 0 so no Pull/Push action is
-    drawn. The one thing it fails on is the decision the app page is
-    waiting for: an overlap with the author's latest. An own copy the
-    engine syncs fails only on a standing push problem (`sync_error`); else
-    it gets today's row."""
+    the git sense — its changes stay on this computer on purpose, and the
+    engine brings the author's latest in itself — so the row says that in
+    plain words, carries `behind`/`ahead` 0 so no Pull/Push action is drawn,
+    and fails only on the decision the app page is waiting for (an overlap
+    with the author's latest). An own copy gets today's row, except in a
+    stuck `own_state` (§16.7), which the app page's buttons fix. Whatever
+    the flags: the kind is a fact about the copy (§16.0 P1)."""
     from fused_render import git_upstream
 
     try:
-        from fused_render.contrib import engine, store
+        from fused_render.contrib import classify, store
 
         root = git_upstream.repo_root(app_dir)
-        if root is None or root != os.path.realpath(app_dir) or not engine.owns(root):
+        if root is None or root != os.path.realpath(app_dir):
+            return None
+        kind = classify.kind_of(root)
+        if kind not in ("github", "own"):
             return None
         rec = store.get(root) or {}
     except Exception:  # noqa: BLE001 — fall back to the ordinary row
         return None
     # A read: no `note_app_opened` here (opening the app already syncs it).
-    if rec.get("kind") == "github":
+    if kind == "github":
         if rec.get("needs_merge"):
             state, detail = FAIL, ("The author's latest overlaps your changes — "
                                    "open the app page to combine them.")
         else:
             state, detail = PASS, "Your changes stay on this computer until you propose them."
-    elif isinstance(rec.get("sync_error"), dict):
-        state, detail = FAIL, ("Your latest changes couldn't be sent to GitHub — "
-                               "check that you're signed in to GitHub.")
     else:
-        return None
+        own = rec.get("own_state")
+        own = own.get("state") if isinstance(own, dict) else own
+        if own not in _OWN_STATE_DETAIL:
+            return None
+        state, detail = FAIL, _OWN_STATE_DETAIL[own]
     row = _check("git", "Repo in sync", state, detail, [])
     # `contrib`: the page offers "Open app page" here instead of Fix with
     # Claude, and Fix all leaves the row out (`doctor_prompt_all`).

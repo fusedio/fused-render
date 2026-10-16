@@ -171,21 +171,42 @@ _bind_memo: dict = {}  # key -> (folder stamp, root_commit, at, bound: bool | No
 
 
 def _git(path, *args, timeout=10.0):
+    """One bounded local git call (git_upstream's discipline), with lazy
+    fetching off: an app installed from a link is a `--filter=blob:none`
+    clone, where asking about a missing object would otherwise go to the
+    network from inside `get`. (Older git ignores the variable; a root
+    commit is never filtered out, so its fetch only ever confirms
+    "missing".)"""
+    import subprocess
+
     from fused_render import git_upstream as gu
 
-    return gu._run(path, *args, timeout=timeout)
+    kw = gu._popen_kwargs()
+    kw["env"] = {**kw["env"], "GIT_NO_LAZY_FETCH": "1"}
+    try:
+        p = subprocess.run([gu._git_bin(), "-C", path, *args], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=timeout, **kw)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    return p.returncode, p.stdout, p.stderr
+
+
+def _roots(path: str) -> list | None:
+    """HEAD's root commits in the repo at `path`, sorted; None when git
+    cannot say (not a repo, no commits, git unavailable)."""
+    from fused_render import git_upstream as gu
+
+    r = _git(path, "rev-list", "--max-parents=0", "HEAD")
+    if not gu._ok(r):
+        return None
+    return sorted(ln for ln in gu._out(r).split() if len(ln) >= 40) or None
 
 
 def root_commit_of(path: str) -> str | None:
     """A root commit of HEAD in the repo at `path` (the lowest-sorting one
     when a history has several, so every reader picks the same), or None —
     not a repo, no commits yet, git unavailable."""
-    from fused_render import git_upstream as gu
-
-    r = _git(path, "rev-list", "--max-parents=0", "HEAD")
-    if not gu._ok(r):
-        return None
-    roots = sorted(ln for ln in gu._out(r).split() if len(ln) >= 40)
+    roots = _roots(path)
     return roots[0] if roots else None
 
 
@@ -214,8 +235,11 @@ def _bound(k: str, root_commit: str) -> bool | None:
         hit = _bind_memo.get(k)
     if hit and hit[0] == stamp and hit[1] == root_commit and now - hit[2] < BIND_TTL_S:
         return hit[3]
-    r = _git(k, "cat-file", "-e", root_commit)
-    ans = None if r is None else True if r[0] == 0 else False if r[0] == 1 else None
+    if root_commit in (_roots(k) or ()):
+        ans = True  # the common case, one local walk
+    else:
+        r = _git(k, "cat-file", "-e", root_commit)
+        ans = None if r is None else True if r[0] == 0 else False if r[0] == 1 else None
     with _bind_lock:
         _bind_memo[k] = (stamp, root_commit, now, ans)
     return ans
@@ -360,12 +384,12 @@ def update(app_dir: str, fn) -> dict | None:
             rec = data["apps"].get(k)
             if not isinstance(rec, dict):
                 return None
-            rec = copy.deepcopy(rec)
+            rec = _view(copy.deepcopy(rec))  # `fn` sees the v2 shape, like `get`
             fn(rec)
             data["apps"][k] = rec
             if not _write(data):
                 return None
-            return copy.deepcopy(rec)
+            return _view(copy.deepcopy(rec))
     except Exception:  # noqa: BLE001
         logger.exception("contrib store: update failed for %s", app_dir)
         return None
@@ -414,10 +438,16 @@ def adopt(old_key: str, app_dir: str) -> dict | None:
             del data["apps"][old_key]
             rec = new_record(old.get("kind") or "own")
             rec.update({k: old[k] for k in ADOPT_KEEP if k in old})
+            p = rec.get("proposal")
+            if isinstance(p, dict):  # a v1 row's proposal, persisted v2-shaped
+                p.setdefault("sent", p.get("pushed_head") or p.get("proposed_head"))
+                p.setdefault("checked_tip", None)
+                p.pop("pushed_head", None)
+                p.pop("proposed_head", None)
             data["apps"][new_key] = rec
             if not _write(data):
                 return None
-            return copy.deepcopy(rec)
+            return _view(copy.deepcopy(rec))
     except Exception:  # noqa: BLE001
         return None
 

@@ -1587,7 +1587,29 @@ def _pull(root):
                    with_output=True)
 
 
+# The contribution loop's push guard (docs/CONTRIB_LOOP.md §16.0 P2,
+# fused_render/contrib/classify.py — mirrored, not imported: PY-15): a copy of
+# someone else's GitHub app carries this pushurl on `origin` and the
+# `fused.kind=github` marker, and its changes leave the machine only as a
+# proposal from the app's page. Without this refusal the button would end in
+# git's "remote helper" error about a URL the user never wrote.
+_NO_PUSH_URL = "no-push://fused"
+_GUARDED_PUSH = ("This app follows its author's version on GitHub, so your changes "
+                 "stay on this computer. To share them, propose them from the "
+                 "app's page.")
+
+
+def _push_guarded(root):
+    code, out, _err = _run(root, "config", "--get-all", "remote.origin.pushurl")
+    if code == 0 and _NO_PUSH_URL in out.decode("utf-8", "replace").split():
+        return True
+    code, out, _err = _run(root, "config", "--local", "--get", "fused.kind")
+    return code == 0 and out.decode("utf-8", "replace").strip() == "github"
+
+
 def _push(root):
+    if _push_guarded(root):
+        raise _Refused("follows-author", _GUARDED_PUSH)
     branch = _current_branch(root)
     if not branch:
         raise _Refused("detached",

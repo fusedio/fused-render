@@ -23,8 +23,10 @@
 //              Restore when something moved away (POST /api/contrib/restore).
 //
 // Claude's merge review (running → ready → Keep / Discard) still rides on
-// `copy.merge_job`, drawn inside the panel: it is the server's state, and a
-// ready merge's two choices are what that state means.
+// `copy.merge_job`, drawn inside the panel: the sentence says what Claude is
+// doing or did, the panel adds the elapsed clock or the two choices a ready
+// merge means (the merge job's own accept/discard routes). A failed merge is
+// the sentence's to say, with its fix buttons.
 //
 // The sheets are mounted outside any one state's branch, so a background
 // re-read that moves the state on never unmounts one mid-flight.
@@ -69,7 +71,8 @@ import { SignInSheet } from "./SignInSheet";
 import { QuietAction, StatusStrip, type StripTone } from "./StatusStrip";
 import { authorOf, elapsed, plural, possessive } from "./words";
 
-/** Ids that open a sheet here instead of posting at once. */
+/** Ids that open a sheet here instead of posting at once, for a server that
+ *  does not mark them with `dialog` itself. */
 const SHEET_IDS = new Set(["propose", "remix", "sign-in"]);
 /** Drawn in the "checked" line, not the button row. */
 const CHECK_ID = "check";
@@ -85,6 +88,8 @@ const ATTENTION_STATES = new Set([
   "error",
   "sync-error",
 ]);
+/** States that say all is well. */
+const QUIET_STATES = new Set(["following", "ok", "merged"]);
 
 type Sheet =
   | null
@@ -96,14 +101,17 @@ type Sheet =
 /** Any action's answer, as `act` reads it. */
 type Outcome = { ok: boolean; message?: string; reason?: string };
 
-/** A merge review worth drawing: live, or a failure while what it failed at
- *  still waits. */
+/** A merge review in flight or waiting for the user's choice. A failed one
+ *  is the server's to say: its sentence and fix buttons cover it. */
 function liveMerge(c: AppContrib): MergeJobView | null {
-  const job = c.copy.merge_job;
+  const job = c.copy?.merge_job;
   if (!job) return null;
-  if (job.status === "running" || job.status === "landing" || job.status === "ready") return job;
-  const stillWaiting = c.copy.needs_merge || (job.purpose === "original" && c.copy.original_update);
-  return job.status === "failed" && stillWaiting ? job : null;
+  return job.status === "running" || job.status === "landing" || job.status === "ready" ? job : null;
+}
+
+/** The sheet (or flow) a button opens instead of posting, if any. */
+function dialogOf(a: ContribAction): string | null {
+  return a.dialog || (SHEET_IDS.has(a.id) ? a.id : null);
 }
 
 export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string; contrib: AppContribState }) {
@@ -142,6 +150,10 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const { panel, proposal } = c;
   const actions = c.actions ?? [];
   const activity = c.activity ?? [];
+  // Nothing to say: the phase is off (an empty sentence), or an app of the
+  // user's own with no GitHub repo and no history to show.
+  if (!panel.sentence) return null;
+  if (panel.state === "local" && actions.length === 0 && activity.length === 0) return null;
   const who = panel.who || authorOf(c.copy);
   const signedIn = c.github.signed_in;
   const openProposal = !!proposal && (proposal.state === "waiting" || proposal.state === "commented");
@@ -188,7 +200,9 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
           setSheet({ k: "confirm", action: a, sentence: plainMessage(started) });
           return started;
         }
-        if (!started.ok || !started.job) {
+        // Merge with Claude answers its merge job (`merge: true`): its
+        // progress and review ride on `copy.merge_job`, read by the re-read.
+        if (!started.ok || !started.job || started.merge) {
           if (started.ok) say(started);
           return started;
         }
@@ -206,9 +220,10 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
 
   const press = (a: ContribAction) => {
     if (busy) return;
-    if (a.id === "propose") return setSheet({ k: "propose" });
-    if (a.id === "remix") return setSheet({ k: "remix" });
-    if (a.id === "sign-in") {
+    const dialog = dialogOf(a);
+    if (dialog === "propose") return setSheet({ k: "propose" });
+    if (dialog === "remix") return setSheet({ k: "remix" });
+    if (dialog === "sign-in") {
       return setSignIn({ doing: "keep going", again: () => void contrib.refresh() });
     }
     if (a.confirm || a.id === "discard") {
@@ -228,6 +243,8 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
     });
   const onDiscardMerge = (m: MergeJobView) => act("discard-merge", () => discardMerge(dir, m.id));
 
+  // The panel's sentence already says what Claude is doing or did (and its
+  // files are the merge's): the block adds only the clock, or the choice.
   let mergeBlock: ReactNode = null;
   if (merge && (merge.status === "running" || merge.status === "landing")) {
     mergeBlock = (
@@ -238,8 +255,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
             "Keeping the merge…"
           ) : (
             <>
-              Claude is combining both versions… <span className="contrib-clock">{clockFrom}</span> so far. Your copy
-              stays as it is until you choose.
+              <span className="contrib-clock">{clockFrom}</span> so far. Your copy stays as it is until you choose.
             </>
           )}
         </span>
@@ -250,10 +266,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
       <div className="contrib-panel-merge is-ready">
         <ClaudeMark />
         <div className="contrib-panel-merge-body">
-          <p className="contrib-panel-merge-title">Claude combined both versions.</p>
-          {merge.summary && <p className="contrib-summary">{merge.summary}</p>}
-          <FileList files={merge.files} label="Files Claude combined" />
-          <p className="contrib-strip-detail">Nothing changes in your copy until you keep it.</p>
+          <p className="contrib-panel-merge-title">Nothing changes in your copy until you keep it.</p>
           <div className="contrib-panel-actions">
             <Button onClick={() => void onKeepMerge(merge)} disabled={!!busy}>
               {spin("keep-merge")}
@@ -266,21 +279,6 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
         </div>
       </div>
     );
-  } else if (merge?.status === "failed") {
-    mergeBlock = (
-      <div className="contrib-panel-merge is-failed" role="status">
-        <TriangleAlert aria-hidden="true" />
-        <div className="contrib-panel-merge-body">
-          <p className="contrib-panel-merge-title">Claude couldn&rsquo;t combine the two versions.</p>
-          <p className="contrib-strip-detail">{merge.error || "Nothing changed in your copy."}</p>
-          <div className="contrib-panel-actions">
-            <QuietAction onClick={() => void onDiscardMerge(merge)} disabled={!!busy}>
-              Leave it for now
-            </QuietAction>
-          </div>
-        </div>
-      </div>
-    );
   }
 
   // ---- the buttons, in the server's order, primary ones first -----------------
@@ -288,7 +286,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const rest = actions.filter((a) => a.id !== CHECK_ID);
   const primaries = rest.filter((a) => a.primary);
   const quiet = rest.filter((a) => !a.primary);
-  const label = (a: ContribAction) => (busy === a.id && !SHEET_IDS.has(a.id) ? `${a.label}…` : a.label);
+  const label = (a: ContribAction) => (busy === a.id && !dialogOf(a) ? `${a.label}…` : a.label);
   const primaryButtons = primaries.map((a, i) => (
     <Button
       key={a.id}
@@ -309,9 +307,9 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const working = !!job || merge?.status === "running" || merge?.status === "landing";
   const tone: StripTone = working
     ? "working"
-    : ATTENTION_STATES.has(panel.state)
+    : merge?.status === "ready" || ATTENTION_STATES.has(panel.state)
       ? "attention"
-      : panel.state === "following"
+      : QUIET_STATES.has(panel.state)
         ? "success"
         : "neutral";
   const icon = working ? (

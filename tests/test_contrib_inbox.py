@@ -582,3 +582,106 @@ def test_try_copy_python_env_and_daemon(world, monkeypatch):
     inbox.try_remove(alice, pr["number"])
     from fused_render import background_apps
     assert stopped == [background_apps.engine_id_for(path)]
+
+
+# ---------------------------------------------------- no longer fits (§16.6)
+
+
+@pytest.fixture
+def fits_world(world, monkeypatch):
+    monkeypatch.setattr(inbox, "_fits", {})
+    monkeypatch.setattr(inbox, "_merges", {})
+    return world
+
+
+def _wait_merge(job_id, timeout=30):
+    from fused_render.contrib import merge_job
+    deadline = time.time() + timeout
+    while merge_job.get(job_id)["status"] == "running" and time.time() < deadline:
+        time.sleep(0.05)
+    return merge_job.get(job_id)
+
+
+def test_fits_follows_githubs_mergeable(fits_world):
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"app.py": "x = 2\n"})
+    assert inbox.list(alice, review=False)[0]["fits"] is True
+    assert inbox.cached(alice)[0]["fits"] is True                    # no network
+    fake.commit("alice/x", "main", {"app.py": "x = 3\n"}, "Alice's x", author="alice")
+    item = inbox.list(alice, review=False, force=True)[0]
+    assert item["number"] == pr["number"] and item["fits"] is True   # cached for this head
+    inbox._fits.clear()
+    assert inbox.list(alice, review=False, force=True)[0]["fits"] is False
+
+
+def test_ask_update_comments_with_the_marker(fits_world):
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"app.py": "x = 2\n"})
+    res = inbox.ask_update(alice, pr["number"], "  Please bring in my latest.  ")
+    assert res["ok"] and "bob" in res["message"]
+    body = gh.pr_comments("alice/x", pr["number"])[-1]["body"]
+    assert body.startswith("Please bring in my latest.") and gh.ASK_UPDATE_MARKER in body
+    assert inbox.ask_update(alice, pr["number"])["ok"]
+    assert inbox.ASK_DEFAULT in gh.pr_comments("alice/x", pr["number"])[-1]["body"]
+    assert [a["kind"] for a in store.activity(alice)][:2] == ["inbox-asked", "inbox-asked"]
+    fake.close("alice/x", pr["number"])
+    assert inbox.ask_update(alice, pr["number"])["reason"] == "closed"
+
+
+def test_merge_with_claude_pushes_the_merge_onto_the_proposal(fits_world):
+    """Alice's latest merged INTO the proposal in a scratch copy of her repo
+    (clean here: no Claude), kept, and sent onto Bob's branch — a plain
+    push. Her folder never moves; the new version is read again."""
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})
+    hers = fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    head_before = git(alice, "rev-parse", "HEAD")
+    out = inbox.merge_start(alice, pr["number"])
+    assert out["ok"] and out["job"], out
+    assert _wait_merge(out["job"])["status"] == "ready"
+    assert git(alice, "rev-parse", "HEAD") == head_before
+    res = inbox.merge_accept(alice, out["job"])
+    assert res["ok"], res
+    new = fake.tip("bob/x", "main")
+    parents = git(fake.bare_path("bob/x"), "rev-list", "--parents", "-n1", new).split()[1:]
+    assert parents == [pr["head_sha"], hers]
+    assert gh.get_pr("alice/x", pr["number"])["head_sha"] == new
+    assert git(alice, "rev-parse", "HEAD") == head_before
+    assert git(alice, "status", "--porcelain") == ""
+    assert settle(alice, pr["number"])["result"]["head_sha"] == new      # read again
+    assert "inbox-merged" in [a["kind"] for a in store.activity(alice)]
+    assert inbox.merge_accept(alice, out["job"])["reason"] == "stale"
+
+
+def test_merge_with_claude_hands_the_overlap_to_a_merge_job(fits_world, monkeypatch):
+    from fused_render.contrib import merge_job
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"app.py": "x = 2\n"})
+    hers = fake.commit("alice/x", "main", {"app.py": "x = 3\n"}, "Alice's x", author="alice")
+    seen = []
+    monkeypatch.setattr(merge_job, "start", lambda app_dir, **kw: seen.append(kw) or "job-9")
+    assert inbox.merge_start(alice, pr["number"]) == {"ok": True, "job": "job-9"}
+    assert seen == [{"purpose": "proposal", "ours": pr["head_sha"], "theirs": hers,
+                     "land": False}]
+
+
+def test_merge_with_claude_needs_maintainer_edits(fits_world):
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"app.py": "x = 2\n"})
+    fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    with fake._txn() as st:
+        st["pulls"]["alice/x"][0]["maintainer_can_modify"] = False
+    res = inbox.merge_start(alice, pr["number"])
+    assert res["reason"] == "forbidden" and "Ask bob to update" in res["message"]
+
+
+def test_a_merge_of_a_moved_proposal_is_not_sent(fits_world, monkeypatch):
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})
+    fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    out = inbox.merge_start(alice, pr["number"])
+    assert _wait_merge(out["job"])["status"] == "ready"
+    moved = fake.commit("bob/x", "main", {"app.py": "x = 5\n"}, "more", author="bob")
+    res = inbox.merge_accept(alice, out["job"])
+    assert res["ok"] is False and res["reason"] == "moved"
+    assert fake.tip("bob/x", "main") == moved

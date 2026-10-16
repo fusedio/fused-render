@@ -1,24 +1,24 @@
-"""What a copy follows (docs/CONTRIB_LOOP.md §5).
+"""What a GitHub-link copy follows, and the one fetch of it
+(docs/CONTRIB_LOOP.md §5, §16.2).
 
-The engine is written against "the tip this copy follows", never `main`
-specifically: stage A follows the author's default branch; stage B adds a
-marketplace copy that follows an approved version (`kind="pinned"`), and
-nothing above this module should have to change for it.
+ONE UPSTREAM (§16.0 P3). The author's latest lives in git's own
+`refs/remotes/origin/<branch>` — the ref every git tool, the Explorer's ↑N
+marks and the git panel already read — not in a private ref. v1's
+`refs/fused/follow` is deleted on the first v2 sync (`engine`).
 
-A GITHUB-LINK COPY FOLLOWS THE URL IN ITS RECORD, NOT ITS `origin`. The
-repo's `.git/config` is writable by anything running in the app folder (the
-app's own Python, a Claude turn, the author's README instructions), and a
-copy re-pointed at some other repo must not start pulling that repo's code
-under Bob's changes. So the follow tip is fetched BY URL —
-`git fetch <url> +refs/heads/<branch>:refs/fused/follow` — into a private
-ref no remote config names. The fetch goes through `gh.fetch` (gh as the
-credential helper, so private repos read; the FakeGitHub's bare repo in
-tests); without gh.py, a private repo the https URL cannot read is retried
-over the ssh spelling of the SAME owner/name, never anything `.git/config`
-says.
+FETCHED BY THE RECORD'S URL, NOT BY `origin`. The repo's `.git/config` is
+writable by anything running in the app folder (the app's own Python, a
+Claude turn, a README's instructions), and a copy re-pointed at some other
+repo must not start pulling that repo's code under Bob's changes. So the
+tip is fetched by URL —
+`git fetch --no-tags <record url> +refs/heads/<b>:refs/remotes/origin/<b>`
+— through `gh.fetch` (gh as the credential helper so private repos read,
+TLS/proxy pinned, the FakeGitHub's bare repo in tests), and only after
+`github_redirected` found no repo-local rule re-pointing or re-credentialing
+a GitHub transfer (fail closed).
 
-AN OWN COPY FOLLOWS ITS `origin`, as auto-sync always has: the author's
-remote is theirs to change, and `refs/remotes/origin/<branch>` is the tip.
+Only `github` copies: an `own` copy's `origin` is its author's to change,
+and git_upstream fetches it as it always has (§16.7).
 """
 from __future__ import annotations
 
@@ -30,15 +30,13 @@ from dataclasses import dataclass
 from fused_render import git_upstream as gu
 from fused_render.contrib import replay
 
-FOLLOW_REF = replay.FOLLOW_REF
+logger = logging.getLogger(__name__)
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+$")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
-#: stderr fragments meaning "https could not authenticate" — the cue for the
-#: ssh retry (appfile_git._AUTH_FAILURE_MARKERS' twin).
-_AUTH_MARKERS = ("could not read username", "authentication failed",
-                 "repository not found", "terminal prompts disabled")
+REDIRECTED_MESSAGE = ("This app's settings point GitHub somewhere else, "
+                      "so fused won't update it.")
 
 
 @dataclass(frozen=True)
@@ -46,9 +44,11 @@ class Follow:
     kind: str          # "branch" (stage A); stage B adds "pinned"
     url: str           # https://github.com/O/R — from the RECORD
     branch: str        # e.g. "main"
-    ref: str = FOLLOW_REF
-    #: An own copy: fetch `origin` as today, tip = its tracking ref.
-    via_origin: bool = False
+
+    @property
+    def ref(self) -> str:
+        """Where the tip lives: git's own tracking ref (P3)."""
+        return f"refs/remotes/origin/{self.branch}"
 
 
 def github_url(repo: str) -> str:
@@ -62,23 +62,17 @@ def _valid(repo, branch) -> bool:
 
 
 def for_record(record) -> Follow | None:
-    """github → the author's branch, by URL; own with a repo → its own
-    branch via `origin`; anything else (no repo, scratch) → None."""
-    if not isinstance(record, dict):
+    """A `github` record → the author's branch, by URL; anything else
+    (own, scratch, no repo, a malformed name) → None."""
+    if not isinstance(record, dict) or record.get("kind") != "github":
         return None
     repo, branch = record.get("repo"), record.get("branch")
     if not _valid(repo, branch):
         return None
-    if record.get("kind") == "github":
-        return Follow("branch", github_url(repo), branch)
-    if record.get("kind") == "own":
-        return Follow("branch", github_url(repo), branch,
-                      ref=f"refs/remotes/origin/{branch}", via_origin=True)
-    return None
+    return Follow("branch", github_url(repo), branch)
 
 
 def _gh_module():
-    """gh.py itself, or None when it cannot be imported."""
     try:
         from fused_render.contrib import gh
     except Exception:  # noqa: BLE001
@@ -86,97 +80,55 @@ def _gh_module():
     return gh
 
 
-def _gh():
-    """gh.py when it has a `fetch` to use, else None."""
-    gh = _gh_module()
-    return gh if callable(getattr(gh, "fetch", None)) else None
-
-
-def _ssh_url(url: str) -> str:
-    return "git@github.com:" + url.split("github.com/", 1)[1] + ".git"
-
-
 def github_redirected(root, url=None) -> bool:
     """Whether this repo's OWN config re-points or re-credentials a GitHub
-    transfer — `.git/config`, what it includes, `.git/config.worktree`: all
-    writable by anything running in the app folder. ONE test for every
-    caller, gh.py's `url_rewrites` (insteadOf/pushInsteadOf aimed at
-    github.com or prefixing `url`, any credential.* key, URL-scoped and
-    deny-listed http.* keys — reviews r05, r2_02). FAILS CLOSED: gh.py
-    missing, or the check itself failing, reads as redirected — a fetch the
-    guard could not vouch for does not run."""
+    transfer — `.git/config`, what it includes, `.git/config.worktree` —
+    gh.py's `url_rewrites`, the one test every caller uses. FAILS CLOSED:
+    gh.py missing, or the check itself failing, reads as redirected."""
     gh = _gh_module()
     rewrites = getattr(gh, "url_rewrites", None) if gh else None
     if rewrites is None:
-        logging.getLogger(__name__).warning(
-            "contrib: no GitHub config guard available for %s; refusing", root)
+        logger.warning("contrib: no GitHub config guard available for %s; refusing", root)
         return True
     try:
         hits = rewrites(root, url)
     except Exception:  # noqa: BLE001
-        logging.getLogger(__name__).exception("contrib: GitHub config guard failed for %s", root)
+        logger.exception("contrib: GitHub config guard failed for %s", root)
         return True
     if hits:
-        logging.getLogger(__name__).warning(
-            "contrib: %s's own git config redirects GitHub: %s", root, hits)
+        logger.warning("contrib: %s's own git config redirects GitHub: %s", root, hits)
     return bool(hits)
 
 
-REDIRECTED_MESSAGE = ("This app's settings point GitHub somewhere else, "
-                      "so fused won't update it.")
-
-
-def fetch_detail(root, follow: Follow) -> tuple[str | None, str | None]:
-    """`(tip, reason)`: the fetched tip, or None with git_upstream's failure
-    class (`offline` | `auth` | `git-failed`) or `redirected`
-    (`github_redirected`). Writes only the follow ref (github kind) or
-    origin's tracking ref (own); the engine serializes its own fetches per
-    copy."""
-    if github_redirected(root, follow.url):
+def fetch(root, fol: Follow) -> tuple[str | None, str | None]:
+    """`(tip, reason)`: the author's tip, fetched by the record's URL into
+    `refs/remotes/origin/<branch>`, or `(None, reason)` — `redirected`
+    (`github_redirected`) or `offline` (unreachable, gone, no access: gh's
+    fetch tells no more, and every one of those is "try again later"). The
+    ref is shared with git's own fetches, so the CALLER holds the slot."""
+    if github_redirected(root, fol.url):
         return None, "redirected"
-    if follow.via_origin:
-        r = gu._run(root, "fetch", "--", "origin", follow.branch)
-    elif _gh() is not None:
-        # gh.py's fetch: gh as the credential helper (private repos fetch
-        # without `gh auth setup-git`), the user's global/system git config
-        # switched off, and the FakeGitHub's bare repo in fake mode.
-        refspec = f"+refs/heads/{follow.branch}:{follow.ref}"
-        if not _gh().fetch(root, follow.url, refspec):
-            return None, "offline"
-        return tip(root, follow), None
-    else:
-        # Only where gh.py's fetch is unavailable but its guard ran (a test
-        # seam): still with gh's transfer options (`git_net_args` pins
-        # http.sslVerify/proxy and the credential helper).
-        gh = _gh_module()
-        net = tuple(gh.git_net_args()) if gh and hasattr(gh, "git_net_args") else ()
-        refspec = f"+refs/heads/{follow.branch}:{follow.ref}"
-        args = ("fetch", "--no-tags", "--no-write-fetch-head", "--")
-        r = gu._run(root, *net, *args, follow.url, refspec)
-        if not gu._ok(r) and r is not None and any(
-                m in gu._text(r).lower() for m in _AUTH_MARKERS):
-            r = gu._run(root, *net, "-c", "core.sshCommand=ssh -oBatchMode=yes",
-                        *args, _ssh_url(follow.url), refspec)
-    if not gu._ok(r):
-        return None, gu._classify(r)
-    return tip(root, follow), None
+    gh = _gh_module()
+    fetcher = getattr(gh, "fetch", None) if gh else None
+    if fetcher is None:
+        return None, "offline"
+    if not fetcher(root, fol.url, f"+refs/heads/{fol.branch}:{fol.ref}"):
+        return None, "offline"
+    t = tip(root, fol)
+    return (t, None) if t else (None, "offline")
 
 
-def fetch(root, follow: Follow) -> str | None:
-    """Fetch the follow tip (§5); None offline/unreachable/refused."""
-    return fetch_detail(root, follow)[0]
+#: v1 name; same answer.
+fetch_detail = fetch
 
 
-def tip(root, follow: Follow) -> str | None:
-    """The last fetched follow tip, no network."""
-    return replay.rev(root, follow.ref)
+def tip(root, fol: Follow) -> str | None:
+    """The last fetched tip, no network."""
+    return replay.rev(root, fol.ref)
 
 
-def tip_or_origin(root, follow: Follow) -> str | None:
-    """`tip`, else (a copy never fetched by the engine yet — a fresh install)
-    the clone's own `origin/<branch>`, which the install's clone wrote from
-    the same URL. Read-only; for status and the first sync."""
-    return tip(root, follow) or replay.rev(root, f"refs/remotes/origin/{follow.branch}")
+#: v1 name; one upstream now, so the same answer as `tip`.
+tip_or_origin = tip
 
 
 def is_repo_root(app_dir) -> str | None:

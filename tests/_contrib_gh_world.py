@@ -92,9 +92,14 @@ def make_world(tmp_path, monkeypatch) -> World:
     rec = store.new_record("github", repo="alice/sine", branch="main", classified_by="install")
     store.put(app, rec)
     f = follow.for_record(rec)
-    assert follow.fetch(app, f), "follow fetch through the fake failed"
-    from fused_render.contrib import replay
-    git(app, "update-ref", replay.BASE_REF, follow.tip(app, f))
+    got = follow.fetch(app, f)
+    assert (got[0] if isinstance(got, tuple) else got), "follow fetch through the fake failed"
+    # What an install does (§16.1): never-push guard, Bob's commit identity.
+    from fused_render.contrib import classify
+    if hasattr(classify, "ensure_push_guard"):
+        classify.ensure_push_guard(app, "github")
+    if hasattr(classify, "apply_identity"):
+        classify.apply_identity(app, block=True)
     return World(fake=fake, repo=repo, app=store.key(app), gh=gh, store=store)
 
 

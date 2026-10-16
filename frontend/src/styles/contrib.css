@@ -1,5 +1,5 @@
 /* The GitHub contribution loop on the app page (shell/contrib/*): the source
-   line under the app's name, the copy-status strip above the Overview's frame,
+   line under the app's name, the Source panel above the Overview's frame,
    the Proposals tab, and the bits of the Propose / Remix / Decline sheets that
    Tailwind utilities do not already say.
 
@@ -65,7 +65,7 @@
   border-radius: 3px;
 }
 
-/* ---- the Overview's stack (CopyStatusCard) --------------------------------- */
+/* ---- the Overview's stack (SourcePanel) ------------------------------------ */
 .contrib-stack {
   flex: 0 0 auto;
   display: flex;
@@ -305,23 +305,149 @@
   overflow: hidden;
 }
 
-/* A second, smaller decision riding under a strip's own (the author's
-   waiting updates under "Your changes"): one line, a hairline above. */
-.contrib-strip-inline {
+/* ---- the Source panel (SourcePanel.tsx) ----------------------------------
+   The strip above, plus what the panel carries under its sentence: Claude's
+   merge review, the "checked" line with the Activity disclosure on a hairline
+   of its own, and the activity list. */
+.contrib-panel-merge {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.contrib-panel-merge > svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+}
+
+.contrib-panel-merge.is-failed > svg {
+  color: var(--warning);
+}
+
+.contrib-panel-merge-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.contrib-panel-merge-title {
+  margin: 0;
+  font-weight: 500;
+}
+
+.contrib-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  margin-top: 10px;
+}
+
+.contrib-panel-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 6px 12px;
+  gap: 4px 12px;
   margin-top: 10px;
-  padding-top: 10px;
+  padding-top: 8px;
   border-top: 1px solid var(--border);
-  font-size: 12.5px;
+}
+
+.contrib-panel-checked {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.contrib-panel-checked .contrib-quiet {
+  font-size: 12px;
+}
+
+/* Raw button, full reset (no preflight), like .contrib-quiet. */
+.contrib-panel-disclose {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.contrib-panel-disclose svg {
+  width: 13px;
+  height: 13px;
+  transition: transform 120ms ease-out;
+}
+
+.contrib-panel-disclose.is-open svg {
+  transform: rotate(90deg);
+}
+
+.contrib-panel-disclose:hover {
   color: var(--fg);
 }
 
-.contrib-strip-inline.is-quiet {
-  color: var(--fg-muted);
+.contrib-panel-disclose:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.contrib-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.contrib-activity-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.contrib-activity-at {
+  flex: 0 0 56px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.contrib-activity-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.contrib-activity-line .contrib-quiet {
+  flex: 0 0 auto;
+}
+
+/* The files list's own "N more files": a text action, not a chip. */
+.contrib-files li.is-more {
+  padding: 0;
+  background: none;
+  font-family: inherit;
 }
 
 /* "More" opened it: the whole comment. */
@@ -548,6 +674,42 @@
   cursor: pointer;
 }
 
+/* Propose: the copy's new files, each unticked. A fieldset with the UA's
+   frame reset (no preflight). */
+.contrib-include {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.contrib-include-legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.contrib-include-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.contrib-include-file {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 /* ---- the Proposals tab ---------------------------------------------------- */
 .contrib-inbox {
   flex: 1 1 auto;
@@ -769,6 +931,26 @@
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+/* A proposal that no longer fits: the Try row's shape, the warning's tint
+   on its edge only. */
+.contrib-stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.contrib-inbox-stale {
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
+  color: var(--warning);
 }
 
 .contrib-inbox-actions {

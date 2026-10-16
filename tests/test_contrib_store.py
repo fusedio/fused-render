@@ -156,9 +156,8 @@ def test_github_clone_unchecked_without_identity(home, tmp_path):
     rec = classify.ensure(d)
     assert (rec["kind"], rec["repo"], rec["owner_checked"]) == ("github", "Alice/X", False)
     assert rec["classified_by"] == "migration"
-    # A migration copy with unknown ownership is NOT owned yet: today's sync.
-    _prefs(home, contrib_sources_enabled=True, contrib_changes_enabled=True)
-    assert engine.owns(d) is False
+    # Unknown ownership never pushes (§16.1): it counts as a GitHub-link copy.
+    assert classify.kind_of(d) == "github"
 
 
 def test_recheck_upgrades_to_own_once(home, tmp_path, monkeypatch):
@@ -200,9 +199,10 @@ def test_record_install_and_finder_move_adoption(home, tmp_path):
     moved = str(tmp_path / "ws" / "app" / "x-moved")
     os.rename(d, moved)
     rec = classify.ensure(moved)
-    assert rec["proposal"] == {"number": 9} and rec["classified_by"] == "install"
+    assert rec["proposal"]["number"] == 9 and rec["classified_by"] == "install"
     # The old folder's git state does not travel (it names its refs).
-    assert rec["needs_merge"] is None and rec["backups"] == [] and "protected" not in rec
+    assert rec["needs_merge"] is None and rec["activity"] == [] and "protected" not in rec
+    assert "backups" not in rec and rec["root_commit"]
     assert len(store.find_by_repo("alice/x")) == 1
 
 
@@ -233,7 +233,7 @@ def test_unrendered_event_never_hides_a_banner(home, tmp_path):
     store.add_event(str(d), "updated-kept", who="alice")
     store.add_event(str(d), "discarded", who="alice")  # newer, never drawn
     assert store.get(str(d))["events"][-1]["seen"] is True
-    assert engine._event(store.get(str(d)))["kind"] == "updated-kept"
+    assert store.get(str(d))["events"][0]["seen"] is False
 
 
 def test_orphan_rows_drop_after_thirty_days(home, tmp_path):

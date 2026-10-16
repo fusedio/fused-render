@@ -1,17 +1,17 @@
-"""Proposals against a real temp clone and FakeGitHub (contract §8, §14):
-credit rewrite, send/update/withdraw, Alice editing the proposal on GitHub,
-lost-record adoption, the status refresh and the A4 return trigger, plus
-gh.py's error mapping and contributors."""
+"""Proposals against a real temp clone and FakeGitHub (contract §8, v2
+§16.5): credit once, send with ticked new files, Update as a plain push that
+merges edits made on GitHub, Withdraw, the status refresh, a collaborator's
+direct publish, the Claude-busy gate, and the audit repros (R1 R4 R6 R7 R8
+R9 R10 R11 R13) asserting the FIXED behaviour; plus gh.py's error mapping
+and contributors."""
 from __future__ import annotations
 
 import os
 import subprocess
 
-
 import pytest
 
-from _contrib_gh_world import (APP_PY, PAGE, claude_commit, edit, git, spy_engine,
-                               make_world, read)
+from _contrib_gh_world import APP_PY, PAGE, claude_commit, edit, git, make_world, read
 
 
 @pytest.fixture
@@ -19,17 +19,74 @@ def w(tmp_path, monkeypatch):
     return make_world(tmp_path, monkeypatch)
 
 
+@pytest.fixture
+def sw(tmp_path, monkeypatch):
+    """The world with git_upstream's auto-sync live (the engine's v2 table
+    runs for real): `sw.sync()` is what an app open does."""
+    from fused_render import git_upstream
+    from fused_render.contrib import classify, engine
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(ws))
+    for name, value in (("_checked", {}), ("_state", {}), ("_sync_failures", {}),
+                        ("_pulled_events", []), ("_pending", {})):
+        if hasattr(git_upstream, name):
+            monkeypatch.setattr(git_upstream, name, value)
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    monkeypatch.setattr(classify, "ensure_in_background", lambda app_dir: False)
+    getattr(engine, "_status_cache", {}).clear()
+    world = make_world(tmp_path, monkeypatch)
+    world.sync = lambda: git_upstream.sync_repo(world.app, action="test", push=False)
+    return world
+
+
 def _p():
     from fused_render.contrib import proposals
     return proposals
 
 
-def _send(w, note=""):
-    return _p().send(w.app, title="Make the wave red", description="Red is nicer.", note=note)
+def _send(w, note="", **kw):
+    return _p().send(w.app, title="Make the wave red", description="Red is nicer.", note=note,
+                     **kw)
 
 
 def _proposal(w):
     return w.store.get(w.app)["proposal"]
+
+
+def _head(w):
+    return git(w.app, "rev-parse", "HEAD")
+
+
+def _tip(w):
+    return git(w.app, "rev-parse", "refs/remotes/origin/main")
+
+
+def _anc(w, a, b) -> bool:
+    from fused_render.contrib import replay
+    return replay.is_ancestor(w.app, a, b)
+
+
+def _fetch(w):
+    from fused_render.contrib import follow
+    got = follow.fetch(w.app, follow.for_record(w.store.get(w.app)))
+    return got[0] if isinstance(got, tuple) else got
+
+
+def _bring_in(w):
+    """What the engine's row 11 does with the author's latest: MERGE it into
+    Bob's copy as Bob (never a rebase)."""
+    _fetch(w)
+    me = w.gh.identity()
+    git(w.app, "-c", f"user.name={me['name']}", "-c", f"user.email={me['email']}",
+        "merge", "-q", "--no-ff", "-m", "Bring in alice's latest", "refs/remotes/origin/main")
+
+
+def _activity(w):
+    return [(a["kind"], a["text"]) for a in w.store.activity(w.app)]
+
+
+APP_PY_LOUD = "def amplitude():\n    return 9\n\n\ndef frequency():\n    return 2\n"
 
 
 # ------------------------------------------------------------------ send
@@ -37,21 +94,24 @@ def _proposal(w):
 
 def test_send_credits_bob_and_claude_and_changes_no_file(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "make the wave red")
+    old = _head(w)
     tree_before = git(w.app, "rev-parse", "HEAD^{tree}")
     view = _send(w, note="Hope you like it")
     assert view["state"] == "waiting" and view["number"] == 1
     p = _proposal(w)
     assert p["head_repo"] == "bob/sine" and p["head_branch"].startswith("fused-sine-")
     # Same files, new commit: Bob authored, Claude credited exactly once.
-    head = git(w.app, "rev-parse", "HEAD")
+    head = _head(w)
     assert git(w.app, "rev-parse", "HEAD^{tree}") == tree_before
-    assert head == p["proposed_head"] == p["pushed_head"]
+    assert head == p["sent"] and p["checked_tip"] == _tip(w)
     assert git(w.app, "log", "-1", "--format=%an <%ae>") == \
         f"Bob <{w.fake.email_of('bob')}>"
     body = git(w.app, "log", "-1", "--format=%B")
     assert body.count("Co-authored-by: Claude <noreply@anthropic.com>") == 1
-    # The old tip is pinned (nothing of Bob's lost silently).
-    assert git(w.app, "for-each-ref", "refs/fused/backup/")
+    # The old tip is pinned, and the activity line names it (Undo).
+    line = [a for a in w.store.get(w.app)["activity"] if a["kind"] == "proposal-credit"]
+    assert line and git(w.app, "rev-parse", line[0]["backup"]) == old
+    assert [k for k, _t in _activity(w)][:2] == ["proposal-sent", "proposal-credit"]
     # On GitHub: the PR from Bob's own copy, exactly that commit, footer + note.
     pr = w.gh.get_pr("alice/sine", 1)
     assert pr["head_sha"] == head and pr["user"] == "bob"
@@ -60,25 +120,40 @@ def test_send_credits_bob_and_claude_and_changes_no_file(w):
     assert w.fake.tip("bob/sine", p["head_branch"]) == head
 
 
-def test_send_includes_uncommitted_edits(w):
+def test_send_commits_tracked_edits_and_only_the_new_files_ticked(w):
     claude_commit(w.app, {"app.py": "def amplitude():\n    return 5\n"}, "louder")
     edit(w.app, "index.html", PAGE.replace("blue", "green"))
-    edit(w.app, "helper.py", "HELP = 1\n")                     # made by hand, untracked
+    edit(w.app, "helper.py", "HELP = 1\n")                     # made by hand, ticked
+    edit(w.app, "secret.txt", "token\n")                       # made by hand, NOT ticked
     edit(w.app, ".gitignore", "out.csv\n")
     edit(w.app, "out.csv", "ignored\n")
     os.makedirs(os.path.join(w.app, "__pycache__"), exist_ok=True)
     edit(w.app, "__pycache__/app.cpython-312.pyc", "bytes")
     os.makedirs(os.path.join(w.app, ".fused"), exist_ok=True)
     edit(w.app, ".fused/meta.json", "{}")
-    _send(w)
+    offered = _p().untracked(w.app)
+    assert "helper.py" in offered and "secret.txt" in offered
+    for never in ("out.csv", "__pycache__/app.cpython-312.pyc", ".fused/meta.json"):
+        assert never not in offered
+    _send(w, include=["helper.py"])
     p = _proposal(w)
-    assert not _p().dirty(w.app)
     ref = f"refs/heads/{p['head_branch']}"
     assert "green" in w.fake.read("bob/sine", "index.html", ref)
     assert w.fake.read("bob/sine", "helper.py", ref) == "HELP = 1\n"
-    for never in ("out.csv", "__pycache__/app.cpython-312.pyc", ".fused/meta.json"):
+    for never in ("secret.txt", "out.csv", "__pycache__/app.cpython-312.pyc", ".fused/meta.json"):
         assert w.fake.read("bob/sine", never, ref) is None, never
     assert git(w.app, "log", "-1", "--format=%s") == "Your edits"
+    assert _p().untracked(w.app) == [".gitignore", "secret.txt"]   # still here, still his
+
+
+@pytest.mark.parametrize("bad", [["index.html"], ["../elsewhere.py"], ["nope.py"], "helper.py"])
+def test_include_must_name_a_new_file_here(w, bad):
+    from fused_render.contrib.jobs import PlainError
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    edit(w.app, "helper.py", "HELP = 1\n")
+    with pytest.raises(PlainError):
+        _send(w, include=bad)
+    assert w.fake.state()["pulls"] == {}
 
 
 def test_start_send_reports_steps_and_result(w, monkeypatch):
@@ -87,7 +162,7 @@ def test_start_send_reports_steps_and_result(w, monkeypatch):
     real = jobs.set_step
     monkeypatch.setattr(jobs, "set_step", lambda jid, key: (seen.append(key), real(jid, key)))
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    out = _p().start_send(w.app, title="Red", description="d")
+    out = _p().start_send(w.app, title="Red", description="d", include=[])
     job = jobs.wait(out["job"])
     assert job["status"] == "done", job
     assert seen == ["copy", "send", "open"]
@@ -106,6 +181,9 @@ def test_send_with_nothing_changed_refuses(w):
     from fused_render.contrib.jobs import PlainError
     with pytest.raises(PlainError, match="nothing to send"):
         _send(w)
+    edit(w.app, "scratch.txt", "only an unticked new file\n")
+    with pytest.raises(PlainError, match="nothing to send"):
+        _send(w)
     assert w.fake.state()["pulls"] == {}
 
 
@@ -121,16 +199,18 @@ def test_one_open_proposal_per_app(w):
 def test_lost_record_adopts_the_open_proposal(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
+    first = _head(w)
     w.store.update(w.app, lambda r: r.update(proposal=None))
     claude_commit(w.app, {"app.py": "x = 2\n"}, "more")
     view = _send(w)
     assert view["number"] == 1
     assert len(w.fake.state()["pulls"]["alice/sine"]) == 1
-    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == git(w.app, "rev-parse", "HEAD")
+    pr_head = w.gh.get_pr("alice/sine", 1)["head_sha"]
+    assert pr_head == _head(w) and _anc(w, first, pr_head)        # added to, not replaced
 
 
 def test_a_second_copy_never_adopts_the_first_copys_proposal(w, tmp_path):
-    from fused_render.contrib import follow, replay
+    from fused_render.contrib import follow
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
     # Copy 2 of the same app (same folder name), same machine, same account.
@@ -141,11 +221,10 @@ def test_a_second_copy_never_adopts_the_first_copys_proposal(w, tmp_path):
     w.store.put(two, rec)
     two = w.store.key(two)
     follow.fetch(two, follow.for_record(rec))
-    git(two, "update-ref", replay.BASE_REF, git(two, "rev-parse", "refs/fused/follow"))
     claude_commit(two, {"app.py": APP_PY_LOUD}, "louder")
     view = _p().send(two, title="Louder", description="d")
     assert view["number"] == 2
-    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _proposal(w)["pushed_head"]
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _proposal(w)["sent"]
 
 
 def test_branch_names_carry_a_random_tail(w):
@@ -161,7 +240,7 @@ def test_branch_names_carry_a_random_tail(w):
 def test_a_local_url_rewrite_onto_github_refuses_transfers(w, key, value):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     git(w.app, "config", key, value)
-    sha = git(w.app, "rev-parse", "HEAD")
+    sha = _head(w)
     with pytest.raises(w.gh.GitHubError) as e:
         w.gh.push(w.app, sha, "bob/sine", "x", lease="")
     assert e.value.reason == "forbidden" and "nothing was sent" in e.value.message
@@ -206,7 +285,7 @@ def test_an_unreadable_config_fails_closed(w, monkeypatch, broken):
     push/fetch refuse, and the follow guard reads it as redirected."""
     from fused_render.contrib import follow
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    sha = git(w.app, "rev-parse", "HEAD")
+    sha = _head(w)
     real = w.gh._git
 
     def flaky(repo, *args, **kw):
@@ -277,22 +356,6 @@ def test_offline_identity_is_cached_for_gated_posts_but_not_for_strict(w):
     assert asks() == n + 1
 
 
-def test_withdraw_waits_for_a_send_in_flight(w):
-    import threading
-    from fused_render.contrib import jobs
-    from fused_render.contrib.jobs import PlainError
-    gate = threading.Event()
-    job = jobs.start("propose-send", w.app, lambda: gate.wait(10) and {})
-    try:
-        with pytest.raises(PlainError, match="still being sent") as e:
-            _p().withdraw(w.app)
-        assert e.value.reason == "busy"
-    finally:
-        gate.set()
-        jobs.wait(job)
-    assert _p().withdraw(w.app) == {"ok": True}
-
-
 def test_disabled_wording(w, monkeypatch):
     from fused_render.contrib import flags, remix
     monkeypatch.setattr(flags, "_raw", lambda: dict.fromkeys(
@@ -315,28 +378,124 @@ def test_fork_creation_is_polled(w):
     assert _proposal(w)["head_repo"] == "bob/sine"
 
 
+# --------------------------------------------------------- Claude busy (R8)
+
+
+def test_r8_nothing_moves_or_leaves_while_claude_works(w, monkeypatch):
+    """R8 fixed: Send (and Update, Withdraw, Remix, a direct publish) refuse
+    while a Claude turn is open — the half-written file is never sent."""
+    from fused_render.contrib import remix
+    from fused_render.contrib.jobs import PlainError
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    edit(w.app, "app.py", "def amplitude(:\n")      # half-written by the running turn
+    head, pr_head = _head(w), w.gh.get_pr("alice/sine", 1)["head_sha"]
+    monkeypatch.setattr(_p(), "claude_busy", lambda root: True)
+    assert _p().preflight(w.app)["reason"] == "claude"
+    for call in (lambda: _p().update(w.app), lambda: _p().withdraw(w.app),
+                 lambda: remix.publish(w.app, name="sine-remix", credit="Remixed.")):
+        with pytest.raises(PlainError) as e:
+            call()
+        assert e.value.reason == "claude" and "Claude is still working" in e.value.message
+    assert _p().credit_once(w.app)["reason"] == "claude"
+    w.store.update(w.app, lambda r: r.update(proposal=None))
+    with pytest.raises(PlainError) as e:
+        _send(w)
+    assert e.value.reason == "claude"
+    assert _head(w) == head and read(w.app, "app.py") == "def amplitude(:\n"
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == pr_head
+    assert "bob/sine-remix" not in w.fake.state()["repos"]
+
+
 # ---------------------------------------------------------------- update
 
 
-def test_update_sends_new_edits_and_is_idempotent(w):
+def test_update_is_a_plain_push_that_github_sees_as_added(w):
+    from fused_render.contrib.jobs import PlainError
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    first = _proposal(w)["pushed_head"]
+    first = _proposal(w)["sent"]
     assert _p().view(w.app)["unproposed"] == 0
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
     assert _p().view(w.app)["unproposed"] == 1
     _p().update(w.app)
     p = _proposal(w)
-    assert p["pushed_head"] != first and p["number"] == 1
-    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == p["pushed_head"]
-    # The already-sent commit kept its identity (pure-function credit).
+    assert p["sent"] == _head(w) and p["number"] == 1
+    remote = w.gh.get_pr("alice/sine", 1)["head_sha"]
+    assert remote == p["sent"] and _anc(w, first, remote)     # added to, never replaced
+    # Credit never runs after the first send: the Fused-authored "louder"
+    # went exactly as it was.
+    assert git(w.app, "log", "-1", "--format=%ae") == "apps@fused.io"
     assert git(w.app, "rev-parse", "HEAD~1") == first
     assert _p().view(w.app)["unproposed"] == 0
-    again = _p().update(w.app)
-    assert again["message"] == "Your proposal is already up to date."
+    with pytest.raises(PlainError, match="already has all your changes") as e:
+        _p().update(w.app)
+    assert e.value.reason == "nothing-new"
+    assert "proposal-updated" in [k for k, _t in _activity(w)]
 
 
-APP_PY_LOUD = "def amplitude():\n    return 9\n\n\ndef frequency():\n    return 2\n"
+def test_update_sends_uncommitted_tracked_edits(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    edit(w.app, "app.py", APP_PY_LOUD)
+    assert _p().view(w.app)["unproposed"] == 1
+    _p().update(w.app)
+    assert not _p().dirty(w.app)
+    assert "return 9" in w.fake.read("bob/sine", "app.py",
+                                     f"refs/heads/{_proposal(w)['head_branch']}")
+
+
+def test_r1_an_author_push_never_rewrites_the_proposal(w):
+    """R1 fixed: Alice's unrelated push is MERGED into Bob's copy; the page
+    has nothing new to offer and Update refuses — no force push, no new
+    commit ids for what GitHub already has."""
+    from fused_render.contrib.jobs import PlainError
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    first = _proposal(w)["sent"]
+    w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
+    _bring_in(w)
+    assert _anc(w, first, _head(w))
+    view = _p().view(w.app)
+    assert view["unproposed"] == 0 and "stale" not in view
+    with pytest.raises(PlainError, match="already has all your changes"):
+        _p().update(w.app)
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == first
+
+
+def test_r4_update_after_discard_refuses_instead_of_emptying_the_proposal(w):
+    from fused_render.contrib.jobs import PlainError
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    pr_head = w.gh.get_pr("alice/sine", 1)["head_sha"]
+    _fetch(w)
+    git(w.app, "reset", "-q", "--hard", "refs/remotes/origin/main")   # what Discard leaves
+    with pytest.raises(PlainError, match="matches alice's latest"):
+        _p().update(w.app)
+    pr = w.gh.get_pr("alice/sine", 1)
+    assert pr["state"] == "open" and pr["head_sha"] == pr_head
+
+
+def test_r9_github_update_branch_is_merged_in_not_replayed(w):
+    """R9 fixed: GitHub's "Update branch" merged main (with Alice's M2) into
+    Bob's proposal. His Update merges that head into his copy, so M2 keeps
+    its id — it is never re-created as one of "his changes"."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    m2 = w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "M2 notes", author="alice")
+    gh_head = w.fake.update_branch("alice/sine", 1)
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    _p().update(w.app)
+    head = _head(w)
+    assert _anc(w, m2, head) and _anc(w, gh_head, head)
+    assert git(w.app, "log", "--format=%s", "HEAD").splitlines().count("M2 notes") == 1
+    pr = w.gh.get_pr("alice/sine", 1)
+    assert pr["head_sha"] == head and _anc(w, gh_head, pr["head_sha"])
+    assert read(w.app, "NOTES.md") == "n\n" and "return 9" in read(w.app, "app.py")
+    _fetch(w)
+    from fused_render.contrib import proposals
+    assert proposals.count_unproposed(w.app, _proposal(w)["sent"], _tip(w)) == 0
 
 
 def test_update_keeps_alices_edit_to_the_proposal(w):
@@ -344,20 +503,23 @@ def test_update_keeps_alices_edit_to_the_proposal(w):
     _send(w)
     p = _proposal(w)
     # Alice fixes something on github.com, straight onto Bob's branch.
-    w.fake.commit("bob/sine", p["head_branch"], {"NOTES.md": "thanks!\n"},
-                  "Add notes", author="alice")
+    hers = w.fake.commit("bob/sine", p["head_branch"], {"NOTES.md": "thanks!\n"},
+                         "Add notes", author="alice")
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
     _p().update(w.app)
-    p2 = _proposal(w)
-    remote = w.gh.get_pr("alice/sine", 1)["head_sha"]
-    assert remote == p2["pushed_head"] == git(w.app, "rev-parse", "HEAD")
+    head = _head(w)
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _proposal(w)["sent"] == head
+    assert _anc(w, hers, head)                             # her commit, same id
+    assert git(w.app, "log", "-1", "--format=%an", hers) == "alice"
     assert read(w.app, "NOTES.md") == "thanks!\n"          # Bob now runs her edit
     assert "return 9" in read(w.app, "app.py")             # and his own
-    assert git(w.app, "log", "-1", "--format=%an") == "alice"  # her commit is still hers
+    assert len(git(w.app, "rev-list", "--parents", "-n1", "HEAD").split()) == 3   # a merge
 
 
-def test_update_refuses_when_alices_edit_overlaps(w):
-    from fused_render.contrib.jobs import PlainError
+def test_update_overlap_goes_to_merge_with_claude(w, monkeypatch):
+    started = []
+    monkeypatch.setattr(_p(), "_start_merge_job",
+                        lambda root, **kw: started.append(kw) or "job-1")
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
     p = _proposal(w)
@@ -365,25 +527,76 @@ def test_update_refuses_when_alices_edit_overlaps(w):
                            {"app.py": APP_PY.replace("return 1", "return 7")},
                            "Tweak", author="alice")
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
-    tree = git(w.app, "rev-parse", "HEAD^{tree}")
-    with pytest.raises(PlainError, match="alice also edited this proposal"):
+    head = _head(w)
+    with pytest.raises(_p().MergeStarted) as e:
         _p().update(w.app)
+    assert e.value.reason == "needs-merge" and e.value.job == "job-1"
+    assert started == [{"purpose": "proposal", "ours": head, "theirs": remote}]
     assert w.gh.get_pr("alice/sine", 1)["head_sha"] == remote   # hers untouched
-    assert git(w.app, "rev-parse", "HEAD^{tree}") == tree       # his files untouched
-    assert not _p().dirty(w.app)
-    assert "return 9" in read(w.app, "app.py")
+    assert _head(w) == head and "return 9" in read(w.app, "app.py")
+
+
+def test_merge_accepted_sends_the_combined_version(w, monkeypatch):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    seen = []
+    monkeypatch.setattr(_p(), "start_update", lambda app_dir: seen.append(app_dir) or {"ok": True})
+    assert _p().merge_accepted(w.app) == {"ok": True} and seen == [w.app]
+
+
+def test_a_rejected_push_says_try_again(w, monkeypatch):
+    from fused_render.contrib.jobs import PlainError
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+
+    def rejected(*a, **k):
+        raise w.gh.GitHubError("conflict")
+    monkeypatch.setattr(w.gh, "push", rejected)
+    with pytest.raises(PlainError, match="Something changed on GitHub in the meantime"):
+        _p().update(w.app)
+
+
+# -------------------------------------------------------------- withdraw
 
 
 def test_withdraw_closes_with_a_note_and_clears(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    head = git(w.app, "rev-parse", "HEAD")
+    head = _head(w)
     assert _p().withdraw(w.app) == {"ok": True}
     pr = w.gh.get_pr("alice/sine", 1)
     assert pr["state"] == "closed" and not pr["merged"]
     assert w.gh.pr_comments("alice/sine", 1)[-1]["body"] == "bob withdrew this proposal."
     assert _proposal(w) is None
-    assert git(w.app, "rev-parse", "HEAD") == head
+    assert _head(w) == head
+    assert "proposal-withdrawn" in [k for k, _t in _activity(w)]
+
+
+def test_r13_withdraw_deletes_the_copy_on_github(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    _p().withdraw(w.app)
+    _send(w)
+    fork = w.fake.bare_path("bob/sine")
+    heads = git(fork, "for-each-ref", "--format=%(refname)", "refs/heads/fused-*").split()
+    assert heads == [f"refs/heads/{_proposal(w)['head_branch']}"]
+
+
+def test_withdraw_waits_for_a_send_in_flight(w):
+    import threading
+    from fused_render.contrib import jobs
+    from fused_render.contrib.jobs import PlainError
+    gate = threading.Event()
+    job = jobs.start("propose-send", w.app, lambda: gate.wait(10) and {})
+    try:
+        with pytest.raises(PlainError, match="still being sent") as e:
+            _p().withdraw(w.app)
+        assert e.value.reason == "busy"
+    finally:
+        gate.set()
+        jobs.wait(job)
+    assert _p().withdraw(w.app) == {"ok": True}
 
 
 # --------------------------------------------------------------- refresh
@@ -403,6 +616,30 @@ def test_refresh_shows_alices_newest_comment_only(w):
     assert view["comment"]["body"] == "Can you make it darker?"
 
 
+def test_refresh_records_the_tip_it_checked(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    new = w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
+    _p().refresh(w.app, force=True, tip=new)
+    assert _proposal(w)["checked_tip"] == new
+
+
+def test_asked_to_update_is_shown_and_update_answers_it(w):
+    from fused_render.contrib import inbox
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
+    w.fake.comment_as("alice", "alice/sine", 1,
+                      f"{inbox.ASK_DEFAULT}\n\n{w.gh.ASK_UPDATE_MARKER}")
+    view = _p().refresh(w.app, force=True)
+    assert view["asked_update"] and view["asked"]["author"] == "alice"
+    assert w.gh.ASK_UPDATE_MARKER not in view["comment"]["body"]
+    _bring_in(w)                        # nothing of Bob's own is new, but she asked
+    _p().update(w.app)
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _head(w)
+    assert not _p().view(w.app)["asked_update"]
+
+
 def test_refresh_is_throttled(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
@@ -414,16 +651,18 @@ def test_refresh_is_throttled(w):
 def test_declined_keeps_changes_and_says_so_once(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    head = git(w.app, "rev-parse", "HEAD")
+    head = _head(w)
     w.fake.close("alice/sine", 1)
     assert _p().refresh(w.app, force=True)["state"] == "declined"
     _p().refresh(w.app, force=True)
     events = [e["kind"] for e in w.store.get(w.app)["events"]]
     assert events.count("declined") == 1
-    assert git(w.app, "rev-parse", "HEAD") == head
-    # Declined is settled: a fresh Send is allowed.
+    assert _head(w) == head
+    # Declined is settled: a fresh Send is allowed — and never re-credits
+    # what was already sent.
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
     assert _send(w)["number"] == 2
+    assert _anc(w, head, _head(w))
 
 
 def test_declined_shows_the_authors_closing_note(w):
@@ -459,36 +698,35 @@ def test_a_declined_proposal_stops_being_polled(w):
     assert not _proposal(w)["cache"]["note_checked"]
 
 
-def test_merged_polls_until_returned_then_stops(w, monkeypatch):
-    calls = spy_engine(monkeypatch)
+def test_merged_keeps_polling_until_returned_then_stops(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
     w.fake.merge("alice/sine", 1, "squash")
     assert _p().refresh(w.app, force=True)["state"] == "merged"
-    assert _proposal(w)["returned_at"] and len(calls) == 1
+    before = _api_calls(w)
+    _p()._last_refresh.clear()
+    _p().refresh(w.app)
+    assert _api_calls(w) > before                    # the engine has not returned it yet
+    w.store.update(w.app, lambda r: r["proposal"].update(returned_at=1.0))   # engine row 7
     before = _api_calls(w)
     _p().refresh(w.app, force=True)
-    assert _api_calls(w) == before and len(calls) == 1
+    assert _api_calls(w) == before
 
 
-def test_stale_follows_what_bob_runs_not_the_commit_count(w):
+def test_r6_a_merged_proposal_on_a_remix_stops_being_polled(w):
+    from fused_render.contrib import remix
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    assert _p().view(w.app)["stale"] is False
-    edit(w.app, "app.py", APP_PY_LOUD)                           # uncommitted
-    assert _p().view(w.app)["stale"] is True
-    git(w.app, "checkout", "--", "app.py")
-    assert _p().view(w.app)["stale"] is False
-    # What a Merge with Claude leaves: the engine carried proposed_head onto a
-    # rewritten HEAD (so nothing reads as unproposed), but the files differ
-    # from what GitHub has.
-    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "combined")
-    head = git(w.app, "rev-parse", "HEAD")
-    w.store.update(w.app, lambda r: r["proposal"].update(proposed_head=head))
-    view = _p().view(w.app)
-    assert view["unproposed"] == 0 and view["stale"] is True
-    _p().update(w.app)
-    assert _p().view(w.app)["stale"] is False
+    remix.publish(w.app, name="sine-remix", credit="Remixed from alice/sine.")
+    w.fake.merge("alice/sine", 1, "squash")
+    assert _p().refresh(w.app, force=True)["state"] == "merged"
+    n = []
+    for _ in range(3):
+        _p()._last_refresh.clear()                   # past the 60 s throttle
+        before = _api_calls(w)
+        _p().refresh(w.app)
+        n.append(_api_calls(w) - before)
+    assert n == [0, 0, 0]
 
 
 def test_edits_made_on_github_are_read_back(w):
@@ -498,80 +736,64 @@ def test_edits_made_on_github_are_read_back(w):
     assert _p().refresh(w.app, force=True)["title"] == "Red wave (edited by Alice)"
 
 
-@pytest.mark.parametrize("method", ["merge", "squash", "rebase"])
-def test_merged_returns_to_following_keeping_unproposed_edits(w, monkeypatch, method):
-    calls = spy_engine(monkeypatch)
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    _send(w)
-    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")      # never proposed
-    w.fake.merge("alice/sine", 1, method)
-    view = _p().refresh(w.app, force=True)
-    assert view["state"] == "merged"
-    assert [c[0] for c in calls] == [w.app] and calls[0][1]["ok"], calls
-    head = git(w.app, "rev-parse", "HEAD")
-    tip = git(w.app, "rev-parse", "refs/fused/follow")
-    assert git(w.app, "rev-list", "--count", f"{tip}..{head}") == "1"   # only "louder" left
-    assert "red" in read(w.app, "index.html") and "return 9" in read(w.app, "app.py")
-    assert w.store.get(w.app)["proposal"]["returned_at"]
-    # Once only.
-    _p().refresh(w.app, force=True)
-    assert len(calls) == 1
-
-
-def test_return_overlap_waits_on_one_merge_job(w, monkeypatch):
-    from fused_render.contrib import merge_job
-    calls = spy_engine(monkeypatch)
-    started = []
-    monkeypatch.setattr(merge_job, "start",
-                        lambda app_dir, **kw: started.append(kw) or "job-1")
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    _send(w)
-    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")      # never proposed
-    w.fake.commit("alice/sine", "main", {"app.py": APP_PY.replace("return 1", "return 7")},
-                  "Quieter", author="alice")
-    w.fake.merge("alice/sine", 1, "squash")
-    tree = git(w.app, "rev-parse", "HEAD^{tree}")
-    _p().refresh(w.app, force=True)
-    assert len(calls) == 1 and [s["purpose"] for s in started] == ["return"]
-    assert w.store.get(w.app)["needs_merge"]
-    assert git(w.app, "rev-parse", "HEAD^{tree}") == tree        # nothing moved
-    _p().refresh(w.app, force=True)
-    assert len(calls) == 1 and len(started) == 1                 # not asked again
-
-
-def test_merged_but_not_yet_in_the_authors_latest_waits(w, monkeypatch):
-    calls = spy_engine(monkeypatch)
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    _send(w)
-    head = git(w.app, "rev-parse", "HEAD")
-    before = w.fake.tip("alice/sine")
-    w.fake.merge("alice/sine", 1, "merge")
-    # GitHub says merged, but main no longer carries it (Alice reset it).
-    git(w.fake.bare_path("alice/sine"), "update-ref", "refs/heads/main", before)
-    assert _p().refresh(w.app, force=True)["state"] == "merged"
-    assert calls and calls[-1][1]["reason"] == "not-yet"
-    assert git(w.app, "rev-parse", "HEAD") == head
-    assert not w.store.get(w.app)["proposal"]["returned_at"]
-
-
-def test_merged_with_loop_off_does_not_return(w, monkeypatch):
-    from fused_render.contrib import flags
-    calls = spy_engine(monkeypatch)
-    monkeypatch.setattr(flags, "_raw", lambda: {"sources": True, "changes": True,
-                                                "inbox": True, "loop": False, "remix": True})
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    _send(w)
-    w.fake.merge("alice/sine", 1, "squash")
-    assert _p().refresh(w.app, force=True)["state"] == "merged"
-    assert calls == []
-
-
 def test_github_trouble_keeps_the_cached_state(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
     w.fake.fail_next("get_pull", "offline")
     assert _p().refresh(w.app, force=True)["state"] == "waiting"
     assert _proposal(w)["cache"]["error"] == "offline"
+
+
+# ------------------------------------------------- direct publish (R7, R7b)
+
+
+def test_r7_direct_publish_keeps_the_proposal_commits_and_settles_it(sw):
+    """R7/R7b fixed: a collaborator's direct publish (engine.push_to_main)
+    sends HEAD as it is — never force, the sent commit unrewritten, so it IS
+    in the author's branch — and the open proposal is closed as published
+    directly, then never polled again, never shown as declined."""
+    from fused_render.contrib import engine
+    w = sw
+    w.fake.add_collaborator("alice/sine", "bob")
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    sent = _proposal(w)["sent"]
+    w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    out = engine.push_to_main(w.app)
+    assert out["ok"], out
+    bare = w.fake.bare_path("alice/sine")
+    assert w.fake.tip("alice/sine", "main") == _head(w)
+    assert subprocess.run(["git", "-C", bare, "merge-base", "--is-ancestor", sent, "main"]
+                          ).returncode == 0
+    assert w.gh.get_pr("alice/sine", 1)["state"] == "closed"
+    assert w.gh.pr_comments("alice/sine", 1)[-1]["body"] == "Published directly"
+    view = _p().view(w.app)
+    assert view["state"] == "merged" and view["direct"] and not view["can_update"]
+    before = _api_calls(w)
+    _p().refresh(w.app, force=True)
+    assert _api_calls(w) == before
+    assert "declined" not in [e["kind"] for e in w.store.get(w.app)["events"]]
+    assert w.fake.tip("bob/sine", _proposal(w)["head_branch"]) is None    # tidied
+
+
+def test_direct_publish_before_any_send_credits_bob(sw):
+    from fused_render.contrib import engine
+    w = sw
+    w.fake.add_collaborator("alice/sine", "bob")
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    assert engine.push_to_main(w.app)["ok"]
+    bare = w.fake.bare_path("alice/sine")
+    assert git(bare, "log", "-1", "--format=%ae", "main") == w.fake.email_of("bob")
+    assert "proposal-credit" in [k for k, _t in _activity(w)]
+
+
+def test_credit_once_is_refused_while_claude_works(w, monkeypatch):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    head = _head(w)
+    monkeypatch.setattr(_p(), "claude_busy", lambda root: True)
+    assert _p().credit_once(w.app)["reason"] == "claude"
+    assert _head(w) == head
 
 
 # ------------------------------------------------------- credit, pure parts
@@ -587,28 +809,28 @@ def test_with_trailer_is_idempotent():
 
 
 def test_credit_keeps_other_peoples_commits(w):
-    base = git(w.app, "rev-parse", "HEAD")
+    base = _head(w)
     claude_commit(w.app, {"a.txt": "1\n"}, "one")
     edit(w.app, "b.txt", "2\n")
     git(w.app, "add", "b.txt")
     git(w.app, "-c", "user.name=Carol", "-c", "user.email=carol@example.com",
         "commit", "-q", "-m", "by hand")
     me = w.gh.identity()
-    tip = _p().credit(w.app, base, git(w.app, "rev-parse", "HEAD"), me)
+    tip = _p().credit(w.app, base, _head(w), me)
     assert git(w.app, "log", "-1", "--format=%an", tip) == "Carol"
     assert git(w.app, "log", "-1", "--format=%an", f"{tip}~1") == "Bob"
     assert _p().credit(w.app, base, tip, me) == tip
 
 
 def test_credit_keeps_a_merge_in_bobs_range_as_a_merge(w):
-    base = git(w.app, "rev-parse", "HEAD")
+    base = _head(w)
     claude_commit(w.app, {"a.txt": "1\n"}, "one")
     git(w.app, "checkout", "-q", "-b", "side", base)
     claude_commit(w.app, {"b.txt": "2\n"}, "two")
     git(w.app, "checkout", "-q", "main")
     git(w.app, "-c", "user.name=Fused", "-c", "user.email=apps@fused.io",
         "merge", "-q", "--no-ff", "-m", "Claude: combine", "side")
-    head = git(w.app, "rev-parse", "HEAD")
+    head = _head(w)
     me = w.gh.identity()
     tip = _p().credit(w.app, base, head, me)
     assert git(w.app, "rev-parse", f"{tip}^{{tree}}") == git(w.app, "rev-parse", f"{head}^{{tree}}")
@@ -616,6 +838,16 @@ def test_credit_keeps_a_merge_in_bobs_range_as_a_merge(w):
     authors = set(git(w.app, "log", "--format=%an", f"{base}..{tip}").splitlines())
     assert authors == {"Bob"}
     assert _p().credit(w.app, base, tip, me) == tip                          # idempotent
+
+
+def test_credit_skips_what_was_sent_and_the_authors_side(w):
+    base = _head(w)
+    sent = claude_commit(w.app, {"a.txt": "1\n"}, "sent already")
+    claude_commit(w.app, {"b.txt": "2\n"}, "not yet")
+    me = w.gh.identity()
+    tip = _p().credit(w.app, base, _head(w), me, exclude=[sent])
+    assert git(w.app, "rev-parse", f"{tip}~1") == sent
+    assert git(w.app, "log", "-1", "--format=%an", tip) == "Bob"
 
 
 # ----------------------------------------------------------------- gh.py
@@ -661,19 +893,42 @@ def test_split_full_refuses_paths():
         gh.split_full("../../user/repos")
 
 
+def test_plain_push_is_never_force(w):
+    """`gh.push` without lease/force is a fast-forward-only push: a branch
+    holding something else refuses with reason "conflict"."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    a = _head(w)
+    w.gh.push(w.app, a, "alice/sine", "side")
+    git(w.app, "reset", "-q", "--hard", "HEAD~1")
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "green")}, "green")
+    with pytest.raises(w.gh.GitHubError) as e:
+        w.gh.push(w.app, _head(w), "alice/sine", "side")
+    assert e.value.reason == "conflict" and w.fake.tip("alice/sine", "side") == a
+
+
+def test_fake_mergeable_and_delete_branch(w):
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    _send(w)
+    assert w.gh.get_pr("alice/sine", 1)["mergeable"] is True
+    w.fake.commit("alice/sine", "main", {"app.py": APP_PY.replace("return 1", "return 7")},
+                  "quieter", author="alice")
+    assert w.gh.get_pr("alice/sine", 1)["mergeable"] is False
+    branch = _proposal(w)["head_branch"]
+    assert w.gh.delete_branch("bob/sine", branch) and w.fake.tip("bob/sine", branch) is None
+
+
 # --------------------------------------------------------------- contributors
 
 
 def test_contributors_after_a_merge(w):
-    from fused_render.contrib import contributors, follow
+    from fused_render.contrib import contributors
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
     w.fake.merge("alice/sine", 1, "squash")
-    rec = w.store.get(w.app)
-    follow.fetch(w.app, follow.for_record(rec))
+    _fetch(w)
     people = contributors.list(w.app)
     logins = [x["login"] for x in people]
-    assert logins == ["alice", "bob"] or sorted(logins) == ["alice", "bob"]
+    assert sorted(logins) == ["alice", "bob"]
     assert all(x["name"] != "Fused" for x in people)
 
 
@@ -694,10 +949,13 @@ def test_no_git_words_in_messages():
     import re
     import fused_render.contrib.proposals as m
     src = open(m.__file__, encoding="utf-8").read()
-    for msg in re.findall(r'PlainError\(\s*((?:f?"[^"]*"\s*)+)', src):
-        low = msg.lower()
-        for word in ("branch", "rebase", "fork", "commit", "push", "conflict",
-                     "origin", "head", "sha"):
+    msgs = re.findall(r'PlainError\(\s*((?:f?"[^"]*"\s*)+)', src)
+    msgs += re.findall(r'"message":\s*((?:f?"[^"]*"\s*)+)', src)
+    msgs += re.findall(r'^(?:CLAUDE_BUSY|_MOVED|_BUSY) = ("[^"]*")', src, re.M)
+    msgs += re.findall(r'_activity\(\s*root,\s*"[^"]*",\s*((?:f?"[^"]*"\s*)+)', src)
+    assert len(msgs) > 20
+    for msg in msgs:
+        low = msg.lower().replace("merge with claude", "")   # the product's own name
+        for word in ("branch", "rebase", "fork", "commit", "push", "pushed", "conflict",
+                     "origin", "head", "sha", "merge"):
             assert not re.search(rf"\b{word}\b", low), (word, msg)
-
-

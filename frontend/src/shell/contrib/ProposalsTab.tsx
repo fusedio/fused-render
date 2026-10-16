@@ -9,19 +9,27 @@
 // thrown away; the app itself is never touched. Accept merges it on GitHub
 // (after a confirm), Decline closes it with an optional note.
 //
+// A proposal that NO LONGER FITS (GitHub's own check, `fits: false` — the
+// app moved on under it) says so with a badge and two ways forward: Ask
+// <sender> to update (a note on the proposal; the sender's page then offers
+// Update) or Merge with Claude (Claude combines it with the app's latest
+// here, then the review reads it again). Unknown (`fits` null) says nothing.
+//
 // The list is the `inbox` field of `/api/contrib/app` — the page's one
 // subscription, which polls fast while any review is still reading — so this
 // tab owns no fetch of its own; it asks for a re-read after every action.
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Inbox, Loader2, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
+import { ExternalLink, Inbox, Loader2, ShieldAlert, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
 import {
   acceptProposal,
+  askToUpdate,
   declineProposal,
   okMessage,
   plainMessage,
   removeTry,
   reviewProposal,
   runJob,
+  startInboxMerge,
   tryProposal,
   useUnmountSignal,
   type AppContribState,
@@ -134,7 +142,7 @@ export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string
   );
 }
 
-type Ask = null | "try" | "accept" | "decline";
+type Ask = null | "try" | "accept" | "decline" | "ask-update";
 
 function InboxCard({
   dir,
@@ -155,6 +163,7 @@ function InboxCard({
   const [error, setError] = useState<string | null>(null);
   const [ask, setAsk] = useState<Ask>(null);
   const [note, setNote] = useState("");
+  const [askNote, setAskNote] = useState("");
   // The server asked for an explicit OK on a flagged proposal (reason
   // "confirm") although this card had not seen the verdict: the confirm then
   // reads as the flagged one, and the next press sends `confirm: true`.
@@ -166,6 +175,7 @@ function InboxCard({
     item.review_status === "none" || item.review_status === "pending" || item.review_status === "running";
   const flagged = review?.verdict === "look";
   const who = item.author;
+  const stale = item.fits === false;
 
   const act = async (key: string, fn: () => Promise<ContribAnswer | { ok: boolean; message?: string }>) => {
     if (busy) return false;
@@ -221,6 +231,11 @@ function InboxCard({
             </Badge>
           )}
           {age && <span className="contrib-inbox-age">{age}</span>}
+          {stale && (
+            <Badge variant="outline" className="contrib-inbox-stale h-4.5 px-1.5 text-[10.5px] font-medium">
+              No longer fits
+            </Badge>
+          )}
         </div>
         <QuietAction href={item.url}>
           View on GitHub
@@ -237,6 +252,43 @@ function InboxCard({
         busy={busy === "review"}
         onRetry={() => void act("review", () => reviewProposal(dir, item.number))}
       />
+
+      {stale && (
+        <div className="contrib-stale" role="status">
+          <span>
+            {slug} changed since {who} sent this, so it no longer fits as it is.
+          </span>
+          <div className="contrib-try-actions">
+            <Button size="sm" variant="outline" disabled={!!busy} onClick={() => setAsk("ask-update")}>
+              Ask {who} to update
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!!busy}
+              onClick={() =>
+                void act("merge", async () => {
+                  const r = await runJob(startInboxMerge(dir, item.number), { signal: signal() });
+                  if (r.ok) {
+                    notify({
+                      title: okMessage(r, `Claude merged ${possessive(who)} proposal with the latest.`),
+                      tone: "info",
+                    });
+                  }
+                  return r;
+                })
+              }
+            >
+              {busy === "merge" ? (
+                <Loader2 data-icon="inline-start" className="animate-spin" />
+              ) : (
+                <Sparkles data-icon="inline-start" />
+              )}
+              {busy === "merge" ? "Claude is combining…" : "Merge with Claude"}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {tryCopy && (
         <div className="contrib-try" role="status">
@@ -263,8 +315,8 @@ function InboxCard({
         </div>
       )}
 
-      {/* Said once: while the Decline sheet is up it shows the error itself. */}
-      {error && ask !== "decline" && (
+      {/* Said once: while a note sheet is up it shows the error itself. */}
+      {error && ask !== "decline" && ask !== "ask-update" && (
         <p className="contrib-error" role="alert">
           {error}
         </p>
@@ -400,6 +452,61 @@ function InboxCard({
               className="min-h-[76px] resize-none"
               placeholder="Thanks for this — here's why it doesn't fit…"
               onChange={(e) => setNote(e.target.value)}
+            />
+          </Field>
+          {error && (
+            <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
+              {error}
+            </p>
+          )}
+        </ContribDialog>
+      )}
+      {ask === "ask-update" && (
+        <ContribDialog
+          open
+          onClose={() => setAsk(null)}
+          locked={busy === "ask-update"}
+          title={`Ask ${who} to update`}
+          description={`${who} sees your note on the proposal, and a way to bring it up to date with ${slug}.`}
+          footer={
+            <>
+              <Button variant="outline" onClick={() => setAsk(null)} disabled={busy === "ask-update"}>
+                Cancel
+              </Button>
+              <Button
+                disabled={busy === "ask-update"}
+                onClick={async () => {
+                  let answer: unknown = null;
+                  const ok = await act("ask-update", async () => {
+                    const r = await askToUpdate(dir, item.number, askNote.trim());
+                    answer = r;
+                    return r;
+                  });
+                  if (ok) {
+                    setAsk(null);
+                    setError(null);
+                    setAskNote("");
+                    notify({ title: okMessage(answer, `Asked ${who} to update the proposal.`), tone: "info" });
+                  }
+                }}
+              >
+                {spin("ask-update")}
+                Ask to update
+              </Button>
+            </>
+          }
+        >
+          <Field>
+            <FieldLabel htmlFor={`contrib-ask-${item.number}`}>
+              Note to {who} <span className="font-normal text-muted-foreground">(optional)</span>
+            </FieldLabel>
+            <Textarea
+              id={`contrib-ask-${item.number}`}
+              value={askNote}
+              rows={3}
+              className="min-h-[76px] resize-none"
+              placeholder="The app changed since you sent this. Could you bring it up to date?"
+              onChange={(e) => setAskNote(e.target.value)}
             />
           </Field>
           {error && (
