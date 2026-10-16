@@ -32,7 +32,9 @@
 //    the segment render, every poll, and re-pins the open cards last
 //    (T:16305-16311, 14665-14775).
 import {
+  cancelScheduledMessage,
   decideThroughQueue,
+  getSchedule,
   markTaskIdle,
   markTaskRunning,
   scheduleMessage,
@@ -61,7 +63,7 @@ import type {
   Working,
 } from "./controller-api";
 import { historyToTurns } from "./history";
-import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit } from "./quota";
+import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit, isPlanLimitText } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
 import { endActiveTasks } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
@@ -84,6 +86,7 @@ import type {
   Quota,
   RetryInfo,
   RunIdResponse,
+  Segment,
   SendResponse,
   SkillRow,
   StartResponse,
@@ -954,6 +957,94 @@ export function createChatController(deps: ControllerDeps): ChatController {
     reportTrouble(troubleFromMessage(message, fromAgent, undefined, curBackend()));
 
   /**
+   * A REPLY LANDED, SO WHATEVER THE RED ROWS REPORTED IS OVER. A failure card
+   * is a report of something the reader may still have to act on — wait for
+   * the plan window, fix the network, send the message again — and a turn
+   * that just completed is the proof it was acted on, whatever did it (the
+   * reset, a switch of account, the Wi-Fi back, a retry). Left in place the
+   * rows read as something still wrong above an answer that plainly arrived
+   * (Akshil, 2026-10-16: the limit card, "and the same for other error
+   * cards"). So every error row goes, and the card at the tail with them.
+   * agent.py `_history` applies the same rule to a restored transcript
+   * (`_drop_resolved_errors`); the rows that never reach the transcript — a
+   * refused send's "This message was not sent" — only this can clear.
+   *
+   * ONLY THE ROWS BEFORE THE MESSAGE THIS REPLY ANSWERS — everything above
+   * the last user bubble. A failure reported DURING the run ("Could not send"
+   * on a follow-up the inbox refused, "Could not stop the run") is about a
+   * different message than the one that just got its answer, and the reply
+   * resolves nothing about it: those stay, and so does the card when the
+   * newest row is one of them (the card is always the newest row —
+   * `ui/Transcript.lastErrorKey`).
+   *
+   * The plan limit has one more thing to undo: the comeback it booked.
+   */
+  /** Did this reply SAY anything? A tool-only turn (a retry that called a
+   *  tool and died again) answered nothing and resolves nothing — the same
+   *  rule as agent.py `_drop_resolved_errors` (CodeRabbit #1699). */
+  const hasWords = (text: string, segs: Segment[]) =>
+    !!text.trim() || segs.some((sg) => sg.kind === "text" && !!(sg.text || "").trim());
+  const isPlanLimit = (t: { text: string; quota?: Quota } | null | undefined) =>
+    !!t && (limitHit(t.quota) || isPlanLimitText(t.text));
+  const retireErrors = () => {
+    let lastUser = -1;
+    state.turns.forEach((t, i) => {
+      if (t.role === "user") lastUser = i;
+    });
+    const gone = state.turns.filter((t, i): t is ErrorTurn => t.role === "error" && i < lastUser);
+    if (!gone.length) return;
+    const turns = state.turns.filter((t, i) => !(t.role === "error" && i < lastUser));
+    const card = state.trouble;
+    const cardStays = !!card && turns.some((t) => t.role === "error");
+    emit({ turns, ...(cardStays ? {} : { trouble: null }) });
+    const hadLimit =
+      gone.some((t) => t.kind === "limit" && isPlanLimit(t)) ||
+      (!cardStays && card?.kind === "limit" && isPlanLimit({ text: card.message, quota: card.quota }));
+    if (!hadLimit) return;
+    // AND EVERY COMEBACK BOOKED ON THIS SESSION. The scheduled "Your usage
+    // limit has reset. Continue…" is for a chat that is still stuck; fired
+    // into one that has already gone on it is a stray prompt that redoes
+    // work. Found on the SERVER'S list, not in a memory of what this frame
+    // posted (Bugbot/CodeRabbit #1699): a reload empties any such memory,
+    // and a second limit hit books a second row. A POST still in flight is
+    // caught by `retiredAt` in `scheduleComeback`. Only when a limit row or
+    // card actually went: an ordinary reply end must not fetch the schedule.
+    const sid = state.sessionId;
+    if (sid) {
+      retiredAt.set(sid, (retiredAt.get(sid) ?? 0) + 1);
+      void cancelComebacks(sid, Date.now());
+    }
+  };
+
+  /** Cancel every pending comeback the server held for `sid` AT THE RETIRE,
+   *  fire-and-forget. `before` is the retire's wall clock: a comeback booked
+   *  after it (a retry that hit the limit again while the list was in
+   *  flight) is for a chat that is stuck again, and stays (CodeRabbit
+   *  #1699). An entry with no readable `created` is treated as older. */
+  const cancelComebacks = async (sid: string, before: number) => {
+    const list = deps.listSchedule ?? getSchedule;
+    const cancel = deps.cancelSchedule ?? cancelScheduledMessage;
+    try {
+      const { entries } = await list();
+      const bookedAfter = (created: string | undefined) => {
+        const at = created ? Date.parse(created) : NaN;
+        return Number.isFinite(at) && at > before;
+      };
+      const mine = entries.filter(
+        (e) =>
+          e.session_id === sid &&
+          e.message === CONTINUE_PROMPT &&
+          e.state === "pending" &&
+          !bookedAfter(e.created),
+      );
+      await Promise.all(mine.map((e) => cancel(e.id)));
+      if (mine.length) announceTasksChanged();
+    } catch (err: unknown) {
+      console.warn("comeback cancel failed:", err instanceof Error ? err.message : err);
+    }
+  };
+
+  /**
    * THE COMEBACK AFTER A USAGE LIMIT. Claude Code's own TUI waits in the open
    * session and continues the task when the plan window reopens; a headless
    * `-p` run gets no such wait — the turn ends on the limit and the process is
@@ -977,6 +1068,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * error the ordinary way (no session to schedule on, or no target).
    */
   const scheduledRuns = new Set<string>();
+  /** session id → how many times its limit has been retired: a comeback whose
+   *  POST settles after a reply already landed is cancelled on the spot. */
+  const retiredAt = new Map<string, number>();
   const scheduleComeback = (runId: string, error: string, quota: Quota): boolean => {
     if (scheduledRuns.has(runId)) return true;
     const sessionId = state.sessionId;
@@ -985,6 +1079,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const trouble: Trouble = { ...troubleFromMessage(error, false, undefined, curBackend()), quota };
     reportTrouble(trouble);
     const post = deps.schedule ?? scheduleMessage;
+    const retiredMark = retiredAt.get(sessionId) ?? 0;
     void post({
       target: FILE,
       message: CONTINUE_PROMPT,
@@ -995,7 +1090,24 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // current Preferences default.
       ...(curBackend() ? { backend: curBackend() } : {}),
     })
-      .then(() => {
+      .then((res: unknown) => {
+        // A reply landed while this POST was in flight: the row it just made
+        // is already stale. Cancel it now rather than note it.
+        if ((retiredAt.get(sessionId) ?? 0) !== retiredMark) {
+          const id = (res as { entry?: { id?: unknown } } | null)?.entry?.id;
+          const cancel = deps.cancelSchedule ?? cancelScheduledMessage;
+          if (typeof id === "string" && id) {
+            void cancel(id)
+              .then(() => announceTasksChanged())
+              .catch((err: unknown) => {
+                addNote(
+                  "Could not cancel the follow-up: " + (err instanceof Error ? err.message : String(err)),
+                  "\u25f7",
+                );
+              });
+          }
+          return;
+        }
         // The card's line about the scheduled follow-up, and the CLI's own
         // wait sentence as a note in the log where the failure sits.
         if (state.trouble === trouble) emit({ trouble: { ...trouble, scheduled: true } });
@@ -1865,6 +1977,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
           if (end.error && limitHit(poll.quota) && loopSeq === seat) {
             if (!scheduleComeback(runId, end.error, poll.quota)) addError(end.error);
           } else if (end.error) addError(end.error);
+          // A REPLY LANDED (text kept, a bubble on screen): whatever the red
+          // rows reported is over. `keepText` and not "no note": a reply that
+          // finished before a stop landed is still a reply, and an empty end
+          // is not one.
+          else if (loopSeq === seat && end.keepText && live.length && hasWords(fullText, segs)) retireErrors();
           // Same guard: a superseded loop's own "Stopped." must not land in the
           // log while the newer loop's turn is the one actually streaming.
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
@@ -3860,6 +3977,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // into exactly the R4-3 shape: a finished run, repaired here, then a
         // follow-up into the host that is still holding it open.
         landedWindow = { runId, segments: probeSegs.length, text: probeText };
+        // The same "a reply landed" fact as `pollLoop`'s done branch, on the
+        // road a comeback takes when it finished while this frame was away:
+        // the red rows are over, and a limit's comeback is spent.
+        if (hasWords(probeText, probeSegs)) retireErrors();
         // A REPAIR IS NEWS THAT HAS TO BE SCROLLED TO (T:17851, P4-10). T calls
         // `scrollBottom()` here unconditionally, and the reason it must be
         // unconditional is that a repair has no `running` → `idle` edge for the

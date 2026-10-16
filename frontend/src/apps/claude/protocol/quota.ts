@@ -31,6 +31,18 @@ export function limitHit(quota: Quota | null | undefined): quota is Quota {
   return !!quota && quota.status === "rejected" && quota.resets_at > 0;
 }
 
+/**
+ * Is this failure text the PLAN'S usage limit — the clock, not a break? The
+ * same two substrings agent.py `_account_error` / `_is_limit_error` match on,
+ * so the live chat and a restored transcript retire the same rows. Narrower
+ * than the trouble classifier's `limit` kind, which also files any Claude
+ * "rate limit" / "quota" sentence there: a 429 on the API is a break and stays.
+ */
+export function isPlanLimitText(text: string | null | undefined): boolean {
+  const low = (text || "").toLowerCase();
+  return low.includes("usage limit") || low.includes("session limit");
+}
+
 /** The ISO instant the comeback is due. */
 export function continueDue(quota: Quota): string {
   return new Date((quota.resets_at + CONTINUE_GRACE_S) * 1000).toISOString();

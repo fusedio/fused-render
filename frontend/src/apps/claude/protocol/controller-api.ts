@@ -677,6 +677,16 @@ export interface ControllerDeps {
     /** The session's agent (D2). */
     backend?: string;
   }) => Promise<unknown>;
+  /** ADDED: the schedule as the server holds it, for `retireLimit` to find
+   *  every comeback still booked on the session — the server's list and not a
+   *  memory of what this frame posted, so a reload or a second limit hit
+   *  cannot orphan one. Defaults to `getSchedule`. */
+  listSchedule?: () => Promise<{
+    entries: Array<{ id: string; session_id: string; message: string; state: string; created?: string }>;
+  }>;
+  /** ADDED: cancels one booked comeback (`retireLimit`). Defaults to
+   *  `cancelScheduledMessage`. */
+  cancelSchedule?: (id: string) => Promise<unknown>;
   /** ADDED: `sleep` for the 400 ms poll cadence and the follow-up wait —
    *  injectable so a test runs the loop without real time (T:16377). */
   sleep?: (ms: number) => Promise<void>;

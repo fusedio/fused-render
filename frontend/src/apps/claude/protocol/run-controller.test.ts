@@ -3714,15 +3714,33 @@ describe("addError: the slot AND the row (T:13698)", () => {
     expect(new Set(keys).size).toBe(2);
   });
 
-  test("the rows survive the next send, which clears the slot", async () => {
+  test("the next send clears the slot; its REPLY retires the row", async () => {
+    // T kept the row for good (T:13698). Not any more (Akshil, 2026-10-16): a
+    // failure the next turn resolved is a scar above the answer, so the row
+    // goes once that answer has landed — and not before, so a send that is
+    // still out keeps the record of what went wrong the last time.
     const { controller } = makeController({
       start: (_f, n) => (n === 0 ? { error: "it broke" } : { run_id: "r1" }),
       poll: () => poll({ done: true, segments: [text("fine now")] }),
     });
     await controller.sendMessage("one");
+    expect(errors(controller).map((t) => t.text)).toEqual(["it broke"]);
     await controller.sendMessage("two");
     expect(controller.getState().trouble).toBeNull();
-    expect(errors(controller).map((t) => t.text)).toEqual(["it broke"]);
+    expect(errors(controller)).toEqual([]);
+    // "one" never got a bubble (a refused start hands the words back), so
+    // the log is the turn that worked and nothing else.
+    expect(controller.getState().turns.map((t) => t.role)).toEqual(["user", "assistant"]);
+  });
+
+  test("a send that fails again keeps the earlier row — nothing was resolved", async () => {
+    const { controller } = makeController({
+      start: (_f, n) => ({ error: n === 0 ? "it broke" : "still broken" }),
+      poll: () => poll({ done: true }),
+    });
+    await controller.sendMessage("one");
+    await controller.sendMessage("two");
+    expect(errors(controller).map((t) => t.text)).toEqual(["it broke", "still broken"]);
   });
 
   test("a recognised failure keeps its kind, so the card copy still applies", async () => {
