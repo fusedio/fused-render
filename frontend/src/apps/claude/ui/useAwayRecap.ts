@@ -47,7 +47,9 @@ export const MAX_FAILURES = 2;
  *  stored, and says `pending: true` while it has nothing yet. The chat asks
  *  again this often (a dict lookup on the server), for at most this long. */
 export const POLL_MS = 15_000;
-export const POLL_CAP_MS = 600_000;
+// Longer than the worker's 10 min failed-recap retry (tasks.py `_RECAP_RETRY_S`),
+// or a first haiku failure would land after the client gave up.
+export const POLL_CAP_MS = 900_000;
 
 /**
  * ONE RECAP PER RETURN, PER PAGE — the gate no per-mount check can be.
@@ -242,7 +244,7 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
       if (!o.enabled || !o.file || !o.sessionId) return;
       const hidden = (doc ?? (typeof globalThis.document !== "undefined" ? globalThis.document : null))?.hidden;
       if (o.running || hidden || o.hasDraft() || (o.root && !recapRootVisible(o.root()))) {
-        take(asked, answer, startedAt); // gated this tick: keep waiting
+        take(asked, answer, now()); // gated this tick: keep waiting; waiting here does not spend the cap
         return;
       }
       const read = o.fetchRecap ?? defaultFetchRecap;

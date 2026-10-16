@@ -360,7 +360,7 @@ test("pending: false stops it; the cap stops it; an anchor change stops it", asy
 
   const capped = harness({ eager: true, pollMs: 5, answer: PENDING });
   await act(async () => {});
-  capped.clock.t += 601_000;
+  capped.clock.t += 901_000;
   await sleep(30);
   const n = capped.calls.length;
   await sleep(30);
