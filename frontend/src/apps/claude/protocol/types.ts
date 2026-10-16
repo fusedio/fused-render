@@ -161,6 +161,14 @@ export interface SendRequest {
 export interface FileRequest {
   file: string;
 }
+/** `commands {file}` — PER AGENT (docs/COPILOT_BACKEND.md D11): an existing
+ *  chat names its session (the server reads the agent off it), a new one the
+ *  Agent pill's `backend`. Neither: Claude's menu, as before. */
+export interface CommandsRequest {
+  file: string;
+  session_id?: string;
+  backend?: string;
+}
 export interface FileSessionRequest {
   file: string;
   /** Optional for `live_run` (target as a whole), required for the rest. */
@@ -228,7 +236,7 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
-  commands: FileRequest;
+  commands: CommandsRequest;
   task_output: TaskOutputRequest;
   task_stop: TaskOutputRequest;
 }

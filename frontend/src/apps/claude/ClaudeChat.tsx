@@ -3590,7 +3590,13 @@ function ChatBody(props: ChatBodyProps) {
   // ── SLASH COMMANDS (SPEC C-1/C-3) ──────────────────────────────────────────
   //
   // The folder's list, fetched per `_file` and again when a poll says it moved.
-  const { commands: slashCommands, refetch: refetchCommands } = useSlashCommands(file);
+  // PER AGENT (D11): the session's own menu, or the Agent pill's for a new
+  // chat — so a Copilot chat never offers Claude's commands, and a pill flip
+  // re-asks.
+  const { commands: slashCommands, refetch: refetchCommands } = useSlashCommands(file, undefined, {
+    sessionId: state.sessionId || "",
+    backend: chatBackend,
+  });
   commandsChanged.current = refetchCommands;
   // The worktree menu's `/worktree` requests (`ui/WorktreeMenu`).
   const wtSeq = useRef(0);
