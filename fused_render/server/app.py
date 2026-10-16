@@ -558,6 +558,36 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             return
         user_plugin.start()
 
+    # Fused Web's `~/Fused/canvas` folder, if it already exists at startup, also
+    # gets the workbench skills fetch kicked — `canvases._kick_workbench_skills`,
+    # the SAME best-effort, off-thread, lock-guarded, never-raising call the
+    # canvases page's /clone route and its watcher already make. Without this,
+    # a Fused Web-only user whose `~/Fused/canvas` predates this server start
+    # would have no clone on disk until their FIRST task after a restart
+    # happened to land here via `api_task_create`'s own kick (routers/tasks.py)
+    # — one request paying for a cold clone instead of finding it ready. This
+    # handler only ever shortens that wait; `api_task_create` still covers a
+    # `~/Fused/canvas` folder CREATED after this ran.
+    #
+    # Filesystem check only (an `isdir`), same discipline as
+    # `export_workbench_plugin_env` above: this runs on the pre-bind path, so
+    # the git clone itself must stay off it — `_kick_workbench_skills` already
+    # hands that to its own daemon thread, so this handler returns at once
+    # either way and never delays the socket bind. Never kicks for a machine
+    # with no `~/Fused/canvas` at all: this must stay scoped to Fused Web's
+    # folder, not a general warm-up for every machine.
+    @on_startup
+    async def _startup_kick_fused_web_workbench_skills():
+        from fused_render import canvases
+        from fused_render.skill_plugin import fused_web_canvas_root
+
+        try:
+            if os.path.isdir(fused_web_canvas_root()):
+                canvases._kick_workbench_skills()
+        except Exception:  # noqa: BLE001 — never worth delaying/failing startup
+            logger.warning("could not kick the workbench skills fetch for "
+                           "~/Fused/canvas", exc_info=True)
+
     # The project queue's dispatcher (queue_manager.py), wired EXPLICITLY.
     #
     # `routers/tasks._wire_manager()` registers the factory, and importing that
