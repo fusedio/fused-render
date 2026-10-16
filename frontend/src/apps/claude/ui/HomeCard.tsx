@@ -8,7 +8,8 @@
 // container query: the thing worth measuring is whether THIS name fits, not how
 // wide the column is.
 import { useLayoutEffect, useRef, type ReactNode } from "react";
-import { ClaudeMark } from "./ClaudeMark";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { useAgent } from "./agent-context";
 import { ComposerCard, type ComposerCardProps } from "./Composer";
 import { HOME_TITLE_STEPS, measureTextIn, pickHomeTitleStep } from "./fit";
 
@@ -70,7 +71,7 @@ export function HomeCard({ name, path, worktree, ...card }: HomeCardProps) {
         {/* The real Claude mark, not the orange asterisk that stood in for it
             (Akshil, 2026-09-08). `.c-spark` still carries the accent and the
             10px of air after it, so the measured fit above is unchanged. */}
-        <ClaudeMark className="c-spark" />
+        <AgentMark backend={useAgent().backend} className="c-spark" />
         <span>{name}</span>
       </div>
       {path ? <div className="c-home-sub">{path}</div> : null}

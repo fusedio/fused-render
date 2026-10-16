@@ -32,6 +32,12 @@ def _health() -> dict:
     return claude_health.summary()
 
 
+def _health_cached():
+    from fused_render import claude_health
+    cached = claude_health.cached()
+    return claude_health._public(cached) if cached else None
+
+
 CLAUDE = Backend(
     id="claude",
     label="Claude",
@@ -58,6 +64,7 @@ CLAUDE = Backend(
     limit_error_markers=("usage limit", "session limit"),
     terminal_resume=_terminal_resume,
     health=_health,
+    health_cached=_health_cached,
     routes_prefix="/api/claude",
     pref_key="claude_enabled",
 )

@@ -48,7 +48,9 @@ from fused_render.server.routers.background_apps import router as background_app
 from fused_render.server.routers.claude_agent import router as claude_agent_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
+from fused_render.server.routers.agent_backends import router as agent_backends_router
 from fused_render.server.routers.claude_health import router as claude_health_router
+from fused_render.server.routers.copilot_health import router as copilot_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.marketplace import router as marketplace_router
@@ -1020,6 +1022,14 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # warm_in_background), never from here — importing the server in a test must
     # not spawn the user's login shell.
     app.include_router(claude_health_router)
+    # The Copilot twin (routers/copilot_health.py): /api/copilot/{health,
+    # health/refresh, install, login, login/cancel}, same snapshot keys, same
+    # entry-point warm-up rule.
+    app.include_router(copilot_health_router)
+    # The agent catalog (routers/agent_backends.py): which agents exist, which
+    # are on, and each one's models/efforts/modes/caps — the one list every
+    # picker reads (docs/COPILOT_BACKEND.md D11). Read-only, no auth guard.
+    app.include_router(agent_backends_router)
     # Is the GitHub CLI usable at all (routers/github.py): found / version /
     # signed-in, so "Publish to GitHub" can be TOLD up front rather than left
     # to discover it by failing — same doctrine as claude_health just above.

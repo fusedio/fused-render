@@ -137,7 +137,9 @@ import {
   useLimitWord,
   type TranscriptTail,
   type Viewable,
+  AgentProvider,
 } from "./ui";
+import { agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import type { ClassifiedCommand } from "./protocol/commands";
 import { useSlashCommands } from "./ui/useSlashCommands";
@@ -796,6 +798,8 @@ function ChatBody(props: ChatBodyProps) {
   // run loop.
   const liveModel = useRef("");
   const liveEffort = useRef("");
+  /** The Agent pill's pick, read at send time like the two above (D2). */
+  const liveBackend = useRef("");
   /** PR4's run-clock seats, filled below once the stores that answer them
    *  exist. Refs for the reason every other send-time read here is one: the
    *  controller closes over them and is built first. */
@@ -1169,6 +1173,7 @@ function ChatBody(props: ChatBodyProps) {
         historyCache: sharedHistoryCache,
         model: () => liveModel.current,
         effort: () => liveEffort.current,
+        backend: () => liveBackend.current,
         hasPane: () => paneAnswer.current(),
         // The controller already announces on THIS document
         // (`announceTasksChanged`); the stamp is for every OTHER one (T:16435).
@@ -1707,7 +1712,20 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   // ── the three pills ────────────────────────────────────────────────────────
-  const defaults = useComposerDefaults(file, params, !!props.hostSeededSettings);
+  const defaults = useComposerDefaults(file, params, !!props.hostSeededSettings, state.backend);
+  // WHICH AGENT THIS CHAT IS ABOUT (docs/COPILOT_BACKEND.md D2/D18): the
+  // conversation's own once the wire has said, else the pill's pick, else the
+  // catalog's default — `useComposerDefaults` resolves exactly that. Every
+  // surface below reads it off the `AgentProvider`; the caps decide which
+  // Claude-only controls are drawn at all (§7).
+  useAgentBackends();
+  const chatBackend = defaults.backend;
+  const agentCaps = capsOf(chatBackend);
+  // THE AGENT IS SWITCHED OFF (D17): the transcript still reads, the box
+  // closes with one line and the Preferences link. Only a session that HAS an
+  // agent — a fresh chat follows the catalog's default, which is always on.
+  const agentOff = !!state.backend && !isBackendEnabled(state.backend);
+  liveBackend.current = chatBackend;
   // WHAT THE RUN IS ACTUALLY LAUNCHED WITH (`run-controller`'s `curModel` /
   // `curEffort`, read at send time on every `start` and `send`) — and it is ""
   // for as long as the pills have not resolved.
@@ -3605,6 +3623,7 @@ function ChatBody(props: ChatBodyProps) {
   const onLocalCommand = useCallback(
     (cmd: ClassifiedCommand): boolean => {
       const plan = planLocalCommand(cmd, {
+        backend: liveBackend.current,
         worktreeReady: worktreeTarget && worktreeReady.current,
       });
       if ("refuse" in plan) {
@@ -3734,6 +3753,9 @@ function ChatBody(props: ChatBodyProps) {
       setModel: defaults.setModel,
       setEffort: defaults.setEffort,
       setPermission: defaults.setPermission,
+      backend: defaults.backend,
+      backendFixed: defaults.backendFixed,
+      setBackend: defaults.setBackend,
       ready: defaults.pillsReady,
     }),
     [defaults],
@@ -3750,10 +3772,11 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
-  const name = file ? file.split("/").filter(Boolean).pop() || file : "Claude";
+  const name = file ? file.split("/").filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
-  const worktreeMenu = worktreeTarget ? (
+  // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
+  const worktreeMenu = worktreeTarget && agentCaps.worktrees ? (
     <WorktreeMenu
       key={file as string}
       file={file as string}
@@ -4536,9 +4559,23 @@ function ChatBody(props: ChatBodyProps) {
       // The SEND button is deliberately left alone: while a run is live it is
       // the STOP button, and a chat that cannot stop its own running turn is a
       // worse state than the one this feature prevents.
-      blocked: sched.blocked,
-      blockedPlaceholder: sched.placeholder,
-      blockedReason: sched.reason,
+      // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
+      // its own sentence, and the link to the switch under it.
+      blocked: sched.blocked || agentOff,
+      blockedPlaceholder: agentOff
+        ? `${agentLabel(state.backend)} is turned off in Preferences.`
+        : sched.placeholder,
+      blockedReason: agentOff
+        ? `${agentLabel(state.backend)} is turned off in Preferences.`
+        : sched.reason,
+      blockedNote: agentOff ? (
+        <>
+          {agentLabel(state.backend)} is turned off in Preferences.{" "}
+          <a href="/preferences?tab=ai" onClick={(e) => { e.preventDefault(); onNavigate("/preferences?tab=ai"); }}>
+            Turn it on
+          </a>
+        </>
+      ) : undefined,
       // THE FLAG TAKES THE FOLLOW-UP FOOTNOTE AWAY (see `ComposerCardProps`):
       // under the queue this pane says "waiting" about messages that really are,
       // and a count of follow-ups the live host will drain in seconds is the one
@@ -4554,6 +4591,8 @@ function ChatBody(props: ChatBodyProps) {
     [
       file,
       state.sessionId,
+      state.backend,
+      agentOff,
       state.status,
       state.queued,
       inboxRows,
@@ -4744,6 +4783,7 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   return (
+   <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
    <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
     <div
@@ -5118,7 +5158,7 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <DockRow
                 tasks={
-                  summarizeTasks(state.tasks) || tasksOpen ? (
+                  agentCaps.bg_tasks && (summarizeTasks(state.tasks) || tasksOpen) ? (
                     <TasksPanel
                       tasks={state.tasks}
                       runId={state.tasksRunId}
@@ -5164,14 +5204,15 @@ function ChatBody(props: ChatBodyProps) {
                 (T:1412-1422). The strip rides INSIDE the composer's own block
                 (between the box and the footnote, T:4203) when there is one,
                 and stands alone in the compact tile that has none. */}
+            {/* The artifacts strip is Claude's (§7 `artifacts`). */}
             {!compact ? (
               <Composer
                 {...card}
-                artStrip={<ArtStrip items={art.items} />}
+                artStrip={agentCaps.artifacts ? <ArtStrip items={art.items} /> : null}
               />
-            ) : (
+            ) : agentCaps.artifacts ? (
               <ArtStrip items={art.items} />
-            )}
+            ) : null}
           </>
         ) : (
           <Home
@@ -5214,6 +5255,7 @@ function ChatBody(props: ChatBodyProps) {
     </div>
    </FilePreviewProvider>
    </CardPolicyProvider>
+   </AgentProvider>
   );
 }
 

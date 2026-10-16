@@ -204,6 +204,8 @@ export interface PermChoice {
 export function permChoices(
   row: Pick<PermissionRow, "tool">,
   liveMode?: PermissionMode | "",
+  /** The agent's name for the escalation row (D18); Claude's words otherwise. */
+  agent = "Claude",
 ): PermChoice[] {
   const label = permCardLabel(prettyToolName(row.tool));
   const choices: PermChoice[] = [
@@ -223,13 +225,13 @@ export function permChoices(
   // that is not the plan card.
   if ((liveMode || DEFAULT_PERMISSION) !== "auto" && liveMode !== "plan") {
     choices.push({
-      text: "Allow, and let Claude decide from here",
+      text: `Allow, and let ${agent} decide from here`,
       decision: "allow",
       scope: "once",
       mode: "auto",
       primary: false,
       title:
-        "Stops asking for what Claude judges safe; it still escalates anything " +
+        `Stops asking for what ${agent} judges safe; it still escalates anything ` +
         "it will not vouch for.",
     });
   }

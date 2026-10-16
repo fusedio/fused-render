@@ -1527,8 +1527,18 @@ def create(target: str, message: str, due=None, session_id: str = "",
            immediate=None, images=None, attachments=None,
            create_target: bool = False,
            model: str = "", effort: str = "", priority=None,
-           follow_of: str = "", origin: str = "", bot: str = "") -> dict:
+           follow_of: str = "", origin: str = "", bot: str = "",
+           backend: str = "") -> dict:
     """Validate and store one scheduled message; return the stored entry.
+
+    `backend` — "claude" | "copilot" | "" — is which agent runs the turn (D2),
+    stored beside `model`/`effort` and handed to `spawn_helper` by `_send`. ""
+    is "the default" and is resolved at send time, so a message scheduled with
+    no opinion follows the Preferences default of the day it fires. An unknown
+    id is a `ValueError` (the router's 400); a known one the Preferences page
+    has switched OFF is one too (D17, request-level gate) — the scheduler's own
+    tick refuses the same entry again at send time, because the toggle can
+    flip between the two.
 
     `title` and `description` are the user's own words about the work, both
     optional and both stored as given. An empty `title` is not a missing value
@@ -1731,6 +1741,14 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # what happened — where a refusal here would report a policy the caller
         # did not set as if the date were malformed.
 
+    backend = str(backend or "").strip()
+    if backend:
+        from fused_render.agent_backends import registry as _registry
+        if not _registry.is_known(backend):
+            raise ValueError("backend: expected one of "
+                             + ", ".join(repr(b) for b in _registry.ORDER))
+        if not _registry.is_enabled(backend):
+            raise ValueError(_registry.disabled_error(backend)["error"])
     mode = permission_mode or _SCHEDULED_PERMISSION_MODE
     if mode not in PERMISSION_MODES:
         raise ValueError(f"permission_mode: expected one of {PERMISSION_MODES}")
@@ -1792,6 +1810,8 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # now carries the choice across instead of quietly dropping it.
         "model": str(model or ""),
         "effort": str(effort or ""),
+        # Which agent (D2) — see the docstring; validated above.
+        "backend": backend,
         # The user's own words, both optional and both "" by default. Read
         # through `_text` because the router hands this module the request body
         # unvalidated, exactly as it does for every other field here.
@@ -2850,6 +2870,16 @@ def _send(entry: dict) -> None:
     scheduled message that failed is exactly the thing the user needs to be able
     to read afterwards."""
     host_sent = False
+    # THE SCHEDULER'S OWN GATE (D17, invariant 10): an entry whose agent has
+    # been switched off since it was stored is an error on the entry, reason
+    # "<Label> disabled", and NOTHING is spawned — not a host send either, since
+    # a disabled agent's sessions are read-only. One funnel, so `tick`,
+    # `dispatch_entry`, `run_now` and a re-send all meet it.
+    from fused_render.agent_backends import registry as _registry
+    backend = str(entry.get("backend") or "")
+    if backend and not _registry.is_enabled(backend):
+        _fail(entry, f"{_registry.get(backend).label} disabled")
+        return
     try:
         res = _host_send(entry)
         host_sent = res is not None
@@ -2861,6 +2891,11 @@ def _send(entry: dict) -> None:
             # send without images keeps the exact call shape it has always had.
             attachments = ({"extra_read_dirs": [shots_dir()]}
                            if _stored_attachments(entry) else {})
+            # `backend` rides the same way: only when the entry names one, so
+            # every Claude send keeps the exact call shape it has always had
+            # (and the test stubs that pin it).
+            if backend:
+                attachments["backend"] = backend
             res = claude_spawn.spawn_helper(
                 entry["target"], _composed(entry),
                 entry.get("permission_mode")
@@ -3848,6 +3883,9 @@ def _materialize(now: datetime) -> None:
                 # the default (bugbot, PR #968).
                 "model": str(entry.get("model") or ""),
                 "effort": str(entry.get("effort") or ""),
+                # …and the agent with them (D2): a template's runs are that
+                # template's runs, on the agent it was set up with.
+                "backend": str(entry.get("backend") or ""),
                 # The user's words travel with every run, like the message and
                 # the target: an occurrence is that template's run, so a list
                 # showing occurrences must be able to name it without going back
@@ -4748,7 +4786,9 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
         # Same rule for the bot that asked (Bugbot, PR #1646): a re-ask of a
         # bot's build is still that bot's task, and the fresh id matches
         # nothing else the bot recorded.
-        bot=str(original.get("bot") or ""))
+        bot=str(original.get("bot") or ""),
+        # And the agent (D2): a re-ask goes to the agent that was asked.
+        backend=str(original.get("backend") or ""))
     # Provenance, and the ONLY link between the two rows — the original is not
     # written to, so without this nothing records that the second message is a
     # re-ask of the first. Written after creation rather than threaded through

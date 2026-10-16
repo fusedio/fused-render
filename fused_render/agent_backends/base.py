@@ -60,6 +60,11 @@ class Backend:
     #: renders (same keys as `claude_health.summary()`), or None when the
     #: probe module is not available. Lazy because the probe spawns.
     health: Optional[Callable[[], dict]] = None
+    #: Lazy: `() -> dict | None`, the cached snapshot WITHOUT measuring. The
+    #: catalog reads a DISABLED backend's health through this one, so turning
+    #: a switch off also stops its probes (an ACP spawn + `gh auth token` for
+    #: Copilot) from running on every catalog read.
+    health_cached: Optional[Callable[[], Optional[dict]]] = None
     #: Lazy: the install/login/doctor router module name, for docs only.
     routes_prefix: str = ""
     #: Pref key that switches the backend on; `prefs.<key>()` must exist.

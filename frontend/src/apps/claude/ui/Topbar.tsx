@@ -60,7 +60,8 @@ import "../styles/composer.css";
 // here so the rule travels with the component that spends it rather than by
 // luck of what else the bundle happened to pull in.
 import "../styles/home.css";
-import { ClaudeMark } from "./ClaudeMark";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { useAgent } from "./agent-context";
 import { knownTaskId } from "./Kebab";
 
 export interface TopbarProps {
@@ -243,6 +244,8 @@ export function Topbar({
   const label =
     shortTaskId(taskId || knownTaskId(sessionId) || "") ||
     (sessionId ? sessionId.slice(0, 8) : "");
+  // THE AGENT'S NAME AND MARK (D18): the conversation's own, off the context.
+  const agent = useAgent();
 
   return (
     <div className={"c-topbar" + (line ? " is-queued" : "")}>
@@ -256,9 +259,9 @@ export function Topbar({
           <StatusIcon status="queued" />
         </span>
       ) : (
-        <ClaudeMark className="c-spark" />
+        <AgentMark backend={agent.backend} className="c-spark" />
       )}
-      <span className="c-tb-title">Claude</span>
+      <span className="c-tb-title">{agent.label}</span>
       {line ? <QueuedCaption line={line} /> : null}
       <span className="c-tb-file" title={subtitle || undefined}>
         {subtitle ?? ""}

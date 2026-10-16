@@ -261,6 +261,7 @@ function emptyState(file: string | null): ChatState {
   return {
     file,
     sessionId: null,
+    backend: "",
     runId: null,
     lastRunId: null,
     status: "idle",
@@ -1535,6 +1536,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
         const poll = data as PollResponse;
         if (poll.session_id) noteSessionId(String(poll.session_id), seat, opts.prompt);
+        noteBackend(poll.backend);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
 
         // usage arrives only at message end; estimate from streamed text meanwhile
@@ -1937,6 +1939,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   const curModel = () => deps.model?.() || "";
   const curEffort = () => deps.effort?.() || "";
+  /** THE SESSION'S OWN AGENT FIRST (D2, immutable); the pill's for a chat
+   *  that has none yet. "" lets agent.py fall back to its default. */
+  const curBackend = () => state.backend || deps.backend?.() || "";
+  /** What the wire said this conversation runs on. Never cleared by a payload
+   *  that omits it (an older server), and never changed once set. */
+  const noteBackend = (b: unknown) => {
+    if (typeof b === "string" && b && b !== state.backend) emit({ backend: b });
+  };
   const curPermission = () => deps.params.get("permission") || DEFAULT_PERMISSION;
   /** The same read, NARROWED — `ChatState.permissionMode` is a union and the
    *  param is arbitrary text off a URL. Deliberately separate from
@@ -2129,6 +2139,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 ...hintParam,
                 message: outgoing,
                 read_dirs: JSON.stringify(opts.readDirs || []),
+                backend: curBackend(),
                 model: curModel(),
                 effort: curEffort(),
                 permission_mode: opts.permission || curPermission(),
@@ -2166,6 +2177,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
               ...hintParam,
               message: outgoing,
               session_id: sessionId,
+              backend: curBackend(),
               model: curModel(),
               effort: curEffort(),
               permission_mode: opts.permission || curPermission(),
@@ -2237,6 +2249,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // re-attach; the landing simply gains nothing.
           const named = (res as { session_id?: string }).session_id;
           if (named && logGen === gen) noteSessionId(String(named), 0, spoken);
+          if (logGen === gen) noteBackend((res as { backend?: string }).backend);
         }
       }
       started = true;
@@ -2416,6 +2429,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           ...hintParam,
           message: outgoing,
           read_dirs: JSON.stringify(opts.readDirs || []),
+          backend: curBackend(),
           model: curModel(),
           effort: curEffort(),
           permission_mode: opts.permission || curPermission(),
@@ -2439,6 +2453,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
             ...hintParam,
             message: outgoing,
             session_id: sessionId,
+            backend: curBackend(),
             model: curModel(),
             effort: curEffort(),
             permission_mode: opts.permission || curPermission(),
@@ -2969,6 +2984,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // THE HINT THE TRANSCRIPT ENDS ON (`_history`'s walk), so a reload keeps
     // the chip. After `clearTasks()` (openSession ran it before the fetch).
     landWorktreeHint(res.worktree_hint);
+    noteBackend(res.backend);
     emit({
       turns: historyToTurns(res),
       transcript: res.transcript ?? null,
@@ -3012,6 +3028,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     setParam({ session_id: sessionId });
     emit({
       sessionId,
+      // The agent belongs to the conversation that is leaving; the fetch
+      // below names the new one's.
+      backend: "",
       historyLoading: true,
       // THE VISIBLE CONVERSATION IS BEING REPLACED, and this counter is how the
       // React side hears about it — T calls `scheduleResetForNewTranscript()`
@@ -4016,6 +4035,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // disowning a session id is the reader navigating home (T:13031's bare set),
     // where clearing a REAL run id must not buy the entry (T:13036).
     setParam({ session_id: null });
+    // THE AGENT PICK GOES WITH THE SESSION (D2/D18): a fresh chat opens on the
+    // catalog's default, the way it opens on the global model pair.
+    setParam({ backend: null }, "replace");
     setParam({ run: null }, "replace");
     // `rev` is documented monotonic and offered as a cheap memo key
     // (controller-api.ts:161), so a fresh transcript carries the old number

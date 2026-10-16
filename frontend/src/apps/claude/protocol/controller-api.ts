@@ -164,11 +164,17 @@ export type TroubleKind =
    *  knowing anything about the app's insides: `ui/TroubleView`'s `SAID` gives
    *  it two plain sentences and no verbatim block. */
   | "boot"
+  /** ADDED (docs/COPILOT_BACKEND.md D17): the agent this chat names is
+   *  switched off in Preferences — `start`/`send` answered 400
+   *  `{reason: "backend_disabled"}`. The card's one action is the switch. */
+  | "disabled"
   | "generic";
 
 export interface Trouble {
   kind: TroubleKind;
   message: string;
+  /** For `disabled`: which agent the refusal named. */
+  backend?: string;
   /** Verbatim traceback / stderr when present. */
   detail?: string;
   /** For `limit`: the window that refused the turn, so the card can say WHEN
@@ -196,6 +202,16 @@ export type RunStatus = "idle" | "starting" | "running" | "stopping";
 export interface ChatState {
   file: string | null;
   sessionId: string | null;
+  /**
+   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" — as the
+   * server reported it (poll, history, defaults), or "" while nothing has
+   * (docs/COPILOT_BACKEND.md D2). Immutable once a session has a turn: the
+   * Agent pill fixes on it, and a send names it. "" for a brand-new chat,
+   * whose pill reads the `backend` param and the catalog's default instead.
+   * Optional on the type so a host or a test that builds a state by hand
+   * predating the field still compiles; the controller always writes it.
+   */
+  backend?: string;
   runId: string | null;
   /**
    * THE LAST RUN THIS CONVERSATION HAD, and unlike `runId` it OUTLIVES the turn.
@@ -665,6 +681,9 @@ export interface ControllerDeps {
    *  Falls back to the `permission` param and "" when absent. */
   model?: () => string;
   effort?: () => string;
+  /** ADDED (D2): the agent the pickers currently show, read at SEND time for
+   *  a chat with no session yet; a session's own `backend` outranks it. */
+  backend?: () => string;
   /** ADDED: `has_pane` is the PAGE's answer, sent on every turn (T:16609). */
   /**
    * The page's answer to `has_pane`, and it is TRI-STATE: `true` a pane is

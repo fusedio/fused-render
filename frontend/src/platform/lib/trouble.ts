@@ -40,7 +40,14 @@ export const CLAUDE_INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh |
 // install Claude Code — a disk-path problem answered with a download link. That
 // is the same wrong-advice failure TR-2 exists to prevent, arriving from the
 // other side, so a shape only counts when the message is ABOUT Claude.
+//
+// PER AGENT since the Copilot backend (docs/COPILOT_BACKEND.md D13): a Copilot
+// session's failure is about Copilot, so its shapes count when the message
+// names THAT. The named phrases stay Claude's — Copilot's own error texts are
+// an assumption the contract lists (§10), and inventing patterns for them
+// would be guessing. The Claude output is unchanged.
 const ABOUT_CLAUDE = /claude/i;
+const ABOUT_COPILOT = /copilot|github/i;
 
 // Unconditional: these name Claude Code or quote the CLI's own vocabulary.
 const NAMED: [TroubleKind, RegExp][] = [
@@ -63,10 +70,10 @@ const SHAPES: [TroubleKind, RegExp][] = [
     Both tiers are ordered most-specific first within themselves: "not signed
     in" and "usage limit" are things a FOUND claude says, so they are tested
     before the could-not-find patterns, which are the broadest. */
-export function troubleKind(message: string): TroubleKind {
+export function troubleKind(message: string, backend = "claude"): TroubleKind {
   const text = String(message || "");
   for (const [kind, re] of NAMED) if (re.test(text)) return kind;
-  if (ABOUT_CLAUDE.test(text)) {
+  if ((backend === "copilot" ? ABOUT_COPILOT : ABOUT_CLAUDE).test(text)) {
     for (const [kind, re] of SHAPES) if (re.test(text)) return kind;
   }
   return "raw";
@@ -100,6 +107,9 @@ export interface TroubleContext extends TroubleFacts {
   what: string;
   /** The failure, verbatim. Never reworded — a paraphrase is not searchable. */
   error: string;
+  /** Which agent the failure is about — "claude" when absent. Picks the
+   *  classifier's subject and the brief's steps (D13). */
+  backend?: string;
 }
 
 /** The block behind "Copy the details".
@@ -122,7 +132,7 @@ export interface TroubleContext extends TroubleFacts {
  * are all still there.
  */
 export function troubleReport(ctx: TroubleContext): string {
-  const kind = troubleKind(ctx.error);
+  const kind = troubleKind(ctx.error, ctx.backend);
   const said = String(ctx.error || "").trim();
   const lines = [
     `${displayName()} — problem report`,
@@ -249,19 +259,33 @@ function whereToLook(ctx: TroubleContext): string[] {
  * simply signed out.
  */
 export function troubleInstructions(ctx: TroubleContext): string {
-  const kind = troubleKind(ctx.error);
+  const kind = troubleKind(ctx.error, ctx.backend);
+  const copilot = ctx.backend === "copilot";
   const steps: Record<TroubleKind, string[]> = {
-    notfound: [
-      "Check whether the CLI exists and where: `which claude`, and look in ~/.local/bin and /opt/homebrew/bin.",
-      "If it is missing, install it: `curl -fsSL https://claude.ai/install.sh | bash`.",
-      "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
-      `Confirm with \`claude --version\`, then tell me to quit ${displayName()} and reopen it.`,
-    ],
-    login: [
-      "Confirm the CLI runs: `claude --version`.",
-      "Sign in: run `claude`, then `/login`, and complete it in the browser.",
-      `Confirm the session works, then tell me to retry in ${displayName()}.`,
-    ],
+    notfound: copilot
+      ? [
+        "Check whether the CLI exists and where: `which copilot`, and look in ~/.local/bin and /opt/homebrew/bin.",
+        "If it is missing, install GitHub Copilot CLI the way its docs say for this platform.",
+        "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
+        `Confirm with \`copilot --version\`, then tell me to quit ${displayName()} and reopen it.`,
+      ]
+      : [
+        "Check whether the CLI exists and where: `which claude`, and look in ~/.local/bin and /opt/homebrew/bin.",
+        "If it is missing, install it: `curl -fsSL https://claude.ai/install.sh | bash`.",
+        "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
+        `Confirm with \`claude --version\`, then tell me to quit ${displayName()} and reopen it.`,
+      ],
+    login: copilot
+      ? [
+        "Confirm the CLI runs: `copilot --version`.",
+        "Sign in: run `copilot`, then `/login`, and complete it in the browser — or `gh auth login`, which the app also honours.",
+        `Confirm the session works, then tell me to retry in ${displayName()}.`,
+      ]
+      : [
+        "Confirm the CLI runs: `claude --version`.",
+        "Sign in: run `claude`, then `/login`, and complete it in the browser.",
+        `Confirm the session works, then tell me to retry in ${displayName()}.`,
+      ],
     limit: [
       "Confirm this is a plan limit rather than a fault — the message should say when it resets.",
       "Tell me when it resets and whether anything else is worth doing in the meantime.",

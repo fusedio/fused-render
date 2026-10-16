@@ -45,6 +45,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from fused_render import session_liveness, tasks_store
+from fused_render.agent_backends import roots
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _require_fused
 
@@ -52,12 +53,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# CLAUDE_CONFIG_DIR wins where set (same rule as user_plugin.py, the claude
-# template agent's CLAUDE_DIR, and templates/shared/file_history.py's
-# config_dir()) — duplicated locally rather than imported cross-package, same
-# posture as those sites.
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+# Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
+# `agent_roots.claude_dir`), module-level because the tests of this router
+# and of `routers/tasks` patch it at a tmp dir. Every scan here walks
+# `projects_roots()`, which puts fused's own Copilot root beside it
+# (docs/COPILOT_BACKEND.md D3): same bucket layout, same row shape, so a
+# Copilot session is a session on every one of these surfaces.
+CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
+
+
+def projects_roots() -> list[tuple[str, str]]:
+    """`[(backend, projects dir), ...]` — Claude's (as patched) and Copilot's."""
+    return roots.projects_roots(PROJECTS_DIR)
 
 # Mutable session state (custom names, triage). The retired bundled sessions
 # inbox app wrote these files too, so existing state carries over. Mirrors
@@ -95,8 +103,10 @@ def _session_cwd(jsonl_path: str) -> str | None:
 @router.get("/api/claude-sessions")
 def api_claude_sessions():
     latest: dict[str, float] = {}
-    if os.path.isdir(PROJECTS_DIR):
-        for jsonl_path in glob.glob(os.path.join(PROJECTS_DIR, "*", "*.jsonl")):
+    for _backend, root in projects_roots():
+        if not os.path.isdir(root):
+            continue
+        for jsonl_path in glob.glob(os.path.join(root, "*", "*.jsonl")):
             cwd = _session_cwd(jsonl_path)
             if not cwd or not os.path.isdir(cwd):
                 continue
@@ -139,8 +149,17 @@ def _transcripts_newest_first() -> list[tuple[float, str]]:
     per name (~2x on this machine's 292-transcript store).
     """
     candidates: list[tuple[float, str]] = []
+    for _backend, root in projects_roots():
+        _scan_root(root, candidates)
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates
+
+
+def _scan_root(root: str, candidates: list[tuple[float, str]]) -> None:
+    """One root's `(mtime, path)` pairs appended onto `candidates` — the
+    walk `_transcripts_newest_first` describes, per root."""
     try:
-        with os.scandir(PROJECTS_DIR) as projects:
+        with os.scandir(root) as projects:
             for project in projects:
                 try:
                     if not project.is_dir():
@@ -158,10 +177,8 @@ def _transcripts_newest_first() -> list[tuple[float, str]]:
                 except OSError:
                     continue
     except OSError:
-        # No projects dir (or it is not a directory): no sessions, not an error.
-        return candidates
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return candidates
+        # No projects dir (or it is not a directory): nothing from this root.
+        return
 
 
 @router.get("/api/claude-sessions/home")
@@ -492,8 +509,10 @@ def api_claude_session_summaries():
     triage = _load_state("triage.json")
     now = datetime.now(timezone.utc).timestamp()
     sessions = []
-    if os.path.isdir(PROJECTS_DIR):
-        for jsonl_path in glob.glob(os.path.join(PROJECTS_DIR, "*", "*.jsonl")):
+    for _backend, root in projects_roots():
+        if not os.path.isdir(root):
+            continue
+        for jsonl_path in glob.glob(os.path.join(root, "*", "*.jsonl")):
             row = _summarize(jsonl_path, now, names, triage)
             if row is not None:
                 sessions.append(row)
@@ -1077,8 +1096,9 @@ def api_claude_session_liveness(path: str):
     a chat can be open on a session whose first turn is still being written, and
     the watch's next lap is the natural place to notice that it now is."""
     resolved = os.path.realpath(path or "")
-    root = os.path.realpath(PROJECTS_DIR)
-    if not resolved.startswith(root + os.sep) or not resolved.endswith(".jsonl"):
+    inside = any(resolved.startswith(os.path.realpath(root) + os.sep)
+                 for _b, root in projects_roots())
+    if not inside or not resolved.endswith(".jsonl"):
         raise HTTPException(status_code=400, detail="not a session transcript")
     try:
         stat = os.stat(resolved)

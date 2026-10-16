@@ -58,15 +58,20 @@ import time
 import urllib.parse
 
 from fused_render import session_liveness
+from fused_render.agent_backends import roots
 
 logger = logging.getLogger(__name__)
 
-#: CLAUDE_CONFIG_DIR wins where set — the same rule (and the same deliberate
-#: local copy) as session_liveness, claude_artifacts and tasks_store.
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+#: Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
+#: `agent_roots.claude_dir`), module-level for the tests that pass a tmp
+#: root. `relocate` with no explicit dirs walks every backend's root
+#: (docs/COPILOT_BACKEND.md D15: a Copilot session's fused transcript moves
+#: within fused's own root, same bucket rule).
+CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 #: Claude Code's registry of live interactive sessions: one `<pid>.json` per
 #: process with `pid`, `sessionId` and `cwd`. Entries outlive their process.
+#: The Copilot host writes the same shape under its own root.
 SESSIONS_DIR = os.path.join(CLAUDE_DIR, "sessions")
 
 #: How far into a transcript to look for its `cwd` before giving up. The field
@@ -264,85 +269,94 @@ def relocate(old_root: str, new_root: str, *, projects_dir: str | None = None,
     `complete` is False only when a transcript that belongs to the app could
     not be moved (running, or an OS error) and should be retried later.
     """
-    projects_dir = projects_dir or PROJECTS_DIR
-    sessions_dir = sessions_dir or SESSIONS_DIR
+    # ONE root when the caller names it (tests, and a caller that knows which
+    # backend it is moving); every backend's root otherwise, with the live
+    # set read across every registry — a session is live whichever CLI holds it.
+    explicit = bool(projects_dir or sessions_dir)
+    project_dirs = ([projects_dir or PROJECTS_DIR] if explicit
+                    else [r for _b, r in roots.projects_roots(PROJECTS_DIR)])
+    session_dirs = ([sessions_dir or SESSIONS_DIR] if explicit
+                    else [r for _b, r in roots.sessions_roots(SESSIONS_DIR)])
     moved, pending = [], []
-    live = _live_session_ids(sessions_dir)
+    live: set = set()
+    for sd in session_dirs:
+        live |= _live_session_ids(sd)
     now = time.time()
-    for bucket in _candidate_buckets(projects_dir, old_root):
-        try:
-            names = sorted(os.listdir(bucket))
-        except OSError:
-            continue
-        targets = {}
-        held = []  # this bucket's own pending — tidy is decided per bucket
-        for name in names:
-            if not name.endswith(".jsonl"):
-                continue
-            src = os.path.join(bucket, name)
-            cwd = transcript_cwd(src)
-            rel = _under(cwd, old_root) if cwd else None
-            if rel is None:
-                continue  # another cwd's transcript sharing the bucket, or no cwd
-            sid = name[:-len(".jsonl")]
-            new_cwd = os.path.join(new_root, rel) if rel else new_root
-            target = os.path.join(projects_dir, munge(new_cwd))
-            targets[target] = new_cwd
-            dst = os.path.join(target, name)
-            if sid in live:
-                held.append(sid)
-                logger.info("session %s is live; leaving its transcript at %s", sid, src)
-                continue
+    for projects_dir in project_dirs:
+        for bucket in _candidate_buckets(projects_dir, old_root):
             try:
-                # `interrupt_closes=False` — the strict reading, every user row
-                # a turn: a reader who just pressed stop or typed `/model` in an
-                # INTERACTIVE session is still at that prompt, and this is the
-                # one caller where a wrong "not mid-turn" moves a file out from
-                # under a live CLI.
-                if session_liveness.transcript_turn_open(
-                        src, now, interrupt_closes=False):
+                names = sorted(os.listdir(bucket))
+            except OSError:
+                continue
+            targets = {}
+            held = []  # this bucket's own pending — tidy is decided per bucket
+            for name in names:
+                if not name.endswith(".jsonl"):
+                    continue
+                src = os.path.join(bucket, name)
+                cwd = transcript_cwd(src)
+                rel = _under(cwd, old_root) if cwd else None
+                if rel is None:
+                    continue  # another cwd's transcript sharing the bucket, or no cwd
+                sid = name[:-len(".jsonl")]
+                new_cwd = os.path.join(new_root, rel) if rel else new_root
+                target = os.path.join(projects_dir, munge(new_cwd))
+                targets[target] = new_cwd
+                dst = os.path.join(target, name)
+                if sid in live:
                     held.append(sid)
-                    logger.info("session %s is mid-turn; leaving %s", sid, src)
+                    logger.info("session %s is live; leaving its transcript at %s", sid, src)
                     continue
-                if _norm(target) == _norm(bucket):
-                    # A rename the munge cannot see (`my_app` -> `my-app`):
-                    # same bucket, so the file stays and only its cwd lines
-                    # move. Nothing else to carry.
-                    _rewrite_cwd(src, src, old_root, new_root)
-                    moved.append(sid)
-                    continue
-                if os.path.exists(dst):
-                    # A copy-on-resume already carried it; the continuation
-                    # at the new path is the live one.
-                    logger.info("session %s already at %s; source left alone", sid, dst)
-                    continue
-                os.makedirs(target, exist_ok=True)
-                _rewrite_cwd(src, dst, old_root, new_root)
-                os.remove(src)
-                _move_aside(os.path.join(bucket, sid), os.path.join(target, sid))
-                moved.append(sid)
-            except FileNotFoundError:
-                continue  # a concurrent relocate got there first
-            except OSError:
-                held.append(sid)
-                logger.debug("moving session %s failed", sid, exc_info=True)
-        pending.extend(held)
-        # Whatever else the bucket held (memory/, unknown files) follows the
-        # transcripts when they all went to one place and NO transcript is
-        # left behind — one still there (live, or another cwd's under the
-        # same munge) may own that memory too, so it stays with it.
-        if len(targets) == 1 and not held:
-            target = next(iter(targets))
-            try:
-                left = os.listdir(bucket)
-                if any(n.endswith(".jsonl") for n in left):
-                    continue
-                for name in left:
-                    if name.endswith(".tmp"):
+                try:
+                    # `interrupt_closes=False` — the strict reading, every user row
+                    # a turn: a reader who just pressed stop or typed `/model` in an
+                    # INTERACTIVE session is still at that prompt, and this is the
+                    # one caller where a wrong "not mid-turn" moves a file out from
+                    # under a live CLI.
+                    if session_liveness.transcript_turn_open(
+                            src, now, interrupt_closes=False):
+                        held.append(sid)
+                        logger.info("session %s is mid-turn; leaving %s", sid, src)
                         continue
-                    _move_aside(os.path.join(bucket, name), os.path.join(target, name))
-                if not os.listdir(bucket):
-                    os.rmdir(bucket)
-            except OSError:
-                logger.debug("tidying bucket %s failed", bucket, exc_info=True)
+                    if _norm(target) == _norm(bucket):
+                        # A rename the munge cannot see (`my_app` -> `my-app`):
+                        # same bucket, so the file stays and only its cwd lines
+                        # move. Nothing else to carry.
+                        _rewrite_cwd(src, src, old_root, new_root)
+                        moved.append(sid)
+                        continue
+                    if os.path.exists(dst):
+                        # A copy-on-resume already carried it; the continuation
+                        # at the new path is the live one.
+                        logger.info("session %s already at %s; source left alone", sid, dst)
+                        continue
+                    os.makedirs(target, exist_ok=True)
+                    _rewrite_cwd(src, dst, old_root, new_root)
+                    os.remove(src)
+                    _move_aside(os.path.join(bucket, sid), os.path.join(target, sid))
+                    moved.append(sid)
+                except FileNotFoundError:
+                    continue  # a concurrent relocate got there first
+                except OSError:
+                    held.append(sid)
+                    logger.debug("moving session %s failed", sid, exc_info=True)
+            pending.extend(held)
+            # Whatever else the bucket held (memory/, unknown files) follows the
+            # transcripts when they all went to one place and NO transcript is
+            # left behind — one still there (live, or another cwd's under the
+            # same munge) may own that memory too, so it stays with it.
+            if len(targets) == 1 and not held:
+                target = next(iter(targets))
+                try:
+                    left = os.listdir(bucket)
+                    if any(n.endswith(".jsonl") for n in left):
+                        continue
+                    for name in left:
+                        if name.endswith(".tmp"):
+                            continue
+                        _move_aside(os.path.join(bucket, name), os.path.join(target, name))
+                    if not os.listdir(bucket):
+                        os.rmdir(bucket)
+                except OSError:
+                    logger.debug("tidying bucket %s failed", bucket, exc_info=True)
     return {"moved": moved, "pending": pending, "complete": not pending}

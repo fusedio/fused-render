@@ -25,7 +25,7 @@ from fused_render.server import ai_metrics
 from fused_render.server.common import (
     AI_PROVIDERS, APPLE_MODELS, _require_fused, ai_result, ai_usage_tokens,
     apple_model_for, provider_of_model)
-from fused_render.shell.prefs import default_model
+from fused_render.shell.prefs import default_backend, default_model
 from fused_render.supervisor.paths import STRIPPED_ENV_VARS
 
 router = APIRouter()
@@ -1409,8 +1409,14 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
     # An explicit short alias ("haiku") resolves through the same table the
     # pref does, so the mapping stays the one place that says which haiku
     # "haiku" is — handed raw to the CLI it would mean the CLI's pick instead.
+    # The default-model pref is a CLAUDE model short name, and it only speaks
+    # here while Claude is the default agent (invariant 12): with Copilot as
+    # the default, this relay — which is Claude-only — falls through to its own
+    # haiku rather than honour a preference set for another agent's chats.
+    preferred = (_AI_SHORT_MODEL_IDS.get(default_model())
+                 if default_backend() == "claude" else None)
     model = (_AI_SHORT_MODEL_IDS.get(model, model) if model else None) \
-        or _AI_SHORT_MODEL_IDS.get(default_model()) or _AI_DEFAULT_MODEL
+        or preferred or _AI_DEFAULT_MODEL
     # The other direction: a repo id or GGUF filename is not something the
     # Claude CLI can run, and passing it through would surface as the CLI's
     # own "unknown model" a subprocess hop later. Refused here, naming the

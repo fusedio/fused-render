@@ -86,8 +86,14 @@ def record_session_when_ready(agent, run_id: str, on_tick=None) -> None:
 
 def spawn_helper(target: str, prompt: str, permission_mode: str,
                  session_id: str = "", model: str = "", effort: str = "",
-                 extra_read_dirs: list[str] | None = None) -> dict:
+                 extra_read_dirs: list[str] | None = None,
+                 backend: str = "") -> dict:
     """Start a session in-process; return `agent._start`'s result dict.
+
+    `backend` ("claude" | "copilot" | "") is which agent hosts the session
+    (docs/COPILOT_BACKEND.md D2); "" leaves `_start` to resolve it — a resumed
+    session's recorded backend, else the Preferences default. Always passed as
+    a keyword, so agent.py's `_start` must accept `backend=`.
 
     `session_id` rides through because a scheduled message may target an
     EXISTING conversation ("" is a fresh one, which is all the apps API ever
@@ -106,7 +112,8 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
     try:
         return agent._start(target, prompt, session_id, model, effort,
                             permission_mode=permission_mode,
-                            extra_read_dirs=list(extra_read_dirs or []) or None)
+                            extra_read_dirs=list(extra_read_dirs or []) or None,
+                            backend=backend or "")
     except FileNotFoundError as exc:
         if "claude CLI not found" in str(exc):
             return {"error":

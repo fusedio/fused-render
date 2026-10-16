@@ -40,6 +40,7 @@ import { canRunInTerminal, useCanRunInTerminal, openTerminal } from "@platform/l
 import { copyPendingText } from "@platform/lib/clipboard";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
 import { forgetSessionSeed } from "./useRecentTasks";
+import { useAgent } from "./agent-context";
 
 /** Live by the listing's own clock (T:13166-13169). */
 const RUNNING_STATES = new Set<Task["status"]>([
@@ -317,6 +318,12 @@ export function Kebab({
   const busy = useRef(false);
   const timers = useRef<number[]>([]);
   const canRun = useCanRunInTerminal();
+  // "Continue with Copilot in terminal" (D18): the agent's own word, since the
+  // command this hands over is that agent's `--resume`.
+  const agent = useAgent();
+  const restingTerminal = sessionId
+    ? `Continue with ${agent.label} in terminal`
+    : `New ${agent.label} session in terminal`;
 
   useEffect(
     () => () => {
@@ -619,8 +626,7 @@ export function Kebab({
               closeOnClick={false}
               onClick={() => void onTerminal()}
             >
-              {terminalLabel ||
-                (sessionId ? "Continue in terminal" : "New session in terminal")}
+              {terminalLabel || restingTerminal}
             </DropdownMenuItem>
           ) : null}
           {/* The primary item above now RUNS the command where it can — this is

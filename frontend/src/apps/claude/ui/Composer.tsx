@@ -54,9 +54,11 @@ import {
 import { MODEL_LABELS, PERMISSION_SHORT } from "./composer-defaults";
 import { ContextMeter } from "./ContextMeter";
 import { contextInput, warnLine } from "./context-window";
+import { AgentSelect } from "./AgentSelect";
 import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
+import { agentLabel, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { copyToTaskShots, SchedButton } from "./SchedButton";
 import { outboxHint } from "./outbox";
 
@@ -64,6 +66,10 @@ import { outboxHint } from "./outbox";
  *  who is being replied to; the landing one names the errand. */
 export const CHAT_PLACEHOLDER = "Reply to Claude…";
 export const HOME_PLACEHOLDER = "Ask Claude…";
+/** The same two, naming the AGENT (docs/COPILOT_BACKEND.md D18). The Claude
+ *  row is the constant above, byte for byte. */
+export const chatPlaceholderFor = (agent: string) => `Reply to ${agent}…`;
+export const homePlaceholderForAgent = (agent: string) => `Ask ${agent}…`;
 
 /** The disabled Send's tooltip when the caller hands no reason (P4R1-2). The
  *  real sentence is `schedBlockReason`'s, threaded through `blockedReason`; this
@@ -86,6 +92,11 @@ export interface ComposerControls {
   model: string;
   effort: string;
   permission: PermissionMode;
+  /** The agent pill (D18). Absent = Claude, and no pill: every host that
+   *  states its own pair (tests, the cards wall) predates the second agent. */
+  backend?: string;
+  backendFixed?: boolean;
+  setBackend?(value: string): void;
   setModel(value: string): void;
   setEffort(value: string): void;
   setPermission(value: PermissionMode): void;
@@ -301,6 +312,10 @@ export interface ComposerCardProps {
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
+  /** ONE LINE UNDER THE BOX while `blocked`, for a block the placeholder
+   *  cannot say alone — "Copilot is turned off in Preferences." plus the link
+   *  (D17). The schedule's block has its own card and passes nothing. */
+  blockedNote?: React.ReactNode;
   /** WHY the box is shut, for the calendar button's tooltip and spoken name —
    *  ONE sentence with one author, so a reader refused by the button reads the
    *  same words as the card six pixels above it (T:17232-17250). */
@@ -552,6 +567,7 @@ export function ComposerCard({
   attachPending,
   blocked,
   blockedPlaceholder,
+  blockedNote,
   blockedReason,
   navLocked,
   navLockedReason,
@@ -2058,6 +2074,10 @@ export function ComposerCard({
 
   const count = queued?.length ?? 0;
   const collapsed = variant === "chat" && !active && !blocked;
+  // WHICH AGENT THE BOX SPEAKS TO (D18): the pill's answer, else the catalog's
+  // default. Subscribed, so the first read and a Preferences switch repaint.
+  const agents = useAgentBackends();
+  const agentWord = agentLabel(controls.backend || agents.default);
 
   return (
     <>
@@ -2115,7 +2135,7 @@ export function ComposerCard({
             aria-hidden={!collapsed}
             data-testid="composer-meta"
           >
-            <span>{MODEL_LABELS[controls.model] ?? controls.model}</span>
+            <span>{modelLabelsOf(controls.backend)[controls.model] ?? MODEL_LABELS[controls.model] ?? controls.model}</span>
             <span className="c-composer-meta-dot" aria-hidden="true" />
             <span>{controls.effort}</span>
           </div>
@@ -2139,8 +2159,8 @@ export function ComposerCard({
                 ? // `homePlaceholderFor` names the KIND once the pane has decided
                   // it ("Ask Claude about this project…"); the markup's own
                   // kind-free wording stands until then (T:5392).
-                  placeholder || HOME_PLACEHOLDER
-                : CHAT_PLACEHOLDER
+                  placeholder || homePlaceholderForAgent(agentWord)
+                : chatPlaceholderFor(agentWord)
           }
           spellCheck={false}
           // AND GRAMMARLY OFF, all three spellings, exactly as T:4156-4157 and
@@ -2226,6 +2246,8 @@ export function ComposerCard({
               : `${count} follow-ups are queued for this turn.`}
           </div>
         ) : null}
+        {/* THE AGENT IS OFF (D17): the placeholder says so; this is the link. */}
+        {blocked && blockedNote ? <div className="c-queued c-blocked-note">{blockedNote}</div> : null}
         {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding,
             as against the follow-ups above that the run's host already has.
             Drawn whatever the queue flag says — these are not the project
@@ -2240,17 +2262,30 @@ export function ComposerCard({
             untouched, so the fit ladder still measures it. */}
         <div className="c-composer-tools">
         <div className="c-composer-row" ref={rowRef}>
+          {/* THE AGENT PILL LEADS (D18), and only while there is a choice: with
+              one agent switched on the word is said by the header, the
+              placeholder and every card instead. */}
+          {controls.setBackend && agents.backends.length >= 2 ? (
+            <AgentSelect
+              value={controls.backend || agents.default}
+              onChange={controls.setBackend}
+              fixed={!!controls.backendFixed}
+            />
+          ) : null}
           <ModelSelect
+            backend={controls.backend}
             value={controls.model}
             onChange={controls.setModel}
             loading={controls.ready === false}
           />
           <EffortSelect
+            backend={controls.backend}
             value={controls.effort}
             onChange={controls.setEffort}
             loading={controls.ready === false}
           />
           <PermissionSelect
+            backend={controls.backend}
             value={controls.permission}
             onChange={controls.setPermission}
             compact={fit !== "full"}

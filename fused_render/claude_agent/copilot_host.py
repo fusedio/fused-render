@@ -1,0 +1,1366 @@
+"""A session host for GITHUB COPILOT CLI — the Copilot twin of session_host.py.
+
+`session_host.py` owns the Claude CLI's stdin for a chat session and lets the
+CLI itself write `out.jsonl` (the stream-json rows `_poll` parses) and its own
+transcript under its own projects dir. Copilot has neither: `copilot --acp`
+speaks the Agent Client Protocol (JSON-RPC, newline-delimited, over stdio),
+streams a turn as `session/update` notifications, asks the CLIENT for every
+permission, and persists nothing fused can read in place. So this process is
+BOTH halves at once — the ACP client, and the writer of every file the rest of
+the app reads for a Claude session:
+
+  * `run_dir/out.jsonl` in the stream-json shape (`system/init`, the user
+    echo, `stream_event` deltas, `assistant`/`user` tool rows, one `result`
+    per prompt) — docs/COPILOT_BACKEND.md §4 is the row contract, and the
+    readers it was written against are `agent._poll`, `_turn_state`,
+    `_read_current_turn`, `_starts_new_turn`, `_segments_from_rows`;
+  * the durable transcript at `agent_roots.projects_dir("copilot")/<munge(cwd)>/
+    <sid>.jsonl` in Claude Code's own record shape, for `tasks_store._parse_head`,
+    `routers/tasks._absorb` and `session_liveness.transcript_turn_open`;
+  * `run_dir/pid` (the CLI's), `host.json`, the live registry row at
+    `agent_roots.sessions_dir("copilot")/<pid>.json`, and the permission
+    round trip through `run_dir/perm/<id>.req.json` / `.res.json` in exactly
+    the shapes `permission_server.py` writes and `agent._permissions` /
+    `_decide` read (D4) — Copilot's `session/request_permission` is answered
+    off the same card the chat window already draws.
+
+Loaded and run BY PATH, exactly like session_host.py (`sys.executable
+copilot_host.py`, the JSON request on stdin — never argv, which `ps` shows
+to every local user). Same request keys as session_host's, plus `argv` (the
+full `copilot --acp ...` argv `agent._copilot_argv` built — this host runs it
+verbatim) and `backend: "copilot"`. Stdlib only, never imports `fused_render`;
+`agent.py` is loaded by path for its spawn helpers and `agent_roots` through
+the shared dir, the way agent.py itself seeds `_SHARED`.
+
+THE READERS DECIDE THE ROW ORDER, and three of their rules shape everything
+below:
+
+  1. `_turn_state` reads ANY row after a `result` as the turn reopening
+     (only `control_response`/`rate_limit_event` and a few bookkeeping
+     `system` subtypes are exempt). So nothing notification-driven — a late
+     `usage_update`, a title — may land in out.jsonl between a `result` and
+     the next user echo: it is written only while a turn is open.
+  2. `_starts_new_turn` is a `user` row whose content is all `text` blocks:
+     the echo written BEFORE `session/prompt` goes out (invariant 3), and
+     never a `tool_result` row, which is why a tool's output rides a
+     `tool_result` block and not prose.
+  3. `transcript_turn_open` walks the transcript's tail to the newest
+     `user`/`assistant` row: a text-only assistant row closes the turn, a
+     user row (prompt or tool_result) holds it open — so every prompt's
+     transcript ends on an assistant row, and a cancelled one on the CLI's
+     own stop marker (`[Request interrupted by user]`), which the tasks
+     readers already turn into "Interrupted by you".
+
+Threads: ONE reader thread owns the CLI's stdout and dispatches replies by
+id, notifications by `sessionUpdate`, and client requests by method — a
+`session/request_permission` is served on its own thread because it blocks
+for as long as the user takes (permission_server does the same for
+`tools/call`). The main thread drains the inbox and runs the reap timer.
+Every state change happens under one lock; every write to the CLI's stdin
+under another. Fork-safety is session_host's argument verbatim: this is a
+bare interpreter the server never forks into.
+"""
+import importlib.util
+import itertools
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+import uuid
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+_SHARED = os.path.join(os.path.dirname(HERE), "templates", "shared")
+if _SHARED not in sys.path:
+    sys.path.insert(0, _SHARED)
+import agent_roots  # noqa: E402  (shared dir, loaded by path like agent.py does)
+
+BACKEND = "copilot"
+PROTOCOL_VERSION = 1
+
+# Same two knobs as session_host.py, by the same names, so a test (or an
+# operator) shrinks both hosts with one setting.
+_IDLE_REAP_SECONDS = float(
+    os.environ.get("FUSED_CLAUDE_HOST_IDLE_REAP_SECONDS", "30"))
+_DRAIN_INTERVAL_SECONDS = float(
+    os.environ.get("FUSED_CLAUDE_HOST_DRAIN_INTERVAL_SECONDS", "0.2"))
+# How long `initialize` + `session/new|load` may take before the run is
+# reported dead. Copilot's first start on a machine (plugin discovery, auth)
+# is slow; a session that never answers at all is the case this bounds.
+_HANDSHAKE_SECONDS = float(
+    os.environ.get("FUSED_COPILOT_HOST_HANDSHAKE_SECONDS", "120"))
+# The permission wait mirrors permission_server.py: same env knob, same poll,
+# same write window — the card on the other side is the same card.
+_PERM_WAIT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
+_PERM_POLL = 0.15
+_DECISION_WRITE_WINDOW = 2.0
+# Mirrors SWITCHABLE_MODES in agent.py / permission_server.py. Never
+# `bypassPermissions`; for Copilot both switchable modes mean `allow_all=on`
+# (D5), so the set only gates WHETHER the switch happens.
+_SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
+_UNSUPPORTED = "unsupported by copilot"
+# Claude Code's own stop marker, as the tasks readers spell it
+# (tasks_store._INTERRUPT_MARKS). Written to the transcript on a cancelled
+# prompt so `_absorb` says "Interrupted by you" and `transcript_turn_open`
+# reads the turn as closed — the contract's §4 table has no transcript row
+# for that case, and without one a stopped turn reads open for
+# STALE_TAIL_SEC.
+_INTERRUPT_MARK = "[Request interrupted by user]"
+# ACP tool kinds → the Claude tool names the page already renders (D14).
+_KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
+                 "search": "Grep"}
+_MCP_PREFIX = "fused_approvals-"
+_FD_CLOSE_CAP = 65536
+
+_EVENT_PATH = "/api/tasks/queue/event"
+_EVENT_TIMEOUT = 5.0
+_EVENT_RETRY_SECONDS = 1.0
+
+
+# ----------------------------------------------------------------- plumbing
+
+def _now_iso() -> str:
+    """ISO 8601 UTC with a `Z`, the way Claude Code stamps every record —
+    `tasks_store.epoch` and `agent._row_ts` parse exactly this."""
+    t = time.time()
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + \
+        ".%03dZ" % int((t % 1) * 1000)
+
+
+def _load_agent(path: str):
+    """agent.py by file path — mirrors `session_host._load_agent`."""
+    spec = importlib.util.spec_from_file_location("claude_agent_copilot_host", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _append_private(path: str):
+    """Binary append, created 0600 if new (session_host's own helper)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    return os.fdopen(fd, "ab")
+
+
+def _private_dirs(path: str) -> None:
+    """`makedirs` with 0700 on every level this call creates. Not
+    `agent._private_dir`: that one is anchored at the runs root and makes an
+    EXCLUSIVE leaf, and neither fits a transcript bucket under
+    `copilot_dir()` that outlives every run and is shared by every turn."""
+    missing = []
+    head = os.path.abspath(path)
+    while head and not os.path.isdir(head):
+        missing.append(head)
+        head = os.path.dirname(head)
+    for d in reversed(missing):
+        try:
+            os.mkdir(d, 0o700)
+        except FileExistsError:
+            pass
+
+
+def _write_atomic(path: str, data: dict) -> None:
+    """permission_server's `_write_atomic`: 0600 from the create, then one
+    `os.replace`, so a poll never reads half a request."""
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    os.replace(tmp, path)
+
+
+def _read_json(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _err_tail(run_dir: str, limit: int = 2000) -> str:
+    """The last bytes of `err.log` — what `_poll`'s abnormal-exit fallback
+    shows, handed back on the `result` row here so a transport death reads
+    the same way whichever reader gets there first."""
+    try:
+        with open(os.path.join(run_dir, "err.log"), "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - limit))
+            return fh.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+
+
+def _enable_faulthandler() -> None:
+    try:
+        import faulthandler
+        if sys.stderr is not None:
+            faulthandler.enable(all_threads=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _close_inherited_fds() -> None:
+    """session_host's D1310 cleanup: every fd above stdio the server leaked
+    into this process must not ride on into the CLI."""
+    try:
+        limit = os.sysconf("SC_OPEN_MAX")
+    except (AttributeError, ValueError, OSError):
+        limit = -1
+    if limit is None or limit < 0 or limit > _FD_CLOSE_CAP:
+        limit = _FD_CLOSE_CAP
+    os.closerange(3, limit)
+
+
+# ------------------------------------------------------- telling the queue
+#
+# The same four posts session_host.py and permission_server.py make
+# (`turn_ended`, `exited`, `card_raised`, `card_cleared`), with session_host's
+# posture — fire and forget, own daemon thread, 5 s + one retry, silence when
+# no origin is exported. See the long comment above `_post_event` there.
+
+def _meta_session_id(run_dir: str) -> str:
+    meta = _read_json(os.path.join(run_dir, "meta.json"))
+    return str(meta.get("session_id") or meta.get("resumed_from") or "")
+
+
+def _post_event(run_dir: str, kind: str, **extra):
+    try:
+        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        if not origin:
+            return None
+        body = {"kind": kind,
+                "run_id": os.path.basename(os.path.normpath(run_dir)),
+                "session_id": _meta_session_id(run_dir)}
+        body.update(extra)
+        t = threading.Thread(target=_send_event, args=(origin + _EVENT_PATH, body),
+                             daemon=True)
+        t.start()
+        return t
+    except Exception:
+        return None
+
+
+def _post_card(run_dir: str, kind: str, req_id: str) -> None:
+    """permission_server's `_post_card` body: `{kind, run_id, request_id}`."""
+    try:
+        origin = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/")
+        if not origin:
+            return
+        body = {"kind": kind,
+                "run_id": os.path.basename(os.path.normpath(run_dir)),
+                "request_id": req_id}
+        threading.Thread(target=_send_event, args=(origin + _EVENT_PATH, body),
+                         daemon=True).start()
+    except Exception:
+        pass
+
+
+def _send_event(url: str, body: dict) -> None:
+    data = json.dumps(body).encode("utf-8")
+    for attempt in (0, 1):
+        try:
+            req = urllib.request.Request(
+                url, data=data,
+                headers={"Content-Type": "application/json", "X-Fused": "1"},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=_EVENT_TIMEOUT) as resp:
+                resp.read()
+            return
+        except Exception:
+            if attempt:
+                return
+        try:
+            time.sleep(_EVENT_RETRY_SECONDS)
+        except Exception:
+            return
+
+
+# ------------------------------------------------------------- the ACP wire
+
+class _Rpc:
+    """One outbound request: the slot its reply lands in. `error` is the
+    JSON-RPC error object, or a transport failure's message."""
+
+    def __init__(self, method: str):
+        self.method = method
+        self.done = threading.Event()
+        self.result = None
+        self.error = None
+        self.on_done = None
+
+    def settle(self, result=None, error=None) -> None:
+        self.result, self.error = result, error
+        self.done.set()
+        cb = self.on_done
+        if cb is not None:
+            cb(self)
+
+
+class _Peer:
+    """The CLI's stdio as JSON-RPC: one writer lock, one reader thread.
+
+    Replies are routed to their `_Rpc` by id; notifications and inbound
+    requests are handed to the callbacks the host installs. On EOF every
+    pending request is failed (so an open prompt ends in a `result`, invariant
+    2) and `dead` is set, which is the main loop's cue to leave."""
+
+    def __init__(self, cli):
+        self.cli = cli
+        self._write_lock = threading.Lock()
+        self._ids = itertools.count(1)
+        self._pending = {}
+        self._pending_lock = threading.Lock()
+        self.dead = threading.Event()
+        self.on_notification = lambda method, params: None
+        self.on_request = lambda rid, method, params: None
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+
+    def start(self) -> None:
+        """Begin reading — AFTER the host has installed its callbacks, or the
+        first `available_commands_update` lands on the no-op defaults."""
+        self._reader.start()
+
+    def _send(self, msg: dict) -> bool:
+        data = (json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8")
+        with self._write_lock:
+            try:
+                self.cli.stdin.write(data)
+                self.cli.stdin.flush()
+                return True
+            except (OSError, ValueError):
+                return False
+
+    def request(self, method: str, params: dict, on_done=None) -> _Rpc:
+        rpc = _Rpc(method)
+        rpc.on_done = on_done
+        rid = next(self._ids)
+        with self._pending_lock:
+            self._pending[rid] = rpc
+        if self.dead.is_set() or not self._send(
+                {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}):
+            with self._pending_lock:
+                self._pending.pop(rid, None)
+            rpc.settle(error={"code": -32000, "message": "copilot is not running"})
+        return rpc
+
+    def notify(self, method: str, params: dict) -> None:
+        self._send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def respond(self, rid, result) -> None:
+        self._send({"jsonrpc": "2.0", "id": rid, "result": result})
+
+    def respond_error(self, rid, code: int, message: str) -> None:
+        self._send({"jsonrpc": "2.0", "id": rid,
+                    "error": {"code": code, "message": message}})
+
+    def _read_loop(self) -> None:
+        try:
+            for raw in self.cli.stdout:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                try:
+                    self._dispatch(msg)
+                except Exception as exc:  # noqa: BLE001 — one bad message must not end the session
+                    sys.stderr.write("copilot_host: dispatch failed: %r\n" % (exc,))
+        finally:
+            with self._pending_lock:
+                pending, self._pending = list(self._pending.values()), {}
+            for rpc in pending:
+                rpc.settle(error={"code": -32000, "message": "copilot exited"})
+            self.dead.set()
+
+    def _dispatch(self, msg: dict) -> None:
+        if "method" in msg:
+            params = msg.get("params")
+            params = params if isinstance(params, dict) else {}
+            if "id" in msg:
+                self.on_request(msg["id"], str(msg["method"]), params)
+            else:
+                self.on_notification(str(msg["method"]), params)
+            return
+        with self._pending_lock:
+            rpc = self._pending.pop(msg.get("id"), None)
+        if rpc is None:
+            return
+        if "error" in msg:
+            err = msg["error"]
+            rpc.settle(error=err if isinstance(err, dict)
+                       else {"code": -32000, "message": str(err)})
+        else:
+            rpc.settle(result=msg.get("result"))
+
+
+# ------------------------------------------------------------- tool mapping
+
+def _first_path(raw: dict, locations) -> str:
+    for key in ("file_path", "path", "filePath", "file"):
+        v = raw.get(key)
+        if isinstance(v, str) and v:
+            return v
+    if isinstance(locations, list):
+        for loc in locations:
+            if isinstance(loc, dict) and isinstance(loc.get("path"), str) and loc["path"]:
+                return loc["path"]
+    return ""
+
+
+def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "") -> tuple:
+    """`(name, input)` for one ACP tool call, per D14: the Claude tool name the
+    chat already has a card and a chip for, with the fields that card reads,
+    plus `_acp: {kind, title, raw}` so nothing Copilot said is lost. An MCP
+    tool reached through `--additional-mcp-config` surfaces as
+    `<server>-<tool>`; fused's own server becomes `mcp__fused_approvals__<tool>`
+    (the name agent.py pre-allows and `_segments_from_rows` strips)."""
+    raw = raw if isinstance(raw, dict) else ({} if raw is None else {"value": raw})
+    kind = str(kind or "")
+    title = str(title or "")
+    acp = {"kind": kind, "title": title, "raw": raw}
+    name = _KIND_TO_TOOL.get(kind)
+    if kind == "execute":
+        inp = {"command": str(raw.get("command") or raw.get("cmd") or title),
+               "description": str(raw.get("description") or title)}
+    elif kind == "edit":
+        path = _first_path(raw, locations)
+        full = path if os.path.isabs(path) else os.path.join(cwd or "", path)
+        if path and not os.path.exists(full):
+            name = "Write"
+            inp = {"file_path": path,
+                   "content": str(raw.get("content") or raw.get("newText")
+                                  or raw.get("new_text") or "")}
+        else:
+            name = "Edit"
+            inp = {"file_path": path,
+                   "diff": str(raw.get("diff") or raw.get("newText")
+                               or raw.get("new_text") or "")}
+    elif kind == "read":
+        inp = {"file_path": _first_path(raw, locations)}
+    elif kind == "fetch":
+        inp = {"url": str(raw.get("url") or title)}
+    elif kind == "search":
+        inp = {"pattern": str(raw.get("pattern") or raw.get("query") or title),
+               "path": str(raw.get("path") or _first_path(raw, locations) or "")}
+    else:
+        inp = dict(raw)
+        mcp = ""
+        for cand in (title, raw.get("name"), raw.get("tool"), raw.get("toolName")):
+            if isinstance(cand, str) and cand.startswith(_MCP_PREFIX):
+                mcp = cand
+                break
+        if mcp:
+            name = "mcp__fused_approvals__" + mcp[len(_MCP_PREFIX):]
+        else:
+            name = title or kind or "tool"
+    inp["_acp"] = acp
+    return name, inp
+
+
+def _tool_output_text(update: dict) -> str:
+    """One string out of a `tool_call_update`'s `content[]` / `rawOutput`."""
+    parts = []
+    for item in update.get("content") or []:
+        if not isinstance(item, dict):
+            continue
+        t = item.get("type")
+        if t == "content":
+            block = item.get("content")
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        elif t == "text" and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+        elif t == "diff":
+            parts.append("--- %s\n-%s\n+%s" % (item.get("path", ""),
+                                               item.get("oldText", ""),
+                                               item.get("newText", "")))
+    if not parts:
+        raw = update.get("rawOutput")
+        if isinstance(raw, str):
+            parts.append(raw)
+        elif raw is not None:
+            parts.append(json.dumps(raw, ensure_ascii=False))
+    return "\n".join(parts)
+
+
+def _pick_option(options, kinds) -> str:
+    """The `optionId` of the first option whose `kind` is in `kinds`, in the
+    order given, or "". By KIND, never by id: the ids are the agent's to
+    choose and only the kind is protocol."""
+    if not isinstance(options, list):
+        return ""
+    for kind in kinds:
+        for opt in options:
+            if isinstance(opt, dict) and opt.get("kind") == kind \
+                    and isinstance(opt.get("optionId"), str):
+                return opt["optionId"]
+    return ""
+
+
+def _permission_outcome(options, decision: dict) -> dict:
+    """D4: allow + scope session → allow_always, allow → allow_once,
+    everything else (deny, expired, cancelled, timeout) → reject_once. An
+    option list that lacks the wanted kind falls to its neighbour, and one
+    with no usable option at all is answered `cancelled`, which the agent
+    reads as a refusal."""
+    if decision.get("decision") == "allow":
+        kinds = ("allow_always", "allow_once") if decision.get("scope") == "session" \
+            else ("allow_once", "allow_always")
+    else:
+        kinds = ("reject_once", "reject_always")
+    oid = _pick_option(options, kinds)
+    if not oid:
+        return {"outcome": {"outcome": "cancelled"}}
+    return {"outcome": {"outcome": "selected", "optionId": oid}}
+
+
+# ------------------------------------------------------------------- the host
+
+class _Host:
+    def __init__(self, agent, req: dict, cli, peer: _Peer):
+        self.agent = agent
+        self.req = req
+        self.cli = cli
+        self.peer = peer
+        self.run_dir = req["run_dir"]
+        self.cwd = req["cwd"]
+        self.model = str(req.get("model") or "")
+        # THE SESSION, as fused named it (uuid4, minted for a new chat, the
+        # resumed id otherwise) — the key of every file this host writes.
+        self.sid = str(req.get("session_id") or req.get("new_session_id") or "")
+        self.resume = bool(req.get("session_id"))
+        # The id on the WIRE: Copilot's reply names it; normally the same.
+        self.acp_sid = self.sid
+        self.lock = threading.RLock()
+        self._out = _append_private(os.path.join(self.run_dir, "out.jsonl"))
+        self.transcript_path = os.path.join(
+            agent_roots.projects_dir(BACKEND), agent_roots.munge(self.cwd),
+            self.sid + ".jsonl")
+        _private_dirs(os.path.dirname(self.transcript_path))
+        self._tx = _append_private(self.transcript_path)
+        self.parent_uuid = None
+        self.registry_path = os.path.join(agent_roots.sessions_dir(BACKEND),
+                                          "%d.json" % cli.pid)
+        _private_dirs(os.path.dirname(self.registry_path))
+        self.perm_dir = os.path.join(self.run_dir, "perm")
+        # Turn state (§5 of the contract).
+        self.turn_open = False
+        self.turn_started = 0.0
+        self.turn_text = None         # text of the last closed text message
+        self.turn_messages = 0        # assistant messages this turn (num_turns)
+        self.tail_closed = True       # transcript's last row is a text assistant row
+        self.msg_open = False         # a message_start has been emitted
+        self.text_parts = []
+        self.thinking_parts = []
+        self.last_usage = {}          # newest usage_update {used, size}
+        self.context_window = None
+        self.replaying = False
+        self.replay_turns = []
+        self.replay_user = None
+        self.replay_agent = []
+        self.interrupts = []          # control request ids awaiting the cancelled reply
+        self.pending_perm = {}        # rpc id -> {"perm_id", "done": Event, "answered"}
+        self.slash_commands = []
+        self.started = False          # handshake done, init row written
+        self.closed = False           # files closed; late notifications dropped
+        self.pending_title = ""
+        self.tools = {}               # toolCallId -> (name, input)
+        self._ids = itertools.count(1)
+        peer.on_notification = self._on_notification
+        peer.on_request = self._on_request
+        peer.start()
+
+    # ------------------------------------------------------------ writers
+
+    def _emit_out(self, row: dict) -> None:
+        if self.closed:
+            return
+        row.setdefault("session_id", self.sid)
+        row["timestamp"] = _now_iso()
+        self._out.write((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+        self._out.flush()
+
+    def _emit_tx(self, row: dict) -> None:
+        """One transcript record, in Claude Code's shape: `uuid`/`parentUuid`
+        chain, `sessionId`, `cwd`, `timestamp`."""
+        if self.closed:
+            return
+        rid = str(uuid.uuid4())
+        row.setdefault("uuid", rid)
+        row.setdefault("parentUuid", self.parent_uuid)
+        row.setdefault("sessionId", self.sid)
+        row.setdefault("cwd", self.cwd)
+        row["timestamp"] = _now_iso()
+        self.parent_uuid = row["uuid"]
+        self._tx.write((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
+        self._tx.flush()
+
+    def _usage(self) -> dict:
+        used = self.last_usage.get("used")
+        return {"input_tokens": int(used) if isinstance(used, (int, float)) else 0,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                "output_tokens": 0}
+
+    def _write_registry(self, status: str) -> None:
+        try:
+            _write_atomic(self.registry_path, {
+                "sessionId": self.sid, "cwd": self.cwd, "status": status,
+                "updatedAt": _now_iso(), "pid": self.cli.pid})
+        except OSError:
+            pass
+
+    def write_init(self) -> None:
+        """The FIRST row of out.jsonl (invariant 1), after the handshake."""
+        row = {"type": "system", "subtype": "init", "session_id": self.sid,
+               "cwd": self.cwd, "model": self.model, "backend": BACKEND,
+               "permissionMode": str(self.req.get("cli_mode") or ""),
+               "slash_commands": list(self.slash_commands), "skills": [],
+               "tools": []}
+        if self.context_window:
+            row["context_window"] = self.context_window
+        self._emit_out(row)
+
+    def write_first_turn_notice(self) -> None:
+        """D18: the transcript's own record that Copilot answers here."""
+        self._emit_tx({"type": "system", "subtype": "task_notification",
+                       "summary": "Handled by GitHub Copilot · model %s" % self.model,
+                       "backend": BACKEND, "model": self.model,
+                       "isMeta": False, "isSidechain": False})
+
+    # ------------------------------------------------------------- the turn
+
+    def send_prompt(self, text: str) -> None:
+        """Echo first, then `session/prompt` (invariant 3). The state and the
+        echo go under the lock, so the reader thread cannot see a reply before
+        the turn reads open; the pipe write goes OUTSIDE it — a prompt larger
+        than the pipe buffer, written while the reader is blocked on this
+        same lock with Copilot's stdout full, would deadlock both."""
+        with self.lock:
+            self.turn_open = True
+            self.turn_started = time.monotonic()
+            self.turn_text = None
+            self.turn_messages = 0
+            self.tail_closed = False
+            self._emit_out({"type": "user", "message": {
+                "role": "user", "content": [{"type": "text", "text": text}]}})
+            self._emit_tx({"type": "user", "message": {
+                "role": "user", "content": [{"type": "text", "text": text}]},
+                "entrypoint": "sdk-cli", "isMeta": False, "isSidechain": False})
+            self._write_registry("busy")
+        self.peer.request("session/prompt", {
+            "sessionId": self.acp_sid,
+            "prompt": [{"type": "text", "text": text}]},
+            on_done=self._on_prompt_reply)
+
+    def _open_message(self) -> None:
+        if self.msg_open:
+            return
+        self.msg_open = True
+        self._emit_out({"type": "stream_event", "event": {
+            "type": "message_start",
+            "message": {"role": "assistant", "model": self.model,
+                        "content": [], "usage": self._usage()}}})
+
+    def _close_message(self) -> None:
+        """End the streamed message: `message_delta`, `message_stop`, then the
+        finalized `assistant` row the transcript keeps (and `_poll` reads
+        the usage off)."""
+        if not self.msg_open:
+            return
+        self.msg_open = False
+        text = "".join(self.text_parts)
+        thinking = "".join(self.thinking_parts)
+        self.text_parts, self.thinking_parts = [], []
+        self._emit_out({"type": "stream_event", "event": {
+            "type": "message_delta", "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 0}}})
+        self._emit_out({"type": "stream_event", "event": {"type": "message_stop"}})
+        content = []
+        if thinking:
+            content.append({"type": "thinking", "thinking": thinking})
+        if text:
+            content.append({"type": "text", "text": text})
+        if not content:
+            return
+        self.turn_messages += 1
+        message = {"role": "assistant", "model": self.model,
+                   "content": content, "usage": self._usage()}
+        self._emit_out({"type": "assistant", "message": message})
+        self._emit_tx({"type": "assistant", "message": message,
+                       "isMeta": False, "isSidechain": False})
+        if text:
+            self.turn_text = text
+        # No `tool_use` in this row, so `transcript_turn_open` reads it as a
+        # reply that finished — the turn's transcript may end here.
+        self.tail_closed = True
+
+    def _on_chunk(self, kind: str, text: str) -> None:
+        if self.replaying:
+            if kind == "text":
+                self.replay_agent.append(text)
+            return
+        if not self.turn_open:
+            return  # a chunk outside a prompt has no turn to belong to
+        self._open_message()
+        if kind == "text":
+            self.text_parts.append(text)
+            delta = {"type": "text_delta", "text": text}
+        else:
+            self.thinking_parts.append(text)
+            delta = {"type": "thinking_delta", "thinking": text}
+        self._emit_out({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0, "delta": delta}})
+
+    def _on_tool_call(self, update: dict) -> None:
+        if self.replaying or not self.turn_open:
+            return
+        self._close_message()
+        tid = str(update.get("toolCallId") or "")
+        name, inp = _map_tool(update.get("kind"), update.get("title"),
+                              update.get("rawInput"), update.get("locations"),
+                              self.cwd)
+        self.tools[tid] = (name, inp)
+        block = {"type": "tool_use", "id": tid, "name": name, "input": inp}
+        self._emit_out({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0, "content_block": block}})
+        self.turn_messages += 1
+        message = {"role": "assistant", "model": self.model,
+                   "content": [block], "usage": self._usage()}
+        self._emit_out({"type": "assistant", "message": message})
+        self._emit_tx({"type": "assistant", "message": message,
+                       "isMeta": False, "isSidechain": False})
+        self.tail_closed = False
+
+    def _on_tool_call_update(self, update: dict) -> None:
+        if self.replaying or not self.turn_open:
+            return
+        status = update.get("status")
+        if status not in ("completed", "failed"):
+            return
+        tid = str(update.get("toolCallId") or "")
+        block = {"type": "tool_result", "tool_use_id": tid,
+                 "content": _tool_output_text(update),
+                 "is_error": status == "failed"}
+        message = {"role": "user", "content": [block]}
+        self._emit_out({"type": "user", "message": message})
+        self._emit_tx({"type": "user", "message": message,
+                       "entrypoint": "sdk-cli", "isMeta": False,
+                       "isSidechain": False})
+        self.tail_closed = False
+
+    def _on_prompt_reply(self, rpc: _Rpc) -> None:
+        """EVERY road a prompt can end on lands here, once: a reply of any
+        stopReason, a JSON-RPC error, the transport dying. One `result` row
+        per prompt (invariant 2)."""
+        with self.lock:
+            if not self.turn_open:
+                return
+            try:
+                self._finish_turn(rpc)
+            except Exception as exc:  # noqa: BLE001
+                # A write failed mid-way: the turn still has to CLOSE with a
+                # result row, or `_turn_state` reads it open forever.
+                try:
+                    self._emit_out({"type": "result", "session_id": self.sid,
+                                    "subtype": "error_during_execution",
+                                    "is_error": True, "stop_reason": "error",
+                                    "result": "copilot_host: %r" % (exc,),
+                                    "num_turns": self.turn_messages,
+                                    "usage": self._usage(), "backend": BACKEND})
+                except Exception:  # noqa: BLE001
+                    pass
+            finally:
+                self.turn_open = False
+                self.msg_open = False
+                self.text_parts, self.thinking_parts = [], []
+                self._write_registry("idle")
+                _post_event(self.run_dir, "turn_ended", at=time.time(),
+                            pid=self.cli.pid)
+
+    def _finish_turn(self, rpc: _Rpc) -> None:
+        self._close_message()
+        duration_ms = int((time.monotonic() - self.turn_started) * 1000)
+        result = {"type": "result", "session_id": self.sid, "backend": BACKEND,
+                  "num_turns": self.turn_messages, "duration_ms": duration_ms,
+                  "usage": self._usage()}
+        if rpc.error is not None:
+            # D13: an API/credits failure is an assistant row the readers
+            # already know (`isApiErrorMessage`), then an error result.
+            text = str(rpc.error.get("message") or "copilot refused the prompt")
+            data = rpc.error.get("data")
+            if data:
+                text += " — " + (data if isinstance(data, str)
+                                 else json.dumps(data, ensure_ascii=False))
+            if rpc.error.get("message") in ("copilot exited", "copilot is not running"):
+                tail = _err_tail(self.run_dir)
+                text = "copilot exited (code %s)%s" % (
+                    self.cli.poll(), (": " + tail) if tail else "")
+            message = {"role": "assistant", "model": "<synthetic>",
+                       "content": [{"type": "text", "text": text}],
+                       "usage": self._usage()}
+            self._emit_out({"type": "assistant", "isApiErrorMessage": True,
+                            "message": message})
+            self._emit_tx({"type": "assistant", "isApiErrorMessage": True,
+                           "message": message, "isMeta": False,
+                           "isSidechain": False})
+            self.tail_closed = True
+            result.update({"subtype": "error_during_execution", "is_error": True,
+                           "result": text, "stop_reason": "error"})
+        else:
+            reply = rpc.result if isinstance(rpc.result, dict) else {}
+            stop = str(reply.get("stopReason") or "end_turn")
+            usage = reply.get("usage")
+            if isinstance(usage, dict):
+                def n(key):
+                    v = usage.get(key)
+                    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+                result["usage"] = {
+                    "input_tokens": n("inputTokens"),
+                    "output_tokens": n("outputTokens"),
+                    "cache_read_input_tokens": n("cachedReadTokens"),
+                    "cache_creation_input_tokens": n("cachedWriteTokens")}
+            if stop == "cancelled":
+                # The stop button's own last word, so the tasks readers say
+                # "Interrupted by you" and read the turn as closed.
+                self._emit_tx({"type": "user", "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": _INTERRUPT_MARK}]},
+                    "entrypoint": "sdk-cli", "isMeta": False,
+                    "isSidechain": False})
+                self.tail_closed = True
+            elif not self.tail_closed:
+                # A reply that ended on a tool call: close the transcript's
+                # turn with an assistant row carrying no `tool_use`, which is
+                # what `transcript_turn_open` reads as "reply finished".
+                self._emit_tx({"type": "assistant", "message": {
+                    "role": "assistant", "model": self.model,
+                    "content": [{"type": "text", "text": self.turn_text or ""}],
+                    "usage": self._usage()},
+                    "isMeta": False, "isSidechain": False})
+                self.tail_closed = True
+            ok = stop == "end_turn"
+            result.update({"subtype": "success" if ok else "error_during_execution",
+                           "is_error": not ok, "result": self.turn_text or "",
+                           "stop_reason": stop})
+        self._emit_tx({"type": "system", "subtype": "turn_duration",
+                       "durationMs": duration_ms, "isMeta": False,
+                       "isSidechain": False})
+        self._emit_out(result)
+        # The interrupts this reply answers. AFTER the result: a
+        # `control_response` is in `_NOT_A_TURN_ROW`, so it may follow one.
+        for rid in self.interrupts:
+            self._control_response(rid, {"still_queued": []})
+        self.interrupts = []
+
+    # ------------------------------------------------------- notifications
+
+    def _on_notification(self, method: str, params: dict) -> None:
+        if method != "session/update":
+            return
+        update = params.get("update")
+        if not isinstance(update, dict):
+            return
+        kind = str(update.get("sessionUpdate") or "")
+        with self.lock:
+            if kind == "agent_message_chunk":
+                self._on_chunk("text", self._chunk_text(update))
+            elif kind == "agent_thought_chunk":
+                self._on_chunk("thinking", self._chunk_text(update))
+            elif kind == "user_message_chunk":
+                if self.replaying:
+                    self._replay_user(self._chunk_text(update))
+            elif kind == "tool_call":
+                self._on_tool_call(update)
+            elif kind == "tool_call_update":
+                self._on_tool_call_update(update)
+            elif kind == "usage_update":
+                self._on_usage(update)
+            elif kind == "available_commands_update":
+                cmds = update.get("availableCommands")
+                if isinstance(cmds, list):
+                    self.slash_commands = [
+                        str(c.get("name")) for c in cmds
+                        if isinstance(c, dict) and c.get("name")]
+            elif kind == "session_info_update":
+                title = update.get("title")
+                if isinstance(title, str) and title.strip():
+                    if self.started:
+                        self._emit_tx({"type": "ai-title", "aiTitle": title.strip()})
+                    else:
+                        # Arrives during `session/new`, before the handshake
+                        # has written the D18 notice: held so that notice
+                        # stays the transcript's first row.
+                        self.pending_title = title.strip()
+
+    @staticmethod
+    def _chunk_text(update: dict) -> str:
+        content = update.get("content")
+        if isinstance(content, dict):
+            return str(content.get("text") or "")
+        if isinstance(content, list):
+            return "".join(str(c.get("text") or "") for c in content
+                           if isinstance(c, dict))
+        return str(content or "")
+
+    def _on_usage(self, update: dict) -> None:
+        for key in ("used", "size"):
+            if isinstance(update.get(key), (int, float)):
+                self.last_usage[key] = update[key]
+        size = self.last_usage.get("size")
+        if size and size != self.context_window:
+            self.context_window = int(size)
+            # Only INSIDE a turn: any row after a `result` reopens the turn
+            # for `_turn_state` (`status` is not a bookkeeping subtype).
+            if self.turn_open:
+                self._emit_out({"type": "system", "subtype": "status",
+                                "context_window": self.context_window})
+
+    def _replay_user(self, text: str) -> None:
+        if self.replay_user is not None and self.replay_agent:
+            self.replay_turns.append((self.replay_user, "".join(self.replay_agent)))
+            self.replay_user, self.replay_agent = None, []
+        self.replay_user = (self.replay_user or "") + text
+
+    def backfill_replay(self) -> None:
+        """D3: turns taken in a terminal (`copilot --resume`) are not in the
+        fused transcript. The `session/load` replay carries every turn; the
+        ones past the transcript's own user-row count are appended."""
+        if self.replay_user is not None:
+            self.replay_turns.append((self.replay_user, "".join(self.replay_agent)))
+        self.replay_user, self.replay_agent = None, []
+        have = 0
+        try:
+            with open(self.transcript_path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(row, dict) or row.get("type") != "user":
+                        continue
+                    if row.get("isMeta") or row.get("isSidechain"):
+                        continue
+                    msg = row.get("message") or {}
+                    content = msg.get("content")
+                    if isinstance(content, list) and content and all(
+                            isinstance(b, dict) and b.get("type") == "text"
+                            for b in content):
+                        if content[0].get("text") != _INTERRUPT_MARK:
+                            have += 1
+        except OSError:
+            pass
+        for user_text, agent_text in self.replay_turns[have:]:
+            self._emit_tx({"type": "user", "message": {
+                "role": "user", "content": [{"type": "text", "text": user_text}]},
+                "entrypoint": "sdk-cli", "isMeta": False, "isSidechain": False})
+            self._emit_tx({"type": "assistant", "message": {
+                "role": "assistant", "model": self.model,
+                "content": [{"type": "text", "text": agent_text}],
+                "usage": self._usage()},
+                "isMeta": False, "isSidechain": False})
+        self.replay_turns = []
+
+    # ---------------------------------------------------------- permissions
+
+    def _on_request(self, rid, method: str, params: dict) -> None:
+        if method == "session/request_permission":
+            threading.Thread(target=self._serve_permission, args=(rid, params),
+                             daemon=True).start()
+            return
+        # `fs/*`, `terminal/*` and anything else the client is asked for: not
+        # offered (clientCapabilities was empty), so refused by the book.
+        self.peer.respond_error(rid, -32601, "method not supported: %s" % method)
+
+    def _perm_id(self) -> str:
+        """permission_server's id format (`HHMMSS-NNN-6hex`): ours, minted,
+        path-safe."""
+        return "%s-%03d-%s" % (time.strftime("%H%M%S"), next(self._ids),
+                               os.urandom(3).hex())
+
+    def _answer_perm(self, rid, outcome: dict) -> bool:
+        """Answer the RPC — once. Both the card's own wait and a cancel can
+        reach for the same request; the first to pop it wins (invariant 6)."""
+        with self.lock:
+            entry = self.pending_perm.pop(rid, None)
+            if entry is None:
+                return False
+            entry["done"].set()
+        self.peer.respond(rid, outcome)
+        return True
+
+    def _serve_permission(self, rid, params: dict) -> None:
+        call = params.get("toolCall")
+        call = call if isinstance(call, dict) else {}
+        tid = str(call.get("toolCallId") or "")
+        known = self.tools.get(tid)
+        if known is not None and not call.get("rawInput"):
+            name, inp = known
+        else:
+            name, inp = _map_tool(call.get("kind"), call.get("title"),
+                                  call.get("rawInput"), call.get("locations"),
+                                  self.cwd)
+        options = params.get("options")
+        perm_id = self._perm_id()
+        _private_dirs(self.perm_dir)
+        entry = {"perm_id": perm_id, "done": threading.Event(), "options": options}
+        with self.lock:
+            self.pending_perm[rid] = entry
+        try:
+            _write_atomic(os.path.join(self.perm_dir, perm_id + ".req.json"), {
+                "id": perm_id, "tool": name, "input": inp,
+                "tool_use_id": tid, "created_at": time.time()})
+        except OSError as exc:
+            sys.stderr.write("copilot_host: cannot park permission: %r\n" % (exc,))
+            self._answer_perm(rid, _permission_outcome(options, {"decision": "deny"}))
+            return
+        # Announce BEFORE blocking, as permission_server does: the card is
+        # on screen now and the queue must hear it before the human answers.
+        _post_card(self.run_dir, "card_raised", perm_id)
+        decision = self._await_decision(entry)
+        if decision is None:
+            return  # answered elsewhere (a cancel), card already cleared
+        _post_card(self.run_dir, "card_cleared", perm_id)
+        if self._answer_perm(rid, _permission_outcome(options, decision)):
+            if decision.get("decision") == "allow" \
+                    and decision.get("mode") in _SWITCHABLE_MODES:
+                # "…and stop asking" (D5): after the RPC reply, so the tool
+                # that asked runs first and everything after it is allowed.
+                self.peer.request("session/set_config_option", {
+                    "sessionId": self.acp_sid, "configId": "allow_all",
+                    "value": "on"})
+
+    def _await_decision(self, entry: dict):
+        """permission_server's `_await_answer`, with one extra exit: the
+        entry's `done` event, set when a cancel answered this card already.
+        Same timeout, same fallback deny written O_EXCL (first writer wins),
+        same write-window re-read for a decision landing right now."""
+        res_path = os.path.join(self.perm_dir, entry["perm_id"] + ".res.json")
+        deadline = time.monotonic() + _PERM_WAIT
+        while time.monotonic() < deadline:
+            if entry["done"].is_set():
+                return None
+            decision = _read_json(res_path)
+            if decision:
+                return decision
+            time.sleep(_PERM_POLL)
+        fallback = {"decision": "deny", "reason": "timeout"}
+        try:
+            fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            end = time.monotonic() + _DECISION_WRITE_WINDOW
+            while time.monotonic() < end:
+                decision = _read_json(res_path)
+                if decision:
+                    return decision
+                time.sleep(_PERM_POLL)
+            return fallback
+        except OSError:
+            return fallback
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(fallback, fh)
+        except OSError:
+            pass  # the latch stays claimed — permission_server's reasoning
+        return fallback
+
+    def reject_pending(self, reason: str) -> None:
+        """Every outstanding permission RPC → `reject_once`, its card closed
+        with a deny on disk (first writer wins, like `_deny_pending`), the
+        queue told. For `session/cancel` and the final teardown."""
+        with self.lock:
+            items = list(self.pending_perm.items())
+        for rid, entry in items:
+            res_path = os.path.join(self.perm_dir, entry["perm_id"] + ".res.json")
+            try:
+                fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump({"decision": "deny", "reason": reason}, fh)
+            except OSError:
+                pass  # already decided by the page; the verdict below still stands
+            if self._answer_perm(rid, _permission_outcome(
+                    entry["options"], {"decision": "deny"})):
+                _post_card(self.run_dir, "card_cleared", entry["perm_id"])
+
+    # -------------------------------------------------------------- inbox
+
+    def _control_response(self, request_id: str, response=None, error: str = "") -> None:
+        body = {"request_id": request_id}
+        if error:
+            body.update({"subtype": "error", "error": error})
+        else:
+            body.update({"subtype": "success", "response": response or {}})
+        self._emit_out({"type": "control_response", "response": body})
+
+    def drain_inbox(self) -> int:
+        """session_host's `_drain_inbox`, PARSED: a user row becomes a
+        `session/prompt` (or is HELD, left in `inbox/`, while a turn is open —
+        D6: a second prompt would cancel the first); a control request is
+        acted on at once whatever the turn is doing. Re-listed from disk on
+        every pass, never cached: `_cancel_run` deletes undrained user
+        entries, and a held message the user just stopped must not be sent.
+        Returns how many user entries are still held."""
+        inbox = os.path.join(self.run_dir, "inbox")
+        done = os.path.join(inbox, "done")
+        try:
+            names = sorted(n for n in os.listdir(inbox) if n.endswith(".json"))
+        except FileNotFoundError:
+            return 0
+        held = 0
+        for name in names:
+            src = os.path.join(inbox, name)
+            try:
+                with open(src, encoding="utf-8") as fh:
+                    row = json.load(fh)
+            except (OSError, ValueError):
+                continue  # half-written or raced away; the next tick sees it
+            if not isinstance(row, dict):
+                row = {}
+            if row.get("type") == "user":
+                with self.lock:
+                    hold = self.turn_open or held
+                if hold:
+                    held += 1
+                    continue
+                self.send_prompt(self._user_text(row))
+            elif row.get("type") == "control_request":
+                self._handle_control(row)
+            if not os.path.isdir(done):
+                _private_dirs(done)
+            try:
+                os.replace(src, os.path.join(done, name))
+            except OSError:
+                pass
+        return held
+
+    @staticmethod
+    def _user_text(row: dict) -> str:
+        message = row.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(str(b.get("text") or "") for b in content
+                           if isinstance(b, dict) and b.get("type") == "text")
+        return ""
+
+    def _handle_control(self, row: dict) -> None:
+        request_id = str(row.get("request_id") or "")
+        request = row.get("request")
+        request = request if isinstance(request, dict) else {}
+        subtype = str(request.get("subtype") or "")
+        if subtype == "interrupt":
+            with self.lock:
+                if not self.turn_open:
+                    # Nothing to cancel; `_await_control_response` wants its
+                    # answer inside 5 s or it tree-kills the session.
+                    self._control_response(request_id, {"still_queued": []})
+                    return
+                # Registered BEFORE the cancel goes out: a reply racing it
+                # answers this id from `_finish_turn`, and the late cancel
+                # then reaches an idle session, which is harmless.
+                self.interrupts.append(request_id)
+            self.peer.notify("session/cancel", {"sessionId": self.acp_sid})
+            self.reject_pending("cancelled")
+        elif subtype == "set_permission_mode":
+            mode = str(request.get("mode") or "")
+            self.peer.request("session/set_config_option", {
+                "sessionId": self.acp_sid, "configId": "allow_all",
+                "value": "on" if mode == "auto" else "off"})
+            with self.lock:
+                self._control_response(request_id, {})
+        else:
+            with self.lock:
+                self._control_response(request_id, error=_UNSUPPORTED)
+
+    # ------------------------------------------------------------ lifecycle
+
+    def handshake(self) -> bool:
+        """`initialize` → `session/new` | `session/load`. False (with the
+        failure already written as a result row) when Copilot never came up."""
+        rpc = self.peer.request("initialize", {
+            "protocolVersion": PROTOCOL_VERSION, "clientCapabilities": {},
+            "clientInfo": {"name": "fused-render", "version": "1"}})
+        if not rpc.done.wait(_HANDSHAKE_SECONDS) or rpc.error is not None:
+            return self._handshake_failed("initialize", rpc)
+        if self.resume:
+            with self.lock:
+                self.replaying = True
+            rpc = self.peer.request("session/load", {
+                "sessionId": self.sid, "cwd": self.cwd, "mcpServers": []})
+            ok = rpc.done.wait(_HANDSHAKE_SECONDS)
+            with self.lock:
+                self.replaying = False
+                if ok and rpc.error is None:
+                    self.backfill_replay()
+            if not ok or rpc.error is not None:
+                return self._handshake_failed("session/load", rpc)
+        else:
+            rpc = self.peer.request("session/new", {
+                "cwd": self.cwd, "mcpServers": []})
+            if not rpc.done.wait(_HANDSHAKE_SECONDS) or rpc.error is not None:
+                return self._handshake_failed("session/new", rpc)
+            got = (rpc.result or {}).get("sessionId") if isinstance(rpc.result, dict) else None
+            if isinstance(got, str) and got and got != self.sid:
+                sys.stderr.write("copilot_host: copilot named the session %s, "
+                                 "fused %s\n" % (got, self.sid))
+                self.acp_sid = got
+        with self.lock:
+            self.write_init()
+            if not self.resume:
+                self.write_first_turn_notice()
+            self.started = True
+            if self.pending_title:
+                self._emit_tx({"type": "ai-title", "aiTitle": self.pending_title})
+                self.pending_title = ""
+            self._write_registry("idle")
+        return True
+
+    def _handshake_failed(self, step: str, rpc: _Rpc) -> bool:
+        err = rpc.error or {"message": "no answer within %ds" % _HANDSHAKE_SECONDS}
+        text = "copilot %s failed: %s" % (step, err.get("message") or err)
+        tail = _err_tail(self.run_dir)
+        if tail:
+            text += "\n" + tail
+        with self.lock:
+            self.write_init()
+            message = {"role": "assistant", "model": "<synthetic>",
+                       "content": [{"type": "text", "text": text}],
+                       "usage": self._usage()}
+            self._emit_out({"type": "assistant", "isApiErrorMessage": True,
+                            "message": message})
+            self._emit_out({"type": "result", "subtype": "error_during_execution",
+                            "is_error": True, "result": text, "stop_reason": "error",
+                            "num_turns": 0, "usage": self._usage(),
+                            "backend": BACKEND})
+        return False
+
+    def run(self) -> None:
+        """Drain, watch, reap — session_host's `_reap_loop` for this host."""
+        idle_since = None
+        try:
+            if not self.handshake():
+                return
+            while self.cli.poll() is None and not self.peer.dead.is_set():
+                held = self.drain_inbox()
+                with self.lock:
+                    busy = self.turn_open or held or bool(self.pending_perm)
+                if busy:
+                    idle_since = None
+                elif idle_since is None:
+                    idle_since = time.monotonic()
+                elif time.monotonic() - idle_since >= _IDLE_REAP_SECONDS:
+                    break
+                time.sleep(_DRAIN_INTERVAL_SECONDS)
+        except Exception as exc:  # noqa: BLE001 — favour reaping over hanging
+            try:
+                with _append_private(os.path.join(self.run_dir, "err.log")) as f:
+                    f.write(("\ncopilot_host: %r\n" % (exc,)).encode("utf-8"))
+            except OSError:
+                pass
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        self.reject_pending("cancelled")
+        with self.lock:
+            if self.turn_open:
+                # Invariant 2 from the other side: the transport died (or the
+                # loop threw) with a prompt still open and no reply ever
+                # coming. The reader normally settles it on EOF; this is the
+                # backstop for the loop ending first.
+                rpc = _Rpc("session/prompt")
+                rpc.error = {"code": -32000, "message": "copilot exited"}
+                try:
+                    self._finish_turn(rpc)
+                except Exception:  # noqa: BLE001
+                    pass
+                self.turn_open = False
+        try:
+            self.cli.stdin.close()
+        except Exception:  # noqa: BLE001
+            pass
+        for path in (os.path.join(self.run_dir, "host.json"), self.registry_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        if self.cli.poll() is None:
+            try:
+                self.cli.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    self.cli.terminate()
+                except OSError:
+                    pass
+        exited_at = time.time()
+        with self.lock:
+            self.closed = True
+        for fh in (self._out, self._tx):
+            try:
+                fh.close()
+            except OSError:
+                pass
+        last = _post_event(self.run_dir, "exited", code=self.cli.poll(),
+                           at=exited_at, pid=self.cli.pid)
+        if last is not None:
+            try:
+                last.join(_EVENT_TIMEOUT + 1.0)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def main() -> None:
+    _enable_faulthandler()
+    try:
+        os.setsid()
+    except OSError:
+        pass
+    _close_inherited_fds()
+    req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    run_dir = req["run_dir"]
+    # A Stop that landed before setsid() — session_host's D1310 window.
+    if os.path.exists(os.path.join(run_dir, "cancelled")):
+        sys.stderr.write("copilot_host: run cancelled before the CLI spawned\n")
+        return
+    agent = _load_agent(req["agent"])
+    argv = list(req["argv"])
+    env = agent._spawn_env("")   # no chat id: no shell-prefix mirror (D9)
+    overlay = req.get("env")
+    if isinstance(overlay, dict):
+        env.update({str(k): str(v) for k, v in overlay.items()})
+
+    err_fh = _append_private(os.path.join(run_dir, "err.log"))
+    try:
+        cli = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=err_fh, cwd=req["cwd"], env=env, **agent._DETACH)
+    except Exception as exc:  # noqa: BLE001
+        err_fh.write(str(exc).encode("utf-8", "replace"))
+        return
+    finally:
+        err_fh.close()
+
+    with agent._private_open(os.path.join(run_dir, "pid")) as f:
+        f.write(str(cli.pid))
+    with agent._private_open(os.path.join(run_dir, "host.json")) as f:
+        json.dump({
+            "pid": os.getpid(),
+            "session_id": req.get("session_id") or req.get("new_session_id", ""),
+            "file": req.get("file", ""), "mode": req.get("cli_mode", ""),
+            "model": req.get("model", ""), "effort": req.get("effort", ""),
+            "read_dirs": req.get("extra_read_dirs", []),
+            "backend": BACKEND,
+        }, f)
+
+    _Host(agent, req, cli, _Peer(cli)).run()
+
+
+if __name__ == "__main__":
+    main()

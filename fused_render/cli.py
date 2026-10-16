@@ -237,9 +237,15 @@ def _run_serve(args: argparse.Namespace) -> None:
     # the first-run strip's GET is a disk read rather than a login-shell spawn.
     # Same placement rule as the showcase refresh above: an entry point, never
     # create_app, so importing the server in a test probes nothing.
-    from fused_render import claude_health
+    # Each agent's probe follows its Preferences switch (D17): a disabled
+    # agent is never probed, so a machine with no Copilot never spawns one.
+    from fused_render import claude_health, copilot_health
+    from fused_render.shell import prefs as _prefs
 
-    claude_health.warm_in_background()
+    if _prefs.claude_enabled():
+        claude_health.warm_in_background()
+    if _prefs.copilot_enabled():
+        copilot_health.warm_in_background()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 

@@ -51,14 +51,21 @@ import threading
 import time
 
 from fused_render import session_liveness, tasks_store
+from fused_render.agent_backends import roots
 
 logger = logging.getLogger(__name__)
 
-# CLAUDE_CONFIG_DIR wins where set — same rule, same deliberate local copy, as
-# session_liveness.py and tasks_store.py. Module-level so tests can point them
-# at a tmp dir.
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+# Claude Code's live-session registry (CLAUDE_CONFIG_DIR wins where set —
+# `agent_roots.claude_dir`). Module-level so tests can point it at a tmp dir;
+# the readers walk `_sessions_roots()`, which puts the Copilot host's registry
+# (same `<pid>.json` shape, fused's own root — docs/COPILOT_BACKEND.md D3)
+# beside whatever this says.
+CLAUDE_DIR = roots.claude_dir()
 SESSIONS_DIR = os.path.join(CLAUDE_DIR, "sessions")
+
+
+def _sessions_roots() -> list[str]:
+    return [root for _b, root in roots.sessions_roots(SESSIONS_DIR)]
 
 TICK_SEC = 1.0
 # How long a long-poll may block. Below the 30s most proxies and the
@@ -275,11 +282,16 @@ def session_for_pid(pid) -> str:
         for row, _mtime in _sess_rows.values():
             if str(row.get("pid") or "") == pid_s:
                 return str(row.get("sessionId") or "")
-    try:
-        with open(os.path.join(SESSIONS_DIR, pid_s + ".json"),
-                  encoding="utf-8") as fh:
-            row = json.load(fh)
-    except (OSError, ValueError):
+    row = None
+    for root in _sessions_roots():
+        try:
+            with open(os.path.join(root, pid_s + ".json"),
+                      encoding="utf-8") as fh:
+                row = json.load(fh)
+            break
+        except (OSError, ValueError):
+            continue
+    if row is None:
         return ""
     if not isinstance(row, dict) or str(row.get("pid") or "") != pid_s:
         return ""
@@ -983,15 +995,20 @@ def _read_registry() -> set[str]:
     and this is the loop that sees it first."""
     keys: set[str] = set()
     stopped = False
-    try:
-        names = os.listdir(SESSIONS_DIR)
-    except OSError:
-        names = []
-    seen: set[str] = set()
-    for name in names:
-        if not name.endswith(".json"):
+    # Every backend's registry in one pass: the rows are keyed by PATH below,
+    # so a Claude pid and a Copilot pid can never collide even when the same
+    # number is reused across the two dirs.
+    listed: list[str] = []
+    for root in _sessions_roots():
+        try:
+            names = os.listdir(root)
+        except OSError:
             continue
-        path = os.path.join(SESSIONS_DIR, name)
+        listed.extend(os.path.join(root, name) for name in names)
+    seen: set[str] = set()
+    for path in listed:
+        if not path.endswith(".json"):
+            continue
         try:
             st = os.stat(path)
         except OSError:
@@ -1102,7 +1119,13 @@ def _read_live_transcripts() -> set[str]:
     for sid in registered:
         path = _tr_paths.get(sid)
         if not path or not os.path.exists(path):
-            path = session_liveness.transcript_path(sid, tasks_store.PROJECTS_DIR)
+            # Root by root through `tasks_store`'s list rather than letting
+            # `transcript_path` walk its own: the tests patch
+            # `tasks_store.PROJECTS_DIR`, and this is the module they patch
+            # it for.
+            path = next((p for _b, root in tasks_store.projects_roots()
+                         for p in [session_liveness.transcript_path(sid, root)]
+                         if p), "")
             if not path:
                 continue
             _tr_paths[sid] = path

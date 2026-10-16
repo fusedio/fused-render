@@ -65,17 +65,22 @@ def disabled_error(backend_id: str) -> dict:
 def catalog(with_health: bool = True) -> dict:
     """`GET /api/agent-backends` payload: enabled backends in ORDER, the
     default, and every backend's description under `all` (so the Preferences
-    page can render a switch for a disabled one). Health is read from each
-    module's cache (`summary()`), which measures on a cold cache."""
+    page can render a switch for a disabled one). Health is ALWAYS the cached
+    snapshot, never a probe: this payload sits in front of every picker and a
+    cold Copilot cache is an ACP spawn plus `gh auth token` plus up to three
+    login-shell probes (~15 s worst case). The entry points warm both caches
+    at startup (`*_health.warm_in_background`), and a surface that needs a
+    fresh answer asks that backend's own `/health` route, which measures.
+    `null` here means "not measured yet", and the UI renders it as unknown."""
     ids = enabled_ids()
     out = []
     everything = []
     for bid in ORDER:
         b = BACKENDS[bid]
         health = None
-        if with_health and b.health is not None:
+        if with_health and b.health_cached is not None:
             try:
-                health = b.health()
+                health = b.health_cached()
             except Exception:  # noqa: BLE001 - a probe failure is "unknown", not a 500
                 health = None
         row = b.to_catalog(enabled=bid in ids, health=health)

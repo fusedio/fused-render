@@ -73,8 +73,21 @@ export const CLAUDE_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN";
  * reason the strip renders nothing at all most of the time.
  */
 export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
+  return agentIssues(health, "claude");
+}
+
+/**
+ * The same classifier for EITHER agent (docs/COPILOT_BACKEND.md D10): the
+ * Copilot health snapshot carries the same keys, so the rules are the rules —
+ * only the name changes, and the two repairs that have no Copilot twin
+ * (`doctor`, `link-path`) are offered for Claude alone. The Claude output is
+ * byte-identical to what `claudeIssues` always said.
+ */
+export function agentIssues(health: ClaudeHealth | null, backend: string): ClaudeIssue[] {
   if (!health) return []; // a failed probe is not a finding — see the strip
   const issues: ClaudeIssue[] = [];
+  const copilot = backend === "copilot";
+  const name = copilot ? "Copilot" : "Claude Code";
 
   if (!health.found) {
     // A pointing-at-nothing override is its own diagnosis, and telling this
@@ -94,16 +107,16 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
     }
     issues.push({
       id: "missing",
-      title: "The app can't find Claude Code",
+      title: `The app can't find ${name}`,
       detail:
-        "Fused Render uses Claude Code on this computer to build and fix " +
+        `Fused Render uses ${name} on this computer to build and fix ` +
         "things. Install it and the app will pick it up — no restart needed.",
       helpKind: "notfound",
       // THE SERVER'S LINE, not the module constant: the server knows its own
       // platform; the fallback is only for a payload from a server too old to
       // say.
-      command: health.install_command || CLAUDE_INSTALL_COMMAND,
-      action: { kind: "install", label: "Install Claude Code" },
+      command: health.install_command || (copilot ? undefined : CLAUDE_INSTALL_COMMAND),
+      action: { kind: "install", label: `Install ${name}` },
     });
     return issues; // everything below is about an install that exists
   }
@@ -124,13 +137,14 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
       : "";
     issues.push({
       id: "broken",
-      title: "Claude Code is installed, but it isn't answering",
+      title: `${name} is installed, but it isn't answering`,
       detail:
-        `There is a Claude Code at ${health.path ?? "the resolved path"}, and it ` +
-        `did not report its version when asked.${named} Run the built-in ` +
-        "diagnostics to see what it says about itself.",
+        `There is a ${name} at ${health.path ?? "the resolved path"}, and it ` +
+        `did not report its version when asked.${named}` +
+        (copilot ? "" : " Run the built-in diagnostics to see what it says about itself."),
       helpKind: "notfound",
-      action: { kind: "doctor", label: "Run diagnostics" },
+      // `doctor` is Claude's own subcommand; Copilot has no twin (D10).
+      action: copilot ? undefined : { kind: "doctor", label: "Run diagnostics" },
     });
     return issues;
   }
@@ -163,12 +177,12 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
     const selfUpdates = health.updatable !== false;
     issues.push({
       id: "outdated",
-      title: `Claude Code ${health.version} is older than this app needs`,
+      title: `${name} ${health.version} is older than this app needs`,
       detail: selfUpdates
         ? `Fused Render starts sessions with options added in ${health.min_version}. ` +
           "Update it and the app will use the version you already have."
         : `Fused Render starts sessions with options added in ${health.min_version}. ` +
-          `Running \`claude update\` here would not change anything — ` +
+          `Running \`${copilot ? "copilot update" : "claude update"}\` here would not change anything — ` +
           `${health.update_blocked_reason ?? "something else owns this install"}` +
           (health.update_command
             ? `, so run the command below instead.`
@@ -176,12 +190,12 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
       helpKind: "raw",
       // Whichever command actually works: `claude update`, or the owning
       // manager's own upgrade line. Never a command we know to be a no-op.
-      command: health.update_command ?? (selfUpdates ? CLAUDE_UPDATE_COMMAND : undefined),
+      command: health.update_command ?? (selfUpdates && !copilot ? CLAUDE_UPDATE_COMMAND : undefined),
       // A button ONLY where running it does something. A managed install gets
       // the right command to copy and no button — we will not run a `sudo` line
       // on someone's behalf, and `brew` is theirs to drive.
       action: selfUpdates
-        ? { kind: "update", label: "Update Claude Code" }
+        ? { kind: "update", label: `Update ${name}` }
         : undefined,
     });
   }
@@ -193,15 +207,18 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
   if (health.signed_in === false) {
     issues.push({
       id: "signed-out",
-      title: "Claude Code isn't signed in",
+      title: `${name} isn't signed in`,
       // NOT "run `claude`, type /login" any more. That was the only route
       // through the TUI door, but `claude auth login` opens the browser itself
       // and finishes on its own loopback callback — so this is a button, and
       // the code never comes anywhere near the app. The sentence describes what
       // pressing it does, because a browser window about to appear over the app
       // is a thing to announce first.
-      detail: "Sign in with your browser — Claude Code opens the page and "
-        + "finishes on its own.",
+      detail: copilot
+        ? "Sign in with GitHub — Copilot opens the page and finishes on its own. "
+          + "A `gh auth login` on this machine counts too."
+        : "Sign in with your browser — Claude Code opens the page and "
+          + "finishes on its own.",
       helpKind: "login",
       action: { kind: "login", label: "Sign in" },
     });
@@ -215,7 +232,9 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
   // and the one warning it prints about that is suppressed by the augmented
   // PATH the app runs it under. Without this row, the terminal is the only
   // place the user finds out, as `command not found`.
-  if (health.on_shell_path === false) {
+  // `link-path` is Claude's installer's gap and Claude's endpoint; nothing to
+  // say for Copilot here.
+  if (health.on_shell_path === false && !copilot) {
     issues.push({
       id: "not-on-path",
       title: "Claude Code works in this app, but not in your terminal yet",

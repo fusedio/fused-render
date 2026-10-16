@@ -133,6 +133,36 @@ def _app_entry_main(dir: str = "") -> dict:
     return {"entry": _app_entry().entry_html(dir)}
 
 
+#: Actions that may spawn a session, and so carry the agent gate.
+_SPAWN_ACTIONS = ("start", "send")
+
+
+def _backend_refusal(action: str, bound: dict) -> dict | None:
+    """The 400 body for a `start`/`send` the agent gate refuses, else None.
+
+    Only when the request NAMES a backend: a bare request is Claude for a
+    new chat and the session's own for a resume, both of which `_start`
+    checks itself. `backend` reaches `main` as a string (the binder's
+    str-coercion), so `""` is "not named"."""
+    if action not in _SPAWN_ACTIONS:
+        return None
+    backend = str(bound.get("backend") or "")
+    if not backend:
+        return None
+    from fused_render.agent_backends import registry
+    if not registry.is_known(backend):
+        return {"error": f"unknown agent backend: {backend!r}",
+                "reason": "backend_unknown", "backend": backend}
+    if not registry.is_enabled(backend):
+        return registry.disabled_error(backend)
+    if (not registry.get(backend).caps.plan_mode
+            and str(bound.get("permission_mode") or "") == "plan"):
+        return {"error": f"plan mode is not available for "
+                         f"{registry.get(backend).label}",
+                "reason": "unsupported", "backend": backend}
+    return None
+
+
 def _error_obj(exc: BaseException) -> dict:
     """`/api/run`'s error object for an exception a handler raised."""
     return {"type": type(exc).__name__, "message": str(exc),
@@ -257,6 +287,18 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
         bound = bind_params(agent.main, params)
     except ParamError as exc:
         return _error(f"{action}: {exc}")
+
+    # THE AGENT GATE (docs/COPILOT_BACKEND.md D17, invariant 10). A `start`
+    # or `send` naming a backend that Preferences has switched off is a 400
+    # with the registry's body, BEFORE the queue gate below mints a
+    # placeholder for a run that must not exist. Request-level only: `_start`
+    # keeps the one check that actually stands between a request and a spawn
+    # (it reads prefs.json itself), so a resume that names no backend is
+    # still refused there if the session's own agent is off. Plan mode is
+    # refused the same way for Copilot (§7 caps.plan_mode).
+    refused = _backend_refusal(action, bound)
+    if refused is not None:
+        return JSONResponse(refused, status_code=400)
 
     # THE QUEUE'S GATE, ON THE SERVER TOO (Akshil's QA, 2026-09-16). The chat
     # asks `/api/tasks/queue/admit` before it spawns, but a page whose copy of

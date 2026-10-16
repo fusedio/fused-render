@@ -11,8 +11,11 @@
 import { useState } from "react";
 
 import { TroubleCard } from "@platform/ui/TroubleCard";
+import { navigateUrl } from "@platform/lib/router";
+import { agentLabel } from "@platform/lib/agent-backends";
 
 import { limitExplain } from "../protocol/quota";
+import { useAgent } from "./agent-context";
 
 import type { Trouble, TroubleKind } from "../protocol/controller-api";
 import { platformKindOf, splitTroubleMessage, troubleExplain } from "../protocol/trouble";
@@ -29,6 +32,8 @@ export const NO_TARGET_SAID = {
  *  Claude, and an install that has not finished is not a Claude fault at all.
  *  Anything absent here is left to `troubleKind(error)`, which is right for the
  *  three cases the download page already documents. */
+/** The Claude row of `saidFor` — kept as a constant so the strings a parity
+ *  test quotes stay where they were. */
 const SAID: Partial<Record<TroubleKind, { title: string; explain: string }>> = {
   "cli-missing": {
     title: "The app can't find Claude Code",
@@ -59,6 +64,17 @@ const SAID: Partial<Record<TroubleKind, { title: string; explain: string }>> = {
   network: {
     title: "The connection dropped",
     explain: "The request to Claude did not get through. Sending it again usually works.",
+  },
+  /**
+   * THE AGENT IS SWITCHED OFF (docs/COPILOT_BACKEND.md D17): `start`/`send`
+   * answered 400 `backend_disabled`. Nothing is broken; the one action is the
+   * Preferences switch, and the card's button goes there.
+   */
+  disabled: {
+    title: "Claude is turned off in Preferences",
+    explain:
+      "This chat runs on Claude, which is switched off. Turn it back on in " +
+      "Preferences to carry on here, or start a new chat with the other agent.",
   },
   /**
    * THE CHAT DID NOT BOOT (P3R1-8, owner 2026-09-10). Two sentences: what
@@ -108,6 +124,17 @@ export interface TroubleViewProps {
   comebackPending?: boolean;
 }
 
+/** `SAID` with the AGENT named (D18): "Claude Code" is the CLI's own name and
+ *  "Claude" the agent's, so the two words swap separately. The Claude row is
+ *  the constant above, untouched. */
+function saidFor(kind: TroubleKind, backend: string): { title: string; explain: string } | undefined {
+  const row = SAID[kind];
+  if (!row || backend !== "copilot") return row;
+  const cli = "Copilot CLI";
+  const swap = (s: string) => s.replace(/Claude Code/g, cli).replace(/\bClaude\b/g, "Copilot");
+  return { title: swap(row.title), explain: swap(row.explain) };
+}
+
 export function TroubleView({
   trouble,
   what,
@@ -116,8 +143,18 @@ export function TroubleView({
   said: saidProp,
   comebackPending,
 }: TroubleViewProps) {
-  const said = saidProp ?? SAID[trouble.kind];
+  const agent = useAgent();
+  // A `disabled` card names the agent the REFUSAL named, which is this chat's
+  // (the context) unless the trouble says otherwise.
+  const backend = trouble.kind === "disabled" ? trouble.backend || agent.backend : agent.backend;
+  const said = saidProp ?? saidFor(trouble.kind, backend);
   const lines = splitTroubleMessage(trouble.message);
+  // THE SWITCH IS THE FIX (D17): the card's one button opens the Agents
+  // section. The caller's own retry stands for every other kind.
+  const openPrefs = trouble.kind === "disabled" && !onRetry
+    ? { onRetry: () => navigateUrl("/preferences?tab=ai"), retryLabel: "Open Preferences" }
+    : {};
+  void agentLabel;
   // Our own words when we have them, else the action sentence out of the
   // message — which is a better description than the classifier's generic one
   // for exactly the messages that carry one. Neither present: the card's own
@@ -154,6 +191,7 @@ export function TroubleView({
         {...(explain ? { explain } : {})}
         {...(onRetry ? { onRetry } : {})}
         {...(retryLabel ? { retryLabel } : {})}
+        {...openPrefs}
       >
         {/* The verbatim traceback is the thing a user pastes somewhere and gets
             an actual answer from, and it is not part of the one-line message

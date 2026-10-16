@@ -45,13 +45,15 @@ import os
 import re
 from datetime import datetime, timezone
 
+from fused_render.agent_backends import roots
 from fused_render.tasks_store import is_interrupt_mark, leading_machinery_tag
 
-# CLAUDE_CONFIG_DIR wins where set — the same rule (and the same deliberate
-# local copy) as claude_artifacts.py, tasks_store.py and the claude template's
-# agent. Module-level so a test can monkeypatch PROJECTS_DIR at a tmp dir,
-# which is how every other transcript reader here is tested.
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+# Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
+# `agent_roots.claude_dir`). Module-level so a test can monkeypatch
+# PROJECTS_DIR at a tmp dir, which is how every other transcript reader here
+# is tested; `transcript_path` walks `roots.projects_roots(PROJECTS_DIR)`, so
+# the Copilot root rides beside whatever this says.
+CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 
 # Entry types Claude Code appends to a transcript after the turn is over (idle
@@ -357,14 +359,24 @@ def transcript_path(session_id: str, projects_dir: str | None = None) -> str:
     PATTERN, so a caller passing something with a `*` or a `/` in it could reach
     outside the tree; ids are uuids, and anything that is not one is refused here
     rather than trusted to be harmless.
+
+    ACROSS EVERY BACKEND'S ROOT (docs/COPILOT_BACKEND.md D3): a Copilot session's
+    transcript sits under fused's own root, same bucket layout. With
+    `projects_dir` given, that ONE root is searched — the callers that pass one
+    (tests, `tasks_watch._read_live_transcripts`) are naming the root they mean,
+    and `tasks_watch` walks the list itself. First match wins, as it always has.
     """
     if not session_id or not isinstance(session_id, str):
         return ""
     if not all(ch.isalnum() or ch in "-_" for ch in session_id):
         return ""
-    root = projects_dir or PROJECTS_DIR
-    matches = glob.glob(os.path.join(root, "*", session_id + ".jsonl"))
-    return matches[0] if matches else ""
+    search = ([projects_dir] if projects_dir
+              else [root for _b, root in roots.projects_roots(PROJECTS_DIR)])
+    for root in search:
+        matches = glob.glob(os.path.join(root, "*", session_id + ".jsonl"))
+        if matches:
+            return matches[0]
+    return ""
 
 
 def session_activity(session_id: str, now: float,

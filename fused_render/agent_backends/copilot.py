@@ -50,6 +50,12 @@ def _health() -> dict:
     return copilot_health.summary()
 
 
+def _health_cached():
+    from fused_render import copilot_health
+    cached = copilot_health.cached()
+    return copilot_health._public(cached) if cached else None
+
+
 COPILOT = Backend(
     id="copilot",
     label="Copilot",
@@ -79,6 +85,7 @@ COPILOT = Backend(
     ),
     terminal_resume=_terminal_resume,
     health=_health,
+    health_cached=_health_cached,
     routes_prefix="/api/copilot",
     pref_key="copilot_enabled",
 )

@@ -427,6 +427,15 @@ def default_backend() -> str:
     return value if value in VALID_DEFAULT_BACKENDS else "claude"
 
 
+def _agents_state() -> dict:
+    """`{"claude": bool, "copilot": bool, "default": id}` for `GET /api/prefs`.
+    Imported lazily: the registry reads this module for the switches."""
+    from fused_render.agent_backends import registry
+
+    return {"claude": claude_enabled(), "copilot": copilot_enabled(),
+            "default": registry.default_id()}
+
+
 def default_model() -> str:
     """The user's preferred Claude model, as a short name — `""` when unset.
 
@@ -772,6 +781,11 @@ def _prefs_response() -> dict:
         # so the Preferences page renders the options the server will accept
         # rather than a second copy of this list that can drift from it.
         "model": {"default": default_model(), "choices": list(VALID_DEFAULT_MODELS)},
+        # The two agent switches and the agent new chats/tasks start from
+        # (docs/COPILOT_BACKEND.md D17). `default` is the EFFECTIVE one — the
+        # stored choice re-pointed to an enabled agent by the registry — so
+        # the page never shows a default that is switched off.
+        "agents": _agents_state(),
         # Whether background file-index scanning may run (default ON), and
         # whether index-backed search orders hits by relevance score (default
         # ON — D720; off is `depth ASC, rel ASC` instead of scored).
@@ -1207,6 +1221,43 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": f"'launcher_row_modifier': {exc}"}, status_code=400)
             prefs[launcher.row_modifier_key()] = value  # flavor's key, as above
             changed = launcher_changed = True
+        if any(k in body for k in ("claude_enabled", "copilot_enabled", "default_backend")):
+            # THE THREE AGENT KEYS TOGETHER (D17, invariant 11). Each is applied
+            # onto the merged record first and the RESULT is judged, so one PUT
+            # that turns Claude off and Copilot on in the same body is fine,
+            # while one that would leave both off is refused whole — there is
+            # no "no agent" state. `default_backend` naming an agent that ends
+            # up off is re-pointed to the one that is on, in the same write,
+            # so a reader never finds a default nothing can honour.
+            for key in ("claude_enabled", "copilot_enabled"):
+                if key in body:
+                    value = body.get(key)
+                    if not isinstance(value, bool):
+                        return JSONResponse({"error": f"'{key}' must be a boolean"},
+                                            status_code=400)
+                    prefs[key] = value
+            if "default_backend" in body:
+                value = body.get("default_backend")
+                if value not in VALID_DEFAULT_BACKENDS:
+                    return JSONResponse(
+                        {"error": "'default_backend' must be one of: "
+                                  + ", ".join(repr(v) for v in VALID_DEFAULT_BACKENDS)},
+                        status_code=400)
+                prefs["default_backend"] = value
+            # The same defaults `backend_enabled` reads: Claude on unless
+            # stored False, Copilot off unless stored True.
+            on = {"claude": prefs.get("claude_enabled") is not False,
+                  "copilot": prefs.get("copilot_enabled") is True}
+            if not any(on.values()):
+                return JSONResponse(
+                    {"error": "turn on the other agent first"}, status_code=400)
+            wanted = prefs.get("default_backend")
+            if wanted not in VALID_DEFAULT_BACKENDS:
+                wanted = "claude"
+            if not on[wanted]:
+                prefs["default_backend"] = next(
+                    b for b in VALID_DEFAULT_BACKENDS if on[b])
+            changed = True
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
@@ -1215,7 +1266,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'lan_enabled', "
-                          "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
+                          "'default_model', 'claude_enabled', 'copilot_enabled', "
+                          "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "
                           "'calls_params', 'calls_retention_days', "
