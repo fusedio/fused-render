@@ -302,7 +302,10 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
     if (!eager) return;
     const win = view ?? (typeof window !== "undefined" ? window : null);
     const document_ = doc ?? (typeof globalThis.document !== "undefined" ? globalThis.document : null);
-    const again = () => setKick((n) => n + 1);
+    const again = () => {
+      if (document_ && document_.hidden) return;
+      setKick((n) => n + 1);
+    };
     document_?.addEventListener("visibilitychange", again);
     win?.addEventListener("focus", again);
     return () => {
@@ -318,6 +321,7 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
     // Not under a half-typed message, like the away path.
     if (o.hasDraft()) return;
     if (o.root && !recapRootVisible(o.root())) return;
+    if (typeof document !== "undefined" && document.hidden) return;
     eagerAsked.current.add(forUuid);
     const asked = forUuid;
     inflight.current = true;
