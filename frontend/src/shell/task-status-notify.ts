@@ -61,6 +61,7 @@
 import type { TaskPulseTask } from "@platform/lib/api";
 import type { NotificationInput } from "@platform/lib/notifications";
 import { labelForSource } from "@platform/lib/format";
+import { agentLabel, agentNamed } from "@platform/lib/agent-backends";
 import { taskColumn } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
@@ -321,7 +322,12 @@ export function notificationForTransition(
       // for this call site otherwise, so it costs nothing and reads as a
       // real second line ("YouTube transcriber" / "Finished"), not a
       // repeated word wedged into the title.
-      detail: "Finished",
+      //
+      // …"Copilot finished" once there is an agent to tell apart
+      // (docs/COPILOT_BACKEND.md D18, `agentNamed`): the second line names who
+      // did the work, and the title is left alone — the caption strip and the
+      // folder family below both read it.
+      detail: agentNamed(task.backend) ? `${agentLabel(task.backend)} finished` : "Finished",
       tone: "info",
       origin: caption || undefined,
       page: destination,

@@ -453,8 +453,8 @@ export function Kebab({
   const restingArchive = filed ? "Unarchive this task" : "Archive this task";
 
   const fetchTerminalCommand = useCallback(
-    (): Promise<string> => fetchAgentTerminalCommand(file ?? "", sessionId),
-    [file, sessionId],
+    (): Promise<string> => fetchAgentTerminalCommand(file ?? "", sessionId, agent.backend),
+    [file, sessionId, agent.backend],
   );
 
   /** THE PRIMARY ITEM. Where the status-bar drawer exists (canRunInTerminal()),

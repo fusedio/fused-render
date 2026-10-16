@@ -71,6 +71,8 @@ export interface ChatDraftForm {
   custom_rule?: RecurrenceRule | null;
   model?: string;
   effort?: string;
+  /** The agent the card picked (docs/COPILOT_BACKEND.md D2); absent = no pick. */
+  backend?: string;
   permission?: string;
   target?: string;
   new_task_each_run?: boolean | null;
@@ -118,6 +120,10 @@ export interface TaskDraftForm {
   repeat: string | null;
   model: string;
   effort: string;
+  /** WHICH AGENT the task runs on (docs/COPILOT_BACKEND.md D2), or absent /
+   *  "" for "the default" — optional, so every form built before the second
+   *  agent still type-checks and an older draft reads as no pick. */
+  backend?: string;
   permission: string;
   attachments: DraftAttachment[];
   new_task_each_run: boolean | null;
@@ -395,6 +401,7 @@ export function heldFormOf(
     custom_rule: base.custom_rule ?? null,
     model: base.model ?? "",
     effort: base.effort ?? "",
+    backend: base.backend ?? "",
     permission: base.permission ?? "",
     new_task_each_run: base.new_task_each_run ?? null,
     session_id: base.session_id ?? "",

@@ -39,6 +39,7 @@ import {
 } from "@platform/lib/claude-defaults";
 import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
 import {
+  capsOf,
   defaultModelOf,
   effortsOf,
   isBackendEnabled,
@@ -552,7 +553,11 @@ export function useComposerDefaults(
     le(recorded.effort) || le(local.effort),
     efforts,
   );
-  const permission = resolvePermission(snapshot.permission);
+  // An agent with no plan mode (§7 `plan_mode`) never shows "plan": the pill
+  // has no such row for it, and the send would be refused.
+  const resolvedPermission = resolvePermission(snapshot.permission);
+  const permission =
+    resolvedPermission === "plan" && !capsOf(backend).plan_mode ? DEFAULT_PERMISSION : resolvedPermission;
 
   // ── WHEN A PILL MAY SHOW ITS VALUE ────────────────────────────────────────
   //
@@ -641,7 +646,10 @@ export function useComposerDefaults(
     (value: string) => {
       if (sessionBackend || !isBackendEnabled(value)) return;
       setLocal({ model: "", effort: "" });
-      params.set({ backend: value }, { history: "replace" });
+      // …and a "plan" pick goes too where the new agent has no plan mode: the
+      // send reads the param itself, and would ask for a mode it refuses.
+      const dropPlan = params.get("permission") === "plan" && !capsOf(value).plan_mode;
+      params.set({ backend: value, ...(dropPlan ? { permission: null } : {}) }, { history: "replace" });
     },
     [params, sessionBackend],
   );

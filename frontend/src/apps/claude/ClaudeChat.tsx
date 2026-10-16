@@ -139,7 +139,7 @@ import {
   type Viewable,
   AgentProvider,
 } from "./ui";
-import { agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
+import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import type { ClassifiedCommand } from "./protocol/commands";
 import { useSlashCommands } from "./ui/useSlashCommands";
@@ -1718,13 +1718,15 @@ function ChatBody(props: ChatBodyProps) {
   // catalog's default — `useComposerDefaults` resolves exactly that. Every
   // surface below reads it off the `AgentProvider`; the caps decide which
   // Claude-only controls are drawn at all (§7).
-  useAgentBackends();
+  const agentCatalog = useAgentBackends();
   const chatBackend = defaults.backend;
   const agentCaps = capsOf(chatBackend);
   // THE AGENT IS SWITCHED OFF (D17): the transcript still reads, the box
   // closes with one line and the Preferences link. Only a session that HAS an
-  // agent — a fresh chat follows the catalog's default, which is always on.
-  const agentOff = !!state.backend && !isBackendEnabled(state.backend);
+  // agent — a fresh chat follows the catalog's default, which is always on —
+  // and only once the catalog has answered: before it, every agent but Claude
+  // reads as off, and a Copilot chat would flash a shut box.
+  const agentOff = agentCatalog.loaded && !!state.backend && !isBackendEnabled(state.backend);
   liveBackend.current = chatBackend;
   // WHAT THE RUN IS ACTUALLY LAUNCHED WITH (`run-controller`'s `curModel` /
   // `curEffort`, read at send time on every `start` and `send`) — and it is ""
@@ -4571,7 +4573,7 @@ function ChatBody(props: ChatBodyProps) {
       blockedNote: agentOff ? (
         <>
           {agentLabel(state.backend)} is turned off in Preferences.{" "}
-          <a href="/preferences?tab=ai" onClick={(e) => { e.preventDefault(); onNavigate("/preferences?tab=ai"); }}>
+          <a href={AGENT_PREFS_URL} onClick={(e) => { e.preventDefault(); onNavigate(AGENT_PREFS_URL); }}>
             Turn it on
           </a>
         </>
@@ -5220,7 +5222,7 @@ function ChatBody(props: ChatBodyProps) {
             {...card}
             name={name}
             {...(file ? { path: file } : {})}
-            placeholder={homePlaceholderFor(pane.noun)}
+            placeholder={homePlaceholderFor(pane.noun, agentLabel(chatBackend))}
             recent={recent}
             onOpenSession={onOpenSession}
             onFillDraft={onFillDraft}

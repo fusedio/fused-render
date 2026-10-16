@@ -13,8 +13,16 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import {
-  readClaudeDefaults, subscribeClaudeDefaults,
+  getClaudeDefaults, readClaudeDefaults, subscribeClaudeDefaults,
 } from "@platform/lib/claude-defaults";
+import {
+  agentLabel,
+  agentNamed,
+  capsOf,
+  defaultModelOf,
+  isBackendEnabled,
+  useAgentBackends,
+} from "@platform/lib/agent-backends";
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
@@ -23,6 +31,7 @@ import {
   getTasks,
   listDir,
   rawUrl,
+  readChatSettings,
   scheduleMessage,
   statPath,
   uploadTaskShot,
@@ -79,13 +88,14 @@ import {
 export { joinDraft, splitDraft } from "@platform/lib/drafts";
 import { notify } from "@platform/lib/notifications";
 import {
-  TASK_EFFORTS,
   TASK_MODELS,
   chatPaneUrl,
   describeRepeats,
   describeRule,
   explorerUrl,
   repeatChoicesFor,
+  taskEffortsOf,
+  taskModelsOf,
   taskRunLabel,
   taskRunOptions,
 } from "./schedule-lib";
@@ -1721,6 +1731,10 @@ export function deleteFailureText(err: unknown, series: boolean): string {
 // in automatically" outlived the requirement, and a PREVIEW of the chat's own
 // name is worse than a question when Save then refuses the preview.)
 export const TITLE_PLACEHOLDER = "What should Claude do?";
+/** The same question naming the task's AGENT (docs/COPILOT_BACKEND.md D18);
+ *  Claude's is the constant above, byte for byte. */
+export const titlePlaceholderFor = (agent: string) =>
+  agent === "Claude" ? TITLE_PLACEHOLDER : `What should ${agent} do?`;
 
 // And the second field is the OVERFLOW of that question — the constraints, the
 // context, the "start with the parquet path" — never the task again. Both jobs a
@@ -2272,6 +2286,9 @@ export function buildSchedulePayload(form: {
   // somebody chose one.
   model: string;
   effort: string;
+  // WHICH AGENT the runs use (docs/COPILOT_BACKEND.md D2). Always sent when
+  // known — the server keeps a continued session's own regardless.
+  backend?: string;
   // A CHAT HANDOFF's session: the conversation the composer was in when it
   // deep-linked here (?new=1&session_id=…). A one-off continues it; a repeat
   // refuses it, because a task that runs every day must not hijack the user's
@@ -2366,6 +2383,7 @@ export function buildSchedulePayload(form: {
     // cancel + re-create instead of quietly reverting to the default.
     ...(form.model ? { model: form.model } : {}),
     ...(form.effort ? { effort: form.effort } : {}),
+    ...(form.backend ? { backend: form.backend } : {}),
     // An edit keeps what it cannot re-ask for — see `continued` above.
     ...(continued ? { session_id: continued } : {}),
     // …and re-states WHERE that id came from, so the re-created entry is still
@@ -2573,6 +2591,8 @@ export interface SeededDraftForm {
   repeat: string | null;
   model: string | null;
   effort: string | null;
+  /** The agent the card picked (D2), or null for "the default". */
+  backend: string | null;
   permission: string | null;
   attachments: { path: string; name: string; kind: "image" | "file" }[] | null;
   newTaskEachRun: boolean | null;
@@ -2649,6 +2669,7 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
     repeat: str("repeat"),
     model: str("model"),
     effort: str("effort"),
+    backend: str("backend"),
     permission: str("permission"),
     attachments: attachments && attachments.length ? attachments : null,
     newTaskEachRun: typeof f.new_task_each_run === "boolean" ? f.new_task_each_run : null,
@@ -3125,9 +3146,20 @@ export default function NewJobModal({
   // so `taskRunOptions` carries it through as its own row and the card shows a
   // reader the CLI's spelling of a model the menu now calls Fable — and writes
   // it back on the next Save.
+  // WHICH AGENT RUNS IT (docs/COPILOT_BACKEND.md D2/D18): the draft's pick,
+  // else the entry's, else "" — "the catalog's default", resolved below so a
+  // Preferences switch reaches a card that has not chosen. A task that
+  // continues a session runs on THAT session's agent (`sessionAgent`, read
+  // once the binding is known), and the picker stands down for it.
+  const agents = useAgentBackends();
+  const [backendPick, setBackendPick] = useState(saved.backend ?? editing?.backend ?? "");
+  /** The agent resolved on the latest render, for the async Claude-default
+   *  reads below, which must not land a Claude pair on another agent's card. */
+  const agentRef = useRef("claude");
   const [model, setModel] = useState(() => {
     const stored = saved.model ?? editing?.model ?? "";
-    return listedModelIn(stored, TASK_MODELS.map((o) => o.key)) || normalizeModel(stored);
+    const known = taskModelsOf(saved.backend ?? editing?.backend).map((o) => o.key);
+    return listedModelIn(stored, known.length ? known : TASK_MODELS.map((o) => o.key)) || normalizeModel(stored);
   });
   const [effort, setEffort] = useState(saved.effort ?? editing?.effort ?? "");
   // A FIELD NOBODY CHOSE OPENS ON WHAT THE RUN WILL GET (Akshil, 2026-09-21:
@@ -3145,7 +3177,9 @@ export default function NewJobModal({
     let live = true;
     readClaudeDefaults().then(
       (d) => {
-        if (!live) return;
+        // The GLOBAL pair is Claude's; another agent's card fills from its
+        // own catalog row instead (the effect under `agent` below).
+        if (!live || agentRef.current !== "claude") return;
         setModel((m) => m || d.model);
         setEffort((e) => e || d.effort);
       },
@@ -3174,6 +3208,7 @@ export default function NewJobModal({
   useEffect(() => {
     if (!globalFollower) return;
     return subscribeClaudeDefaults((d) => {
+      if (agentRef.current !== "claude") return;
       if (tookGlobal.current?.model && d.model) setModel(d.model);
       if (tookGlobal.current?.effort && d.effort) setEffort(d.effort);
     });
@@ -3672,6 +3707,7 @@ export default function NewJobModal({
     permission,
     model,
     effort,
+    backend: backendPick,
     // Paths only: a fresh attach reads as dirty from the moment it lands
     // (its path is "" until the upload answers, then a path — both differ
     // from this baseline), which is exactly right — the user added something.
@@ -3697,6 +3733,7 @@ export default function NewJobModal({
     permission !== initial.permission ||
     model !== initial.model ||
     effort !== initial.effort ||
+    backendPick !== initial.backend ||
     images.map((i) => i.path || "pending").join("\n") !== initial.images;
 
   // ---- THE DRAFT (design.md, "New Task modal (task draft)") -----------------
@@ -3788,6 +3825,69 @@ export default function NewJobModal({
     || (chatSessionId ?? "")
     || (saved.sessionId ?? "");
   /**
+   * THE AGENT OF THE SESSION THIS TASK CONTINUES, when it continues one: a
+   * session's agent never changes (D2), so the server runs the entry on it
+   * whatever the card says, and the card says the same. Read off the
+   * session's record (`GET /api/tasks/settings`, §8); "" until it answers, or
+   * for a card bound to nothing.
+   */
+  const agentSession = learnedSession || editing?.session_id || boundSessionId;
+  const [sessionAgent, setSessionAgent] = useState(editing?.session_id ? editing.backend ?? "" : "");
+  useEffect(() => {
+    if (!agentSession) return;
+    let live = true;
+    readChatSettings(agentSession).then(
+      (r) => {
+        if (live && r.backend) setSessionAgent(r.backend);
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [agentSession]);
+  const agentLocked = !!agentSession;
+  // The pick counts only while its agent is switched on; a session's own
+  // agent counts whatever the switch says (the server will refuse the save,
+  // and say so in the banner).
+  const agent = sessionAgent
+    || (backendPick && (agentLocked || isBackendEnabled(backendPick)) ? backendPick : "")
+    || agents.default;
+  agentRef.current = agent;
+  const runModels = taskModelsOf(agent);
+  const runEfforts = taskEffortsOf(agent);
+  // ANOTHER AGENT'S CARD OPENS ON ITS OWN DEFAULTS: the global pair above is
+  // Claude's, so a Copilot card fills (or corrects) a value its list does not
+  // hold from its catalog row. Waits for the catalog — before it lands every
+  // id reads as the static Claude row.
+  useEffect(() => {
+    if (agent === "claude" || !agents.loaded) return;
+    const models = runModels.map((o) => o.key);
+    const efforts = runEfforts.map((o) => o.key);
+    // An EMPTY value is filled; a value the list does not hold is corrected
+    // only when it came from the Claude global (`tookGlobal`, the race before
+    // the catalog landed). A draft's or an entry's own value is carried
+    // through as `taskRunOptions` carries it, so an edit stays lossless.
+    const took = tookGlobal.current;
+    setModel((m) => (!m || (took?.model && !models.includes(m)) ? defaultModelOf(agent) : m));
+    setEffort((e) =>
+      !e || (took?.effort && !efforts.includes(e))
+        ? efforts.includes("medium") ? "medium" : efforts[0] ?? ""
+        : e);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent, agents.loaded]);
+  const pickBackend = useCallback((value: string) => {
+    if (value === agentRef.current) return;
+    setBackendPick(value);
+    // The pair was the OTHER agent's; Claude's comes back to the global, and
+    // follows it again until picked (the effect above fills anyone else's).
+    const pair = value === "claude" ? getClaudeDefaults() : null;
+    tookGlobal.current = { model: value === "claude", effort: value === "claude" };
+    setModel(pair?.model ?? "");
+    setEffort(pair?.effort ?? "");
+    if (!capsOf(value).plan_mode) setPermission((p) => (p === "plan" ? "auto" : p));
+  }, []);
+  /**
    * IS THERE ANYTHING IN THIS CARD WORTH KEEPING — words, or files. Nothing
    * else (Akshil, 2026-09-12).
    *
@@ -3832,6 +3932,8 @@ export default function NewJobModal({
       repeat: repeatOn ? repeat : null,
       model,
       effort,
+      // The PICK, not the resolved agent: "" keeps following the default.
+      backend: backendPick,
       permission,
       // Paths only once they exist: a chip whose upload has not answered names
       // no file yet, and a draft holding "" would restore an empty chip.
@@ -3896,6 +3998,7 @@ export default function NewJobModal({
           custom_rule: value.custom_rule,
           model: value.model,
           effort: value.effort,
+          backend: value.backend,
           permission: value.permission,
           target: value.target,
           new_task_each_run: value.new_task_each_run,
@@ -4327,6 +4430,7 @@ export default function NewJobModal({
           permission,
           model,
           effort,
+          backend: agent,
           // The two sources are kept APART here, because the payload treats
           // them oppositely: the task's OWN thread (learned, on the entry)
           // survives a repeat, a CHAT's does not. A one-off entry's stored id
@@ -4649,10 +4753,10 @@ export default function NewJobModal({
             ref={titleRef}
             type="text"
             className="new-task-field new-task-title"
-            aria-label="What should Claude do?"
+            aria-label={titlePlaceholderFor(agentLabel(agent))}
             aria-required="true"
             onPaste={pasteFiles}
-            placeholder={TITLE_PLACEHOLDER}
+            placeholder={titlePlaceholderFor(agentLabel(agent))}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             // ENTER CREATES THE TASK; SHIFT+ENTER MOVES DOWN into the
@@ -5301,6 +5405,15 @@ export default function NewJobModal({
             click for the people who want it and nothing at all for the people
             who do not. The row is unchanged — same controls, same rules — it
             has only moved. */}
+        {/* WHO RUNS IT, AND WHERE (D18) — said whenever there is an agent to
+            tell apart, so the card's one hidden choice is never a surprise. */}
+        {agentNamed(agent) && (
+          <span className="field-hint schedule-form-sub new-task-agent">
+            {target.trim()
+              ? `${agentLabel(agent)} will run this task in ${leafOf(target.trim())}`
+              : `${agentLabel(agent)} will run this task`}
+          </span>
+        )}
         <details className="schedule-form-more" open={moreOpen}
                  onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
           {/* The disclosure is a QUIET row, not a button: secondary text and a
@@ -5515,6 +5628,21 @@ export default function NewJobModal({
               the details block was flush with the card edge, so the one control
               behind it was the only one in the form that did not line up
               (audit 2026-08-16). */}
+          {/* THE AGENT FIRST (D18), and only while there is a choice: the
+              Permissions, Model and Thinking under it are that agent's. A task
+              that continues a session has its agent already (D2) — the line
+              under the folder names it, and there is nothing to pick. */}
+          {agents.backends.length >= 2 && !agentLocked && (
+            <div className="field schedule-form-sub">
+              <span className="field-label">Agent</span>
+              <Dropdown
+                ariaLabel="Agent"
+                value={agentLabel(agent)}
+                options={agents.backends.map((b) => ({ key: b.id, label: b.label }))}
+                onPick={pickBackend}
+              />
+            </div>
+          )}
           <div className="field schedule-form-sub">
             <span className="field-label">Permissions</span>
             <Dropdown
@@ -5524,7 +5652,10 @@ export default function NewJobModal({
               // is said. The raw keys ("acceptEdits") were the server's
               // vocabulary printed at the user (audit 2026-08-16), and an
               // unknown key still shows itself rather than being hidden.
-              options={(permissionModes.length ? permissionModes : ["auto"]).map((m) => ({
+              options={(permissionModes.length ? permissionModes : ["auto"])
+                // No plan mode for an agent without one (§7 `plan_mode`).
+                .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
+                .map((m) => ({
                 key: m,
                 label: permissionLabel(m),
               }))}
@@ -5563,12 +5694,12 @@ export default function NewJobModal({
               <span className="field-label">Model</span>
               <Dropdown
                 ariaLabel="Model"
-                value={taskRunLabel(TASK_MODELS, model)}
+                value={taskRunLabel(runModels, model)}
                 // Same contract as Permissions above: the KEY is submitted, the
                 // label is only how it is said. `taskRunOptions` is what keeps
                 // an unrecognised stored value selectable instead of silently
                 // resetting the task to the default on the next edit.
-                options={taskRunOptions(TASK_MODELS, model)}
+                options={taskRunOptions(runModels, model)}
                 onPick={pickModel}
               />
             </div>
@@ -5581,8 +5712,8 @@ export default function NewJobModal({
               <span className="field-label">Thinking</span>
               <Dropdown
                 ariaLabel="Thinking"
-                value={taskRunLabel(TASK_EFFORTS, effort)}
-                options={taskRunOptions(TASK_EFFORTS, effort)}
+                value={taskRunLabel(runEfforts, effort)}
+                options={taskRunOptions(runEfforts, effort)}
                 onPick={pickEffort}
               />
             </div>

@@ -12,7 +12,7 @@ import { useState } from "react";
 
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { navigateUrl } from "@platform/lib/router";
-import { agentLabel } from "@platform/lib/agent-backends";
+import { AGENT_PREFS_URL } from "@platform/lib/agent-backends";
 
 import { limitExplain } from "../protocol/quota";
 import { useAgent } from "./agent-context";
@@ -152,9 +152,8 @@ export function TroubleView({
   // THE SWITCH IS THE FIX (D17): the card's one button opens the Agents
   // section. The caller's own retry stands for every other kind.
   const openPrefs = trouble.kind === "disabled" && !onRetry
-    ? { onRetry: () => navigateUrl("/preferences?tab=ai"), retryLabel: "Open Preferences" }
+    ? { onRetry: () => navigateUrl(AGENT_PREFS_URL), retryLabel: "Open Preferences" }
     : {};
-  void agentLabel;
   // Our own words when we have them, else the action sentence out of the
   // message — which is a better description than the classifier's generic one
   // for exactly the messages that carry one. Neither present: the card's own
@@ -187,6 +186,7 @@ export function TroubleView({
            whole message did. That is what makes the card the ONE drawer of the
            install box below. */
         kind={platformKindOf(trouble.kind)}
+        backend={backend}
         {...(said ? { title: said.title } : {})}
         {...(explain ? { explain } : {})}
         {...(onRetry ? { onRetry } : {})}

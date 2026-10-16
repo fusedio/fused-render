@@ -185,6 +185,11 @@ export interface ChatMountProps {
    */
   model?: string;
   effort?: string;
+  /** `backend` — WHICH AGENT this conversation runs on, stated by a host that
+   *  knows it (a task row's `backend`, docs/COPILOT_BACKEND.md D2). A seed like
+   *  the two above: it names the agent for the frames before the chat's own
+   *  history says it, and the history's answer outranks it from then on. */
+  backend?: string;
   /** `msg` — ONE TURN inside the conversation, to open scrolled to. The
    *  transcript stamps `data-msg` on every turn it draws and the param is spent
    *  the moment the named one is on screen (params/store.ts). Handed over by
@@ -251,6 +256,7 @@ export function ChatMount(props: ChatMountProps) {
     // why these two are not in `useHostIds` beside the ids.
     if (props.model) seed.model = props.model;
     if (props.effort) seed.effort = props.effort;
+    if (props.backend) seed.backend = props.backend;
     return createMemoryParamsStore(seed);
   });
   useHostIds(memory, props.sessionId, props.runId, props.msgAnchor);

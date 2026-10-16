@@ -39,6 +39,7 @@ import {
   type ClaudeIssue,
 } from "@platform/lib/claude-health";
 import { CommandLine } from "./CommandLine";
+import { copyToClipboard } from "@platform/lib/clipboard";
 
 /** `claude doctor`'s own words, or the installer's. Rendered verbatim and in a
  *  scroll box rather than summarised: the whole reason to surface either is
@@ -76,6 +77,28 @@ function DoctorReport({ doctor }: { doctor: ClaudeDoctor }) {
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+/** The device code, in the command plate's skin with its Copy button — and no
+ *  Run, because a code is something to type, not to execute. */
+function DeviceCode({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="update-badge-command">
+      <code>{code}</code>
+      <button
+        type="button"
+        className="update-badge-copy"
+        onClick={async () => {
+          if (!(await copyToClipboard(code))) return;
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 2000);
+        }}
+      >
+        {copied ? "Copied" : "Copy"}
+      </button>
     </div>
   );
 }
@@ -178,11 +201,25 @@ export function IssueRow({
           {install!.detail || "Working…"}
         </p>
       )}
-      {signingIn && (
+      {/* A DEVICE-CODE sign-in (Copilot, D10) has a code to type, and it is
+          drawn only while that flow is OPEN: the record keeps the last one's
+          code after it ends, and a stale code is a code that no longer works. */}
+      {signingIn && login?.detail ? (
+        <>
+          <p className="claude-health-progress" role="status">
+            Open{" "}
+            <a href={login.detail.url} target="_blank" rel="noreferrer">
+              {login.detail.url}
+            </a>{" "}
+            and enter this code.
+          </p>
+          <DeviceCode code={login.detail.code} />
+        </>
+      ) : signingIn ? (
         <p className="claude-health-progress" role="status">
           Finish signing in with the browser window that just opened.
         </p>
-      )}
+      ) : null}
       {/* The child's own diagnosis. `Login failed: Request failed with status
           code 400` is the loopback exchange rejecting the code, and it is the
           only diagnosis on offer — the server derives this one line and keeps

@@ -72,6 +72,24 @@ export const CLAUDE_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN";
  * An EMPTY array means "nothing to say" — which is the common case and the
  * reason the strip renders nothing at all most of the time.
  */
+/** The "Signed in" line for EITHER agent, or null when it is not signed in.
+ *  Copilot's three methods are its own words (D10); Claude's are the setup
+ *  wizard's (shell/onboarding/ToolsStep `signedInHint`), which the caller
+ *  passes in so there stays one copy of them. */
+export function agentAccountLine(
+  health: ClaudeHealth,
+  backend: string,
+  claudeLine: (h: ClaudeHealth) => string,
+): string | null {
+  if (health.signed_in !== true) return null;
+  if (backend !== "copilot") return claudeLine(health);
+  const method = health.account?.method;
+  if (method === "copilot") return "Signed in with copilot login";
+  if (method === "gh") return "Signed in through gh";
+  if (method === "token") return "Signed in with a token from the environment";
+  return "Signed in";
+}
+
 export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
   return agentIssues(health, "claude");
 }

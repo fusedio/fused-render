@@ -62,7 +62,8 @@ import { useChatTemplates } from "./TaskCards";
 // The header's identity block — status ring, number, title, project — lives in
 // its own module because the native chat's top line draws the SAME block for the
 // task behind the conversation it is showing (see that file's note).
-import { TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
+import { TaskPeekAgent, TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
+import { agentLabel, agentNamed } from "@platform/lib/agent-backends";
 import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
@@ -970,7 +971,11 @@ export function TaskPeek({
       items.push("separator");
     }
     items.push({
-      label: "Continue this task in terminal",
+      // The agent's word once there is more than one to name (D18): the
+      // command handed over is that agent's own `--resume`.
+      label: agentNamed(task.backend)
+        ? `Continue with ${agentLabel(task.backend)} in terminal`
+        : "Continue this task in terminal",
       icon: ICON_TERMINAL,
       // No session and no template means there is no command to hand over —
       // said by the row rather than by a toast after the press.
@@ -1146,6 +1151,7 @@ export function TaskPeek({
                   The whole argument, and the markup, are in `TaskPeekWho.tsx`
                   now — the chat's header draws this same chip. */}
               <TaskPeekProject task={task} home={home} />
+              <TaskPeekAgent task={task} />
               {/* "↗ OPEN" — a WORD behind a MARK (design.md, Polish batches 4
                   and 5). The folder glyph it replaced was the page's one door
                   picture, which is a good rule everywhere except beside a
@@ -1309,6 +1315,9 @@ export function TaskPeek({
                 // chat's model.
                 model={task.model}
                 effort={task.effort}
+                // …and WHICH AGENT, for the same window (D2): the header, the
+                // placeholder and the pills name it before the history lands.
+                backend={task.backend}
                 // ONE TURN TO LAND ON, when the press that opened this was a
                 // message row rather than a task row (task-peek-store
                 // `PeekState.anchor`). Absent, the conversation opens where a

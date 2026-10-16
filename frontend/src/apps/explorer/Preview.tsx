@@ -3,6 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
+import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -271,6 +272,10 @@ function usePreviewFileMenu(
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
   const canRun = useCanRunInTerminal();
+  // "Open in Claude" FOLLOWS THE CLAUDE SWITCH (docs/COPILOT_BACKEND.md D17):
+  // with Claude Code turned off in Preferences the terminal door to it goes
+  // too. Subscribed so a flip repaints; the menus read it when they open.
+  useAgentBackends();
   // Publish this header menu's overlay state to the shared registry (lib/
   // ui-overlay). A directory opened in Preview embeds a Listing whose own
   // document-level keyboard handlers would otherwise fire (Cmd+Backspace,
@@ -606,12 +611,12 @@ function usePreviewFileMenu(
     }),
     copy: [
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
-      {
+      ...(isBackendEnabled("claude") ? [{
         label: canRun ? "Open in Claude" : "Copy Claude session command",
         icon: MenuIcons.openWith,
         onClick: doOpenInClaude,
-      },
-      ...(canRun
+      }] : []),
+      ...(canRun && isBackendEnabled("claude")
         ? [
             {
               label: "Copy Claude session command",

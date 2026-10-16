@@ -470,7 +470,12 @@ export interface ClaudeHealth {
   /** Who, when signed in: the CLI's own `authMethod` ("claude.ai", "console",
       "apiKey", …) plus the claude.ai account's email / org / plan when it has
       one. An env token with no CLI answer reports as an API key. null when
-      there is nothing to say. Read by the setup wizard's "Signed in" row. */
+      there is nothing to say. Read by the setup wizard's "Signed in" row.
+
+      The COPILOT snapshot (`/api/copilot/health`, D10) says one of three:
+      "copilot" (its own `copilot login`), "gh" (a `gh auth login` token the
+      app hands it) or "token" (a token already in the environment) — worded
+      by `agentAccountLine` in platform/lib/claude-health. */
   account: {
     method: string | null;
     email: string | null;
@@ -588,6 +593,12 @@ export interface ClaudeLoginStatus {
   started_at: number | null;
   /** The child's own diagnosis when a sign-in ended without signing in. */
   error: string | null;
+  /** A DEVICE-CODE sign-in's two facts (Copilot, docs/COPILOT_BACKEND.md D10):
+   *  the code to type and the page to type it on. Meaningful ONLY while
+   *  `in_flight` — the record keeps the last flow's after it ends, so a reader
+   *  must never show it otherwise. Absent for Claude, whose browser sign-in
+   *  needs no code. */
+  detail?: { code: string; url: string } | null;
 }
 
 /** Start a browser sign-in. The CLI opens the page and completes on its own
@@ -610,7 +621,7 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 //
 // `/api/copilot/{health, health/refresh, install, login, login/cancel}` answer
 // the same bodies as the Claude ones above, so one set of functions keyed on
-// the backend id serves both — `useAgentSetup(backend)` in agent-setup.ts is
+// the backend id serves both — `useAgentSetup(backend)` in claude-setup.ts is
 // the caller. The Claude-named functions stay for every reader that predates
 // the second agent. `link-path` and `doctor` are Claude-only (no Copilot twin
 // in the contract) and are not generalised.
@@ -4265,8 +4276,10 @@ export function markWholeTaskRead(
 // composer's constants speaking, and the two cases are the same fact here.
 export function readChatSettings(
   sessionId: string,
-): Promise<{ model: string; effort: string }> {
-  return getJson<{ model: string; effort: string }>(
+): Promise<{ model: string; effort: string; backend?: string }> {
+  // `backend` (docs/COPILOT_BACKEND.md §8): the agent the record names; absent
+  // on an older server.
+  return getJson<{ model: string; effort: string; backend?: string }>(
     `/api/tasks/settings?session_id=${encodeURIComponent(sessionId)}`,
   );
 }
@@ -6220,6 +6233,10 @@ export function scheduleMessage(body: {
   // model; see the note at the create endpoint.
   model?: string;
   effort?: string;
+  // WHICH AGENT the entry's runs use (docs/COPILOT_BACKEND.md D2). The server
+  // refuses one switched off in Preferences (400) and, for an entry that
+  // continues a session, keeps the session's own.
+  backend?: string;
   // All three are omitted rather than sent empty: blank means "no opinion", and
   // for `title` that is a meaningful answer — the server names the task itself.
   title?: string;

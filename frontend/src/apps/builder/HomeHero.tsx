@@ -17,11 +17,7 @@ import {
   subscribeClaudeDefaults,
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
-import {
-  EFFORTS,
-  MODELS,
-  MODEL_LABELS,
-} from "@apps/claude/ui/composer-defaults";
+import { effortsOf, modelLabelsOf, modelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import {
   resolveComposerDefaults,
   type ComposerPicks,
@@ -175,8 +171,9 @@ async function createAppUnderFreeName(
 const SAMPLE_ROW = 4;
 
 // The composer's two session pickers — what the scaffolding turn runs with,
-// and what the chat it lands in opens showing. The claude composer's own lists
-// (MODELS / EFFORTS), handed straight to the CLI as --model / --effort.
+// and what the chat it lands in opens showing. The agent catalog's Claude row
+// (docs/COPILOT_BACKEND.md D11) — the same lists the chat's pills read —
+// handed straight to the CLI as --model / --effort.
 //
 // No "Auto": the composer always names a concrete pair, and the pair it shows
 // is the ONE global default (platform/lib/claude-defaults) — so a pick here
@@ -184,11 +181,14 @@ const SAMPLE_ROW = 4;
 //
 // The labels are BARE — "Opus", "high" — not "high effort": each pill's glyph
 // names its axis, so repeating it in the text is the same word twice.
-const MODEL_CHOICES: { value: ComposerPicks["model"]; label: string }[] =
-  MODELS.map((m) => ({ value: m, label: MODEL_LABELS[m] ?? m }));
+const modelChoices = (): { value: ComposerPicks["model"]; label: string }[] =>
+  modelsOf("claude").map((m) => ({
+    value: m as ComposerPicks["model"],
+    label: modelLabelsOf("claude")[m] ?? m,
+  }));
 
-const EFFORT_CHOICES: { value: ComposerPicks["effort"]; label: string }[] =
-  EFFORTS.map((e) => ({ value: e, label: e }));
+const effortChoices = (): { value: ComposerPicks["effort"]; label: string }[] =>
+  effortsOf("claude").map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
 
 // A composer attachment — NewJobModal's TaskImage shape. `path` is "" until the
 // upload answers; `thumb` is a blob: URL for a picture the browser can draw.
@@ -327,7 +327,9 @@ export function HeroComposer({
   // AI" button (?annot=). null means no model is annotated; the composer
   // reads as a plain prompt box exactly like today.
   const [annotation, setAnnotation] = useState<AppAnnotation | null>(null);
-  // The global pair, or the fallback while it is unknown; see MODEL_CHOICES.
+  // The global pair, or the fallback while it is unknown; see modelChoices.
+  // Subscribed to the catalog, whose first read can re-list the pickers.
+  useAgentBackends();
   const [model, setModel] = useState(
     () => resolveComposerDefaults(getClaudeDefaults()).model,
   );
@@ -789,7 +791,7 @@ export function HeroComposer({
                 glyph="model"
                 label="Model"
                 value={model}
-                choices={MODEL_CHOICES}
+                choices={modelChoices()}
                 disabled={busy}
                 onPick={pickModel}
               />
@@ -797,7 +799,7 @@ export function HeroComposer({
                 glyph="effort"
                 label="Effort"
                 value={effort}
-                choices={EFFORT_CHOICES}
+                choices={effortChoices()}
                 disabled={busy}
                 onPick={pickEffort}
               />

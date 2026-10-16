@@ -224,6 +224,20 @@ export function isBackendEnabled(id: string | null | undefined): boolean {
   return current.backends.some((b) => b.id === (id || "claude"));
 }
 
+/** Does a surface that names NO agent today (a task row, a card, a peek, a
+ *  notification) name this one? Only when there is more than one to tell
+ *  apart, or the row's agent is not Claude — so an install with Claude alone
+ *  draws exactly what it drew before the second agent, and a Copilot task
+ *  stays named after Copilot is switched off again (D18). */
+export function agentNamed(id: string | null | undefined): boolean {
+  return (id || "claude") !== "claude" || current.backends.length > 1;
+}
+
+/** Where every "turn it on" link goes: the Agents section on Preferences' AI
+ *  tab (D17). One string, so the chat's line, the trouble card and the New
+ *  task card cannot point at three places. */
+export const AGENT_PREFS_URL = "/preferences?tab=ai";
+
 /** What a NEW chat or task opens on: the catalog's default. */
 export function defaultBackend(): string {
   return current.default;

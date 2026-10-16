@@ -52,7 +52,7 @@ import {
 // look like two different objects on two surfaces three pixels apart, and made
 // waiting look like failing.
 import { QueueCaptionText, StatusIcon } from "@shell/ScheduleTaskViews";
-import { TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
+import { TaskPeekAgent, TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
 import { shortTaskId } from "@shell/tasks-lib";
 import "../styles/composer.css";
 // The skeleton below wears the landing list's own placeholder bar
@@ -193,6 +193,7 @@ export function Topbar({
             row puts it, rather than at the far end of the header. */}
         {line ? <QueuedCaption line={line} /> : null}
         <TaskPeekProject task={who} {...(home ? { home } : {})} />
+        <TaskPeekAgent task={who} />
         {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
             the ring says running or not, and "resumes 4:00 AM" is the one fact
             about this conversation the ring cannot carry. */}

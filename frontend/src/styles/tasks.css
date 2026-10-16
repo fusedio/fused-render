@@ -555,6 +555,16 @@ button.tasks-caret,
   font-weight: 400;
 }
 
+/* The agent's mark beside the id (TaskAgentMark, docs/COPILOT_BACKEND.md D18):
+   the id's muted ink and its size, so it reads as part of the name. */
+.tasks-agent {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
 /* -- Said, not shown ------------------------------------------------------------
    Text that exists for the accessibility tree and not for the eye. This page has
    one user of it and it is the reason the class exists: a board card says unread

@@ -165,6 +165,9 @@ export interface FileSessionRequest {
   file: string;
   /** Optional for `live_run` (target as a whole), required for the rest. */
   session_id: string;
+  /** `terminal_command` only: the agent whose CLI a FRESH session opens in
+   *  (D2); a named session's own agent outranks it. */
+  backend?: string;
   /** `"1"` from the React page (history): app-state reads come back as
    *  in-stream notice segments (agent.py `app_reads`). */
   native?: string;
