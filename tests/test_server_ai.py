@@ -834,7 +834,8 @@ def test_a_copilot_default_agent_never_reaches_the_relay(monkeypatch):
     Claude short name and only speaks while Claude is the default agent. With
     Copilot the default, the relay — Claude-only — takes its own haiku."""
     monkeypatch.setattr(_server_ai, "default_model", lambda: "opus")
-    monkeypatch.setattr(_server_ai, "default_backend", lambda: "copilot")
+    # The REGISTRY's default (enabled, re-pointed), not the stored pref.
+    monkeypatch.setattr(_server_ai.agent_registry, "default_id", lambda: "copilot")
     fake = _cli_ok(monkeypatch, turns=[_result_lines()])
     _relay({"prompt": "one"})
     proc, = fake.procs

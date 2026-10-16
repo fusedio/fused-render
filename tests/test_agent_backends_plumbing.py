@@ -437,12 +437,16 @@ def test_a_copilot_default_never_reaches_fused_ai(monkeypatch):
     from fused_render.server import ai as ai_mod
     prefs_mod.write_pref("default_model", "opus")
     assert ai_mod.default_model() == "opus"
-    prefs_mod.write_pref("copilot_enabled", True)
+    # A STORED Copilot default with Copilot switched off is not the default:
+    # the relay asks the registry, which re-points to Claude.
     prefs_mod.write_pref("default_backend", "copilot")
-    assert ai_mod.default_backend() == "copilot"
+    assert ai_mod.agent_registry.default_id() == "claude"
+    prefs_mod.write_pref("copilot_enabled", True)
+    assert ai_mod.agent_registry.default_id() == "copilot"
     # The relay's own resolution: with Copilot the default the pref is ignored.
     src = open(ai_mod.__file__, encoding="utf-8").read()
-    assert 'default_backend() == "claude"' in src
+    assert 'agent_registry.default_id() == "claude"' in src
+    assert "default_backend()" not in src
 
 
 # ------------------------------------------------------------------ catalog
@@ -508,6 +512,148 @@ def test_erase_of_a_claude_session_leaves_the_copilot_cli_store_alone(
     assert r.status_code == 200, r.text
     assert not path.exists()
     assert (state / "sess-a").exists()
+
+
+# ------------------------------------------------------------------ round 2
+
+
+def _copilot_default():
+    _enable_copilot()
+    prefs_mod.write_pref("default_backend", "copilot")
+
+
+def test_app_builder_tasks_are_claude_whatever_the_default(tmp_path, monkeypatch):
+    from fused_render.server.routers import apps as apps_mod
+    _copilot_default()
+    page = tmp_path / "app" / "index.html"
+    page.parent.mkdir()
+    page.write_text("<html></html>")
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: None)
+    monkeypatch.setattr(apps_mod, "_await_sent", lambda entry_id, entry: entry)
+    entry, error = apps_mod._create_app_task(str(page), "build it")
+    assert error is None
+    assert entry["backend"] == "claude"
+
+
+def test_a_bots_task_is_claude_whatever_the_default(tmp_path, client, monkeypatch):
+    from fused_render.bots import store as bot_store
+    _copilot_default()
+    monkeypatch.setattr(bot_store, "list_ids", lambda: ["bot-1"])
+    target = tmp_path / "p"
+    target.mkdir()
+    due = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    r = client.post("/api/tasks/create", headers=FUSED,
+                    json={"prompt": "go", "target": str(target), "due": due,
+                          "bot": "bot-1"})
+    assert r.status_code == 200, r.text
+    stored = next(e for e in schedule.list_entries()
+                  if e["id"] == r.json()["entry_id"])
+    assert stored["backend"] == "claude"
+    # An explicit agent still speaks for itself.
+    r = client.post("/api/tasks/create", headers=FUSED,
+                    json={"prompt": "go", "target": str(target), "due": due,
+                          "bot": "bot-1", "backend": "copilot"})
+    stored = next(e for e in schedule.list_entries()
+                  if e["id"] == r.json()["entry_id"])
+    assert stored["backend"] == "copilot"
+
+
+def test_a_session_bound_message_cannot_name_another_agent(
+        tmp_path, copilot_projects, client):
+    _enable_copilot()
+    target = tmp_path / "p"
+    target.mkdir()
+    _write_transcript(copilot_projects, "sess-cop", str(target), [_user("hi")])
+    with pytest.raises(schedule.BackendRefused) as info:
+        schedule.create(str(target), "go", _past(), session_id="sess-cop",
+                        backend="claude")
+    assert info.value.body == {"error": "this session belongs to Copilot",
+                               "reason": "backend_mismatch", "backend": "copilot"}
+    # Naming the owner is fine, and so is naming nothing.
+    assert schedule.create(str(target), "go", _past(), session_id="sess-cop",
+                           backend="copilot")["backend"] == "copilot"
+    # The schedule door answers with the whole body.
+    due = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    r = client.post("/api/schedule", headers=FUSED,
+                    json={"target": str(target), "message": "go", "due": due,
+                          "session_id": "sess-cop", "backend": "claude"})
+    assert r.status_code == 400
+    assert r.json()["reason"] == "backend_mismatch"
+    assert r.json()["backend"] == "copilot"
+
+
+def test_plan_mode_is_refused_for_an_agent_without_one(tmp_path):
+    _enable_copilot()
+    target = tmp_path / "p"
+    target.mkdir()
+    with pytest.raises(schedule.BackendRefused) as info:
+        schedule.create(str(target), "go", _past(), backend="copilot",
+                        permission_mode="plan")
+    assert info.value.body == {"error": "plan mode is not available for Copilot",
+                               "reason": "unsupported", "backend": "copilot"}
+    assert schedule.create(str(target), "go", _past(), backend="claude",
+                           permission_mode="plan")["permission_mode"] == "plan"
+
+
+def test_the_schedule_doors_disabled_refusal_is_the_whole_body(tmp_path, client):
+    target = tmp_path / "p"
+    target.mkdir()
+    due = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    r = client.post("/api/schedule", headers=FUSED,
+                    json={"target": str(target), "message": "go", "due": due,
+                          "backend": "copilot"})
+    assert r.status_code == 400
+    assert r.json() == registry.disabled_error("copilot")
+
+
+def test_the_settings_door_reads_the_owner_off_the_transcript_root(
+        tmp_path, copilot_projects, client):
+    target = tmp_path / "p"
+    target.mkdir()
+    # No record, but a transcript under the Copilot root: that IS the owner.
+    _write_transcript(copilot_projects, "sess-cop", str(target), [_user("hi")])
+    r = client.post("/api/tasks/settings", headers=FUSED,
+                    json={"session_id": "sess-cop", "backend": "claude"})
+    assert r.status_code == 400, r.text
+    r = client.post("/api/tasks/settings", headers=FUSED,
+                    json={"session_id": "sess-cop", "backend": "copilot"})
+    assert r.status_code == 200, r.text
+
+
+def test_a_pid_in_both_registries_names_the_newer_file(tmp_path, home, monkeypatch):
+    claude_sessions = tmp_path / "claude-sessions"
+    claude_sessions.mkdir()
+    monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(claude_sessions))
+    copilot_sessions = home / "copilot" / "sessions"
+    copilot_sessions.mkdir(parents=True)
+    monkeypatch.setattr(tasks_watch, "_pid_alive", lambda pid: True)
+    old = claude_sessions / "33.json"
+    new = copilot_sessions / "33.json"
+    old.write_text(json.dumps({"sessionId": "s-dead", "pid": 33}))
+    new.write_text(json.dumps({"sessionId": "s-live", "pid": 33}))
+    os.utime(old, (1000, 1000))
+    os.utime(new, (2000, 2000))
+    assert tasks_watch.session_for_pid(33) == "s-live"
+    # …and the other way round, so the order of the dirs is not the answer.
+    os.utime(old, (3000, 3000))
+    assert tasks_watch.session_for_pid(33) == "s-dead"
+
+
+def test_erase_through_a_symlinked_copilot_bucket_takes_the_cli_store_too(
+        tmp_path, claude_projects, copilot_projects, client, monkeypatch):
+    target = tmp_path / "p"
+    target.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    path = _write_transcript(elsewhere, "sess-copilot", str(target), [_user("two")])
+    (copilot_projects / path.parent.name).symlink_to(path.parent)
+    state = tmp_path / "copilot-session-state"
+    (state / "sess-copilot").mkdir(parents=True)
+    monkeypatch.setattr(tasks_mod, "_copilot_session_state_dir", lambda: str(state))
+    assert client.get("/api/tasks").json()["tasks"][0]["key"] == "sess-copilot"
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": "sess-copilot"})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert not (state / "sess-copilot").exists()
 
 
 # ------------------------------------------------------------------ invariant 7

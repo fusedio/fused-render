@@ -359,3 +359,91 @@ def test_two_copies_of_a_folder_do_not_share_one_recap(
     assert "in the original" in first_prompt and "in the copy" not in first_prompt
     assert "in the copy" in second_prompt, (
         "the second file must not be answered out of the first file's cache")
+
+
+# ------------------------------------------------------- the session's agent
+
+# A `copilot` stand-in: records argv and stdin, creates the session-state dir
+# its `--session-id` names (as the real CLI does), and prints plain text — `-s`
+# output is the reply alone.
+_COPILOT_STUB = """#!{python}
+import json
+import os
+import sys
+
+stdin_data = sys.stdin.read()
+argv = sys.argv[1:]
+with open(os.environ["RECAP_STUB_CALLS"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(dict(argv=argv, stdin=stdin_data)) + "\\n")
+sid = argv[argv.index("--session-id") + 1]
+os.makedirs(os.path.join(os.environ["COPILOT_HOME"], "session-state", sid))
+sys.stdout.write("Copilot's recap, long enough to count as one.\\n")
+"""
+
+
+@pytest.fixture
+def copilot_cli(tmp_path, monkeypatch, calls):
+    home = tmp_path / "copilot-home"
+    (home / "session-state").mkdir(parents=True)
+    monkeypatch.setenv("COPILOT_HOME", str(home))
+    bin_dir = tmp_path / "copilot-bin"
+    bin_dir.mkdir()
+    path = bin_dir / "copilot"
+    path.write_text(_COPILOT_STUB.format(python=sys.executable))
+    path.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_COPILOT_BIN", str(path))
+    return home
+
+
+def _switches(monkeypatch, **on):
+    from fused_render.agent_backends import registry
+    monkeypatch.setattr(registry, "is_enabled", lambda b: on.get(b, False))
+
+
+def test_a_claude_session_recaps_nothing_with_claude_switched_off(
+        client, project, calls, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    _switches(monkeypatch, copilot=True)
+    assert _get(client, target).json()["text"] == ""
+    assert _spawns(calls) == []
+
+
+def test_a_copilot_session_recaps_nothing_with_copilot_switched_off(
+        client, project, calls, copilot_cli, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "copilot")
+    _switches(monkeypatch, claude=True)
+    assert _get(client, target).json()["text"] == ""
+    assert _spawns(calls) == []
+
+
+def test_a_copilot_session_is_recapped_by_copilot_with_no_tools(
+        client, project, calls, copilot_cli, monkeypatch):
+    target, write = project
+    write(("user", "make the tests pass"), ("assistant", "they pass now"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "copilot")
+    _switches(monkeypatch, claude=True, copilot=True)
+    assert _get(client, target).json()["text"] == (
+        "Copilot's recap, long enough to count as one.")
+    call, = _spawns(calls)
+    argv = call["argv"]
+    # No tools: an allowlist naming a tool that does not exist (an EMPTY
+    # `--available-tools=` keeps every tool — verified live).
+    assert f"--available-tools={recap_mod._COPILOT_RECAP_NO_TOOLS}" in argv
+    assert "--available-tools=" not in argv
+    assert "-s" in argv and "--no-ask-user" in argv
+    # The tail over stdin, never argv; the system text leads it.
+    tail = "User: make the tests pass\n\nAssistant: they pass now"
+    assert call["stdin"] == (recap_mod._RECAP_SYSTEM + "\n\n"
+                             + recap_mod._RECAP_PROMPT % tail)
+    assert not any("make the tests pass" in a for a in argv)
+    # The run's own session is gone: nothing for `copilot --resume` to list.
+    assert os.listdir(copilot_cli / "session-state") == []
+
+
+def test_the_recap_asks_the_agent_module_whose_session_it_is(agent, tmp_path):
+    target = tmp_path / "t"
+    target.mkdir()
+    assert recap_mod._recap_backend(agent, str(target), SESSION) == "claude"

@@ -282,13 +282,20 @@ def session_for_pid(pid) -> str:
         for row, _mtime in _sess_rows.values():
             if str(row.get("pid") or "") == pid_s:
                 return str(row.get("sessionId") or "")
-    row = None
+    # EVERY REGISTRY DIR, NEWEST WINS: pids are recycled, so the same
+    # `<pid>.json` can sit under both backends' dirs — a dead run's leftover
+    # in one and the live process in the other. The newer write is the one
+    # this pid is holding now.
+    row, newest = None, -1.0
     for root in _sessions_roots():
+        path = os.path.join(root, pid_s + ".json")
         try:
-            with open(os.path.join(root, pid_s + ".json"),
-                      encoding="utf-8") as fh:
+            mtime = os.path.getmtime(path)
+            if mtime <= newest:
+                continue
+            with open(path, encoding="utf-8") as fh:
                 row = json.load(fh)
-            break
+            newest = mtime
         except (OSError, ValueError):
             continue
     if row is None:

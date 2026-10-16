@@ -307,11 +307,11 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     # point, never create_app.
     # Each agent's probe follows its Preferences switch (D17), as in cli.py.
     from fused_render import claude_health, copilot_health
-    from fused_render.shell import prefs as _prefs
+    from fused_render.agent_backends import registry as _agent_registry
 
-    if _prefs.claude_enabled():
+    if _agent_registry.is_enabled("claude"):
         claude_health.warm_in_background()
-    if _prefs.copilot_enabled():
+    if _agent_registry.is_enabled("copilot"):
         copilot_health.warm_in_background()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi

@@ -687,6 +687,19 @@ def _release_folder(manager, task_key: str) -> None:
                      exc_info=True)
 
 
+class BackendRefused(ValueError):
+    """`create` refusing a message over its AGENT (D2/D17): switched off, the
+    wrong agent for the session it names, or a permission mode that agent
+    cannot run. A `ValueError` so every caller's existing 400 still catches
+    it; `body` is the full refusal (`error`, `reason`, `backend`) — the same
+    shape `registry.disabled_error` and `routers/claude_agent` answer — for a
+    router that hands the page something it can act on."""
+
+    def __init__(self, body: dict):
+        super().__init__(str(body.get("error") or "backend refused"))
+        self.body = dict(body)
+
+
 class SpawnBusy(Exception):
     """`dispatch_entry` refusing to start a turn that cannot go RIGHT NOW, where
     the reason is a wait rather than a verdict: the conversation already has a
@@ -1536,13 +1549,15 @@ def create(target: str, message: str, due=None, session_id: str = "",
     PINNED HERE, never left for send time: "" is resolved now and the entry
     stores the answer, so a task scheduled today runs tomorrow on the agent the
     user saw in the modal, not whatever the Preferences default is when it
-    fires. "" resolves to the agent the entry is ALREADY bound to where there
-    is one — a `session_id`'s owner (`_session_backend`), a `follow_of`
-    leader's — and to `registry.default_id()` otherwise. An unknown id is a
-    `ValueError` (the router's 400); a known one the Preferences page has
-    switched OFF is one too (D17, request-level gate) — the scheduler's own
-    tick refuses the same entry again at send time, because the toggle can
-    flip between the two. An entry stored before the field existed has no
+    fires. A `session_id`'s owner (`_session_backend`) comes first and is the
+    answer — an explicit `backend` naming another agent is refused (invariant
+    8). Otherwise "" takes a `follow_of` leader's agent, else
+    `registry.default_id()`. An unknown id is a `ValueError` (the router's
+    400); every other refusal about the agent is a `BackendRefused` carrying
+    the full body — switched OFF in Preferences (D17, request-level gate; the
+    scheduler's own tick refuses the same entry again at send time, because
+    the toggle can flip between the two), the wrong agent for the session,
+    or `permission_mode="plan"` on an agent with no plan mode. An entry stored before the field existed has no
     `backend` key and reads as Claude (`_entry_backend`), never as the
     default of the day.
 
@@ -1777,14 +1792,28 @@ def create(target: str, message: str, due=None, session_id: str = "",
         backend = backend or _entry_backend(leader)
 
     # THE PIN (see the docstring): resolved once, here, and stored. A session
-    # already belongs to an agent and a resume runs there whatever the entry
-    # says (`agent._start`), so the entry says the same thing; anything else
-    # takes the Preferences default, which is enabled by construction.
-    if not backend and session_id:
-        backend = _session_backend(session_id)
+    # already belongs to an agent (invariant 8) and its owner comes FIRST: a
+    # caller naming another agent is refused rather than stored, because the
+    # entry would then say one agent while `agent._start` resumed on the other
+    # and the send gate checked the wrong switch. Anything else takes the
+    # Preferences default, which is enabled by construction.
+    if session_id:
+        owner = _session_backend(session_id)
+        if backend and backend != owner:
+            raise BackendRefused({
+                "error": f"this session belongs to {_registry.get(owner).label}",
+                "reason": "backend_mismatch", "backend": owner})
+        backend = owner
     backend = backend or _registry.default_id()
     if not _registry.is_enabled(backend):
-        raise ValueError(_registry.disabled_error(backend)["error"])
+        raise BackendRefused(_registry.disabled_error(backend))
+    # Plan mode needs a plan card to approve, which only some agents have
+    # (§7 caps.plan_mode) — refused here in the words `routers/claude_agent`
+    # uses, rather than failing at send time with nobody watching.
+    if mode == "plan" and not _registry.get(backend).caps.plan_mode:
+        raise BackendRefused({
+            "error": f"plan mode is not available for {_registry.get(backend).label}",
+            "reason": "unsupported", "backend": backend})
 
     # No vocabulary check: the one word anything writes is "chat" (the chat
     # admission), and a store that refused an unknown one would be this layer
@@ -2883,17 +2912,28 @@ def _entry_backend(entry: dict) -> str:
     return value if value in roots.BACKENDS else roots.DEFAULT_BACKEND
 
 
-def _session_backend(session_id: str) -> str:
-    """The agent that owns an existing session (`roots.backend_for_session`):
-    the session-settings record, else the root its transcript sits under,
-    else Claude. An id that is not a plain name is never globbed for."""
+def session_owner(session_id: str) -> str:
+    """The agent the EVIDENCE says owns `session_id`: the session-settings
+    record, else the root its transcript sits under — and "" when there is
+    neither, which is a session nothing has started yet. An id that is not a
+    plain name is never globbed for. `/api/tasks/settings` asks this (an id
+    with no evidence may still be recorded); `_session_backend` is the same
+    answer with Claude standing in for "no evidence"."""
     from fused_render.agent_backends import roots
     sid = str(session_id or "").strip()
     hint = tasks_store.session_backend(tasks_store.settings_state(), sid)
     if hint or sid in ("", ".", "..") or not all(
             c.isalnum() or c in "-_." for c in sid):
-        return hint or roots.DEFAULT_BACKEND
-    return roots.backend_for_session(sid)
+        return hint
+    found = roots.find_transcript(sid)
+    return found[0] if found else ""
+
+
+def _session_backend(session_id: str) -> str:
+    """The agent that owns an existing session: `session_owner`, else Claude
+    (every session that predates the field is a Claude one)."""
+    from fused_render.agent_backends import roots
+    return session_owner(session_id) or roots.DEFAULT_BACKEND
 
 
 def _send(entry: dict) -> None:

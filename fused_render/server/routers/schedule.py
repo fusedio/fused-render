@@ -14,6 +14,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, File, Header, UploadFile
+from fastapi.responses import JSONResponse
 
 from fused_render import drafts, recur, schedule, tasks_store, tasks_watch
 from fused_render.server import image_convert
@@ -512,6 +513,10 @@ def api_schedule_create(body: dict = Body(...),
     try:
         entry = create_entry(resolved, body, due, repeats=repeats, rule=rule,
                              create_target=True)
+    except schedule.BackendRefused as exc:
+        # The full body (`reason`, `backend`), as `/api/tasks/create` answers
+        # it, so the page can say which switch to flip (D17).
+        return JSONResponse(exc.body, status_code=400)
     except ValueError as exc:
         return _error(str(exc), status=400)
 

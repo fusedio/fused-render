@@ -20,12 +20,13 @@ from fastapi.responses import (
 )
 
 from fused_render import claude_health, jobs
+from fused_render.agent_backends import registry as agent_registry
 from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
 from fused_render.server.common import (
     AI_PROVIDERS, APPLE_MODELS, _require_fused, ai_result, ai_usage_tokens,
     apple_model_for, provider_of_model)
-from fused_render.shell.prefs import default_backend, default_model
+from fused_render.shell.prefs import default_model
 from fused_render.supervisor.paths import STRIPPED_ENV_VARS
 
 router = APIRouter()
@@ -1414,7 +1415,7 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
     # the default, this relay — which is Claude-only — falls through to its own
     # haiku rather than honour a preference set for another agent's chats.
     preferred = (_AI_SHORT_MODEL_IDS.get(default_model())
-                 if default_backend() == "claude" else None)
+                 if agent_registry.default_id() == "claude" else None)
     model = (_AI_SHORT_MODEL_IDS.get(model, model) if model else None) \
         or preferred or _AI_DEFAULT_MODEL
     # The other direction: a repo id or GGUF filename is not something the

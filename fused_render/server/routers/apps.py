@@ -1400,10 +1400,15 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
         # `permission_mode` "" keeps `schedule.create`'s default ("auto", the
         # broadest); the App Doctor CHECK task passes "plan" so the CLI itself
         # refuses every edit — see app_doctor_ai.PERMISSION_MODE.
+        # CLAUDE, NAMED: app-builder and App Doctor tasks are Claude-only
+        # (their prompts, `plan` mode and the doctor's checks are Claude's),
+        # so they never follow the Preferences default. Claude switched off
+        # is then the ordinary disabled refusal, said plainly.
         entry = schedule.create(
             entry_html, prompt, datetime.now(timezone.utc),
             immediate=True, model=model, effort=effort,
-            permission_mode=permission_mode, images=images or None)
+            permission_mode=permission_mode, images=images or None,
+            backend="claude")
     except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
         return None, f"failed to create the app's task: {exc}"
     entry_id = str(entry.get("id") or "")

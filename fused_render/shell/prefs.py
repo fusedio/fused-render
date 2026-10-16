@@ -429,10 +429,13 @@ def default_backend() -> str:
 
 def _agents_state() -> dict:
     """`{"claude": bool, "copilot": bool, "default": id}` for `GET /api/prefs`.
-    Imported lazily: the registry reads this module for the switches."""
+    Imported lazily: the registry reads this module for the switches. The
+    REGISTRY's answer, not the raw switches: a hand-edited prefs.json that
+    turns both off reads as Claude on there, and this page must agree."""
     from fused_render.agent_backends import registry
 
-    return {"claude": claude_enabled(), "copilot": copilot_enabled(),
+    return {"claude": registry.is_enabled("claude"),
+            "copilot": registry.is_enabled("copilot"),
             "default": registry.default_id()}
 
 

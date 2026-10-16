@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -910,8 +911,20 @@ def _recap_plain(text: str) -> str:
     return out[:_RECAP_MAX_CHARS]
 
 
-def _recap_generate(agent, file: str, session_id: str) -> str:
+def _recap_backend(agent, file: str, session_id: str) -> str:
+    """Which agent owns the session being recapped — the agent module's own
+    ladder (`_backend_for_session`: the record, then the root its transcript
+    sits under, then Claude), walked over the same roots `_history` reads."""
+    return agent._backend_for_session(session_id, agent._workdir(file),
+                                      hint=agent._session_backend(session_id))
+
+
+def _recap_generate(agent, file: str, session_id: str,
+                    backend: str = "claude") -> str:
     """Read the transcript, run the one-shot CLI, return the recap or "".
+
+    A COPILOT session is recapped by Copilot (`_recap_copilot`) from the same
+    tail; everything below is the Claude run.
 
     `--no-session-persistence` is the load-bearing flag: this run mints a
     session id of its own and must leave no `.jsonl` behind, or every recap
@@ -947,6 +960,8 @@ def _recap_generate(agent, file: str, session_id: str) -> str:
     workdir = agent._workdir(file)
     if not os.path.isdir(workdir):
         workdir = tempfile.gettempdir()
+    if backend == "copilot":
+        return _recap_copilot(agent, workdir, tail)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": _RECAP_PROMPT % tail}]}})
@@ -970,6 +985,63 @@ def _recap_generate(agent, file: str, session_id: str) -> str:
     return _recap_result(stdout) if proc.returncode == 0 else ""
 
 
+#: The one tool a Copilot recap may use — a name no tool has. Verified live
+#: against copilot 1.0.98 (2026-10-16): `--available-tools=` with an EMPTY
+#: value is ignored and the run keeps every tool (it ran `cat` on a probe
+#: file), while an allowlist naming only a tool that does not exist leaves the
+#: model with none (no tool definitions in the session's events, and a prompt
+#: asking it to read a file got "I don't have a tool available").
+_COPILOT_RECAP_NO_TOOLS = "fused_recap_no_tools"
+
+_COPILOT_SESSION_ID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _recap_copilot(agent, workdir: str, tail: str) -> str:
+    """The Copilot twin of the Claude run: one shot (`-p` mode, entered by a
+    prompt on stdin), silent (`-s`: the reply only, no stats), no tools
+    (`_COPILOT_RECAP_NO_TOOLS`), no repo instructions and no built-in MCP
+    servers, nothing it could stop to ask. Copilot has no `--system-prompt`,
+    so the system text leads the same user message the Claude run sends.
+
+    Copilot has no `--no-session-persistence` either: every run is a session
+    under `~/.copilot/session-state/<id>/`, which `copilot --resume` lists. So
+    the id is MINTED here (`--session-id`) and that one directory is removed
+    afterwards, whatever the outcome — verified live to leave nothing else
+    under session-state. (Copilot's own `session-store.db` index still gets
+    a row for the run; that file is Copilot's, and is not edited from here.)
+
+    The tail travels over stdin, never argv — the same rule as the Claude
+    run. Every failure is "", as there."""
+    import uuid
+
+    from fused_render import copilot_health
+
+    sid = str(uuid.uuid4())
+    state_dir = os.path.join(copilot_health.config_dir(), "session-state")
+    prompt = _RECAP_SYSTEM + "\n\n" + _RECAP_PROMPT % tail
+    try:
+        proc = subprocess.Popen(
+            [agent._copilot_bin(), "-s", "--no-auto-update", "--model", "auto",
+             f"--available-tools={_COPILOT_RECAP_NO_TOOLS}",
+             "--no-custom-instructions", "--disable-builtin-mcps",
+             "--no-ask-user", "--session-id", sid],
+            cwd=workdir, env=agent._spawn_env(backend="copilot"),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
+            errors="replace")
+        try:
+            stdout, _ = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return ""
+        return _recap_plain(stdout) if proc.returncode == 0 else ""
+    finally:
+        if _COPILOT_SESSION_ID_RE.fullmatch(sid):
+            shutil.rmtree(os.path.join(state_dir, sid), ignore_errors=True)
+
+
 def _recap(agent, file: str, session_id: str, for_uuid: str) -> str:
     """The cached, single-flighted recap for one turn of one session.
 
@@ -986,6 +1058,18 @@ def _recap(agent, file: str, session_id: str, for_uuid: str) -> str:
     endpoint decorates a screen rather than gating it, and a chat must never
     show an error because a nicety could not be computed.
     """
+    # THE SESSION'S AGENT, AND ITS SWITCH (D17): a recap is that agent's run,
+    # so an agent switched off in Preferences recaps nothing — checked before
+    # the cache, so a recap computed while it was on is not shown either.
+    try:
+        backend = _recap_backend(agent, file, session_id)
+        from fused_render.agent_backends import registry
+        if not registry.is_enabled(backend):
+            return ""
+    except Exception:  # noqa: BLE001 — see NOTHING HERE RAISES above
+        logger.warning("could not resolve the agent for a recap of %s",
+                       session_id, exc_info=True)
+        return ""
     # The FILE is part of the key, not just the session: see the cache block's
     # "KEYED ON THE FILE TOO". Canonical, so two spellings of one folder are
     # one conversation.
@@ -1006,7 +1090,7 @@ def _recap(agent, file: str, session_id: str, for_uuid: str) -> str:
         return hit if hit is not None else ""
 
     try:
-        text = _recap_generate(agent, file, session_id)
+        text = _recap_generate(agent, file, session_id, backend)
     except Exception:  # noqa: BLE001 — see NOTHING HERE RAISES above
         logger.warning("could not generate a session recap for %s", session_id,
                        exc_info=True)

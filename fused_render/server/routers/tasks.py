@@ -5978,8 +5978,11 @@ def api_task_settings(patch: SettingsPatch,
         raise HTTPException(status_code=400,
                             detail=f"invalid backend {backend!r}")
     if backend:
-        held = tasks_store.session_backend(tasks_store.settings_state(),
-                                           session_id)
+        # THE SESSION'S OWNER, not the record alone (invariant 8): a session
+        # that predates the field has no record, and its transcript root is
+        # what says whose it is. No evidence at all is a session nothing has
+        # started, which may still be recorded.
+        held = schedule.session_owner(session_id)
         if held and held != backend:
             raise HTTPException(
                 status_code=400,
@@ -6568,17 +6571,21 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     listed_roots = sessions.projects_roots()
     root_reals = {os.path.realpath(r): backend for backend, r in listed_roots}
     names = (session_id, session_id + ".jsonl")
-    projects: dict[str, str] = {}  # realpath(project dir) -> as listed
-    for _backend, projects_dir in listed_roots:
+    # realpath(project dir) -> (as listed, the backend of the root it was
+    # LISTED under). Tagged while scanning, not recovered from the realpath
+    # afterwards: a bucket symlinked out of the Copilot root resolves outside
+    # it, and its session-state must still go (D15).
+    projects: dict[str, tuple[str, str]] = {}
+    for backend, projects_dir in listed_roots:
         try:
             with os.scandir(projects_dir) as it:
                 for entry in it:
                     if entry.is_dir():
-                        projects[os.path.realpath(entry.path)] = entry.path
+                        projects[os.path.realpath(entry.path)] = (entry.path, backend)
         except OSError:
             continue
     targets: list[str] = []
-    for listed in projects.values():
+    for listed, _backend in projects.values():
         for name in names:
             candidate = os.path.join(listed, name)
             if os.path.lexists(candidate):
@@ -6614,8 +6621,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                 os.remove(resolved)
                 if resolved.endswith(".jsonl"):
                     erased = True
-                    copilot = copilot or (root_reals.get(
-                        os.path.dirname(parent)) == "copilot")
+                    copilot = copilot or projects[parent][1] == "copilot"
             else:
                 continue
         except OSError:
@@ -7258,6 +7264,8 @@ def api_queue_admit(body: dict = Body(...),
         # supposed to cause.
         entry = schedule_api.create_entry(resolved, dict(body, message=message),
                                           schedule._now(), origin="chat")
+    except schedule.BackendRefused as exc:
+        return JSONResponse(exc.body, status_code=400)
     except ValueError as exc:
         return _error(str(exc), status=400)
 
@@ -8168,6 +8176,10 @@ def api_task_create(body: dict = Body(...),
         from fused_render.bots import store as bot_store  # noqa: PLC0415
         if fields["bot"] not in bot_store.list_ids():
             return _error(f"bot: no bot {fields['bot']!r}", status=400)
+        # BOTS STAY CLAUDE (Q7): a bot's build names no agent, and the
+        # Preferences default must not hand it to another one. Claude off is
+        # then the ordinary disabled 400, said plainly.
+        fields["backend"] = fields["backend"] or "claude"
     target = fields["target"] or _page_scope(x_fused_page)[2]
     if not target:
         return _error("target: required — no target given and no X-Fused-Page "
@@ -8193,6 +8205,8 @@ def api_task_create(body: dict = Body(...),
             title=fields["title"] or None, model=fields["model"],
             effort=fields["effort"], permission_mode=mode, origin="page",
             bot=fields["bot"], backend=fields["backend"])
+    except schedule.BackendRefused as exc:
+        return JSONResponse(exc.body, status_code=400)
     except ValueError as exc:
         return _error(str(exc), status=400)
     entry_id = str(entry.get("id") or "")
@@ -8346,6 +8360,8 @@ def api_task_send(key: str, body: dict = Body(...),
                                 model=model, effort=effort,
                                 permission_mode=mode, origin="page",
                                 backend=owner)
+    except schedule.BackendRefused as exc:
+        return JSONResponse(exc.body, status_code=400)
     except ValueError as exc:
         return _error(str(exc), status=400)
     entry_id = str(entry.get("id") or "")
