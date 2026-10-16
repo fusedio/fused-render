@@ -105,7 +105,8 @@ def workbench_plugin_dir() -> str | None:
 
     This value being SET is not permission to pass it: the skills are for canvas
     clones only, so the caller must also check the target against
-    `canvases_root()` — see `claude_agent/agent.py:_plugin_argv`. Absent
+    `canvases_root()` — or Fused Web's own `~/Fused/canvas` — see
+    `claude_agent/agent.py:_in_workbench_root`. Absent
     means "no validated clone on disk" (never fetched, fetch failed, or git is
     missing) — no flag, and the clone's CLAUDE.md degrades to the folder's own
     conventions. Decided by the server

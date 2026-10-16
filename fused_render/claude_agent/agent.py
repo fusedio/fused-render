@@ -690,8 +690,8 @@ def _run_backend(run_dir: str) -> str:
         return DEFAULT_BACKEND
 
 
-def _in_canvases_root(target: str) -> bool:
-    """Whether `target` is inside the canvas-clones root.
+def _path_is_inside(root: str, target: str) -> bool:
+    """Whether `target` is inside `root`.
 
     abspath + realpath + normcase + commonpath, and each of the four earns its
     place — every way this can be wrong ends in the gate silently withholding the
@@ -706,17 +706,52 @@ def _in_canvases_root(target: str) -> bool:
     * commonpath rather than a string prefix, because `<root>-evil` starts with
       the root's characters and is a different directory entirely.
 
-    A path that cannot be resolved at all is treated as OUTSIDE."""
+    A path that cannot be resolved at all is treated as OUTSIDE. Shared by both
+    gate roots (`_in_canvases_root` and the Fused Web one) so they fail the same
+    way under the same four conditions."""
     if not target:
         return False
     try:
-        root = os.path.normcase(os.path.realpath(os.path.abspath(_canvases_root())))
+        root = os.path.normcase(os.path.realpath(os.path.abspath(root)))
         path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
         return os.path.commonpath([root, path]) == root
     except (OSError, ValueError):
         # ValueError: commonpath refuses to mix an absolute and a relative
         # path — that means "not inside".
         return False
+
+
+def _in_canvases_root(target: str) -> bool:
+    """Whether `target` is inside the canvas-clones root (`_canvases_root()`,
+    `~/.fused-render/canvases` or the flavor's own home). See `_path_is_inside`
+    for the four-step containment rule and why each step is there."""
+    return _path_is_inside(_canvases_root(), target)
+
+
+# Fused Web (the sandbox/showcase app, not this server) keeps its OWN local
+# canvas clones at `~/Fused/canvas/<name>` — each with its own `canvas.toml` —
+# entirely outside `_canvases_root()`, because those tasks are started through
+# `fused.tasks.create` rather than a canvas push. Resolved at CALL time
+# (`os.path.expanduser`, not module-import time) so a test can monkeypatch HOME
+# and so a real change of HOME mid-process is honored rather than frozen at
+# whatever HOME happened to be when this module first loaded.
+def _fused_web_canvas_root() -> str:
+    """`~/Fused/canvas` — Fused Web's local canvas-clones folder, a SECOND
+    gate root alongside `_canvases_root()` (see `_in_workbench_root`)."""
+    return os.path.expanduser(os.path.join("~", "Fused", "canvas"))
+
+
+def _in_fused_web_canvas_root(target: str) -> bool:
+    """Whether `target` is inside Fused Web's local canvas-clones folder."""
+    return _path_is_inside(_fused_web_canvas_root(), target)
+
+
+def _in_workbench_root(target: str) -> bool:
+    """Whether `target` is inside EITHER gate root the workbench plugin is
+    scoped to: the canvas-clones root this server owns, or `~/Fused/canvas`,
+    where Fused Web keeps its own local canvas clones. Either is sufficient —
+    the roots are independent, not nested."""
+    return _in_canvases_root(target) or _in_fused_web_canvas_root(target)
 
 
 def _plugin_argv(target: str | None = None) -> list:
@@ -740,11 +775,13 @@ def _plugin_argv(target: str | None = None) -> list:
       target shape needs.
     * the `workbench` plugin's canvas/UDF skills (fetched at runtime into a
       directory the app owns — see appenv.workbench_plugin_dir) go ONLY to a
-      session whose target is inside the canvases root. A canvas clone's
-      CLAUDE.md names them (the canvas.toml format reference above all), and
-      nothing else does: handing them to a file, app-folder or plain-folder chat
-      would load canvas/UDF guidance into a session with no canvas anywhere near
-      it, which is noise at best and a wrong-tool suggestion at worst.
+      session whose target is inside one of the gate roots (`_in_workbench_root`):
+      the canvas-clones root this server owns, or `~/Fused/canvas`, where Fused
+      Web keeps its OWN local canvas clones. A canvas clone's CLAUDE.md names
+      these skills (the canvas.toml format reference above all), and nothing else
+      does: handing them to a file, app-folder or plain-folder chat would load
+      canvas/UDF guidance into a session with no canvas anywhere near it, which
+      is noise at best and a wrong-tool suggestion at worst.
 
     The flag is repeatable, so the roots compose rather than needing a merged
     tree; either can be absent independently, and `target=None` (no target
@@ -2940,10 +2977,12 @@ _COPILOT_PLUGIN_MANIFEST = {"name": "fused", "version": "0.0.1",
 
 def _skill_plugin_roots(target: str | None = None) -> list:
     """The plugin roots `_plugin_argv` would pass, as paths: fused-render's
-    own skills always, the workbench plugin's only for a canvas target. Split
-    out so the Copilot plugin builder shares the gate without the flags."""
+    own skills always, the workbench plugin's only for a target inside one of
+    the gate roots (`_in_workbench_root`: the canvas-clones root, or Fused
+    Web's `~/Fused/canvas`). Split out so the Copilot plugin builder shares
+    the gate without the flags."""
     roots = [_skill_plugin_dir()]
-    if target and _in_canvases_root(target):
+    if target and _in_workbench_root(target):
         roots.append(_workbench_plugin_dir())
     return [r for r in roots if r]
 
