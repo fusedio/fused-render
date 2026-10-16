@@ -490,16 +490,16 @@ def _merge_job_for(t: _Target, body) -> tuple[dict | None, dict | None]:
 def api_contrib_merge_accept(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Keep the merge. Any purpose (the job itself says which; an own app's
     own-sync merge is offered with the sources phase alone) — except an
-    inbox proposal's (purpose "proposal" in the author's app), whose Keep
-    is `inbox.merge_accept`: it sends the result onto the sender's
-    proposal, which `merge_job.accept` alone never does."""
+    inbox Merge with Claude (`inbox.owns_merge`), whose Keep is
+    `inbox.merge_accept`: it sends the result onto the sender's proposal,
+    which `merge_job.accept` alone never does."""
     t = _gate(body, x_fused, "sources")
     if not isinstance(t, _Target):
         return t
     job, refused = _merge_job_for(t, body)
     if refused is not None:
         return refused
-    if job.get("purpose") == "proposal" and t.record.get("kind") == "own":
+    if _mod("inbox").owns_merge(job["id"]):
         if not _phase_on("inbox"):
             return _disabled()
         return _call("inbox merge accept", _mod("inbox").merge_accept, t.app_dir, job["id"])
@@ -882,9 +882,10 @@ def api_contrib_action(body: dict = Body(...), x_fused: str | None = Header(defa
 
 @router.post("/api/contrib/restore")
 def api_contrib_restore(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Undo / Restore on one Activity line (`engine.restore`, which backs up
-    the current state first). Only a line this app's Activity offers Undo
-    for is accepted."""
+    """Undo / Restore on one Activity line — `engine.restore` for a
+    GitHub-link copy, `ownsync.restore` for an own app (each backs up the
+    current state first and knows only its own lines). Only a line this
+    app's Activity offers Undo for is accepted."""
     t = _gate(body, x_fused, "sources")
     if not isinstance(t, _Target):
         return t
@@ -893,4 +894,5 @@ def api_contrib_restore(body: dict = Body(...), x_fused: str | None = Header(def
     line = next((x for x in lines if isinstance(x, dict) and x.get("id") == line_id), None)
     if not line_id or line is None or not line.get("undo"):
         return _refuse("not-offered", "That can't be undone any more.")
-    return _call("restore", _mod("engine").restore, t.app_dir, line_id)
+    owner = "ownsync" if t.record.get("kind") == "own" else "engine"
+    return _call("restore", _mod(owner).restore, t.app_dir, line_id)

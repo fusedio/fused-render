@@ -181,11 +181,11 @@ def _git(path, *args, timeout=10.0):
 
     from fused_render import git_upstream as gu
 
-    kw = gu._popen_kwargs()
-    kw["env"] = {**kw["env"], "GIT_NO_LAZY_FETCH": "1"}
     try:
         p = subprocess.run([gu._git_bin(), "-C", path, *args], stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=timeout, **kw)
+                           stderr=subprocess.PIPE, timeout=timeout,
+                           env={**os.environ, **gu._ENV, "GIT_NO_LAZY_FETCH": "1"},
+                           stdin=subprocess.DEVNULL, close_fds=False)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
     return p.returncode, p.stdout, p.stderr
@@ -212,16 +212,16 @@ def root_commit_of(path: str) -> str | None:
 
 def _folder_stamp(k: str):
     """What changes when a different repo moves in at `k`: the folder's own
-    inode, and its `.git`'s (dir, or a worktree's file) inode + mtime."""
+    inode, and its `.git`'s (dir, or a worktree's file) inode. Not `.git`'s
+    mtime: every git write (index.lock) bumps it."""
     try:
         st = os.stat(k)
     except OSError:
         return None
     try:
-        g = os.stat(os.path.join(k, ".git"))
-        return (st.st_ino, g.st_ino, g.st_mtime_ns)
+        return (st.st_ino, os.stat(os.path.join(k, ".git")).st_ino)
     except OSError:
-        return (st.st_ino, None, None)
+        return (st.st_ino, None)
 
 
 def _bound(k: str, root_commit: str) -> bool | None:
@@ -668,7 +668,11 @@ def migrate_v2(app_dir: str) -> tuple[dict | None, bool]:
     line naming the ref, map the proposal's `pushed_head or proposed_head`
     to `sent` (+ `checked_tip`), drop the v1-only fields, stamp `v: 2`.
     Answers `(record, migrated)` — `migrated` is False for a record already
-    v2 (or no record). The caller deletes V1_REFS when it is True."""
+    v2 (or no record). The caller deletes V1_REFS when it is True. A v2
+    record costs one read, no write (this runs on every sync)."""
+    cur = get(app_dir)
+    if cur is None or cur.get("v") == RECORD_V:
+        return cur, False
     did = []
 
     def fn(rec):

@@ -123,6 +123,7 @@ def env(tmp_path, monkeypatch):
                     try_open=lambda d, n, confirm=False: {"ok": True, "path": "/p", "url": "/u",
                                                           "confirm": confirm},
                     try_remove=lambda d, n: {"ok": True}, accept=_boom,
+                    owns_merge=lambda job: False,
                     decline=lambda d, n, note="": {"ok": True, "note": note})
 
     def app(name, kind="github", **extra):
@@ -494,6 +495,11 @@ def test_restore_only_an_offered_undo(env, monkeypatch):
         assert _post(env, "restore", path=d, id=bad)["reason"] == "not-offered"
     assert _post(env, "restore", path=d, id="a1") == {"ok": True}
     assert restored == ["a1"]
+    # An own app's lines are ownsync's to undo, never the engine's.
+    mine = env.app("m", kind="own", repo="bob/m")
+    env.ownsync.restore = lambda app_dir, line: restored.append(("own", line)) or {"ok": True}
+    assert _post(env, "restore", path=mine, id="a1") == {"ok": True}
+    assert restored == ["a1", ("own", "a1")]
 
 
 def test_app_read_carries_panel_actions_activity(env, monkeypatch):
@@ -558,11 +564,13 @@ def test_merge_accept_only_for_this_apps_job(env):
 
 
 def test_keeping_an_inbox_merge_sends_it_to_the_proposal(env):
-    """An inbox proposal's merge (purpose "proposal", in the author's app)
-    is kept through inbox.merge_accept — never merge_job.accept alone."""
+    """An inbox Merge with Claude (inbox.owns_merge) is kept through
+    inbox.merge_accept — never merge_job.accept alone."""
     mine = env.app("mine", kind="own", repo="bob/mine")
     env.merge_job.get = lambda i: {"id": i, "status": "ready", "purpose": "proposal",
                                    "app_dir": store.key(mine)}
+    env.merge_job.accept = _boom
+    env.inbox.owns_merge = lambda job: job == "mj"
     kept, discarded = [], []
     env.inbox.merge_accept = lambda d, job: kept.append(job) or {"ok": True, "message": "Sent."}
     env.merge_job.discard = lambda i: discarded.append(i) or {"ok": True}

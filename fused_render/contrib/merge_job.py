@@ -134,13 +134,13 @@ def _log_git(what: str, res) -> None:
 _NO_EDITOR = {"GIT_EDITOR": "true", "GIT_SEQUENCE_EDITOR": "true"}
 
 
-def _commit_args(root: str) -> tuple:
-    """Hooks off, no signing, zdiff3 markers, no rerere — and the copy's
-    identity (`replay.identity_args`, read from the REAL repo: a worktree
-    shares its config)."""
+def _commit_args(root: str, identity=None) -> tuple:
+    """Hooks off, no signing, zdiff3 markers, no rerere — and the job's
+    identity, else the copy's (`replay.identity_args`, read from the REAL
+    repo: a worktree shares its config)."""
     from fused_render.contrib import replay
 
-    return (*replay.COMMIT_CONFIG, *replay.identity_args(root))
+    return (*replay.COMMIT_CONFIG, *replay.identity_args(root, identity))
 
 
 def _git_dir(worktree: str) -> str:
@@ -292,13 +292,15 @@ def _canon(app_dir: str) -> str:
 
 
 def start(app_dir: str, *, purpose: str, ours: str | None = None, theirs: str | None = None,
-          land: bool = True, sides: dict | None = None, resolver=None,
-          onto: str | None = None, **_legacy) -> str:
+          land: bool = True, sides: dict | None = None, identity: dict | None = None,
+          resolver=None, onto: str | None = None, **_legacy) -> str:
     """Start (or return the open) merge job for `app_dir`: merge `theirs`
     into `ours` (default: HEAD now). `land` False: `accept` never touches
     the folder and only answers the merged `tip` (the inbox's merge of a
     proposal in the author's repo). `sides` = `{"first", "second"}`, the
-    prompt's words for ours and theirs (defaults per purpose). `onto` is the
+    prompt's words for ours and theirs (defaults per purpose). `identity`
+    (`{"name", "email"}`) commits the merge as that person (an own copy's
+    author), else the copy's identity. `onto` is the
     v1 name of `theirs`; v1's `upstream`/`strategy`/`mark` are ignored."""
     purpose = _ALIASES.get(purpose, purpose)
     if purpose not in PURPOSES:
@@ -314,7 +316,8 @@ def start(app_dir: str, *, purpose: str, ours: str | None = None, theirs: str | 
                 return job["id"]
         job_id = uuid.uuid4().hex[:16]
         job = {"id": job_id, "root": root, "purpose": purpose, "ours": ours,
-               "theirs": theirs, "land": bool(land), "sides": sides, "branch": None,
+               "theirs": theirs, "land": bool(land), "sides": sides,
+               "identity": identity, "branch": None,
                "new_tip": None, "worktree": None,
                "status": "running", "summary": "", "files": [], "error": None,
                "started_at": time.time(), "ended_at": None, "run_ids": [],
@@ -429,8 +432,9 @@ def _run_inner(job: dict, resolver) -> None:
         logger.warning("merge job %s: no merge answer in %s", job["id"], root)
         _finish(job, "failed", error=FAILED_MESSAGE)
         return
+    commit_args = _commit_args(root, job["identity"])
     if mt["clean"]:
-        made = _git(root, *_commit_args(root), "commit-tree", mt["tree"], "-p", job["ours"],
+        made = _git(root, *commit_args, "commit-tree", mt["tree"], "-p", job["ours"],
                     "-p", job["theirs"], "-m", message)
         if not _ok(made) or not _out(made):
             _log_git("commit-tree", made)
@@ -447,7 +451,7 @@ def _run_inner(job: dict, resolver) -> None:
         _finish(job, "failed", error=FAILED_MESSAGE)
         return
     job["worktree"] = wt
-    res = _git(wt, *_commit_args(root), "merge", "--no-commit", "--no-ff", job["theirs"],
+    res = _git(wt, *commit_args, "merge", "--no-commit", "--no-ff", job["theirs"],
                env=_NO_EDITOR, timeout=180.0)
     if res is None:
         _finish(job, "failed", error=FAILED_MESSAGE)
@@ -491,7 +495,7 @@ def _run_inner(job: dict, resolver) -> None:
             return
         if _unmerged(wt):
             continue
-        res = _git(wt, *_commit_args(root), "commit", "-q", "--no-verify", "-m", message,
+        res = _git(wt, *commit_args, "commit", "-q", "--no-verify", "-m", message,
                    env=_NO_EDITOR)
         if not _ok(res):
             _log_git("merge commit", res)

@@ -158,12 +158,16 @@ def names(result) -> list[str]:
     return [p for p in result[1].decode("utf-8", "replace").split("\0") if p]
 
 
-def identity_args(root) -> tuple:
+def identity_args(root, identity=None) -> tuple:
     """Committer (and author) identity for every commit fused makes in a
-    copy: the repo-LOCAL `user.name`/`user.email` classification sets for a
-    `github` copy (Bob's GitHub name + noreply, §16.1), else the `Fused`
-    identity app_git commits with. Never the machine's global identity — a
-    work laptop's `bob@corp.example` must not ride into a proposal."""
+    copy: `identity` when the caller names one (`{"name", "email"}` — an own
+    copy's author, from GitHub), else the repo-LOCAL `user.name`/`user.email`
+    classification sets for a `github` copy (Bob's GitHub name + noreply,
+    §16.1), else the `Fused` identity app_git commits with. Never the
+    machine's global identity — a work laptop's `bob@corp.example` must not
+    ride into a proposal."""
+    if isinstance(identity, dict) and identity.get("name") and identity.get("email"):
+        return ("-c", f"user.name={identity['name']}", "-c", f"user.email={identity['email']}")
     email = out(git(root, "config", "--local", "--get", "user.email"))
     name = out(git(root, "config", "--local", "--get", "user.name"))
     if email and name:
@@ -358,7 +362,7 @@ def protect_locked(root) -> int:
     return len(todo)
 
 
-def _protect_after_move(root) -> None:
+def protect_after_move(root) -> None:
     try:
         protect_locked(root)
     except Exception:  # noqa: BLE001 — housekeeping; the next sync redoes it
@@ -440,12 +444,12 @@ def clobber_paths(root, head, target) -> list[str]:
             if p not in staged and os.path.lexists(os.path.join(root, p))]
 
 
-def commit_edits_locked(root, paths, message="Your edits") -> str | None:
+def commit_edits_locked(root, paths, message="Your edits", *, identity=None) -> str | None:
     """Commit the uncommitted edits to `paths` — the ones standing in an
     update's way (the engine's row 6), NEVER the rest of the tree: an
     untracked `creds.json` only Bob made, or anything else he staged, stays
     out (`commit --only`, literal pathspecs). Bob's identity
-    (`identity_args`). Caller holds the slot. Answers the new HEAD, or None
+    (`identity_args(root, identity)`). Caller holds the slot. Answers the new HEAD, or None
     (nothing to commit / git refused)."""
     wanted = set(paths or ())
     paths = [p for _code, p in edits(root) if p in wanted]
@@ -454,7 +458,8 @@ def commit_edits_locked(root, paths, message="Your edits") -> str | None:
     if not ok(git(root, "--literal-pathspecs", "add", "-A", "--", *paths,
                   timeout=REPLAY_TIMEOUT_S)):
         return None
-    r = git(root, "--literal-pathspecs", *COMMIT_CONFIG, *identity_args(root), "commit",
+    r = git(root, "--literal-pathspecs", *COMMIT_CONFIG, *identity_args(root, identity),
+            "commit",
             "--only", "--no-verify", "-q", "-m", message, "--", *paths)
     if not ok(r):
         logger.warning("contrib: committing edits in %s failed: %s", root, gu._text(r))
@@ -533,7 +538,7 @@ def backup_locked(root, tip, *, why="update", also=()) -> list[str]:
     return refs
 
 
-def _unbackup_locked(root, refs) -> None:
+def unbackup_locked(root, refs) -> None:
     """Take back the refs of a move that did not happen."""
     for r in refs:
         git(root, "update-ref", "-d", r)
@@ -673,7 +678,7 @@ def merge_tree(root, ours, theirs, *, base=None) -> dict:
     return _merge_tree_scratch(root, ours, theirs, base)
 
 
-def merge_into(root, *, head, onto, message) -> dict:
+def merge_into(root, *, head, onto, message, identity=None) -> dict:
     """A merge commit with parents `head` and `onto` (§16.3 row 11), built
     without touching the folder, as Bob (`identity_args`).
     `{"ok", "tip", "conflict", "files", "supported"}`."""
@@ -685,14 +690,14 @@ def merge_into(root, *, head, onto, message) -> dict:
     if not mt["clean"]:
         res["conflict"] = True
         return res
-    c = out(git(root, *identity_args(root), "commit-tree", mt["tree"], "-p", head,
+    c = out(git(root, *identity_args(root, identity), "commit-tree", mt["tree"], "-p", head,
                 "-p", onto, "-m", message))
     if c:
         res.update(ok=True, tip=c)
     return res
 
 
-def pick(root, *, onto, commits) -> dict:
+def pick(root, *, onto, commits, identity=None) -> dict:
     """Re-apply exactly `commits` (oldest first) onto `onto` — A4's return
     (§16.3 row 7) keeps only the edits made after sending. Each is the
     three-way merge a cherry-pick does (its parent as the base), in memory
@@ -725,7 +730,7 @@ def pick(root, *, onto, commits) -> dict:
         message = msg[1].decode("utf-8", "replace") if ok(msg) else "Your edit"
         env = {"GIT_AUTHOR_NAME": parts[0], "GIT_AUTHOR_EMAIL": parts[1],
                "GIT_AUTHOR_DATE": parts[2]}
-        made = _run_env(root, env, *identity_args(root), "commit-tree", mt["tree"],
+        made = _run_env(root, env, *identity_args(root, identity), "commit-tree", mt["tree"],
                         "-p", cur, "-m", message)
         cur = out(made) if ok(made) else None
         if not cur:
@@ -819,25 +824,25 @@ def land_locked(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str
         if clobber or not is_ancestor(root, old_tip, new_tip):
             refs = backup_locked(root, old_tip, why=why, also=clobber)
             if not refs or (clobber and not any(r.endswith("-wip") for r in refs)):
-                _unbackup_locked(root, refs)
+                unbackup_locked(root, refs)
                 return "reset-refused", None
         # The S bit is what makes a set-aside `.fused/` file invisible to
         # `reset --keep`; without it the file reads as a local deletion and
         # the move refuses.
-        _protect_after_move(root)
+        protect_after_move(root)
         with fused_aside(root, new_tip):
             moved = git(root, "reset", "--keep", new_tip, timeout=REPLAY_TIMEOUT_S)
         if not ok(moved):
-            _unbackup_locked(root, refs)
+            unbackup_locked(root, refs)
             logger.info("contrib land deferred in %s: %s", root, gu._text(moved))
             return "reset-refused", None
-        if not _undo_race_locked(root, old_tip, refs):
+        if not undo_race_locked(root, old_tip, refs):
             return "moved", None
-    _protect_after_move(root)
+    protect_after_move(root)
     return None, (refs[0] if refs else None)
 
 
-def _undo_race_locked(root, old_tip, refs, *, hard=False) -> bool:
+def undo_race_locked(root, old_tip, refs, *, hard=False) -> bool:
     """True when the reset really moved from `old_tip`. Else a commit raced
     in (land_locked's docstring): pin it, put the branch back on it, take
     back the planned backups (a hard reset keeps them: their `-wip` is the
@@ -857,7 +862,7 @@ def _undo_race_locked(root, old_tip, refs, *, hard=False) -> bool:
                          root, moved_from, pin, gu._text(back))
             return False
     if not hard:
-        _unbackup_locked(root, refs)
+        unbackup_locked(root, refs)
     return False
 
 
@@ -878,21 +883,21 @@ def reset_hard_locked(root, *, branch, target, why) -> tuple[bool, str | None]:
     clobber = clobber_paths(root, head, target)
     refs = backup_locked(root, head, why=why, also=clobber)
     if not refs or ((dirty(root) or clobber) and not any(r.endswith("-wip") for r in refs)):
-        _unbackup_locked(root, refs)
+        unbackup_locked(root, refs)
         return False, None
-    _protect_after_move(root)
+    protect_after_move(root)
     with fused_aside(root, target):
         moved = git(root, "reset", "--hard", target, timeout=REPLAY_TIMEOUT_S)
     if not ok(moved):
         logger.warning("contrib: reset --hard failed in %s: %s", root, gu._text(moved))
         return False, refs[0]  # a failed hard reset may be partial: the backup stays
-    if not _undo_race_locked(root, head, refs, hard=True):
+    if not undo_race_locked(root, head, refs, hard=True):
         return False, refs[0]
     # Only paths STILL untracked: one the target now tracks is the author's.
     still = {p for code, p in edits(root) if code == "??"}
     for rel in sorted(untracked & still):
         _remove_untracked(root, rel)
-    _protect_after_move(root)
+    protect_after_move(root)
     return True, refs[0]
 
 
@@ -909,3 +914,9 @@ def _remove_untracked(root, rel) -> None:
             parent = os.path.dirname(parent)
     except OSError:
         logger.warning("contrib: could not remove %s", path, exc_info=True)
+
+
+# Private spellings ownsync used before these went public.
+_protect_after_move = protect_after_move
+_unbackup_locked = unbackup_locked
+_undo_race_locked = undo_race_locked

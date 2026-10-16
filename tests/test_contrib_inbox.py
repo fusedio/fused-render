@@ -709,3 +709,30 @@ def test_a_merge_that_could_not_be_sent_is_sent_on_retry(fits_world, monkeypatch
     assert inbox.merge_accept(alice, out["job"])["ok"]
     assert accepts == [out["job"]]                       # the kept result, sent again
     assert fake.tip("bob/x", "main") != pr["head_sha"]
+
+
+def test_the_item_carries_its_merge_and_one_merge_runs_at_a_time(fits_world):
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})
+    # A second proposal from another branch of Bob's copy.
+    fork = fake.bare_path("bob/x")
+    git(fork, "update-ref", "refs/heads/two", fake.tip("alice/x", "main"))
+    fake.commit("bob/x", "two", {"app.py": "x = 2\n"}, "Bob's other change", author="bob")
+    fake.sign_in("bob")
+    gh.forget_identity()
+    pr2 = gh.open_pr("alice/x", title="Other", body="b", head="bob:two", base="main")
+    fake.sign_in("alice")
+    gh.forget_identity()
+    fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    assert all(i["merge_job"] is None for i in inbox.list(alice, review=False))
+    out = inbox.merge_start(alice, pr["number"])
+    assert _wait_merge(out["job"])["status"] == "ready"
+    assert inbox.owns_merge(out["job"])
+    items = {i["number"]: i for i in inbox.cached(alice)}
+    assert items[pr["number"]]["merge_job"]["id"] == out["job"]
+    assert items[pr["number"]]["merge_job"]["status"] == "ready"
+    assert items[pr2["number"]]["merge_job"] is None
+    assert inbox.merge_start(alice, pr["number"]) == {"ok": True, "job": out["job"]}
+    assert inbox.merge_start(alice, pr2["number"])["reason"] == "busy"
+    assert inbox.merge_accept(alice, out["job"])["ok"]
+    assert all(i["merge_job"] is None for i in inbox.cached(alice))

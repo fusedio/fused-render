@@ -265,6 +265,7 @@ def _items(app_dir: str, repo: str, prs, *, start_reviews: bool) -> builtins.lis
             "number": number, "url": pr.get("url") or "", "title": pr.get("title") or "",
             "author": pr.get("user") or "", "from_fused": from_fused,
             "fits": _fits_for(repo, number, head, network=False),
+            "merge_job": _merge_for(app_dir, number),
             "summary": summary, "summary_source": source, "description": description,
             "review": review_obj, "review_status": status,
             "try": ({"status": try_state["status"], "path": try_state["path"],
@@ -933,12 +934,52 @@ def merge_start(app_dir: str, number: int) -> dict:
                 "message": "Couldn't download your latest version from GitHub. Try again."}
     if _mod("replay").is_ancestor(app_dir, base, head):
         return {"ok": True, "message": "This proposal already has your latest version."}
-    job = _mod("merge_job").start(app_dir, purpose="proposal", ours=head, theirs=base,
-                                  land=False)
+    mj = _mod("merge_job")
+    # One merge job per app folder (merge_job answers the open one): never
+    # let this proposal's Keep land on another's combination.
+    open_job = mj.for_app(app_dir)
+    if open_job:
+        with _lock:
+            mine = _merges.get(open_job.get("id"))
+        if mine and mine["number"] == n and mine["head"] == head:
+            return {"ok": True, "job": open_job["id"]}
+        return {"ok": False, "reason": "busy",
+                "message": "Claude is still combining another version of this app. "
+                           "Finish that first."}
+    job = mj.start(app_dir, purpose="proposal", ours=head, theirs=base, land=False)
     with _lock:
-        _merges[job] = {"repo": repo, "number": n, "author": author, "head": head,
-                        "head_repo": pr["head_repo"], "head_branch": pr["head_branch"]}
+        _merges[job] = {"app": app_dir, "repo": repo, "number": n, "author": author,
+                        "head": head, "head_repo": pr["head_repo"],
+                        "head_branch": pr["head_branch"]}
     return {"ok": True, "job": job}
+
+
+def owns_merge(job_id: str) -> bool:
+    """Whether merge job `job_id` is an inbox Merge with Claude — its Keep
+    must go through `merge_accept` (which sends the result), never straight
+    to `merge_job.accept`."""
+    with _lock:
+        return job_id in _merges
+
+
+def _merge_for(app_dir: str, number: int) -> dict | None:
+    """The item's Merge with Claude (`merge_start`), for the page to show
+    and Keep/Discard on the item: `{id, status, summary, files, error}`.
+    "accepted" with a result not yet sent reads as "ready" (Keep retries)."""
+    with _lock:
+        mine = [(jid, info) for jid, info in _merges.items()
+                if info.get("app") == app_dir and info.get("number") == int(number)]
+    for jid, info in reversed(mine):
+        job = _mod("merge_job").get(jid)
+        status = (job or {}).get("status")
+        if info.get("tip"):
+            status = "ready"
+        elif status not in ("running", "ready", "landing", "failed"):
+            continue
+        return {"id": jid, "status": status, "summary": (job or {}).get("summary") or "",
+                "files": builtins.list((job or {}).get("files") or []),
+                "error": (job or {}).get("error")}
+    return None
 
 
 def merge_accept(app_dir: str, job_id: str) -> dict:

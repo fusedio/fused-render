@@ -155,38 +155,32 @@ def _own_state(root) -> dict | None:
 
 
 def _claude_busy(root) -> bool:
-    """A Claude turn is open in this folder right now (§16.0 P8): the last
-    message of a transcript whose cwd is the folder or under it
-    (`session_liveness.transcript_turn_open`, the stop marker closing a
-    turn). Unreadable reads as not busy."""
+    """A Claude turn is open in this folder right now (§16.0 P8) — the
+    engine's one rule (`engine.claude_busy`, `transcript_turn_open`).
+    Unreadable reads as not busy."""
     try:
-        from fused_render import claude_session_move as csm
-        from fused_render import session_liveness as sl
+        from fused_render.contrib import engine
 
-        now = time.time()
-        real = os.path.realpath(root)
-        for bucket in csm._candidate_buckets(csm.PROJECTS_DIR, real):
-            try:
-                names = os.listdir(bucket)
-            except OSError:
-                continue
-            for name in names:
-                if not name.endswith(".jsonl"):
-                    continue
-                path = os.path.join(bucket, name)
-                try:
-                    if now - os.path.getmtime(path) > sl.STALE_TAIL_SEC:
-                        continue
-                except OSError:
-                    continue
-                cwd = csm.transcript_cwd(path)
-                if not cwd or csm._under(os.path.realpath(cwd), real) is None:
-                    continue
-                if sl.transcript_turn_open(path, now, interrupt_closes=True):
-                    return True
+        return bool(engine.claude_busy(root))
     except Exception:  # noqa: BLE001
         logger.debug("ownsync: claude liveness check failed for %s", root, exc_info=True)
-    return False
+        return False
+
+
+def _identity(*, cached: bool) -> dict | None:
+    """`{name, email}` the commits ownsync makes carry: the author's GitHub
+    name + noreply address when known, else None (the repo's own / Fused,
+    `replay.identity_args`). `cached=True` inside the sync slot: never a
+    GitHub call there (§0.9)."""
+    try:
+        from fused_render.contrib import gh
+
+        ident = gh.cached_identity() if cached else gh.identity()
+    except Exception:  # noqa: BLE001 — unknown identity: the fallback
+        return None
+    if not isinstance(ident, dict) or not ident.get("email"):
+        return None
+    return {"name": ident.get("name") or ident.get("login"), "email": ident["email"]}
 
 
 def _job_open(root) -> bool:
@@ -363,14 +357,14 @@ def _after_push(root, f: _Facts, *, pulled, pushed, why) -> dict:
     return _result(root, f.branch, "skipped", state, pulled=pulled)
 
 
-def _combine(root, f: _Facts, *, allow_merge: bool) -> dict:
+def _combine(root, f: _Facts, *, allow_merge: bool, identity=None) -> dict:
     """`{tip}` | `{conflict, files}` | `{}` (git could not say): U picked
     onto the tip, or (U holds a merge, or the pick conflicts and
-    `allow_merge`) the tip merged into HEAD."""
+    `allow_merge`) the tip merged into HEAD — as `identity` (`_identity`)."""
     if not f.u:
         return {"tip": f.tip}
     if not f.u_merges:
-        p = replay.pick(root, onto=f.tip, commits=f.u)
+        p = replay.pick(root, onto=f.tip, commits=f.u, identity=identity)
         if p.get("ok") and p.get("tip"):
             return {"tip": p["tip"]}
         if not allow_merge:
@@ -379,7 +373,7 @@ def _combine(root, f: _Facts, *, allow_merge: bool) -> dict:
     elif not allow_merge:
         return {}
     m = replay.merge_into(root, head=f.head, onto=f.tip,
-                          message="Combine with the version on GitHub")
+                          message="Combine with the version on GitHub", identity=identity)
     if m.get("ok") and m.get("tip"):
         return {"tip": m["tip"]}
     if m.get("conflict") or not m.get("supported", True):
@@ -484,7 +478,7 @@ def _resolve_locked(root, branch, *, push) -> dict:
     if _claude_busy(root):
         return _result(root, branch, "skipped", "claude")
     behind = replay.count(root, f"{f.head}..{f.tip}") or 0
-    combined = _combine(root, f, allow_merge=True)
+    combined = _combine(root, f, allow_merge=True, identity=_identity(cached=True))
     if combined.get("conflict"):
         return _stuck(root, f, "needs-merge", files=combined.get("files") or [])
     new = combined.get("tip")
@@ -598,12 +592,12 @@ def _hard_move(root, f: _Facts) -> tuple[str | None, list]:
     clobber = replay.clobber_paths(root, f.head, f.tip)
     refs = replay.backup_locked(root, f.head, why="use-github", also=clobber)
     if not refs or not any(r.endswith("-wip") for r in refs):
-        replay._unbackup_locked(root, refs)
+        replay.unbackup_locked(root, refs)
         return "reset-refused", []
-    replay._protect_after_move(root)  # see land_locked: the S bit lets .fused/ through
+    replay.protect_after_move(root)  # see land_locked: the S bit lets .fused/ through
     with replay.fused_aside(root, f.tip):
         moved = gu._run(root, "reset", "--hard", f.tip, timeout=replay.REPLAY_TIMEOUT_S)
-    if not gu._ok(moved) or not replay._undo_race_locked(root, f.head, refs, hard=True):
+    if not gu._ok(moved) or not replay.undo_race_locked(root, f.head, refs, hard=True):
         # A failed hard reset may be partial, and a raced one dropped the
         # edits: either way the backup is their only copy — named.
         logger.warning("ownsync: hard move did not happen in %s: %s", root,
@@ -611,7 +605,7 @@ def _hard_move(root, f: _Facts) -> tuple[str | None, list]:
         _activity(root, "backup", "Saved a copy of your work before changing it.",
                   backup=refs)
         return "moved", []
-    replay._protect_after_move(root)
+    replay.protect_after_move(root)
     return None, refs
 
 
@@ -621,6 +615,7 @@ def put_on_top(root) -> dict:
     would carry back what GitHub removed."""
     if _claude_busy(root):
         return _answer(root, False, CLAUDE_BUSY)
+    ident = _identity(cached=False)  # outside the slot: may ask GitHub
     with replay.slot() as held:
         if not held:
             return _answer(root, False, BUSY)
@@ -636,7 +631,7 @@ def put_on_top(root) -> dict:
             return _answer(root, False, "Your edits include a combined version that would "
                            "bring back what was removed on GitHub, so they can't be put on "
                            "top. Use the version on GitHub, or publish yours over it.")
-        combined = _combine(root, f, allow_merge=False)
+        combined = _combine(root, f, allow_merge=False, identity=ident)
         if combined.get("conflict"):
             files = combined.get("files") or []
             return _answer(root, False, f"Your edits and the version on GitHub both change "
@@ -696,8 +691,10 @@ def publish_over(root) -> dict:
                                "looked. Check again before replacing it.")
             return _answer(root, False, MESSAGES["publish-failed"])
         _set_state(root, None)
+        # Not undoable here: putting this copy back on GitHub's old version
+        # would not un-publish anything. The pin ages out like any backup.
         _activity(root, "publish-over", "Replaced the version on GitHub with this copy. "
-                  "GitHub's previous version is saved here.", backup=[pin] if pin else None)
+                  "GitHub's previous version is kept on this Mac for 30 days.")
     return _answer(root, True, "The version on GitHub is now this copy.")
 
 
@@ -717,10 +714,11 @@ def save_edits(root) -> dict:
     if _claude_busy(root):
         return _answer(root, False, CLAUDE_BUSY)
     files = st.get("files") or []
+    ident = _identity(cached=False)  # outside the slot: may ask GitHub
     with replay.slot() as held:
         if not held:
             return _answer(root, False, BUSY)
-        if not replay.commit_edits_locked(root, files, message="Saved edits"):
+        if not replay.commit_edits_locked(root, files, message="Saved edits", identity=ident):
             return _answer(root, False, "Couldn't save your edits. Try again.")
         _set_state(root, None)
         _activity(root, "save-edits", f"Saved your edits to {_files_words(files)}.")
@@ -738,8 +736,80 @@ def start_merge(root) -> dict:
     from fused_render.contrib import merge_job
 
     job = merge_job.start(root, purpose=plan["purpose"], ours=plan["ours"],
-                          theirs=plan["theirs"])
+                          theirs=plan["theirs"], identity=_identity(cached=False))
     return {"ok": True, "job": job}
+
+
+def restore(root, activity_id) -> dict:
+    """Undo one Activity line that names a backup: this copy goes back to
+    the version the backup holds (and its unsaved edits, when the line
+    saved some). What is here now is backed up first and named by a new
+    line, so a restore can itself be undone."""
+    entry = store.activity_entry(root, activity_id) or {}
+    refs = entry.get("backup")
+    refs = [r for r in (refs if isinstance(refs, list) else [refs]) if isinstance(r, str) and r]
+    tip_ref = next((r for r in refs if not r.endswith("-wip")), None)
+    if not tip_ref or entry.get("restored_at"):
+        return _answer(root, False, "There's nothing to undo here.")
+    if _claude_busy(root):
+        return _answer(root, False, CLAUDE_BUSY)
+    with replay.slot() as held:
+        if not held:
+            return _answer(root, False, BUSY)
+        branch = gu._default_branch(root)
+        if not branch or gu._current_branch(root) != branch:
+            return _answer(root, False, NOT_MAIN)
+        target, head = replay.rev(root, tip_ref), replay.rev(root, "HEAD")
+        if not target or not head:
+            return _answer(root, False, "That earlier version is no longer available.")
+        wip = replay.rev(root, f"{tip_ref}-wip") if f"{tip_ref}-wip" in refs else None
+        saved = []
+        if target != head:
+            refused, backup = replay.land_locked(root, branch=branch, old_tip=head,
+                                                 new_tip=target, why="restore")
+            if refused == "reset-refused":
+                return _answer(root, False, "You have unsaved edits to files the earlier "
+                               "version changes. Save or undo them first.")
+            if refused is not None:
+                return _answer(root, False, BUSY)
+            saved = _with_wip(root, backup)
+        if wip and not _put_back_edits(root, target, wip, saved):
+            return _answer(root, False, "Couldn't put back your unsaved edits. Try again.")
+        store.mark_restored(root, activity_id)
+        _set_state(root, None)
+        _activity(root, "restore", "Put back an earlier version of this app. What was here "
+                  "is saved too.", backup=saved or None)
+    return _answer(root, True, "This app is back to the earlier version.")
+
+
+def _put_back_edits(root, target, wip, saved: list) -> bool:
+    """Write the unsaved edits a backup's `-wip` holds (relative to
+    `target`) back into the folder, unstaged. Edits made here since are
+    backed up first when the move itself saved nothing (`saved`)."""
+    r = gu._run(root, "diff", "--name-status", "--no-renames", "-z", target, wip)
+    if not gu._ok(r):
+        return False
+    fields = [p for p in r[1].decode("utf-8", "replace").split("\0") if p]
+    pairs = list(zip(fields[0::2], fields[1::2]))
+    if not pairs:
+        return True
+    if not saved and replay.dirty(root):
+        refs = replay.backup_locked(root, target, why="restore")
+        if not any(x.endswith("-wip") for x in refs):
+            replay.unbackup_locked(root, refs)
+            return False
+        saved.extend(refs)
+    keep = [p for code, p in pairs if code != "D"]
+    if keep and not gu._ok(gu._run(root, "--literal-pathspecs", "restore", f"--source={wip}",
+                                   "--worktree", "--", *keep)):
+        return False
+    for code, p in pairs:
+        if code == "D":
+            try:
+                os.remove(os.path.join(root, p))
+            except OSError:
+                pass
+    return True
 
 
 def merge_plan(root) -> dict | None:

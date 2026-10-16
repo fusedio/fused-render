@@ -89,6 +89,7 @@ class _Proposals(types.ModuleType):
         self.refreshes = 0
         self.settled = []
         self.withdrawn = []
+        self.merge_accepted_calls = []
 
     def refresh(self, app_dir, *, force=False, tip=None):
         self.refreshes += 1
@@ -115,6 +116,9 @@ class _Proposals(types.ModuleType):
     def withdraw(self, app_dir):
         self.withdrawn.append(app_dir)
         return {"ok": True}
+
+    def merge_accepted(self, app_dir):
+        self.merge_accepted_calls.append(app_dir)
 
 
 @pytest.fixture
@@ -654,9 +658,45 @@ def test_redirected_config_is_never_fetched(w):
     assert engine.status(w.app)["sync_error_code"] == "redirected"
 
 
-def test_owns_is_kind_github_whatever_the_flags(w, monkeypatch):
-    _flags(monkeypatch, sources=False, changes=False, inbox=False, loop=False, remix=False)
-    assert engine.owns(w.app)
+def test_fetch_errors_reach_status_offline_stays_silent(w, monkeypatch):
+    from fused_render.contrib import follow
+    real = follow.fetch
+    monkeypatch.setattr(follow, "fetch", lambda root, fol: (None, "not-found"))
+    assert w.sync()["why"] == "not-found"
+    st = engine.status(w.app)
+    assert st["sync_error_code"] == "not-found"
+    assert st["sync_error"] == "alice's app isn't on GitHub any more, or it's private now."
+    assert engine.bring_in(w.app)["reason"] == "not-found"
+    monkeypatch.setattr(follow, "fetch", lambda root, fol: (None, "offline"))
+    assert w.sync()["status"] == "offline"
+    assert engine.status(w.app)["sync_error_code"] == "not-found"   # unchanged, not news
+    monkeypatch.setattr(follow, "fetch", real)
+    w.sync()
+    assert engine.status(w.app)["sync_error"] is None
+
+
+def test_gh_fetch_reasons_map_to_codes(w, monkeypatch):
+    from fused_render.contrib import follow
+    monkeypatch.setattr(w.gh, "fetch_detail", lambda root, url, spec: (False, "signed-out"),
+                        raising=False)
+    fol = follow.for_record(store.get(w.app))
+    assert follow.fetch(w.app, fol) == (None, "auth")
+
+
+def test_explicit_identity_commits_as_that_person(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    tip = _alice(w, {"app.py": APP_LOUD}, "alice app")
+    git_upstream._run(w.app, "fetch", "-q", "origin")
+    m = replay.merge_into(w.app, head=w.head(), onto=tip, message="m",
+                          identity={"name": "Alice A", "email": "alice@users.noreply.github.com"})
+    assert git(w.app, "log", "-1", "--format=%an <%ae>|%cn", m["tip"]) == \
+        "Alice A <alice@users.noreply.github.com>|Alice A"
+
+
+def test_merge_landed_proposal_hands_the_send_to_proposals(w):
+    engine.merge_landed(w.app, purpose="proposal", old_tip="a", new_tip="b")
+    assert w.proposals.merge_accepted_calls == [w.app]
+    assert _activity(w)[-1]["kind"] == "proposal"
 
 
 def test_status_counts_only_bobs_files_when_behind(w):

@@ -341,7 +341,8 @@ def publish(app_dir, *, name: str, credit: str, step=None) -> dict:
         if not held:
             raise PlainError("Your app is busy updating. Try again in a moment.")
         p._gate(root)
-        tip = _remix_commit_locked(root, name=name, credit=credit, original=original, me=me)
+        tip = _remix_commit_locked(root, name=name, credit=credit, original=original,
+                                   me=p.commit_identity(root, me))
     if not tip:
         raise PlainError("Couldn't prepare your remix. Try again.")
     gu = _gu()

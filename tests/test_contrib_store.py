@@ -96,7 +96,7 @@ def test_store_unknown_keys_survive(home, tmp_path):
     _prefs(home, contrib_sources_enabled=True, contrib_changes_enabled=True,
            contrib_inbox_enabled=True)
     assert engine.status(str(d))["kind"] == "scratch"
-    assert engine.owns(str(d)) is False
+    assert classify.kind_of(str(d)) == "scratch"  # never synced (git_upstream)
 
 
 def test_events_cap_and_ack(home, tmp_path):
@@ -708,7 +708,43 @@ def test_own_copy_divergence_goes_to_ownsync(world, monkeypatch):
     assert git_upstream.last_checked(a)
 
 
+def test_own_copy_divergence_through_the_real_ownsync(world):
+    """The hook end to end: the author's own copy, behind AND ahead of GitHub
+    (a commit made elsewhere), is settled by `ownsync.resolve` — never
+    today's diverged row — and its push guard (left from a mistaken
+    `github` classification) is gone."""
+    _prefs(world.home, contrib_sources_enabled=True)
+    a = _install(world)
+    store.update(a, lambda r: r.__setitem__("kind", "own"))
+    mine = _commit(a, "b.txt", "mine\n", "mine")
+    tip = _alice_push(world, "c.txt", "alice\n")
+    r = _sync(a, push=True)
+    assert r["status"] == "synced" and r.get("pushed") is True, r
+    assert not classify.is_push_guarded(a)
+    assert subprocess.run(["git", "-C", a, "merge-base", "--is-ancestor", tip, "HEAD"]).returncode == 0
+    assert git(world.remote, "log", "-1", "--format=%s", "main").strip() == "mine"
+    assert mine  # picked onto the tip: a new id, same change
+
+
 # ---------------------------------------------------------- install page
+
+
+def test_install_page_get_the_latest_brings_it_in(world, monkeypatch):
+    """§16.8's headline: "Get the latest" on a GitHub-link copy with nothing
+    of its own is the engine's Bring in."""
+    from fused_render import app_fused_dir, appfile
+
+    bob = _install(world)
+    tip = _alice_push(world, "c.txt", "alice\n")
+    src = {"url": URL, "commit": tip}
+    git(bob, "fetch", "-q", "origin")  # what the engine's own fetch leaves
+    assert appfile_git.probe(bob, src) == "update"
+    monkeypatch.setattr(appfile, "write_stamp", lambda *a, **k: None)
+    monkeypatch.setattr(app_fused_dir, "ensure", lambda *a, **k: None)
+    target = {"git": src, "state": "update", "path": bob, "found_by": "git"}
+    done = appfile_git.install("x.fused", target, {"entry": "index.html"}, force=False)
+    assert done["action"] == "updated"
+    assert git(bob, "rev-parse", "HEAD").strip() == tip
 
 
 def test_install_page_for_a_github_copy_with_changes_is_plain(world):

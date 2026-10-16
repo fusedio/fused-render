@@ -407,10 +407,18 @@ def push(root: str, sha: str, full: str, branch: str, *, force: bool = False,
         fake.after_push(full, branch)
 
 
-def fetch(root: str, full_or_url: str, *refspecs: str, timeout: float = FETCH_TIMEOUT_S) -> bool:
+#: Why a fetch fetched nothing (`fetch_detail`): GitHub's reasons, plus
+#: "redirected" — the repo's own config would re-point or re-credential the
+#: transfer (or could not be read), so it was refused before it started.
+FETCH_REASONS = ("offline", "redirected", "not-found", "forbidden", "signed-out", "failed")
+
+
+def fetch_detail(root: str, full_or_url: str, *refspecs: str,
+                 timeout: float = FETCH_TIMEOUT_S) -> tuple[bool, str | None]:
     """`git fetch <github url> <refspecs…>` into the repo at `root`, with the
-    same credentials and hygiene as `push`. Never raises: False means nothing
-    was fetched (offline, gone, no access) and the caller keeps what it has.
+    same credentials and hygiene as `push`. Never raises: `(True, None)`
+    when it fetched, else `(False, reason)` with reason in FETCH_REASONS
+    and nothing fetched (the caller keeps what it has).
 
     SAFE WITHOUT THE MUTATION SLOT when every refspec writes a private ref
     only its caller writes (`refs/fused/…`) — inbox.py's `_FETCH_QUIET`
@@ -418,20 +426,28 @@ def fetch(root: str, full_or_url: str, *refspecs: str, timeout: float = FETCH_TI
     (auto-sync's) is not written, and the after-fetch housekeeping that
     rewrites shared files (gc and its packed-refs, maintenance, the
     commit-graph) is switched off. A refspec into a ref someone else also
-    moves (`refs/fused/follow`) still wants the caller to hold the slot."""
+    moves (`refs/remotes/origin/<b>`) still wants the caller to hold the slot."""
     try:
         url = clone_url(full_or_url)
+    except GitHubError:
+        return False, "failed"
+    try:
         _guard(root, url)
     except GitHubError:
-        return False
+        return False, "redirected"   # a rewrite, or a config that can't be read
     res = _git(root, *git_net_args(), "-c", "gc.auto=0", "-c", "maintenance.auto=false",
                "-c", "fetch.writeCommitGraph=false", "fetch", "--quiet", "--no-tags",
                "--no-write-fetch-head", url, *refspecs, env=git_net_env(),
                timeout=timeout)
     if res is None or res.returncode != 0:
-        _git_failure(res, pushing=False)  # logs the raw words
-        return False
-    return True
+        reason = _git_failure(res, pushing=False).reason  # logs the raw words
+        return False, reason if reason in FETCH_REASONS else "failed"
+    return True, None
+
+
+def fetch(root: str, full_or_url: str, *refspecs: str, timeout: float = FETCH_TIMEOUT_S) -> bool:
+    """`fetch_detail` answering only whether it fetched."""
+    return fetch_detail(root, full_or_url, *refspecs, timeout=timeout)[0]
 
 
 # ------------------------------------------------------------- backend switch
@@ -520,6 +536,21 @@ def identity(*, strict: bool = False, refresh: bool = False) -> dict | None:
     with _identity_lock:
         _identity_cache[key] = (now, value)
     return dict(value) if value else None
+
+
+def cached_identity() -> dict | None:
+    """`identity()`'s answer from its cache only — NEVER a network call, so
+    it is safe inside the sync slot (§0.9). None when nothing fresh is
+    cached, nobody is signed in, or GitHub was unreachable last time."""
+    key = os.environ.get(FAKE_ENV) or "real"
+    with _identity_lock:
+        hit = _identity_cache.get(key)
+    if hit is None:
+        return None
+    at, value = hit
+    if value is _UNREACHABLE or not value or not 0 <= time.time() - at <= IDENTITY_TTL_S:
+        return None
+    return dict(value)
 
 
 def unreachable() -> bool:

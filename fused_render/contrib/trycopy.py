@@ -24,8 +24,8 @@ answered by a different module:
   `agent._app_dir_for` both return nothing for a path whose first
   workspace component is dotted, so no Claude turn auto-commits there; the
   clone has NO `origin` remote, so `git_upstream`'s open-time check and
-  auto-sync skip it ("no-remote"); and its record is kind "scratch", which
-  `engine.owns` never claims. The contrib routes refuse it too (they require
+  auto-sync skip it ("no-remote"); and its record is kind "scratch"
+  (`classify.kind_of`), which the engine never syncs. The contrib routes refuse it too (they require
   `app_git.app_dir_for(path)`).
 
 `app_hidden` is NOT used: it hides showcase subfolders from hub listings

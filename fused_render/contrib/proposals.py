@@ -155,6 +155,16 @@ def _identity_cfg(ident: dict) -> list[str]:
             "-c", "core.hooksPath=" + os.devnull, "-c", "commit.gpgsign=false"]
 
 
+def commit_identity(root, ident: dict) -> dict:
+    """Who commits as Bob here: the copy's repo-local `user.name`/`user.email`
+    when both are set (§16.1: classification writes his GitHub identity
+    there — one identity for app_git, Claude's turns and us), else `ident`
+    (the signed-in account)."""
+    name = _out(_git(root, "config", "--local", "--get", "user.name"))
+    email = _out(_git(root, "config", "--local", "--get", "user.email"))
+    return {**ident, "name": name, "email": email} if name and email else ident
+
+
 def _owner_name(record: dict) -> str:
     """The display name for the author (contract §13: the GitHub login)."""
     repo = (record or {}).get("repo") or ""
@@ -205,11 +215,11 @@ def tip_of(root, record, *, fetch: bool = False) -> str | None:
 
 def claude_busy(root) -> bool:
     """A Claude turn is open in this folder right now (§16.0 P8) — the
-    engine's one rule (`engine._claude_busy`: the transcript's last
+    engine's one rule (`engine.claude_busy`: the transcript's last
     message). Unreadable reads as not busy."""
     try:
         from fused_render.contrib import engine
-        return bool(engine._claude_busy(root))
+        return bool(engine.claude_busy(root))
     except Exception:  # noqa: BLE001
         logger.debug("proposals: claude busy check failed for %s", root, exc_info=True)
         return False
@@ -421,6 +431,7 @@ def _prepare(root, record, ident: dict, *, tip: str | None, include=(),
     """Under the slot: commit the edits that go (`commit`), credit once
     (`do_credit`), and answer the HEAD to send."""
     gu = _gu()
+    ident = commit_identity(root, ident)
     with _replay().slot() as held:
         if not held or gu._operation_in_flight(root) is not None:
             raise PlainError(_BUSY)
@@ -834,6 +845,7 @@ def _take_in_pr_head(root, record, ident: dict, fork: str, head_branch: str,
             f"Your proposal was also changed on GitHub, in the same places as your newer "
             f"edits. Claude is combining them — check the result on this page, and it's "
             f"sent once you keep it.", job)
+    ident = commit_identity(root, ident)
     me = (ident["name"], ident["email"])
     merged = _commit_tree(root, mt["tree"], [head, fetched],
                           "Bring in the edits made to your proposal on GitHub\n",

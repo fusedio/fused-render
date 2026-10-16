@@ -1047,3 +1047,26 @@ def test_r10_everything_sent_is_bobs(sw):
     emails = set(git(fork, "log", "--format=%ae", f"refs/heads/{branch}", "^refs/tmp/alice"
                      ).split())
     assert emails == {w.fake.email_of("bob")}, emails
+
+
+def test_fetch_detail_says_why(w):
+    ok = w.gh.fetch_detail(w.app, "alice/sine", "+refs/heads/main:refs/fused/x")
+    assert ok == (True, None)
+    assert w.gh.fetch_detail(w.app, "alice/nope", "+refs/heads/main:refs/fused/x") == \
+        (False, "not-found")
+    git(w.app, "config", "url.https://evil.example/.insteadOf", "https://github.com/")
+    assert w.gh.fetch_detail(w.app, "alice/sine", "+refs/heads/main:refs/fused/x") == \
+        (False, "redirected")
+    assert w.gh.fetch(w.app, "alice/sine", "+refs/heads/main:refs/fused/x") is False
+
+
+def test_cached_identity_never_asks_github(w):
+    w.gh.forget_identity()
+    assert w.gh.cached_identity() is None
+    calls = w.fake.state()["calls"].count("user")
+    assert w.gh.identity()["login"] == "bob"
+    assert w.gh.cached_identity()["login"] == "bob"
+    assert w.fake.state()["calls"].count("user") == calls + 1
+    w.gh.forget_identity()
+    w.fake.fail_next("user", "offline")
+    assert w.gh.identity() is None and w.gh.cached_identity() is None

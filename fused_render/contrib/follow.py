@@ -100,22 +100,32 @@ def github_redirected(root, url=None) -> bool:
     return bool(hits)
 
 
+#: gh.py's failure reasons, in the engine's `sync_error` codes.
+_REASONS = {"signed-out": "auth", "auth": "auth", "not-found": "not-found",
+            "forbidden": "forbidden", "offline": "offline", "redirected": "redirected"}
+
+
 def fetch(root, fol: Follow) -> tuple[str | None, str | None]:
     """`(tip, reason)`: the author's tip, fetched by the record's URL into
     `refs/remotes/origin/<branch>`, or `(None, reason)` — `redirected`
-    (`github_redirected`) or `offline` (unreachable, gone, no access: gh's
-    fetch tells no more, and every one of those is "try again later"). The
-    ref is shared with git's own fetches, so the CALLER holds the slot."""
+    (`github_redirected`), `offline` (silent, retried), `auth`,
+    `not-found` (gone, or private now), `forbidden`, or `failed`. The ref is
+    shared with git's own fetches, so the CALLER holds the slot."""
     if github_redirected(root, fol.url):
         return None, "redirected"
     gh = _gh_module()
-    fetcher = getattr(gh, "fetch", None) if gh else None
-    if fetcher is None:
-        return None, "offline"
-    if not fetcher(root, fol.url, f"+refs/heads/{fol.branch}:{fol.ref}"):
-        return None, "offline"
+    refspec = f"+refs/heads/{fol.branch}:{fol.ref}"
+    detail = getattr(gh, "fetch_detail", None) if gh else None
+    if callable(detail):
+        ok, reason = detail(root, fol.url, refspec)
+        if not ok:
+            return None, _REASONS.get(reason, "failed")
+    else:
+        fetcher = getattr(gh, "fetch", None) if gh else None
+        if fetcher is None or not fetcher(root, fol.url, refspec):
+            return None, "offline"
     t = tip(root, fol)
-    return (t, None) if t else (None, "offline")
+    return (t, None) if t else (None, "failed")
 
 
 #: v1 name; same answer.

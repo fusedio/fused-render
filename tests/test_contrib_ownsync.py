@@ -58,6 +58,12 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(classify, "ensure_in_background", lambda app_dir: False)
     from fused_render import claude_session_move as csm
     monkeypatch.setattr(csm, "PROJECTS_DIR", str(tmp_path / "claude-projects"))
+    # The author's GitHub account (never a real `gh` call in a test).
+    from fused_render.contrib import gh
+    alice = {"login": "alice", "id": 7, "name": "Alice",
+             "email": "7+alice@users.noreply.github.com"}
+    monkeypatch.setattr(gh, "identity", lambda **kw: dict(alice))
+    monkeypatch.setattr(gh, "cached_identity", lambda: dict(alice))
 
     class Env:
         pass
@@ -176,6 +182,9 @@ def test_diverged_puts_edits_on_top_and_publishes(env):
     assert len(lines) == 1 and lines[0]["undo"] is True and _plain(lines[0]["text"])
     assert ownsync.status(env.lap)["state"] == "published"
     assert len(git(env.lap, "worktree", "list").splitlines()) == 1
+    # The re-made edit keeps its author; the one re-making it is her account.
+    assert git(env.lap, "log", "-1", "--format=%an|%cn <%ce>").strip() == \
+        "Fixture Author|Alice <7+alice@users.noreply.github.com>"
 
 
 def test_push_false_brings_in_without_publishing(env):
@@ -218,6 +227,9 @@ def test_overlapping_edit_is_named_and_saved_by_its_button(env):
     assert _head(env.lap) == _remote(env)
     assert _read(env.lap, "a.txt") == "one\nTWO\nthree\nunsaved\n"
     assert git(env.lap, "status", "--porcelain").strip() == ""
+    # Her own edits, saved in her GitHub name (TL ruling), not Fused's.
+    saved = git(env.lap, "log", "-1", "--format=%an <%ae>|%cn", "--grep=Saved edits").strip()
+    assert saved == "Alice <7+alice@users.noreply.github.com>|Alice"
 
 
 def test_overlap_in_history_is_needs_merge_and_stands(env, monkeypatch):
@@ -234,7 +246,8 @@ def test_overlap_in_history_is_needs_merge_and_stands(env, monkeypatch):
     seen = {}
     monkeypatch.setattr(merge_job, "start", lambda app_dir, **kw: seen.update(kw) or "j1")
     assert ownsync.start_merge(env.lap) == {"ok": True, "job": "j1"}
-    assert seen == {"purpose": "own-sync", "ours": head, "theirs": _remote(env)}
+    assert seen == {"purpose": "own-sync", "ours": head, "theirs": _remote(env),
+                    "identity": {"name": "Alice", "email": "7+alice@users.noreply.github.com"}}
     # The job landed: the state is over and the combined version publishes.
     ran = []
     monkeypatch.setattr(git_upstream, "schedule_sync",
@@ -465,6 +478,38 @@ def test_use_github_backs_up_everything(env):
     assert any(git(env.lap, "rev-parse", r).strip() == mine for r in refs)
     wip = [r for r in refs if r.endswith("-wip")]
     assert wip and git(env.lap, "show", f"{wip[0]}:x.txt") == "unsaved\n"
+
+
+def test_undo_use_github_brings_back_edits_saved_and_not(env):
+    _commit(env.lap, "x.txt", "x\n", "published")
+    assert _sync(env.lap)["pushed"] is True
+    gh_tip = _rewrite_elsewhere(env)
+    mine = _commit(env.lap, "n.txt", "n\n", "edit")
+    write(env.lap, "x.txt", "unsaved\n")
+    write(env.lap, "new.txt", "brand new\n")       # untracked: stays where it is
+    assert _sync(env.lap)["why"] == "github-changed"
+    assert ownsync.use_github(env.lap)["ok"] and _head(env.lap) == gh_tip
+    line = _activity(env.lap)[0]
+    _transcript(env, env.lap, last="user")
+    assert ownsync.restore(env.lap, line["id"])["ok"] is False   # Claude is working
+    _transcript(env, env.lap, last="assistant")                 # the turn ended
+    out =ownsync.restore(env.lap, line["id"])
+    assert out["ok"], out
+    assert _head(env.lap) == mine
+    assert _read(env.lap, "x.txt") == "unsaved\n" and _read(env.lap, "new.txt") == "brand new\n"
+    lines = _activity(env.lap)
+    assert lines[0]["undo"] is True and _plain(lines[0]["text"])      # undo of the undo
+    assert [ln["undo"] for ln in lines if ln["id"] == line["id"]] == [False]
+    assert ownsync.restore(env.lap, line["id"])["ok"] is False        # only once
+    assert _sync(env.lap)["why"] == "github-changed" and _head(env.lap) == mine
+
+
+def test_undo_an_automatic_combine(env):
+    head = _diverge(env)
+    assert _sync(env.lap, push=False)["status"] == "synced"
+    line = _activity(env.lap)[0]
+    assert ownsync.restore(env.lap, line["id"])["ok"]
+    assert _head(env.lap) == head
 
 
 def test_publish_over_refuses_when_github_moved_again(env):

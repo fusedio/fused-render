@@ -101,20 +101,3 @@ def make_world(tmp_path, monkeypatch) -> World:
     if hasattr(classify, "apply_identity"):
         classify.apply_identity(app, block=True)
     return World(fake=fake, repo=repo, app=store.key(app), gh=gh, store=store)
-
-
-def spy_engine(monkeypatch):
-    """The REAL `engine.return_to_following`, with every call and answer
-    recorded — the A4 trigger is proposals', the return itself the engine's."""
-    from fused_render.contrib import engine
-
-    calls = []
-    real = engine.return_to_following
-
-    def spy(root):
-        out = real(root)
-        calls.append((root, out))
-        return out
-
-    monkeypatch.setattr(engine, "return_to_following", spy)
-    return calls

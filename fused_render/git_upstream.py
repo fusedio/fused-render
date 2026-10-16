@@ -898,15 +898,15 @@ def _sync_locked(root, *, action, push):
     app made here, a developer's own checkout — gets the plain body exactly
     as before."""
     kind = None
-    _classify = None
+    _cls = None
     try:
-        from fused_render.contrib import classify as _classify
-        kind = _classify.kind_of(root, kick=True)
+        from fused_render.contrib import classify as _cls
+        kind = _cls.kind_of(root, kick=True)
     except Exception:  # noqa: BLE001 — no record readable: today's sync
         logger.exception("contrib kind check failed for %s", root)
     if kind == "github":
         try:
-            _classify.settle_locked(root, "github")
+            _cls.settle_locked(root, "github")
             from fused_render.contrib import engine as _contrib
             return _contrib.sync(root, action=action, push=push)
         except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
@@ -916,7 +916,7 @@ def _sync_locked(root, *, action, push):
         return _skipped("scratch")
     if kind == "own":
         try:
-            _classify.settle_locked(root, "own")
+            _cls.settle_locked(root, "own")
         except Exception:  # noqa: BLE001 — a guard failure never costs a sync
             logger.exception("contrib settle failed for %s", root)
     return _sync_plain(root, action=action, push=push, kind=kind)

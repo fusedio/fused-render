@@ -71,6 +71,9 @@ from fused_render.contrib import classify, flags, follow, replay, store
 
 logger = logging.getLogger(__name__)
 
+#: A fetch error in words (§0.1) when no better sentence fits.
+_SYNC_ERROR_DEFAULT = "fused couldn't check for updates to this app; it will keep trying."
+
 _SWEEP_EVERY_S = 3600.0
 _last_sweep = [0.0]
 #: Each copy's unreferenced old backups are pruned at most once a day.
@@ -98,18 +101,6 @@ def _out(status, why=None, **extra) -> dict:
     `offline` | `needs-merge` | `blocked` | `deferred`, plus `why`,
     `move` (which row moved), `pulled`, `files`, `tip`, `branch`."""
     return {"status": status, "why": why, "pulled": 0, "pushed": False, **extra}
-
-
-def _in_workspace(root) -> bool:
-    """`root` is a workspace app folder, `<workspace>/<tag>/<name>`."""
-    try:
-        from fused_render.shell.seed import fused_dir
-
-        rel = os.path.relpath(os.path.realpath(root), os.path.realpath(fused_dir()))
-    except (ValueError, OSError):
-        return False
-    parts = rel.split(os.sep)
-    return len(parts) == 2 and not any(p.startswith(".") for p in parts)
 
 
 def _merge_job(root):
@@ -175,6 +166,11 @@ def _claude_busy(root) -> bool:
     return False
 
 
+def claude_busy(root) -> bool:
+    """`_claude_busy`, for proposals/ownsync: one busy rule (P8)."""
+    return _claude_busy(root)
+
+
 def _activity(root, kind, text, *, backup=None, aside=None):
     """One Activity line (§16.9); never raises."""
     try:
@@ -217,19 +213,32 @@ def _files_words(files) -> str:
     return text + (f" and {more} more" if more > 0 else "")
 
 
+def _sync_error_words(reason, who) -> str:
+    return {
+        "redirected": follow.REDIRECTED_MESSAGE,
+        "auth": f"fused couldn't read {who}'s app on GitHub. Sign in to GitHub again.",
+        "not-found": f"{who}'s app isn't on GitHub any more, or it's private now.",
+        "forbidden": f"Your GitHub account can't read {who}'s app any more.",
+    }.get(reason, _SYNC_ERROR_DEFAULT)
+
+
 def _note_sync_error(root, reason):
-    logger.warning("contrib: sync of %s failed (%s)", root, reason)
-    store.update(root, lambda r: r.__setitem__("sync_error", {"reason": reason,
-                                                               "at": time.time()}))
+    """A fetch that failed for a reason the person can act on (never
+    `offline`: that stays silent and is retried): `sync_error` {reason,
+    message, at}, the signal for the page's Try again / Sign in."""
+    logger.warning("contrib: fetch for %s failed (%s)", root, reason)
+
+    def fn(r):
+        r["sync_error"] = {"reason": reason, "message": _sync_error_words(reason, _who(r)),
+                           "at": time.time()}
+    store.update(root, fn)
 
 
 def _note_checked(root):
-    """A successful fetch: `last_checked` (§16.9), and a standing
-    `redirected` error is over."""
+    """A successful fetch: `last_checked` (§16.9); any fetch error is over."""
     def fn(r):
         r["last_checked"] = time.time()
-        if (r.get("sync_error") or {}).get("reason") == "redirected":
-            r["sync_error"] = None
+        r["sync_error"] = None
     store.update(root, fn)
 
 
@@ -242,9 +251,9 @@ def _copy_lock(root) -> threading.Lock:
         return _copy_locks.setdefault(store.key(root), threading.Lock())
 
 
-#: Set while this thread runs the engine for a copy: a re-entry from inside
-#: (a proposals.refresh that still calls the v1 `return_to_following`) is a
-#: no-op instead of a deadlock on `_copy_lock`.
+#: Set while this thread runs the engine for a copy: a `bring_in` from
+#: inside (a refresh or hook the run called) refuses as busy instead of
+#: deadlocking on `_copy_lock`.
 _inside = threading.local()
 
 
@@ -253,26 +262,6 @@ def _record(root):
     if not rec or rec.get("kind") != "github":
         return None, None
     return rec, follow.for_record(rec)
-
-
-# ------------------------------------------------------------------ the shim
-
-
-def owns(root) -> bool:
-    """Whether git_upstream's intercept must hand `root` to `sync` — a
-    `github` kind, whatever the flags (P1). TRANSITIONAL: kept so the
-    intercept that still asks it never falls through to a plain (pushing)
-    sync of a GitHub-link copy (P2); git_upstream moves to
-    `classify.kind_of`. Store reads only."""
-    kind_of = getattr(classify, "kind_of", None)
-    if callable(kind_of):
-        return kind_of(root) == "github"
-    rec = store.get(root)
-    if rec is None:
-        if flags.sources() and _in_workspace(root):
-            classify.ensure_in_background(root)
-        return False
-    return rec.get("kind") == "github"
 
 
 # ------------------------------------------------------------------ v1 → v2
@@ -387,10 +376,10 @@ def _run_inner(root, *, user) -> dict:
             return _out("skipped", "in-progress")
         tip, reason = follow.fetch(root, fol)
     if tip is None:
-        if reason == "redirected":
-            _note_sync_error(root, "redirected")
-            return _out("skipped", "redirected")
-        return _out("offline")
+        if reason == "offline":
+            return _out("offline")
+        _note_sync_error(root, reason)
+        return _out("skipped", reason)
     _note_checked(root)
     done = {"branch": fol.branch, "tip": tip}
     if not user and not gu.auto_sync_enabled():
@@ -710,8 +699,8 @@ def _deferred_message(res, who) -> dict:
         return _refuse("offline", OFFLINE_MESSAGE)
     if why == "claude":
         return _refuse("claude", CLAUDE_BUSY_MESSAGE)
-    if why == "redirected":
-        return _refuse("redirected", follow.REDIRECTED_MESSAGE)
+    if why in ("redirected", "auth", "not-found", "forbidden", "failed"):
+        return _refuse(why, _sync_error_words(why, who))
     if why == "not-default":
         return _refuse("off-default", "You're on a different version of this app. Go back to "
                                       "the main version first.")
@@ -772,18 +761,6 @@ def _bring_in_answer(res, who) -> dict:
                                   "already have here. Move yours aside to get the update.",
                        files=files)
     return _deferred_message(res, who)
-
-
-#: v1 names (routers, proposals) — the same button.
-bring_in_latest = bring_in
-
-
-def return_to_following(root) -> dict:
-    """v1 name, TRANSITIONAL: row 7 of every run does the return now. A
-    re-entry from inside a run (proposals.refresh) is a no-op."""
-    if getattr(_inside, "depth", 0):
-        return {"ok": True, "message": ""}
-    return bring_in(root)
 
 
 def keep_mine(root) -> dict:
@@ -968,7 +945,7 @@ def go_back_main(root) -> dict:
             if not gu._ok(r):
                 logger.warning("contrib: go back failed in %s: %s", root, gu._text(r))
                 if backup:
-                    replay._unbackup_locked(root, [backup, backup + "-wip"])
+                    replay.unbackup_locked(root, [backup, backup + "-wip"])
                 return _refuse("failed", "Couldn't go back to the main version; a file here is "
                                          "in the way. Nothing was changed.")
         _activity(root, "go-back", text, backup=backup)
@@ -1041,7 +1018,7 @@ def restore(root, activity_id) -> dict:
                 wip = replay.rev(root, backup + "-wip")
                 if wip:
                     _apply_wip_locked(root, target, wip)
-                replay._protect_after_move(root)
+                replay.protect_after_move(root)
             back = _unaside(root, aside) if aside else []
         store.mark_restored(root, activity_id)
         _settled(root)
@@ -1165,7 +1142,8 @@ def merge_landed(root, *, purpose, old_tip, new_tip, backup=None, **_legacy) -> 
     """A Merge with Claude result just landed in the folder (`merge_job.accept`):
     the record and Activity for its purpose. Never raises, never pushes —
     own-sync and remix bring-in hand the push to the own path
-    (`ownsync.merge_landed`, else git_upstream's scheduled sync)."""
+    (`ownsync.merge_landed`, else git_upstream's scheduled sync), a
+    proposal's merge to `proposals.merge_accepted` (Update sends it)."""
     try:
         rec = store.get(root) or {}
         who = _who(rec)
@@ -1178,6 +1156,14 @@ def merge_landed(root, *, purpose, old_tip, new_tip, backup=None, **_legacy) -> 
             store.update(root, lambda r: r.__setitem__("original_update", None))
             _activity(root, "original", "Brought in the original app's latest.", backup=backup)
             gu.schedule_sync(root, "Publish after bringing in the original", push=True)
+        elif purpose == "proposal":
+            # Update's merge of the edits made to the proposal on GitHub:
+            # proposals sends the result (no force).
+            _activity(root, "proposal", "Combined your changes with the edits made to your "
+                                        "proposal.", backup=backup)
+            from fused_render.contrib import proposals
+
+            proposals.merge_accepted(root)
         elif purpose == "own-sync":
             _activity(root, "own-sync", "Combined your edits with the version on GitHub.",
                       backup=backup)
@@ -1201,10 +1187,6 @@ _status_lock = threading.Lock()
 _status_cache: dict = {}  # root -> (key, (changes_files, behind, unproposed))
 _STATUS_CACHE_MAX = 256
 
-#: `sync_error` codes in words for the page (§0.1); the code rides in
-#: `sync_error_code`.
-_SYNC_ERROR_WORDS = {"redirected": follow.REDIRECTED_MESSAGE}
-_SYNC_ERROR_DEFAULT = "fused couldn't check for updates to this app; it will keep trying."
 
 
 def _job_view(root):
@@ -1257,11 +1239,10 @@ def status(root) -> dict:
                 can_push=rec.get("can_push"),
                 owner_checked=bool(rec.get("owner_checked", True)),
                 last_checked=rec.get("last_checked"), merge_job=_job_view(root))
-    code = (rec.get("sync_error") or {}).get("reason") \
-        if isinstance(rec.get("sync_error"), dict) else None
-    if code:
-        view["sync_error"] = _SYNC_ERROR_WORDS.get(code, _SYNC_ERROR_DEFAULT)
-        view["sync_error_code"] = code
+    err = rec.get("sync_error") if isinstance(rec.get("sync_error"), dict) else None
+    if err and err.get("reason"):
+        view["sync_error"] = err.get("message") or _sync_error_words(err["reason"], _who(rec))
+        view["sync_error_code"] = err["reason"]
     if view["kind"] != "github":
         view["state"] = "remix" if remix_of else "own"
         return view
