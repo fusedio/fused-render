@@ -229,22 +229,71 @@ def test_a_resume_ignores_the_requests_backend(agent, target, home, tmp_path,
     assert agent._session_backend(SID_COPILOT) == "copilot"
 
 
-def test_a_fresh_chat_takes_the_requests_backend_and_mints_its_id(
+def test_a_fresh_copilot_chat_learns_its_id_from_the_stream(
         agent, target, home, tmp_path, monkeypatch):
+    """`copilot --acp` refuses `--session-id` (verified 2026-10-16), so a
+    fresh Copilot chat mints nothing: `_start` answers `session_id: ""`, and
+    the first poll that sees the host's init row records Copilot's own id —
+    the `session` file, the marker, and the settings record `_start` could
+    not write."""
     file, workdir = target
     _prefs(home, copilot_enabled=True)
     _copilot_bin(tmp_path, monkeypatch)
     monkeypatch.setitem(agent._HOST_FILES, "copilot", _stub_host(tmp_path))
     res = agent._start(file, "hi", "", "gpt-5.4", "high", "acceptEdits",
                        has_pane=False, backend="copilot")
-    assert res["backend"] == "copilot"
-    req, _run_dir = _req_of(agent, res)
+    assert res["backend"] == "copilot" and res["session_id"] == ""
+    req, run_dir = _req_of(agent, res)
     assert req["backend"] == "copilot"
+    assert req["session_id"] == "" and req["new_session_id"] == ""
     assert req["argv"][1:3] == ["--acp", "--no-auto-update"]
-    assert req["argv"][req["argv"].index("--session-id") + 1] == res["session_id"]
+    assert "--session-id" not in req["argv"]
     assert req["cli_mode"] == "acceptEdits"
-    assert agent._session_backend(res["session_id"]) == "copilot"
-    assert agent._session_settings(res["session_id"]) == ("gpt-5.4", "high")
+    with open(os.path.join(run_dir, "meta.json")) as fh:
+        meta = json.load(fh)
+    assert "session_id" not in meta and meta["backend"] == "copilot"
+    # The host's init row names Copilot's own id; the poll records it.
+    with open(os.path.join(run_dir, "pid"), "w") as fh:
+        fh.write(str(os.getpid()))
+    with open(os.path.join(run_dir, "out.jsonl"), "w") as fh:
+        for row in ({"type": "system", "subtype": "init", "session_id": SID_COPILOT},
+                    {"type": "result", "subtype": "success", "is_error": False,
+                     "result": "ok", "session_id": SID_COPILOT}):
+            fh.write(json.dumps(row) + "\n")
+    assert agent._poll(res["run_id"])["session_id"] == SID_COPILOT
+    with open(os.path.join(run_dir, "session")) as fh:
+        assert fh.read() == SID_COPILOT
+    assert os.path.exists(os.path.join(run_dir, "recorded"))
+    assert agent._session_backend(SID_COPILOT) == "copilot"
+    assert agent._session_settings(SID_COPILOT) == ("gpt-5.4", "high")
+
+
+def test_a_later_copilot_poll_still_names_the_session(agent, tmp_path):
+    """A later turn's rows need not repeat the init row: the poll answers
+    with the id the run already recorded, never ""."""
+    run_dir = _live_run(agent, tmp_path)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": "/f", "message": "m", "resumed_from": "",
+                   "backend": "copilot"}, fh)
+    with open(os.path.join(run_dir, "session"), "w") as fh:
+        fh.write(SID_COPILOT)
+    open(os.path.join(run_dir, "recorded"), "w").close()
+    with open(os.path.join(run_dir, "out.jsonl"), "w") as fh:
+        fh.write(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": "hi"}}}) + "\n")
+    assert agent._poll("run-1")["session_id"] == SID_COPILOT
+
+
+def test_a_fresh_claude_chat_still_mints_its_id(agent, target, tmp_path, monkeypatch):
+    file, _ = target
+    monkeypatch.setitem(agent._HOST_FILES, "claude", _stub_host(tmp_path))
+    res = agent._start(file, "hi", "", "", "", "", has_pane=False)
+    assert res["backend"] == "claude" and res["session_id"]
+    req, run_dir = _req_of(agent, res)
+    assert req["new_session_id"] == res["session_id"] and "argv" not in req
+    with open(os.path.join(run_dir, "meta.json")) as fh:
+        assert json.load(fh)["session_id"] == res["session_id"]
 
 
 def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
@@ -382,11 +431,12 @@ def test_copilot_argv_composition(agent, target, home, tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     argv = agent._copilot_argv(str(run_dir), True, "acceptEdits", "", "gpt-5.4",
-                               "high", [str(tmp_path / "extra")], file,
-                               new_session_id=SID_COPILOT)
+                               "high", [str(tmp_path / "extra")], file)
     assert argv[0] == binary
     assert argv[1:3] == ["--acp", "--no-auto-update"]
-    assert argv[argv.index("--session-id") + 1] == SID_COPILOT
+    # `--acp` refuses `--session-id`: never emitted, fresh (here) or resume
+    # (the no-pane test below).
+    assert "--session-id" not in argv
     assert argv[argv.index("--model") + 1] == "gpt-5.4"
     assert argv[argv.index("--reasoning-effort") + 1] == "high"
     plugin = argv[argv.index("--plugin-dir") + 1]

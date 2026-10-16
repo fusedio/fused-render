@@ -2941,12 +2941,12 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
 
 def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
                   session_id: str, model: str, effort: str,
-                  extra_read_dirs: list | None, file: str,
-                  new_session_id: str = "") -> list:
-    """The COPILOT CLI's argv — `_claude_argv`'s twin, same parameters in the
-    same order so `_start` builds either from one call site, per
-    docs/COPILOT_BACKEND.md §3. Driven over ACP by `copilot_host.py`
-    (`--acp`, JSON-RPC on stdio), never `-p` (D16).
+                  extra_read_dirs: list | None, file: str) -> list:
+    """The COPILOT CLI's argv — `_claude_argv`'s twin, same leading
+    parameters in the same order so `_start` builds either from one call
+    site, per docs/COPILOT_BACKEND.md §3. Driven over ACP by `copilot_host.py`
+    (`--acp`, JSON-RPC on stdio), never `-p` (D16). `session_id` names no
+    flag: a resume is the host's `session/load`.
 
     What maps, and to what:
       * the system prompt → the generated plugin's agent (D8), not a flag;
@@ -2961,13 +2961,14 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
         condition (a `fused` wrapper exists);
       * `--permission-mode acceptEdits` → `--allow-tool write` (D5);
         `auto`/prompt are the host's `allow_all` switch, not argv;
-      * `--resume` → nothing: the host does `session/load`. A fresh session
-        takes `--session-id <minted>` exactly as Claude does;
+      * `--resume` → nothing: the host does `session/load`;
+      * `--session-id` → NEVER: `--acp` refuses it outright ("cannot be used
+        with"; verified 2026-10-16, the CLI exits). Copilot mints the id in
+        its `session/new` reply and the host announces it on the init row,
+        which `_poll` records (D2);
       * `--effort` → `--reasoning-effort`.
     """
     cmd = [_copilot_bin(), "--acp", "--no-auto-update"]
-    if not session_id and new_session_id:
-        cmd += ["--session-id", new_session_id]
     if model:
         cmd += ["--model", model]
     if effort:
@@ -3438,7 +3439,14 @@ def _start(file: str, message: str, session_id: str, model: str,
     # minted id into it would make every new chat look like a continuation to
     # `meta["resumed_from"]`, to `_live_run`, and to the Tasks listing's
     # `_entry_session`. The minted id rides beside it, under its own name.
-    new_session_id = "" if session_id else str(uuid.uuid4())
+    #
+    # CLAUDE ONLY. `copilot --acp` refuses `--session-id` and exits, so a
+    # fresh Copilot chat is nameless here exactly as every chat was before
+    # the flag: Copilot mints its id in `session/new`, the host announces it
+    # on the init row, and `_poll` records it (the `session` file, the
+    # `recorded` marker, and — for this case — the settings record below).
+    new_session_id = "" if session_id or backend == "copilot" \
+        else str(uuid.uuid4())
 
     # COPILOT'S ARGV, READY-MADE, before anything else is written. Claude's
     # host builds its own from the request (`_claude_argv`, so the two stay
@@ -3451,8 +3459,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     if backend == "copilot":
         try:
             argv = _copilot_argv(run_dir, pane, cli_mode, session_id, model,
-                                 effort, list(extra_read_dirs or []), file,
-                                 new_session_id)
+                                 effort, list(extra_read_dirs or []), file)
         except (FileNotFoundError, OSError) as exc:
             return {"error": str(exc), "backend": backend}
 
@@ -3482,6 +3489,12 @@ def _start(file: str, message: str, session_id: str, model: str,
         # from whenever the CLI first speaks, and `_poll` seeds its own answer
         # from it so the very first poll already carries the id.
         meta["session_id"] = new_session_id
+    if backend == "copilot" and not session_id:
+        # What the settings record will say once `_poll` learns the id this
+        # chat runs in (`_start` cannot write it: there is no id yet). Read
+        # off meta rather than host.json, which the host removes on exit.
+        meta["model"] = model
+        meta["effort"] = effort
     # `draft_key` is the composer's RECEIPT for this send, carried verbatim and
     # read by nothing in this template (fused_render/server/routers/tasks.py
     # `_settle_new_chats` is its one reader). A chat with no session yet keeps
@@ -3579,7 +3592,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # conversation to have a record about, and a record for a chat that never
     # ran would answer the next chat handed the same id. `new_session_id or
     # session_id` is the conversation the turn actually happens in, the same
-    # pair the return value names.
+    # pair the return value names. A fresh Copilot chat has neither yet, so
+    # this is a no-op for it and `_poll` writes the record instead.
     _record_settings(new_session_id or session_id, model, effort, backend)
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
@@ -3610,7 +3624,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # the same breath it started it — which is what lets the page say "a turn
     # just started HERE" (`POST /api/tasks/running`) before anything the CLI
     # writes exists, and what lets the Tasks listing carry a row for a chat with
-    # no transcript yet.
+    # no transcript yet. A fresh Copilot chat answers "" — its id arrives on a
+    # later poll, the path every chat took before Claude's `--session-id`.
     return {"run_id": run_id, "session_id": new_session_id or session_id,
             "backend": backend}
 
@@ -7631,6 +7646,13 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     if not new_session:
         new_session = str(meta.get("session_id") or "")
         seeded_session = bool(new_session)
+    if not new_session and backend == "copilot":
+        # A Copilot run has no minted id to seed from (`_start`), and a later
+        # turn's rows past the cursor need not repeat the init row that named
+        # it — so the run's own record of the CLI's word (the `session` file
+        # a poll latched, else the head of out.jsonl). Not a seed: both are
+        # what the CLI said, not what `_start` intended.
+        new_session = _run_own_session(run_dir, meta)
 
     # First poll that sees a turn finished CLEANLY sweeps anything it left
     # uncommitted into the app's repo (one-shot via a marker, like the
@@ -7685,6 +7707,13 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # instead would leave a `session` file naming an id the CLI
                 # never used, for any run where the flag did not take.
                 open(marker, "w", encoding="utf-8").close()
+                if backend == "copilot" and not meta.get("resumed_from"):
+                    # A FRESH COPILOT CHAT'S SETTINGS RECORD, at the one
+                    # moment its id is first known (`_start` had none to
+                    # write it under). Same values `_start` would have
+                    # recorded, kept on meta for exactly this.
+                    _record_settings(new_session, str(meta.get("model") or ""),
+                                     str(meta.get("effort") or ""), backend)
         except OSError:
             pass  # session bookkeeping must never break the chat itself
 
