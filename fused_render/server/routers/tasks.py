@@ -3226,6 +3226,13 @@ def _recap_feed(wants: list, machine_busy: bool | None = None,
             # Only a dedupe guard: the stored recap's `at >= reply_at` is the
             # real "already done" check, so forgetting costs at most a re-ask.
             _recap_seen.clear()
+            # Jobs still waiting in a lane keep their mark, or the next
+            # listing would queue them a second time.
+            for lane in (_recap_heap, _recap_backfill):
+                for _k, _s, queued in lane:
+                    if not queued.get("due"):
+                        _recap_seen.add((queued["session_id"], queued["for_uuid"],
+                                         queued["reply_at"]))
         pushed = False
         for job in wants:
             if job.get("due"):

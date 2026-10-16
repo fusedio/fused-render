@@ -885,7 +885,7 @@ def _recap_tail(turns: list, ended: bool = False) -> str:
     return "\n\n".join(parts)[-_RECAP_TAIL_CHARS:]
 
 
-def _recap_result(stdout: str) -> str:
+def _recap_result(stdout: str, titles: bool | None = None) -> str:
     """The recap out of `--output-format stream-json`'s terminal `result`
     event, capped.
 
@@ -921,22 +921,23 @@ def _recap_result(stdout: str) -> str:
     text = payload.get("result")
     if not isinstance(text, str):
         return ""
-    return _recap_plain(text)
+    return _recap_plain(text, titles)
 
 
-def _recap_prompts() -> tuple[str, str]:
+def _recap_prompts(titles: bool | None = None) -> tuple[str, str]:
     """`(system, prompt)` for this run: the 7-word titles pair with the flag on,
     the fold's own with it off."""
-    if _recap_titles_on():
+    if _recap_titles_on() if titles is None else titles:
         return _RECAP_SYSTEM_TITLES, _RECAP_PROMPT_TITLES
     return _RECAP_SYSTEM, _RECAP_PROMPT
 
 
-def _recap_min_chars() -> int:
-    return _RECAP_MIN_CHARS_TITLES if _recap_titles_on() else _RECAP_MIN_CHARS
+def _recap_min_chars(titles: bool | None = None) -> int:
+    on = _recap_titles_on() if titles is None else titles
+    return _RECAP_MIN_CHARS_TITLES if on else _RECAP_MIN_CHARS
 
 
-def _recap_plain(text: str) -> str:
+def _recap_plain(text: str, titles: bool | None = None) -> str:
     """One line of plain prose, or "" when what came back is not a recap.
 
     The model is told "no markdown" and sometimes ignores it — a `**bold:**`
@@ -952,7 +953,7 @@ def _recap_plain(text: str) -> str:
     out = " ".join(lines)
     out = re.sub(r"\*\*|__|`", "", out)
     out = re.sub(r"\s+", " ", out).strip()
-    if len(out) < _recap_min_chars():
+    if len(out) < _recap_min_chars(titles):
         return ""
     return out[:_RECAP_MAX_CHARS]
 
@@ -998,6 +999,9 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
     hist = (agent._history(file, session_id, transcript=transcript) if transcript
             else agent._history(file, session_id))
     turns = (hist or {}).get("turns") or []
+    # One read of the preference per generation: a flip mid-run must not pair
+    # the titles prompt with the fold's length rule.
+    titles = _recap_titles_on()
     tail = _recap_tail(turns, ended)
     if not tail:
         if ended:
@@ -1008,13 +1012,13 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         workdir = tempfile.gettempdir()
     message = json.dumps({"type": "user", "message": {
         "role": "user",
-        "content": [{"type": "text", "text": _recap_prompts()[1] % tail}]}})
+        "content": [{"type": "text", "text": _recap_prompts(titles)[1] % tail}]}})
     proc = subprocess.Popen(
         [agent._claude_bin(), "-p", "--no-session-persistence",
          "--input-format", "stream-json",
          "--max-turns", "1", "--tools", "", "--model", "haiku",
          "--output-format", "stream-json", "--verbose",
-         "--system-prompt", _recap_prompts()[0]],
+         "--system-prompt", _recap_prompts(titles)[0]],
         cwd=workdir, env=agent._spawn_env(), stdin=subprocess.PIPE,
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
         encoding="utf-8", errors="replace")
@@ -1026,7 +1030,7 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         proc.kill()
         proc.communicate()
         return ""
-    return _recap_result(stdout) if proc.returncode == 0 else ""
+    return _recap_result(stdout, titles) if proc.returncode == 0 else ""
 
 
 def _stored_recap(session_id: str, for_uuid: str,

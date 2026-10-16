@@ -294,6 +294,22 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
   // chat nobody can see — the one page-wide gate it keeps.
   const eagerAsked = useRef(new Set<string>());
   const { eager, enabled, file, sessionId, running } = opts;
+  // A re-check trigger: a skip for a draft, a hidden page or a read still in
+  // flight is not a verdict, so the things that clear those bump this and the
+  // effect looks again. Positions are still asked once (`eagerAsked`).
+  const [kick, setKick] = useState(0);
+  useEffect(() => {
+    if (!eager) return;
+    const win = view ?? (typeof window !== "undefined" ? window : null);
+    const document_ = doc ?? (typeof globalThis.document !== "undefined" ? globalThis.document : null);
+    const again = () => setKick((n) => n + 1);
+    document_?.addEventListener("visibilitychange", again);
+    win?.addEventListener("focus", again);
+    return () => {
+      document_?.removeEventListener("visibilitychange", again);
+      win?.removeEventListener("focus", again);
+    };
+  }, [eager, view, doc]);
   useEffect(() => {
     if (!eager || !enabled || !file || !sessionId || !forUuid || running) return;
     if (eagerAsked.current.has(forUuid) || spent.current.has(forUuid)) return;
@@ -312,14 +328,18 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
         spent.current.add(asked);
         const text = (answer && answer.text ? answer.text : "").trim();
         const fresh = latest.current;
-        if (!text || fresh.forUuid !== asked || fresh.running) return;
+        // The position moved while this was in flight: the new one was skipped
+        // behind `inflight`, so look again now.
+        if (fresh.forUuid !== asked) setKick((n) => n + 1);
+        if (!text || fresh.forUuid !== asked || fresh.running || fresh.hasDraft()) return;
         setRecap({ text, forUuid: asked });
       })
       .catch(() => {
         inflight.current = false;
         failures.current += 1;
+        setKick((n) => n + 1);
       });
-  }, [eager, enabled, file, sessionId, forUuid, running]);
+  }, [eager, enabled, file, sessionId, forUuid, running, kick]);
 
   // THE AUTO-DISMISS, and the late-answer drop, in one expression: the fold is
   // only ever drawn against the position it was written about.
