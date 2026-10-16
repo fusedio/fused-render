@@ -87,6 +87,7 @@ import {
   SHOW_PAGE_DOOR,
   taskHref,
 } from "./tasks-lib";
+import { useTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
 import { MISSING_FOLDER_TOAST, taskFolder } from "./useMissingFolders";
 import {
@@ -419,6 +420,9 @@ export function TaskPeek({
   const key = usePeekedKey();
   const anchor = usePeekAnchor();
   const canRun = useCanRunInTerminal();
+  // The peek's recap fold exists only with the Tasks recap titles on: off, the
+  // peek's chat is exactly what it was before them.
+  const recapOn = useTaskRecapTitlesEnabled();
   // THE URL MEETS THE DATA (task-peek-store.settlePeek): a deep link naming a
   // task that is not here closes the panel and drops the param instead of
   // standing open and empty; one naming a task NUMBER is rewritten to that
@@ -1317,6 +1321,12 @@ export function TaskPeek({
                 chatOnly
                 peek
                 paramsSource="memory"
+                // THE RECAP OPT-IN (ChatMount `recap`): the peek is the one chat
+                // the reader opened on this page, so it gets the "While you were
+                // away" fold — and, with task recaps on, the fold on open
+                // (useAwayRecap `eager`). The Cards wall's compact chats stay
+                // out: seven mounts, one return, seven calls.
+                recap={recapOn}
                 // NOT `closePeek` directly: the chat hands Escape up before
                 // this panel's own listener sees it, so the blur-first rule has
                 // to be applied here too (see `escapeOrBlur`).

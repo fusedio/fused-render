@@ -8123,7 +8123,7 @@ def _is_turn_row(row: dict) -> bool:
 
 
 def _history(file: str, session_id: str, app_reads: bool = False,
-             inbox: bool = True) -> dict:
+             inbox: bool = True, transcript: str = "") -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
     Resolved ONLY at the target file's own project dir — with copied files
@@ -8168,10 +8168,14 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         return {"turns": [], "transcript": _transcript_stat(""), "context": None,
                 "tasks": [], "tasks_run": ""}
     file = os.path.abspath(file)
-    path = _session_transcript_path(_workdir(file), session_id)
+    # `transcript` (the Tasks recap worker) names the file outright, for a task
+    # whose folder is gone and so cannot be resolved through it.
+    path = transcript or _session_transcript_path(_workdir(file), session_id)
     # SPEC T-1: the task registry of this session's LAST run, while its run
     # dir is still on disk — a reload shows the tasks panel it left.
-    task_registry, host_run_id = _session_task_registry(file, session_id)
+    # (Skipped for a `transcript` read: `file` is then not a project folder.)
+    task_registry, host_run_id = (({}, "") if transcript
+                                  else _session_task_registry(file, session_id))
     tasks = _task_list(task_registry)
     # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
     # is the watermark the page follows the conversation by — it re-renders when

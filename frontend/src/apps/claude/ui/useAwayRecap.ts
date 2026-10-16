@@ -29,7 +29,7 @@
 // at the end of it (design, "Data model (ours)").
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { fetchRecap as defaultFetchRecap, type Recap } from "../protocol/recap";
+import { fetchRecap as defaultFetchRecap, type Recap, type RecapResponse } from "../protocol/recap";
 
 /** How long away is long enough (Claude Code's own threshold). A CONSTANT, and
  *  the hook takes an override, because there is no test-knob convention in this
@@ -42,6 +42,14 @@ export const AWAY_MS = 60_000;
  *  spends the reader's money on nothing (Claude Code: "failing repeatedly this
  *  turn"). */
 export const MAX_FAILURES = 2;
+
+/** With the Tasks recap titles on the server only reads what the Tasks worker
+ *  stored, and says `pending: true` while it has nothing yet. The chat asks
+ *  again this often (a dict lookup on the server), for at most this long. */
+export const POLL_MS = 15_000;
+// Longer than the worker's 10 min failed-recap retry (tasks.py `_RECAP_RETRY_S`),
+// or a first haiku failure would land after the client gave up.
+export const POLL_CAP_MS = 900_000;
 
 /**
  * ONE RECAP PER RETURN, PER PAGE — the gate no per-mount check can be.
@@ -125,6 +133,16 @@ export interface AwayRecapOptions extends AwayRecapEnv {
   /** Whether this mount is one the recap applies to at all — a conversation
    *  the reader opened, not the landing or an embed. */
   enabled: boolean;
+  /**
+   * ALSO RECAP ON OPEN (prefs `task_recap.enabled`, the Tasks recap titles).
+   * With it on, a chat that is not mid-turn asks once per position as soon as
+   * it has one, instead of waiting for an absence. Off (the default) is the
+   * away-only behaviour above, untouched. The server call is cheap when the
+   * Tasks listing already stored the recap (`_recap` reads the store first).
+   */
+  eager?: boolean;
+  /** Overrides for `POLL_MS` (tests). */
+  pollMs?: number;
   /** Override for `AWAY_MS`; tests pass 0. */
   awayMs?: number;
   /**
@@ -192,6 +210,59 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
     });
   }, []);
 
+  // THE PENDING POLL. Mounted-ness and the one timer live in refs, so an
+  // unmount, an anchor change or a send (`forUuid` moves) ends it.
+  const mounted = useRef(true);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+    };
+  }, []);
+
+  /** Take one answer: spent either way, shown when it has text, and — only
+   *  when the server says `pending` — asked about again in `POLL_MS` until the
+   *  cap, the same gates as the first ask. */
+  const take = (asked: string, answer: RecapResponse | undefined, startedAt: number) => {
+    spent.current.add(asked);
+    const text = (answer && answer.text ? answer.text : "").trim();
+    const fresh = latest.current;
+    if (text) {
+      if (fresh.forUuid !== asked || fresh.running) return;
+      setRecap({ text, forUuid: asked });
+      return;
+    }
+    if (!answer || answer.pending !== true || !mounted.current) return;
+    if (now() - startedAt >= POLL_CAP_MS) return;
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    const scheduledAt = now();
+    pollTimer.current = setTimeout(() => {
+      pollTimer.current = null;
+      const o = latest.current;
+      if (!mounted.current || o.forUuid !== asked) return; // moved on: stop
+      if (!o.enabled || !o.file || !o.sessionId) return;
+      const hidden = (doc ?? (typeof globalThis.document !== "undefined" ? globalThis.document : null))?.hidden;
+      if (o.running || hidden || o.hasDraft() || (o.root && !recapRootVisible(o.root()))) {
+        // Gated this tick: keep waiting. The cap is PAUSED for exactly the
+        // time this tick spent gated — the deadline slides by that much and no
+        // more — so a gate never hands the anchor a fresh budget (CodeRabbit,
+        // PR #1696): eligible time already spent stays spent.
+        take(asked, answer, startedAt + (now() - scheduledAt));
+        return;
+      }
+      const read = o.fetchRecap ?? defaultFetchRecap;
+      void read(o.file, o.sessionId, asked)
+        .then((next) => {
+          if (mounted.current) take(asked, next, startedAt);
+        })
+        .catch(() => {
+          if (mounted.current) take(asked, answer, startedAt);
+        });
+    }, opts.pollMs ?? POLL_MS);
+  };
+
   useEffect(() => {
     const win = view ?? (typeof window !== "undefined" ? window : null);
     const document_ = doc ?? (typeof globalThis.document !== "undefined" ? globalThis.document : null);
@@ -239,18 +310,17 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
         .then((answer) => {
           inflight.current = false;
           if (!live) return;
-          // Spent EITHER WAY: an empty answer is the server saying there is
-          // nothing to show for this position, and asking again would buy the
-          // same nothing at the same price.
-          spent.current.add(asked);
-          const text = (answer && answer.text ? answer.text : "").trim();
-          if (!text) return;
+          // Spent EITHER WAY (`take`): an empty answer is the server saying
+          // there is nothing to show for this position, and asking again would
+          // buy the same nothing at the same price — unless it says `pending`.
           // The world may have moved while the model was thinking (3-25s): a
-          // message sent, a turn started. Re-asked here rather than assumed,
-          // and the render gate below re-asks once more.
-          const fresh = latest.current;
-          if (fresh.forUuid !== asked || fresh.running || fresh.hasDraft()) return;
-          setRecap({ text, forUuid: asked });
+          // message sent, a turn started; `take` re-asks that, and the render
+          // gate below re-asks once more. A draft typed meanwhile also drops it.
+          if (latest.current.hasDraft() && answer?.pending !== true) {
+            spent.current.add(asked);
+            return;
+          }
+          take(asked, answer, now());
         })
         .catch(() => {
           inflight.current = false;
@@ -278,6 +348,65 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
     // Bound once per env, never per render: a listener torn down and re-added
     // mid-absence would forget the clock it was keeping.
   }, [view, doc, now]);
+
+  // THE EAGER ASK (`eager`): the same read and the same fold, on open and on
+  // each new position rather than on a return. Its own once-per-position set,
+  // so a failed or empty answer is not re-bought on every render; `spent` (a
+  // dismissed or already-shown fold) still wins. Not mid-turn, and not in a
+  // chat nobody can see — the one page-wide gate it keeps.
+  const eagerAsked = useRef(new Set<string>());
+  const { eager, enabled, file, sessionId, running } = opts;
+  // A re-check trigger: a skip for a draft, a hidden page or a read still in
+  // flight is not a verdict, so the things that clear those bump this and the
+  // effect looks again. Positions are still asked once (`eagerAsked`).
+  const [kick, setKick] = useState(0);
+  useEffect(() => {
+    if (!eager) return;
+    const win = view ?? (typeof window !== "undefined" ? window : null);
+    const document_ = doc ?? (typeof globalThis.document !== "undefined" ? globalThis.document : null);
+    const again = () => {
+      if (document_ && document_.hidden) return;
+      setKick((n) => n + 1);
+    };
+    document_?.addEventListener("visibilitychange", again);
+    win?.addEventListener("focus", again);
+    return () => {
+      document_?.removeEventListener("visibilitychange", again);
+      win?.removeEventListener("focus", again);
+    };
+  }, [eager, view, doc]);
+  useEffect(() => {
+    if (!eager || !enabled || !file || !sessionId || !forUuid || running) return;
+    if (eagerAsked.current.has(forUuid) || spent.current.has(forUuid)) return;
+    if (failures.current >= MAX_FAILURES || inflight.current) return;
+    const o = latest.current;
+    // Not under a half-typed message, like the away path.
+    if (o.hasDraft()) return;
+    if (o.root && !recapRootVisible(o.root())) return;
+    if (typeof document !== "undefined" && document.hidden) return;
+    eagerAsked.current.add(forUuid);
+    const asked = forUuid;
+    inflight.current = true;
+    const read = o.fetchRecap ?? defaultFetchRecap;
+    void read(file, sessionId, asked)
+      .then((answer) => {
+        inflight.current = false;
+        const fresh = latest.current;
+        // The position moved while this was in flight: the new one was skipped
+        // behind `inflight`, so look again now.
+        if (fresh.forUuid !== asked) setKick((n) => n + 1);
+        if (fresh.hasDraft() && answer?.pending !== true) {
+          spent.current.add(asked);
+          return;
+        }
+        take(asked, answer, now());
+      })
+      .catch(() => {
+        inflight.current = false;
+        failures.current += 1;
+        setKick((n) => n + 1);
+      });
+  }, [eager, enabled, file, sessionId, forUuid, running, kick]);
 
   // THE AUTO-DISMISS, and the late-answer drop, in one expression: the fold is
   // only ever drawn against the position it was written about.

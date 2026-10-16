@@ -240,11 +240,10 @@ def _recap_once(agent, target):
 # ------------------------------------------------------------------ the skips
 
 def test_nothing_to_recap_yet_never_spawns(client, project, calls):
-    """The last thing said is the reader's own message, so there is no news to
-    bring them — and an empty transcript has nothing to summarize at all.
-    Neither is worth an API call."""
+    """An empty transcript, or one where Claude never said anything in prose,
+    has nothing to summarize: not worth an API call."""
     target, write = project
-    write(("user", "go"), ("assistant", "done"), ("user", "and again"))
+    write(("user", "go"), ("user", "and again"))
     assert _get(client, target).json()["text"] == ""
 
     write()
@@ -359,3 +358,228 @@ def test_two_copies_of_a_folder_do_not_share_one_recap(
     assert "in the original" in first_prompt and "in the copy" not in first_prompt
     assert "in the copy" in second_prompt, (
         "the second file must not be answered out of the first file's cache")
+
+
+# ------------------------------------- task recap titles (task_recap_titles_enabled)
+
+def test_the_prompt_asks_for_at_most_seven_words():
+    """The one prompt change for task recaps (Akshil, 2026-10-15): the same
+    recap now titles a Tasks row, so both the system prompt and the turn say
+    "maximum 7 words" — and the away fold gets the shorter recap too."""
+    assert "at most 7 words" in recap_mod._RECAP_PROMPT_TITLES
+    assert "AT MOST 7 WORDS" in recap_mod._RECAP_SYSTEM_TITLES
+    # Flag off keeps the fold's own wording.
+    assert "7 words" not in recap_mod._RECAP_PROMPT
+    assert "7 WORDS" not in recap_mod._RECAP_SYSTEM
+    assert recap_mod._RECAP_MIN_CHARS == 20
+
+
+def test_the_prompt_picker_follows_the_flag(monkeypatch):
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
+    assert recap_mod._recap_prompts() == (recap_mod._RECAP_SYSTEM, recap_mod._RECAP_PROMPT)
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    assert recap_mod._recap_prompts() == (recap_mod._RECAP_SYSTEM_TITLES,
+                                          recap_mod._RECAP_PROMPT_TITLES)
+
+
+def test_a_seven_word_recap_is_long_enough(monkeypatch):
+    """`_RECAP_MIN_CHARS` was 20, which refused a terse 7-word recap: with the
+    flag on the floor is lower; off, it is the original 20."""
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
+    assert recap_mod._recap_plain("Fixed login typo") == ""
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    assert recap_mod._recap_plain("Fixed login typo") == "Fixed login typo"
+    assert recap_mod._recap_plain("Tests pass, PR ready") == "Tests pass, PR ready"
+    assert recap_mod._recap_plain("Done.") == ""
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    from fused_render import tasks_store
+    d = tmp_path / "state"
+    d.mkdir()
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(d))
+    return tasks_store
+
+
+def test_a_stored_recap_answers_without_spawning(agent, project, calls, store,
+                                                 monkeypatch):
+    """The Tasks listing's recap (stored on the session record) serves the
+    fold for the same turn; a stored FAILURE does not — the fold keeps its own
+    retry — and a recap older than the caller's `stale_before` is re-asked."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    store.record_recap(SESSION, FOR_UUID, "Stored recap from the listing", now=100.0)
+    assert recap_mod._recap(agent, target, SESSION, FOR_UUID) == (
+        "Stored recap from the listing")
+    assert _spawns(calls) == []
+
+    store.record_recap(SESSION, "u-failed", "", now=100.0)
+    assert recap_mod._recap(agent, target, SESSION, "u-failed") == (
+        "the recap, long enough to count as one")
+    assert len(_spawns(calls)) == 1
+
+    store.record_recap(SESSION, "u-old", "Taken mid-reply", now=100.0)
+    assert recap_mod._recap(agent, target, SESSION, "u-old",
+                            stale_before=200.0) == (
+        "the recap, long enough to count as one")
+    assert len(_spawns(calls)) == 2
+
+
+def test_a_generated_recap_is_stored_only_with_the_flag_on(
+        agent, project, calls, store, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
+    recap_mod._recap(agent, target, SESSION, FOR_UUID)
+    assert store.session_recap(store.settings_state(), SESSION) is None
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    recap_mod._recap(agent, target, SESSION, "u-2")
+    stored = store.session_recap(store.settings_state(), SESSION)
+    assert stored["text"] == "the recap, long enough to count as one"
+    assert stored["for_uuid"] == "u-2"
+
+
+def test_a_warm_cache_hit_is_stored_when_the_flag_is_on(
+        agent, project, calls, store, monkeypatch):
+    """Asked first with the flag off (cached, not stored), then again with it
+    on: the second answer comes from memory but still reaches the store."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
+    recap_mod._recap(agent, target, SESSION, FOR_UUID)
+    assert store.session_recap(store.settings_state(), SESSION) is None
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    recap_mod._recap(agent, target, SESSION, FOR_UUID)
+    assert len(_spawns(calls)) == 1
+    assert store.session_recap(store.settings_state(), SESSION)["for_uuid"] == FOR_UUID
+
+
+def test_a_store_failure_does_not_wedge_the_key(
+        agent, project, calls, store, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+
+    def boom(*a, **k):
+        raise ValueError("bad store")
+
+    monkeypatch.setattr(store, "record_recap", boom)
+    assert recap_mod._recap(agent, target, SESSION, FOR_UUID)
+    assert recap_mod._recap_inflight == {}
+
+
+def test_a_retry_after_a_stored_failure_spawns_again(
+        agent, project, calls, store, monkeypatch):
+    """The failed ask left `""` in memory and in the store; the listing's retry
+    (`stale_before` past the failure) must reach the CLI, not that cache."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    answers = ["", "A real recap of the turn"]
+    spawned = []
+
+    def generate(*a):
+        spawned.append(1)
+        return answers.pop(0)
+
+    monkeypatch.setattr(recap_mod, "_recap_generate", generate)
+    assert recap_mod._recap(agent, target, SESSION, FOR_UUID, ended=True) == ""
+    stored = store.session_recap(store.settings_state(), SESSION)
+    assert stored["text"] == "" and stored["for_uuid"] == FOR_UUID
+
+    assert recap_mod._recap(agent, target, SESSION, FOR_UUID, ended=True) == ""  # cached ""
+    assert len(spawned) == 1
+    assert recap_mod._recap(agent, target, SESSION, FOR_UUID, ended=True,
+                            stale_before=stored["at"]) == "A real recap of the turn"
+    assert len(spawned) == 2
+
+
+def test_recap_tail_widens_to_earlier_prose_and_never_leaks_segments():
+    prose = [{"role": "user", "text": "fix login"},
+             {"role": "assistant", "text": "Fixed the token refresh."}]
+    tools = [{"role": "assistant", "text": "",
+              "segments": [{"type": "tool", "text": "SECRET-TOOL-BODY"}]},
+             {"role": "error", "text": "API Error: nope"}] * 5
+    tail = recap_mod._recap_tail(prose + tools, ended=True)
+    assert "Fixed the token refresh." in tail and "fix login" in tail
+    assert "SECRET-TOOL-BODY" not in tail and "API Error" not in tail
+    assert recap_mod._recap_tail([{"role": "user", "text": "hi"}] + tools, ended=True) == ""
+    assert recap_mod._recap_tail([], ended=True) == ""
+    # The fold (ended=False) keeps its original rules: last 8 turns, no widening.
+    assert recap_mod._recap_tail(prose + tools) == ""
+
+
+def test_recap_tail_keeps_an_unanswered_last_user_message():
+    turns = [{"role": "user", "text": "go"},
+             {"role": "assistant", "text": "done"},
+             {"role": "user", "text": "and again"}]
+    assert recap_mod._recap_tail(turns, ended=True).endswith("User: and again")
+    assert recap_mod._recap_tail(turns) == ""  # the fold: the reader spoke last
+
+
+def test_an_ended_turn_with_no_prose_is_stored_empty_not_failed(
+        agent, project, calls, store, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("user", "and again"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    assert recap_mod._recap(agent, target, SESSION, FOR_UUID, ended=True) == ""
+    stored = store.session_recap(store.settings_state(), SESSION)
+    assert stored["empty"] is True and _spawns(calls) == []
+    # A fold under the same transcript stores nothing.
+    recap_mod._recap(agent, target, SESSION, "u-other")
+    assert store.session_recap(store.settings_state(), SESSION)["for_uuid"] == FOR_UUID
+
+
+# --- with `task_recap_titles_enabled` the endpoint only READS the store ---
+
+def test_flag_on_endpoint_reads_the_store_and_never_spawns(
+        client, project, calls, store, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    body = _get(client, target).json()
+    assert body["text"] == "" and body["pending"] is True  # nothing stored yet
+
+    store.record_recap(SESSION, FOR_UUID, "Stored by the worker", now=1.0)
+    body = _get(client, target).json()
+    assert body["text"] == "Stored by the worker" and body["pending"] is False
+
+    store.record_recap(SESSION, FOR_UUID, "", now=2.0, empty=True)
+    body = _get(client, target).json()
+    assert body["text"] == "" and body["pending"] is False
+    store.record_recap(SESSION, FOR_UUID, "", now=3.0)  # a failure: may still land
+    assert _get(client, target).json()["pending"] is True
+    assert _spawns(calls) == []
+
+
+def test_flag_off_endpoint_still_generates_with_no_pending_key(
+        client, project, calls, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
+    body = _get(client, target).json()
+    assert body["text"] and "pending" not in body
+    assert len(_spawns(calls)) == 1

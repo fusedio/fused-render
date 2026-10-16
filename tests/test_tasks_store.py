@@ -1059,6 +1059,31 @@ def test_erasing_a_session_erases_what_it_ran_with(state_dir):
     assert tasks_store.session_settings(state, "sess-b") == ("opus", "max")
 
 
+def test_a_recap_rides_on_the_settings_record_and_goes_with_an_erase(state_dir):
+    """The turn recap is one more field on the session's record (Akshil,
+    2026-10-15: "just add a field in json"): it leaves model/effort alone, it
+    is replaced by a newer turn's, and an erase takes the whole record."""
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    tasks_store.record_recap("sess-a", "u-1", "Fixed the login bug", now=10.0)
+    state = tasks_store.settings_state()
+    assert tasks_store.session_settings(state, "sess-a") == ("haiku", "low")
+    assert tasks_store.session_recap(state, "sess-a") == {
+        "text": "Fixed the login bug", "for_uuid": "u-1", "at": 10.0,
+        "empty": False}
+
+    tasks_store.record_recap("sess-a", "u-2", "", now=20.0)  # a failed turn
+    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a") == {
+        "text": "", "for_uuid": "u-2", "at": 20.0, "empty": False}
+    tasks_store.record_recap("sess-a", "u-3", "", now=30.0, empty=True)
+    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a")["empty"] is True
+    assert tasks_store.session_recap(state, "nobody") is None
+    assert tasks_store.record_recap("", "u-1", "x") == {}
+    assert tasks_store.record_recap("sess-a", "", "x") == {}
+
+    tasks_store.forget_session("sess-a")
+    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a") is None
+
+
 # ------------------------------------------------- did the user say anything?
 # `user_row_after` — the evidence a tombstone asks for before it lets a row
 # come back (routers/tasks.py:_deleted). Read from the END of the transcript,
@@ -1304,3 +1329,23 @@ def test_acquire_lease_blocking_waits_for_a_real_rival_to_release(state_dir):
         assert done.wait(timeout=2)  # now it can proceed
     finally:
         t.join(timeout=2)
+
+
+def test_update_writes_through_a_tmp_file_and_replace(state_dir, monkeypatch):
+    """Unlocked readers must never see a half-written store: the write goes to
+    a sibling tmp file and lands with `os.replace`."""
+    import os as _os
+
+    seen = []
+    real = _os.replace
+
+    def spy(src, dst):
+        with open(src, encoding="utf-8") as f:
+            seen.append((src, dst, f.read()))
+        return real(src, dst)
+
+    monkeypatch.setattr(tasks_store.os, "replace", spy)
+    tasks_store.record_recap("sess-a", "u-1", "Fixed the login bug", now=1.0)
+    src, dst, body = seen[-1]
+    assert src != dst and src.startswith(dst) and "Fixed the login bug" in body
+    assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a")["text"]

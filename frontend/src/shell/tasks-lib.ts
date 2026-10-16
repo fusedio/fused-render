@@ -79,6 +79,18 @@ export function firstLine(text: string): string {
   return text.split("\n").map((s) => s.trim()).find(Boolean) ?? text.trim();
 }
 
+/** One line of plain words from Claude's markdown reply — the client's twin of
+ *  the server's `_recap_plain` (routers/claude_sessions.py): a leading list
+ *  marker, heading or quote mark goes, as do `**`, `__` and backticks, and
+ *  whitespace collapses. */
+function plainLine(text: string): string {
+  return firstLine(text)
+    .replace(/^\s*(?:[#>]+|[-*+]|\d+[.)])\s+/, "")
+    .replace(/\*\*|__|`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** What a task's title row draws, and whether it is a message. */
 export interface CardTitle {
   /** The one line to print. "" when the task has neither a message nor a title,
@@ -89,6 +101,30 @@ export interface CardTitle {
    *  The caption follows it (the message, not the title, is what the one-line
    *  clamp is hiding); nothing else on the row changes with it. */
   said: boolean;
+  /** Where `text` came from. `recap` and `reply` only ever appear with prefs
+   *  `task_recap.enabled` on (the row then carries a `recap` key). */
+  kind: "recap" | "reply" | "said" | "title";
+  /** The whole of what `text` is one line of — the title's `data-hint`. */
+  hint: string | undefined;
+}
+
+/** What the server prints in `last_reply` for a stopped turn (routers/tasks.py
+ *  `_INTERRUPTED_REPLY`). A status line, not Claude's words, so it never titles
+ *  a row. */
+export const INTERRUPTED_REPLY = "Interrupted by you";
+
+/** The statuses whose turn has ENDED — the ones a recap or a reply may title.
+ *  Every other status is work in flight or still ahead, and keeps the reader's
+ *  own words. */
+const TURN_ENDED = new Set(["done", "blocked", "archived"]);
+
+/** Whether task recap titles are on, as the row itself says it: the server
+ *  puts a `recap` key on a row (null until one lands) ONLY with
+ *  `task_recap_titles_enabled` on (routers/tasks.py `_row`), and leaves it off
+ *  otherwise. With it on, the title carries the words and the italic reply
+ *  sub-line is not drawn. */
+export function recapTitlesOn(task: { recap?: unknown }): boolean {
+  return task.recap !== undefined;
 }
 
 /** THE ONE LINE EVERY VIEW TITLES A TASK BY — the List row, the Board card,
@@ -103,9 +139,26 @@ export interface CardTitle {
 export function cardTitleLine(task: {
   title?: string | null;
   last_message?: { text: string } | null;
+  status?: string;
+  last_reply?: string;
+  recap?: { text: string; for_uuid: string } | null;
 }): CardTitle {
+  // TASK RECAPS (prefs `task_recap.enabled`; the server sends `recap` — even
+  // as null — only with it on). A finished turn is titled by its haiku recap
+  // once it lands, and by the first line of Claude's reply until then (or for
+  // good, if haiku failed). A running turn keeps the rule below.
+  if (recapTitlesOn(task) && TURN_ENDED.has(task.status ?? "")) {
+    const recap = (task.recap?.text ?? "").trim();
+    if (recap) return { text: firstLine(recap), said: false, kind: "recap", hint: recap };
+    const reply = plainLine(task.last_reply ?? "");
+    if (reply && reply !== INTERRUPTED_REPLY) {
+      return { text: reply, said: false, kind: "reply", hint: task.last_reply };
+    }
+  }
   const said = firstLine(task.last_message?.text ?? "");
-  return said ? { text: said, said: true } : { text: firstLine(task.title ?? ""), said: false };
+  return said
+    ? { text: said, said: true, kind: "said", hint: task.last_message?.text }
+    : { text: firstLine(task.title ?? ""), said: false, kind: "title", hint: task.title ?? undefined };
 }
 
 /** A path as a person reads it: $HOME collapsed to "~". */

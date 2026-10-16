@@ -66,6 +66,7 @@ import {
   putGitAutoSyncEnabled,
   putAutoDownloadUpdates,
   putProjectQueueEnabled,
+  putTaskRecapTitlesEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putLanEnabled,
   putLauncherHotkey,
@@ -89,7 +90,7 @@ import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
-import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
+import { publishProjectQueueEnabled, publishTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
 import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { IS_QUERY_EMBED, navigate, navigateUrl } from "@platform/lib/router";
 import { displayName, isBot } from "@platform/lib/flavor";
@@ -877,6 +878,46 @@ function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: 
         />
         <span>
           <b>Project queue</b> (one task at a time per folder).
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Task recaps: a short haiku recap of every finished turn titles its Tasks row.
+// Opt-in, the queue section's shape, because it spends a haiku call per turn.
+function TaskRecapSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `=== true`: OPT-IN, so a server that predates the field has no recaps.
+  const enabled = prefs.task_recap?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putTaskRecapTitlesEnabled(!enabled);
+      onChange(next);
+      publishTaskRecapTitlesEnabled(next.task_recap?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Task recaps</h2>
+      <p className="deploy-muted">
+        Title each task with a short AI recap of its last turn (runs haiku after every finished turn).
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Task recaps</b> (opt-in beta).
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -1968,6 +2009,7 @@ export default function Preferences() {
                 {!bot && <AppSharingSection prefs={prefs} onChange={setPrefs} />}
                 {!bot && <GithubLinkSection prefs={prefs} onChange={setPrefs} />}
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
+                <TaskRecapSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />}
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <LivePreviewsSection prefs={prefs} onChange={setPrefs} />}

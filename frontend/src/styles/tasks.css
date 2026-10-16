@@ -445,6 +445,16 @@ button.tasks-caret,
   text-overflow: ellipsis;
 }
 
+/* A title that is a RECAP (task recaps on, tasks-lib `kind: "recap"`) reads at
+   weight 100, DELIBERATELY the lightest (Akshil, 2026-10-16): it is a sentence
+   about the task, not the reader's own words, and the row's weight is what
+   tells those two apart. A
+   title that is the reader's message, with or without the reply line after
+   it, keeps the 500 above. */
+.tasks-title.is-recap {
+  font-weight: 100;
+}
+
 /* First line of Claude's newest reply, filling the space after the title in the
    List row only: grey, italic, same size. Gives way before the title does. */
 .tasks-title-reply {
