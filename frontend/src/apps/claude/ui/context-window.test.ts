@@ -320,26 +320,34 @@ describe("contextReport", () => {
     expect(small.columns).toBe(10);
     expect(small.rows).toBe(10);
     expect(small.squares).toHaveLength(100);
-    // 42% of 100 squares, and the rest free — no buffer row, which is what
-    // 2.1.300's `/context` shows for every model.
-    expect(small.squares.filter((s) => s.kind === "messages")).toHaveLength(42);
-    expect(small.squares.filter((s) => s.kind === "buffer")).toHaveLength(0);
-    expect(small.squares.filter((s) => s.kind === "free")).toHaveLength(58);
+    // 84k of the 197k compaction point is 42.6% — 43 squares, the rest free.
+    expect(small.squares.filter((s) => s.kind === "messages")).toHaveLength(43);
+    expect(small.squares.filter((s) => s.kind === "free")).toHaveLength(57);
 
     const big = contextReport("claude-sonnet-5", input(285_229));
     expect(big.columns).toBe(20);
     expect(big.squares).toHaveLength(200);
+    // 285,229 / 997,000 = 28.6% of 200 squares.
     expect(big.squares.filter((s) => s.kind === "messages")).toHaveLength(57);
   });
 
-  it("draws no autocompact buffer on any model", () => {
-    // Opus 5: a 1M grid, 100k of it used, the rest free.
-    const r = contextReport("claude-opus-5", input(100_000, "claude-opus-5"));
-    expect(r.squares).toHaveLength(200);
-    expect(r.squares.filter((s) => s.kind === "buffer")).toHaveLength(0);
-    expect(r.squares.filter((s) => s.kind === "messages")).toHaveLength(20);
+  it("adds up: Messages is the headline's numerator and the rows sum to its denominator", () => {
+    // Input AND output, over the compaction point — the same pair the headline
+    // prints, so the three numbers on screen agree with each other.
+    const u = usage({
+      cache_read_input_tokens: 90_000,
+      output_tokens: 10_000,
+      model: "claude-opus-5",
+    });
+    const r = contextReport("claude-opus-5", u);
+    expect([r.total, r.compactAt, r.pct]).toEqual([100_000, 997_000, 10]);
     expect(r.legend.map((row) => row.label)).toEqual(["Messages", "Free space"]);
-    expect(r.legend[1]!.tokens).toBe(900_000);
+    expect(r.legend[0]!.tokens).toBe(r.total);
+    expect(r.legend[0]!.tokens + r.legend[1]!.tokens).toBe(r.compactAt);
+    expect(r.legend[0]!.pct).toBe("10.0");
+    expect(r.legend[1]!.pct).toBe("90.0");
+    expect(r.squares).toHaveLength(200);
+    expect(r.squares.filter((s) => s.kind === "messages")).toHaveLength(20);
   });
 
   it("names the one category we can honestly claim, and says so", () => {
@@ -347,11 +355,11 @@ describe("contextReport", () => {
     expect(r.legend.map((row) => row.label)).toEqual(["Messages", "Free space"]);
     const messages = r.legend[0]!;
     expect(messages.tokens).toBe(84_000);
-    expect(messages.pct).toBe("42.0");
+    expect(messages.pct).toBe("42.6");
     // We have no per-category split, so the row says the whole sum is in play
     // rather than implying the other ten categories measured zero.
     expect(messages.note).toBe("(all context in use)");
-    expect(r.legend[1]!.tokens).toBe(116_000);
+    expect(r.legend[1]!.tokens).toBe(113_000);
   });
 
   it("suggests nothing until 80%, then quotes the CLI's own line", () => {

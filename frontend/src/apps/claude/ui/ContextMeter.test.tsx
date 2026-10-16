@@ -154,7 +154,7 @@ test("the breakdown is `/context`: a block chart, then its legend", () => {
   ).toBe("claude-haiku-4-5");
 });
 
-test("no window draws an autocompact buffer; a 1M model gets 200 squares", () => {
+test("the popover has Messages and Free space only; a 1M model gets 200 squares", () => {
   const view = render(
     <ContextReportView
       usage={usage({ cache_read_input_tokens: 100_000, model: "claude-opus-5" })}

@@ -325,13 +325,13 @@ export function contextHint(
 
 /** One square of the grid. */
 export interface ContextSquare {
-  kind: "messages" | "buffer" | "free";
+  kind: "messages" | "free";
   glyph: string;
 }
 
 /** One legend row under the grid. */
 export interface ContextLegendRow {
-  kind: "messages" | "buffer" | "free";
+  kind: "messages" | "free";
   label: string;
   glyph: string;
   tokens: number;
@@ -344,10 +344,11 @@ export interface ContextLegendRow {
 export interface ContextReport {
   model: string;
   window: number;
-  /** The grid's used tokens — input, clipped to the window, as `/context` draws it. */
+  /** The grid's used tokens — `total`, clipped to `compactAt`. */
   used: number;
   /** The headline's pair: the whole conversation and the compaction point it is
-   *  measured against — `pct` is `total / compactAt`, the ring's own number. */
+   *  measured against — `pct` is `total / compactAt`, the ring's own number,
+   *  and every row of the legend is a share of that same `compactAt`. */
   total: number;
   compactAt: number;
   pct: number;
@@ -361,7 +362,6 @@ export interface ContextReport {
 
 const GLYPH_FULL = "⛁"; // a filled square, fullness >= 0.7
 const GLYPH_PART = "⛀"; // ...and its lighter twin below that
-const GLYPH_BUFFER = "⛝";
 const GLYPH_FREE = "⛶";
 
 /** `round`, min 1 for a segment that has any tokens at all: a category worth
@@ -387,31 +387,22 @@ export function contextReport(
   usage: ContextUsage | null | undefined,
 ): ContextReport {
   const id = (model || "").trim();
-  const {
-    model: modelWindow,
-    compactAt,
-    enforced,
-  } = contextThresholds(model, usage);
+  const { model: modelWindow, compactAt } = contextThresholds(model, usage);
   const columns = modelWindow >= WINDOW_1M ? 20 : 10;
   const rows = 10;
   const cells = columns * rows;
-  const used = Math.max(0, Math.min(contextInput(usage), modelWindow));
-  // `window − H`: the room the CLI holds back so a compaction has somewhere to
-  // land. Drawn only when a window is actually enforced — with `source: "auto"`
-  // the CLI prints no buffer row at all.
-  const buffer = enforced ? Math.max(0, modelWindow - compactAt) : 0;
+  // ONE NUMERATOR AND ONE DENOMINATOR for the whole popover: the headline is
+  // `total / compactAt`, so the grid, Messages and Free space are drawn on the
+  // same pair. The first cut drew them on input-only over the model's full
+  // window, and the three numbers on screen did not add up (Akshil,
+  // 2026-10-16: Messages ≠ the headline, Messages + Free ≠ its denominator).
+  const total = contextTotal(usage);
+  const used = Math.max(0, Math.min(total, compactAt));
 
-  let messageCells = squaresFor(used, modelWindow, cells);
-  let bufferCells = squaresFor(buffer, modelWindow, cells);
-  if (messageCells + bufferCells > cells) {
-    // The arithmetic can overflow by a square at the rounding edges; the buffer
-    // gives way first, because the number being read is the used one.
-    messageCells = Math.min(messageCells, cells);
-    bufferCells = Math.max(0, cells - messageCells);
-  }
-  const freeCells = Math.max(0, cells - messageCells - bufferCells);
+  const messageCells = Math.min(cells, squaresFor(used, compactAt, cells));
+  const freeCells = Math.max(0, cells - messageCells);
 
-  const exact = (used / modelWindow) * cells;
+  const exact = (used / compactAt) * cells;
   const squares: ContextSquare[] = [];
   for (let i = 0; i < messageCells; i++) {
     // How full THIS square is: the one at the frontier is a part-square, and
@@ -422,14 +413,11 @@ export function contextReport(
       glyph: fullness >= 0.7 ? GLYPH_FULL : GLYPH_PART,
     });
   }
-  for (let i = 0; i < bufferCells; i++) {
-    squares.push({ kind: "buffer", glyph: GLYPH_BUFFER });
-  }
   for (let i = 0; i < freeCells; i++) {
     squares.push({ kind: "free", glyph: GLYPH_FREE });
   }
 
-  const pctOf = (n: number): string => ((n / modelWindow) * 100).toFixed(1);
+  const pctOf = (n: number): string => ((n / compactAt) * 100).toFixed(1);
   const legend: ContextLegendRow[] = [];
   if (used > 0) {
     legend.push({
@@ -441,16 +429,7 @@ export function contextReport(
       note: "(all context in use)",
     });
   }
-  if (buffer > 0) {
-    legend.push({
-      kind: "buffer",
-      label: "Autocompact buffer",
-      glyph: GLYPH_BUFFER,
-      tokens: buffer,
-      pct: pctOf(buffer),
-    });
-  }
-  const free = Math.max(0, modelWindow - used - buffer);
+  const free = Math.max(0, compactAt - used);
   legend.push({
     kind: "free",
     label: "Free space",
