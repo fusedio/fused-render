@@ -93,6 +93,9 @@ EXCLUDED_NAMES = (
 #: Process names whose crash reports / ps lines are ours.
 _PS_NEEDLES = (_flavor.app_name(), "fused_render", _flavor.app_support_name(),
                "fused-apple-ai", "claude")
+#: How many of everyone else's processes `_ps_text` names, by CPU and by RSS.
+_PS_TOP_CPU = 15
+_PS_TOP_RSS = 10
 _REDACT_KEY = re.compile(r"token|secret|key|password|credential", re.I)
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
@@ -649,11 +652,6 @@ def _memory_text() -> str | None:
             text += f"/proc/meminfo: {e}\n"
         return text
     return None
-
-
-#: How many of everyone else's processes `_ps_text` names, by CPU and by RSS.
-_PS_TOP_CPU = 15
-_PS_TOP_RSS = 10
 
 
 def _ps_text() -> str | None:
