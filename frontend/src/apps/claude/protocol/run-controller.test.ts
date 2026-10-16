@@ -1082,8 +1082,10 @@ describe("follow-ups (T:16024, D687)", () => {
     // `draft_key` is the one field T never sent, and it is native's own: this
     // send has no session, so it is the send that CREATES one and it names the
     // `new:<file>` draft whose TASK number has to follow (PR #1118 round 5).
-    // Every other field is T's, spelled T's way.
+    // Every other field is T's, spelled T's way — bar `backend`, the agent the
+    // chat runs on (docs/COPILOT_BACKEND.md D2), which every start names.
     expect(Object.keys(started.fields).sort()).toEqual([
+      "backend",
       "draft_key",
       "effort",
       "file",
@@ -1715,8 +1717,9 @@ describe("follow-ups (T:16024, D687)", () => {
     ]);
     expect(made.agent.of("cancel")).toEqual([]);
     const sent = made.agent.of("send")[0]!.fields;
-    // The same field set legacy posts (T:16138-16150).
+    // The same field set legacy posts (T:16138-16150), plus `backend` (D2).
     expect(Object.keys(sent).sort()).toEqual([
+      "backend",
       "effort",
       "message",
       "model",
