@@ -1551,7 +1551,7 @@ export interface Prefs {
   // order instead (`ranked_search_enabled` server-side).
   // `low_impact` (default OFF) is the quiet-on-a-busy-Mac mode
   // (`index_low_impact_enabled` server-side).
-  indexing: { enabled: boolean; ranked: boolean; low_impact: boolean };
+  indexing: { enabled: boolean; ranked: boolean; low_impact?: boolean };
   // App git auto-sync (default ON; fused_render/shell/prefs.py's
   // `git_auto_sync_enabled`). OPTIONAL: an older server answers without it.
   git?: { auto_sync: boolean };

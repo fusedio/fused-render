@@ -138,7 +138,7 @@ export function LowImpactToggle({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const lowImpact = prefs.indexing.low_impact;
+  const lowImpact = prefs.indexing.low_impact ?? false;
 
   const toggle = async () => {
     if (busy) return;
@@ -165,7 +165,8 @@ export function LowImpactToggle({
         <span>
           <b>Low-impact indexing.</b> Keeps the index quiet on a busy Mac: one watcher
           per machine, longer waits before rescans, one worker at a time, and only the
-          changed chunks rewritten. Search results may lag a minute or two.
+          changed chunks rewritten. Search results may lag a minute or two, and
+          changes inside hidden dot-folders wait for the hourly pass.
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
