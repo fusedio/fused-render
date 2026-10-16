@@ -27,13 +27,13 @@
 // state — whether there is a pane at all, its width, the divider drag, and
 // `_side` itself — stays in Listing; this component owns only what the pane
 // shows.
+import { useEffect } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { ChatMount } from "@apps/claude";
 import { usePaneFocusGuard } from "@apps/explorer/listing/usePaneFocusGuard";
 import {
   SideCloseButton,
-  SideMaximizeButton,
   SideTabs,
   paneSideIcon,
 } from "@apps/explorer/SideChrome";
@@ -85,6 +85,11 @@ export default function ListingPreviewPane({
   // focus contract — platform/lib/frame-focus.ts).
   const { rootRef, guardProps } = usePaneFocusGuard<HTMLDivElement>();
   const maximized = useSideMaximized();
+  // Full screen is the chat's (its ⋮ holds the toggle), so leaving the chat
+  // tab leaves full screen too.
+  useEffect(() => {
+    if (!undecided && side !== "claude") setSideMaximized(false);
+  }, [side, undecided]);
 
   // --- the pane's modes (listing/pane-side.ts) --------------------------------
   // A TAB STRIP over the two companions the pane may be on (SideChrome's
@@ -129,10 +134,6 @@ export default function ListingPreviewPane({
       )}
       <div className="side-header-tail">
         {sideTabs}
-        {/* The chat carries Full screen in its own ⋮ (Kebab). */}
-        {side !== "claude" ? (
-          <SideMaximizeButton maximized={maximized} onToggle={() => setSideMaximized(!maximized)} />
-        ) : null}
       </div>
     </div>
   );
