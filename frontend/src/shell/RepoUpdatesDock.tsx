@@ -691,6 +691,9 @@ function RepoRowView({
   // one button a row offers today, and it costs nothing to leave general
   // enough to survive this row ever growing a second action again.
   const [busyAction, setBusyAction] = useState<RepoAction | null>(null);
+  // "Fix with Claude" goes with the Claude switch (D17); subscribed so the
+  // catalog's first answer, or a flip, repaints the row.
+  useAgentBackends();
   const [failure, setFailure] = useState<MutationResult | null>(null);
   // The button that produced `failure`, named in the Fix prompt.
   const [lastAction, setLastAction] = useState<RepoAction>(row.primaryAction);
