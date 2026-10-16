@@ -52,7 +52,7 @@ _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")
 def _declaring_folders():
     return sorted(
         name for name in os.listdir(_TEMPLATES)
-        if os.path.isfile(os.path.join(_TEMPLATES, name, "pyproject.toml"))
+        if projectenv.has_project_env(os.path.join(_TEMPLATES, name))
     )
 
 

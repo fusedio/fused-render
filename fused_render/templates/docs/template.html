@@ -1293,8 +1293,8 @@
       if (/is read-only/.test(e.message)) applyReadonly("Read-only", RO_TOOLTIP_DEFAULT);
     } finally { S.saving = false; updateSavedTag(); }
   }
-  async function ensureTypst() {
-    const st = await py({ action: "typst_status" }).catch(() => ({ available: false }));
+  async function ensureTool(tool, title, body) {
+    const st = await py({ action: tool + "_status" }).catch(() => ({ available: false }));
     if (st.available) return true;
     return await new Promise((resolve) => {
       closeDialog();
@@ -1302,9 +1302,9 @@
       wrap.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,.28);display:grid;place-items:center;z-index:80";
       const card = document.createElement("div");
       card.style.cssText = "background:#fff;border-radius:10px;box-shadow:var(--shadow-2);padding:20px;width:min(420px,92vw);text-align:center";
-      card.innerHTML = `<div style="font-weight:600;margin-bottom:6px">PDF export needs the typst compiler</div>
-        <div style="font-size:12.5px;color:var(--ink-2);margin-bottom:14px">The first PDF export downloads the typst compiler (~30 MB). This happens once.</div>
-        <button class="btn primary" id="tyGo">Download typst (~30 MB)</button>
+      card.innerHTML = `<div style="font-weight:600;margin-bottom:6px">${title}</div>
+        <div style="font-size:12.5px;color:var(--ink-2);margin-bottom:14px">${body}</div>
+        <button class="btn primary" id="tyGo">Download ${tool}</button>
         <div id="tyBar" class="hidden" style="height:6px;border-radius:4px;background:var(--hair-2);overflow:hidden;margin:14px 0"><div style="height:100%;background:var(--blue);width:0%;transition:width .2s"></div></div>
         <div id="tyDetail" style="font-size:12px;color:var(--ink-2);word-break:break-word"></div>
         <div style="margin-top:14px"><button class="btn" id="tyCancel">Cancel</button></div>`;
@@ -1316,7 +1316,7 @@
       card.querySelector("#tyGo").onclick = async () => {
         card.querySelector("#tyGo").classList.add("hidden");
         card.querySelector("#tyBar").classList.remove("hidden");
-        try { await py({ action: "typst_install" }); }
+        try { await py({ action: tool + "_install" }); }
         catch (e) {
           card.querySelector("#tyDetail").textContent = e.message;
           card.querySelector("#tyGo").classList.remove("hidden");
@@ -1324,10 +1324,10 @@
         }
         const poll = async () => {
           if (done) return;
-          const s = await py({ action: "typst_status" }).catch(() => null);
+          const s = await py({ action: tool + "_status" }).catch(() => null);
           if (done) return;   // canceled while the status call was in flight
           const p = (s && s.progress) || {};
-          if (s && s.available) { toast("typst installed."); finish(true); return; }
+          if (s && s.available) { toast(tool + " installed."); finish(true); return; }
           if (p.error) {
             card.querySelector("#tyDetail").textContent = p.error;
             card.querySelector("#tyGo").classList.remove("hidden");
@@ -1344,7 +1344,8 @@
   async function doExport(fmt) {
     if (!S.view) return;
     $("exportMenu").classList.add("hidden");
-    if (fmt === "pdf" && !(await ensureTypst())) return;
+    if (fmt === "pdf" && !(await ensureTool("typst", "PDF export needs the typst compiler",
+      "The first PDF export downloads the typst compiler (~30 MB). This happens once."))) return;
     toast("Preparing " + fmt.toUpperCase() + "…", 8000);
     try {
       // A Word download keeps native comments; other formats get content only.
@@ -1550,9 +1551,6 @@
   // autosave (debounced) on edits
   let saveTimer; onDocChange = () => { buildTOC(); if (!$("panel").classList.contains("hidden") && S.panelTab === "comments") renderPanel(); clearTimeout(saveTimer); saveTimer = setTimeout(() => S.dirty && doSave("auto"), 4000); };
 
-  // warm pandoc in the background so the first export is fast
-  py({ action: "warmup" }).catch(() => {});
-
   // ---- boot: load the file, mount the editor ----
   $("boot").classList.add("hidden");
   if (!IS_DOC) {
@@ -1560,9 +1558,13 @@
     $("nofile").textContent = "Unsupported file type: " + BASENAME + " — this template only opens .docx and .odt files.";
     return;
   }
-  let res;
-  try { res = await py({ action: "import", file: FILE }); }
-  catch (e) { res = { error: e.message }; }
+  const load = () => py({ action: "import", file: FILE }).catch((e) => ({ error: e.message }));
+  let res = await load();
+  if (res.missing_pandoc) {
+    res = (await ensureTool("pandoc", "Opening documents needs pandoc",
+      "The first document you open downloads pandoc (~40 MB), the converter this editor reads and writes files with. This happens once."))
+      ? await load() : { error: "pandoc is not installed." };
+  }
   if (res.error) {
     $("nofile").classList.remove("hidden");
     $("nofile").textContent = "Cannot open " + BASENAME + ": " + res.error;

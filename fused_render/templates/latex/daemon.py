@@ -5,10 +5,9 @@ brutal for this chatty template (compile → outline+bib, ~1.5 s status polls, a
 synctex probe per cursor settle). So the page spawns this daemon once (one
 runPython → `{port, token}`) and makes every later engine call over direct HTTP,
 dispatched straight to `engine.main()` — no second copy of the domain logic (the
-geotiff/netcdf/zarr pattern). Runs in the folder's project venv, so export's
-`import pypandoc` resolves here. A random per-run token gates every request; the
-server self-exits after 30 min idle and respawns when daemon.py/engine.py/
-pyproject.toml change.
+geotiff/netcdf/zarr pattern). Runs in the folder's project venv. A random
+per-run token gates every request; the server self-exits after 30 min idle and
+respawns when daemon.py/engine.py/pyproject.toml change.
 
 Run detached:  python daemon.py --serve
 """

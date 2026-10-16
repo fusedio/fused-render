@@ -116,98 +116,33 @@ def test_should_defer_download_only_on_a_sustained_cold_fetch(eng):
     assert d(many, 5.0) is True
 
 
-def _fake_pypandoc(monkeypatch, convert):
-    import types
-    mod = types.ModuleType("pypandoc")
-    mod.convert_file = convert
-    monkeypatch.setitem(sys.modules, "pypandoc", mod)   # export does `import pypandoc`
-
-
-def test_export_calls_pypandoc_and_returns_the_file(eng, tmp_path, monkeypatch):
+def _fake_pandoc(eng, tmp_path, monkeypatch, returncode=0):
     monkeypatch.setattr(eng, "_export_dir_for", lambda p: str(tmp_path))
-    seen = {}
+    monkeypatch.setattr(eng.pandoc_bin, "path", lambda: "pandoc")
+    seen = []
 
-    def convert(src, to, format=None, outputfile=None, extra_args=None):
-        seen.update(src=src, to=to, format=format)
-        open(outputfile, "w", encoding="utf-8").write("converted")
-    _fake_pypandoc(monkeypatch, convert)
+    def fake_run(cmd, **kw):
+        seen.append(cmd)
+        if returncode == 0:
+            out = next(a for a in cmd if a.startswith("--output="))[len("--output="):]
+            open(out, "w", encoding="utf-8").write("converted")
+        return subprocess.CompletedProcess(cmd, returncode, stdout="", stderr="pandoc boom")
+    monkeypatch.setattr(eng.subprocess, "run", fake_run)
+    return seen
 
+
+def test_export_runs_pandoc_and_returns_the_file(eng, tmp_path, monkeypatch):
+    seen = _fake_pandoc(eng, tmp_path, monkeypatch)
     r = eng.main(action="export", path=_tex(tmp_path), target="md")
     assert r.get("name", "").endswith(".md") and r.get("size", 0) > 0 and "error" not in r
-    assert seen["to"] == "gfm" and seen["format"] == "latex+raw_tex"
+    assert seen[0][:3] == ["pandoc", "--from=latex+raw_tex", "--to=gfm"]
 
 
-def test_export_surfaces_a_pypandoc_failure(eng, tmp_path, monkeypatch):
-    monkeypatch.setattr(eng, "_export_dir_for", lambda p: str(tmp_path))
-
-    def convert(*a, **k):
-        raise RuntimeError("pandoc boom")
-    _fake_pypandoc(monkeypatch, convert)
-
+def test_export_surfaces_a_pandoc_failure_and_a_missing_pandoc(eng, tmp_path, monkeypatch):
+    _fake_pandoc(eng, tmp_path, monkeypatch, returncode=1)
     r = eng.main(action="export", path=_tex(tmp_path), target="html")
-    assert "error" in r and "pandoc boom" in r["error"]
+    assert "pandoc boom" in r["error"] and not r.get("missing_pandoc")
 
-
-def test_pandoc_venv_returns_cached_without_building(eng, tmp_path, monkeypatch):
-    pandoc = tmp_path / "_pandoc"
-    vdir = pandoc / "venv" / "bin"
-    vdir.mkdir(parents=True)
-    vpy = vdir / "python"
-    vpy.write_text("", encoding="utf-8")
-    (pandoc / "deps_ok").write_text("ok", encoding="utf-8")
-    monkeypatch.setattr(eng, "PANDOC_DIR", str(pandoc))
-    monkeypatch.setattr(eng.subprocess, "run",
-                        lambda *a, **k: pytest.fail("must not rebuild an existing venv"))
-    assert eng._pandoc_venv_python() == str(vpy)
-
-
-def test_pandoc_venv_builds_once_and_writes_marker_after_a_clean_install(eng, tmp_path, monkeypatch):
-    pandoc = tmp_path / "_pandoc"
-    monkeypatch.setattr(eng, "PANDOC_DIR", str(pandoc))
-    monkeypatch.setattr(eng.shutil, "which", lambda n: "uv" if n == "uv" else None)
-    runs = []
-
-    def fake_run(cmd, **kw):
-        runs.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0)
-    monkeypatch.setattr(eng.subprocess, "run", fake_run)
-
-    eng._pandoc_venv_python()
-    assert any("venv" in c for c in runs) and any("install" in c for c in runs)
-    assert os.path.exists(os.path.join(str(pandoc), "deps_ok"))   # only after a clean install
-
-
-def test_pandoc_venv_leaves_no_marker_when_install_fails(eng, tmp_path, monkeypatch):
-    # A failed uv install must NOT write deps_ok, so the next export rebuilds
-    # rather than reusing a half-built tree.
-    pandoc = tmp_path / "_pandoc"
-    monkeypatch.setattr(eng, "PANDOC_DIR", str(pandoc))
-    monkeypatch.setattr(eng.shutil, "which", lambda n: "uv" if n == "uv" else None)
-
-    def fail_install(cmd, **kw):
-        if "install" in cmd:
-            raise subprocess.CalledProcessError(1, cmd)
-        return subprocess.CompletedProcess(cmd, 0)
-    monkeypatch.setattr(eng.subprocess, "run", fail_install)
-
-    with pytest.raises(subprocess.CalledProcessError):
-        eng._pandoc_venv_python()
-    assert not os.path.exists(os.path.join(str(pandoc), "deps_ok"))
-
-
-def test_export_falls_back_to_ondemand_venv_when_pypandoc_missing(eng, tmp_path, monkeypatch):
-    # The built-in engine runs export on the app interpreter (no folder venv), so
-    # `import pypandoc` fails and we must fetch pandoc on demand instead of crashing.
-    import json as _json
-    monkeypatch.setattr(eng, "_export_dir_for", lambda p: str(tmp_path))
-    monkeypatch.setitem(sys.modules, "pypandoc", None)          # import pypandoc -> ImportError
-    monkeypatch.setattr(eng, "_pandoc_venv_python", lambda: "pyexe")
-
-    def fake_run(cmd, **kw):
-        a = _json.loads(cmd[-1])                                 # the conversion job rides in argv
-        open(a["out"], "w", encoding="utf-8").write("converted")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-    monkeypatch.setattr(eng.subprocess, "run", fake_run)
-
-    r = eng.main(action="export", path=_tex(tmp_path), target="md")
-    assert r.get("name", "").endswith(".md") and r.get("size", 0) > 0 and "error" not in r
+    monkeypatch.setattr(eng.pandoc_bin, "path", lambda: None)
+    r = eng.main(action="export", path=_tex(tmp_path), target="html")
+    assert r["missing_pandoc"] is True
