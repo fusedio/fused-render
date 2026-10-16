@@ -276,8 +276,19 @@ def _watcher_argv(root: str) -> list:
 
     cfg = load_config()
     spec = {"root": root, "ignore": list(cfg.rules.patterns),
-            "index_dir": cfg.dir}
+            "index_dir": cfg.dir, "low_impact": _low_impact()}
     return [sys.executable, "-m", WATCHER_MODULE, json.dumps(spec)]
+
+
+def _low_impact() -> bool:
+    """The low-impact indexing flag, read per call. Lazy import: the prefs
+    module imports this one's importers."""
+    try:
+        from fused_render.shell.prefs import index_low_impact_enabled
+
+        return index_low_impact_enabled()
+    except Exception:  # noqa: BLE001 - a bad prefs file means "off"
+        return False
 
 
 def _end_process(proc: subprocess.Popen) -> None:
@@ -390,7 +401,8 @@ def _make_loop(root: str, stop_event: threading.Event) -> WatchLoop:
         root,
         open_source=lambda r: _real_open_source(r, stop_event),
         dropped=make_dropped(load_config().rules,
-                              index_dir=load_config().dir),
+                              index_dir=load_config().dir,
+                              root=root, low_impact=_low_impact()),
         # `WatchLoop` calls `forward(folders)` (or `forward(folders,
         # hinted=False)` for the burst-overflow, error-recovery and
         # periodic-backstop cases) with a single iterable
@@ -464,6 +476,12 @@ def start() -> None:
         except Exception:
             logger.exception("index watch: could not start a watcher for "
                              "%s; the other roots are unaffected", root)
+
+
+def is_armed() -> bool:
+    """Whether the server has the watcher running (between `start()` and
+    `stop()`), paused by the indexing preference or not."""
+    return _armed
 
 
 def stop() -> None:

@@ -359,6 +359,35 @@ def acquire_lease_blocking(name: str) -> None:
         _lease_handles[name] = handle
 
 
+def try_acquire_lease(name: str) -> bool:
+    """Claim `name`'s lease WITHOUT waiting: True when this process now holds
+    it (or already did — idempotent, same as `acquire_lease_blocking`), False
+    when another open file description holds it. Unlike the blocking claim,
+    a lease taken this way may be handed back with `release_lease` — the
+    index watcher's ownership lease (`server/index_owner.py`) yields to a
+    preferred process instead of holding for life."""
+    with _lease_lock:
+        if name in _lease_handles:
+            return True
+        handle = _open_lease_file(name)
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            handle.close()
+            return False
+        _lease_handles[name] = handle
+        return True
+
+
+def release_lease(name: str) -> None:
+    """Give back a lease this process holds (a no-op when it holds none).
+    Closing the handle is what drops the flock."""
+    with _lease_lock:
+        handle = _lease_handles.pop(name, None)
+    if handle is not None:
+        handle.close()
+
+
 def reset_leases_for_tests() -> None:
     """Test-only escape hatch: release every lease this process holds, so a
     test can simulate losing/giving up a role (or simply not leak a held

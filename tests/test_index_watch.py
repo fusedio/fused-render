@@ -612,3 +612,47 @@ def test_the_real_sleep_is_interruptible_by_stop_event():
     assert elapsed < 5.0, (
         f"sleep(30.0) took {elapsed:.2f}s after stop_event was set almost "
         "immediately — it is not interruptible")
+
+
+# ------------------------------------------------- low-impact indexing flag
+
+
+def test_the_app_support_dir_is_always_dropped_and_default_ignored():
+    """Self-writes (updates, pid/port files) — flag or not, ignore list or
+    not."""
+    from fused_render import _flavor
+
+    support = norm(os.path.join(_flavor.app_support_base(), "updates", "x.dmg"))
+    assert make_dropped(IgnoreRules([]))(support)
+    assert make_dropped(IgnoreRules([]), low_impact=False)(support)
+    assert IgnoreRules(default_ignore()).is_ignored_tree(support)
+
+
+def test_dot_segments_below_the_root_are_dropped_only_under_the_flag():
+    root = norm(os.path.expanduser("~/proj"))
+    hidden = [f"{root}/.venv/lib/x.py", f"{root}/a/.cache2/b", f"{root}/.env"]
+    plain = [f"{root}/a/b.txt", f"{root}/a.b/c"]
+    on = make_dropped(IgnoreRules([]), root=root, low_impact=True)
+    off = make_dropped(IgnoreRules([]), root=root, low_impact=False)
+    for p in hidden:
+        assert on(p), p
+        assert not off(p), p
+    for p in plain:
+        assert not on(p), p
+    # Relative to the root: a root that itself sits under a dot folder still
+    # sees its ordinary files.
+    dot_root = norm(os.path.expanduser("~/.config/proj"))
+    assert not make_dropped(IgnoreRules([]), root=dot_root,
+                            low_impact=True)(f"{dot_root}/a.txt")
+
+
+def test_the_watcher_spec_carries_the_flag(monkeypatch):
+    import json as _json
+
+    import fused_render.shell.prefs as prefs
+    from fused_render.server import index_watch
+
+    for on in (True, False):
+        monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda on=on: on)
+        argv = index_watch._watcher_argv("/home/me")
+        assert _json.loads(argv[-1])["low_impact"] is on

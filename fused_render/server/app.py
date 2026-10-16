@@ -359,6 +359,11 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
                 logger.info("startup: %s took %.1fs", name, took)
         logger.info("startup: %d handler(s) in %.1fs",
                     len(startup_handlers), time.monotonic() - t_all)
+        # "Every startup handler finished" — what work deferred past the
+        # boot (the low-impact startup index scan) waits on.
+        done = getattr(getattr(app, "state", None), "startup_done", None)
+        if done is not None:
+            done.set()
         try:
             yield
         finally:
@@ -488,6 +493,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # the exact sequence against what `on_event` produced.
     app.state.startup_handlers = startup_handlers
     app.state.shutdown_handlers = shutdown_handlers
+    app.state.startup_done = threading.Event()
     app.state.start_dir = start_dir
 
     @on_startup_full
@@ -1221,6 +1227,17 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         if not extras.available("index"):
             return
+        from fused_render.shell.prefs import index_low_impact_enabled
+
+        if index_low_impact_enabled():
+            # Low-impact indexing: nothing index-shaped on the boot path. A
+            # daemon thread waits for every startup handler to finish, plus a
+            # grace period, then prunes, scans (only as the watcher owner)
+            # and warms.
+            index_routes.start_deferred_startup_scan(
+                start_dir, app.state.startup_done)
+            index_routes.start_index_job_bridge()
+            return
         await index_routes.startup_scan(start_dir)
         # ...and warm the corpus path the explorer's home search reads, on a
         # detached thread, so the gitignore sweep and the duckdb import are
@@ -1249,12 +1266,24 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         if not extras.available("index"):
             return
+        from fused_render.shell.prefs import index_low_impact_enabled
+
+        if index_low_impact_enabled():
+            # Low-impact indexing: one watcher per Mac. The owner lease
+            # (server/index_owner.py) starts this process's watcher only
+            # while it holds the lease, and stops it on handover.
+            from fused_render.server import index_owner
+
+            index_owner.ensure_owner_waiter(on_acquire=index_watch.start,
+                                            on_release=index_watch.stop)
+            return
         index_watch.start()
 
     @on_shutdown
     async def _shutdown_index_watch():
-        from fused_render.server import index_watch
+        from fused_render.server import index_owner, index_watch
 
+        index_owner.stop_waiter()
         index_watch.stop()
 
     # THE IN-APP UPDATE MANAGER (update/mac.py, update/linux.py), for every

@@ -506,3 +506,90 @@ def test_startup_kick_failure_never_fails_startup(tmp_path, monkeypatch):
     handler, run = _grab_startup_handler(
         tmp_path, monkeypatch, "_startup_kick_fused_web_workbench_skills")
     run(handler())  # must not raise
+
+
+# ------------------------------------------- low-impact deferred startup scan
+
+
+def test_the_lifespan_sets_startup_done_after_every_handler():
+    import threading
+    from types import SimpleNamespace
+
+    done = threading.Event()
+    seen = []
+
+    async def handler():
+        seen.append(done.is_set())
+
+    async def go():
+        app = SimpleNamespace(state=SimpleNamespace(startup_done=done))
+        async with _lifespan([handler], [])(app=app):
+            seen.append(done.is_set())
+
+    asyncio.run(go())
+    assert seen == [False, True]
+
+
+def _index_scan_handler(app):
+    return next(h for h in app.state.startup_handlers
+                if h.__name__ == "_startup_index_scan")
+
+
+def test_with_the_flag_on_the_startup_scan_is_not_awaited(monkeypatch):
+    import fused_render.shell.prefs as prefs
+    from fused_render import extras
+    from fused_render.server.routers import index as index_routes
+
+    app = create_app(start_dir=".")
+    calls = []
+
+    async def fake_scan(start_dir=None):
+        calls.append("scan")
+
+    monkeypatch.setattr(extras, "available", lambda name: True)
+    monkeypatch.setattr(index_routes, "startup_scan", fake_scan)
+    monkeypatch.setattr(index_routes, "startup_warm", lambda: calls.append("warm"))
+    monkeypatch.setattr(index_routes, "start_index_job_bridge", lambda: None)
+    monkeypatch.setattr(index_routes, "start_deferred_startup_scan",
+                        lambda d, ev: calls.append(("deferred", ev)))
+
+    monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: True)
+    asyncio.run(_index_scan_handler(app)())
+    assert calls == [("deferred", app.state.startup_done)]
+
+    calls.clear()
+    monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: False)
+    asyncio.run(_index_scan_handler(app)())
+    assert calls == ["scan", "warm"]
+
+
+@pytest.mark.parametrize("owner,want", [(True, ["scan", "warm"]),
+                                        (False, ["prune", "warm"])])
+def test_the_deferred_scan_waits_for_startup_done(monkeypatch, owner, want):
+    import threading
+
+    import fused_render.shell.prefs as prefs
+    from fused_render.server import index_owner
+    from fused_render.server.routers import index as index_routes
+
+    calls = []
+    monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: True)
+    monkeypatch.setattr(index_owner, "owns", lambda: owner)
+    monkeypatch.setattr(index_routes, "run_startup_scan",
+                        lambda d=None: calls.append("scan"))
+    monkeypatch.setattr(index_routes.runner, "prune_runs",
+                        lambda cfg, keep: calls.append("prune"))
+    monkeypatch.setattr(index_routes, "startup_warm", lambda: calls.append("warm"))
+
+    ready = threading.Event()
+    waited = []
+    t = threading.Thread(target=index_routes.run_deferred_startup_scan,
+                         args=(".", ready),
+                         kwargs={"delay_s": 0.01, "wait": waited.append})
+    t.start()
+    time.sleep(0.2)
+    assert calls == []  # still waiting for the app to report ready
+    ready.set()
+    t.join(timeout=5)
+    assert waited == [0.01]
+    assert calls == want

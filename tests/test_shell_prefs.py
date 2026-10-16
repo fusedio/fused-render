@@ -1612,3 +1612,34 @@ def test_put_rejects_bad_auto_download_updates(tmp_path, monkeypatch):
         "/api/prefs", json={"auto_download_updates": "yes"}, headers=FUSED
     ).status_code == 400
     assert not (home / "prefs.json").exists()
+
+
+def test_low_impact_toggle_runs_the_owner_hook_after_the_write(tmp_path, monkeypatch):
+    """`index_low_impact_enabled` flips the watcher ownership (server/
+    index_owner.py) after prefs.json is written, with the stored value; other
+    prefs never call it."""
+    from fused_render.server import index_owner
+
+    client, home = _client(tmp_path, monkeypatch)
+    seen = []
+
+    def hook(enabled):
+        stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+        seen.append((enabled, stored["index_low_impact_enabled"]))
+
+    monkeypatch.setattr(index_owner, "on_flag_changed", hook)
+    client.put("/api/prefs", json={"index_low_impact_enabled": True}, headers=FUSED)
+    client.put("/api/prefs", json={"index_low_impact_enabled": False}, headers=FUSED)
+    client.put("/api/prefs", json={"indexing_enabled": True}, headers=FUSED)
+    assert seen == [(True, True), (False, False)]
+
+
+def test_low_impact_toggle_on_a_test_app_starts_nothing(tmp_path, monkeypatch):
+    """No lifespan ran, so no watcher and no waiter: the real hook is a no-op."""
+    from fused_render.server import index_owner
+
+    client, _home = _client(tmp_path, monkeypatch)
+    assert client.put("/api/prefs", json={"index_low_impact_enabled": True},
+                      headers=FUSED).status_code == 200
+    assert not index_owner.waiter_running()
+    client.put("/api/prefs", json={"index_low_impact_enabled": False}, headers=FUSED)

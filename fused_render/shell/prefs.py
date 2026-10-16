@@ -1351,6 +1351,16 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             index_watch.resume()
         else:
             index_watch.pause()
+    if "index_low_impact_enabled" in body:
+        # AFTER the write: the owner waiter, the watcher child spec and the
+        # rescan queue all read the flag back from the stored preference.
+        # On: compete for the machine-wide watcher lease (stopping this
+        # process's free-running watcher until it wins); off: give the lease
+        # back and run the watcher as before. A no-op on a server that never
+        # started the watcher. Lazy import, same cycle as above.
+        from fused_render.server import index_owner
+
+        index_owner.on_flag_changed(bool(prefs.get("index_low_impact_enabled")))
     if "lan_enabled" in body and not _flavor.is_bot():
         # AFTER the write, like `engines` below: the listener follows the stored
         # preference, and a failure to bind is reported in the response's

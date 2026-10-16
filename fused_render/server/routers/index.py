@@ -394,6 +394,49 @@ async def startup_scan(start_dir: str | None = None) -> None:
     await asyncio.to_thread(run_startup_scan, start_dir)
 
 
+#: Low-impact indexing: how long after the app reports ready the deferred
+#: startup scan waits before it starts.
+DEFERRED_STARTUP_DELAY_S = 15.0
+#: ...and the most it waits for the "startup finished" signal at all.
+DEFERRED_STARTUP_READY_TIMEOUT_S = 600.0
+
+
+def run_deferred_startup_scan(start_dir, ready, *,
+                              delay_s: float = DEFERRED_STARTUP_DELAY_S,
+                              wait=None) -> None:
+    """The low-impact startup scan, off the boot path: wait for `ready` (a
+    `threading.Event` the lifespan sets once every startup handler
+    finished), then `delay_s` more, then scan — only if this process owns
+    the index watcher (or the flag was turned off meanwhile); a non-owner
+    only prunes its old run dirs. The warm runs either way. Never raises."""
+    try:
+        ready.wait(DEFERRED_STARTUP_READY_TIMEOUT_S)
+        (wait or time.sleep)(delay_s)
+        from fused_render.server import index_owner
+        from fused_render.shell.prefs import index_low_impact_enabled
+
+        if not index_low_impact_enabled() or index_owner.owns():
+            run_startup_scan(start_dir)
+        else:
+            logger.info("index: startup scan skipped (another process owns "
+                        "the index watcher)")
+            try:
+                runner.prune_runs(load_config(), keep=KEEP_RUNS)
+            except Exception:  # noqa: BLE001 - housekeeping only
+                logger.exception("could not prune old index runs")
+        startup_warm()
+    except Exception:  # noqa: BLE001 - a background thread must not raise
+        logger.exception("deferred startup index scan failed")
+
+
+def start_deferred_startup_scan(start_dir, ready) -> threading.Thread:
+    t = threading.Thread(target=run_deferred_startup_scan,
+                         args=(start_dir, ready),
+                         name="index-startup-deferred", daemon=True)
+    t.start()
+    return t
+
+
 # ------------------------------------------------------------- startup warm
 
 def warm_root() -> str:
