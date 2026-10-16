@@ -535,8 +535,11 @@ def _plan_partial_merge(con, old_parts_meta, files_dir, outside, kept, shard_src
     `shard_owner` (shard columns plus `owner`) that the caller reads per run.
 
     Returns `None` — fall back to the full rewrite — when a manifest-named
-    file is missing, a partition carries no bounds, nothing is affected, or
-    every partition is."""
+    file is missing, a partition carries no bounds, a partition predates the
+    `depth` column (a mixed-schema store is unreadable; the full rewrite
+    migrates every partition), nothing is affected, or every partition is."""
+    import pyarrow.parquet as pq
+
     from fused_render.index.query import prune
 
     n = len(old_parts_meta)
@@ -545,6 +548,9 @@ def _plan_partial_merge(con, old_parts_meta, files_dir, outside, kept, shard_src
     for p in old_parts_meta:
         if p.get("min") is None or not os.path.exists(
                 os.path.join(files_dir, p["file"])):
+            return None
+        if "depth" not in pq.read_schema(
+                os.path.join(files_dir, p["file"])).names:
             return None
     prefix = "" if rootp == "/" else rootp + "/"
     candidates = {id(p) for p in prune(old_parts_meta, prefix)}
@@ -779,10 +785,20 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
             # is unioned with, and a positional UNION ALL would fail outright
             # rather than merge. Backfill it from the path instead (see
             # depth_expr).
-            fcols = pq.read_schema(old_files[0]).names
-            fdp = "depth" if "depth" in fcols else f"{depth_expr('path')} AS depth"
+            # A store can mix pre-`depth` and current partitions (the partial
+            # merge hands those to this path to migrate): bind by name and
+            # backfill per row.
+            has_depth = ["depth" in pq.read_schema(p).names for p in old_files]
+            if all(has_depth):
+                fdp, full_src = "depth", old_src
+            else:
+                fdp = f"coalesce(depth, {depth_expr('path')}) AS depth"
+                full_src = old_src[:-1] + ", union_by_name=true)"
+                if not any(has_depth):
+                    fdp = f"{depth_expr('path')} AS depth"
+                    full_src = old_src
             srcs.append(f"SELECT path, dir, name, ext, size, mtime, {fdp} "
-                        f"FROM {old_src} WHERE {outside} OR {kept}")
+                        f"FROM {full_src} WHERE {outside} OR {kept}")
         if has_shards:
             srcs.append(f"SELECT * FROM {shard_src}")
         src = " UNION ALL ".join(srcs) or None

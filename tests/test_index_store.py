@@ -752,6 +752,31 @@ def test_partial_merge_falls_back_to_full_rewrite_when_every_partition_is_touche
     assert summary["merged_rewrite"] is False
 
 
+def test_partial_merge_migrates_a_store_with_a_pre_depth_partition(tmp_path):
+    """A partition written before the `depth` column existed must not be
+    carried forward next to new ones: a mixed-schema manifest breaks readers.
+    Any such partition forces the full rewrite, which writes `depth` everywhere."""
+    cfg = _build_ten_dir_store(tmp_path)
+    old = read_manifest(cfg)["partitions"][7]
+    path = os.path.join(cfg.files_dir, old["file"])
+    t = pq.read_table(path)
+    pq.write_table(t.drop(["depth"]), path)
+
+    update = [("/r/d02", _scanned("sig2-changed",
+                                   [_row("/r/d02/f0.txt", size=999)],
+                                   999, 100, 0))]
+    keep = [(f"/r/d{i:02d}", 5) for i in range(10) if i != 2]
+    summary = compact(cfg, "/r", _shard(tmp_path, cfg, update, keep=keep), pa, pq)
+    assert summary["merged_rewrite"] is False
+    parts = read_manifest(cfg)["partitions"]
+    for p in parts:
+        assert "depth" in pq.read_schema(
+            os.path.join(cfg.files_dir, p["file"])).names
+    rows = _all_rows(cfg)
+    assert len(rows) == 50 - 5 + 1
+    assert len({r[0] for r in rows}) == len(rows)
+
+
 def test_partial_merge_at_the_boundary_one_partition_short_of_everything(tmp_path):
     """9 of 10 dirs change; exactly 1 stays untouched -- the boundary on the
     side where a merge still has something to save."""
