@@ -1857,7 +1857,9 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
     places that each know half: an empty `model` means "not saying", not "no
     model". Same invariant `tasks_store.record_settings` keeps on the server
     side — the two writers share one file, so they have to share one rule.
-    `backend` is written once, by `_start` (immutable per session, D2); an
+    `backend` is written once, by `_start` — or, for a fresh Copilot chat
+    whose id `_start` cannot know, by `_record_copilot_session` (immutable
+    per session, D2); an
     unknown value is not written at all.
 
     Locked (flock) for the whole read-modify-write, like
@@ -1896,6 +1898,33 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
                 json.dump(state, fh, indent=2, ensure_ascii=False)
     except OSError:
         pass
+
+
+def _record_copilot_session(run_dir: str, meta: dict, session_id: str) -> None:
+    """A FRESH Copilot chat's settings record, written the first time this
+    module names its id to a caller (`_poll`'s answer, `cancel`'s).
+
+    `_start` cannot write it: `copilot --acp` refuses `--session-id`, so the
+    id is Copilot's own, minted in `session/new` after the spawn (D2). The
+    server resolves an id's agent off this record first and falls back to
+    Claude, so it has to exist before the id is out. The values are the ones
+    `_start` would have recorded, kept on meta for this (`model`/`effort`).
+    One-shot per run (`settings_recorded`), set only once the record reads
+    back as Copilot, so a store that would not open is tried again next poll.
+    Claude runs and resumes (whose record `_start` wrote) are no-ops."""
+    if meta.get("backend") != "copilot" or meta.get("resumed_from") \
+            or not session_id or _bad_id(session_id):
+        return
+    done = os.path.join(run_dir, "settings_recorded")
+    if os.path.exists(done):
+        return
+    _record_settings(session_id, str(meta.get("model") or ""),
+                     str(meta.get("effort") or ""), "copilot")
+    if _session_backend(session_id) == "copilot":
+        try:
+            open(done, "w", encoding="utf-8").close()
+        except OSError:
+            pass
 
 
 def _permissions(run_dir: str) -> list:
@@ -4205,8 +4234,10 @@ def _host_alive(run_dir: str) -> bool:
     the host has overwritten it (see session_host.py), and the CLI can be
     freshly dead — a crash, the tail end of an idle-reap — with `host.json`
     still on disk for the instant before the host notices and removes it.
-    `host.json` is written once, right after the host spawns the CLI, and
-    removed in the host's own `finally` the moment it reaps (or dies) — so
+    `host.json` is written right after the host spawns the CLI (the Copilot
+    host rewrites it once more, with its session id, after the handshake;
+    `_send` re-records model/mode), and removed in the host's own `finally`
+    the moment it reaps (or dies) — so
     its PRESENCE plus an alive PID inside it is the host's own two-part
     answer to "is there still a queue to write a follow-up into"."""
     try:
@@ -4383,12 +4414,25 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
             host["mode"] = cli_mode
             host_changed = True
     if host_changed:
-        # Not racing the host itself: it writes host.json once, at spawn,
-        # and only ever removes it (in its own `finally`) after that — it
-        # never rewrites it mid-session, so this is the only writer for the
-        # life of the file.
-        with _private_open(os.path.join(run_dir, "host.json")) as f:
-            json.dump(host, f)
+        # TWO WRITERS. The Claude host writes host.json once, at spawn; the
+        # Copilot host REWRITES it after its handshake, to put Copilot's own
+        # session id in (read-modify-write + replace, `session_id` only). So
+        # this re-reads it just before writing and changes only the two keys
+        # it owns, then replaces it atomically — a reader never sees half a
+        # file, and the host's id is not written back over with the "" this
+        # send read. Gone by now (the host reaped) → nothing to record into.
+        path = os.path.join(run_dir, "host.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                fresh = json.load(fh)
+            if isinstance(fresh, dict):
+                fresh.update({k: host[k] for k in ("model", "mode") if k in host})
+                tmp = f"{path}.{os.urandom(4).hex()}.tmp"
+                with _private_open(tmp) as f:
+                    json.dump(fresh, f)
+                os.replace(tmp, path)
+        except (OSError, ValueError):
+            pass
     # WHAT THIS CHAT RUNS WITH, recorded for the same reason `_start` records
     # it and at the same moment in the send: a follow-up never passes through
     # `_start`, so without this a pill changed mid-session would reach the CLI
@@ -7707,15 +7751,14 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 # instead would leave a `session` file naming an id the CLI
                 # never used, for any run where the flag did not take.
                 open(marker, "w", encoding="utf-8").close()
-                if backend == "copilot" and not meta.get("resumed_from"):
-                    # A FRESH COPILOT CHAT'S SETTINGS RECORD, at the one
-                    # moment its id is first known (`_start` had none to
-                    # write it under). Same values `_start` would have
-                    # recorded, kept on meta for exactly this.
-                    _record_settings(new_session, str(meta.get("model") or ""),
-                                     str(meta.get("effort") or ""), backend)
         except OSError:
             pass  # session bookkeeping must never break the chat itself
+    # BEFORE this poll names a fresh Copilot chat's id to anyone, the record
+    # saying it is a Copilot chat exists — whatever `error` says, unlike the
+    # latch above: the server resolves an id's agent off that record first
+    # and falls back to Claude.
+    if new_session:
+        _record_copilot_session(run_dir, meta, new_session)
 
     # The streamed deltas are the full turn; the `result` row holds only the
     # LAST assistant message, so swapping to it after a tool-using turn threw
@@ -9987,8 +10030,11 @@ def main(action: str = "start", file: str = "", message: str = "",
                     meta = json.load(fh)
             except (OSError, ValueError):
                 meta = {}
-            result["session_id"] = _run_own_session(
-                run_dir, meta if isinstance(meta, dict) else {})
+            meta = meta if isinstance(meta, dict) else {}
+            result["session_id"] = _run_own_session(run_dir, meta)
+            if result["session_id"]:
+                # Named here too, possibly before any poll: same rule.
+                _record_copilot_session(run_dir, meta, result["session_id"])
         return result
     if action == "live_host":
         # "Is there a session I can hand a follow-up to?" — asked BEFORE

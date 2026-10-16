@@ -260,12 +260,105 @@ def test_a_fresh_copilot_chat_learns_its_id_from_the_stream(
                     {"type": "result", "subtype": "success", "is_error": False,
                      "result": "ok", "session_id": SID_COPILOT}):
             fh.write(json.dumps(row) + "\n")
+    assert agent._session_backend(SID_COPILOT) == ""     # nothing named it yet
+    # The FIRST poll that reports the id has already recorded it as Copilot:
+    # the server resolves an id's agent off this record and falls back to
+    # Claude, so it must never see the id first.
     assert agent._poll(res["run_id"])["session_id"] == SID_COPILOT
+    assert agent._session_backend(SID_COPILOT) == "copilot"
     with open(os.path.join(run_dir, "session")) as fh:
         assert fh.read() == SID_COPILOT
     assert os.path.exists(os.path.join(run_dir, "recorded"))
     assert agent._session_backend(SID_COPILOT) == "copilot"
     assert agent._session_settings(SID_COPILOT) == ("gpt-5.4", "high")
+
+
+def _fresh_copilot_run(agent, file, name="20261016-130000-aaa", rows=()):
+    """A fresh Copilot chat's run dir as `_start` leaves it: meta with no
+    `session_id`, a live host, and whatever the host has streamed."""
+    run_dir = os.path.join(agent.RUNS, name)
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": file, "message": "hi", "resumed_from": "",
+                   "mode": "prompt", "backend": "copilot",
+                   "model": "gpt-5.4", "effort": ""}, fh)
+    with open(os.path.join(run_dir, "pid"), "w") as fh:
+        fh.write(str(os.getpid()))
+    with open(os.path.join(run_dir, "host.json"), "w") as fh:
+        json.dump({"pid": os.getpid(), "session_id": "", "file": file,
+                   "mode": None, "model": "gpt-5.4", "effort": "",
+                   "read_dirs": [], "backend": "copilot"}, fh)
+    with open(os.path.join(run_dir, "out.jsonl"), "w") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+    return run_dir
+
+
+def test_an_errored_first_turn_still_records_before_naming(agent, target):
+    """The `recorded` latch skips an errored poll; the settings record does
+    not — the id goes out on that poll all the same."""
+    file, _ = target
+    run_dir = _fresh_copilot_run(agent, file, rows=(
+        {"type": "system", "subtype": "init", "session_id": SID_COPILOT},
+        {"type": "result", "subtype": "error_during_execution", "is_error": True,
+         "result": "boom", "session_id": SID_COPILOT}))
+    p = agent._poll(os.path.basename(run_dir))
+    assert p["session_id"] == SID_COPILOT and p["error"]
+    assert agent._session_backend(SID_COPILOT) == "copilot"
+    assert agent._session_settings(SID_COPILOT) == ("gpt-5.4", "")
+    assert not os.path.exists(os.path.join(run_dir, "recorded"))
+
+
+def test_cancel_names_a_fresh_copilot_id_only_once_recorded(agent, target, monkeypatch):
+    file, _ = target
+    run_dir = _fresh_copilot_run(agent, file, rows=(
+        {"type": "system", "subtype": "init", "session_id": SID_COPILOT},))
+    monkeypatch.setattr(agent, "_cancel", lambda run_id, **kw: {"ok": True})
+    out = agent.main("cancel", run_id=os.path.basename(run_dir))
+    assert out["session_id"] == SID_COPILOT
+    assert agent._session_backend(SID_COPILOT) == "copilot"
+
+
+def test_a_fresh_copilot_run_is_found_by_file_then_by_id(agent, target):
+    """Before its id is known a fresh Copilot run answers to its FILE; once
+    the host has said the id, to that too — `_live_host` (sends) and
+    `_live_run` (re-attach) alike, and neither hands the id out."""
+    file, _ = target
+    run_dir = _fresh_copilot_run(agent, file, rows=(
+        {"type": "user", "message": {"role": "user", "content": "hi"}},))
+    name = os.path.basename(run_dir)
+    assert agent._live_host(file) == {"run_id": name}
+    assert agent._live_host(file, SID_COPILOT) == {"run_id": ""}
+    assert agent._live_run(file)["run_id"] == name
+    assert agent._live_run(file, SID_COPILOT)["run_id"] == ""
+    # The host's init row lands: found by id, before any poll.
+    _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_COPILOT},
+                   {"type": "user", "message": {"role": "user", "content": "hi"}}])
+    assert agent._live_host(file, SID_COPILOT) == {"run_id": name}
+    assert agent._live_run(file, SID_COPILOT) == {"run_id": name, "backend": "copilot"}
+
+
+def test_send_keeps_the_session_id_the_copilot_host_wrote(agent, target, monkeypatch):
+    """`_send` re-records model/mode in host.json while the Copilot host may
+    be rewriting it with its own session id: re-read, two keys, replace."""
+    file, _ = target
+    run_dir = _fresh_copilot_run(agent, file)
+    path = os.path.join(run_dir, "host.json")
+    real = agent._write_control_request
+
+    def host_handshakes_meanwhile(*a, **k):
+        real(*a, **k)
+        with open(path) as fh:
+            host = json.load(fh)
+        host["session_id"] = SID_COPILOT
+        with open(path, "w") as fh:
+            json.dump(host, fh)
+    monkeypatch.setattr(agent, "_write_control_request", host_handshakes_meanwhile)
+    assert agent._send(os.path.basename(run_dir), "m", permission_mode="auto") == {"sent": True}
+    with open(path) as fh:
+        host = json.load(fh)
+    assert host["session_id"] == SID_COPILOT and host["mode"] == "auto"
+    assert not [n for n in os.listdir(run_dir) if n.endswith(".tmp")]
 
 
 def test_a_later_copilot_poll_still_names_the_session(agent, tmp_path):
