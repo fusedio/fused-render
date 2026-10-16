@@ -51,7 +51,7 @@ _appenv = _load_sibling_appenv()
 def claude_dir() -> str:
     """Claude Code's own data dir — the SAME one the CLI uses, so
     CLAUDE_CONFIG_DIR wins where the user set it."""
-    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    return os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
 
 
 def copilot_dir() -> str:
