@@ -787,7 +787,7 @@ def test_commit_racing_the_land_is_put_back_and_pinned(env, monkeypatch):
     result = _sync(bob)
     monkeypatch.setattr(replay, "_protect_after_move", real)
 
-    assert result["status"] == "skipped" and result["why"] == "land"
+    assert result["status"] == "skipped" and result["why"] == "moved"
     assert _head(bob) == raced[0]
     assert _read(bob, "claude.txt") == "WORK\n"
     pins = git(bob, "for-each-ref", "--format=%(objectname)", "refs/fused/backup/").split()
@@ -1104,29 +1104,43 @@ def _d(**kw):
 
 
 @pytest.mark.parametrize("facts, kind, why", [
-    # GitHub-link copy, rows 1-11 of `decide`'s table
+    # GitHub-link copy, rows 1-10 of `decide`'s table
     (dict(claude_busy=True, job_open=True), "wait", "claude"),
     (dict(job_open=True, merged_proposal=True), "skip", "merge-job"),
-    (dict(merged_proposal=True, standing="return"), "standing", "needs-merge"),
+    (dict(standing="needs-merge", clobber=(".env",)), "standing", "needs-merge"),
+    (dict(merged_proposal=True, standing="return", clobber=(".env",)), "standing",
+     "needs-merge"),
+    # a merged proposal's plain overlap gives way to the return
+    (dict(merged_proposal=True, standing="needs-merge"), "return", None),
+    (dict(clobber=(".env",), blocking_edits=("a",)), "blocked", "clobber"),
+    (dict(clobber=(".env",), merged_proposal=True), "blocked", "clobber"),       # r3: hoisted
+    (dict(blocking_edits=("a",), head_in_tip=True), "commit-edits", None),
+    (dict(blocking_edits=("a",), merged_proposal=True), "commit-edits", None),   # r3: hoisted
     (dict(merged_proposal=True), "return", None),
     (dict(merged_proposal=True, loop=False), "wait", "merged-proposal"),
-    (dict(tip_in_head=True, standing="needs-merge"), "noop", None),
-    (dict(standing="needs-merge", clobber=(".env",)), "standing", "needs-merge"),
-    (dict(clobber=(".env",), blocking_edits=("a",)), "blocked", "clobber"),
-    (dict(blocking_edits=("a",), head_in_tip=True), "commit-edits", None),
+    (dict(tip_in_head=True), "noop", None),
     (dict(head_in_tip=True), "move", "update"),
     (dict(base="H"), "move", "update"),
     (dict(), "integrate", "update-kept"),
-    # own copy, rows 1-9
+    # own copy, rows 1-10
     (dict(kind="own", claude_busy=True), "wait", "claude"),
     (dict(kind="own", job_open=True), "skip", "merge-job"),
-    (dict(kind="own", tip_in_head=True, push=True), "noop", None),
+    (dict(kind="own", tip_in_head=True, head_in_tip=True, rewritten=True), "noop", None),
     (dict(kind="own", standing="own-sync"), "standing", "needs-merge"),
     (dict(kind="own", clobber=(".env",)), "blocked", "clobber"),
+    (dict(kind="own", blocking_edits=("a",)), "blocked", "edits"),  # never committed for
     (dict(kind="own", head_in_tip=True, base=None), "move", "own-sync"),
-    (dict(kind="own", base=None), "rewritten", "rewritten"),
+    # THE INVARIANT: tip lacks `synced` (or it is unknown) — nothing pushed
+    (dict(kind="own", base=None, rewritten=True), "rewritten", "rewritten"),
+    (dict(kind="own", base=None, rewritten=True, tip_in_head=True, push=True),
+     "rewritten", "rewritten"),
     (dict(kind="own", base="H", rewritten=True), "move", "own-sync"),
-    (dict(kind="own", blocking_edits=("a",)), "integrate", "own-sync"),  # never committed for
+    (dict(kind="own", base="H", rewritten=True, tip_in_head=True, push=True),
+     "move", "own-sync"),                                         # r3: a pure rewind
+    (dict(kind="own", base="S", rewritten=True, tip_in_head=True, push=True),
+     "rewritten", "rewritten"),
+    (dict(kind="own", tip_in_head=True, push=True), "noop", None),
+    (dict(kind="own"), "integrate", "own-sync"),
 ])
 def test_decide_table(facts, kind, why):
     a = _d(**facts)
@@ -1245,3 +1259,281 @@ def test_job_open_precedes_the_merged_proposal_return(env, monkeypatch):
     monkeypatch.setattr(engine, "_job_open", lambda root: True)
     assert _sync(bob)["why"] == "merge-job"
     assert _head(bob) == proposed
+
+
+# ------------------------------------------------------- round-3 repros
+#
+# One invariant (`decide`'s docstring): an own copy pushes only onto a GitHub
+# tip that contains `synced`, the newest published point by HISTORY.
+
+
+def _remote_main(env):
+    return git(env.remote, "rev-parse", "refs/heads/main").strip()
+
+
+def _rewind_elsewhere(env, n=1):
+    other = str(env.tmp / "other")
+    git(str(env.tmp), "clone", "-q", env.remote, other)
+    _ident(other)
+    git(other, "reset", "-q", "--hard", f"HEAD~{n}")
+    git(other, "push", "-q", "--force", "origin", "main")
+    return other, _head(other)
+
+
+def test_r3_own_rewind_after_engine_push_is_never_republished(env):
+    """A key pushed by the engine, then main REWOUND on GitHub (force-push
+    back, no new commit): tip ⊆ HEAD, but the tip lacks `synced` — no push;
+    everything here was published, so the copy follows GitHub back."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    key = _commit(lap, "secret.txt", "API_KEY=sk\n", "add key")
+    assert _sync(lap, push=True)["pushed"] is True
+    _other, rewound = _rewind_elsewhere(env)
+    res = _sync(lap, push=True)
+    assert res["pushed"] is False and _remote_main(env) == rewound
+    assert _head(lap) == rewound
+    assert key in git(lap, "for-each-ref", "--format=%(objectname)", "refs/fused/backup/")
+    assert replay.rev(lap, replay.BASE_REF) == key   # never moved backward
+    again = _sync(lap, push=True)                    # and it stays put
+    assert again["pushed"] is False and _remote_main(env) == rewound
+
+
+def test_r3_own_rewind_after_terminal_push_is_never_republished(env):
+    """Same, the key pushed from a terminal (no `refs/fused/base` for it):
+    the tracking ref's reflog holds the published point."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    _commit(lap, "secret.txt", "API_KEY=sk\n", "add key")
+    git(lap, "push", "-q", "origin", "main")
+    _other, rewound = _rewind_elsewhere(env)
+    res = _sync(lap, push=True)
+    assert res["pushed"] is False and _remote_main(env) == rewound
+
+
+def test_r3_own_rewind_with_unpushed_work_is_rewritten_not_pushed(env):
+    """A rewind under a published key AND a commit never pushed: the
+    invariant fails and HEAD is not all published — the no-button
+    sentence, nothing pushed, nothing moved."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    _commit(lap, "secret.txt", "API_KEY=sk\n", "add key")
+    assert _sync(lap, push=True)["pushed"] is True
+    _other, rewound = _rewind_elsewhere(env)
+    mine = _commit(lap, "mine.txt", "mine\n", "unpushed")
+    res = _sync(lap, push=True)
+    assert res["status"] == "skipped" and res["why"] == "rewritten"
+    assert _remote_main(env) == rewound and _head(lap) == mine
+    nm = store.get(lap)["needs_merge"]
+    assert nm["rewritten"] and nm["button"] is False and nm["message"] == engine.REWRITTEN_MESSAGE
+
+
+def test_r3_own_dirty_overlap_is_shown_not_silently_stuck(env):
+    """Own copy: an unpushed commit + an uncommitted edit to a file GitHub's
+    side changed. Never committed for; a no-button sentence naming the file,
+    nothing pushed."""
+    _flags(env, sources=True, inbox=True)
+    mine = _bob(env, "own", kind="own")
+    head = _commit(mine, "mine.txt", "mine\n", "local commit")
+    write(mine, "a.txt", "one\ntwo\nthree\nDIRTY\n")
+    tip = _alice_commit(env, "a.txt", "ONE\ntwo\nthree\n", "other machine")
+    res = _sync(mine, push=True)
+    assert res["status"] == "skipped" and res["why"] == "edits"
+    assert _head(mine) == head and _remote_main(env) == tip
+    assert _read(mine, "a.txt") == "one\ntwo\nthree\nDIRTY\n"
+    nm = store.get(mine)["needs_merge"]
+    assert nm["button"] is False and nm["files"] == ["a.txt"] and "a.txt" in nm["message"]
+    assert engine.merge_plan(mine) is None
+    # Undone, the next sync replays and pushes, and the sentence goes.
+    write(mine, "a.txt", "one\ntwo\nthree\n")
+    res = _sync(mine, push=True)
+    assert res["status"] == "synced" and res["pushed"] is True
+    assert store.get(mine)["needs_merge"] is None
+
+
+def _merge_proposal(bob, sha):
+    def merged(r):
+        r["proposal"]["cache"] = {"state": "merged", "merge_commit_sha": sha,
+                                  "comment": None, "checked_at": 1}
+    store.update(bob, merged)
+
+
+def _merged_squash_with_dirty_edit(env, dirty):
+    _all_on(env)
+    bob = _bob(env)
+    proposed = _commit(bob, "a.txt", "one\nBOB\nthree\n", "bob proposes")
+    _propose(bob, proposed)
+    squash = _alice_commit(env, "a.txt", "one\nBOB, tidied\nthree\n", "squashed (#7)")
+    _merge_proposal(bob, squash)
+    write(bob, "a.txt", dirty)
+    return bob, proposed, squash
+
+
+def test_r3_return_with_a_dirty_edit_commits_it_and_lands(env):
+    """Merged proposal (squash) + an uncommitted edit to the file the squash
+    changes: the edit is committed (only it) and rides the return — never a
+    land refusing on every trigger."""
+    bob, proposed, squash = _merged_squash_with_dirty_edit(
+        env, "one\nBOB\nthree\nmore typing\n")
+    res = _sync(bob)
+    assert res["status"] == "synced"
+    assert _read(bob, "a.txt") == "one\nBOB, tidied\nthree\nmore typing\n"
+    git(bob, "merge-base", "--is-ancestor", squash, "HEAD")      # raises if not
+    assert git(bob, "show", "--name-only", "--format=", "HEAD").split() == ["a.txt"]
+    assert store.get(bob)["proposal"]["returned_at"]
+
+
+def test_r3_return_with_a_dirty_overlap_records_it_for_merge(env):
+    """Same, the edit overlapping the squash's own change: committed, and
+    the return's overlap recorded for Merge with Claude (purpose return)."""
+    bob, proposed, squash = _merged_squash_with_dirty_edit(env, "one\nBOB again\nthree\n")
+    res = _sync(bob)
+    assert res["status"] == "skipped" and res["why"] == "needs-merge"
+    head = _head(bob)
+    assert head != proposed and git(bob, "rev-parse", "HEAD^").strip() == proposed
+    assert git(bob, "show", "--name-only", "--format=", "HEAD").split() == ["a.txt"]
+    nm = store.get(bob)["needs_merge"]
+    assert nm["purpose"] == "return" and nm["head"] == head and nm["onto"] == squash
+    assert _sync(bob)["why"] == "needs-merge"            # standing, nothing re-run
+
+
+def test_r3_return_never_overwrites_an_ignored_file(env):
+    """Merged proposal + the author's tip newly tracks a file Bob has as an
+    IGNORED local file (.env): blocked with the rename sentence, as an
+    update is."""
+    _all_on(env)
+    bob = _bob(env)
+    write(bob, ".git/info/exclude", ".env\n")
+    write(bob, ".env", "BOB_SECRET=1\n")
+    proposed = _commit(bob, "b.txt", "bob\n", "bob proposes")
+    _propose(bob, proposed)
+    write(env.alice, "b.txt", "bob\n")
+    squash = _alice_commit(env, ".env", "ALICE_DEFAULT=0\n", "squash + .env")
+    _merge_proposal(bob, squash)
+    res = _sync(bob)
+    assert res["status"] == "skipped" and res["why"] == "clobber"
+    assert _read(bob, ".env") == "BOB_SECRET=1\n" and _head(bob) == proposed
+    nm = store.get(bob)["needs_merge"]
+    assert nm["button"] is False and nm["files"] == [".env"]
+
+
+def test_r3_your_edits_commits_only_the_blocking_paths(env):
+    """One blocking edit + an untracked file only Bob made (+ one he staged):
+    "Your edits" holds the blocking path alone."""
+    _all_on(env)
+    bob = _bob(env)
+    _sync(bob)
+    write(bob, "a.txt", "one\ntwo\nthree\nbob typing\n")       # blocking
+    write(bob, "creds.json", '{"token": "x"}\n')               # Bob-only, untracked
+    write(bob, "notes.txt", "staged\n")
+    git(bob, "add", "notes.txt")                                # Bob-only, staged
+    _alice_commit(env, "a.txt", "ONE\ntwo\nthree\n", "alice edits a")
+    res = _sync(bob)
+    assert res["status"] == "synced"
+    assert "Your edits" in git(bob, "log", "--format=%s", "-3")
+    assert "creds.json" not in git(bob, "log", "--name-only", "--format=", "-5").split()
+    assert "notes.txt" not in git(bob, "log", "--name-only", "--format=", "-5").split()
+    assert _read(bob, "creds.json") == '{"token": "x"}\n'
+    assert "notes.txt" in git(bob, "status", "--porcelain")
+
+
+def test_r3_own_no_reflog_keeps_the_terminal_push_via_origin_seen(env):
+    """BASE_REF from an earlier engine push, then a terminal push with the
+    tracking ref's reflog gone, then a rewrite elsewhere: origin-seen (pinned
+    before the fetch) is the published point — nothing re-published."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    _commit(lap, "x.txt", "x\n", "x")
+    assert _sync(lap, push=True)["pushed"] is True
+    git(lap, "config", "core.logAllRefUpdates", "false")
+    os.remove(os.path.join(lap, ".git", "logs", "refs", "remotes", "origin", "main"))
+    key = _commit(lap, "secret.txt", "API_KEY=sk\n", "add key")
+    git(lap, "push", "-q", "origin", "main")
+    other, _ = _rewind_elsewhere(env)
+    _commit(other, "index.html", "<p>v2</p>\n", "fix")
+    git(other, "push", "-q", "origin", "main")
+    _sync(lap, push=True)
+    assert git(env.remote, "show", "main:secret.txt", check=False) == ""
+    assert replay.rev(lap, replay.ORIGIN_SEEN_REF) == key
+
+
+def test_r3_own_no_reflog_and_no_pin_is_unknown(env, monkeypatch):
+    """No reflog and no origin-seen pin: `synced` is unknown — no push."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    git(lap, "config", "core.logAllRefUpdates", "false")
+    log = os.path.join(lap, ".git", "logs", "refs", "remotes", "origin", "main")
+    if os.path.exists(log):
+        os.remove(log)
+    assert engine._reflog_values(lap, "refs/remotes/origin/main") == []
+    _commit(lap, "mine.txt", "m\n", "m")
+    tip = _alice_commit(env, "p.txt", "p\n", "p")
+    monkeypatch.setattr(engine, "_pin_origin_seen", lambda root, fol: None)
+    res = _sync(lap, push=True)
+    assert res["why"] == "rewritten" and _remote_main(env) == tip
+
+
+def test_r3_fresh_clone_one_entry_reflog_still_replays_and_pushes(env):
+    """Sanity: a fresh own clone (one reflog entry), a local commit, GitHub
+    moved on — replayed and pushed."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    _commit(lap, "mine.txt", "m\n", "m")
+    _alice_commit(env, "p.txt", "p\n", "p")
+    res = _sync(lap, push=True)
+    assert res["status"] == "synced" and res["pushed"]
+    assert _remote_main(env) == _head(lap)
+
+
+def test_r3_synced_is_newest_by_history_not_by_reflog_order(env):
+    """Terminal-pushed key; GitHub rewinds; a plain fetch logs S->c1; the
+    author pushes a fix on c1. The reflog's newest value in HEAD is c1, but
+    `synced` is S (newest by history) — nothing re-published."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    _commit(lap, "secret.txt", "API_KEY=sk\n", "add key")
+    git(lap, "push", "-q", "origin", "main")
+    other, _ = _rewind_elsewhere(env)
+    git(lap, "fetch", "-q", "origin")          # intermediate plain fetch
+    _commit(other, "index.html", "<p>v2</p>\n", "fix")
+    git(other, "push", "-q", "origin", "main")
+    _sync(lap, push=True)
+    assert git(env.remote, "show", "main:secret.txt", check=False) == ""
+
+
+def test_r3_land_deferrals_say_why(env, monkeypatch):
+    """A land that cannot happen defers with its own why, not one `land`."""
+    import dataclasses
+
+    _all_on(env)
+    bob = _bob(env)
+    _alice_commit(env, "c.txt", "alice\n", "alice change")
+    real_land = replay.land_locked
+    monkeypatch.setattr(replay, "land_locked", lambda *a, **k: "reset-refused")
+    assert _sync(bob)["why"] == "reset-refused"
+    monkeypatch.setattr(replay, "land_locked", real_land)
+    real_facts = engine._facts
+    monkeypatch.setattr(engine, "_facts", lambda *a, **k: dataclasses.replace(
+        real_facts(*a, **k), claude_busy=False))
+    monkeypatch.setattr(engine, "_claude_busy", lambda root: True)  # a turn starts
+    assert _sync(bob)["why"] == "claude"
+
+
+def test_r3_origin_seen_stays_live_after_following_a_rewrite(env):
+    """The pin never moves backward while HEAD holds it; once the copy has
+    followed a rewrite (the old pin out of HEAD) it follows the new history
+    forward again with each push."""
+    _flags(env, sources=True, inbox=True)
+    lap = _bob(env, "own", kind="own")
+    key = _commit(lap, "secret.txt", "API_KEY=sk\n", "add key")
+    assert _sync(lap, push=True)["pushed"] is True
+    _sync(lap, push=True)
+    assert replay.rev(lap, replay.ORIGIN_SEEN_REF) == key
+    _other, rewound = _rewind_elsewhere(env)
+    _sync(lap, push=True)                         # follows the rewind back
+    assert _head(lap) == rewound and replay.rev(lap, replay.ORIGIN_SEEN_REF) == key
+    for i in range(2):
+        mine = _commit(lap, f"n{i}.txt", f"{i}\n", f"next {i}")
+        assert _sync(lap, push=True)["pushed"] is True and _remote_main(env) == mine
+    _sync(lap, push=True)
+    assert replay.rev(lap, replay.ORIGIN_SEEN_REF) == mine
+    assert git(env.remote, "show", "main:secret.txt", check=False) == ""

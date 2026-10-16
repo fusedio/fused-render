@@ -55,10 +55,12 @@ A DELIBERATE EXCEPTION TO D245 ("a manual edit commits nothing"), for
 GitHub-link copies only: uncommitted edits to files the AUTHOR's side of an
 update changes (`base..tip` — never a file only Bob touched) would make
 `reset --keep` refuse that update on every trigger, forever and silently.
-So they are committed first as one "Your edits" commit
-(`replay.commit_edits_locked`, the Propose pathspec) and ride the update
-like the rest of Bob's changes. They stay local — nothing leaves the
-machine without Propose — and an own app is never committed for.
+So exactly those paths are committed first as one "Your edits" commit
+(`replay.commit_edits_locked(paths=blocking_edits)` — an untracked file
+only Bob made stays out) and ride the update like the rest of Bob's
+changes. They stay local — nothing leaves the machine without Propose — and
+an own app is never committed for: there they are a `needs_merge` with no
+button and a sentence naming the file.
 
 WHAT "BASE" MEANS. `refs/fused/base` is the follow tip Bob's changes sit on
 (advanced by every land); `upstream` for a replay is that base when HEAD
@@ -67,18 +69,18 @@ install), else the merge-base. With an author force-push the merge-base
 would reach back into the author's OWN rewritten history and replay it as if
 it were Bob's; the base never does.
 
-AN OWN COPY NEVER RE-PUBLISHES WHAT ITS AUTHOR REMOVED (review r01). When
-the author's main on GitHub moved while this machine has unpushed commits,
-only the commits this machine NEVER pushed — `<synced>..HEAD` — are
-replayed onto the new tip and pushed. `synced` (`_synced`) is the newest
-PUBLISHED point HEAD contains: the newest value in origin's tracking ref's
-REFLOG that is in HEAD (every value that ref ever held came from GitHub),
-or `refs/fused/base` — so a plain fetch moving the tracking ref (the
-Doctor, a terminal) never hides it. A commit the author deliberately
-rewrote away (a leaked key) was pushed, so it is in `synced`, so it is
-never replayed. With no published point in HEAD at all, nothing is
-replayed or pushed: the overlap is recorded with a plain sentence and the
-edits stay where they are.
+AN OWN COPY NEVER RE-PUBLISHES WHAT ITS AUTHOR REMOVED (reviews r01, r2,
+r3 — one invariant, `decide`'s docstring). `synced` (`_synced`) is the
+newest BY HISTORY of every published point HEAD contains: the tracking
+ref's value pinned before each engine fetch (`refs/fused/origin-seen`,
+forward-only), every value its REFLOG records (old and new sides — every
+value that ref ever held came from GitHub), and `refs/fused/base`. An
+automatic push, and the replay that would feed one, happens only when
+GitHub's new tip CONTAINS `synced`. A commit the author deliberately
+removed (a leaked key, rewritten away or simply rewound) was published, so
+it is in `synced`, so a tip without it is never pushed onto: a no-button
+sentence instead, the edits staying where they are. No reflog and no pin
+means `synced` is unknown — the same answer.
 
 A PROPOSAL SURVIVES AN AUTO-INTEGRATE. Rebasing Bob's commits gives them new
 ids, so `proposal.proposed_head` would fall out of HEAD's history and every
@@ -339,19 +341,23 @@ def _protect_soon(root):
             replay.protect_locked(root)
 
 
-def _land(root, branch, old, new, why, *, mark_tip=None) -> bool:
+def _land(root, branch, old, new, why, *, mark_tip=None) -> str | None:
     """The only write of an integration: backup + final check + move, under
-    the slot. Defers (False) when the slot is busy, a Claude turn is running
-    in the folder, or `land_locked` refuses (the branch moved since the plan
-    was made — a fresh plan is the next trigger's)."""
+    the slot. None when it landed; else the `deferred` why — `slot-busy`,
+    `claude` (a turn is running in the folder), or `land_locked`'s refusal
+    (`moved`: the branch moved since the plan was made, a fresh plan is the
+    next trigger's; `in-progress`; `reset-refused`)."""
     with replay.slot() as held:
-        if not held or _claude_busy(root):
-            return False
-        if not replay.land_locked(root, branch=branch, old_tip=old, new_tip=new, why=why,
-                                  app_dir=root):
-            return False
+        if not held:
+            return "slot-busy"
+        if _claude_busy(root):
+            return "claude"
+        refused = replay.land_locked(root, branch=branch, old_tip=old, new_tip=new, why=why,
+                                     app_dir=root)
+        if refused:
+            return refused
         _carry_proposal_locked(root, mark_tip)
-        return True
+        return None
 
 
 _locks_guard = threading.Lock()
@@ -547,13 +553,35 @@ def _fetch(root, fol, *, own) -> tuple:
     follow ref and no FETCH_HEAD, so it runs without the slot; an own copy's
     `git fetch origin <branch>` writes FETCH_HEAD and origin's tracking ref —
     the files a plain auto-sync fetch writes too — so it holds the slot, for
-    the length of one bounded fetch."""
+    the length of one bounded fetch — and pins the published point the
+    fetch is about to move away from (`_pin_origin_seen`) first."""
     if not own:
         return follow.fetch_detail(root, fol)
     with replay.slot() as held:
         if not held:
             return None, "busy"
+        _pin_origin_seen(root, fol)
         return follow.fetch_detail(root, fol)
+
+
+def _pin_origin_seen(root, fol) -> None:
+    """Before an own copy's fetch: write the tracking ref's current value to
+    `refs/fused/origin-seen` when HEAD contains it and it descends from the
+    old pin — FORWARD ONLY, so a rewind or rewrite the fetch brings in can
+    never pull it back while HEAD still holds the old pin. An old pin HEAD
+    no longer contains (the copy followed a rewrite) no longer counts in
+    `_synced`, so it gives way and the pin stays live. Every value of that
+    ref came from GitHub, so this is a published point `_synced` keeps even
+    with no reflog. Slot held."""
+    cur = replay.rev(root, fol.ref)
+    head = replay.rev(root, "HEAD")
+    if not cur or not head or not replay.is_ancestor(root, cur, head):
+        return
+    old = replay.rev(root, replay.ORIGIN_SEEN_REF)
+    if old == cur or (old and replay.is_ancestor(root, old, head)
+                      and not replay.is_ancestor(root, old, cur)):
+        return
+    gu._run(root, "update-ref", replay.ORIGIN_SEEN_REF, cur)
 
 
 # ------------------------------------------------------------ the decision
@@ -571,13 +599,15 @@ class Facts:
                                # own: `synced`, the newest published point)
     tip_in_head: bool          # nothing of the author's / GitHub's is missing
     head_in_tip: bool          # nothing of this copy's is missing from tip
-    rewritten: bool            # own: GitHub's tip does not contain `base`
+    rewritten: bool            # own: `base` unknown, or GitHub's tip lacks it
+                               # (THE INVARIANT — nothing may be pushed)
     claude_busy: bool
     job_open: bool
     merged_proposal: bool      # proposal merged on GitHub and inside `tip`
     loop: bool                 # flags.loop()
     standing: str | None       # purpose of a needs_merge that still applies
-    blocking_edits: tuple      # uncommitted edits to files the AUTHOR's side changes
+    blocking_edits: tuple      # uncommitted edits to files the other side changes
+                               # (github: base..tip; own: synced..tip)
     clobber: tuple             # IGNORED local files `tip` would newly track
     push: bool                 # own: a push was asked for
     who: str | None
@@ -595,25 +625,40 @@ def decide(f: Facts) -> Action:
     the first that matches decides. No git, no store, no clock: given the
     same facts, the same action.
 
+    THE INVARIANT (own copies; reviews r01, r2, r3). `synced` is the most
+    recent BY HISTORY of every published point HEAD contains —
+    `refs/fused/origin-seen` (the tracking ref pinned before each engine
+    fetch, forward-only), every value the tracking ref's reflog records (old
+    and new sides), and `refs/fused/base` (`_synced`). An automatic push,
+    and an own replay that would feed one, is allowed ONLY when GitHub's new
+    tip contains `synced`; otherwise (`rewritten`, which also covers
+    `synced` unknown: no reflog and no pin) nothing is pushed or replayed —
+    a no-button sentence, or, when everything here was published, a move to
+    GitHub's tip. Own row 8 is the only row that checks it; only rows below
+    it may push.
+
     GitHub-link copy (`kind == "github"`):
 
     | # | situation                                   | action        | event        | needs_merge            |
     |---|---------------------------------------------|---------------|--------------|------------------------|
     | 1 | a Claude turn is running in the folder      | wait          | —            | unchanged              |
     | 2 | a Merge with Claude job is open             | skip          | —            | unchanged (the job's)  |
-    | 3 | proposal merged, in tip, a return overlap   | standing      | —            | unchanged              |
-    |   |   already recorded for this tip and HEAD    |               |              |                        |
-    | 4 | proposal merged, in tip, loop on            | return        | merged-back  | cleared / return       |
-    | 5 | proposal merged, in tip, loop off           | wait          | —            | unchanged              |
-    | 6 | tip ⊆ HEAD                                  | noop          | —            | cleared                |
-    | 7 | an overlap is recorded for this tip and HEAD| standing      | —            | unchanged              |
-    | 8 | tip newly tracks an IGNORED local file      | blocked       | —            | set, no button, says   |
+    | 3 | an overlap is recorded for this tip and HEAD| standing      | —            | unchanged              |
+    |   |   (a merged proposal's: only a return one)  |               |              |                        |
+    | 4 | tip newly tracks an IGNORED local file      | blocked       | —            | set, no button, says   |
     |   |                                             |               |              |   which file to rename |
-    | 9 | uncommitted edits to files the author's     | commit-edits  | —            | — (decide again)       |
-    |   |   side changes                              |               |              |                        |
-    |10 | HEAD ⊆ tip, or HEAD is just an old tip      | move          | updated      | cleared                |
+    | 5 | uncommitted edits to files the author's     | commit-edits  | —            | — (decide again)       |
+    |   |   side changes (only those are committed)   |               |              |                        |
+    | 6 | proposal merged, in tip, loop on            | return        | merged-back  | cleared / return       |
+    | 7 | proposal merged, in tip, loop off           | wait          | —            | unchanged              |
+    | 8 | tip ⊆ HEAD                                  | noop          | —            | cleared                |
+    | 9 | HEAD ⊆ tip, or HEAD is just an old tip      | move          | updated      | cleared                |
     |   |   (nothing of Bob's on top)                 |               |              |                        |
-    |11 | otherwise (Bob's changes + author moved)    | integrate     | updated-kept | cleared / needs-merge  |
+    |10 | otherwise (Bob's changes + author moved)    | integrate     | updated-kept | cleared / needs-merge  |
+
+    Rows 4-5 sit above the merged-proposal rows: the return lands with the
+    same `reset --keep`, so an ignored file it would overwrite or a dirty
+    overlap it would refuse on stops it exactly as it stops an update.
 
     Own copy with a GitHub repo (`kind == "own"`) — `base` is `synced`:
 
@@ -621,57 +666,62 @@ def decide(f: Facts) -> Action:
     |---|---------------------------------------------|---------------|--------------|------------------------|
     | 1 | a Claude turn is running in the folder      | wait          | —            | unchanged              |
     | 2 | a Merge with Claude job is open             | skip          | —            | unchanged              |
-    | 3 | GitHub's tip ⊆ HEAD                         | noop (+push)  | —            | cleared                |
+    | 3 | HEAD == GitHub's tip                        | noop          | —            | cleared                |
     | 4 | an overlap is recorded for this tip and HEAD| standing      | —            | unchanged              |
     | 5 | tip newly tracks an IGNORED local file      | blocked       | —            | set, no button         |
-    | 6 | HEAD ⊆ tip                                  | move (+push)  | —            | cleared                |
-    | 7 | no published point HEAD contains            | rewritten     | —            | set, no button         |
-    | 8 | synced == HEAD (all published; GitHub       | move          | —            | cleared                |
-    |   |   rewrote its history)                      |               |              |                        |
-    | 9 | otherwise                                   | integrate     | —            | cleared / own-sync     |
+    | 6 | uncommitted edits to files GitHub's side    | blocked       | —            | set, no button, names  |
+    |   |   changes (`synced..tip`) — never committed |               |              |   the file             |
+    | 7 | HEAD ⊆ tip                                  | move          | —            | cleared                |
+    | 8 | THE INVARIANT fails (`rewritten`):          |               |              |                        |
+    |   |   synced == HEAD (all published)            | move          | —            | cleared                |
+    |   |   else                                      | rewritten     | —            | set, no button         |
+    | 9 | tip ⊆ HEAD                                  | noop (+push)  | —            | cleared                |
+    |10 | otherwise                                   | integrate     | —            | cleared / own-sync     |
     |   |   (+push)                                   |               |              |                        |
 
     `integrate` replays the copy's own commits (`base..HEAD`) onto the tip
     in a scratch worktree and holds the result to the three-way merge; only
     when that check fails (a merge commit in the range carried a hand
-    resolution a rebase drops) does it fall back to a merge commit — for an
-    own copy whose history GitHub rewrote, never (that merge would
-    re-publish what was removed: a no-button overlap instead). A conflict is
-    a needs_merge with the strategy that produced it."""
+    resolution a rebase drops) does it fall back to a merge commit. A
+    conflict is a needs_merge with the strategy that produced it. A land
+    that cannot happen defers with why it could not (`_land`: `slot-busy`,
+    `claude`, `moved`, `in-progress`, `reset-refused`)."""
     if f.claude_busy:
         return Action("wait", "claude")
     if f.job_open:
         return Action("skip", "merge-job")
     if f.kind == "github":
-        if f.merged_proposal:
-            if f.standing == "return":
-                return Action("standing", "needs-merge")
-            if f.loop:
-                return Action("return", event="merged-back")
-            return Action("wait", "merged-proposal")
-        if f.tip_in_head:
-            return Action("noop")
-        if f.standing:
+        if f.standing and (not f.merged_proposal or f.standing == "return"):
             return Action("standing", "needs-merge")
         if f.clobber:
             return Action("blocked", "clobber")
         if f.blocking_edits:
             return Action("commit-edits")
+        if f.merged_proposal:
+            if f.loop:
+                return Action("return", event="merged-back")
+            return Action("wait", "merged-proposal")
+        if f.tip_in_head:
+            return Action("noop")
         if f.head_in_tip or f.base == f.head:
             return Action("move", "update", event="updated")
         return Action("integrate", "update-kept", event="updated-kept")
-    if f.tip_in_head:
+    if f.tip_in_head and f.head_in_tip:
         return Action("noop")
     if f.standing:
         return Action("standing", "needs-merge")
     if f.clobber:
         return Action("blocked", "clobber")
+    if f.blocking_edits:
+        return Action("blocked", "edits")
     if f.head_in_tip:
         return Action("move", "own-sync")
-    if not f.base:
+    if f.rewritten or not f.base:
+        if f.base and f.base == f.head:
+            return Action("move", "own-sync")
         return Action("rewritten", "rewritten")
-    if f.base == f.head:
-        return Action("move", "own-sync")
+    if f.tip_in_head:
+        return Action("noop")
     return Action("integrate", "own-sync")
 
 
@@ -687,7 +737,7 @@ def _facts(root, rec, fol, tip, *, push) -> Facts | None:
         rewritten = False
     else:
         base = _synced(root, fol, head)
-        rewritten = bool(base) and not replay.is_ancestor(root, base, tip)
+        rewritten = not base or not replay.is_ancestor(root, base, tip)
     nm = rec.get("needs_merge") if isinstance(rec.get("needs_merge"), dict) else None
     standing = None
     if nm and nm.get("button", True) and not nm.get("rewritten") \
@@ -695,10 +745,14 @@ def _facts(root, rec, fol, tip, *, push) -> Facts | None:
         standing = nm.get("purpose") or "needs-merge"
     blocking = ()
     clobber = ()
-    if not tip_in_head:
+    # An own copy GitHub rewound (tip ⊆ HEAD, invariant failing) still
+    # moves its tree: the same checks as any move.
+    if not tip_in_head or (kind == "own" and head != tip and rewritten):
         edited = set(_dirty_paths(root))
-        if kind == "github" and edited and base:
-            blocking = tuple(sorted(edited & _changed_between(root, base, tip)))
+        side = base if kind == "github" else (
+            base or gu._out(gu._run(root, "merge-base", head, tip)) or None)
+        if edited and side:
+            blocking = tuple(sorted(edited & _changed_between(root, side, tip)))
         clobber = tuple(p for p in replay.clobber_paths(root, head, tip) if p not in edited)
     return Facts(
         kind=kind, branch=fol.branch, head=head, tip=tip, base=base,
@@ -710,17 +764,18 @@ def _facts(root, rec, fol, tip, *, push) -> Facts | None:
 
 
 def _synced(root, fol, head) -> str | None:
-    """An own copy's newest PUBLISHED point that HEAD contains: the newest
-    value origin's tracking ref ever held (its reflog — every value it held
-    came from GitHub, by a fetch or a push) that is in HEAD, or
-    `refs/fused/base` (set by every land and push here) — whichever is
-    newer. A plain fetch moving the tracking ref past HEAD therefore never
-    hides the published point HEAD really sits on (review r2_01/r2_07)."""
-    cands = [replay.rev(root, replay.BASE_REF)]
-    for sha in [replay.rev(root, fol.ref)] + _reflog_values(root, fol.ref):
-        if sha and replay.is_ancestor(root, sha, head):
-            cands.append(sha)
-            break
+    """An own copy's newest PUBLISHED point that HEAD contains, by HISTORY
+    (`decide`'s invariant): of `refs/fused/origin-seen`, the tracking ref,
+    EVERY value its reflog records (no first-hit stop — a plain fetch that
+    logged a rewind S→c1 lists c1 first, and S is the one that matters) and
+    `refs/fused/base`, the one HEAD contains that contains all the others.
+    None — unknown, so nothing is pushed — when there is neither a reflog
+    nor an origin-seen pin, or the candidates are not one line of history."""
+    seen = replay.rev(root, replay.ORIGIN_SEEN_REF)
+    logged = _reflog_values(root, fol.ref)
+    if not seen and not logged:
+        return None
+    cands = [seen, replay.rev(root, replay.BASE_REF), replay.rev(root, fol.ref), *logged]
     return _latest(root, [c for c in cands if c and replay.is_ancestor(root, c, head)])
 
 
@@ -762,6 +817,14 @@ def _clobber_message(f: Facts) -> str:
             "Rename yours to get the update.")
 
 
+def _edits_message(f: Facts) -> str:
+    """An own copy's uncommitted edit in the way of GitHub's version (own row
+    6): fused never commits for an own app, so the person decides."""
+    name = os.path.basename(f.blocking_edits[0])
+    return (f"You have changes to {name} that aren't committed yet, and the version on "
+            "GitHub changed it too. Commit or undo them to keep this app in sync.")
+
+
 def _execute(root, rec, fol, f: Facts, a: Action):
     """Carry out `a` (see `decide`). Answers an outcome, or `_AGAIN` after
     committing "Your edits" (the caller decides once more)."""
@@ -774,15 +837,18 @@ def _execute(root, rec, fol, f: Facts, a: Action):
     if a.kind == "standing":
         return _out("needs-merge", "needs-merge", **done)
     if a.kind == "blocked":
+        files = f.clobber if a.why == "clobber" else f.blocking_edits
+        message = _clobber_message(f) if a.why == "clobber" else _edits_message(f)
         _set_needs_merge(root, onto=f.tip, upstream=f.base, head=f.head, purpose="needs-merge",
-                         files=list(f.clobber), message=_clobber_message(f), button=False)
-        return _out("needs-merge", "clobber", **done)
+                         files=list(files), message=message, button=False)
+        return _out("needs-merge", a.why, **done)
     if a.kind == "rewritten":
         _set_needs_merge(root, onto=f.tip, upstream=None, head=f.head, purpose="own-sync",
                          files=[], message=REWRITTEN_MESSAGE, rewritten=True, button=False)
         return _out("needs-merge", "rewritten", **done)
     if a.kind == "commit-edits":
-        return _AGAIN if _commit_edits(root, f.head) else _out("deferred", "edits", **done)
+        return (_AGAIN if _commit_edits(root, f.head, f.blocking_edits)
+                else _out("deferred", "edits", **done))
     if a.kind == "return":
         return _return(root, rec, fol, f.head, f.tip)
     if a.kind == "noop":
@@ -795,8 +861,6 @@ def _execute(root, rec, fol, f: Facts, a: Action):
         new = f.tip
     else:
         res = _integrate_result(root, rec, f)
-        if res.get("blocked"):
-            return res["blocked"]
         if res.get("needs_merge"):
             _set_needs_merge(root, onto=f.tip, upstream=f.base, head=f.head,
                              purpose="needs-merge" if f.kind == "github" else "own-sync",
@@ -805,8 +869,9 @@ def _execute(root, rec, fol, f: Facts, a: Action):
         if not res.get("tip"):
             return _out("deferred", "replay", **done)
         new, mark_tip = res["tip"], res.get("mark_tip")
-    if not _land(root, f.branch, f.head, new, a.why, mark_tip=mark_tip):
-        return _out("deferred", "land", **done)
+    refused = _land(root, f.branch, f.head, new, a.why, mark_tip=mark_tip)
+    if refused:
+        return _out("deferred", refused, **done)
     gu._record_pull(root, behind)
     if a.event:
         store.add_event(root, a.event, who=f.who)
@@ -820,7 +885,7 @@ def _integrate_result(root, rec, f: Facts) -> dict:
     replay is unsound (`replay._replay_unsound`: a merge commit carried a
     resolution) or conflicts across a merge a rebase had to linearize.
     Answers `{tip, mark_tip}` | `{needs_merge, files, strategy, mark}` |
-    `{blocked: outcome}` | `{}` (defer)."""
+    `{}` (defer)."""
     mark = _proposed_mark(root, rec, f.head, f.base) if f.kind == "github" else None
     res = replay.replay(root, onto=f.tip, upstream=f.base, branch=f.head, mark=mark)
     if res["ok"]:
@@ -831,12 +896,8 @@ def _integrate_result(root, rec, f: Facts) -> dict:
             return {"needs_merge": True, "files": res["files"], "strategy": "rebase",
                     "mark": mark}
         return {}
-    if f.kind == "own" and f.rewritten:
-        # A merge would bring back what GitHub's rewrite removed.
-        _set_needs_merge(root, onto=f.tip, upstream=f.base, head=f.head, purpose="own-sync",
-                         files=[], strategy="merge", message=REWRITTEN_MESSAGE,
-                         rewritten=True, button=False)
-        return {"blocked": _out("needs-merge", "rewritten", branch=f.branch, tip=f.tip)}
+    # (An own copy reaches here only when GitHub's tip contains `synced` —
+    # `decide`'s invariant — so a merge brings back nothing GitHub removed.)
     who = f.who or "the author"
     msg = (f"Bring in {who}'s latest" if f.kind == "github"
            else "Combine with the version saved on GitHub")
@@ -858,7 +919,12 @@ def _after_settle(root, f: Facts, *, landed):
             return
         if f.kind == "github":
             replay.advance_base_locked(root, replay.rev(root, "HEAD") or f.head)
-        elif replay.rev(root, replay.BASE_REF) != f.tip:
+            return
+        # Own: forward only. A rewound or rewritten tip that does not
+        # contain the old base never pulls it back (`_synced` would then
+        # forget the published point the rewind removed).
+        old = replay.rev(root, replay.BASE_REF)
+        if old != f.tip and (not old or replay.is_ancestor(root, old, f.tip)):
             gu._run(root, "update-ref", replay.BASE_REF, f.tip)
 
 
@@ -897,14 +963,16 @@ def _push_if_asked(root, f: Facts, url, *, pulled, status, had_changes=False) ->
                 had_changes=had_changes, **done)
 
 
-def _commit_edits(root, head) -> str | None:
-    """Commit the uncommitted edits standing in an update's way as "Your
-    edits" (module docstring, the D245 exception); the new HEAD, or None
-    (defer)."""
+def _commit_edits(root, head, paths) -> str | None:
+    """Commit the uncommitted edits standing in an update's way (`paths`,
+    the facts' `blocking_edits` — nothing else) as "Your edits" (module
+    docstring, the D245 exception); the new HEAD, or None (defer)."""
+    if not paths:
+        return None
     with replay.slot() as held:
         if not held or _claude_busy(root) or replay.rev(root, "HEAD") != head:
             return None
-        return replay.commit_edits_locked(root)
+        return replay.commit_edits_locked(root, paths)
 
 
 # ------------------------------------------------------------ A4: the return
@@ -981,8 +1049,9 @@ def _return(root, rec, fol, head, tip) -> dict:
         if not res["ok"]:
             return _out("deferred", "replay", **done)
         new = res["tip"]
-    if not _land(root, branch, head, new, "merged-back"):
-        return _out("deferred", "land", **done)
+    refused = _land(root, branch, head, new, "merged-back")
+    if refused:
+        return _out("deferred", refused, **done)
 
     def fn(r):
         r["needs_merge"] = None
@@ -1134,6 +1203,10 @@ def _deferred_message(res, who) -> dict:
                            "switched on."}
     if why in ("not-default", "in-progress"):
         return _in_progress()
+    if why == "reset-refused":
+        return {"ok": False, "reason": why,
+                "message": "Uncommitted edits here are in the way of the update; "
+                           "fused will try again."}
     return {"ok": False, "reason": why or "deferred",
             "message": "Couldn't finish updating this app right now; fused will try again."}
 

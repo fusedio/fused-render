@@ -5,6 +5,7 @@ gh.py's error mapping and contributors."""
 from __future__ import annotations
 
 import os
+import subprocess
 
 
 import pytest
@@ -197,6 +198,32 @@ def test_a_rewrite_pulled_in_by_an_include_is_seen(w, tmp_path):
     extra.write_text('[url "https://evil.example/"]\n\tinsteadOf = https://github.com/\n')
     git(w.app, "config", "include.path", str(extra))
     assert w.gh.url_rewrites(w.app)
+
+
+@pytest.mark.parametrize("broken", ["no-run", "rc"])
+def test_an_unreadable_config_fails_closed(w, monkeypatch, broken):
+    """A config read that fails is not a clean config: url_rewrites raises,
+    push/fetch refuse, and the follow guard reads it as redirected."""
+    from fused_render.contrib import follow
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    sha = git(w.app, "rev-parse", "HEAD")
+    real = w.gh._git
+
+    def flaky(repo, *args, **kw):
+        if args[:2] == ("config", "--list"):
+            if broken == "no-run":
+                return None
+            return subprocess.CompletedProcess(args, 128, "", "fatal: bad config line 3")
+        return real(repo, *args, **kw)
+
+    monkeypatch.setattr(w.gh, "_git", flaky)
+    with pytest.raises(w.gh.GitHubError) as e:
+        w.gh.url_rewrites(w.app)
+    assert e.value.reason == "failed"
+    with pytest.raises(w.gh.GitHubError):
+        w.gh.push(w.app, sha, "bob/sine", "x", lease="")
+    assert w.gh.fetch(w.app, "alice/sine", "+refs/heads/main:refs/fused/x") is False
+    assert follow.github_redirected(w.app, "https://github.com/alice/sine") is True
 
 
 def test_net_args_pin_tls_and_the_environment_proxy(monkeypatch):

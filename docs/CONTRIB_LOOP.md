@@ -269,14 +269,19 @@ def sync(root, *, action, push) -> dict   # same return shape as git_upstream._s
 #    proposal merged & contained (A4, flags.loop()) → return_to_following().
 #    Never pushes anywhere. auto_sync_enabled() False → fetch + status only.
 #  own kind with repo: today's ff/push, but diverged → replay ONLY the commits
-#    this machine never pushed (`<synced>..HEAD`; synced = the latest of
-#    refs/fused/base and origin's tracking ref read BEFORE the fetch that HEAD
-#    contains) onto origin's tip, land, push. synced == HEAD (all published,
-#    GitHub rewrote) → follow origin's tip (old tip backed up). synced unknown or
-#    not in HEAD, or merges in range over a rewritten origin → needs_merge
-#    (own-sync, rewritten: true, plain sentence; merge_plan None): nothing
-#    replayed or pushed. Overlap → needs_merge (purpose "own-sync"). A commit the
-#    author removed from GitHub is never re-published.
+#    this machine never pushed (`<synced>..HEAD`) onto origin's tip, land, push.
+#    synced = newest BY HISTORY, among those HEAD contains, of
+#    refs/fused/origin-seen (the tracking ref pinned BEFORE each engine fetch,
+#    forward-only), every tracking-ref reflog value (old and new sides) and
+#    refs/fused/base. THE INVARIANT: an automatic push (or the replay feeding
+#    one) only when origin's new tip contains synced. Otherwise: synced == HEAD
+#    (all published; GitHub rewrote or rewound) → follow origin's tip (old tip
+#    backed up, base never moved backward); else, or synced unknown (no reflog,
+#    no pin) → needs_merge (own-sync, rewritten: true, plain sentence;
+#    merge_plan None): nothing replayed or pushed. Uncommitted edits to files
+#    GitHub's side changed → needs_merge, no button, sentence naming the file
+#    (never committed for). Overlap → needs_merge (purpose "own-sync"). A commit
+#    the author removed from GitHub is never re-published.
 def status(root) -> CopyStatus            # NO network, cheap, for the page/cards
 def discard(root, *, withdraw: bool) -> dict   # backup (incl. wip), reset --hard follow tip; withdraw → proposals.withdraw
 def push_to_main(root) -> dict            # collaborator only (gh.can_push): integrate first, push HEAD to follow branch on the author's repo, record base
@@ -550,3 +555,11 @@ flags off → `_sync_locked` behaves exactly as before.
   action="Accept proposal", push=True)`.
 - 2026-10-16: `jobs.PlainError(message, reason=None)`; job dicts carry `reason`.
   `merge_job` owns remix bring-in (clean merge-tree → ready, no Claude).
+- 2026-10-16 (round 3): own copies push under ONE invariant (§6.4, `decide`'s
+  docstring) with `refs/fused/origin-seen` as a new private ref. GitHub-link
+  rows: the ignored-file and dirty-edit rows come before the merged-proposal
+  return. "Your edits" commits only the blocking paths. A land that cannot
+  happen defers with `why` `slot-busy` | `claude` | `moved` | `in-progress` |
+  `reset-refused` (was one `land`); `replay.land_locked` answers that reason
+  or None. `gh.url_rewrites` raises `GitHubError("failed")` when the repo's
+  config cannot be read (fail closed).

@@ -306,11 +306,20 @@ def url_rewrites(root: str, url: str | None = None) -> list[str]:
     it pulls in, and `.git/config.worktree` (`extensions.worktreeConfig`)
     are all seen. The command-scope rules tests use (GIT_CONFIG_COUNT) do
     not count. `push`/`fetch` refuse when this is non-empty; follow.fetch's
-    fallback should ask it too."""
+    fallback should ask it too.
+
+    FAILS CLOSED: an empty config still lists cleanly (rc 0), so a git that
+    did not run, timed out or exited non-zero is a check that could not
+    vouch for the repo — `GitHubError("failed")`, never `[]`. `push` and
+    `fetch` refuse on it; `follow.github_redirected` reads it as
+    redirected."""
     res = _git(root, "config", "--list", "--show-scope", "--includes", "-z",
                env=git_net_env(), timeout=10)
     if res is None or res.returncode != 0:
-        return []
+        detail = "git did not run" if res is None else (res.stderr or "").strip()
+        logger.warning("could not read %s's git config to vouch for a GitHub transfer: %s",
+                       root, detail[-500:])
+        raise GitHubError("failed", detail=detail)
     hits = []
     # With -z, `--show-scope` output is `<scope>\0<key>\n<value>\0` per entry.
     tokens = (res.stdout or "").split("\0")

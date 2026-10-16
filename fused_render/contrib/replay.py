@@ -78,6 +78,10 @@ FOLLOW_REF = "refs/fused/follow"
 #: the engine replays `<base>..HEAD`, so an author's force-push never turns
 #: their own old commits into Bob's changes.
 BASE_REF = "refs/fused/base"
+#: An own copy's tracking ref as it stood BEFORE the engine's fetch, pinned
+#: forward-only at each own sync (`engine._pin_origin_seen`): the published
+#: point a missing or truncated reflog would otherwise forget.
+ORIGIN_SEEN_REF = "refs/fused/origin-seen"
 BACKUP_PREFIX = "refs/fused/backup/"
 PROPOSED_REF = "refs/fused/proposed"
 
@@ -576,18 +580,22 @@ def _backup_refs_named(rec) -> set:
             if isinstance(b, dict) and isinstance(b.get("ref"), str)}
 
 
-def commit_edits_locked(root, message="Your edits") -> str | None:
-    """Commit every uncommitted edit (`edits()`, the Propose pathspec) as one
-    commit — the engine's answer to edits that would otherwise block an
-    update forever: they are Bob's changes either way, and committed they
-    ride the replay like the rest. Caller holds the slot. Answers the new
+def commit_edits_locked(root, paths, message="Your edits") -> str | None:
+    """Commit the uncommitted edits to `paths` — the ones standing in an
+    update's way (engine `blocking_edits`), NEVER the rest of the tree: an
+    untracked `creds.json` only Bob made, or anything he staged, stays out
+    (`commit --only`, literal pathspecs). Committed, they ride the replay
+    like the rest of Bob's changes. Caller holds the slot. Answers the new
     HEAD, or None (nothing to commit / git refused)."""
-    if not edits(root):
+    wanted = set(paths or ())
+    paths = [p for _code, p in edits(root) if p in wanted]
+    if not paths:
         return None
-    if not ok(git(root, "add", "-A", "--", *EDITS_PATHSPEC, timeout=REPLAY_TIMEOUT_S)):
+    if not ok(git(root, "--literal-pathspecs", "add", "-A", "--", *paths,
+                  timeout=REPLAY_TIMEOUT_S)):
         return None
-    r = git(root, *_REPLAY_CONFIG, *identity_args(root), "commit", "--no-verify", "-q",
-            "-m", message)
+    r = git(root, "--literal-pathspecs", *_REPLAY_CONFIG, *identity_args(root), "commit",
+            "--only", "--no-verify", "-q", "-m", message, "--", *paths)
     if not ok(r):
         logger.warning("contrib: committing edits in %s failed: %s", root, gu._text(r))
         return None
@@ -893,11 +901,15 @@ def land(root, *, branch, old_tip, new_tip, why, app_dir=None) -> bool:
         if not held:
             return False
         return land_locked(root, branch=branch, old_tip=old_tip, new_tip=new_tip,
-                           why=why, app_dir=app_dir)
+                           why=why, app_dir=app_dir) is None
 
 
-def land_locked(root, *, branch, old_tip, new_tip, why, app_dir=None) -> bool:
-    """`land`'s body; the caller holds the slot.
+def land_locked(root, *, branch, old_tip, new_tip, why, app_dir=None) -> str | None:
+    """`land`'s body; the caller holds the slot. None when the branch moved
+    to `new_tip`, else why nothing moved: `moved` (the branch is not at
+    `old_tip`, or a commit raced in), `in-progress` (a merge/rebase/… in
+    flight) or `reset-refused` (the backup or `reset --keep` failed — an
+    uncommitted edit overlapping the move, typically).
 
     THE RACE (review r02). Nothing that commits into an app folder — a Claude
     turn's own `git commit`, app_git's sweep — holds the slot, so a commit
@@ -908,12 +920,12 @@ def land_locked(root, *, branch, old_tip, new_tip, why, app_dir=None) -> bool:
     mismatch pins it under `refs/fused/backup/` and resets straight back to
     it — the exact state the racing writer left — and the land defers."""
     if gu._current_branch(root) != branch or rev(root, f"refs/heads/{branch}") != old_tip:
-        return False
+        return "moved"
     if gu._operation_in_flight(root) is not None:
-        return False
+        return "in-progress"
     new_tip = rev(root, new_tip)
     if not new_tip:
-        return False
+        return "moved"
     refs = []
     if new_tip != old_tip:
         clobber = clobber_paths(root, old_tip, new_tip)
@@ -921,7 +933,7 @@ def land_locked(root, *, branch, old_tip, new_tip, why, app_dir=None) -> bool:
             refs = backup_locked(root, old_tip, why=why, also=clobber)
             if not refs or (clobber and not any(r.endswith("-wip") for r in refs)):
                 _unbackup_locked(root, refs)
-                return False
+                return "reset-refused"
         # The S bit is what makes a set-aside `.fused/` file invisible to
         # `reset --keep`; without it the file reads as a local deletion and
         # the move refuses. Callers outside `engine.sync` (a merge job's
@@ -933,13 +945,13 @@ def land_locked(root, *, branch, old_tip, new_tip, why, app_dir=None) -> bool:
             # Nothing moved: the backup pins a tip that is still the branch.
             _unbackup_locked(root, refs)
             logger.info("contrib land deferred in %s: %s", root, gu._text(moved))
-            return False
+            return "reset-refused"
         if not _undo_race_locked(root, old_tip, new_tip, refs, app_dir):
-            return False
+            return "moved"
     name_backups(root, refs, why, app_dir)
     advance_base_locked(root, new_tip)
     _protect_after_move(root)
-    return True
+    return None
 
 
 def _undo_race_locked(root, old_tip, new_tip, refs, app_dir, *, hard=False) -> bool:
