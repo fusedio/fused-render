@@ -102,7 +102,8 @@ def _git(*args: str, cwd: str | None = None, timeout: int = TIMEOUT_S) -> subpro
         # resolver every git spawn shares) plus `-C <cwd>` and the args —
         # close_fds=False and no cwd= keep CPython on the posix_spawn path.
         return subprocess.run(cmd, capture_output=True, text=True,
-                              encoding="utf-8", env=env, timeout=timeout,
+                              encoding="utf-8", errors="replace", env=env,
+                              timeout=timeout,
                               close_fds=False)
     except FileNotFoundError:
         raise GitInstallError("git is required to install from a GitHub link; "

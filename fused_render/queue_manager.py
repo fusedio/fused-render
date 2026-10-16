@@ -615,8 +615,13 @@ class QueueManager:
         on the answer, the standing line checked before an insert)."""
         # `STATE_DIR`, not `duties_dir()`: this is the pre-queue file an older
         # build wrote at baseline, and `project_queue.read_legacy_held_answers`
-        # (`tasks_store.load_state`) reads it from there. Guard and reader
-        # must name one path or the migration never runs on a branch.
+        # (`tasks_store.load_state`) reads it from there. BASELINE ONLY: a
+        # branch manager that consumed it would carry those decisions into
+        # its own index and rename the file out from under the baseline
+        # manager they belong to (CodeRabbit, PR #1697).
+        from fused_render._branch import branch_ref  # noqa: PLC0415
+        if branch_ref():
+            return
         path = os.path.join(tasks_store.STATE_DIR, LEGACY_ANSWERS_FILE)
         if not os.path.exists(path):
             return
