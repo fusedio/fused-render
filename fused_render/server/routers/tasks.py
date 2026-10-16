@@ -138,6 +138,7 @@ from fused_render import (
     queue_manager,
     schedule,
     session_liveness,
+    skill_plugin,
     tasks_index,
     tasks_store,
     tasks_watch,
@@ -8488,6 +8489,27 @@ def api_task_create(body: dict = Body(...),
     resolved, refusal = schedule_api.resolve_target(target, "target")
     if refusal is not None:
         return refusal
+    # Fused Web (the sandbox/showcase app) keeps its own local canvas clones
+    # at `~/Fused/canvas/<name>` and starts tasks against them right here,
+    # through `fused.tasks.create` — never through `canvases.py`'s own
+    # /clone or sync-start routes, which are the ONLY other callers of this
+    # fetch. A Fused Web-only user (never opened a canvas in fused-render)
+    # therefore reached the `workbench` plugin gate (agent._in_workbench_root)
+    # with no clone on disk at all: the path check passed but
+    # `_workbench_plugin_dir()` returned None, and the session got no skills,
+    # silently. Kicking the same best-effort, off-thread, never-raising fetch
+    # here closes that — including for a `~/Fused/canvas` folder created
+    # after this server started, which startup's own kick cannot see.
+    # Non-blocking (a thread start, maybe a no-op if one is already in
+    # flight) and swallowed defensively anyway: a plumbing bug in the kick
+    # must never fail the user's task.
+    try:
+        if skill_plugin.in_fused_web_canvas_root(resolved):
+            from fused_render import canvases
+            canvases._kick_workbench_skills()
+    except Exception:  # noqa: BLE001 — never worth failing a task create
+        logger.debug("could not kick the workbench skills fetch for %s",
+                     resolved, exc_info=True)
     when, immediate, refusal = _page_due(body.get("due"))
     if refusal is not None:
         return refusal
