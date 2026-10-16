@@ -533,15 +533,43 @@ def _valid_engine_choice(capability: str, code: str) -> str | None:
     return None
 
 
+#: Process-level switch for file indexing, same shape as `FUSED_RENDER_CALLS`
+#: (calls.enabled_override): unset → the preference decides; an off-word
+#: ("0", "false", "no", "off") forces indexing off; any other value forces it
+#: on. The force-ON side exists for dev runs, which default OFF (below).
+INDEXING_ENV = "FUSED_RENDER_INDEXING"
+
+
+def indexing_override() -> bool | None:
+    raw = os.environ.get(INDEXING_ENV)
+    if raw is None:
+        return None
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def is_dev_run() -> bool:
+    """A `scripts/dev.sh` server (it exports FUSED_RENDER_DEV=1; nothing in a
+    packaged app ever sets it — routers/config.py reports the same bit as
+    `dev`). pytest does not set it, so test defaults are untouched."""
+    return os.environ.get("FUSED_RENDER_DEV") == "1"
+
+
 def indexing_enabled() -> bool:
-    """Whether background file-index scanning may run at all (default ON).
+    """Whether background file-index scanning may run at all (default ON
+    for the installed app, default OFF for a dev run).
 
     Mirrors `calls_enabled()`'s idiom: absence and any non-`false` stored
     value both read as enabled, so a preference file that predates this
-    setting — every existing install — keeps scanning exactly as before. No
-    env override, unlike `calls_enabled`'s `FUSED_RENDER_CALLS`: there is no
-    operational reason to force this off outside the app the way there is
-    for the call log.
+    setting — every existing install — keeps scanning exactly as before.
+
+    Dev runs (`is_dev_run`) default OFF with NO stored preference: every
+    worktree server used to watch the whole home dir and compact the index
+    alongside the installed app, which is what put a 10-core Mac at load
+    ~500 and the desktop app past its boot cutoff (2026-10-16 diagnostics).
+    A dev server that needs the index opts in — Preferences → Indexing
+    (stores `indexing_enabled: true`) or `FUSED_RENDER_INDEXING=1` for the
+    process — and the stored preference still wins over the dev default, so
+    a developer who turned it on stays on across restarts.
 
     Turning this off does not delete the on-disk index or stop
     `/api/index/rank` from answering it — only new scans are refused. Every
@@ -550,7 +578,13 @@ def indexing_enabled() -> bool:
     per call, same as `reader_enabled`, so a toggle applies to the very next
     one with no server restart.
     """
-    return read_prefs().get("indexing_enabled") is not False
+    override = indexing_override()
+    if override is not None:
+        return override
+    stored = read_prefs().get("indexing_enabled")
+    if stored is None and is_dev_run():
+        return False
+    return stored is not False
 
 
 def git_auto_sync_enabled() -> bool:
@@ -572,6 +606,22 @@ def auto_download_updates_enabled() -> bool:
     user-initiated either way: this only moves "available" to "installed".
     """
     return read_prefs().get("auto_download_updates") is True
+
+
+def index_low_impact_enabled() -> bool:
+    """Whether the file index runs in *low-impact* mode (default OFF — opt-in
+    like `task_recap_titles_enabled`).
+
+    On, the index trades freshness for a quiet machine: one watcher owner per
+    Mac (a machine-wide lease the installed :1777 app wins), longer and
+    load-aware rescan floors, one scan worker at a time at a lower priority,
+    watcher events dropped for search-hidden dot-folders and the app's own
+    support dir, the startup scan deferred until after the server is ready,
+    and compaction rewriting only the touched partitions. Read per call —
+    the gate acts on the next trigger, no restart needed, except the worker
+    which receives it through its run spec (`index/runner.py`).
+    """
+    return read_prefs().get("index_low_impact_enabled") is True
 
 
 def ranked_search_enabled() -> bool:
@@ -808,7 +858,8 @@ def _prefs_response() -> dict:
         # Whether background file-index scanning may run (default ON), and
         # whether index-backed search orders hits by relevance score (default
         # ON — D720; off is `depth ASC, rel ASC` instead of scored).
-        "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled()},
+        "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled(),
+                     "low_impact": index_low_impact_enabled()},
         # Whether app-made git commits are auto-pushed and behind repos are
         # auto fast-forwarded on app open (default ON).
         "git": {"auto_sync": git_auto_sync_enabled()},
@@ -1172,6 +1223,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["ranked_search_enabled"] = value
             changed = True
+        if "index_low_impact_enabled" in body:
+            value = body.get("index_low_impact_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'index_low_impact_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["index_low_impact_enabled"] = value
+            changed = True
         if "git_auto_sync_enabled" in body:
             value = body.get("git_auto_sync_enabled")
             if not isinstance(value, bool):
@@ -1295,6 +1353,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'lan_enabled', "
                           "'default_model', 'claude_enabled', 'copilot_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
+                          "'index_low_impact_enabled', "
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "
                           "'calls_params', 'calls_retention_days', "
@@ -1326,6 +1385,16 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             index_watch.resume()
         else:
             index_watch.pause()
+    if "index_low_impact_enabled" in body:
+        # AFTER the write: the owner waiter, the watcher child spec and the
+        # rescan queue all read the flag back from the stored preference.
+        # On: compete for the machine-wide watcher lease (stopping this
+        # process's free-running watcher until it wins); off: give the lease
+        # back and run the watcher as before. A no-op on a server that never
+        # started the watcher. Lazy import, same cycle as above.
+        from fused_render.server import index_owner
+
+        index_owner.on_flag_changed(bool(prefs.get("index_low_impact_enabled")))
     if "lan_enabled" in body and not _flavor.is_bot():
         # AFTER the write, like `engines` below: the listener follows the stored
         # preference, and a failure to bind is reported in the response's

@@ -80,7 +80,21 @@ RUST_TIMEOUT_MS = 1000
 MAX_VANISHED_REPLANS = 3
 
 
-def make_dropped(rules, index_dir: str | None = None):
+def _hidden_under(p: str, root: str) -> bool:
+    """Whether `p` has a dot-leading segment below `root` — the rows
+    index/query.py hides from search (`lrel LIKE '.%' OR lrel LIKE '%/.%'`)."""
+    if not root:
+        return False
+    # Root `/` has no trailing segment to strip: its children start with
+    # "/" itself, not "//".
+    prefix = root if root.endswith("/") else root + "/"
+    if p == root or not p.startswith(prefix):
+        return False
+    return any(seg.startswith(".") for seg in p[len(prefix):].split("/"))
+
+
+def make_dropped(rules, index_dir: str | None = None, *,
+                 root: str | None = None, low_impact: bool = False):
     """A `path -> bool` filter: True when the watcher must never act on
     `path`. Four structural refusals — the real analogue is not
     `index_touch._real_blocked` (that one filters a scan ROOT, chosen by
@@ -123,12 +137,25 @@ def make_dropped(rules, index_dir: str | None = None):
         indexes — and an active git repo writes under `.git/objects`
         constantly, making this the hottest of the four in practice.
 
+      * the app's own support dir (`_flavor.app_support_base()`, i.e.
+        `~/Library/Application Support/fused-render`) — updates, pid/port
+        files: self-writes, always dropped, same reasoning as the log dir.
+      * under `low_impact` (the low-impact indexing flag) and given `root`:
+        any path with a dot-leading segment relative to `root`. Search
+        hides those rows anyway (index/query.py), so a live rescan of them
+        buys nothing; the hourly backstop and full scans still index them.
+
     Returning True for any means: this path or a change under it must never
     cause a flush. That is load-bearing, not an optimization."""
+    from fused_render import _flavor
     from fused_render.logs import log_dir
 
     guard = MountGuard()
-    own = [d for d in (norm(str(index_dir or "")), norm(log_dir())) if d]
+    own = [d for d in (norm(str(index_dir or "")), norm(log_dir()),
+                       norm(_flavor.app_support_base())) if d]
+    hide_root = norm(str(root or "")) if low_impact else ""
+    if hide_root != "/":
+        hide_root = hide_root.rstrip("/")
 
     def dropped(path: str) -> bool:
         p = norm(str(path or ""))
@@ -137,6 +164,8 @@ def make_dropped(rules, index_dir: str | None = None):
         if guard.blocks(p):
             return True
         if any(p == d or p.startswith(d + "/") for d in own):
+            return True
+        if hide_root and _hidden_under(p, hide_root):
             return True
         if is_inside_leaf_dir(p):
             return True
@@ -165,10 +194,11 @@ class Pruner:
     refuses (which adds the index's own directory)."""
 
     def __init__(self, root: str, rules,
-                 index_dir: str | None = None):
+                 index_dir: str | None = None, *, low_impact: bool = False):
         self.rules = rules
         self.guard = MountGuard()
-        self.dropped = make_dropped(rules, index_dir=index_dir)
+        self.dropped = make_dropped(rules, index_dir=index_dir, root=root,
+                                    low_impact=low_impact)
         self.root_dev = os.stat(root).st_dev
 
     def rule_kept(self, path: str) -> bool:
@@ -437,11 +467,19 @@ def main(argv=None) -> int:
     from fused_render.index.worker import _set_background_io_policy
 
     _set_background_io_policy()
+    low_impact = spec.get("low_impact") is True
+    if low_impact:
+        # Low-impact indexing: CPU priority too, not only I/O.
+        try:
+            os.nice(10)
+        except OSError:
+            pass
     out = _Out(sys.stdout)
     root = spec["root"]
     try:
         pruner = Pruner(root, IgnoreRules(spec.get("ignore") or []),
-                        index_dir=spec.get("index_dir"))
+                        index_dir=spec.get("index_dir"),
+                        low_impact=low_impact)
     except OSError as e:
         out.send(error=f"{type(e).__name__}: {e}")
         return 1

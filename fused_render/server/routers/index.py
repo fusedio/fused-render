@@ -394,6 +394,75 @@ async def startup_scan(start_dir: str | None = None) -> None:
     await asyncio.to_thread(run_startup_scan, start_dir)
 
 
+#: Low-impact indexing: how long after the app reports ready the deferred
+#: startup scan waits before it starts.
+DEFERRED_STARTUP_DELAY_S = 15.0
+#: ...and the most it waits for the "startup finished" signal at all.
+DEFERRED_STARTUP_READY_TIMEOUT_S = 600.0
+
+
+#: Set by the app's shutdown (`stop_deferred_startup_scan`) so a deferred
+#: scan still waiting exits instead of scanning on a dying server. Cleared
+#: by `start_deferred_startup_scan`, i.e. at each startup.
+_deferred_stop = threading.Event()
+
+
+def run_deferred_startup_scan(start_dir, ready, *,
+                              delay_s: float = DEFERRED_STARTUP_DELAY_S,
+                              wait=None, stop_event=None,
+                              ready_timeout_s: float =
+                              DEFERRED_STARTUP_READY_TIMEOUT_S) -> None:
+    """The low-impact startup scan, off the boot path: wait for `ready` (a
+    `threading.Event` the lifespan sets once every startup handler
+    finished), then `delay_s` more, then scan and warm.
+
+    It runs whether or not this process owns the index watcher: the index
+    store is per branch, so a server that skipped it would never refresh its
+    own store. Only the watcher is owner-gated (server/index_owner.py).
+
+    Exits without scanning when `stop_event` (the module's, by default) is
+    set — the server is shutting down — or when `ready` never came (a
+    startup handler raised, so the lifespan never finished). Never raises."""
+    stop = stop_event or _deferred_stop
+    try:
+        if not ready.wait(ready_timeout_s):
+            logger.warning("index: deferred startup scan skipped (startup "
+                           "did not finish within %.0f s)", ready_timeout_s)
+            return
+        if stop.is_set():
+            return
+        if wait is not None:
+            wait(delay_s)
+        else:
+            stop.wait(delay_s)
+        if stop.is_set():
+            return
+        run_startup_scan(start_dir)
+        if stop.is_set():
+            return
+        startup_warm()
+    except Exception:  # noqa: BLE001 - a background thread must not raise
+        logger.exception("deferred startup index scan failed")
+
+
+def start_deferred_startup_scan(start_dir, ready) -> threading.Thread:
+    _deferred_stop.clear()
+    t = threading.Thread(target=run_deferred_startup_scan,
+                         args=(start_dir, ready),
+                         name="index-startup-deferred", daemon=True)
+    t.start()
+    return t
+
+
+def stop_deferred_startup_scan() -> None:
+    """The shutdown hook: a deferred scan still waiting exits. Idempotent."""
+    _deferred_stop.set()
+
+
+def reset_deferred_for_tests() -> None:
+    _deferred_stop.clear()
+
+
 # ------------------------------------------------------------- startup warm
 
 def warm_root() -> str:

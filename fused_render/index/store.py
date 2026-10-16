@@ -30,9 +30,17 @@ from fused_render.index.ignore import ignored_for_index
 # never more than this many.
 MAX_COMPACTION_THREADS = 4
 
+# Low-impact indexing (prefs `index_low_impact_enabled`, carried to the
+# worker in its run spec as `low_impact`): the merge gets at most this many
+# threads and this much memory, so an index rewrite never competes with the
+# window the user is looking at on a loaded Mac. Flag off: unchanged caps.
+LOW_IMPACT_COMPACTION_THREADS = 2
+LOW_IMPACT_COMPACTION_MEMORY_MB = 768
 
-def compaction_threads() -> int:
-    return max(1, min(MAX_COMPACTION_THREADS, (os.cpu_count() or 4) // 4))
+
+def compaction_threads(low_impact: bool = False) -> int:
+    n = max(1, min(MAX_COMPACTION_THREADS, (os.cpu_count() or 4) // 4))
+    return min(n, LOW_IMPACT_COMPACTION_THREADS) if low_impact else n
 
 
 # Cores an interactive index read (stats/search/rank/guarded query) may use.
@@ -64,17 +72,19 @@ MIN_COMPACTION_MEMORY_MB = 512
 MAX_COMPACTION_MEMORY_MB = 2048
 
 
-def compaction_memory_mb() -> int:
+def compaction_memory_mb(low_impact: bool = False) -> int:
     try:
         total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     except (ValueError, OSError, AttributeError):
-        return 1024  # unknown RAM: a middle value, still far under 80%
+        mb = 1024  # unknown RAM: a middle value, still far under 80%
+        return min(mb, LOW_IMPACT_COMPACTION_MEMORY_MB) if low_impact else mb
     total_mb = total // (1024 * 1024)
-    return max(MIN_COMPACTION_MEMORY_MB,
-               min(MAX_COMPACTION_MEMORY_MB, total_mb // 8))
+    mb = max(MIN_COMPACTION_MEMORY_MB,
+             min(MAX_COMPACTION_MEMORY_MB, total_mb // 8))
+    return min(mb, LOW_IMPACT_COMPACTION_MEMORY_MB) if low_impact else mb
 
 
-def background_connect(temp_dir=None):
+def background_connect(temp_dir=None, low_impact: bool = False):
     """An in-memory DuckDB for the scan side, capped to `compaction_threads`
     cores and `compaction_memory_mb` of RAM. With `temp_dir`, a merge larger
     than the memory cap spills there rather than growing the worker's RSS.
@@ -84,8 +94,8 @@ def background_connect(temp_dir=None):
     import duckdb
 
     con = duckdb.connect()
-    con.execute(f"SET threads TO {compaction_threads()}")
-    con.execute(f"SET memory_limit = '{compaction_memory_mb()}MB'")
+    con.execute(f"SET threads TO {compaction_threads(low_impact)}")
+    con.execute(f"SET memory_limit = '{compaction_memory_mb(low_impact)}MB'")
     if temp_dir is not None:
         os.makedirs(temp_dir, exist_ok=True)
         con.execute(f"SET temp_directory = '{_sql(temp_dir)}'")
@@ -446,7 +456,7 @@ def partition_files(cfg: IndexConfig, manifest=None):
 
 
 def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None,
-            cancel_flag=None):
+            cancel_flag=None, low_impact: bool = False):
     """Merge new shards with the existing index, keeping old rows for dirs
     outside `root` and for unchanged dirs inside it, sort by path, and write
     size-bounded partition files + manifest. Skips the rewrite entirely when
@@ -484,7 +494,8 @@ def compact(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None,
                         on_wait=lambda: phase("waiting for another scan to finish")):
             if cancel_flag is not None and os.path.exists(cancel_flag):
                 return None
-            return _compact_locked(cfg, root, shards_dir, pa, pq, emit)
+            return _compact_locked(cfg, root, shards_dir, pa, pq, emit,
+                                   low_impact=low_impact)
     except StoreLockCancelled:
         return None
 
@@ -643,7 +654,8 @@ def _merge_rows_to_partitions(con, src, files_dir, generation, part_rows, phase,
     return parts, total_rows
 
 
-def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
+def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None,
+                    low_impact: bool = False):
     import shutil
 
     def phase(msg):
@@ -654,8 +666,11 @@ def _compact_locked(cfg: IndexConfig, root, shards_dir, pa, pq, emit=None):
     dirs_parquet = cfg.dirs_parquet
     old_manifest = read_manifest(cfg) or {}
     generation = int(old_manifest.get("generation") or 0) + 1
+    # `low_impact` is passed only when set, so a flag-off compaction calls
+    # background_connect with exactly the arguments it always did.
     con = background_connect(
-        temp_dir=os.path.join(cfg.dir, "duckdb-tmp"))
+        temp_dir=os.path.join(cfg.dir, "duckdb-tmp"),
+        **({"low_impact": True} if low_impact else {}))
     rootp = root.rstrip("/") or "/"
     prefix_like = (like_literal(rootp) + "/") if rootp != "/" else "/"
     outside = (f"(dir <> '{_sql(rootp)}' "

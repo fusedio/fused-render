@@ -90,6 +90,59 @@ DEFER_DEADLINE_S = 120.0
 # minutes for the same reason: the deferral is a delay the user waits out.
 MUTATION_SCAN_FLOOR_S = 20.0
 
+# Low-impact indexing (shell/prefs.py `index_low_impact_enabled`): the same
+# three knobs, longer/tighter, and the floor stretched again while the
+# machine is loaded. Read at fire time, so a runtime toggle takes effect on
+# the next trigger.
+LOW_IMPACT_FLOOR_S = 60.0
+LOW_IMPACT_LOADED_FLOOR_S = 180.0
+# 1-minute load average per CPU above which the machine counts as loaded.
+LOW_IMPACT_LOAD_PER_CPU = 1.5
+LOW_IMPACT_DEADLINE_S = 600.0
+LOW_IMPACT_MAX_RUNS = 1
+
+
+def _low_impact() -> bool:
+    try:
+        from fused_render.shell.prefs import index_low_impact_enabled
+
+        return index_low_impact_enabled()
+    except Exception:  # noqa: BLE001 - unreadable prefs means "off"
+        return False
+
+
+def _loaded(loadavg=None) -> bool:
+    try:
+        one = (loadavg or os.getloadavg)()[0]
+    except (OSError, AttributeError):
+        return False
+    return one / (os.cpu_count() or 1) > LOW_IMPACT_LOAD_PER_CPU
+
+
+def effective_floor_s(default: float = MUTATION_SCAN_FLOOR_S,
+                      loadavg=None) -> float:
+    """`default` with the flag off; 60 s with it on, 180 s while loaded."""
+    if not _low_impact():
+        return default
+    return (LOW_IMPACT_LOADED_FLOOR_S if _loaded(loadavg)
+            else LOW_IMPACT_FLOOR_S)
+
+
+def effective_deadline_s(default: float = DEFER_DEADLINE_S) -> float:
+    return LOW_IMPACT_DEADLINE_S if _low_impact() else default
+
+
+def effective_budget_cap(default: int | None = None) -> int:
+    """The concurrent-run cap: `default` (runner.MAX_CONCURRENT_RUNS when
+    None) with the flag off, 1 with it on."""
+    if _low_impact():
+        return LOW_IMPACT_MAX_RUNS
+    if default is None:
+        from fused_render.index import runner
+        default = runner.MAX_CONCURRENT_RUNS
+    return default
+
+
 # Folders scanned per burst. A mutation batch spans one or two folders in
 # practice; a hundred distinct ones is a pathological caller, and starting a
 # hundred detached workers would be a worse answer to it than logging.
@@ -170,13 +223,17 @@ class RescanQueue:
                  coalesce_s: float = COALESCE_S,
                  deadline_s: float = DEFER_DEADLINE_S,
                  floor_s: float = MUTATION_SCAN_FLOOR_S,
-                 live_count=None, max_runs: int | None = None):
+                 live_count=None, max_runs: int | None = None,
+                 loadavg=None):
         # `live_count` answers "how many index runs are alive process-wide";
         # None means no cap (the injected fakes that never model one).
         # `max_runs` defaults to runner.MAX_CONCURRENT_RUNS, imported lazily
         # for the same cycle-avoidance reason as the `_real_*` deps below.
         self._live_count = live_count
         self._max_runs = max_runs
+        # `os.getloadavg` unless injected; only consulted under the
+        # low-impact flag (`effective_floor_s`).
+        self._loadavg = loadavg
         self._start = start
         self._live = live_run_covers
         self._blocked = blocked
@@ -187,6 +244,15 @@ class RescanQueue:
         self.deadline_s = deadline_s
         self.floor_s = floor_s
         self._lock = threading.Lock()
+        # Serializes whole fire cycles. `_armed` only guarantees one TIMER
+        # is pending; a note that lands while a cycle is running arms the
+        # next one, which can fire before this one has called `_start`.
+        # Two overlapping cycles would then each read the same `live_count`
+        # and each admit a scan under a budget of one (CodeRabbit, #1700).
+        # Held for the whole cycle: `runner.start` writes the run's spec
+        # before returning, so a cycle that waits here sees the previous
+        # cycle's starts in `live_count`.
+        self._fire_lock = threading.Lock()
         # folder -> the time it was first noted, for the deferral ceiling.
         self._pending: dict = {}
         # folder -> whether every note it has received so far is one that may
@@ -263,6 +329,10 @@ class RescanQueue:
             logger.exception("could not start the queued index rescans")
 
     def _fire(self) -> None:
+        with self._fire_lock:
+            self._fire_cycle()
+
+    def _fire_cycle(self) -> None:
         with self._lock:
             self._armed = False
             pending = dict(self._pending)
@@ -271,16 +341,16 @@ class RescanQueue:
             self._hinted.clear()
         now = self._now()
         defer = {}
+        # The low-impact flag is read here, at fire time, so toggling it
+        # takes effect on the next trigger. Flag off: the constructed values.
+        floor_s = effective_floor_s(self.floor_s, self._loadavg)
+        deadline_s = effective_deadline_s(self.deadline_s)
         # Room under the run cap, computed once: runs started below do not
         # show up in `live_count` until their spec is written, so it is
         # decremented by hand for each start.
         budget = None
         if self._live_count is not None:
-            max_runs = self._max_runs
-            if max_runs is None:
-                from fused_render.index import runner
-                max_runs = runner.MAX_CONCURRENT_RUNS
-            budget = max_runs - self._live_count()
+            budget = effective_budget_cap(self._max_runs) - self._live_count()
         outermost, excess = self._outermost(pending)
         for folder in excess:
             # Past MAX_FOLDERS for this cycle, not dropped: kept pending so
@@ -312,8 +382,8 @@ class RescanQueue:
             recent = False
             if not live:
                 last = self._last_scan(folder)
-                recent = last is not None and (now - last) < self.floor_s
-            if (live or recent) and waited < self.deadline_s:
+                recent = last is not None and (now - last) < floor_s
+            if (live or recent) and waited < deadline_s:
                 # Same trap as the excess loop above: `folder` is the
                 # collapsed root, and restoring just it would drop any
                 # member absorbed into it. Put back the full set.
@@ -383,6 +453,10 @@ class RescanQueue:
 
 
 def _real_start(root: str, hint=None) -> None:
+    # Not gated on the index-watcher lease (server/index_owner.py), even
+    # under the low-impact flag: the index store is per branch, so a server
+    # that skipped its own in-app rescans would never refresh its own store.
+    # Only the watcher is owner-gated.
     from fused_render.index import runner
     from fused_render.index.config import load_config
     from fused_render.server.routers.index import _wake_index_job_bridge

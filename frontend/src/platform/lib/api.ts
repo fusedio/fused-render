@@ -1549,7 +1549,9 @@ export interface Prefs {
   // whether index-backed search ORDERS its hits by relevance score at all —
   // off means `/api/index/rank?ranked=false`'s shallowest-then-alphabetical
   // order instead (`ranked_search_enabled` server-side).
-  indexing: { enabled: boolean; ranked: boolean };
+  // `low_impact` (default OFF) is the quiet-on-a-busy-Mac mode
+  // (`index_low_impact_enabled` server-side).
+  indexing: { enabled: boolean; ranked: boolean; low_impact?: boolean };
   // App git auto-sync (default ON; fused_render/shell/prefs.py's
   // `git_auto_sync_enabled`). OPTIONAL: an older server answers without it.
   git?: { auto_sync: boolean };
@@ -1923,6 +1925,10 @@ export function putGitAutoSyncEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { ranked_search_enabled: enabled });
+}
+
+export function putIndexLowImpactEnabled(value: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { index_low_impact_enabled: value });
 }
 
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {

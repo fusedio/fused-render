@@ -11,6 +11,7 @@ request and the spawn cannot make the worker compact into a directory nobody
 reads.
 """
 import ctypes
+import json
 import os
 import platform
 import sys
@@ -23,6 +24,8 @@ from fused_render.index.scan import run_scan
 # a scan, which otherwise puts up to ten processes x 16 stat threads plus an
 # all-cores DuckDB compaction against the one thread the user is waiting on.
 SCAN_NICE_INCREMENT = 10
+# Under low-impact indexing (the run spec's `low_impact`), further down still.
+LOW_IMPACT_NICE_INCREMENT = 15
 
 # `<sys/resource.h>` constants for `setiopolicy_np(3)` (darwin). `nice()`
 # only lowers CPU scheduling priority; nothing about it touches the disk I/O
@@ -47,12 +50,26 @@ IOPRIO_CLASS_SHIFT = 13
 _IOPRIO_SET_SYSCALL_NR = {"x86_64": 251, "aarch64": 30}
 
 
-def _renice_self() -> None:
+def nice_increment(low_impact: bool = False) -> int:
+    return LOW_IMPACT_NICE_INCREMENT if low_impact else SCAN_NICE_INCREMENT
+
+
+def _spec_low_impact(run_dir: str) -> bool:
+    """The run spec's low-impact flag; an unreadable spec reads as off (the
+    scan itself reports the failure)."""
+    try:
+        with open(os.path.join(run_dir, "spec.json")) as f:
+            return json.load(f).get("low_impact") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _renice_self(low_impact: bool = False) -> None:
     """Nice this process down, in the child. Never a `preexec_fn` at the
     spawn: that forces CPython off posix_spawn onto fork(), which is the
     SIGSEGV this file's other comment is about."""
     try:
-        os.nice(SCAN_NICE_INCREMENT)
+        os.nice(nice_increment(low_impact))
     except (AttributeError, OSError):
         pass  # not permitted — scan at full priority
 
@@ -103,7 +120,7 @@ def main(argv=None) -> int:
             os.setsid()
         except OSError:
             pass  # already a session leader (spawned from a shell)
-    _renice_self()
+    _renice_self(_spec_low_impact(argv[0]))
     _set_background_io_policy()
     run_scan(argv[0])
     return 0

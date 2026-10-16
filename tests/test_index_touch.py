@@ -787,3 +787,151 @@ def test_the_budget_counts_scans_started_this_cycle():
     f.fire()
     assert f.started == ["/home/me/a"]
     assert list(q._pending) == ["/home/me/b"]
+
+
+# ------------------------------------------------- low-impact indexing flag
+
+import pytest  # noqa: E402
+
+from fused_render.server import index_touch  # noqa: E402
+
+
+@pytest.fixture()
+def low_impact(monkeypatch):
+    state = {"on": True}
+    import fused_render.shell.prefs as prefs
+
+    monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: state["on"])
+    return state
+
+
+_IDLE = lambda: (0.5, 0.5, 0.5)  # noqa: E731
+_BUSY = lambda: (1e6, 1e6, 1e6)  # noqa: E731
+
+
+def test_effective_values_follow_the_flag_and_the_load(low_impact):
+    assert index_touch.effective_floor_s(20.0, _IDLE) == 60.0
+    assert index_touch.effective_floor_s(20.0, _BUSY) == 180.0
+    assert index_touch.effective_deadline_s(120.0) == 600.0
+    assert index_touch.effective_budget_cap(4) == 1
+    low_impact["on"] = False
+    assert index_touch.effective_floor_s(20.0, _BUSY) == 20.0
+    assert index_touch.effective_deadline_s(120.0) == 120.0
+    assert index_touch.effective_budget_cap(4) == 4
+
+
+def _scanned_ago(seconds):
+    folder = canonical_root("/home/me/proj")
+    f = Fake(last_scan={folder: 1000.0 - seconds})
+    return f, folder
+
+
+@pytest.mark.parametrize("load,ago,starts", [
+    (_IDLE, 30, False),    # inside the 60 s floor: deferred
+    (_IDLE, 90, True),     # past it
+    (_BUSY, 90, False),    # loaded: floor is 180 s
+    (_BUSY, 200, True),
+])
+def test_the_floor_under_the_flag_is_load_aware(low_impact, load, ago, starts):
+    f, folder = _scanned_ago(ago)
+    q = f.queue(loadavg=load)
+    q.note_folders(folder)
+    f.fire()
+    assert (f.started == [folder]) is starts
+
+
+def test_flag_off_keeps_the_constructed_floor(low_impact):
+    low_impact["on"] = False
+    f, folder = _scanned_ago(30)  # past the default 20 s floor
+    q = f.queue(loadavg=_BUSY)
+    q.note_folders(folder)
+    f.fire()
+    assert f.started == [folder]
+
+
+def test_toggling_the_flag_applies_on_the_next_fire(low_impact):
+    low_impact["on"] = False
+    f, folder = _scanned_ago(30)
+    q = f.queue(loadavg=_IDLE)
+    low_impact["on"] = True  # after construction
+    q.note_folders(folder)
+    f.fire()
+    assert f.started == []  # 60 s floor now applies
+
+
+def test_deadline_under_the_flag_is_600s(low_impact):
+    f, folder = _scanned_ago(1)
+    q = f.queue(loadavg=_IDLE)
+    q.note_folders(folder)
+    f.t += 300  # past the default 120 s deadline, inside 600 s
+    f.scans[folder] = f.t - 1
+    f.fire()
+    assert f.started == []
+    f.t += 400
+    f.scans[folder] = f.t - 1
+    f.fire()
+    assert f.started == [folder]
+
+
+def test_the_run_cap_under_the_flag_is_one(low_impact):
+    f = Fake()
+    q = _capped(f, [0], max_runs=4, loadavg=_IDLE)
+    q.note_folders("/home/me/a", "/home/me/b")
+    f.fire()
+    assert f.started == ["/home/me/a"]
+    low_impact["on"] = False
+    f.fire()
+    assert f.started == ["/home/me/a", "/home/me/b"]
+
+
+def test_real_start_rescans_even_when_not_the_watcher_owner(low_impact,
+                                                            monkeypatch):
+    """Only the watcher is owner-gated: the store is per branch, so a
+    non-owner must still refresh its own."""
+    from fused_render.index import runner
+    from fused_render.server import index_owner
+
+    calls = []
+    monkeypatch.setattr(runner, "start", lambda *a, **k: calls.append(a))
+    monkeypatch.setattr(index_owner, "owns", lambda: False)
+    monkeypatch.setattr("fused_render.server.routers.index."
+                        "_wake_index_job_bridge", lambda: None)
+    index_touch._real_start("/home/me/proj")
+    assert len(calls) == 1
+
+
+def test_overlapping_fire_cycles_share_one_budget(low_impact):
+    """Two cycles firing at once (a note landing mid-cycle arms the next
+    timer) must not each admit a scan under a cap of one: the second cycle
+    waits for the first and then sees its start in `live_count`."""
+    import threading
+
+    f = Fake()
+    started = []
+    inside = threading.Event()
+    release = threading.Event()
+
+    def slow_start(root, hint=None):
+        started.append(root)
+        inside.set()
+        release.wait(5)
+
+    q = RescanQueue(start=slow_start, live_run_covers=f.live_run_covers,
+                    blocked=f.blocks, last_scan=f.last_scan,
+                    schedule=f.schedule, now=f.now,
+                    live_count=lambda: len(started), max_runs=4, loadavg=_IDLE)
+    q.note("/a/x.txt")
+    t1 = threading.Thread(target=q.fire)
+    t1.start()
+    assert inside.wait(5)
+    # A second burst arrives while the first cycle is inside `_start`.
+    q.note("/b/y.txt")
+    t2 = threading.Thread(target=q.fire)
+    t2.start()
+    release.set()
+    t1.join(5)
+    t2.join(5)
+    # Budget is one under the flag: the second cycle deferred its folder
+    # instead of starting a second worker, and re-armed for later.
+    assert started == ["/a"]
+    assert "/b" in q._pending

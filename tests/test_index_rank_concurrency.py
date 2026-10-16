@@ -381,3 +381,20 @@ def test_rank_route_stays_fast_while_a_freshness_triggered_rescan_runs(
             time.sleep(0.1)
 
     report.assert_ceiling(2.0)
+
+
+def test_the_worker_nices_further_under_low_impact(monkeypatch, tmp_path):
+    """The flag comes off the run spec, never prefs.json."""
+    import json as _json
+
+    (tmp_path / "spec.json").write_text(_json.dumps({"low_impact": True}))
+    seen = []
+    monkeypatch.setattr(os, "nice", lambda inc: seen.append(inc) or 0)
+    monkeypatch.setattr(worker, "run_scan", lambda rd: None)
+    assert worker.main([str(tmp_path)]) == 0
+    assert seen == [worker.LOW_IMPACT_NICE_INCREMENT] == [15]
+
+
+def test_nice_increment_knob():
+    assert worker.nice_increment() == worker.SCAN_NICE_INCREMENT == 10
+    assert worker.nice_increment(low_impact=True) == 15

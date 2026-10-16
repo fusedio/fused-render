@@ -1152,3 +1152,47 @@ def test_planning_skips_partitions_outside_the_scan_root(tmp_path, monkeypatch):
     assert probes, "expected affected-count probes"
     bad = [s for s in probes if any(z in s for z in z_files)]
     assert not bad, (z_files, bad[:2], len(probes))
+# -- low-impact resource knobs --------------------------------------------------
+
+@pytest.mark.parametrize("cpus,normal,low", [(64, 4, 2), (8, 2, 2), (4, 1, 1)])
+def test_compaction_threads_low_impact_caps_at_two(monkeypatch, cpus, normal, low):
+    monkeypatch.setattr(os, "cpu_count", lambda: cpus)
+    assert store_mod.compaction_threads() == normal
+    assert store_mod.compaction_threads(low_impact=True) == low
+
+
+@pytest.mark.parametrize("gb,normal,low", [(4, 512, 512), (8, 1024, 768),
+                                           (64, 2048, 768)])
+def test_compaction_memory_low_impact_caps_at_768(monkeypatch, gb, normal, low):
+    _fake_sysconf(monkeypatch, gb * 1024 ** 3)
+    assert store_mod.compaction_memory_mb() == normal
+    assert store_mod.compaction_memory_mb(low_impact=True) == low
+
+
+def test_background_connect_low_impact_applies_the_caps(monkeypatch):
+    import duckdb
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 64)
+    _fake_sysconf(monkeypatch, 64 * 1024 ** 3)
+    con = store_mod.background_connect(low_impact=True)
+    assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 2
+    ref = duckdb.connect()
+    ref.execute("SET memory_limit = '768MB'")
+    assert (con.execute("SELECT current_setting('memory_limit')").fetchone()
+            == ref.execute("SELECT current_setting('memory_limit')").fetchone())
+
+
+def test_compact_threads_low_impact_into_background_connect(tmp_path, monkeypatch):
+    seen = []
+    real = store_mod.background_connect
+
+    def spy(**kw):
+        seen.append(kw.get("low_impact", False))
+        return real(**kw)
+
+    monkeypatch.setattr(store_mod, "background_connect", spy)
+    cfg = _cfg(tmp_path)
+    compact(cfg, "/r", _shard(tmp_path, cfg,
+                              [("/r", _scanned("s", [_row("/r/a.txt")], 10, 1, 0))]),
+            pa, pq, low_impact=True)
+    assert seen == [True]
