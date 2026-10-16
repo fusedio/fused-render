@@ -91,6 +91,13 @@ _DRAIN_INTERVAL_SECONDS = float(
 # is slow; a session that never answers at all is the case this bounds.
 _HANDSHAKE_SECONDS = float(
     os.environ.get("FUSED_COPILOT_HOST_HANDSHAKE_SECONDS", "120"))
+# The reap is close stdin → wait → kill: the ACP server exits on stdin EOF
+# and tears its own MCP children down, so the kill is only for one that
+# hangs. And how long the mode set after the handshake may hold the first
+# prompt back — a reply that never comes must not wedge the session.
+_EXIT_WAIT_SECONDS = 5.0
+_CONFIG_WAIT_SECONDS = 5.0
+_AGENT_MODE = "https://agentclientprotocol.com/protocol/session-modes#agent"
 # The permission wait mirrors permission_server.py: same env knob, same poll,
 # same write window — the card on the other side is the same card.
 _PERM_WAIT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
@@ -532,19 +539,20 @@ class _Host:
         self.run_dir = req["run_dir"]
         self.cwd = req["cwd"]
         self.model = str(req.get("model") or "")
-        # THE SESSION, as fused named it (uuid4, minted for a new chat, the
-        # resumed id otherwise) — the key of every file this host writes.
-        self.sid = str(req.get("session_id") or req.get("new_session_id") or "")
-        self.resume = bool(req.get("session_id"))
-        # The id on the WIRE: Copilot's reply names it; normally the same.
-        self.acp_sid = self.sid
+        # THE SESSION — the key of every file this host writes. A resume
+        # names it; a fresh chat has none until `session/new` answers, because
+        # Copilot MINTS it (`--acp` refuses `--session-id`, verified live), so
+        # it is set in `handshake` and nothing keyed on it is written before.
+        # `new_session_id` is not read: that is Claude's fused-minted id.
+        self.sid = str(req.get("session_id") or "")
+        self.resume = bool(self.sid)
         self.lock = threading.RLock()
         self._out = _append_private(os.path.join(self.run_dir, "out.jsonl"))
-        self.transcript_path = os.path.join(
-            agent_roots.projects_dir(BACKEND), agent_roots.munge(self.cwd),
-            self.sid + ".jsonl")
-        _private_dirs(os.path.dirname(self.transcript_path))
-        self._tx = _append_private(self.transcript_path)
+        self.transcript_path = self._transcript_path()
+        # Opened on the first record, not here: a session that never comes
+        # up (signed out, a dead binary) must leave no empty transcript for
+        # the tasks scan to list.
+        self._tx = None
         self.parent_uuid = None
         self.registry_path = os.path.join(agent_roots.sessions_dir(BACKEND),
                                           "%d.json" % cli.pid)
@@ -568,6 +576,9 @@ class _Host:
         self.interrupts = []          # control request ids awaiting the cancelled reply
         self.pending_perm = {}        # rpc id -> {"perm_id", "done": Event, "answered"}
         self.slash_commands = []
+        self.commands_dirty = False   # the list moved after the init row
+        self.results = 0              # result rows written so far
+        self.result_written = False   # this prompt's result is on disk
         self.started = False          # handshake done, init row written
         self.closed = False           # files closed; late notifications dropped
         self.pending_title = ""
@@ -578,6 +589,13 @@ class _Host:
         peer.start()
 
     # ------------------------------------------------------------ writers
+
+    def _transcript_path(self) -> str:
+        """`<projects>/<munge(cwd)>/<sid>.jsonl`, "" while the id is unknown."""
+        if not self.sid:
+            return ""
+        return os.path.join(agent_roots.projects_dir(BACKEND),
+                            agent_roots.munge(self.cwd), self.sid + ".jsonl")
 
     def _emit_out(self, row: dict) -> None:
         if self.closed:
@@ -590,8 +608,8 @@ class _Host:
     def _emit_tx(self, row: dict) -> None:
         """One transcript record, in Claude Code's shape: `uuid`/`parentUuid`
         chain, `sessionId`, `cwd`, `timestamp`."""
-        if self.closed:
-            return
+        if self.closed or not self.transcript_path:
+            return  # no session id yet: nothing to key a transcript on
         rid = str(uuid.uuid4())
         row.setdefault("uuid", rid)
         row.setdefault("parentUuid", self.parent_uuid)
@@ -599,6 +617,9 @@ class _Host:
         row.setdefault("cwd", self.cwd)
         row["timestamp"] = _now_iso()
         self.parent_uuid = row["uuid"]
+        if self._tx is None:
+            _private_dirs(os.path.dirname(self.transcript_path))
+            self._tx = _append_private(self.transcript_path)
         self._tx.write((json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8"))
         self._tx.flush()
 
@@ -626,6 +647,7 @@ class _Host:
         if self.context_window:
             row["context_window"] = self.context_window
         self._emit_out(row)
+        self.commands_dirty = False
 
     def write_first_turn_notice(self) -> None:
         """D18: the transcript's own record that Copilot answers here."""
@@ -648,6 +670,10 @@ class _Host:
             self.turn_text = None
             self.turn_messages = 0
             self.tail_closed = False
+            self.result_written = False
+            if self.commands_dirty:
+                # Ahead of the echo, where Claude Code writes its own init.
+                self.write_init()
             self._emit_out({"type": "user", "message": {
                 "role": "user", "content": [{"type": "text", "text": text}]}})
             self._emit_tx({"type": "user", "message": {
@@ -655,7 +681,7 @@ class _Host:
                 "entrypoint": "sdk-cli", "isMeta": False, "isSidechain": False})
             self._write_registry("busy")
         self.peer.request("session/prompt", {
-            "sessionId": self.acp_sid,
+            "sessionId": self.sid,
             "prompt": [{"type": "text", "text": text}]},
             on_done=self._on_prompt_reply)
 
@@ -766,8 +792,11 @@ class _Host:
                 self._finish_turn(rpc)
             except Exception as exc:  # noqa: BLE001
                 # A write failed mid-way: the turn still has to CLOSE with a
-                # result row, or `_turn_state` reads it open forever.
+                # result row, or `_turn_state` reads it open forever — and
+                # with exactly one, so not when the failure came after it.
                 try:
+                    if self.result_written:
+                        raise exc
                     self._emit_out({"type": "result", "session_id": self.sid,
                                     "subtype": "error_during_execution",
                                     "is_error": True, "stop_reason": "error",
@@ -782,7 +811,7 @@ class _Host:
                 self.text_parts, self.thinking_parts = [], []
                 self._write_registry("idle")
                 _post_event(self.run_dir, "turn_ended", at=time.time(),
-                            pid=self.cli.pid)
+                            pid=self.cli.pid, session_id=self.sid)
 
     def _finish_turn(self, rpc: _Rpc) -> None:
         self._close_message()
@@ -853,6 +882,8 @@ class _Host:
                        "durationMs": duration_ms, "isMeta": False,
                        "isSidechain": False})
         self._emit_out(result)
+        self.result_written = True
+        self.results += 1
         # The interrupts this reply answers. AFTER the result: a
         # `control_response` is in `_NOT_A_TURN_ROW`, so it may follow one.
         for rid in self.interrupts:
@@ -885,9 +916,11 @@ class _Host:
             elif kind == "available_commands_update":
                 cmds = update.get("availableCommands")
                 if isinstance(cmds, list):
-                    self.slash_commands = [
-                        str(c.get("name")) for c in cmds
-                        if isinstance(c, dict) and c.get("name")]
+                    names = [str(c.get("name")) for c in cmds
+                             if isinstance(c, dict) and c.get("name")]
+                    if names != self.slash_commands:
+                        self.slash_commands = names
+                        self._refresh_commands()
             elif kind == "session_info_update":
                 title = update.get("title")
                 if isinstance(title, str) and title.strip():
@@ -898,6 +931,18 @@ class _Host:
                         # has written the D18 notice: held so that notice
                         # stays the transcript's first row.
                         self.pending_title = title.strip()
+
+    def _refresh_commands(self) -> None:
+        """A command list that lands AFTER the init row (ACP sends it when it
+        likes, often just after the `session/new` reply) rides a fresh init
+        row. `init` is turn preamble, so one is safe while a turn is open or
+        before any turn has ended; after a `result` it would reopen the turn
+        for `_turn_state`, so then it waits for the next echo."""
+        if not self.started:
+            return  # the handshake's own init row will carry it
+        self.commands_dirty = True
+        if self.turn_open or not self.results:
+            self.write_init()
 
     @staticmethod
     def _chunk_text(update: dict) -> str:
@@ -930,12 +975,16 @@ class _Host:
 
     def backfill_replay(self) -> None:
         """D3: turns taken in a terminal (`copilot --resume`) are not in the
-        fused transcript. The `session/load` replay carries every turn; the
-        ones past the transcript's own user-row count are appended."""
+        fused transcript. The `session/load` replay carries every turn; each
+        replayed prompt is looked for, in order, among the transcript's own
+        prompts, and the ones not found are appended. Matched by TEXT, not
+        by count: a fused prompt Copilot never recorded (one refused with a
+        JSON-RPC error) would otherwise shift every later terminal turn out
+        of the diff."""
         if self.replay_user is not None:
             self.replay_turns.append((self.replay_user, "".join(self.replay_agent)))
         self.replay_user, self.replay_agent = None, []
-        have = 0
+        have = []
         try:
             with open(self.transcript_path, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
@@ -952,11 +1001,18 @@ class _Host:
                     if isinstance(content, list) and content and all(
                             isinstance(b, dict) and b.get("type") == "text"
                             for b in content):
-                        if content[0].get("text") != _INTERRUPT_MARK:
-                            have += 1
+                        text = "".join(str(b.get("text") or "") for b in content)
+                        if text != _INTERRUPT_MARK:
+                            have.append(text.strip())
         except OSError:
             pass
-        for user_text, agent_text in self.replay_turns[have:]:
+        missing, at = [], 0
+        for user_text, agent_text in self.replay_turns:
+            try:
+                at = have.index(user_text.strip(), at) + 1
+            except ValueError:
+                missing.append((user_text, agent_text))
+        for user_text, agent_text in missing:
             self._emit_tx({"type": "user", "message": {
                 "role": "user", "content": [{"type": "text", "text": user_text}]},
                 "entrypoint": "sdk-cli", "isMeta": False, "isSidechain": False})
@@ -1026,14 +1082,16 @@ class _Host:
         decision = self._await_decision(entry)
         if decision is None:
             return  # answered elsewhere (a cancel), card already cleared
-        _post_card(self.run_dir, "card_cleared", perm_id)
         if self._answer_perm(rid, _permission_outcome(options, decision)):
+            # Only the answer that won announces the card gone: a cancel
+            # that beat it here has posted its own `card_cleared`.
+            _post_card(self.run_dir, "card_cleared", perm_id)
             if decision.get("decision") == "allow" \
                     and decision.get("mode") in _SWITCHABLE_MODES:
                 # "…and stop asking" (D5): after the RPC reply, so the tool
                 # that asked runs first and everything after it is allowed.
                 self.peer.request("session/set_config_option", {
-                    "sessionId": self.acp_sid, "configId": "allow_all",
+                    "sessionId": self.sid, "configId": "allow_all",
                     "value": "on"})
 
     def _await_decision(self, entry: dict):
@@ -1166,12 +1224,12 @@ class _Host:
                 # answers this id from `_finish_turn`, and the late cancel
                 # then reaches an idle session, which is harmless.
                 self.interrupts.append(request_id)
-            self.peer.notify("session/cancel", {"sessionId": self.acp_sid})
+            self.peer.notify("session/cancel", {"sessionId": self.sid})
             self.reject_pending("cancelled")
         elif subtype == "set_permission_mode":
             mode = str(request.get("mode") or "")
             self.peer.request("session/set_config_option", {
-                "sessionId": self.acp_sid, "configId": "allow_all",
+                "sessionId": self.sid, "configId": "allow_all",
                 "value": "on" if mode == "auto" else "off"})
             with self.lock:
                 self._control_response(request_id, {})
@@ -1206,11 +1264,17 @@ class _Host:
                 "cwd": self.cwd, "mcpServers": []})
             if not rpc.done.wait(_HANDSHAKE_SECONDS) or rpc.error is not None:
                 return self._handshake_failed("session/new", rpc)
-            got = (rpc.result or {}).get("sessionId") if isinstance(rpc.result, dict) else None
-            if isinstance(got, str) and got and got != self.sid:
-                sys.stderr.write("copilot_host: copilot named the session %s, "
-                                 "fused %s\n" % (got, self.sid))
-                self.acp_sid = got
+            got = rpc.result.get("sessionId") if isinstance(rpc.result, dict) else None
+            if not isinstance(got, str) or self.agent._bad_id(got):
+                # The id names files on disk: one a path could be built out
+                # of is refused, by agent.py's own rule for session ids.
+                rpc.error = {"code": -32603,
+                             "message": "no usable sessionId in the reply: %r" % (got,)}
+                return self._handshake_failed("session/new", rpc)
+            with self.lock:
+                self.sid = got
+                self.transcript_path = self._transcript_path()
+            self._write_host_json()
         with self.lock:
             self.write_init()
             if not self.resume:
@@ -1220,11 +1284,51 @@ class _Host:
                 self._emit_tx({"type": "ai-title", "aiTitle": self.pending_title})
                 self.pending_title = ""
             self._write_registry("idle")
+        self._apply_mode()
         return True
+
+    def _apply_mode(self) -> None:
+        """D5 at spawn: every mode is ACP's `agent` mode, and `auto` is
+        `allow_all=on` — not argv (`_copilot_argv` leaves it to the host),
+        so nothing else would ever turn it on. Set EXPLICITLY both ways, and
+        the mode too: a resumed session may come back from a terminal left
+        in another mode or with allow_all on. Waited for (bounded) before the
+        first prompt goes out, so that prompt runs under the mode the user
+        picked; a refusal is logged and the session carries on."""
+        mode = self.peer.request("session/set_mode", {
+            "sessionId": self.sid, "modeId": _AGENT_MODE})
+        allow = self.peer.request("session/set_config_option", {
+            "sessionId": self.sid, "configId": "allow_all",
+            "value": "on" if self.req.get("cli_mode") == "auto" else "off"})
+        for rpc in (mode, allow):
+            if not rpc.done.wait(_CONFIG_WAIT_SECONDS) or rpc.error is not None:
+                sys.stderr.write("copilot_host: %s: %r\n" % (rpc.method, rpc.error))
+
+    def _write_host_json(self) -> None:
+        """host.json's `session_id`, once Copilot has named a fresh session.
+        Read-modify-write, atomic: `main` wrote the rest before the
+        handshake, and a `_send` may already have re-recorded model/mode."""
+        path = os.path.join(self.run_dir, "host.json")
+        host = _read_json(path)
+        if not host:
+            return  # reaped, or never written: nothing to name
+        host["session_id"] = self.sid
+        try:
+            _write_atomic(path, host)
+        except OSError:
+            pass
 
     def _handshake_failed(self, step: str, rpc: _Rpc) -> bool:
         err = rpc.error or {"message": "no answer within %ds" % _HANDSHAKE_SECONDS}
         text = "copilot %s failed: %s" % (step, err.get("message") or err)
+        if err.get("message") in ("copilot exited", "copilot is not running"):
+            # The CLI refused to start (a bad flag, a broken install): its
+            # exit code and its own stderr are the whole story.
+            try:
+                self.cli.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            text = "copilot exited during %s (code %s)" % (step, self.cli.poll())
         tail = _err_tail(self.run_dir)
         if tail:
             text += "\n" + tail
@@ -1242,22 +1346,20 @@ class _Host:
         return False
 
     def run(self) -> None:
-        """Drain, watch, reap — session_host's `_reap_loop` for this host."""
-        idle_since = None
+        """Drain, watch, reap — session_host's `_reap_loop` for this host.
+
+        The reap closes session_host's own race the same way: a `_send` can
+        land in the inbox between the loop's last drain and its exit, already
+        told `{"sent": True}`. So `host.json` goes FIRST (a later `_send`
+        then fails cleanly with "no live session"), and one more pass drains
+        what is there — which for Copilot means running that turn to its
+        `result` before stdin closes, since EOF ends the ACP server."""
         try:
             if not self.handshake():
                 return
-            while self.cli.poll() is None and not self.peer.dead.is_set():
-                held = self.drain_inbox()
-                with self.lock:
-                    busy = self.turn_open or held or bool(self.pending_perm)
-                if busy:
-                    idle_since = None
-                elif idle_since is None:
-                    idle_since = time.monotonic()
-                elif time.monotonic() - idle_since >= _IDLE_REAP_SECONDS:
-                    break
-                time.sleep(_DRAIN_INTERVAL_SECONDS)
+            self._serve(reaping=False)
+            self._remove_host_json()
+            self._serve(reaping=True)
         except Exception as exc:  # noqa: BLE001 — favour reaping over hanging
             try:
                 with _append_private(os.path.join(self.run_dir, "err.log")) as f:
@@ -1266,6 +1368,30 @@ class _Host:
                 pass
         finally:
             self.close()
+
+    def _serve(self, reaping: bool) -> None:
+        """Until the session goes idle for `_IDLE_REAP_SECONDS` — or, when
+        `reaping`, until it is idle at all — or the CLI is gone."""
+        idle_since = None
+        while self.cli.poll() is None and not self.peer.dead.is_set():
+            held = self.drain_inbox()
+            with self.lock:
+                busy = self.turn_open or held or bool(self.pending_perm)
+            if busy:
+                idle_since = None
+            elif reaping:
+                return
+            elif idle_since is None:
+                idle_since = time.monotonic()
+            elif time.monotonic() - idle_since >= _IDLE_REAP_SECONDS:
+                return
+            time.sleep(_DRAIN_INTERVAL_SECONDS)
+
+    def _remove_host_json(self) -> None:
+        try:
+            os.remove(os.path.join(self.run_dir, "host.json"))
+        except OSError:
+            pass
 
     def close(self) -> None:
         self.reject_pending("cancelled")
@@ -1286,29 +1412,34 @@ class _Host:
             self.cli.stdin.close()
         except Exception:  # noqa: BLE001
             pass
-        for path in (os.path.join(self.run_dir, "host.json"), self.registry_path):
+        self._remove_host_json()
+        try:
+            os.remove(self.registry_path)
+        except OSError:
+            pass
+        # Reap: stdin is closed above, and the ACP server exits on that EOF
+        # (taking its MCP children with it). Wait, then kill one that hangs.
+        try:
+            self.cli.wait(timeout=_EXIT_WAIT_SECONDS)
+        except subprocess.TimeoutExpired:
             try:
-                os.remove(path)
-            except OSError:
+                self.cli.kill()
+                self.cli.wait(timeout=_EXIT_WAIT_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
                 pass
-        if self.cli.poll() is None:
-            try:
-                self.cli.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    self.cli.terminate()
-                except OSError:
-                    pass
         exited_at = time.time()
         with self.lock:
             self.closed = True
         for fh in (self._out, self._tx):
+            if fh is None:
+                continue  # no transcript was ever written
             try:
                 fh.close()
             except OSError:
                 pass
         last = _post_event(self.run_dir, "exited", code=self.cli.poll(),
-                           at=exited_at, pid=self.cli.pid)
+                           at=exited_at, pid=self.cli.pid,
+                           session_id=self.sid or _meta_session_id(self.run_dir))
         if last is not None:
             try:
                 last.join(_EVENT_TIMEOUT + 1.0)
@@ -1331,10 +1462,10 @@ def main() -> None:
         return
     agent = _load_agent(req["agent"])
     argv = list(req["argv"])
-    env = agent._spawn_env("")   # no chat id: no shell-prefix mirror (D9)
-    overlay = req.get("env")
-    if isinstance(overlay, dict):
-        env.update({str(k): str(v) for k, v in overlay.items()})
+    # Copilot's env, not Claude's: the `CLAUDE_CODE_*` switches stripped and
+    # `COPILOT_GITHUB_TOKEN` from `gh auth token` (D10). No chat id: there is
+    # no shell-prefix mirror for Copilot (D9).
+    env = agent._spawn_env("", backend=BACKEND)
 
     err_fh = _append_private(os.path.join(run_dir, "err.log"))
     try:
@@ -1352,7 +1483,9 @@ def main() -> None:
     with agent._private_open(os.path.join(run_dir, "host.json")) as f:
         json.dump({
             "pid": os.getpid(),
-            "session_id": req.get("session_id") or req.get("new_session_id", ""),
+            # A resume's id; "" for a fresh chat until `session/new` names
+            # it (`_Host._write_host_json`).
+            "session_id": req.get("session_id") or "",
             "file": req.get("file", ""), "mode": req.get("cli_mode", ""),
             "model": req.get("model", ""), "effort": req.get("effort", ""),
             "read_dirs": req.get("extra_read_dirs", []),

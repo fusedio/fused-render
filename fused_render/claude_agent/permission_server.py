@@ -117,10 +117,12 @@ ANSWERABLE_TOOL = "AskUserQuestion"
 # served. Copilot asks its client for permissions over ACP, and
 # `copilot_host.py` answers those off the same `perm/` files; a second
 # approval tool on the roster would be one the model could call and nobody
-# would answer. Flags are stripped before the positional dirs are read, so
-# `argv[1]`/`argv[2]` keep meaning what they always did.
+# would answer. The flag may sit anywhere (agent.py appends it after the
+# dirs) and is stripped before the positional dirs are read, so
+# `argv[1]`/`argv[2]` keep meaning what they always did. Only this exact
+# token: a dir is never mistaken for a flag, whatever it is named.
 NO_APPROVE = "--no-approve" in sys.argv[1:]
-_POSITIONAL = [a for a in sys.argv[1:] if not a.startswith("--")]
+_POSITIONAL = [a for a in sys.argv[1:] if a != "--no-approve"]
 PERM_DIR = os.path.abspath(_POSITIONAL[0]) if len(_POSITIONAL) > 0 else ""
 STATE_DIR = os.path.abspath(_POSITIONAL[1]) if len(_POSITIONAL) > 1 else ""
 
