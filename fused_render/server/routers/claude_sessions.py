@@ -1180,6 +1180,22 @@ def api_claude_session_recap(file: str, session_id: str, for_uuid: str):
     if not file or not session_id or not for_uuid:
         raise HTTPException(status_code=400,
                             detail="file, session_id and for_uuid are required")
+    if _recap_titles_on():
+        # WITH THE TASKS RECAP TITLES ON the chat never asks haiku itself: the
+        # Tasks worker (routers/tasks.py) is the one writer, after its settle
+        # minute, so the fold and the list title appear together. This only
+        # READS the store — a dict lookup — and says whether to ask again.
+        try:
+            stored = tasks_store.session_recap(tasks_store.settings_state(), session_id)
+        except Exception:  # noqa: BLE001 — a decoration, never a fault
+            stored = None
+        same = stored is not None and stored["for_uuid"] == for_uuid
+        text = stored["text"] if same else ""
+        # Settled for good only when the store says there was nothing to say;
+        # a failure is retried by the worker, and no mark yet means not yet.
+        pending = not text and not (same and stored["empty"])
+        return {"text": text, "for_uuid": for_uuid, "pending": pending,
+                "at": datetime.now(timezone.utc).isoformat()}
     return {"text": _recap(agent, file, session_id, for_uuid),
             "for_uuid": for_uuid,
             "at": datetime.now(timezone.utc).isoformat()}

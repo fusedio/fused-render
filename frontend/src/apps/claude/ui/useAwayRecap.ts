@@ -29,7 +29,7 @@
 // at the end of it (design, "Data model (ours)").
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { fetchRecap as defaultFetchRecap, type Recap } from "../protocol/recap";
+import { fetchRecap as defaultFetchRecap, type Recap, type RecapResponse } from "../protocol/recap";
 
 /** How long away is long enough (Claude Code's own threshold). A CONSTANT, and
  *  the hook takes an override, because there is no test-knob convention in this
@@ -42,6 +42,12 @@ export const AWAY_MS = 60_000;
  *  spends the reader's money on nothing (Claude Code: "failing repeatedly this
  *  turn"). */
 export const MAX_FAILURES = 2;
+
+/** With the Tasks recap titles on the server only reads what the Tasks worker
+ *  stored, and says `pending: true` while it has nothing yet. The chat asks
+ *  again this often (a dict lookup on the server), for at most this long. */
+export const POLL_MS = 15_000;
+export const POLL_CAP_MS = 600_000;
 
 /**
  * ONE RECAP PER RETURN, PER PAGE — the gate no per-mount check can be.
@@ -133,6 +139,8 @@ export interface AwayRecapOptions extends AwayRecapEnv {
    * Tasks listing already stored the recap (`_recap` reads the store first).
    */
   eager?: boolean;
+  /** Overrides for `POLL_MS` (tests). */
+  pollMs?: number;
   /** Override for `AWAY_MS`; tests pass 0. */
   awayMs?: number;
   /**
@@ -200,6 +208,54 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
     });
   }, []);
 
+  // THE PENDING POLL. Mounted-ness and the one timer live in refs, so an
+  // unmount, an anchor change or a send (`forUuid` moves) ends it.
+  const mounted = useRef(true);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+    };
+  }, []);
+
+  /** Take one answer: spent either way, shown when it has text, and — only
+   *  when the server says `pending` — asked about again in `POLL_MS` until the
+   *  cap, the same gates as the first ask. */
+  const take = (asked: string, answer: RecapResponse | undefined, startedAt: number) => {
+    spent.current.add(asked);
+    const text = (answer && answer.text ? answer.text : "").trim();
+    const fresh = latest.current;
+    if (text) {
+      if (fresh.forUuid !== asked || fresh.running) return;
+      setRecap({ text, forUuid: asked });
+      return;
+    }
+    if (!answer || answer.pending !== true || !mounted.current) return;
+    if (now() - startedAt >= POLL_CAP_MS) return;
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = setTimeout(() => {
+      pollTimer.current = null;
+      const o = latest.current;
+      if (!mounted.current || o.forUuid !== asked) return; // moved on: stop
+      if (!o.enabled || !o.file || !o.sessionId) return;
+      const hidden = (doc ?? (typeof globalThis.document !== "undefined" ? globalThis.document : null))?.hidden;
+      if (o.running || hidden || o.hasDraft() || (o.root && !recapRootVisible(o.root()))) {
+        take(asked, answer, startedAt); // gated this tick: keep waiting
+        return;
+      }
+      const read = o.fetchRecap ?? defaultFetchRecap;
+      void read(o.file, o.sessionId, asked)
+        .then((next) => {
+          if (mounted.current) take(asked, next, startedAt);
+        })
+        .catch(() => {
+          if (mounted.current) take(asked, answer, startedAt);
+        });
+    }, opts.pollMs ?? POLL_MS);
+  };
+
   useEffect(() => {
     const win = view ?? (typeof window !== "undefined" ? window : null);
     const document_ = doc ?? (typeof globalThis.document !== "undefined" ? globalThis.document : null);
@@ -247,18 +303,17 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
         .then((answer) => {
           inflight.current = false;
           if (!live) return;
-          // Spent EITHER WAY: an empty answer is the server saying there is
-          // nothing to show for this position, and asking again would buy the
-          // same nothing at the same price.
-          spent.current.add(asked);
-          const text = (answer && answer.text ? answer.text : "").trim();
-          if (!text) return;
+          // Spent EITHER WAY (`take`): an empty answer is the server saying
+          // there is nothing to show for this position, and asking again would
+          // buy the same nothing at the same price — unless it says `pending`.
           // The world may have moved while the model was thinking (3-25s): a
-          // message sent, a turn started. Re-asked here rather than assumed,
-          // and the render gate below re-asks once more.
-          const fresh = latest.current;
-          if (fresh.forUuid !== asked || fresh.running || fresh.hasDraft()) return;
-          setRecap({ text, forUuid: asked });
+          // message sent, a turn started; `take` re-asks that, and the render
+          // gate below re-asks once more. A draft typed meanwhile also drops it.
+          if (latest.current.hasDraft()) {
+            spent.current.add(asked);
+            return;
+          }
+          take(asked, answer, now());
         })
         .catch(() => {
           inflight.current = false;
@@ -329,14 +384,15 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
     void read(file, sessionId, asked)
       .then((answer) => {
         inflight.current = false;
-        spent.current.add(asked);
-        const text = (answer && answer.text ? answer.text : "").trim();
         const fresh = latest.current;
         // The position moved while this was in flight: the new one was skipped
         // behind `inflight`, so look again now.
         if (fresh.forUuid !== asked) setKick((n) => n + 1);
-        if (!text || fresh.forUuid !== asked || fresh.running || fresh.hasDraft()) return;
-        setRecap({ text, forUuid: asked });
+        if (fresh.hasDraft()) {
+          spent.current.add(asked);
+          return;
+        }
+        take(asked, answer, now());
       })
       .catch(() => {
         inflight.current = false;

@@ -547,3 +547,39 @@ def test_an_ended_turn_with_no_prose_is_stored_empty_not_failed(
     # A fold under the same transcript stores nothing.
     recap_mod._recap(agent, target, SESSION, "u-other")
     assert store.session_recap(store.settings_state(), SESSION)["for_uuid"] == FOR_UUID
+
+
+# --- with `task_recap_titles_enabled` the endpoint only READS the store ---
+
+def test_flag_on_endpoint_reads_the_store_and_never_spawns(
+        client, project, calls, store, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: True)
+    body = _get(client, target).json()
+    assert body["text"] == "" and body["pending"] is True  # nothing stored yet
+
+    store.record_recap(SESSION, FOR_UUID, "Stored by the worker", now=1.0)
+    body = _get(client, target).json()
+    assert body["text"] == "Stored by the worker" and body["pending"] is False
+
+    store.record_recap(SESSION, FOR_UUID, "", now=2.0, empty=True)
+    body = _get(client, target).json()
+    assert body["text"] == "" and body["pending"] is False
+    store.record_recap(SESSION, FOR_UUID, "", now=3.0)  # a failure: may still land
+    assert _get(client, target).json()["pending"] is True
+    assert _spawns(calls) == []
+
+
+def test_flag_off_endpoint_still_generates_with_no_pending_key(
+        client, project, calls, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.shell import prefs as shell_prefs
+
+    monkeypatch.setattr(shell_prefs, "task_recap_titles_enabled", lambda: False)
+    body = _get(client, target).json()
+    assert body["text"] and "pending" not in body
+    assert len(_spawns(calls)) == 1
