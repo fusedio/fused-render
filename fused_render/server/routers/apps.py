@@ -723,10 +723,10 @@ def api_migrate_app(body: dict = Body(...), x_fused: str | None = Header(default
         "entry_html": entry_html,
         "from_version": from_version,
         "to_version": to_version,
-        # Same two keys as /api/apps/new, same meaning: the stored entry with
+        # Same keys as /api/apps/new, same meaning: the stored entry with
         # its `run_id` once the send resolved, and why no entry was stored.
         "task": task,
-        "task_error": task_error,
+        **_task_error_keys(task_error),
     }
 
 
@@ -1025,10 +1025,10 @@ def api_app_doctor_fix(body: dict = Body(...),
         "path": folder,
         "entry_html": entry_html,
         "check": check_id,
-        # Same two keys as /api/apps/new, same meaning: the stored entry with
+        # Same keys as /api/apps/new, same meaning: the stored entry with
         # its `run_id` once the send resolved, and why no entry was stored.
         "task": task,
-        "task_error": task_error,
+        **_task_error_keys(task_error),
     }
 
 
@@ -1111,6 +1111,14 @@ def api_app_doctor_run(body: dict = Body(...),
             return _error("an App Doctor task for this app is already in progress",
                           status=409)
 
+        # CLAUDE RUNS THE CHECK (App Doctor is Claude-only), so with Claude off
+        # say so BEFORE `begin`: `begin` drops the cached verdict, and a check
+        # that then cannot be created would leave nothing where the last
+        # verdict was. The full disabled body, as every agent refusal answers.
+        from fused_render.agent_backends import registry
+        if not registry.is_enabled("claude"):
+            return JSONResponse(registry.disabled_error("claude"), status_code=400)
+
         force = bool(body.get("force"))
         gathered, begin_error, reuse = app_doctor_ai.begin(folder, force=force)
         if begin_error is not None:
@@ -1136,6 +1144,8 @@ def api_app_doctor_run(body: dict = Body(...),
             # (the previous verdict was already dropped by `begin`, which is the
             # honest state — it described files the user asked to re-judge).
             app_doctor_ai.clear_run(folder)
+            if isinstance(task_error, dict):
+                return JSONResponse(task_error, status_code=400)
             return _error(task_error or "the check task could not be created", status=502)
         task_id = str(task.get("id") or "")
         if not app_doctor_ai.record_task(folder, gathered, task_id):
@@ -1355,6 +1365,17 @@ def _session_choice_error(field: str, value, allowed) -> str | None:
     return None
 
 
+def _task_error_keys(task_error) -> dict:
+    """`task_error` as a response states it: always a sentence or None (every
+    page reads it as a string), plus `task_refusal` — the agent refusal's
+    whole body when that is why there is no task (`_create_app_task`), else
+    None."""
+    if isinstance(task_error, dict):
+        return {"task_error": str(task_error.get("error") or ""),
+                "task_refusal": task_error}
+    return {"task_error": task_error, "task_refusal": None}
+
+
 def _create_app_task(entry_html: str, prompt: str, model: str = "",
                      effort: str = "",
                      images: list[str] | None = None,
@@ -1388,7 +1409,9 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
     first, `run_now` says "already claimed" — that is success, not failure:
     the wait below reads the same store either way.
 
-    Returns (entry, error), exactly one set: a task that could not be stored
+    Returns (entry, error), exactly one set — `error` a sentence, or the
+    `BackendRefused` body when the agent is why (`_task_error_keys` states
+    either on a response): a task that could not be stored
     must not fail the creation that already succeeded, but the reason rides
     back so the UI is not silent about the prompt going nowhere. An entry that
     was stored but whose send failed comes back as the entry — its own
@@ -1409,6 +1432,11 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
             immediate=True, model=model, effort=effort,
             permission_mode=permission_mode, images=images or None,
             backend="claude")
+    except schedule.BackendRefused as exc:
+        # The agent refusal WHOLE (`reason`, `backend`), not flattened into
+        # the sentence below: the page needs `backend_disabled` to point at the
+        # right switch. `_task_error_keys` turns it into the response's keys.
+        return None, exc.body
     except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
         return None, f"failed to create the app's task: {exc}"
     entry_id = str(entry.get("id") or "")
@@ -1459,6 +1487,14 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     prompt = body.get("prompt", "")
     if not isinstance(prompt, str):
         return _error("'prompt' must be a string")
+    # A PROMPT IS A CLAUDE TASK (`_create_app_task`), so with Claude off the
+    # whole request is refused HERE, with the full disabled body — before the
+    # starter is copied or a repo initialised — rather than leaving an app
+    # behind whose first turn could never start.
+    if prompt.strip():
+        from fused_render.agent_backends import registry
+        if not registry.is_enabled("claude"):
+            return JSONResponse(registry.disabled_error("claude"), status_code=400)
 
     # The composer's model/effort pickers. Both optional and both
     # defaulting to "" — an older client that sends neither gets exactly the
@@ -1574,6 +1610,7 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         "task": task,
         # Why the task was NOT created — the app itself was created fine, but
         # the UI shouldn't be silent about the prompt going nowhere. None when
-        # created, or when there was no prompt.
-        "task_error": task_error,
+        # created, or when there was no prompt. `task_refusal` beside it is the
+        # agent refusal's whole body when that is the reason.
+        **_task_error_keys(task_error),
     }

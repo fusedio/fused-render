@@ -1549,10 +1549,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
     PINNED HERE, never left for send time: "" is resolved now and the entry
     stores the answer, so a task scheduled today runs tomorrow on the agent the
     user saw in the modal, not whatever the Preferences default is when it
-    fires. A `session_id`'s owner (`_session_backend`) comes first and is the
-    answer — an explicit `backend` naming another agent is refused (invariant
-    8). Otherwise "" takes a `follow_of` leader's agent, else
-    `registry.default_id()`. An unknown id is a `ValueError` (the router's
+    fires. A `session_id`'s owner (`session_owner`) comes first — an explicit
+    `backend` naming another agent is refused when the record or transcript
+    root says otherwise (invariant 8), and a blank takes the owner, Claude
+    when nothing says. A `follow_of` leader's agent is held the same way.
+    Otherwise "" is `registry.default_id()`. An unknown id is a `ValueError` (the router's
     400); every other refusal about the agent is a `BackendRefused` carrying
     the full body — switched OFF in Preferences (D17, request-level gate; the
     scheduler's own tick refuses the same entry again at send time, because
@@ -1788,22 +1789,28 @@ def create(target: str, message: str, due=None, session_id: str = "",
             raise ValueError(
                 f"follow_of: no scheduled message with id {follow_of!r}")
         # A follower is the next line of its leader's conversation, so it
-        # goes to the leader's agent unless the caller said otherwise.
-        backend = backend or _entry_backend(leader)
+        # goes to the leader's agent — and naming another one is refused the
+        # way a session's mismatch is (below): one conversation, one agent.
+        leads = _entry_backend(leader)
+        if backend and backend != leads:
+            raise _mismatch(leads, "this conversation")
+        backend = leads
 
     # THE PIN (see the docstring): resolved once, here, and stored. A session
     # already belongs to an agent (invariant 8) and its owner comes FIRST: a
     # caller naming another agent is refused rather than stored, because the
     # entry would then say one agent while `agent._start` resumed on the other
-    # and the send gate checked the wrong switch. Anything else takes the
-    # Preferences default, which is enabled by construction.
+    # and the send gate checked the wrong switch. Refused only on EVIDENCE
+    # (`session_owner`: a record or a transcript root) — a session nothing has
+    # recorded yet, a Copilot run seconds old, is not "Claude's" just because
+    # Claude is what a blank reads as; that fallback only fills a blank.
+    # Anything else takes the Preferences default, which is enabled by
+    # construction.
     if session_id:
-        owner = _session_backend(session_id)
-        if backend and backend != owner:
-            raise BackendRefused({
-                "error": f"this session belongs to {_registry.get(owner).label}",
-                "reason": "backend_mismatch", "backend": owner})
-        backend = owner
+        owner = session_owner(session_id)
+        if owner and backend and backend != owner:
+            raise _mismatch(owner, "this session")
+        backend = backend or owner or _registry.DEFAULT
     backend = backend or _registry.default_id()
     if not _registry.is_enabled(backend):
         raise BackendRefused(_registry.disabled_error(backend))
@@ -2912,13 +2919,22 @@ def _entry_backend(entry: dict) -> str:
     return value if value in roots.BACKENDS else roots.DEFAULT_BACKEND
 
 
+def _mismatch(owner: str, what: str) -> "BackendRefused":
+    """The refusal for naming an agent other than the one `what` belongs to."""
+    from fused_render.agent_backends import registry
+    return BackendRefused({
+        "error": f"{what} belongs to {registry.get(owner).label}",
+        "reason": "backend_mismatch", "backend": owner})
+
+
 def session_owner(session_id: str) -> str:
     """The agent the EVIDENCE says owns `session_id`: the session-settings
     record, else the root its transcript sits under — and "" when there is
     neither, which is a session nothing has started yet. An id that is not a
-    plain name is never globbed for. `/api/tasks/settings` asks this (an id
-    with no evidence may still be recorded); `_session_backend` is the same
-    answer with Claude standing in for "no evidence"."""
+    plain name is never globbed for. `create` and `/api/tasks/settings` refuse
+    a mismatch only against a non-empty answer; `create` fills a blank
+    `backend` from it, with Claude standing in for "no evidence" (every
+    session that predates the field is a Claude one)."""
     from fused_render.agent_backends import roots
     sid = str(session_id or "").strip()
     hint = tasks_store.session_backend(tasks_store.settings_state(), sid)
@@ -2927,13 +2943,6 @@ def session_owner(session_id: str) -> str:
         return hint
     found = roots.find_transcript(sid)
     return found[0] if found else ""
-
-
-def _session_backend(session_id: str) -> str:
-    """The agent that owns an existing session: `session_owner`, else Claude
-    (every session that predates the field is a Claude one)."""
-    from fused_render.agent_backends import roots
-    return session_owner(session_id) or roots.DEFAULT_BACKEND
 
 
 def _send(entry: dict) -> None:

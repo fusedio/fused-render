@@ -45,7 +45,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from fused_render import session_liveness, tasks_store
+from fused_render import claude_health, session_liveness, tasks_store
 from fused_render.agent_backends import roots
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _require_fused
@@ -948,20 +948,18 @@ def _recap_generate(agent, file: str, session_id: str,
     requires it whenever `--output-format stream-json` is used (exits 1
     without it, same rule `ai.py`'s `_ai_cmd` documents).
 
-    `cwd` is the target's own working directory when there is one, and a temp
-    directory otherwise. It genuinely does not matter — a fresh session with no
-    tools cannot look at the filesystem — but a cwd that does not exist fails
-    the spawn itself, so the fallback is not optional.
+    NO `cwd`, AND `close_fds=False` (`claude_health.SUBPROCESS_KWARGS`): either
+    a `cwd=` or the default `close_fds=True` makes CPython fork()+exec instead
+    of posix_spawn, and a fork with libproj resident in the server dies SIGSEGV
+    before exec (D277/D292). A run with no tools never looks at the
+    filesystem, so the server's own cwd is as good as any.
     """
     turns = (agent._history(file, session_id) or {}).get("turns") or []
     tail = _recap_tail(turns)
     if not tail:
         return ""
-    workdir = agent._workdir(file)
-    if not os.path.isdir(workdir):
-        workdir = tempfile.gettempdir()
     if backend == "copilot":
-        return _recap_copilot(agent, workdir, tail)
+        return _recap_copilot(agent, tail)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": _RECAP_PROMPT % tail}]}})
@@ -971,9 +969,9 @@ def _recap_generate(agent, file: str, session_id: str,
          "--max-turns", "1", "--tools", "", "--model", "haiku",
          "--output-format", "stream-json", "--verbose",
          "--system-prompt", _RECAP_SYSTEM],
-        cwd=workdir, env=agent._spawn_env(), stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-        encoding="utf-8", errors="replace")
+        env=agent._spawn_env(), stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        **claude_health.SUBPROCESS_KWARGS)
     try:
         stdout, _ = proc.communicate(input=message + "\n", timeout=_RECAP_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -997,7 +995,7 @@ _COPILOT_SESSION_ID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
-def _recap_copilot(agent, workdir: str, tail: str) -> str:
+def _recap_copilot(agent, tail: str) -> str:
     """The Copilot twin of the Claude run: one shot (`-p` mode, entered by a
     prompt on stdin), silent (`-s`: the reply only, no stats), no tools
     (`_COPILOT_RECAP_NO_TOOLS`), no repo instructions and no built-in MCP
@@ -1012,7 +1010,10 @@ def _recap_copilot(agent, workdir: str, tail: str) -> str:
     a row for the run; that file is Copilot's, and is not edited from here.)
 
     The tail travels over stdin, never argv — the same rule as the Claude
-    run. Every failure is "", as there."""
+    run, and so does the spawn rule (no Popen `cwd`, `close_fds=False`). The
+    CLI is pointed at the temp dir with its own `-C` instead: a folder it
+    already trusts, so no trust question can stall a one-shot run. Every
+    failure is "", as there."""
     import uuid
 
     from fused_render import copilot_health
@@ -1025,11 +1026,11 @@ def _recap_copilot(agent, workdir: str, tail: str) -> str:
             [agent._copilot_bin(), "-s", "--no-auto-update", "--model", "auto",
              f"--available-tools={_COPILOT_RECAP_NO_TOOLS}",
              "--no-custom-instructions", "--disable-builtin-mcps",
-             "--no-ask-user", "--session-id", sid],
-            cwd=workdir, env=agent._spawn_env(backend="copilot"),
+             "--no-ask-user", "--session-id", sid,
+             "-C", tempfile.gettempdir()],
+            env=agent._spawn_env(backend="copilot"),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True, encoding="utf-8",
-            errors="replace")
+            stderr=subprocess.DEVNULL, **claude_health.SUBPROCESS_KWARGS)
         try:
             stdout, _ = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
         except subprocess.TimeoutExpired:

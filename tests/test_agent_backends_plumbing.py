@@ -582,6 +582,41 @@ def test_a_session_bound_message_cannot_name_another_agent(
     assert r.json()["backend"] == "copilot"
 
 
+def test_a_session_nothing_has_recorded_yet_is_nobodys_to_refuse(
+        tmp_path, copilot_projects):
+    """No record and no transcript is no evidence: a Copilot run seconds old
+    must not be refused as "belongs to Claude" on send/resend/resay. The
+    Claude fallback only fills a blank."""
+    _enable_copilot()
+    target = tmp_path / "p"
+    target.mkdir()
+    assert schedule.create(str(target), "go", _past(), session_id="sess-new",
+                           backend="copilot")["backend"] == "copilot"
+    assert schedule.create(str(target), "go", _past(),
+                           session_id="sess-new")["backend"] == "claude"
+    # …and a resend of a Copilot entry whose session has no evidence yet.
+    entry = schedule.create(str(target), "go", _past(), backend="copilot")
+    schedule._update(entry["id"], state=schedule.SENT, turn="failed",
+                     error="the turn died", claude_session_id="sess-young")
+    result = schedule.resend(entry["id"])
+    assert result["ok"] is True, result
+    assert result["entry"]["backend"] == "copilot"
+
+
+def test_a_follower_cannot_name_another_agent_than_its_leader(tmp_path):
+    _enable_copilot()
+    target = tmp_path / "p"
+    target.mkdir()
+    leader = schedule.create(str(target), "first", _past(), backend="copilot")
+    with pytest.raises(schedule.BackendRefused) as info:
+        schedule.create(str(target), "second", _past(), follow_of=leader["id"],
+                        backend="claude")
+    assert info.value.body == {"error": "this conversation belongs to Copilot",
+                               "reason": "backend_mismatch", "backend": "copilot"}
+    assert schedule.create(str(target), "second", _past(), follow_of=leader["id"],
+                           backend="copilot")["backend"] == "copilot"
+
+
 def test_plan_mode_is_refused_for_an_agent_without_one(tmp_path):
     _enable_copilot()
     target = tmp_path / "p"

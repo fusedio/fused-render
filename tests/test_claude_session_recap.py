@@ -447,3 +447,40 @@ def test_the_recap_asks_the_agent_module_whose_session_it_is(agent, tmp_path):
     target = tmp_path / "t"
     target.mkdir()
     assert recap_mod._recap_backend(agent, str(target), SESSION) == "claude"
+
+
+class _FakeProc:
+    returncode = 0
+
+    def __init__(self, out):
+        self._out = out
+
+    def communicate(self, input=None, timeout=None):
+        return self._out, None
+
+
+@pytest.mark.parametrize("backend", ["claude", "copilot"])
+def test_both_recap_spawns_keep_the_posix_spawn_rule(
+        project, agent, monkeypatch, backend):
+    """No `cwd`, `close_fds=False`, no session/preexec hooks: any of those makes
+    CPython fork()+exec, and a fork with libproj resident in the server dies
+    SIGSEGV before exec (D277/D292)."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    seen = []
+    text = "the recap, long enough to count as one"
+
+    def fake_popen(argv, **kw):
+        seen.append(kw)
+        return _FakeProc(_ok(text) if backend == "claude" else text)
+
+    monkeypatch.setattr(recap_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    assert recap_mod._recap_generate(agent, target, SESSION, backend) == text
+    kw, = seen
+    assert "cwd" not in kw
+    assert kw["close_fds"] is False
+    assert "start_new_session" not in kw and "preexec_fn" not in kw
+    for key, value in recap_mod.claude_health.SUBPROCESS_KWARGS.items():
+        assert kw[key] == value

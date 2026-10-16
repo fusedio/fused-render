@@ -507,7 +507,57 @@ def test_spawn_failure_does_not_fail_creation_and_says_why(client, workspace, mo
     assert r.status_code == 200
     assert r.json()["task"] is None
     assert r.json()["task_error"] == "claude CLI not found"
+    assert r.json()["task_refusal"] is None
     assert (workspace / "app" / "demo" / "index.html").is_file()
+
+
+def _claude_off(monkeypatch):
+    from fused_render.agent_backends import registry
+    monkeypatch.setattr(registry, "is_enabled", lambda b: b != "claude")
+
+
+def test_a_new_app_with_a_prompt_and_claude_off_is_refused_before_any_copy(
+        client, workspace, monkeypatch):
+    """The prompt is a Claude task, so the whole request is the disabled 400 —
+    no half-made app left behind whose first turn could never start."""
+    from fused_render.agent_backends import registry
+    _claude_off(monkeypatch)
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda *a, **k: pytest.fail("no task with Claude off"))
+    r = client.post("/api/apps/new", json={"name": "demo", "prompt": "hi"},
+                    headers=HDRS)
+    assert r.status_code == 400
+    assert r.json() == registry.disabled_error("claude")
+    assert not (workspace / "app" / "demo").exists()
+    # No prompt, no Claude task: the app is made as ever.
+    r = client.post("/api/apps/new", json={"name": "demo"}, headers=HDRS)
+    assert r.status_code == 200, r.text
+
+
+def test_an_agent_refusal_from_the_app_task_keeps_its_body(tmp_path, monkeypatch):
+    from fused_render.agent_backends import registry
+    _claude_off(monkeypatch)
+    page = tmp_path / "index.html"
+    page.write_text("<html></html>")
+    task, error = apps_mod._create_app_task(str(page), "build it")
+    assert task is None
+    assert error == registry.disabled_error("claude")
+    assert apps_mod._task_error_keys(error) == {
+        "task_error": error["error"], "task_refusal": error}
+
+
+def test_app_doctor_with_claude_off_refuses_before_dropping_the_verdict(
+        client, workspace, monkeypatch):
+    from fused_render import app_doctor_ai
+    from fused_render.agent_backends import registry
+    d = _app_dir(workspace, "demo")
+    _claude_off(monkeypatch)
+    monkeypatch.setattr(app_doctor_ai, "begin",
+                        lambda *a, **k: pytest.fail("begin drops the last verdict"))
+    r = client.post("/api/apps/doctor/run", headers=HDRS,
+                    json={"path": str(d), "check": "cross-browser", "force": True})
+    assert r.status_code == 400, r.text
+    assert r.json() == registry.disabled_error("claude")
 
 
 @pytest.mark.parametrize(
