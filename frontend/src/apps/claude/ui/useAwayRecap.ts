@@ -309,7 +309,7 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
           // The world may have moved while the model was thinking (3-25s): a
           // message sent, a turn started; `take` re-asks that, and the render
           // gate below re-asks once more. A draft typed meanwhile also drops it.
-          if (latest.current.hasDraft()) {
+          if (latest.current.hasDraft() && answer?.pending !== true) {
             spent.current.add(asked);
             return;
           }
@@ -388,7 +388,7 @@ export function useAwayRecap(opts: AwayRecapOptions): AwayRecapResult {
         // The position moved while this was in flight: the new one was skipped
         // behind `inflight`, so look again now.
         if (fresh.forUuid !== asked) setKick((n) => n + 1);
-        if (fresh.hasDraft()) {
+        if (fresh.hasDraft() && answer?.pending !== true) {
           spent.current.add(asked);
           return;
         }
