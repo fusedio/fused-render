@@ -357,6 +357,11 @@ def _no_real_fused_credentials(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_login_shell_path(monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_LOGIN_PATH", "")
+
+
+@pytest.fixture(autouse=True)
 def _no_real_share_shim(monkeypatch):
     """No test may spawn the real `_fused_share_app.py` shim by accident.
 

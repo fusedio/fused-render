@@ -1173,6 +1173,12 @@ def warm_in_background() -> None:
     """
     def _run() -> None:
         try:
+            from fused_render.claude_agent import agent_module
+
+            agent_module()._login_path()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             snapshot()
         except Exception:  # noqa: BLE001 - a warm-up must never be the failure
             pass
