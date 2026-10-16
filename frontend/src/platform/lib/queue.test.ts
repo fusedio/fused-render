@@ -7,6 +7,9 @@
 // isolation is exactly the kind of thing that drifts back.
 import { describe, expect, it } from "bun:test";
 import {
+  backgroundCaption,
+  BACKGROUND_HINT,
+  BACKGROUND_WORD,
   canForceStart,
   canRunNext,
   chatUrl,
@@ -82,6 +85,17 @@ describe("a place in the line", () => {
   it("has nothing to say about a row that is not queued", () => {
     expect(queueCaption({ status: "in_progress", queue_position: 2 })).toBe(null);
     expect(queueCaption({})).toBe(null);
+  });
+});
+
+describe("background work", () => {
+  it("is a caption on a row whose host still holds a job, and nothing otherwise", () => {
+    expect(BACKGROUND_WORD).toBe("background job");
+    expect(BACKGROUND_HINT).toBe("background job running");
+    expect(backgroundCaption({ pending_background: true })).toBe("background job");
+    expect(backgroundCaption({ pending_background: false })).toBe("");
+    // An older server sends no field at all.
+    expect(backgroundCaption({})).toBe("");
   });
 });
 

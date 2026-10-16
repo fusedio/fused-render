@@ -3573,6 +3573,12 @@ export interface Task {
   // whenever nothing is waiting.
   attention?: { tool: string; summary: string } | null;
   live: boolean;
+  // A live session host is still holding BACKGROUND WORK for this chat — a
+  // `run_in_background` Bash, a background Agent, a Monitor
+  // (routers/tasks.py `_hosted_runs`). A caption, never a status: the reply
+  // may be over and that work may never end (a dev server). Absent on an older
+  // server.
+  pending_background?: boolean;
   unread: number;
   // WHEN THIS TASK BEGAN, epoch seconds — the EARLIEST clock the server has for
   // it: the scheduled entry's `created`, else the transcript's first record
