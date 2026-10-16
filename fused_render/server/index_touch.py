@@ -439,26 +439,15 @@ class RescanQueue:
         return out, []
 
 
-_logged_not_owner = False
-
-
 def _real_start(root: str, hint=None) -> None:
+    # Not gated on the index-watcher lease (server/index_owner.py), even
+    # under the low-impact flag: the index store is per branch, so a server
+    # that skipped its own in-app rescans would never refresh its own store.
+    # Only the watcher is owner-gated.
     from fused_render.index import runner
     from fused_render.index.config import load_config
     from fused_render.server.routers.index import _wake_index_job_bridge
 
-    if _low_impact():
-        from fused_render.server import index_owner
-
-        if not index_owner.owns():
-            # Another server on this Mac owns the watcher and its rescans;
-            # this one answers queries from its store as it stands.
-            global _logged_not_owner
-            if not _logged_not_owner:
-                _logged_not_owner = True
-                logger.info("index: not rescanning %s — another process owns "
-                            "the index watcher (low-impact indexing)", root)
-            return
     started = runner.start(load_config(), root, hint=hint)
     _wake_index_job_bridge()
     logger.info("index: rescanning %s after an in-app change (run %s)",

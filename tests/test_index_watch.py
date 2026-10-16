@@ -578,6 +578,9 @@ def test_start_degrades_instead_of_raising_when_roots_cannot_be_determined(monke
 
     monkeypatch.setattr(iw, "_stop_event", None)
     monkeypatch.setattr(iw, "_threads", [])
+    # `start()` arms first; restore it, or a later test's `is_armed()` (the
+    # low-impact prefs hook) sees a watcher that is not there.
+    monkeypatch.setattr(iw, "_armed", False)
     monkeypatch.setattr("fused_render.index.config.load_config",
                         lambda dir=None: (_ for _ in ()).throw(
                             RuntimeError("config is unreadable")))
@@ -617,15 +620,18 @@ def test_the_real_sleep_is_interruptible_by_stop_event():
 # ------------------------------------------------- low-impact indexing flag
 
 
-def test_the_app_support_dir_is_always_dropped_and_default_ignored():
+def test_the_app_support_dir_is_always_dropped_but_not_default_ignored():
     """Self-writes (updates, pid/port files) — flag or not, ignore list or
-    not."""
+    not. Refused by the watcher only: adding it to `default_ignore` would
+    change `rules.sig()` for every user on the default list and force a
+    whole-root rescan on upgrade, flag off."""
     from fused_render import _flavor
 
-    support = norm(os.path.join(_flavor.app_support_base(), "updates", "x.dmg"))
+    base = norm(_flavor.app_support_base())
+    support = norm(os.path.join(base, "updates", "x.dmg"))
     assert make_dropped(IgnoreRules([]))(support)
     assert make_dropped(IgnoreRules([]), low_impact=False)(support)
-    assert IgnoreRules(default_ignore()).is_ignored_tree(support)
+    assert base not in default_ignore()
 
 
 def test_dot_segments_below_the_root_are_dropped_only_under_the_flag():
@@ -644,6 +650,16 @@ def test_dot_segments_below_the_root_are_dropped_only_under_the_flag():
     dot_root = norm(os.path.expanduser("~/.config/proj"))
     assert not make_dropped(IgnoreRules([]), root=dot_root,
                             low_impact=True)(f"{dot_root}/a.txt")
+
+
+def test_dot_segments_are_dropped_under_root_slash():
+    """Root `/` must not lose the rule to `"/".rstrip("/") == ""`."""
+    on = make_dropped(IgnoreRules([]), root="/", low_impact=True)
+    off = make_dropped(IgnoreRules([]), root="/", low_impact=False)
+    for p in ("/.Trashes/x", "/opt/proj/.venv/lib/x.py"):
+        assert on(p), p
+        assert not off(p), p
+    assert not on("/opt/proj/a.txt")
 
 
 def test_the_watcher_spec_carries_the_flag(monkeypatch):

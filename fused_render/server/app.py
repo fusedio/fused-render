@@ -1232,8 +1232,8 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         if index_low_impact_enabled():
             # Low-impact indexing: nothing index-shaped on the boot path. A
             # daemon thread waits for every startup handler to finish, plus a
-            # grace period, then prunes, scans (only as the watcher owner)
-            # and warms.
+            # grace period, then prunes, scans and warms — owner or not (the
+            # store is per branch; only the watcher is owner-gated).
             index_routes.start_deferred_startup_scan(
                 start_dir, app.state.startup_done)
             index_routes.start_index_job_bridge()
@@ -1283,6 +1283,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _shutdown_index_watch():
         from fused_render.server import index_owner, index_watch
 
+        index_routes.stop_deferred_startup_scan()
         index_owner.stop_waiter()
         index_watch.stop()
 

@@ -13,10 +13,17 @@ With `index_low_impact_enabled` on, a machine-wide lease picks ONE owner:
     the holder, for diagnostics and tests.
   * `index-watcher.preempt.json` — `{"pid", "since"}`, written by a
     PREFERRED process (the installed baseline :1777 app, `is_preferred_owner`)
-    that could not get the lease. A non-preferred holder that sees a request
-    from a live pid hands over: it stops its watcher, releases the lease, and
-    does not re-claim while the request stands. A request (or owner record)
-    from a dead pid is stale and ignored/cleaned.
+    that could not get the lease, and rewritten (refreshing `since`) on every
+    tick it keeps waiting. A non-preferred holder that sees a live request
+    hands over: it stops its watcher, releases the lease, and does not
+    re-claim while the request stands. A request is stale — ignored — when
+    its pid is dead (the file is also deleted) or its `since` is older than
+    `PREEMPT_STALE_S`, so a wedged preferred process cannot park the lease
+    forever. An owner record from a dead pid is simply overwritten.
+
+Only the WATCHER is owner-gated. In-app rescans (`index_touch`) and the
+deferred startup scan run in every server regardless: the index store is per
+branch, so a non-owner that skipped them would never refresh its own store.
 
 Flag OFF: nothing here runs; `index_watch.start()` is called as it always was.
 
@@ -44,12 +51,24 @@ RETRY_S = 10.0
 RETRY_MAX_S = 60.0
 #: Pause after handing the lease over, before trying again.
 HANDOVER_PAUSE_S = 5.0
+#: A preempt request older than this is stale even from a live pid. Twice the
+#: waiter's longest backoff, since the waiter refreshes it every tick.
+PREEMPT_STALE_S = 2 * RETRY_MAX_S
+#: How long `stop()` waits for an in-flight on_acquire/on_release callback.
+STOP_CALLBACK_WAIT_S = 30.0
 
 
 def is_preferred_owner() -> bool:
     """Whether this process is the installed baseline Render app — no branch
     ref (so it serves on the flavor's port base, 1777) and not the Bot
-    flavor. That process wins the watcher whenever it is running."""
+    flavor. That process wins the watcher whenever it is running.
+
+    A source checkout run on the baseline ref without FUSED_RENDER_BRANCH
+    also counts as preferred: it shares ~/.fused-render and port 1777 with
+    the installed app anyway, so the two cannot run side by side. The lease
+    files live in `tasks_store.STATE_DIR`, which follows FUSED_RENDER_HOME,
+    so a server on an isolated home has its own lease and owns its watcher
+    outright."""
     from fused_render import _branch, _flavor
 
     return _branch.branch_ref() == "" and not _flavor.is_bot()
@@ -114,6 +133,13 @@ class OwnerLoop:
         self.owned = False
         self._retry = RETRY_S
         self._lock = threading.RLock()
+        # Set while no on_acquire/on_release callback is running. Callbacks
+        # run OUTSIDE `_lock` so `stop()` never blocks behind a slow watcher
+        # start; `stop()` waits on this instead, so its caller's follow-up
+        # (e.g. `index_watch.stop()`) lands after the callback.
+        self._idle = threading.Event()
+        self._idle.set()
+        self._loop_ident: int | None = None
 
     # ------------------------------------------------------------ files
     def _path(self, name: str) -> str:
@@ -157,6 +183,13 @@ class OwnerLoop:
         if not self.pid_alive(pid):
             self._remove(PREEMPT_FILE)
             return None
+        since = req.get("since")
+        if (not isinstance(since, (int, float))
+                or self.now() - since > PREEMPT_STALE_S):
+            # A live pid that stopped refreshing its request (wedged, or not
+            # waiting any more): ignore it. Not deleted — its owner may be
+            # about to rewrite it.
+            return None
         return req
 
     def _remove_own_preempt(self) -> None:
@@ -171,30 +204,62 @@ class OwnerLoop:
 
     # ------------------------------------------------------------ policy
     def tick(self) -> float:
+        """One transition. The decision is made under `_lock`; the callback
+        it implies runs after the lock is dropped, then `after` settles the
+        state under the lock again (and undoes an acquire if `stop()` came
+        in meanwhile)."""
         with self._lock:
             if self.stop_event.is_set():
                 return 0.0
             if self.owned:
-                return self._tick_owned()
-            return self._tick_waiting()
+                delay, callback, after = self._tick_owned()
+            else:
+                delay, callback, after = self._tick_waiting()
+            if callback is not None:
+                self._idle.clear()
+        if callback is None:
+            return delay
+        try:
+            self._safe(callback)
+        finally:
+            with self._lock:
+                try:
+                    after()
+                finally:
+                    self._idle.set()
+        return delay
 
-    def _tick_owned(self) -> float:
+    def _drop_lease(self) -> None:
+        """Under `_lock`: give back the lease and our owner record."""
+        if self.owned:
+            self._remove_own_owner()
+            self._release(LEASE_NAME)
+            self.owned = False
+
+    def _tick_owned(self):
         if self.preferred or self.live_preempt() is None:
-            return HOLD_POLL_S
+            return HOLD_POLL_S, None, None
         logger.info("index owner: a preferred process asked for the watcher; "
                     "handing it over")
-        self._safe(self.on_release)
-        self._remove_own_owner()
-        self._release(LEASE_NAME)
-        self.owned = False
-        self._retry = RETRY_S
-        return HANDOVER_PAUSE_S
 
-    def _tick_waiting(self) -> float:
+        def after():
+            # `stop()` may have dropped it already while on_release ran.
+            #
+            # Accepted overlap: `on_release` (index_watch.stop) asks the
+            # watcher child to exit, but the child can still drain queued
+            # events for a moment after the lease is free, so the new owner's
+            # watcher and ours briefly run side by side. Both only schedule
+            # coalesced rescans, so the cost is at most a duplicate rescan.
+            self._drop_lease()
+            self._retry = RETRY_S
+
+        return HANDOVER_PAUSE_S, self.on_release, after
+
+    def _tick_waiting(self):
         if not self.preferred and self.live_preempt() is not None:
             # A preferred process is waiting for the lease: do not race it
             # back for it (we may have just handed it over).
-            return self._backoff()
+            return self._backoff(), None, None
         if self._try_acquire(LEASE_NAME):
             self.owned = True
             self._retry = RETRY_S
@@ -203,14 +268,18 @@ class OwnerLoop:
                                      "since": self.now()})
             self._remove_own_preempt()
             logger.info("index owner: this process owns the index watcher")
-            self._safe(self.on_acquire)
-            return HOLD_POLL_S
+
+            def after():
+                if self.stop_event.is_set():
+                    # stop() raced the callback: do not keep the lease.
+                    self._drop_lease()
+
+            return HOLD_POLL_S, self.on_acquire, after
         if self.preferred:
-            req = self._read(PREEMPT_FILE)
-            if not req or req.get("pid") != self.pid:
-                self._write(PREEMPT_FILE, {"pid": self.pid,
-                                           "since": self.now()})
-        return self._backoff()
+            # Rewritten every waiting tick so `since` stays fresh: a request
+            # that stops being refreshed goes stale (PREEMPT_STALE_S).
+            self._write(PREEMPT_FILE, {"pid": self.pid, "since": self.now()})
+        return self._backoff(), None, None
 
     def _backoff(self) -> float:
         delay = self._retry
@@ -225,6 +294,7 @@ class OwnerLoop:
             logger.exception("index owner: callback failed")
 
     def run(self) -> None:
+        self._loop_ident = threading.get_ident()
         while not self.stop_event.is_set():
             try:
                 delay = self.tick()
@@ -238,14 +308,19 @@ class OwnerLoop:
     def stop(self) -> None:
         """End the loop and give back everything this process holds: the
         lease, the owner record, and any preempt request of ours. Does not
-        call `on_release` — the caller decides what replaces the watcher."""
+        call `on_release` — the caller decides what replaces the watcher.
+
+        Never blocks behind the lock while a callback runs; it does wait (up
+        to STOP_CALLBACK_WAIT_S) for an in-flight callback to finish, so
+        whatever the caller does next happens after it."""
         with self._lock:
             self.stop_event.set()
-            if self.owned:
-                self._remove_own_owner()
-                self._release(LEASE_NAME)
-                self.owned = False
+            self._drop_lease()
             self._remove_own_preempt()
+        if threading.get_ident() != self._loop_ident:
+            if not self._idle.wait(STOP_CALLBACK_WAIT_S):
+                logger.warning("index owner: a watcher callback is still "
+                               "running after %.0f s", STOP_CALLBACK_WAIT_S)
 
 
 # ----------------------------------------------------------------- wiring

@@ -19,6 +19,7 @@ from fused_render.server.index_owner import (
     LEASE_NAME,
     OWNER_FILE,
     PREEMPT_FILE,
+    PREEMPT_STALE_S,
     RETRY_MAX_S,
     RETRY_S,
     OwnerLoop,
@@ -113,7 +114,7 @@ def test_non_preferred_holder_hands_over_to_a_live_preempt_request(state_dir):
     loop = _loop(c, preferred=False)
     loop.tick()
     assert loop.owned
-    _write(state_dir, PREEMPT_FILE, {"pid": OTHER, "since": 1.0})
+    _write(state_dir, PREEMPT_FILE, {"pid": OTHER, "since": 990.0})
     assert loop.tick() == HANDOVER_PAUSE_S
     assert c.log == ["acquire", "release"]
     assert not loop.owned
@@ -132,14 +133,70 @@ def test_a_preempt_request_from_a_dead_pid_is_ignored_and_cleaned(state_dir):
     c = Calls()
     loop = _loop(c, preferred=False, alive=())
     loop.tick()
-    _write(state_dir, PREEMPT_FILE, {"pid": OTHER, "since": 1.0})
+    _write(state_dir, PREEMPT_FILE, {"pid": OTHER, "since": 990.0})
     assert loop.tick() == HOLD_POLL_S
     assert loop.owned and c.log == ["acquire"]
     assert not os.path.exists(os.path.join(state_dir, PREEMPT_FILE))
 
 
+def test_an_old_request_from_a_live_pid_is_ignored(state_dir):
+    """A live pid that stopped refreshing its request (a wedged preferred
+    app) cannot park the lease forever."""
+    c = Calls()
+    loop = _loop(c, preferred=False)  # OTHER is alive
+    _write(state_dir, PREEMPT_FILE,
+           {"pid": OTHER, "since": 1000.0 - PREEMPT_STALE_S - 1})
+    assert loop.tick() == HOLD_POLL_S and loop.owned
+    assert loop.tick() == HOLD_POLL_S and c.log == ["acquire"]
+
+
+def test_the_preferred_waiter_refreshes_its_request_every_tick(state_dir):
+    rival = _lease_rival.hold(os.path.join(state_dir, LEASE_NAME))
+    try:
+        t = [1000.0]
+        loop = OwnerLoop(lambda: None, lambda: None, preferred=True,
+                         now=lambda: t[0], sleep=lambda s: None,
+                         pid_alive=lambda p: True, pid=ME)
+        loop.tick()
+        t[0] = 1050.0
+        loop.tick()
+        assert _read(state_dir, PREEMPT_FILE) == {"pid": ME, "since": 1050.0}
+    finally:
+        _lease_rival.release(rival)
+
+
+def test_stop_during_a_blocking_on_acquire_does_not_deadlock(state_dir):
+    """Callbacks run outside the lock: `stop()` from another thread returns
+    once the callback finishes, and the lease is given back."""
+    import threading
+
+    entered, unblock = threading.Event(), threading.Event()
+
+    def slow_acquire():
+        entered.set()
+        unblock.wait(5)
+
+    loop = OwnerLoop(slow_acquire, lambda: None, preferred=False,
+                     sleep=lambda s: None, pid_alive=lambda p: True, pid=ME)
+    ticker = threading.Thread(target=loop.tick)
+    ticker.start()
+    assert entered.wait(5)
+    stopper = threading.Thread(target=loop.stop)
+    stopper.start()
+    stopper.join(0.2)
+    assert stopper.is_alive()  # waits for the in-flight callback...
+    assert not loop.owned  # ...but already gave back the lease
+    unblock.set()
+    stopper.join(5)
+    ticker.join(5)
+    assert not stopper.is_alive() and not ticker.is_alive()
+    assert not loop.owned
+    assert LEASE_NAME not in tasks_store._lease_handles
+    assert not os.path.exists(os.path.join(state_dir, OWNER_FILE))
+
+
 def test_a_stale_request_does_not_block_acquiring(state_dir):
-    _write(state_dir, PREEMPT_FILE, {"pid": OTHER, "since": 1.0})
+    _write(state_dir, PREEMPT_FILE, {"pid": OTHER, "since": 990.0})
     loop = _loop(Calls(), preferred=False, alive=())
     assert loop.tick() == HOLD_POLL_S and loop.owned
 
@@ -155,7 +212,7 @@ def test_preferred_holder_ignores_preempt_requests(state_dir):
     c = Calls()
     loop = _loop(c, preferred=True)
     loop.tick()
-    _write(state_dir, PREEMPT_FILE, {"pid": OTHER, "since": 1.0})
+    _write(state_dir, PREEMPT_FILE, {"pid": OTHER, "since": 990.0})
     assert loop.tick() == HOLD_POLL_S
     assert loop.owned and c.log == ["acquire"]
 

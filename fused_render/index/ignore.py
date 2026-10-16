@@ -349,13 +349,9 @@ def default_ignore() -> list[str]:
     list from whenever they saved it and does not receive this pattern
     retroactively. Changing how saved configs merge in new defaults is a
     separate change."""
-    from fused_render import _flavor  # stdlib-only module; no cycle
     from fused_render.logs import log_dir  # stdlib-only module; no cycle
 
-    # The app's own support dir (updates, pid/port files) is self-writes,
-    # the same as the log dir; `watcher.make_dropped` also refuses it.
-    out = [norm(os.path.expanduser("~/Library/Caches")), norm(log_dir()),
-           norm(_flavor.app_support_base())]
+    out = [norm(os.path.expanduser("~/Library/Caches")), norm(log_dir())]
     out += [norm(os.path.expanduser(p)) for p in LIBRARY_CHURN_PATHS]
     return DEFAULT_IGNORE_NAMES + out
 

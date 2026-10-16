@@ -884,16 +884,16 @@ def test_the_run_cap_under_the_flag_is_one(low_impact):
     assert f.started == ["/home/me/a", "/home/me/b"]
 
 
-def test_real_start_skips_when_not_the_watcher_owner(low_impact, monkeypatch):
+def test_real_start_rescans_even_when_not_the_watcher_owner(low_impact,
+                                                            monkeypatch):
+    """Only the watcher is owner-gated: the store is per branch, so a
+    non-owner must still refresh its own."""
     from fused_render.index import runner
     from fused_render.server import index_owner
 
     calls = []
     monkeypatch.setattr(runner, "start", lambda *a, **k: calls.append(a))
     monkeypatch.setattr(index_owner, "owns", lambda: False)
-    index_touch._real_start("/home/me/proj")
-    assert calls == []
-    monkeypatch.setattr(index_owner, "owns", lambda: True)
     monkeypatch.setattr("fused_render.server.routers.index."
                         "_wake_index_job_bridge", lambda: None)
     index_touch._real_start("/home/me/proj")

@@ -85,9 +85,12 @@ def _hidden_under(p: str, root: str) -> bool:
     index/query.py hides from search (`lrel LIKE '.%' OR lrel LIKE '%/.%'`)."""
     if not root:
         return False
-    if p == root or not p.startswith(root + "/"):
+    # Root `/` has no trailing segment to strip: its children start with
+    # "/" itself, not "//".
+    prefix = root if root.endswith("/") else root + "/"
+    if p == root or not p.startswith(prefix):
         return False
-    return any(seg.startswith(".") for seg in p[len(root) + 1:].split("/"))
+    return any(seg.startswith(".") for seg in p[len(prefix):].split("/"))
 
 
 def make_dropped(rules, index_dir: str | None = None, *,
@@ -150,7 +153,9 @@ def make_dropped(rules, index_dir: str | None = None, *,
     guard = MountGuard()
     own = [d for d in (norm(str(index_dir or "")), norm(log_dir()),
                        norm(_flavor.app_support_base())) if d]
-    hide_root = norm(str(root or "")).rstrip("/") if low_impact else ""
+    hide_root = norm(str(root or "")) if low_impact else ""
+    if hide_root != "/":
+        hide_root = hide_root.rstrip("/")
 
     def dropped(path: str) -> bool:
         p = norm(str(path or ""))
