@@ -44,8 +44,12 @@ def _load(name):
 
 
 @pytest.fixture
-def agent():
-    return _load("agent")
+def agent(tmp_path):
+    mod = _load("agent")
+    # The learned model→window map lives beside the real runs tree; a test
+    # must neither read the box's nor write into it.
+    mod.MODEL_WINDOWS = str(tmp_path / "model-windows.json")
+    return mod
 
 
 def _poll_rows(agent, tmp_path, rows, tail=""):
@@ -979,10 +983,81 @@ def _t_usage(text, usage, model="claude-sonnet-4-5"):
 
 
 def _reading(inp=0, creation=0, read=0, out=0, model="claude-sonnet-4-5",
-             compacted=False):
+             compacted=False, window=None):
     return {"input_tokens": inp, "cache_creation_input_tokens": creation,
             "cache_read_input_tokens": read, "output_tokens": out,
-            "model": model, "compacted": compacted}
+            "model": model, "window": window, "compacted": compacted}
+
+
+def test_history_context_carries_the_window_the_cli_taught(
+        agent, tmp_path, monkeypatch):
+    """The meter's denominator comes from the CLI, not a table. A `result`
+    row's `modelUsage.<model>.contextWindow` is learned once (`_learn_windows`)
+    and stamped on every later reading of that model — history and poll
+    alike — so a CLI release that widens a model's window cannot leave the
+    ring reading six times too full (Akshil, 2026-10-15)."""
+    agent._learn_windows({"type": "result", "modelUsage": {
+        "claude-haiku-5-5": {"contextWindow": 1000000, "inputTokens": 2},
+        "claude-sonnet-4-6": {"contextWindow": 200000},
+        "junk": {"contextWindow": "1m"},
+        "zero": {"contextWindow": 0},
+        "boolean": {"contextWindow": True},
+    }})
+    assert json.load(open(agent.MODEL_WINDOWS)) == {
+        "claude-haiku-5-5": 1000000, "claude-sonnet-4-6": 200000}
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        _t_user("one"),
+        _t_usage("first", {"input_tokens": 5, "output_tokens": 7},
+                 model="claude-haiku-5-5"),
+    ])
+    assert out["context"] == _reading(5, 0, 0, 7, "claude-haiku-5-5",
+                                      window=1000000)
+    # A model nobody has named yet: None, and the page's table stands in.
+    out = _history_payload(agent, tmp_path, monkeypatch, [
+        _t_user("one"),
+        _t_usage("first", {"input_tokens": 5, "output_tokens": 7},
+                 model="claude-new-thing"),
+    ])
+    assert out["context"]["window"] is None
+
+
+def test_learned_windows_merge_and_survive_a_bad_file(agent, tmp_path):
+    agent._learn_windows({"modelUsage": {"a": {"contextWindow": 10}}})
+    agent._learn_windows({"modelUsage": {"b": {"contextWindow": 20}}})
+    # Same numbers again: nothing to say, nothing rewritten.
+    before = os.stat(agent.MODEL_WINDOWS).st_mtime_ns
+    agent._learn_windows({"modelUsage": {"a": {"contextWindow": 10}}})
+    assert os.stat(agent.MODEL_WINDOWS).st_mtime_ns == before
+    assert agent._known_window("a") == 10 and agent._known_window("b") == 20
+    assert agent._known_window("") is None
+    # A corrupt file costs the reading, never the payload.
+    with open(agent.MODEL_WINDOWS, "w") as fh:
+        fh.write("{not json")
+    assert agent._known_window("a") is None
+    agent._learn_windows({"modelUsage": {"c": {"contextWindow": 30}}})
+    assert agent._known_window("c") == 30
+    # No file at all, no result row with usage: both quiet.
+    os.remove(agent.MODEL_WINDOWS)
+    agent._learn_windows({"type": "result"})
+    assert not os.path.exists(agent.MODEL_WINDOWS)
+    assert agent._known_window("a") is None
+
+
+def test_poll_stamps_the_window_its_own_result_row_taught(agent, tmp_path):
+    """A chat's FIRST turn names its model (the assistant row) and its window
+    (the result row) in the same batch, and the reading is built before the
+    result row is read — so the poll re-stamps it at the end rather than
+    making the first ring of every new chat read off the table."""
+    out = _poll_rows(agent, tmp_path, [
+        {"type": "assistant", "message": {
+            "role": "assistant", "model": "claude-opus-5-5",
+            "content": [{"type": "text", "text": "hi"}],
+            "usage": {"input_tokens": 4, "output_tokens": 3}}},
+        {"type": "result", "result": "hi", "session_id": "s1",
+         "modelUsage": {"claude-opus-5-5": {"contextWindow": 1000000}}},
+    ])
+    assert out["context"]["window"] == 1000000
+    assert agent._known_window("claude-opus-5-5") == 1000000
 
 
 def test_history_reports_the_latest_assistant_usage_as_context(

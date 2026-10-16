@@ -53,7 +53,7 @@ test("a bare ring, ONE sentence for both readers, and a second line that says pr
       model="claude-haiku-4-5"
     />,
   ).root.findByType("button");
-  const sentence = "Context: 84k of 167k tokens before auto-compact (50%)";
+  const sentence = "Context: 84k of 197k tokens before auto-compact (43%)";
   // `data-hint` is this app's tooltip (platform/lib/hints), never `title`. It
   // carries the sentence AND a "Click for details" line: nothing about a plain
   // ring says it opens anything. The spoken name is the sentence alone — a
@@ -78,11 +78,11 @@ test("the ring turns yellow at 75% and red at 90%", () => {
         model="claude-haiku-4-5"
       />,
     ).root.findByType("button").props.className as string;
-  // Haiku compacts at 167k: 72% dim, 76% yellow, 89% yellow, 91% red.
-  expect(cls(120_000)).toBe("c-ctxmeter");
-  expect(cls(127_000)).toBe("c-ctxmeter is-warn");
-  expect(cls(148_000)).toBe("c-ctxmeter is-warn");
-  expect(cls(152_000)).toBe("c-ctxmeter is-high");
+  // Haiku 4.5 compacts at 197k: 71% dim, 76% yellow, 89% yellow, 94% red.
+  expect(cls(140_000)).toBe("c-ctxmeter");
+  expect(cls(150_000)).toBe("c-ctxmeter is-warn");
+  expect(cls(175_000)).toBe("c-ctxmeter is-warn");
+  expect(cls(185_000)).toBe("c-ctxmeter is-high");
 });
 
 test("the arc is the percentage, drawn from twelve o'clock", () => {
@@ -91,9 +91,9 @@ test("the arc is the percentage, drawn from twelve o'clock", () => {
       <ContextMeter usage={usage({ cache_read_input_tokens: tokens, model })} model={model} />,
     ).root.findByProps({ className: "c-ctxmeter-arc" }).props;
   const circumference = 2 * Math.PI * 7;
-  // 100k of Haiku's 167k compaction point: 60%.
+  // 100k of Haiku's 197k compaction point: round(50.8) = 51%.
   expect(arc("claude-haiku-4-5", 100_000).strokeDasharray).toBe(
-    `${(circumference * 0.6).toFixed(2)} ${circumference.toFixed(2)}`,
+    `${(circumference * 0.51).toFixed(2)} ${circumference.toFixed(2)}`,
   );
   // Rotated a quarter turn back, so the arc starts at the top like every other
   // dial a reader has seen.
@@ -107,7 +107,7 @@ test("the arc is the percentage, drawn from twelve o'clock", () => {
   const filled = ring.findByProps({ className: "c-ctxmeter-arc" }).props;
   expect([filled.cx, filled.cy]).toEqual([track.cx, track.cy]);
   expect(filled.transform).toBe(`rotate(-90 ${track.cx} ${track.cy})`);
-  // A million-token model reports its own scale (967k): the same count, 10%.
+  // A million-token model reports its own scale (997k): the same count, 10%.
   expect(arc("claude-sonnet-5", 100_000).strokeDasharray).toBe(
     `${(circumference * 0.1).toFixed(2)} ${circumference.toFixed(2)}`,
   );
@@ -121,7 +121,7 @@ test("a compacted reading says it is an estimate", () => {
     />,
   ).root.findByType("button");
   expect(meter.props["aria-label"]).toBe(
-    "Context: 9.8k of 967k tokens before auto-compact (1%) · compacted, estimate",
+    "Context: 9.8k of 997k tokens before auto-compact (1%) · compacted, estimate",
   );
 });
 
@@ -154,7 +154,7 @@ test("the breakdown is `/context`: a block chart, then its legend", () => {
   ).toBe("claude-haiku-4-5");
 });
 
-test("an enforced window draws its autocompact buffer, and 200 squares", () => {
+test("the popover has Messages and Free space only; a 1M model gets 200 squares", () => {
   const view = render(
     <ContextReportView
       usage={usage({ cache_read_input_tokens: 100_000, model: "claude-opus-5" })}
@@ -168,5 +168,5 @@ test("an enforced window draws its autocompact buffer, and 200 squares", () => {
     view
       .findAllByProps({ className: "c-ctxpop-row" })
       .map((row) => row.findByProps({ className: "c-ctxpop-label" }).props.children),
-  ).toEqual(["Messages:", "Autocompact buffer:", "Free space:"]);
+  ).toEqual(["Messages:", "Free space:"]);
 });
