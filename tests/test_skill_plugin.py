@@ -1131,6 +1131,80 @@ def test_both_canvas_entry_points_fetch_and_neither_can_fail_over_it():
     assert "acquire(blocking=False)" in helper
 
 
+# -- Fused Web's `~/Fused/canvas` also kicks the fetch --------------------------
+#
+# The gate (agent._in_workbench_root) recognizes `~/Fused/canvas` as a second
+# root, but recognizing the path is not enough: `_workbench_plugin_dir()`
+# answers None until SOMETHING has fetched the clone, and the only callers of
+# that fetch were fused-render's own canvases page (the /clone route and the
+# watcher a canvas open starts). A user who only uses Fused Web — tasks started
+# with `fused.tasks.create` against `~/Fused/canvas/<name>`, never opening a
+# canvas in fused-render — had no clone and so no workbench skills despite
+# passing the gate. `skill_plugin.in_fused_web_canvas_root` below is the ONE
+# containment rule server code shares for "is this a Fused Web canvas target",
+# so `api_task_create` and server startup can each kick the same best-effort
+# fetch without re-deriving the rule.
+
+def test_in_fused_web_canvas_root_matches_target_inside_and_rejects_sibling(
+        tmp_path, monkeypatch):
+    """Same shape as `agent._in_fused_web_canvas_root`, deliberately: a target
+    inside `~/Fused/canvas` is in, a sibling that merely starts with the same
+    letters (`canvas-evil`) or a target elsewhere under `~/Fused` is not, and
+    the root is read from HOME at CALL time so a test (or a real HOME change)
+    is honored rather than frozen at import."""
+    from fused_render import skill_plugin
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    assert skill_plugin.fused_web_canvas_root() == str(home / "Fused" / "canvas")
+
+    inside = home / "Fused" / "canvas" / "my_canvas" / "sub" / "x.py"
+    inside.parent.mkdir(parents=True)
+    inside.write_text("x")
+    assert skill_plugin.in_fused_web_canvas_root(str(inside))
+    assert skill_plugin.in_fused_web_canvas_root(
+        str(home / "Fused" / "canvas" / "my_canvas"))
+
+    evil = home / "Fused" / "canvas-evil" / "x"
+    evil.mkdir(parents=True)
+    assert not skill_plugin.in_fused_web_canvas_root(str(evil))
+    other = home / "Fused" / "other"
+    other.mkdir(parents=True)
+    assert not skill_plugin.in_fused_web_canvas_root(str(other))
+    assert not skill_plugin.in_fused_web_canvas_root("")
+
+    # Moving HOME mid-process changes the answer — resolved at call time.
+    home2 = tmp_path / "home2"
+    (home2 / "Fused" / "canvas" / "other_canvas").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home2))
+    assert skill_plugin.in_fused_web_canvas_root(
+        str(home2 / "Fused" / "canvas" / "other_canvas"))
+    assert not skill_plugin.in_fused_web_canvas_root(str(inside))
+
+
+def test_task_create_and_startup_also_kick_the_fetch_for_fused_web():
+    """The review finding this closes: the gate recognizing `~/Fused/canvas`
+    was not enough while nothing but the canvases page ever fetched the clone.
+    `api_task_create` (Fused Web's `fused.tasks.create` entry point) and server
+    startup (covering a `~/Fused/canvas` folder that already exists when the
+    process comes up) must each kick the same best-effort fetch."""
+    tasks_src = open(os.path.join(REPO_ROOT, "fused_render", "server",
+                                  "routers", "tasks.py"), encoding="utf-8").read()
+    route = tasks_src[tasks_src.index("def api_task_create"):]
+    route = route[:route.index("\n@router")]
+    assert "_kick_workbench_skills()" in route
+    assert "in_fused_web_canvas_root" in route
+
+    app_src = open(os.path.join(REPO_ROOT, "fused_render", "server", "app.py"),
+                  encoding="utf-8").read()
+    start = app_src.index("async def _startup_kick_fused_web_workbench_skills")
+    handler = app_src[start:start + 2000]
+    assert "_kick_workbench_skills()" in handler
+    assert "fused_web_canvas_root" in handler
+
+
 # -- retiring the legacy `fused@fused-marketplace` plugin ----------------------
 #
 # The pre-rename plugin the app itself once told users to install. It is still
