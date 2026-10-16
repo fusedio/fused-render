@@ -56,6 +56,17 @@ const NAMED: [TroubleKind, RegExp][] = [
   ["notfound", /claude code isn'?t installed|claude cli not found|claude not found/i],
 ];
 
+// COPILOT'S OWN MARKERS (docs/COPILOT_BACKEND.md D13), unconditional for a
+// Copilot session the way NAMED is for Claude: the CLI's errors need not name
+// itself, and a refused sign-in or a spent allowance is the same fix whatever
+// the sentence around it says. KEEP IN SYNC BY HAND with
+// `account_error_markers` / `limit_error_markers` in
+// fused_render/agent_backends/copilot.py.
+const COPILOT_NAMED: [TroubleKind, RegExp][] = [
+  ["login", /authentication required|auth_required|not logged in|copilot login|no copilot access|not authorized/i],
+  ["limit", /ai credits|premium request|rate.?limit|quota/i],
+];
+
 // Only when the message is about Claude — see above.
 const SHAPES: [TroubleKind, RegExp][] = [
   ["login", /not (?:signed|logged) in|oauth|authenticat/i],
@@ -72,6 +83,9 @@ const SHAPES: [TroubleKind, RegExp][] = [
     before the could-not-find patterns, which are the broadest. */
 export function troubleKind(message: string, backend = "claude"): TroubleKind {
   const text = String(message || "");
+  if (backend === "copilot") {
+    for (const [kind, re] of COPILOT_NAMED) if (re.test(text)) return kind;
+  }
   for (const [kind, re] of NAMED) if (re.test(text)) return kind;
   if ((backend === "copilot" ? ABOUT_COPILOT : ABOUT_CLAUDE).test(text)) {
     for (const [kind, re] of SHAPES) if (re.test(text)) return kind;

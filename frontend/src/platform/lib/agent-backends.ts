@@ -59,10 +59,48 @@ export const CLAUDE_FALLBACK: AgentBackendRow = {
   health: null,
 };
 
+/** The Copilot row, so `backendOf("copilot")` answers with Copilot's caps
+ *  before the read lands — a Copilot chat must never draw Claude-only
+ *  controls for a frame. Off (`enabled: false`, and absent from `backends`)
+ *  until the server says otherwise, which is Copilot's own default (D17).
+ *  KEEP IN SYNC BY HAND with fused_render/agent_backends/copilot.py
+ *  (models, default_model, efforts, modes, caps): the server row replaces it
+ *  the moment the catalog answers, so a drift here costs only the first frame. */
+export const COPILOT_FALLBACK: AgentBackendRow = {
+  id: "copilot",
+  label: "Copilot",
+  enabled: false,
+  models: [
+    { id: "auto", label: "Auto (Copilot picks)" },
+    { id: "gpt-5.4", label: "GPT-5.4" },
+    { id: "gpt-5.4-mini", label: "GPT-5.4 mini" },
+    { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5 (via Copilot)" },
+    { id: "claude-opus-4.5", label: "Claude Opus 4.5 (via Copilot)" },
+    { id: "gemini-3-pro", label: "Gemini 3 Pro (via Copilot)" },
+  ],
+  default_model: "auto",
+  efforts: ["low", "medium", "high", "xhigh", "max"],
+  modes: ["prompt", "acceptEdits", "auto"],
+  caps: {
+    plan_mode: false,
+    live_model_switch: false,
+    live_mode_switch: true,
+    snapshots: false,
+    artifacts: false,
+    worktrees: false,
+    bg_tasks: false,
+    ask_user: false,
+    terminal_mirror: false,
+    mid_turn_messages: false,
+  },
+  health: null,
+};
+
 const FALLBACK: AgentCatalog = {
+  // ENABLED: Claude alone, the defaults of both switches (D17).
   backends: [CLAUDE_FALLBACK],
   default: "claude",
-  all: [CLAUDE_FALLBACK],
+  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK],
 };
 
 export interface AgentCatalogState extends AgentCatalog {

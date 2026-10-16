@@ -672,6 +672,8 @@ export interface ControllerDeps {
     due: string;
     session_id: string;
     title: string;
+    /** The session's agent (D2). */
+    backend?: string;
   }) => Promise<unknown>;
   /** ADDED: `sleep` for the 400 ms poll cadence and the follow-up wait —
    *  injectable so a test runs the loop without real time (T:16377). */

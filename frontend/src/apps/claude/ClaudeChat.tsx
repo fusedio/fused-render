@@ -2706,7 +2706,7 @@ function ChatBody(props: ChatBodyProps) {
         if (parked?.taken.items.length) attachBack.current?.(parked.taken.items);
         strand(text);
       }
-      const t = troubleFromError(err);
+      const t = troubleFromError(err, liveBackend.current);
       controller.reportTrouble({ ...t, message: "This message was not sent: " + t.message });
     },
     // `setOutbox` is a `[]`-deps callback (stable for the mount), left out so
@@ -4170,7 +4170,7 @@ function ChatBody(props: ChatBodyProps) {
       // the scheduler's sentence as `reason` (2026-09-21): that message is out
       // of the queue for good and the next tick sends it, so the poll below is
       // the honest answer rather than an error about work that is on its way.
-      const t = troubleFromError(err);
+      const t = troubleFromError(err, liveBackend.current);
       controller.reportTrouble({ ...t, message: "The queue did not take that: " + t.message });
     } finally {
       setForcing(false);
@@ -4248,7 +4248,7 @@ function ChatBody(props: ChatBodyProps) {
         // that road and it still stays put.
         if (leaving) onBack();
       } catch (err) {
-        const t = troubleFromError(err);
+        const t = troubleFromError(err, liveBackend.current);
         controller.reportTrouble({
           ...t,
           message: stopId

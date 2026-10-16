@@ -950,7 +950,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   /** T:13698 `addError(message)` — classify, then report. */
   const addError = (message: string, fromAgent = false) =>
-    reportTrouble(troubleFromMessage(message, fromAgent));
+    reportTrouble(troubleFromMessage(message, fromAgent, undefined, curBackend()));
 
   /**
    * THE COMEBACK AFTER A USAGE LIMIT. Claude Code's own TUI waits in the open
@@ -981,7 +981,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const sessionId = state.sessionId;
     if (!FILE || !sessionId) return false;
     scheduledRuns.add(runId);
-    const trouble: Trouble = { ...troubleFromMessage(error), quota };
+    const trouble: Trouble = { ...troubleFromMessage(error, false, undefined, curBackend()), quota };
     reportTrouble(trouble);
     const post = deps.schedule ?? scheduleMessage;
     void post({
@@ -990,6 +990,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       due: continueDue(quota),
       session_id: sessionId,
       title: CONTINUE_TITLE,
+      // The session's own agent (D2): a create naming none is pinned to the
+      // current Preferences default.
+      ...(curBackend() ? { backend: curBackend() } : {}),
     })
       .then(() => {
         // The card's line about the scheduled follow-up, and the CLI's own
@@ -1879,7 +1882,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // bubbles and its card belong to a transcript that is no longer on screen.
       if (!disposed && logGen === gen) {
         for (const c of chunks.values()) if (c.key) dropTurn(c.key);
-        reportTrouble(troubleFromError(err));
+        reportTrouble(troubleFromError(err, curBackend()));
       }
     } finally {
       emit({ working: null });
@@ -2285,7 +2288,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // the agent never saw either (T:16693-16720).
         returnSend(text, opts);
       }
-      reportTrouble(troubleFromError(err));
+      reportTrouble(troubleFromError(err, curBackend()));
     } finally {
       if (sendSeq === seat) sending = false;
     }
@@ -2527,7 +2530,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
           return;
         }
         giveBack();
-        reportTrouble(troubleFromError(err));
+        reportTrouble(troubleFromError(err, curBackend()));
         return;
       }
       // Same guard, same reason as the two roads above: a `send` that rejects
@@ -3879,7 +3882,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // exists to remove. T only warns here (T:17862-17865), so a warn is also
       // the parity answer for those two roads.
       if (!disposed && logGen === gen) {
-        if (!quiet && !neverShown) reportTrouble(troubleFromError(err));
+        if (!quiet && !neverShown) reportTrouble(troubleFromError(err, curBackend()));
         else console.warn("re-attach failed:", err instanceof Error ? err.message : err);
       }
     } finally {

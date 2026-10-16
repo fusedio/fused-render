@@ -3835,8 +3835,19 @@ export default function NewJobModal({
    * whatever the card says, and the card says the same. Read off the
    * session's record (`GET /api/tasks/settings`, §8); "" until it answers, or
    * for a card bound to nothing.
+   *
+   * ONLY A SESSION THE ENTRY WILL ACTUALLY CONTINUE — `buildSchedulePayload`'s
+   * own `continued` rule, restated on the live form: the task's learned thread
+   * unless a repeat mints a fresh session per run, a chat's only while the
+   * task stays a one-off. A card that will start fresh sessions picks freely.
    */
-  const agentSession = learnedSession || editing?.session_id || boundSessionId;
+  const repeating = repeatOn && repeat !== "none";
+  const carriesLearned = !!learnedSession && !(repeating && newTaskEachRun);
+  const agentSession = carriesLearned
+    ? learnedSession
+    : learnedSession || repeating
+      ? ""
+      : (!learnedSession && editing?.session_id) || boundSessionId;
   const [sessionAgent, setSessionAgent] = useState(editing?.session_id ? editing.backend ?? "" : "");
   useEffect(() => {
     if (!agentSession) return;
@@ -3858,7 +3869,7 @@ export default function NewJobModal({
   // The pick counts only while its agent is switched on; a session's own
   // agent counts whatever the switch says (the server will refuse the save,
   // and say so in the banner).
-  const agent = sessionAgent
+  const agent = (agentLocked ? sessionAgent : "")
     || (backendPick && (agentLocked || backendPick === editingBackend || isBackendEnabled(backendPick))
       ? backendPick
       : "")

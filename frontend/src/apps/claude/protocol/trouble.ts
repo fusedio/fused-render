@@ -121,19 +121,26 @@ export function troubleOf(kind: TroubleKind, message: string, detail?: string): 
  * `fromAgent` says whether agent.py itself raised (a traceback exists), which is
  * what separates `engine` from `generic`.
  */
-export function troubleFromMessage(message: string, fromAgent = false, detail?: string): Trouble {
+export function troubleFromMessage(
+  message: string,
+  fromAgent = false,
+  detail?: string,
+  /** The chat's agent (`ChatState.backend`, D13): a Copilot session's failure
+   *  is classified by Copilot's markers. Claude's rules when absent. */
+  backend = "",
+): Trouble {
   const text = String(message || "");
   if (isUnknownRun(text)) return troubleOf("unknown-run", text);
-  return troubleOf(fromPlatform(platformTroubleKind(text), text, fromAgent), text, detail);
+  return troubleOf(fromPlatform(platformTroubleKind(text, backend || "claude"), text, fromAgent), text, detail);
 }
 
 /**
  * Classify a THROWN failure: `AgentError` (the agent raised or timed out on
  * the server, with a traceback when it raised), an abort, or anything else.
  */
-export function troubleFromError(err: unknown): Trouble {
+export function troubleFromError(err: unknown, backend = ""): Trouble {
   if (err instanceof AgentError) {
-    return troubleFromMessage(err.message, true, err.traceback);
+    return troubleFromMessage(err.message, true, err.traceback, backend);
   }
   const disabled = disabledBackendOf(err);
   if (disabled) {
@@ -141,7 +148,7 @@ export function troubleFromError(err: unknown): Trouble {
     return { kind: "disabled", message, backend: disabled };
   }
   const message = err instanceof Error ? err.message : String(err);
-  return troubleFromMessage(message, false);
+  return troubleFromMessage(message, false, undefined, backend);
 }
 
 /** The text behind "Copy the details" (T:13630 `troubleReport`). */
