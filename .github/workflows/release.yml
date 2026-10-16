@@ -373,6 +373,15 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
 
+      # Before the manifest, unlike the arm64 job: the manifest writes a NEW
+      # prefix (fused-render-macos-x86_64/), and if the CI role's IAM policy
+      # (terraform iam_github.tf in the application repo) does not cover it yet,
+      # that step fails — the Release attachment must not hang on it.
+      - name: Upload DMG to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber
+
       - name: Publish signed macOS (Intel) update manifest
         env:
           FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
@@ -392,11 +401,6 @@ jobs:
           aws cloudfront create-invalidation \
             --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
             --paths "/fused-render-dmgs/*" "/fused-render-macos-x86_64/*"
-
-      - name: Upload DMG to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber
 
   # FusedBot.app: the same repo, build script and signing path with
   # FUSED_RENDER_FLAVOR=bot (fused_render/_flavor.py) — its own bundle id,
