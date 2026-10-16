@@ -651,7 +651,21 @@ def _memory_text() -> str | None:
     return None
 
 
+#: How many of everyone else's processes `_ps_text` names, by CPU and by RSS.
+_PS_TOP_CPU = 15
+_PS_TOP_RSS = 10
+
+
 def _ps_text() -> str | None:
+    """Our processes in full, then the machine's top CPU and RSS users by
+    executable name only.
+
+    THE TOP LISTS (2026-10-16 bundle): load average sat at 100–330 on a
+    10-core Mac for 45 minutes while every fused server timed out, and with
+    only needle-matched lines the bundle summed to under 3 cores of it, so
+    whatever held the rest was invisible. A stranger's command line can carry
+    a token or a path worth hiding, so those rows keep the executable's
+    basename (`ps -o comm`) and drop the arguments."""
     if sys.platform.startswith("win"):
         return None
     try:
@@ -664,7 +678,43 @@ def _ps_text() -> str | None:
     if not lines:
         return "ps produced no output\n" + r.stderr
     keep = [lines[0]] + [ln for ln in lines[1:] if any(n in ln for n in _PS_NEEDLES)]
-    return "\n".join(keep) + "\n"
+    return "\n".join(keep) + "\n" + _ps_top(lines[1:])
+
+
+def _ps_top(lines: list[str]) -> str:
+    """The non-needle rows of `lines` (pid ppid user %cpu %mem rss lstart×5
+    command) that rank in the top CPU or RSS lists, command → basename."""
+    try:
+        r = subprocess.run(["ps", "-axo", "pid=,comm="], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=CMD_TIMEOUT_S,
+                           check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    names: dict[str, str] = {}
+    for ln in r.stdout.splitlines():
+        pid, _, comm = ln.strip().partition(" ")
+        names[pid] = os.path.basename(comm.strip()) or "?"
+    rows = []
+    for ln in lines:
+        if any(n in ln for n in _PS_NEEDLES):
+            continue
+        f = ln.split(None, 11)
+        if len(f) < 12:
+            continue
+        try:
+            cpu, rss = float(f[3]), int(f[5])
+        except ValueError:
+            continue
+        rows.append((cpu, rss, " ".join(f[:11]) + " " + names.get(f[0], "?")))
+    picked: dict[str, None] = {}
+    for row in sorted(rows, key=lambda x: -x[0])[:_PS_TOP_CPU]:
+        picked[row[2]] = None
+    for row in sorted(rows, key=lambda x: -x[1])[:_PS_TOP_RSS]:
+        picked[row[2]] = None
+    if not picked:
+        return ""
+    return (f"\n# everyone else: top {_PS_TOP_CPU} by %CPU + top {_PS_TOP_RSS} by RSS,"
+            " executable name only\n" + "\n".join(picked) + "\n")
 
 
 def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> None:
