@@ -29,7 +29,7 @@ def _local():
 
 def _usable(exe):
     try:
-        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=30).stdout
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=30).stdout
         version = tuple(int(n) for n in out.split("\n", 1)[0].split()[-1].split(".")[:3])
     except (OSError, subprocess.SubprocessError, IndexError, ValueError):
         return False

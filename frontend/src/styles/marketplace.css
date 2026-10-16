@@ -518,7 +518,7 @@
 
 .mp-footer-refresh:hover:not(:disabled) {
   color: var(--fg);
-  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+  background: var(--ctl-quiet-bg-hover);
 }
 
 .mp-footer-refresh:disabled {
