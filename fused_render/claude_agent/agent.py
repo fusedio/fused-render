@@ -222,10 +222,25 @@ def _transcript_backend(path: str) -> str:
 # GUI-launched app inherits its login session's PATH, not a shell's.
 _POSIX_CANDIDATES = ("~/.local/bin/claude", "/opt/homebrew/bin/claude",
                      "/usr/local/bin/claude")
-# ...and where GitHub Copilot CLI installs `copilot` (npm -g lands in the
-# same three prefixes).
+# ...and where GitHub Copilot CLI installs `copilot`: the standalone
+# installer, Homebrew, npm -g (default prefix and the common user prefix),
+# bun and pnpm. A COPY of `copilot_health.POSIX_CANDIDATES` (this module
+# may not import the package); a test pins the two equal.
 _COPILOT_CANDIDATES = ("~/.local/bin/copilot", "/opt/homebrew/bin/copilot",
-                       "/usr/local/bin/copilot")
+                       "/usr/local/bin/copilot", "~/.npm-global/bin/copilot",
+                       "~/.bun/bin/copilot", "~/Library/pnpm/copilot")
+
+# Where `gh` gets installed, for the D10 login substitute — a COPY of
+# `github_setup.candidates()`: the app's own install dir first (derived at
+# call time, `_gh_bin`), then these. Same override env var too.
+_GH_BIN_ENV = "FUSED_RENDER_GH_BIN"
+_GH_CANDIDATES = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh",
+                  "~/.local/bin/gh")
+
+# The Copilot health snapshot `copilot_health.py` caches under the shell home
+# (`storage.home_dir()`, which `appenv.home_dir()` resolves to). Its
+# `account.method` says which credential a spawn should carry (D10).
+_COPILOT_HEALTH_FILE = "copilot-health.json"
 
 # The user-facing name of each backend, for refusals this module words itself
 # (`_backend_disabled_error`). `agent_backends.<id>.label` is the app-side
@@ -561,7 +576,10 @@ def _claude_bin() -> str:
 
 def _copilot_bin() -> str:
     """Path to the `copilot` executable — `_claude_bin`'s twin, same ladder:
-    FUSED_RENDER_COPILOT_BIN, then PATH, then the known install prefixes."""
+    FUSED_RENDER_COPILOT_BIN, then PATH, then the known install prefixes.
+    The override is also where `copilot_health.adopt` publishes a binary only
+    the user's login shell could find, which is how that find reaches this
+    module. A stale override that isn't a file is ignored, as for claude."""
     override = os.environ.get("FUSED_RENDER_COPILOT_BIN")
     if override and os.path.isfile(override):
         return override
@@ -2968,33 +2986,77 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
     return cmd
 
 
-# `gh auth token`, cached per process (D10: the login substitute). A token is
-# a fact about the machine that changes on the order of hours; asking `gh` on
-# every spawn would put a subprocess in front of every chat for nothing.
+def _copilot_signs_in_with_gh() -> bool:
+    """Whether the cached Copilot health snapshot says spawns sign in with
+    `gh`'s token (`account.method == "gh"`, D10). The snapshot's probe ran
+    WITH that token and found it works, so this is the one place that knows
+    the substitute is wanted; without it a user with their own `copilot
+    login` would have a `gh` account silently put in front of it. Absent,
+    unreadable, signed out (`account: null`) or any other method → False.
+    Read raw, without the snapshot's freshness gates: the question is which
+    credential this machine uses, not whether the probe is current."""
+    try:
+        with open(os.path.join(_home_dir(), _COPILOT_HEALTH_FILE),
+                  encoding="utf-8") as fh:
+            snap = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    account = snap.get("account") if isinstance(snap, dict) else None
+    return isinstance(account, dict) and account.get("method") == "gh"
+
+
+def _gh_bin(path_env: str) -> str:
+    """The `gh` to run, "" when none — `github_setup.resolve()`'s ladder in
+    stdlib: FUSED_RENDER_GH_BIN, then `path_env` (the spawn's AUGMENTED
+    PATH, not this process's: a Dock-launched app's PATH has no Homebrew),
+    then the app's own install dir (`<home>/bin`, where the onboarding
+    installer writes `gh`) and the package-manager prefixes. An override
+    that is not executable is not fallen through, exactly as
+    `copilot_health.gh_token` treats it: the user named that binary."""
+    forced = os.environ.get(_GH_BIN_ENV)
+    if forced:
+        return forced if os.path.isfile(forced) and os.access(forced, os.X_OK) else ""
+    found = shutil.which("gh", path=path_env)
+    if found and os.path.isabs(found):
+        return found
+    for candidate in (os.path.join(_home_dir(), "bin", "gh"), *_GH_CANDIDATES):
+        resolved = os.path.expanduser(os.path.expandvars(candidate))
+        if os.path.isfile(resolved) and os.access(resolved, os.X_OK):
+            return resolved
+    return ""
+
+
+# `gh auth token`'s answer, cached per process (D10: the login substitute). A
+# token is a fact about the machine that changes on the order of hours; asking
+# `gh` on every spawn would put a subprocess in front of every chat. Only a
+# real token is kept, per binary: a miss is asked again next spawn, so a
+# `gh auth login` takes effect on the next chat rather than ten minutes on.
 _GH_TOKEN_TTL = 600.0
-_GH_TOKEN_CACHE = {"at": 0.0, "token": ""}
+_GH_TOKEN_CACHE = {"at": 0.0, "gh": "", "token": ""}
 _GH_TOKEN_LOCK = threading.Lock()
 
 
-def _gh_token() -> str:
-    """The token `gh auth token` prints, "" when there is no `gh`, it is not
-    logged in, or it hangs (5 s). Cached for `_GH_TOKEN_TTL`, misses too."""
+def _gh_token(gh: str, env: dict | None = None) -> str:
+    """The token `gh auth token` prints, "" when it is not logged in, fails
+    or hangs (5 s). `gh` is `_gh_bin`'s answer; `env` the spawn env it runs
+    under. NEVER logged — it goes into one child env and nowhere else."""
+    if not gh:
+        return ""
     with _GH_TOKEN_LOCK:
         now = time.monotonic()
-        if now - _GH_TOKEN_CACHE["at"] < _GH_TOKEN_TTL:
+        if (_GH_TOKEN_CACHE["token"] and _GH_TOKEN_CACHE["gh"] == gh
+                and now - _GH_TOKEN_CACHE["at"] < _GH_TOKEN_TTL):
             return _GH_TOKEN_CACHE["token"]
         token = ""
-        gh = shutil.which("gh")
-        if gh and os.path.isabs(gh):
-            try:
-                res = subprocess.run([gh, "auth", "token"], capture_output=True,
-                                     text=True, timeout=5, close_fds=False,
-                                     encoding="utf-8", errors="replace")
-                if res.returncode == 0:
-                    token = res.stdout.strip()
-            except (OSError, subprocess.SubprocessError):
-                token = ""
-        _GH_TOKEN_CACHE.update(at=now, token=token)
+        try:
+            res = subprocess.run([gh, "auth", "token"], capture_output=True,
+                                 text=True, timeout=5, close_fds=False,
+                                 encoding="utf-8", errors="replace", env=env)
+            if res.returncode == 0:
+                token = res.stdout.strip()
+        except (OSError, ValueError, subprocess.SubprocessError):
+            token = ""
+        _GH_TOKEN_CACHE.update(at=now, gh=gh, token=token)
         return token
 
 
@@ -3029,9 +3091,13 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     the `CLAUDE_CODE_*` switches are stripped (a checkpointing flag or a
     shell prefix mean nothing to `copilot`, and the shell-prefix mirror is a
     Claude-only surface — D9 keeps no terminal mirror for Copilot), and
-    `COPILOT_GITHUB_TOKEN` is set from `gh auth token` when that yields one
-    (D10's login substitute; Copilot documents it as winning over stored
-    credentials). A token the user exported themselves is left alone.
+    `COPILOT_GITHUB_TOKEN` is set from `gh auth token` ONLY when the Copilot
+    health snapshot says this machine signs in that way
+    (`_copilot_signs_in_with_gh`, D10's login substitute; Copilot documents
+    the variable as winning over stored credentials, which is exactly why it
+    is not set on a machine with its own `copilot login`). `gh` is resolved
+    against the PATH built below (`_gh_bin`). A token the user exported
+    themselves is never overridden.
 
     The session must not inherit an ambient FUSED_ENV from the server's own
     process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
@@ -3078,8 +3144,11 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     if backend == "copilot":
         for name in [k for k in env if k.startswith("CLAUDE_CODE_")]:
             env.pop(name, None)
-        if not env.get("COPILOT_GITHUB_TOKEN"):
-            token = _gh_token()
+        # COPILOT_HOME is left exactly as found: it moves Copilot's own
+        # credential + session-state store, and the health probe measured
+        # with whatever the user set.
+        if not env.get("COPILOT_GITHUB_TOKEN") and _copilot_signs_in_with_gh():
+            token = _gh_token(_gh_bin(env["PATH"]), env)
             if token:
                 env["COPILOT_GITHUB_TOKEN"] = token
         return env

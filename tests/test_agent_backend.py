@@ -84,7 +84,7 @@ def agent(tmp_path, home, monkeypatch):
     monkeypatch.setattr(mod, "CLAUDE_DIR", str(claude_dir))
     monkeypatch.setattr(mod, "PROJECTS", str(claude_dir / "projects"))
     # `gh` is never run under test; the token is whatever the test says.
-    monkeypatch.setattr(mod, "_gh_token", lambda: "")
+    monkeypatch.setattr(mod, "_gh_token", lambda *a, **k: "")
     return mod
 
 
@@ -456,22 +456,95 @@ def test_two_plugins_make_skills_a_dir_of_links(agent, home, tmp_path, monkeypat
     assert len(agent._plugin_argv(str(clone))) == 4
 
 
-def test_copilot_spawn_env_strips_claude_and_adds_the_gh_token(agent, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_SHELL_PREFIX", "/x")
+def _health(home, snap):
+    """The Copilot health snapshot, where `copilot_health` caches it (the
+    branch-resolved shell home)."""
+    with open(os.path.join(home["resolved"], "copilot-health.json"), "w") as fh:
+        fh.write(snap if isinstance(snap, str) else json.dumps(snap))
+
+
+def _no_gh(*a, **k):
+    raise AssertionError("gh must not run unless the snapshot says method=gh")
+
+
+def _exe(path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write("#!/bin/sh\nexit 0\n")
+    os.chmod(path, 0o755)
+    return path
+
+
+def test_copilot_spawn_env_without_a_gh_snapshot_never_runs_gh(agent, home, monkeypatch):
+    """D10 as amended: the token is injected only when the cached snapshot
+    says `account.method == "gh"`. No snapshot, a signed-out one, another
+    method, or junk → no token, and no `gh` subprocess at all."""
     monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
-    monkeypatch.setattr(agent, "_gh_token", lambda: "ghp_test")
+    monkeypatch.setattr(agent, "_gh_token", _no_gh)
+    monkeypatch.setattr(agent, "_gh_bin", _no_gh)
+    assert "COPILOT_GITHUB_TOKEN" not in agent._spawn_env(backend="copilot")
+    for snap in ({"account": None}, {"account": {"method": "copilot"}},
+                 {"account": {"method": "token"}}, {"account": "gh"}, [], "{nope"):
+        _health(home, snap)
+        assert "COPILOT_GITHUB_TOKEN" not in agent._spawn_env(backend="copilot"), snap
+    # A snapshot under the UNNESTED home is not the shell's: not read.
+    os.remove(os.path.join(home["resolved"], "copilot-health.json"))
+    with open(os.path.join(home["unnested"], "copilot-health.json"), "w") as fh:
+        json.dump({"account": {"method": "gh"}}, fh)
+    assert "COPILOT_GITHUB_TOKEN" not in agent._spawn_env(backend="copilot")
+
+
+def test_copilot_spawn_env_strips_claude_and_adds_the_gh_token(agent, home, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SHELL_PREFIX", "/x")
+    monkeypatch.setenv("COPILOT_HOME", "/somewhere/copilot-home")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    _health(home, {"account": {"method": "gh", "email": None}})
+    seen = []
+    monkeypatch.setattr(agent, "_gh_bin", lambda path: seen.append(path) or "/gh")
+    monkeypatch.setattr(agent, "_gh_token",
+                        lambda gh, env=None: "ghp_test" if gh == "/gh" else "")
     env = agent._spawn_env("chat", backend="copilot")
     assert not [k for k in env if k.startswith("CLAUDE_CODE_")]
     assert env["COPILOT_GITHUB_TOKEN"] == "ghp_test"
+    assert env["COPILOT_HOME"] == "/somewhere/copilot-home"   # left alone
     assert "FUSED_CLAUDE_CMD_LOG" not in env     # no terminal mirror (D9)
-    # A token the user exported wins; no token stays absent.
+    # `gh` is resolved against the AUGMENTED PATH, not this process's.
+    assert seen and "/opt/homebrew/bin" in seen[0].split(os.pathsep)
+    # A token the user exported wins, and `gh` is not even asked.
     monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "mine")
+    monkeypatch.setattr(agent, "_gh_bin", _no_gh)
     assert agent._spawn_env(backend="copilot")["COPILOT_GITHUB_TOKEN"] == "mine"
+    # `gh` yields nothing: stays absent.
     monkeypatch.delenv("COPILOT_GITHUB_TOKEN")
-    monkeypatch.setattr(agent, "_gh_token", lambda: "")
+    monkeypatch.setattr(agent, "_gh_bin", lambda path: "")
+    monkeypatch.setattr(agent, "_gh_token", lambda gh, env=None: "")
     assert "COPILOT_GITHUB_TOKEN" not in agent._spawn_env(backend="copilot")
     # Claude's env is untouched by any of this.
-    assert agent._spawn_env()["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "1"
+    claude_env = agent._spawn_env()
+    assert claude_env["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "1"
+    assert "COPILOT_GITHUB_TOKEN" not in claude_env
+
+
+def test_gh_is_resolved_like_github_setup(agent, home, tmp_path, monkeypatch):
+    """Override → the spawn PATH → the app's own `<home>/bin` → the
+    package-manager prefixes, as `github_setup.resolve()` does — the copies
+    pinned equal to its constants."""
+    from fused_render import github_setup
+    assert agent._GH_BIN_ENV == github_setup.BIN_ENV
+    assert agent._GH_CANDIDATES == github_setup.POSIX_CANDIDATES
+    monkeypatch.delenv("FUSED_RENDER_GH_BIN", raising=False)
+    monkeypatch.setattr(agent, "_GH_CANDIDATES", ())
+    assert agent._gh_bin(str(tmp_path / "empty")) == ""
+    own = _exe(os.path.join(home["resolved"], "bin", "gh"))
+    assert agent._gh_bin(str(tmp_path / "empty")) == own
+    on_path = _exe(str(tmp_path / "brew" / "gh"))
+    assert agent._gh_bin(str(tmp_path / "brew")) == on_path
+    forced = _exe(str(tmp_path / "forced" / "gh"))
+    monkeypatch.setenv("FUSED_RENDER_GH_BIN", forced)
+    assert agent._gh_bin(str(tmp_path / "brew")) == forced
+    # A stale override is not fallen through (the user named that binary).
+    monkeypatch.setenv("FUSED_RENDER_GH_BIN", str(tmp_path / "gone"))
+    assert agent._gh_bin(str(tmp_path / "brew")) == ""
 
 
 def test_the_gh_token_is_cached_per_process(agent, monkeypatch):
@@ -481,12 +554,43 @@ def test_the_gh_token_is_cached_per_process(agent, monkeypatch):
     class Res:
         returncode = 0
         stdout = "tok\n"
-    monkeypatch.setattr(mod.shutil, "which", lambda n: "/usr/bin/gh")
-    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: calls.append(a) or Res())
-    mod._GH_TOKEN_CACHE.update(at=0.0, token="")
-    assert mod._gh_token() == "tok"
-    assert mod._gh_token() == "tok"
-    assert len(calls) == 1
+    monkeypatch.setattr(mod.subprocess, "run",
+                        lambda argv, **k: calls.append((argv, k.get("env"))) or Res())
+    mod._GH_TOKEN_CACHE.update(at=0.0, gh="", token="")
+    assert mod._gh_token("/usr/bin/gh", {"PATH": "/p"}) == "tok"
+    assert mod._gh_token("/usr/bin/gh") == "tok"
+    assert calls == [(["/usr/bin/gh", "auth", "token"], {"PATH": "/p"})]
+    assert mod._gh_token("") == ""                      # no gh: never runs
+    # A miss is not cached: a `gh auth login` counts on the next spawn.
+    Res.returncode = 1
+    mod._GH_TOKEN_CACHE.update(at=0.0, gh="", token="")
+    assert mod._gh_token("/usr/bin/gh") == ""
+    Res.returncode = 0
+    assert mod._gh_token("/usr/bin/gh") == "tok"
+    assert len(calls) == 3
+
+
+def test_copilot_bin_ladder(agent, tmp_path, monkeypatch):
+    """FUSED_RENDER_COPILOT_BIN (where `copilot_health.adopt` publishes a
+    shell-only find) → PATH → the install prefixes, which are
+    `copilot_health`'s own list."""
+    from fused_render import copilot_health
+    assert agent._COPILOT_CANDIDATES == copilot_health.POSIX_CANDIDATES
+    assert copilot_health.BIN_ENV == "FUSED_RENDER_COPILOT_BIN"
+    on_path = _exe(str(tmp_path / "path" / "copilot"))
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    assert agent._copilot_bin() == on_path
+    forced = _exe(str(tmp_path / "forced" / "copilot"))
+    monkeypatch.setenv("FUSED_RENDER_COPILOT_BIN", forced)
+    assert agent._copilot_bin() == forced
+    # Nothing on PATH: the user-prefix candidates (here ~/.bun/bin).
+    monkeypatch.delenv("FUSED_RENDER_COPILOT_BIN")
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing"))
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    bun = _exe(str(tmp_path / "h" / ".bun" / "bin" / "copilot"))
+    monkeypatch.setattr(agent, "_COPILOT_CANDIDATES",
+                        tuple(c for c in agent._COPILOT_CANDIDATES if c.startswith("~")))
+    assert agent._copilot_bin() == bun
 
 
 # -------------------------------------------------------- _send (D7, §7)
