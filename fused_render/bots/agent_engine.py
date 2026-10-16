@@ -91,7 +91,7 @@ ROLLOVER_FRACTION = 0.5        # roll the conversation over when its context pas
 NUDGE_FRACTION = 0.8           # … and nudge the model to `remember` durable facts at this share of the rollover mark
 WINDOW_DEFAULT = 200_000
 WINDOW_1M = 1_000_000
-_MILLION = re.compile(r"\[1m\]|fable|opus-?5|sonnet-?5", re.I)  # the frontend's rule (context-window.ts): these are 1M-token models
+_MILLION = re.compile(r"\[1m\]|fable|opus-?5|sonnet-?5|haiku-?5|opus-?4-?[78](?!\d)|^(?:opus|sonnet|haiku)$", re.I)  # the frontend's rule (context-window.ts): every 5.x model and Opus 4.7+ run 1M (CLI 2.1.300, measured 2026-10-15)
 
 
 def context_window(model: str) -> int:

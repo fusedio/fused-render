@@ -1,0 +1,12 @@
+[project]
+name = "fused-render-template-las"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "laspy[lazrs]>=2.5",
+    "numpy",
+    "pyproj",
+]
+
+[tool.uv]
+package = false

@@ -120,9 +120,9 @@ def test_export_app_env_sets_the_home_var(exported, monkeypatch):
 def test_the_bundled_uv_is_on_the_path_every_child_inherits(home, tmp_path, monkeypatch):
     """A packaged build's own uv must be findable by `shutil.which("uv")`.
 
-    Five templates set up their daemon's venv with uv and resolve it exactly that
+    Four templates set up their daemon's venv with uv and resolve it exactly that
     way (`geotiff/tile_server.py`, `zarr_aoi/tile_server.py`,
-    `netcdf/grid_tile_server.py`, `las/las_reader.py`,
+    `netcdf/grid_tile_server.py`,
     `pyramid/overview_pyramid.py`) — they must, because a template may not branch
     on how the app was installed. The macOS bundle ships uv at
     `Contents/Resources/bin/uv`, which is NOT beside the interpreter and was on
@@ -130,7 +130,7 @@ def test_the_bundled_uv_is_on_the_path_every_child_inherits(home, tmp_path, monk
     install worker. So on a DMG with no user-installed uv, `_daemon_python()` fell
     back to the app interpreter — which has neither `imagecodecs`/`pyproj` (geotiff
     loses LZW and JPEG tiles) nor `s3fs`/`gcsfs`/`crc32c` (every remote zarr store
-    fails to open), and las/pyramid raised advice the user cannot follow. The
+    fails to open), and pyramid raised advice the user cannot follow. The
     Linux supervisor already prepends its payload's bin dir
     (`supervisor/paths.py`), so this is the same mechanism, not a second one.
 

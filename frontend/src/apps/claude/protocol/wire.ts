@@ -26,6 +26,10 @@ export const APP_STATE_TAG = "live-app-state";
 export const ANN_TAG = "annotations";
 /** T:4790 — the attached-pictures block's tag. */
 export const PANE_SHOT_TAG = "pane-shot";
+/** The focused-terminal metadata line agent.py's `_with_terminal_hint` writes
+ *  onto a send (D1326). Server-side only: the page never composes it, but the
+ *  inbox rows and the CLI's echoed user records carry it back verbatim. */
+export const TERMINAL_HINT_TAG = "terminal-hint";
 
 // ---- markers (T:10525-10545) ----------------------------------------------
 //
@@ -450,10 +454,18 @@ export function stripAnnBlock(text: string | null | undefined): string {
   return tagged.slice(j + 4).replace(/^\n+/, "");
 }
 
+/** The terminal-hint block, removed from wherever it sits. D1330 stripped it
+ *  on restore (`_history`) only; a follow-up parked in the inbox, or the CLI's
+ *  echo of a sent turn, still reached the live bubble with the raw hint in it. */
+export function stripTerminalHintBlock(text: string | null | undefined): string {
+  const re = new RegExp("<" + TERMINAL_HINT_TAG + ">[\\s\\S]*?</" + TERMINAL_HINT_TAG + ">\\s*", "g");
+  return (text || "").replace(re, "").trim();
+}
+
 /** T:10552 `stripBlocks` — the inverse of `composeOutgoing`: exactly what the
  *  user typed, or the markers naming what a wordless send carried. */
 export function stripBlocks(text: string | null | undefined): string {
-  const noState = stripAppStateBlock(text);
+  const noState = stripAppStateBlock(stripTerminalHintBlock(text));
   const noPaneShot = stripPaneBlock(noState);
   const bare = stripAnnBlock(noPaneShot);
   if (bare) return bare;

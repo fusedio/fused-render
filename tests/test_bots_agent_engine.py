@@ -404,7 +404,7 @@ def test_text_then_done(server, fake_cli, monkeypatch):
     # Bot threads (docs §6): sessions persist so the next turn can --resume them; a fake Bot without a
     # conversation record runs every turn fresh, so nothing is resumed here.
     assert "--no-session-persistence" not in argv and "--resume" not in argv
-    assert argv[argv.index("--autocompact") + 1] == str(agent_engine.WINDOW_DEFAULT)
+    assert argv[argv.index("--autocompact") + 1] == str(agent_engine.WINDOW_1M)  # bare "haiku" alias = a 1M model (CLI 2.1.300)
     assert "--include-partial-messages" not in argv
     assert argv[argv.index("--model") + 1] == "haiku"
     assert argv[argv.index("--effort") + 1] == "low"
@@ -1434,10 +1434,15 @@ def test_conversation_resumes_and_rolls_over(server, fake_cli, monkeypatch):
 
 
 def test_context_window_rule():
-    assert agent_engine.context_window("haiku") == agent_engine.WINDOW_DEFAULT
+    assert agent_engine.context_window("haiku") == agent_engine.WINDOW_1M  # every 5.x model, and the bare aliases, are 1M
+    assert agent_engine.context_window("claude-haiku-4-5") == agent_engine.WINDOW_DEFAULT
+    assert agent_engine.context_window("claude-sonnet-4-6") == agent_engine.WINDOW_DEFAULT
+    assert agent_engine.context_window("claude-opus-4-8") == agent_engine.WINDOW_1M
+    assert agent_engine.context_window("claude-opus-4-6") == agent_engine.WINDOW_DEFAULT
     assert agent_engine.context_window("claude-sonnet-5") == agent_engine.WINDOW_1M
     assert agent_engine.context_window("sonnet[1m]") == agent_engine.WINDOW_1M
-    assert agent_engine.rollover_at("haiku") == agent_engine.WINDOW_DEFAULT // 2
+    assert agent_engine.rollover_at("haiku") == agent_engine.WINDOW_1M // 2
+    assert agent_engine.rollover_at("claude-haiku-4-5") == agent_engine.WINDOW_DEFAULT // 2
 
 
 # ---- Super Bot: Claude Code's own AskUserQuestion becomes a question card, not an approval ----

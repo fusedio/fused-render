@@ -34,6 +34,7 @@ if "__file__" not in globals():
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
 from procutil import pid_alive as _pid_alive
+import pandoc_bin
 
 CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".fused-render", "cache", "docs")
 DOCS_DIR = os.path.join(os.path.expanduser("~"), ".fused-render", "docs")  # user-owned library of docs created from the Home screen
@@ -63,9 +64,10 @@ PANDOC_TO = {
 
 
 def _pandoc(args, input_text=None):
-    """Run the bundled pandoc. Returns stdout bytes; raises on failure."""
-    import pypandoc
-    exe = pypandoc.get_pandoc_path()
+    """Run pandoc. Returns stdout bytes; raises on failure."""
+    exe = pandoc_bin.path()
+    if not exe:
+        raise RuntimeError("pandoc is not installed")
     kw = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
     if input_text is not None:
         kw["input"] = input_text.encode("utf-8")
@@ -220,9 +222,11 @@ def _resolve_dest(path: str, directory: str) -> str:
 
 def main(action: str = "export", file: str = "", html: str = "", title: str = "",
          fmt: str = "pdf", path: str = "", directory: str = "", expected_mtime: str = ""):
-    if action == "warmup":
-        import pypandoc
-        return {"pandoc": pypandoc.get_pandoc_version()}
+    if action == "pandoc_status":
+        return pandoc_bin.status()
+
+    if action == "pandoc_install":
+        return pandoc_bin.install()
 
     if action == "typst_status":
         return _typst_status()
@@ -277,6 +281,8 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
     if action == "import":
         if not file or not os.path.isfile(file):
             raise FileNotFoundError(f"file not found: {file}")
+        if not pandoc_bin.path():
+            return {"missing_pandoc": True}
         editable, ro_msg, ro_tip = _editability(file)
         out = _pandoc(["-f", _source_fmt(file), "-t", "html+tex_math_dollars", "--mathjax",
                        "--track-changes=all", "--embed-resources",

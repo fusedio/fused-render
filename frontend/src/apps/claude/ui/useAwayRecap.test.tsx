@@ -80,6 +80,8 @@ interface Knobs {
   running?: boolean;
   draft?: string;
   enabled?: boolean;
+  eager?: boolean;
+  pollMs?: number;
   awayMs?: number;
   answer?: RecapResponse | Error;
   /** The mount's box. Visible unless a test says otherwise. */
@@ -112,6 +114,8 @@ function harness(initial: Knobs = {}, count = 1) {
       running: knobs.running ?? false,
       hasDraft: () => (knobs.draft ?? "").trim().length > 0,
       enabled: knobs.enabled ?? true,
+      ...(knobs.eager === undefined ? {} : { eager: knobs.eager }),
+      ...(knobs.pollMs === undefined ? {} : { pollMs: knobs.pollMs }),
       ...(knobs.awayMs === undefined ? {} : { awayMs: knobs.awayMs }),
       root: () => (knobs.root === undefined ? ON_SCREEN : knobs.root),
       fetchRecap: read as never,
@@ -281,4 +285,110 @@ test("two chats on one page, one return, ONE model call", async () => {
   const h = harness({}, 2);
   await h.away();
   expect(h.calls.length).toBe(1);
+});
+
+// ---- THE EAGER ASK (prefs task_recap.enabled): the fold on open, not only on return.
+
+test("eager: asks once on mount and shows the fold; flag off asks nothing", async () => {
+  const off = harness();
+  await act(async () => {});
+  expect(off.calls).toEqual([]);
+
+  const h = harness({ eager: true });
+  await act(async () => {});
+  expect(h.calls).toEqual([["/w/app.py", "s1", "u1"]]);
+  expect(h.recap()?.text).toBe(ANSWER.text);
+  await h.set({});
+  expect(h.calls.length).toBe(1);
+});
+
+test("eager: not mid-turn, and asks when the turn ends; again on a new anchor", async () => {
+  const h = harness({ eager: true, running: true });
+  await act(async () => {});
+  expect(h.calls).toEqual([]);
+
+  await h.set({ running: false });
+  await act(async () => {});
+  expect(h.calls.length).toBe(1);
+
+  await h.set({ forUuid: "u2" });
+  await act(async () => {});
+  expect(h.calls.map((c) => c[2])).toEqual(["u1", "u2"]);
+});
+
+test("eager: an empty answer shows nothing and is not re-asked", async () => {
+  const h = harness({ eager: true, answer: { text: "", for_uuid: "u1", at: "" } });
+  await act(async () => {});
+  expect(h.calls.length).toBe(1);
+  expect(h.recap()).toBe(null);
+  await h.set({});
+  expect(h.calls.length).toBe(1);
+});
+
+test("eager: not under a half-typed message", async () => {
+  const h = harness({ eager: true, draft: "half a thought" });
+  await act(async () => {});
+  expect(h.calls).toEqual([]);
+});
+
+// ---- THE PENDING POLL (the server only reads what the Tasks worker stored).
+
+const PENDING: RecapResponse = { text: "", for_uuid: "u1", at: "", pending: true };
+const sleep = (ms: number) => act(async () => void (await new Promise((r) => setTimeout(r, ms))));
+
+test("pending: asks again, shows the fold when the text lands, then stops", async () => {
+  const h = harness({ eager: true, pollMs: 5, answer: PENDING });
+  await act(async () => {});
+  expect(h.calls.length).toBe(1);
+  expect(h.recap()).toBe(null);
+  await sleep(30);
+  expect(h.calls.length).toBeGreaterThan(1);
+
+  await h.set({ answer: ANSWER });
+  await sleep(30);
+  expect(h.recap()?.text).toBe(ANSWER.text);
+  const n = h.calls.length;
+  await sleep(30);
+  expect(h.calls.length).toBe(n);
+});
+
+test("pending: false stops it; the cap stops it; an anchor change stops it", async () => {
+  const done = harness({ eager: true, pollMs: 5, answer: { ...PENDING, pending: false } });
+  await act(async () => {});
+  await sleep(30);
+  expect(done.calls.length).toBe(1);
+
+  const capped = harness({ eager: true, pollMs: 5, answer: PENDING });
+  await act(async () => {});
+  capped.clock.t += 901_000;
+  await sleep(30);
+  const n = capped.calls.length;
+  await sleep(30);
+  expect(capped.calls.length).toBe(n);
+
+  // A gate PAUSES the cap, it does not restart it: 14 min of eligible polling,
+  // then a long gated stretch, then 2 more eligible minutes — over the 15 min
+  // cap, so the poll must stop rather than run on a fresh window.
+  const gated = harness({ eager: true, pollMs: 5, answer: PENDING });
+  await act(async () => {});
+  gated.clock.t += 840_000;
+  await sleep(30);
+  await gated.set({ running: true });
+  gated.clock.t += 3_600_000;
+  await sleep(30);
+  const duringGate = gated.calls.length;
+  await gated.set({ running: false });
+  gated.clock.t += 120_000;
+  await sleep(30);
+  const afterGate = gated.calls.length;
+  await sleep(30);
+  expect(gated.calls.length).toBe(afterGate); // stopped: budget was spent before the gate
+  expect(afterGate - duringGate).toBeLessThanOrEqual(1);
+
+  const moved = harness({ eager: true, pollMs: 5, answer: PENDING });
+  await act(async () => {});
+  await moved.set({ forUuid: "u2", running: true });
+  const before = moved.calls.length;
+  await sleep(30);
+  expect(moved.calls.length).toBe(before); // old anchor's poll ended, new one is mid-turn
 });

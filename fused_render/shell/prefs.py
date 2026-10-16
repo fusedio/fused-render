@@ -422,6 +422,19 @@ def project_queue_enabled() -> bool:
     return read_prefs().get("project_queue_enabled") is True
 
 
+def task_recap_titles_enabled() -> bool:
+    """Whether every finished Claude turn gets a short haiku recap that titles
+    its Tasks row (default off — opt-in beta: it spends one haiku call per
+    finished turn, chat open or not).
+
+    Same idiom as `project_queue_enabled`: only a stored `true` is on. Off, the
+    listing carries no `recap` field, nothing is queued for haiku, and the
+    away fold's recap is never written to `session_settings.json` — the rows
+    and the fold are main's, byte for byte.
+    """
+    return read_prefs().get("task_recap_titles_enabled") is True
+
+
 def lan_enabled() -> bool:
     """Whether the user's apps (everything under ~/Fused plus linked folders)
     are shared with the local network (default off — opt-in). The switch
@@ -778,6 +791,9 @@ def _prefs_response() -> dict:
         # No `forced_by` twin — there is no env override to report; see
         # `project_queue_enabled`.
         "queue": {"enabled": project_queue_enabled()},
+        # Whether finished turns are recapped by haiku and the Tasks rows
+        # titled by it (opt-in beta, `task_recap_titles_enabled`).
+        "task_recap": {"enabled": task_recap_titles_enabled()},
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -1087,6 +1103,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["project_queue_enabled"] = value
             changed = True
+        if "task_recap_titles_enabled" in body:
+            value = body.get("task_recap_titles_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'task_recap_titles_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["task_recap_titles_enabled"] = value
+            changed = True
         if "lan_enabled" in body:
             value = body.get("lan_enabled")
             if not isinstance(value, bool):
@@ -1240,6 +1263,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'native_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
+                          "'task_recap_titles_enabled', "
                           "'lan_enabled', "
                           "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
                           "'git_auto_sync_enabled', 'auto_download_updates', "

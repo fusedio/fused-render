@@ -47,9 +47,8 @@ if "__file__" not in globals():
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
-from procutil import clean_env as _clean_env
-from procutil import file_lock as _file_lock
 from procutil import pid_alive as _pid_alive
+import pandoc_bin
 
 CACHE_ROOT = os.path.expanduser("~/.fused-render/cache/latex")
 TECTONIC_CACHE = os.path.join(CACHE_ROOT, "tectonic-cache")  # shared package/font cache
@@ -203,61 +202,16 @@ def _export_dir_for(main_path: str) -> str:
     return d
 
 
-PANDOC_DIR = os.path.join(CACHE_ROOT, "_pandoc")   # export-only fallback venv (see _pandoc_convert)
-
-
-def _pandoc_venv_python() -> str:
-    """A private venv holding `pypandoc-binary`, built once with uv. Only reached
-    when `import pypandoc` fails — i.e. the built-in engine ran export on the app
-    interpreter (which has no folder venv, D174) rather than the fused engine's.
-    Concurrent first-exports serialize on a kernel `file_lock`; `deps_ok` is
-    written only after a clean install, so a half-built tree is rebuilt not
-    reused."""
-    vpy = os.path.join(PANDOC_DIR, "venv", "bin", "python")
-    marker = os.path.join(PANDOC_DIR, "deps_ok")
-    ready = lambda: os.path.exists(vpy) and os.path.exists(marker)
-    if ready():
-        return vpy
-    uv = shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
-    if not (shutil.which("uv") or os.path.exists(uv)):
-        raise RuntimeError("Export needs the 'uv' tool to set up pandoc — install it "
-                           "from https://astral.sh/uv and try again.")
-    os.makedirs(PANDOC_DIR, exist_ok=True)
-    with _file_lock(os.path.join(PANDOC_DIR, "build.lock")):
-        if ready():   # another export finished the build while we waited
-            return vpy
-        env = _clean_env()   # a bundle-pointing PYTHON* would shadow the venv's pypandoc
-        if not os.path.exists(vpy):
-            subprocess.run([uv, "venv", "--python", "3.12", os.path.join(PANDOC_DIR, "venv")],
-                           check=True, capture_output=True, env=env)
-        subprocess.run([uv, "pip", "install", "-p", vpy, "pypandoc-binary"],
-                       check=True, capture_output=True, env=env)
-        with open(marker, "w", encoding="utf-8") as f:
-            f.write("ok")
-    return vpy
-
-
-def _pandoc_convert(src, to, out, extra):
-    """Convert `src` -> `out` with pypandoc. Fast path: import it from the folder
-    venv (the fused engine's). Fallback: the built-in engine has no such venv, so
-    fetch pandoc into a private one and run the conversion there. Raises on
-    failure so the one caller reports it uniformly."""
+def _pandoc_convert(exe, src, to, out, extra):
     try:
-        import pypandoc
-    except ImportError:
-        vpy = _pandoc_venv_python()
-        code = ("import json,sys,pypandoc;a=json.loads(sys.argv[1]);"
-                "pypandoc.convert_file(a['src'],a['to'],format='latex+raw_tex',"
-                "outputfile=a['out'],extra_args=a['extra'])")
-        args = json.dumps({"src": src, "to": to, "out": out, "extra": extra})
-        p = subprocess.run([vpy, "-c", code, args], capture_output=True, text=True,
-                           env=_clean_env(),
-                           encoding="utf-8", errors="replace")
-        if p.returncode != 0 or not os.path.exists(out):
-            detail = (p.stderr or p.stdout or "").strip().splitlines()
-            raise RuntimeError(detail[-1] if detail else "pandoc conversion failed")
-        return
-    pypandoc.convert_file(src, to, format="latex+raw_tex", outputfile=out, extra_args=extra)
+        p = subprocess.run([exe, "--from=latex+raw_tex", "--to=" + to, src, "--output=" + out, *extra],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=120)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("pandoc timed out after 120 s")
+    if p.returncode != 0 or not os.path.exists(out):
+        detail = (p.stderr or p.stdout or "").strip().splitlines()
+        raise RuntimeError(detail[-1] if detail else "pandoc conversion failed")
 
 
 # -------------------------------------------------------------- compile + log
@@ -900,6 +854,12 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
     if action == "tectonic_install":
         return _tectonic_install()
 
+    if action == "pandoc_status":
+        return pandoc_bin.status()
+
+    if action == "pandoc_install":
+        return pandoc_bin.install()
+
     if action == "list_projects":
         return {"projects": _list_projects(), "dir": _fwd(LIBRARY)}
 
@@ -1034,8 +994,11 @@ def main(action: str = "tectonic_status", path: str = "", target: str = "",
                       "--section-divs", "--embed-resources"]
         elif to in ("docx", "odt"):
             extra += ["--toc"]
+        exe = pandoc_bin.path()
+        if not exe:
+            return {"error": "pandoc is not installed", "missing_pandoc": True}
         try:
-            _pandoc_convert(path, to, out, extra)
+            _pandoc_convert(exe, path, to, out, extra)
         except Exception as e:  # noqa: BLE001 — surface the failure to the UI
             return {"error": f"export to {fmt} failed: {e}"}
         return {"path": out, "name": os.path.basename(out), "size": os.path.getsize(out)}

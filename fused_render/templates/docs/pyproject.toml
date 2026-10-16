@@ -10,7 +10,7 @@ name = "fused-render-template-docs"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "pypandoc-binary",
+    "pypandoc-binary ; sys_platform != 'darwin' or platform_machine != 'arm64'",
 ]
 
 # Not a distribution — this folder is a set of scripts, not something to build

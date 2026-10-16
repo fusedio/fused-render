@@ -155,9 +155,9 @@ export function ContextReportView({ usage, model }: ContextMeterProps) {
     <div className="c-ctxpop-body">
       <div className="c-ctxpop-title">Context Usage</div>
       {report.model ? <div className="c-ctxpop-dim">{report.model}</div> : null}
-      {/* The headline is the ring's number in full digits; the grid and legend
-          below are `/context`'s own picture of the whole model window, buffer
-          and all, which is why their per-row percentages are of the window. */}
+      {/* The headline is the ring's number in full digits, and the grid and
+          legend below are shares of the same pair — Messages is the headline's
+          numerator, Messages + Free space is its denominator. */}
       <div className="c-ctxpop-dim">
         {groupDigits(report.total)}/{groupDigits(report.compactAt)} tokens before
         auto-compact ({report.pct}%)

@@ -1392,6 +1392,10 @@ export interface Prefs {
   // both the pref's own default and what every server did before this existed,
   // so "not sent" and "off" are honestly the same answer here.
   queue?: { enabled: boolean };
+  // Haiku recaps of every finished turn, titling the Tasks rows
+  // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
+  // Optional like `queue`: absent reads as off.
+  task_recap?: { enabled: boolean };
   /** Whether a task on the Tasks page opens in a side panel beside the list
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
    *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
@@ -1763,6 +1767,10 @@ export function putTaskNotifyTerminalSessionsEnabled(enabled: boolean): Promise<
 
 export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { project_queue_enabled: enabled });
+}
+
+export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_recap_titles_enabled: enabled });
 }
 
 export interface LanDevice {
@@ -3569,8 +3577,14 @@ export interface Task {
    */
   last_message?: { role: "user" | "assistant"; text: string; at: number } | null;
   /** First line of Claude's newest reply in this conversation, "" when none.
-   *  The List row prints it after the title; nothing else reads it. */
+   *  The List row prints it after the title; with `recap` present it also
+   *  titles a finished turn until the recap lands (tasks-lib `cardTitleLine`). */
   last_reply?: string;
+  /** The haiku recap of this row's last finished turn (`for_uuid` names the
+   *  turn), or null while it has none. ABSENT unless prefs
+   *  `task_recap.enabled` is on — the client reads the key's presence as
+   *  the flag, so flag-off rows title exactly as before. */
+  recap?: { text: string; for_uuid: string } | null;
   /**
    * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
    * (or absent, on an older server) when there is none.
