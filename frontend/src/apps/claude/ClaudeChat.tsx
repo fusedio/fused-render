@@ -141,6 +141,7 @@ import {
 } from "./ui";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
+import { sessionSeed } from "./ui/useRecentTasks";
 import type { ClassifiedCommand } from "./protocol/commands";
 import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
@@ -1980,7 +1981,11 @@ function ChatBody(props: ChatBodyProps) {
           // already leaves (run-controller.openSession swallows the error by
           // design, T:18057-18059). Never a blank box.
           await Promise.race([
-            controller.openSession(sessionId),
+            // The host's seed (`ChatMount backend`, a task row's) or the
+            // row's, so the agent is named before the history lands.
+            controller.openSession(sessionId, {
+              backend: params.get("backend") || sessionSeed(sessionId)?.backend || "",
+            }),
             deadline(GATE_FALLBACK_MS),
           ]);
           if (cancelled) return;
@@ -3569,7 +3574,7 @@ function ChatBody(props: ChatBodyProps) {
       // transcript until something else re-rendered (Bugbot, d9f041e11).
       leader.forget();
       params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
-      void controller.openSession(sessionId);
+      void controller.openSession(sessionId, { backend: sessionSeed(sessionId)?.backend || "" });
     },
     [controller, cardPolicy, leader, params],
   );
@@ -4330,7 +4335,7 @@ function ChatBody(props: ChatBodyProps) {
     // session lands as a prop, the key changes, and the box's text is handed to
     // `draftSyncer(<session>).setText(...)`. One record, minted by the flip that
     // needs it, with no second key to reconcile.
-    void controller.openSession(adoptSession);
+    void controller.openSession(adoptSession, { backend: sessionSeed(adoptSession)?.backend || "" });
   }, [adoptSession, controller, cardPolicy, params]);
 
   /**

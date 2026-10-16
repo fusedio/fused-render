@@ -59,6 +59,8 @@ export const CLAUDE_UPDATE_COMMAND = "claude update";
 
 /** The env var that points the app at a CLI it cannot otherwise see. */
 export const CLAUDE_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN";
+/** Copilot's twin (fused_render/copilot_health.py `BIN_ENV`). */
+export const COPILOT_BIN_ENV = "FUSED_RENDER_COPILOT_BIN";
 
 /**
  * Everything unresolved about this snapshot, most-blocking first.
@@ -114,11 +116,11 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
     if (health.source === "override") {
       issues.push({
         id: "unusable-override",
-        title: `${CLAUDE_BIN_ENV} points at something that cannot run`,
+        title: `${copilot ? COPILOT_BIN_ENV : CLAUDE_BIN_ENV} points at something that cannot run`,
         detail:
           `The app was told to use ${health.path ?? "a specific path"}, and there ` +
           "is no runnable file there. Correct it or unset it — with it unset, " +
-          "the app looks for Claude Code in the usual places.",
+          `the app looks for ${name} in the usual places.`,
         helpKind: "notfound",
       });
       return issues;

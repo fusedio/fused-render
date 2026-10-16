@@ -17,7 +17,14 @@ import {
   subscribeClaudeDefaults,
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
-import { effortsOf, modelLabelsOf, modelsOf, useAgentBackends } from "@platform/lib/agent-backends";
+import {
+  AGENT_PREFS_URL,
+  effortsOf,
+  isBackendEnabled,
+  modelLabelsOf,
+  modelsOf,
+  useAgentBackends,
+} from "@platform/lib/agent-backends";
 import {
   resolveComposerDefaults,
   type ComposerPicks,
@@ -181,6 +188,9 @@ const SAMPLE_ROW = 4;
 //
 // The labels are BARE — "Opus", "high" — not "high effort": each pill's glyph
 // names its axis, so repeating it in the text is the same word twice.
+/** The closed composer's one line (D17). */
+const CLAUDE_OFF_LINE = "Building an app uses Claude Code, which is turned off in Preferences.";
+
 const modelChoices = (): { value: ComposerPicks["model"]; label: string }[] =>
   modelsOf("claude").map((m) => ({
     value: m as ComposerPicks["model"],
@@ -329,7 +339,12 @@ export function HeroComposer({
   const [annotation, setAnnotation] = useState<AppAnnotation | null>(null);
   // The global pair, or the fallback while it is unknown; see modelChoices.
   // Subscribed to the catalog, whose first read can re-list the pickers.
-  useAgentBackends();
+  const agentCatalog = useAgentBackends();
+  // BUILDING AN APP IS CLAUDE'S (D17): the server refuses the scaffolding
+  // task with Claude switched off, so the composer closes and says why rather
+  // than taking a brief it cannot act on. Only on a real answer — before the
+  // catalog lands, Claude is on.
+  const claudeOff = agentCatalog.loaded && !isBackendEnabled("claude");
   const [model, setModel] = useState(
     () => resolveComposerDefaults(getClaudeDefaults()).model,
   );
@@ -431,7 +446,7 @@ export function HeroComposer({
     if (autoFocus) requestAnimationFrame(() => inputRef.current?.focus());
   }, [autoFocus]);
 
-  const busy = phase !== "idle";
+  const busy = phase !== "idle" || claudeOff;
   const canSubmit = prompt.trim().length > 0 && !busy;
 
   // Upload each file as a task shot; the chip shows at once and is dropped
@@ -703,7 +718,7 @@ export function HeroComposer({
         <TextArea
           ref={inputRef}
           className="home-composer-input"
-          placeholder="What do you want to build?"
+          placeholder={claudeOff ? CLAUDE_OFF_LINE : "What do you want to build?"}
           aria-label="What do you want to build?"
           value={prompt}
           rows={1}
@@ -837,6 +852,20 @@ export function HeroComposer({
           </button>
         </div>
       </div>
+      {claudeOff ? (
+        <p className="home-composer-off">
+          {CLAUDE_OFF_LINE}{" "}
+          <a
+            href={AGENT_PREFS_URL}
+            onClick={(e) => {
+              e.preventDefault();
+              navigateUrl(AGENT_PREFS_URL);
+            }}
+          >
+            Turn it on
+          </a>
+        </p>
+      ) : null}
       <div className="home-composer-samples">
         <div className="home-composer-sample-strip" ref={stripRef}>
           {Array.from(

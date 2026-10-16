@@ -1587,7 +1587,11 @@ function AgentHealthRow({ backend }: { backend: "claude" | "copilot" }) {
     );
   }
   const issues = agentIssues(health, backend);
-  const account = agentAccountLine(health, backend, signedInHint);
+  // `null` is "could not ask", never "signed out" — said as that, with the
+  // re-check right beside it, rather than as a ready line with no account.
+  const account = health.signed_in === null
+    ? "Couldn't confirm sign-in."
+    : agentAccountLine(health, backend, signedInHint);
   return (
     <>
       <p className="deploy-muted">

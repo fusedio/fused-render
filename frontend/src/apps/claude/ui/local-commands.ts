@@ -4,7 +4,7 @@
 // `notify` while the composer keeps the words.
 import { LOCAL_COMMANDS, type ClassifiedCommand } from "../protocol/commands";
 import { parseWorktreeCommand } from "../protocol/worktrees";
-import { effortsOf, modelLabelsOf, modelsOf } from "@platform/lib/agent-backends";
+import { agentLabel, capsOf, effortsOf, modelLabelsOf, modelsOf } from "@platform/lib/agent-backends";
 
 /** `/model <name>`'s argument as a model value: a shortlist id or its label
  *  (any case) off the AGENT's catalog row (docs/COPILOT_BACKEND.md D11), or a
@@ -48,6 +48,10 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
     case "clear":
     case "help":
     case "tasks":
+      // No background tasks to show for an agent without them (§7 `bg_tasks`).
+      if (cmd.name === "tasks" && !capsOf(ctx.backend).bg_tasks) {
+        return { refuse: `${agentLabel(ctx.backend)} has no background tasks` };
+      }
       // An argument here is words the reader meant to keep (a message pasted
       // after the command): refuse rather than throw them away.
       if (cmd.arg) return { refuse: `/${cmd.name} takes no argument` };
@@ -67,6 +71,7 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
       return { do: "effort", value };
     }
     case "worktree": {
+      if (!capsOf(ctx.backend).worktrees) return { refuse: `${agentLabel(ctx.backend)} has no worktrees` };
       if (!ctx.worktreeReady) {
         return { refuse: "/worktree works in a chat on a file or folder inside a git repository" };
       }

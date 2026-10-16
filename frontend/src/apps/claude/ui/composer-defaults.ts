@@ -249,8 +249,18 @@ export function useComposerDefaults(
   // the pills; a `backend` param naming a switched-off agent is ignored rather
   // than offered (D17).
   const catalog = useAgentBackends();
+  // THE CONVERSATION'S OWN AGENT, from the first source that has said: the
+  // wire (`sessionBackend`), this chat's record or `defaults` answer
+  // (`knownBackend`, below), or — for a chat WITH a session — the host's
+  // seed (`ChatMount backend`, the task row's). All three are facts about
+  // the session, so they count even for an agent switched off (D17: the
+  // chat still reads, named as what it is). Only a NEW chat's pick is
+  // checked against the switches.
+  const [knownBackend, setKnownBackend] = useState("");
+  const hasSession = !!snapshot.session_id;
+  const ownBackend = sessionBackend || knownBackend || (hasSession ? snapshot.backend || "" : "");
   const paramBackend = snapshot.backend && isBackendEnabled(snapshot.backend) ? snapshot.backend : "";
-  const backend = sessionBackend || paramBackend || catalog.default;
+  const backend = ownBackend || paramBackend || catalog.default;
   const models = modelsOf(backend);
   const efforts = effortsOf(backend);
   const fallbackModel = defaultModelOf(backend);
@@ -389,6 +399,7 @@ export function useComposerDefaults(
     // one can leave it standing under the new session (Bugbot, PR #1226): the
     // pills go back to the wash and paint this chat's own record, or "".
     setRecorded({ model: "", effort: "" });
+    setKnownBackend("");
     setRecordReady(false);
     // THE LOCAL PICK FOLLOWS EXACTLY ONE TRANSITION: "no session" → "the id
     // this chat was just given". A fresh chat (back to "") opens on the global
@@ -412,6 +423,7 @@ export function useComposerDefaults(
           model: picked.model ?? normalizeModel(rec?.model),
           effort: picked.effort ?? (rec?.effort || ""),
         });
+        if (rec?.backend) setKnownBackend((b) => b || rec.backend!);
       })
       .catch(() => {
         // Best-effort, like every other read here: a record we could not fetch
@@ -443,6 +455,9 @@ export function useComposerDefaults(
           model: d ? normalizeModel(d.model) : "",
           effort: d?.effort || "",
         });
+        // The conversation's agent off its record (§8) — only when there IS
+        // a conversation: the folder-wide answer names no one's.
+        if (sessionId && d?.backend) setKnownBackend((b) => b || d.backend!);
         // Validated against the same two lists, and for the same reason: a
         // record naming something this build does not offer renders as a blank
         // pill. An agent that predates the field simply has none, which reads
@@ -644,14 +659,14 @@ export function useComposerDefaults(
   // from the other agent's menu.
   const setBackend = useCallback(
     (value: string) => {
-      if (sessionBackend || !isBackendEnabled(value)) return;
+      if (ownBackend || !isBackendEnabled(value)) return;
       setLocal({ model: "", effort: "" });
       // …and a "plan" pick goes too where the new agent has no plan mode: the
       // send reads the param itself, and would ask for a mode it refuses.
       const dropPlan = params.get("permission") === "plan" && !capsOf(value).plan_mode;
       params.set({ backend: value, ...(dropPlan ? { permission: null } : {}) }, { history: "replace" });
     },
-    [params, sessionBackend],
+    [params, ownBackend],
   );
 
   return useMemo(
@@ -660,7 +675,7 @@ export function useComposerDefaults(
       effort,
       permission,
       backend,
-      backendFixed: !!sessionBackend,
+      backendFixed: !!ownBackend,
       setBackend,
       setModel: (value: string) => {
         if (localPick) {
@@ -685,7 +700,7 @@ export function useComposerDefaults(
       modelSettled,
       effortSettled,
     }),
-    [model, effort, permission, backend, sessionBackend, setBackend, params, record,
+    [model, effort, permission, backend, ownBackend, setBackend, params, record,
      localPick, pickLocal, detectionReady, prefsReady, recordReady, globalReady,
      pillsReady, modelSettled, effortSettled],
   );

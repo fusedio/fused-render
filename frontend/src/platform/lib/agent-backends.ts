@@ -17,6 +17,7 @@
 import { useSyncExternalStore } from "react";
 import {
   getAgentBackends,
+  type HttpError,
   type AgentBackendRow,
   type AgentCaps,
   type AgentCatalog,
@@ -112,6 +113,11 @@ export interface AgentCatalogState extends AgentCatalog {
 let current: AgentCatalogState = { ...FALLBACK, loaded: false };
 let reading: Promise<void> | null = null;
 let generation = 0;
+/** Consecutive failed reads, for the retry's backoff; 0 after an answer. */
+let failures = 0;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+const RETRY_BASE_MS = 1_000;
+const RETRY_MAX_MS = 30_000;
 const listeners = new Set<() => void>();
 
 function publish(next: AgentCatalogState) {
@@ -147,14 +153,29 @@ function read(): Promise<void> {
   reading = withDeadline(getAgentBackends(), GATE_FALLBACK_MS)
     .then((c) => {
       if (generation !== departed) return;
+      failures = 0;
       publish(fromServer(c));
     })
-    .catch(() => {
-      // A refused or missing endpoint keeps the static Claude row — which is
-      // exactly what every surface drew before the catalog existed. Marked
-      // loaded so nothing waits on an answer that is not coming.
+    .catch((err) => {
       if (generation !== departed) return;
-      publish({ ...current, loaded: true });
+      // A 404 IS an answer: a server that predates the endpoint, which runs
+      // Claude alone — exactly the static rows. Marked loaded so nothing waits
+      // on a catalog that is never coming.
+      if ((err as HttpError | null)?.status === 404) {
+        publish({ ...current, loaded: true });
+        return;
+      }
+      // ANYTHING ELSE (a timeout, a server mid-restart) says nothing about
+      // which agents are on, so `loaded` stays false — the gates that wait on
+      // a real answer (a switched-off agent's closed composer) keep waiting —
+      // and the read is tried again, backing off.
+      failures += 1;
+      const wait = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (failures - 1));
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        if (!current.loaded) void read();
+      }, wait);
     })
     .finally(() => {
       if (generation === departed) reading = null;
@@ -202,7 +223,9 @@ export function agentCatalog(): AgentCatalogState {
 
 function subscribe(cb: () => void): () => void {
   listeners.add(cb);
-  void read();
+  // Only while nothing has answered: a mount after the read has landed reads
+  // the cache, and the focus / Preferences paths below re-ask on purpose.
+  if (!current.loaded) void read();
   return () => {
     listeners.delete(cb);
   };
@@ -285,6 +308,9 @@ export function defaultBackend(): string {
 export function resetAgentBackendsForTests(next?: AgentCatalog) {
   generation += 1;
   reading = null;
+  failures = 0;
+  if (retryTimer) clearTimeout(retryTimer);
+  retryTimer = null;
   current = next ? fromServer(next) : { ...FALLBACK, loaded: false };
   for (const l of listeners) l();
 }

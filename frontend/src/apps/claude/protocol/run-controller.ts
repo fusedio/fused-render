@@ -1946,9 +1946,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  that has none yet. "" lets agent.py fall back to its default. */
   const curBackend = () => state.backend || deps.backend?.() || "";
   /** What the wire said this conversation runs on. Never cleared by a payload
-   *  that omits it (an older server), and never changed once set. */
+   *  that omits it (an older server), and never changed once set: FIRST WINS,
+   *  because a session's agent is immutable (D2) and a second answer can only
+   *  be a stale one about a conversation this page has left. */
   const noteBackend = (b: unknown) => {
-    if (typeof b === "string" && b && b !== state.backend) emit({ backend: b });
+    if (typeof b === "string" && b && !state.backend) emit({ backend: b });
   };
   const curPermission = () => deps.params.get("permission") || DEFAULT_PERMISSION;
   /** The same read, NARROWED — `ChatState.permissionMode` is a union and the
@@ -3002,7 +3004,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     });
   }
 
-  async function openSession(sessionId: string): Promise<void> {
+  async function openSession(sessionId: string, opts: { backend?: string } = {}): Promise<void> {
     if (disposed) return;
     // Reuse the `sending` gate: a message sent during the await would be
     // appended first and the older history turns dumped after it (T:17994).
@@ -3029,11 +3031,16 @@ export function createChatController(deps: ControllerDeps): ChatController {
     clearInbox();
     clearTasks();
     setParam({ session_id: sessionId });
+    // The `backend` param is a NEW chat's pick (D18) and names nothing about
+    // the conversation arriving, which carries its own agent.
+    setParam({ backend: null }, "replace");
     emit({
       sessionId,
-      // The agent belongs to the conversation that is leaving; the fetch
-      // below names the new one's.
-      backend: "",
+      // The agent belongs to the conversation that is leaving. The ARRIVING
+      // one's, when the opener knows it (the row it was opened from), is
+      // named at once — so a restore that fails, or is slow, never shows the
+      // previous chat's agent or the default's. The fetch below confirms it.
+      backend: opts.backend || "",
       historyLoading: true,
       // THE VISIBLE CONVERSATION IS BEING REPLACED, and this counter is how the
       // React side hears about it — T calls `scheduleResetForNewTranscript()`

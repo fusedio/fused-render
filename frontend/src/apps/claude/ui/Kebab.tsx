@@ -41,6 +41,7 @@ import { copyPendingText } from "@platform/lib/clipboard";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
 import { forgetSessionSeed } from "./useRecentTasks";
 import { useAgent } from "./agent-context";
+import { agentNamed, useAgentBackends } from "@platform/lib/agent-backends";
 
 /** Live by the listing's own clock (T:13166-13169). */
 const RUNNING_STATES = new Set<Task["status"]>([
@@ -319,11 +320,21 @@ export function Kebab({
   const timers = useRef<number[]>([]);
   const canRun = useCanRunInTerminal();
   // "Continue with Copilot in terminal" (D18): the agent's own word, since the
-  // command this hands over is that agent's `--resume`.
+  // command this hands over is that agent's `--resume`. ONE helper for the
+  // item's resting label and the two places that put it back, and gated like
+  // TaskPeek's item (`agentNamed`): with only Claude to name, the words are the
+  // ones this menu always said, handed in as `claudeWords`.
   const agent = useAgent();
-  const restingTerminal = sessionId
-    ? `Continue with ${agent.label} in terminal`
-    : `New ${agent.label} session in terminal`;
+  useAgentBackends();
+  const restingTerminal = useCallback(
+    (claudeWords: string) =>
+      agentNamed(agent.backend)
+        ? sessionId
+          ? `Continue with ${agent.label} in terminal`
+          : `New ${agent.label} session in terminal`
+        : claudeWords,
+    [agent.backend, agent.label, sessionId],
+  );
 
   useEffect(
     () => () => {
@@ -441,13 +452,13 @@ export function Kebab({
       // Named at open time: the session param changes without a reload
       // (T:13415).
       setTerminalLabel(
-        sessionId ? "Continue in terminal" : "New session in terminal",
+        restingTerminal(sessionId ? "Continue in terminal" : "New session in terminal"),
       );
       setCopyLabel("Copy command");
       setArchiveLabel("");
       void refresh();
     },
-    [sessionId, refresh],
+    [sessionId, refresh, restingTerminal],
   );
 
   const restingArchive = filed ? "Unarchive this task" : "Archive this task";
@@ -493,11 +504,11 @@ export function Kebab({
       later(() => {
         busy.current = false;
         setTerminalLabel(
-          sessionId ? "Continue in terminal" : "New session in terminal",
+          restingTerminal(sessionId ? "Continue in terminal" : "New session in terminal"),
         );
       }, 2500);
     }
-  }, [fetchTerminalCommand, sessionId, later]);
+  }, [fetchTerminalCommand, sessionId, later, restingTerminal]);
 
   /** THE SECONDARY ITEM, only offered where the primary one no longer copies —
    *  a reader with their own terminal should not have to fight the drawer for
@@ -626,7 +637,8 @@ export function Kebab({
               closeOnClick={false}
               onClick={() => void onTerminal()}
             >
-              {terminalLabel || restingTerminal}
+              {terminalLabel ||
+                restingTerminal(sessionId ? "Continue in terminal" : "New session in terminal")}
             </DropdownMenuItem>
           ) : null}
           {/* The primary item above now RUNS the command where it can — this is

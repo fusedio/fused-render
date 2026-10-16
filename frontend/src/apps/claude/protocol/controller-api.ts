@@ -517,7 +517,9 @@ export interface ChatController {
   answerAppState(id: string, block: string): Promise<void>;
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
-  openSession(sessionId: string): Promise<void>;
+  /** `backend`: the arriving conversation's agent, when the opener knows it
+   *  (a task row's) — named before the history lands (D2/D18). */
+  openSession(sessionId: string, opts?: { backend?: string }): Promise<void>;
   /** Re-attach to a run id from the URL (T:17792 resumeRun). `opts` ADDED in
    *  PR4 — the three postures the standing watch and the scheduled-run poller
    *  need (see `ResumeOptions`). */

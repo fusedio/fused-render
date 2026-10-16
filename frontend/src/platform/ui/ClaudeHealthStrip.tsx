@@ -204,7 +204,7 @@ export function IssueRow({
       {/* A DEVICE-CODE sign-in (Copilot, D10) has a code to type, and it is
           drawn only while that flow is OPEN: the record keeps the last one's
           code after it ends, and a stale code is a code that no longer works. */}
-      {signingIn && login?.detail ? (
+      {signingIn && login?.detail?.code && login.detail.url ? (
         <>
           <p className="claude-health-progress" role="status">
             Open{" "}
