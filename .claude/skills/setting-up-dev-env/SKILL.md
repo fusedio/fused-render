@@ -80,3 +80,4 @@ If you have run `dev.sh` once, both already exist. Verify: `ls fused_render/stat
 | `fused` extra | compute-engine wheel for `/api/run` |
 | `FUSED_RENDER_NO_RELOAD=1` | run the server once without watchfiles (no Python auto-reload; the server opens its own tab) |
 | `FUSED_RENDER_CORE_TEMPLATES` | `dev.sh` points it at the repo so template edits show without a version bump |
+| `FUSED_RENDER_INDEXING=1` | dev servers (`FUSED_RENDER_DEV=1`, set by `dev.sh`) do **not** index the home dir by default — several worktrees each watching `~` is what overloaded the Mac on 2026-10-16. Export this (or turn Indexing on in Preferences, which persists) when your work needs the file index |
