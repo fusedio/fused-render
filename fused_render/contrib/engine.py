@@ -90,26 +90,26 @@ def _in_workspace(root) -> bool:
 
 
 def _merge_job(root):
-    """WS-C's open Merge with Claude job for this app, if any (getattr: the
-    module or its `for_app` may not exist yet)."""
+    """The app's current Merge with Claude job, if any (`merge_job.current`:
+    no git, no network)."""
     try:
         from fused_render.contrib import merge_job
     except ImportError:
         return None
-    fn = getattr(merge_job, "for_app", None)
+    fn = getattr(merge_job, "current", None)
     if fn is None:
         return None
     try:
         job = fn(root)
     except Exception:  # noqa: BLE001
-        logger.exception("contrib: merge_job.for_app failed for %s", root)
+        logger.exception("contrib: merge_job.current failed for %s", root)
         return None
     return job if isinstance(job, dict) else None
 
 
 def _job_open(root) -> bool:
     job = _merge_job(root)
-    return bool(job) and job.get("status") in ("running", "ready")
+    return bool(job) and job.get("status") in ("running", "ready", "landing")
 
 
 def _base(root, head, new_tip) -> str | None:
@@ -138,16 +138,10 @@ def _changes(root, head, tip, base) -> int:
 
 
 def _dirty_paths(root) -> list[str]:
-    """Tracked paths with uncommitted edits, `.fused/` excluded (§6.1)."""
-    r = gu._run(root, "status", "--porcelain", "-z", "--untracked-files=no",
-                "--", ".", ":(exclude).fused")
-    if not gu._ok(r):
-        return []
-    out = []
-    for item in r[1].decode("utf-8", "replace").split("\0"):
-        if len(item) > 3:
-            out.append(item[3:])
-    return out
+    """Paths with uncommitted edits — tracked or untracked-not-ignored,
+    fused's machine state excluded: the ONE definition proposals.py's "Your
+    edits" uses too (`replay.edits`)."""
+    return [p for _code, p in replay.edits(root)]
 
 
 def _changed_between(root, a, b) -> set:
@@ -244,11 +238,55 @@ def owns(root) -> bool:
         return False
     if rec.get("kind") == "github" and not rec.get("owner_checked"):
         classify.ensure_in_background(root)
+        if rec.get("classified_by") == "migration":
+            # A copy that existed before the loop, whose owner could not be
+            # asked yet: today's sync until the one-time check runs (it may
+            # be the author's own repo). A fresh install is active at once —
+            # with no GitHub identity it could not push anyway.
+            return False
     if rec.get("kind") == "github":
         return snap["changes"] and follow.for_record(rec) is not None
     if rec.get("kind") == "own":
         return snap["inbox"] and follow.for_record(rec) is not None
     return False
+
+
+def follows_author(root) -> bool:
+    """Whether `root` is a GitHub-link copy the engine keeps on the author's
+    latest — `owns` for a `github` record, as a pure read (no background
+    classification kicked): git_upstream asks this on every state write and
+    every Update-card poll, so that the old Update/Switch card (an `--ff-only`
+    pull or a checkout that would fail against Bob's commits, or move his
+    branch behind the engine's back) never shows for such a copy."""
+    try:
+        if not flags.changes():
+            return False
+        rec = store.get(root)
+        if not rec or rec.get("kind") != "github":
+            return False
+        if not rec.get("owner_checked") and rec.get("classified_by") == "migration":
+            return False
+        return follow.for_record(rec) is not None
+    except Exception:  # noqa: BLE001 — unknown reads as today's behaviour
+        return False
+
+
+def settle_when_off(root) -> bool:
+    """Called by git_upstream's intercept for every root the engine does NOT
+    own, slot held: when the loop is off and this folder's `.fused/` paths
+    still carry the skip-worktree bits it set, clear them once and drop the
+    record's `protected` marker — so switching the loop off really returns
+    the repo to today's behaviour. A store read and nothing else otherwise.
+    Answers whether it un-protected."""
+    if flags.sources():
+        return False
+    rec = store.get(root)
+    if not rec or not rec.get("protected"):
+        return False
+    with replay.slot_held():
+        replay.unprotect_locked(root)
+    store.update(root, lambda r: r.pop("protected", None))
+    return True
 
 
 # ----------------------------------------------------------------------- sync
@@ -267,6 +305,7 @@ def sync(root, *, action, push) -> dict:
             if now - _last_sweep[0] > _SWEEP_EVERY_S:
                 _last_sweep[0] = now
                 replay.sweep()
+                store.sweep_orphans(now)
             if rec.get("kind") == "github":
                 return _sync_github(root, rec, action=action)
             return _sync_own(root, rec, action=action, push=push)
@@ -543,6 +582,54 @@ def return_to_following(root) -> dict:
     return {"ok": False, "reason": "failed", "message": "Couldn't finish updating this app right now."}
 
 
+# ------------------------------------------------------- Merge with Claude
+
+
+def merge_plan(root) -> dict | None:
+    """What a Merge with Claude job for `root` should replay, from the
+    recorded overlap: `{"purpose", "onto", "upstream"}`, or None when there
+    is none (or its commits are gone). `upstream` is exactly what the
+    engine's own replay used — the base for needs-merge, origin's tip
+    before for own-sync, `proposed_head` for return. No network."""
+    rec = store.get(root)
+    nm = rec.get("needs_merge") if rec and isinstance(rec.get("needs_merge"), dict) else None
+    if not nm:
+        return None
+    onto, upstream = replay.rev(root, nm.get("onto") or ""), replay.rev(root, nm.get("upstream") or "")
+    if not (onto and upstream):
+        return None
+    purpose = nm.get("purpose") if nm.get("purpose") in ("needs-merge", "own-sync", "return") \
+        else "needs-merge"
+    return {"purpose": purpose, "onto": onto, "upstream": upstream}
+
+
+def merge_landed(root, *, purpose, old_tip, new_tip) -> None:
+    """A Merge with Claude job's result just landed (`merge_job.accept`
+    called `replay.land`): the record bookkeeping for its purpose. Never
+    raises."""
+    try:
+        rec = store.get(root) or {}
+        who = _owner(rec)
+        now = time.time()
+
+        def fn(r):
+            r["needs_merge"] = None
+            if purpose == "return" and isinstance(r.get("proposal"), dict):
+                r["proposal"]["returned_at"] = now
+            if purpose == "original":
+                r["original_update"] = None
+        store.update(root, fn)
+        kind = {"needs-merge": "merge-accepted", "return": "merged-back",
+                "original": "original-brought-in"}.get(purpose)
+        if kind:
+            store.add_event(root, kind, who=who)
+        if purpose in ("own-sync", "original"):
+            # The combined tip is the author's own: auto-sync pushes it.
+            gu.schedule_sync(root, "Auto-push after merge", push=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("contrib: merge bookkeeping failed for %s", root)
+
+
 # ------------------------------------------------------------ user actions
 
 
@@ -656,8 +743,11 @@ _STATUS_CACHE_MAX = 256
 def _refs(root) -> dict:
     """HEAD plus every ref the status reads, in two git calls."""
     out = {"HEAD": replay.rev(root, "HEAD")}
+    # Exact refs only: never `refs/fused/` (every backup ref would be listed
+    # on each card render).
     r = gu._run(root, "for-each-ref", "--format=%(refname) %(objectname)",
-                "refs/fused/", "refs/remotes/origin/")
+                replay.FOLLOW_REF, replay.BASE_REF, replay.PROPOSED_REF,
+                "refs/fused/original", "refs/remotes/origin/")
     if gu._ok(r):
         for line in gu._out(r).splitlines():
             name, _, sha = line.partition(" ")
@@ -682,9 +772,13 @@ def _unproposed(root, head, tip, proposed) -> int:
 
 
 def _event(rec):
+    """The newest unseen, still-fresh event of a kind the page renders
+    (`store.RENDERED_EVENTS`) — a newer one it never draws must not hide it
+    (those are stored seen already)."""
     cutoff = time.time() - EVENT_TTL_S
     for e in reversed(rec.get("events") or []):
-        if isinstance(e, dict) and not e.get("seen") and (e.get("at") or 0) >= cutoff:
+        if (isinstance(e, dict) and not e.get("seen") and e.get("kind") in store.RENDERED_EVENTS
+                and (e.get("at") or 0) >= cutoff):
             return {"kind": e.get("kind"), "at": e.get("at"), "who": e.get("who")}
     return None
 
@@ -693,7 +787,18 @@ def _job_view(root):
     job = _merge_job(root)
     if not job:
         return None
-    return {k: job.get(k) for k in ("id", "status", "summary", "files", "purpose")}
+    # Passed through as merge_job.current answers it — "landing" (accept in
+    # progress) is its own status; the page treats it as running.
+    return {k: job.get(k) for k in ("id", "status", "summary", "files", "purpose",
+                                    "error", "started_at")}
+
+
+#: `sync_error` codes in words for the page — a code like "git-failed" must
+#: never reach a person (§0.1); the code itself rides in `sync_error_code`.
+_SYNC_ERROR_WORDS = {
+    "auth": "Your latest changes couldn't be sent to GitHub — sign in to GitHub again.",
+}
+_SYNC_ERROR_DEFAULT = "Your latest changes couldn't be sent to GitHub yet; fused will keep trying."
 
 
 def status(root) -> dict:
@@ -705,7 +810,7 @@ def status(root) -> dict:
         "kind": "own", "state": "own", "repo": None, "author": None, "remix_of": None,
         "changes": 0, "dirty": False, "unproposed": 0, "needs_merge": False,
         "merge_job": None, "event": None, "original_update": False, "can_push": None,
-        "behind": 0, "sync_error": None, "pending": False,
+        "behind": 0, "sync_error": None, "sync_error_code": None, "pending": False,
     }
     if rec is None:
         if os.path.isdir(root):
@@ -722,14 +827,20 @@ def status(root) -> dict:
         "event": _event(rec),
         "original_update": bool(rec.get("original_update")),
         "can_push": rec.get("can_push"),
-        "sync_error": (rec.get("sync_error") or {}).get("reason")
-        if isinstance(rec.get("sync_error"), dict) else None,
     }
+    code = rec.get("sync_error", {}).get("reason") if isinstance(rec.get("sync_error"), dict) \
+        else None
+    if code:
+        view["sync_error"] = _SYNC_ERROR_WORDS.get(code, _SYNC_ERROR_DEFAULT)
+        view["sync_error_code"] = code
     if view["kind"] != "github":
         view["state"] = "remix" if remix_of else "own"
         return view
     view["author"] = _owner(rec)
     fol = follow.for_record(rec)
+    if fol is None:
+        view["state"] = "following"  # nothing to compare against
+        return view
     refs = _refs(root)
     head = refs.get("HEAD")
     tip = (refs.get(fol.ref) or refs.get(f"refs/remotes/origin/{fol.branch}")) if fol else None

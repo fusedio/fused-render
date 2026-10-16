@@ -81,7 +81,7 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { navigateUrl, replaceSearch, spaLinkProps, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
@@ -353,6 +353,19 @@ export default function AppPage({
   const tab: AppPageTab = offered(urlTab) ? urlTab : APP_PAGE_TABS[0];
   const offeredRef = useRef(offered);
   offeredRef.current = offered;
+  // The tab ACTUALLY shown (a `?_tab=proposals` this folder does not offer
+  // shows the Overview) — what the arrow keys step from.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  // Once answered, a `?_tab=proposals` this folder does not offer (a switch
+  // from an app that had one, a stale link) is rewritten to the default
+  // tab's address in place — so the URL, the strip and Back all agree on the
+  // tab that is on screen.
+  const dropProposalsTab = contrib.settled && urlTab === "proposals" && !inboxOffered;
+  useEffect(() => {
+    if (!dropProposalsTab) return;
+    replaceSearch(appPageUrl(dir, APP_PAGE_TABS[0], peekSearch(location.search, null)));
+  }, [dropProposalsTab, dir]);
   const inboxCount = contrib.data?.inbox?.count ?? 0;
 
   // This page's OWN resolution of the URL's `_snapshot` sha — extracted into
@@ -502,7 +515,7 @@ export default function AppPage({
       if (!onBody && !inSidebar) return;
       // Every tab is always offered now (no more conditional Git tab to
       // skip), so this steps over the route's own static list directly.
-      const cur = appPageTabFromSearch(location.search);
+      const cur = tabRef.current;
       const step = e.key === "ArrowRight" ? 1 : -1;
       let i = APP_PAGE_TABS.indexOf(cur) + step;
       // Skip a tab this folder does not offer (the Proposals tab, AppPage's

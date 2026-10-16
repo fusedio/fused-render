@@ -13,9 +13,19 @@ export function plural(n: number, one: string, many = one + "s"): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/** The author's display name: the login, else the owner half of the repo. */
+const NO_NAME = "the author";
+
+/** The author's display name: the login, else the owner half of the repo,
+ *  else "the author" (lower case — it is mostly read mid-sentence; see
+ *  `atStart` for the sentence-initial spelling). */
 export function authorOf(copy: Pick<CopyStatus, "author" | "repo" | "remix_of">): string {
-  return copy.author || copy.repo?.split("/")[0] || copy.remix_of?.split("/")[0] || "the author";
+  return copy.author || copy.repo?.split("/")[0] || copy.remix_of?.split("/")[0] || NO_NAME;
+}
+
+/** A name opening a sentence. Only the fallback is capitalised: a GitHub
+ *  login is spelled the way its owner spells it ("alice" stays "alice"). */
+export function atStart(name: string): string {
+  return name === NO_NAME ? "The author" : name;
 }
 
 export function possessive(name: string): string {
@@ -36,6 +46,21 @@ export function githubUrl(repo: string): string {
 export function elapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** `copy.sync_error` is git_upstream's failure CODE ("auth", "rejected",
+ *  "git-failed"…), never shown as is: a code becomes a sentence here, and
+ *  anything that already reads as a sentence passes through. */
+export function syncErrorSentence(code: string): string {
+  if (/\s/.test(code.trim())) return code;
+  switch (code) {
+    case "auth":
+      return "GitHub didn't accept your sign-in, so your latest edits weren't sent.";
+    case "rejected":
+      return "GitHub turned down your latest edits.";
+    default:
+      return "Your latest edits didn't reach GitHub.";
+  }
 }
 
 /** The progress steps of sending a proposal, keyed by the job's `step`. */

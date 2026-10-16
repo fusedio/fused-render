@@ -52,6 +52,16 @@ EVENT_KINDS = frozenset({
     "discarded", "remixed", "original-brought-in",
 })
 
+#: The kinds the app page draws as a one-time banner (`engine.status`'s
+#: `event`). Every other kind is a user action the page already confirmed,
+#: or a state the card draws itself: stored for the record, but born seen,
+#: so it can never hide a newer banner-worthy one.
+RENDERED_EVENTS = frozenset({"updated-kept", "merged-back"})
+
+#: An orphaned row (its folder gone and no copy adopted it) is dropped once
+#: this long has passed since a sweep first found it so.
+ORPHAN_TTL_S = 30 * 24 * 3600
+
 _lock = threading.Lock()
 
 
@@ -249,6 +259,7 @@ def adopt(old_key: str, app_dir: str) -> dict | None:
             if not isinstance(rec, dict) or new_key in data["apps"]:
                 return None
             del data["apps"][old_key]
+            rec.pop("orphaned_at", None)
             data["apps"][new_key] = rec
             if not _write(data):
                 return None
@@ -307,6 +318,39 @@ def prune(root: str) -> int:
         return 0
 
 
+def sweep_orphans(now: float | None = None) -> int:
+    """Housekeeping (the engine's hourly pass): stamp `orphaned_at` on a row
+    whose folder is gone, clear it on one whose folder is back, and drop a
+    row orphaned for longer than ORPHAN_TTL_S — a copy deleted outside the
+    server, or moved somewhere `classify.ensure` never ran. Answers how many
+    rows were dropped."""
+    now = time.time() if now is None else now
+    try:
+        with _lock:
+            data = _read()
+            apps = data["apps"]
+            changed = dropped = 0
+            for k in list(apps):
+                rec = apps[k]
+                if not isinstance(rec, dict):
+                    continue
+                if os.path.isdir(k):
+                    if rec.pop("orphaned_at", None) is not None:
+                        changed += 1
+                elif not rec.get("orphaned_at"):
+                    rec["orphaned_at"] = now
+                    changed += 1
+                elif now - rec["orphaned_at"] > ORPHAN_TTL_S:
+                    del apps[k]
+                    dropped += 1
+            if (changed or dropped) and not _write(data):
+                return 0
+        return dropped
+    except Exception:  # noqa: BLE001
+        logger.exception("contrib store: orphan sweep failed")
+        return 0
+
+
 # ------------------------------------------------------------ events / backups
 
 
@@ -315,7 +359,8 @@ def add_event(app_dir: str, kind: str, who: str | None = None) -> dict | None:
     False; `ack(app_dir, "event")` marks every event seen."""
     if kind not in EVENT_KINDS:
         raise ValueError(f"unknown contrib event kind {kind!r}")
-    event = {"kind": kind, "at": time.time(), "who": who, "seen": False}
+    event = {"kind": kind, "at": time.time(), "who": who,
+             "seen": kind not in RENDERED_EVENTS}
 
     def fn(rec):
         events = rec.get("events") if isinstance(rec.get("events"), list) else []

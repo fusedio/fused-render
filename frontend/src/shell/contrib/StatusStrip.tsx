@@ -45,9 +45,6 @@ export function StatusStrip({
   return (
     <section
       className={cn("contrib-strip", `is-${tone}`, slim && "is-slim")}
-      // A polite live region: a state change after a background check (the
-      // author merged, an update landed) is announced without stealing focus.
-      aria-live="polite"
       aria-busy={busy || undefined}
     >
       <div className="contrib-strip-plate" aria-hidden="true">
@@ -56,8 +53,15 @@ export function StatusStrip({
       <div className="contrib-strip-main">
         <div className="contrib-strip-row">
           <div className="contrib-strip-text">
-            <p className="contrib-strip-sentence">{sentence}</p>
-            {detail && <p className="contrib-strip-detail">{detail}</p>}
+            {/* The live region is the SENTENCE alone: a state change after a
+                background check (the author merged, an update landed) is
+                announced without stealing focus, and nothing that ticks —
+                the merge clock in the detail line — is ever read out. */}
+            <p className="contrib-strip-sentence" aria-live="polite">
+              {sentence}
+            </p>
+            {/* A div, not a p: the detail slot may hold a quote block. */}
+            {detail && <div className="contrib-strip-detail">{detail}</div>}
           </div>
           {primary && <div className="contrib-strip-primary">{primary}</div>}
           {onDismiss && (

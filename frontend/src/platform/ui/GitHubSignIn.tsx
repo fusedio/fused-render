@@ -15,7 +15,9 @@
 //
 // THE STEPS, each one sentence and one button (handoff principle 5):
 //   checking → set up (helper missing) → sign in → waiting for GitHub (the
-//   one-time code, Copy code, reopen the page) → signed in.
+//   one-time code, Copy code, reopen the page) → signed in. An opening read
+//   that fails is its own step ("Couldn't check GitHub just now." + Try
+//   again), never a "Checking…" left up for good.
 // No CLI, gh or terminal words reach the reader; the server's own error text
 // does not either (it is gh's), only a calm sentence and Try again.
 //
@@ -67,6 +69,7 @@ interface LoginRecord {
 
 type Step =
   | { kind: "checking" }
+  | { kind: "unreachable" }
   | { kind: "setup"; failed: boolean }
   | { kind: "installing" }
   | { kind: "signin"; failed: boolean }
@@ -77,6 +80,7 @@ export function GitHubSignIn({
   onSignedIn,
   onCancel,
   prompt = "Sign in to GitHub to continue.",
+  recheck = false,
   className,
 }: {
   /** GitHub said yes. `login` can be null: the account name is read off
@@ -90,6 +94,13 @@ export function GitHubSignIn({
   onCancel?: () => void;
   /** The sign-in step's one sentence — why the surface needs GitHub. */
   prompt?: string;
+  /** The caller has just been told GitHub refused this computer (a job that
+   *  came back "signed out"), so the status CACHE — up to a minute old — is
+   *  exactly what must not decide: the opening read re-probes GitHub
+   *  (POST /api/github/status/refresh) and only that fresh answer may
+   *  auto-advance. Later reads use the cache, which the sign-in worker
+   *  refreshes itself before it settles. */
+  recheck?: boolean;
   className?: string;
 }) {
   const [step, setStep] = useState<Step>({ kind: "checking" });
@@ -98,6 +109,7 @@ export function GitHubSignIn({
   const baseline = useRef<{ install: number | null; login: number | null } | null>(null);
   const pollRef = useRef<number | null>(null);
   const goneRef = useRef(false);
+  const readOnceRef = useRef(false);
   // Kept current so a poll tick's late answer reports to the caller's latest
   // callback, not the one this effect closed over.
   const onSignedInRef = useRef(onSignedIn);
@@ -136,17 +148,30 @@ export function GitHubSignIn({
     let status: GithubStatus;
     let install: InstallRecord;
     let login: LoginRecord;
+    // Until one read has succeeded, the step has nothing true to show — so
+    // that read is the one `recheck` makes fresh, and the one whose failure
+    // must not leave "Checking GitHub…" up forever.
+    const opening = !readOnceRef.current;
     try {
       [status, install, login] = await Promise.all([
-        getJson<GithubStatus>("/api/github/status"),
+        opening && recheck
+          ? postJson<GithubStatus>("/api/github/status/refresh", {})
+          : getJson<GithubStatus>("/api/github/status"),
         getJson<InstallRecord>("/api/github/install"),
         getJson<LoginRecord>("/api/github/login"),
       ]);
     } catch {
-      // A hiccup: the next tick tries again; keep showing the last step.
+      if (goneRef.current) return;
+      // A poll hiccup keeps the last step and the next tick tries again; an
+      // opening read that failed says so, with Try again.
+      if (opening) {
+        stopPolling();
+        setStep({ kind: "unreachable" });
+      }
       return;
     }
     if (goneRef.current) return;
+    readOnceRef.current = true;
     if (baseline.current === null) {
       baseline.current = { install: install.started_at, login: login.started_at };
     }
@@ -192,11 +217,14 @@ export function GitHubSignIn({
     // nothing of ours yet. (A cancel from this step never lands here: it
     // stops the poll before it asks the server to stop.)
     setStep({ kind: "signin", failed: !!rec?.error });
-  }, [finish]);
+  }, [finish, recheck]);
   tickRef.current = tick;
 
   useEffect(() => {
     goneRef.current = false;
+    // Mount, or `recheck` turning on under a mounted step: either way the
+    // next read is an opening one again.
+    readOnceRef.current = false;
     void tick();
     return () => {
       goneRef.current = true;
@@ -274,6 +302,23 @@ export function GitHubSignIn({
     case "checking":
       sentence = "Checking GitHub…";
       actions = <Skeleton className="h-8 w-36" />;
+      break;
+    case "unreachable":
+      sentence = "Couldn't check GitHub just now.";
+      actions = (
+        <>
+          {cancelButton}
+          <Button
+            size="sm"
+            onClick={() => {
+              setStep({ kind: "checking" });
+              void tick();
+            }}
+          >
+            Try again
+          </Button>
+        </>
+      );
       break;
     case "setup":
       sentence = step.failed

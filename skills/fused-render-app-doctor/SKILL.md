@@ -108,6 +108,8 @@ Real: a line the skill's trap table names, in a view this app ships, with no fal
 - **Unpushed commits** — push the branch. The findings are the unpushed subject lines — if any read as work-in-progress, say so instead of pushing blindly. The row knows the commits exist, not that they're ready.
 - **Behind origin** — this is exactly what the row's own "Pull" action (in the App Doctor panel, not this skill) is for; a fix session should pull (fast-forward only) rather than force anything, and stop and say so if a pull cannot fast-forward.
 
+- **"The author's latest overlaps your changes"** or **"couldn't be sent to GitHub"** — a copy fused keeps in step by itself (an app installed from someone's GitHub link, or your own app while the contribution loop is on). Do NOT run git in it — no pull, rebase, merge, reset or push: fused moves this folder only through its own safe path. Tell the user to open the app's page and use **Merge with Claude** there (overlap), or to sign in to GitHub again (couldn't send), and stop.
+
 So what you share is what you tested, matches what you pushed, and matches what origin has.
 
 ## `fused-dir-committed` — the repo leaves out the .fused folder

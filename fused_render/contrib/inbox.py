@@ -34,6 +34,8 @@ import builtins
 import logging
 import os
 import re
+import subprocess
+import tempfile
 import threading
 import time
 
@@ -44,12 +46,15 @@ logger = logging.getLogger(__name__)
 
 LIST_TTL_S = 120.0
 REVIEW_SLOTS = 2
+#: Review files kept per repo (newest first); a closed proposal's go at once.
+REVIEWS_KEEP = 50
 FUSED_MARKER = "<!-- fused:proposal v1 -->"
 _FETCH_TIMEOUT_S = 60.0
 _MAX_DIFF_BYTES = 2_000_000
 
 _lock = threading.Lock()
 _lists: dict = {}          # repo -> (fetched_at, [pr])
+_gens: dict = {}           # repo -> generation, bumped by `invalidate`
 _waiting: set = set()      # (app_dir, number) reviews queued behind the slots
 _asked: dict = {}          # (app_dir, number) -> head the last review job read
 _review_slots = threading.BoundedSemaphore(REVIEW_SLOTS)
@@ -95,11 +100,17 @@ def _plain_gh(exc, fallback: str = "Couldn't reach GitHub. Try again.") -> str:
 
 
 def _open_prs(repo: str, *, force: bool = False) -> builtins.list | None:
+    """GitHub's open proposals, cached LIST_TTL_S. A listing that was asked
+    for BEFORE an `invalidate` (an accept or decline that just closed one)
+    is answered to its caller but never cached: it may still hold the
+    proposal that was just closed, and caching it would bring that row back
+    for two minutes."""
     now = time.time()
     with _lock:
         hit = _lists.get(repo)
         if hit and not force and now - hit[0] < LIST_TTL_S:
             return hit[1]
+        gen = _gens.get(repo, 0)
     try:
         prs = _mod("gh").list_open_prs(repo)
     except Exception as exc:  # noqa: BLE001 — offline keeps the last answer
@@ -107,7 +118,8 @@ def _open_prs(repo: str, *, force: bool = False) -> builtins.list | None:
             logger.exception("inbox: listing proposals for %s failed", repo)
         return hit[1] if hit else None
     with _lock:
-        _lists[repo] = (now, prs)
+        if _gens.get(repo, 0) == gen:
+            _lists[repo] = (now, prs)
     return prs
 
 
@@ -116,6 +128,7 @@ def invalidate(app_dir: str) -> None:
     if repo:
         with _lock:
             _lists.pop(repo, None)
+            _gens[repo] = _gens.get(repo, 0) + 1
 
 
 def list(app_dir: str, *, review: bool = True, force: bool = False) -> builtins.list:
@@ -130,11 +143,12 @@ def list(app_dir: str, *, review: bool = True, force: bool = False) -> builtins.
     prs = _open_prs(repo, force=force)
     if prs is None:
         return []
+    open_numbers = [p.get("number") for p in prs if isinstance(p.get("number"), int)]
     try:
-        _mod("trycopy").sweep(app_dir, [p.get("number") for p in prs
-                                        if isinstance(p.get("number"), int)])
+        _mod("trycopy").sweep(app_dir, open_numbers)
     except Exception:  # noqa: BLE001
         logger.exception("inbox: try-copy sweep failed for %s", app_dir)
+    _prune_reviews(repo, open_numbers)
     return _items(app_dir, repo, prs, start_reviews=review)
 
 
@@ -167,10 +181,14 @@ def _items(app_dir: str, repo: str, prs, *, start_reviews: bool) -> builtins.lis
             status = "pending"
         body = pr.get("body") or ""
         from_fused = FUSED_MARKER in body
-        if from_fused:
-            summary = _description_of(body)
+        # The summary is Claude's own reading (the review) whenever there is
+        # one; the sender's words are only the stand-in until then, and are
+        # always shown as theirs (`description`), never as Claude's.
+        description = _description_of(body) if from_fused else _plain_body(body)
+        if review_obj is not None:
+            summary, source = review_obj.get("summary") or "", "review"
         else:
-            summary = review_obj["summary"] if review_obj else ""
+            summary, source = description, "sender"
         try:
             try_state = _mod("trycopy").status(app_dir, number)
         except Exception:  # noqa: BLE001
@@ -178,7 +196,8 @@ def _items(app_dir: str, repo: str, prs, *, start_reviews: bool) -> builtins.lis
         out.append({
             "number": number, "url": pr.get("url") or "", "title": pr.get("title") or "",
             "author": pr.get("user") or "", "from_fused": from_fused,
-            "summary": summary, "review": review_obj, "review_status": status,
+            "summary": summary, "summary_source": source, "description": description,
+            "review": review_obj, "review_status": status,
             "try": ({"status": try_state["status"], "path": try_state["path"],
                      "url": try_state["url"]} if try_state else None),
             "head_sha": head, "created_at": pr.get("created_at") or "",
@@ -187,11 +206,15 @@ def _items(app_dir: str, repo: str, prs, *, start_reviews: bool) -> builtins.lis
 
 
 def _description_of(body: str) -> str:
-    """A fused-sent body minus its footer and the note line: Claude's
-    description, which is the plain summary for these."""
+    """A fused-sent body minus its footer and the note line: the sender's
+    description (drafted by their Claude, edited by them)."""
     text = body.split("\n\n---\nSent from Fused")[0]
     text = re.sub(r"\n*\*\*Note from [^*]*:\*\*.*\Z", "", text, flags=re.S)
     return _mod("ai").plain(text)
+
+
+def _plain_body(body: str) -> str:
+    return _mod("ai").plain(body, 1500)
 
 
 # ------------------------------------------------------------- the review
@@ -205,27 +228,99 @@ def _reviews_dir(repo: str) -> str:
     return os.path.join(storage.home_dir(), "contrib", "reviews", safe)
 
 
-def _review_path(repo: str, number: int, head: str) -> str:
-    return os.path.join(_reviews_dir(repo), f"{int(number)}-{head}.json")
+def _review_path(repo: str, number: int, head: str, base: str) -> str:
+    """One file per (proposal, head, merge base): the review read exactly
+    `base..head`, so a different base is a different review."""
+    return os.path.join(_reviews_dir(repo), f"{int(number)}-{head}-{base}.json")
 
 
 def _job_kind(number: int) -> str:
     return f"inbox-review-{int(number)}"
 
 
-def _review_for(app_dir: str, repo: str, number: int, head: str) -> dict | None:
-    """The finished review of exactly `head`: from disk, else from the last
-    review job (an uncached, model-failed review) while that job is kept."""
+def _review_for(app_dir: str, repo: str, number: int, head: str,
+                base: str | None = None) -> dict | None:
+    """The finished review of exactly `head` — and, when `base` is given,
+    of exactly `base..head` (accept and Try pass the merge base they see
+    now; the listing, which runs no git, takes the newest review of the
+    head). From disk, else from the last review job (an uncached,
+    model-failed review) while that job is kept."""
+    import glob
+
     from fused_render.shell import storage
 
-    data = storage.read_json(_review_path(repo, number, head))
-    if isinstance(data, dict) and data.get("head_sha") == head:
-        return data
+    def matches(data):
+        return (isinstance(data, dict) and data.get("head_sha") == head
+                and (base is None or data.get("base_sha") == base))
+
+    if base is not None:
+        candidates = [_review_path(repo, number, head, base)]
+    else:
+        pattern = os.path.join(glob.escape(_reviews_dir(repo)), f"{int(number)}-{head}-*.json")
+        candidates = sorted(glob.glob(pattern), key=_mtime, reverse=True)
+    for path in candidates:
+        data = storage.read_json(path)
+        if matches(data):
+            return data
     job = jobs.latest(_job_kind(number), app_dir)
-    if job and job["status"] == "done" and isinstance(job["result"], dict) \
-            and job["result"].get("head_sha") == head:
+    if job and job["status"] == "done" and matches(job["result"]):
         return job["result"]
     return None
+
+
+def _review_files(repo: str) -> builtins.list:
+    """`[(number, head, path)]` of every review file kept for `repo`."""
+    try:
+        names = os.listdir(_reviews_dir(repo))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        m = re.fullmatch(r"(\d+)-([0-9a-f]{40,64})-([0-9a-f]{40,64})\.json", name)
+        if m:
+            out.append((int(m.group(1)), m.group(2),
+                        os.path.join(_reviews_dir(repo), name)))
+    return out
+
+
+def _prune_reviews(repo: str, open_numbers=None, *, drop: int | None = None) -> None:
+    """Delete the review files of proposals no longer open (or of `drop`),
+    then keep the newest REVIEWS_KEEP. Never raises."""
+    files = _review_files(repo)
+    keep_open = None if open_numbers is None else {int(n) for n in open_numbers}
+    left = []
+    for number, _head, path in files:
+        gone = (drop is not None and number == drop) or \
+            (keep_open is not None and number not in keep_open)
+        if gone:
+            _unlink(path)
+        else:
+            left.append(path)
+    for path in sorted(left, key=_mtime, reverse=True)[REVIEWS_KEEP:]:
+        _unlink(path)
+
+
+def _unlink(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _local_base(app_dir: str, number: int) -> str | None:
+    """The merge base of the last-fetched proposal and author's branch —
+    local refs only, no network."""
+    gu = _gu()
+    n = int(number)
+    return gu._out(gu._run(app_dir, "merge-base", f"refs/fused/pr/{n}-base",
+                           f"refs/fused/pr/{n}")) or None
 
 
 def _review_status(app_dir: str, number: int, head: str) -> str:
@@ -285,14 +380,23 @@ def _review_job(app_dir: str, number: int) -> dict:
     try:
         branch = pr.get("base_branch") or record.get("branch") or "main"
         head = _fetch_pr(app_dir, repo, number, branch)
-        diff, files = _proposal_diff(app_dir, number)
+        base = _local_base(app_dir, number)
+        if base is None:
+            raise PlainError("This proposal isn't based on your app, so it can't be "
+                             "reviewed here.")
+        done = _review_for(app_dir, repo, number, head, base)
+        if done is not None:
+            return done
+        diff, files = _proposal_diff(app_dir, number, base)
         result = _mod("ai").safety_review(
             diff=diff, files=files, title=pr.get("title") or "",
             body=pr.get("body") or "", head_sha=head)
+        result["base_sha"] = base
     finally:
         _review_slots.release()
     if result.get("model"):
-        storage.write_json(_review_path(repo, number, head), result)
+        storage.write_json(_review_path(repo, number, head, base), result)
+        _prune_reviews(repo)
     return result
 
 
@@ -314,27 +418,135 @@ def _fetch_pr(app_dir: str, repo: str, number: int, branch: str) -> str:
     return head
 
 
-def _proposal_diff(app_dir: str, number: int) -> tuple[str, builtins.list]:
+# The diff a review reads must show EVERY byte the proposal brings, whatever
+# the repo says about how to show it. Git would otherwise:
+#  - print "Binary files differ" for any file it guesses is binary (a NUL in
+#    an HTML comment, UTF-16, a .pyc) — code the review never sees;
+#  - honour `.gitattributes` (`*.js binary`, `-diff`, a textconv driver) —
+#    from the WORK TREE and the INDEX, i.e. whatever the author's copy holds;
+#  - honour diff config (`diff.noprefix` would break our own parsing).
+# So: `-a` (text, always), `--no-textconv`, `--no-ext-diff`, an EMPTY work
+# tree and a fresh index (no `.gitattributes` to read), no global attributes
+# file, and the prefix/quoting config pinned. `$GIT_DIR/info/attributes`
+# (this machine's, not the proposal's) can still mark a file `-diff`; `-a`
+# overrides that too. The git dir itself is the author's, so a partial
+# clone still fetches a missing blob on demand.
+_NEUTRAL_CONFIG = ("-c", "core.attributesFile=" + os.devnull,
+                   "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+                   "-c", "diff.relative=false", "-c", "core.quotePath=false",
+                   "-c", "diff.renames=true", "-c", "color.ui=false")
+
+
+def _neutral_git(app_dir: str, *args, timeout: float = 120.0):
+    """`(rc, stdout_bytes)` of `git <args>` in the author's repo with no
+    attributes and pinned diff config (see above), or None."""
     gu = _gu()
+    git_dir = gu._out(gu._run(app_dir, "rev-parse", "--absolute-git-dir"))
+    if not git_dir:
+        return None
+    with tempfile.TemporaryDirectory(prefix="fused-review-") as tmp:
+        tree = os.path.join(tmp, "tree")
+        os.mkdir(tree)
+        env = {**os.environ, **gu._ENV, "GIT_INDEX_FILE": os.path.join(tmp, "index")}
+        env.pop("GIT_DIR", None)
+        env.pop("GIT_WORK_TREE", None)
+        try:
+            proc = subprocess.run(
+                [gu._git_bin(), "--git-dir", git_dir, "--work-tree", tree,
+                 *_NEUTRAL_CONFIG, *args],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                env=env, timeout=timeout, close_fds=False)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+    if proc.returncode != 0:
+        logger.warning("inbox: git %s failed: %s", args[0],
+                       proc.stderr.decode("utf-8", "replace")[-500:])
+    return proc.returncode, proc.stdout
+
+
+def _raw_entries(raw: bytes) -> builtins.list:
+    """`diff --raw -z` → `[{"status", "path", "old_path", "mode"}]`."""
+    parts = raw.split(b"\0")
+    out, i = [], 0
+    while i < len(parts):
+        meta = parts[i].decode("utf-8", "replace")
+        if not meta.startswith(":"):
+            i += 1
+            continue
+        fields = meta[1:].split()
+        status = fields[4] if len(fields) >= 5 else ""
+        new_mode = fields[1] if len(fields) >= 2 else ""
+        if status[:1] in ("R", "C") and i + 2 < len(parts):
+            old, path, i = parts[i + 1], parts[i + 2], i + 3
+        else:
+            old, path, i = None, parts[i + 1] if i + 1 < len(parts) else b"", i + 2
+        if path:
+            out.append({"status": status, "path": path.decode("utf-8", "replace"),
+                        "old_path": old.decode("utf-8", "replace") if old else None,
+                        "mode": new_mode})
+    return out
+
+
+def _unquote(path: bytes) -> bytes:
+    """A path as git prints it in a patch header (C-quoted when it holds a
+    quote, a backslash or a control character)."""
+    if path[:1] != b'"' or path[-1:] != b'"':
+        return path
+    import codecs
+
+    try:
+        return codecs.escape_decode(path[1:-1])[0]
+    except ValueError:
+        return path
+
+
+def _not_text(patch: bytes) -> set:
+    """Paths whose new lines are not UTF-8 text (a NUL anywhere, or bytes
+    that do not decode) — binary files and other encodings alike."""
+    found = set()
+    for section in re.split(rb"(?m)^diff --git ", patch):
+        path, bad = None, False
+        for line in section.split(b"\n"):
+            if line.startswith(b"+++ "):
+                name = _unquote(line[4:].rstrip(b"\r"))
+                path = name[2:] if name.startswith(b"b/") else None
+            elif line.startswith(b"+") and not line.startswith(b"+++"):
+                if b"\0" in line:
+                    bad = True
+                else:
+                    try:
+                        line.decode("utf-8")
+                    except UnicodeDecodeError:
+                        bad = True
+        if path and bad:
+            found.add(path.decode("utf-8", "replace"))
+    return found
+
+
+def _proposal_diff(app_dir: str, number: int, base: str | None = None,
+                   ) -> tuple[str, builtins.list]:
+    """`(diff text, file entries)` of `base..refs/fused/pr/<N>` — `base` the
+    merge base (computed when omitted). Every entry: `status`, `path`,
+    `old_path` (a rename's), `mode` (new mode; "120000" = a link) and
+    `binary` (its new lines are not UTF-8 text)."""
     n = int(number)
-    head, base = f"refs/fused/pr/{n}", f"refs/fused/pr/{n}-base"
-    mb = gu._out(gu._run(app_dir, "merge-base", base, head))
+    head = f"refs/fused/pr/{n}"
+    mb = base or _local_base(app_dir, n)
     if not mb:
         raise PlainError("This proposal isn't based on your app, so it can't be "
                          "reviewed here.")
-    common = ("--no-color", "--no-ext-diff", "--no-textconv", "-M")
-    diff_res = gu._run(app_dir, "diff", *common, mb, head, timeout=60.0)
-    names = gu._run(app_dir, "diff", "--name-status", "--no-renames", mb, head,
-                    timeout=60.0)
-    if not gu._ok(diff_res) or not gu._ok(names):
+    patch = _neutral_git(app_dir, "diff", "-a", "--no-textconv", "--no-ext-diff",
+                         "--no-color", "-M", "--src-prefix=a/", "--dst-prefix=b/",
+                         mb, head)
+    raw = _neutral_git(app_dir, "diff", "--raw", "-z", "-M", "--no-abbrev", mb, head)
+    if not patch or patch[0] != 0 or not raw or raw[0] != 0:
         raise PlainError("Couldn't read this proposal. Try again.")
+    files = _raw_entries(raw[1])
+    not_text = _not_text(patch[1])
+    for e in files:
+        e["binary"] = e["path"] in not_text
     # Cut far past ai.MAX_DIFF_CHARS, so a cut diff always reads as oversized.
-    diff = diff_res[1][:_MAX_DIFF_BYTES].decode("utf-8", "replace")
-    files = []
-    for line in gu._out(names).splitlines():
-        status, _, path = line.partition("\t")
-        if path:
-            files.append({"status": status.strip(), "path": path})
+    diff = patch[1][:_MAX_DIFF_BYTES].decode("utf-8", "replace").replace("\0", "\\0")
     return diff, files
 
 
@@ -350,7 +562,8 @@ def try_open(app_dir: str, number: int, *, confirm: bool = False) -> dict:
     if repo is None:
         return {"ok": False, "reason": "not-own", "message": "This app has no proposals."}
     head = _current_head(app_dir, repo, number)
-    review_obj = _review_for(app_dir, repo, number, head) if head else None
+    base = _local_base(app_dir, number) if head else None
+    review_obj = _review_for(app_dir, repo, number, head, base) if base else None
     if review_obj is None:
         review(app_dir, number)
         return {"ok": False, "reason": "review-pending",
@@ -398,9 +611,12 @@ def _merge_method(repo: str) -> str:
     return "merge"
 
 
-def accept(app_dir: str, number: int) -> dict:
+def accept(app_dir: str, number: int, *, confirm: bool = False) -> dict:
     """Merge proposal `number` on GitHub and bring the author's copy up to
-    date. Long (a sync runs): the route runs it as a job."""
+    date. Needs a review of exactly what would be merged (the head GitHub
+    reports now, against the merge base a fresh download gives); a "look"
+    verdict refuses with reason "confirm" unless `confirm`, like Try. Long
+    (a download and a sync run): the route runs it as a job."""
     app_dir = _key(app_dir)
     repo, _ = _repo_of(app_dir)
     if repo is None:
@@ -420,12 +636,22 @@ def accept(app_dir: str, number: int) -> dict:
         _cleanup(app_dir, number)
         return {"ok": False, "reason": "closed", "message": "This proposal is no longer open."}
     head = pr.get("head_sha") or ""
-    review_obj = _review_for(app_dir, repo, number, head)
+    try:
+        fetched = _fetch_pr(app_dir, repo, number,
+                            pr.get("base_branch") or _repo_of(app_dir)[1].get("branch")
+                            or "main")
+    except PlainError as exc:
+        return {"ok": False, "reason": "offline", "message": exc.message}
+    base = _local_base(app_dir, number) if fetched == head else None
+    review_obj = _review_for(app_dir, repo, number, head, base) if base else None
     if review_obj is None:
         review(app_dir, number)
         return {"ok": False, "reason": "review-needed",
-                "message": f"{author} changed this proposal since Claude read it. "
-                           "Claude is reading it again — accept it once that's done."}
+                "message": _why_unreviewed(app_dir, repo, number, head, author,
+                                           moved=fetched != head)}
+    if review_obj.get("verdict") != "fine" and not confirm:
+        return {"ok": False, "reason": "confirm",
+                "message": "Claude thinks this proposal needs a look. Accept it anyway?"}
     try:
         result = gh.merge_pr(repo, number, sha=head, method=_merge_method(repo))
     except Exception as exc:  # noqa: BLE001
@@ -450,6 +676,26 @@ def accept(app_dir: str, number: int) -> dict:
     return _after_accept(app_dir, number,
                          f"Merged. {author} will see it, and everyone who follows "
                          "this app gets it next time they open it.")
+
+
+def _why_unreviewed(app_dir: str, repo: str, number: int, head: str,
+                    author: str, *, moved: bool = False) -> str:
+    """Why there is no review of exactly what would be merged, in words: the
+    sender changed it, the author's app moved under it, or Claude simply has
+    not read it (never, or the review was lost — a restart drops an uncached
+    one). Only the first is the sender's doing."""
+    heads = {h for n, h, _p in _review_files(repo) if n == int(number)}
+    job = jobs.latest(_job_kind(number), app_dir)
+    if job and job["status"] == "done" and isinstance(job["result"], dict):
+        heads.add(job["result"].get("head_sha"))
+    then = "Claude is reading it again — accept it once that's done."
+    if moved:  # it changed between GitHub's answer and the download
+        return f"{author} just changed this proposal. " + then
+    if head in heads:
+        return "Your app changed since Claude read this proposal. " + then
+    if heads:
+        return f"{author} changed this proposal since Claude read it. " + then
+    return "Claude needs to read this proposal first. Accept it once that's done."
 
 
 def _after_accept(app_dir: str, number: int, message: str) -> dict:
@@ -482,8 +728,13 @@ def decline(app_dir: str, number: int, note: str = "") -> dict:
 
 
 def _cleanup(app_dir: str, number: int) -> None:
+    """A proposal was merged or closed: its Try copy and review files go,
+    and the next listing asks GitHub afresh."""
     try:
         _mod("trycopy").remove(app_dir, number)
     except Exception:  # noqa: BLE001
         logger.exception("inbox: removing try copy failed")
+    repo, _ = _repo_of(app_dir)
+    if repo:
+        _prune_reviews(repo, drop=int(number))
     invalidate(app_dir)

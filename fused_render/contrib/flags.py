@@ -7,22 +7,49 @@ never the raw pref, so a phase switched on without its prerequisite behaves
 as off everywhere at once — a half-enabled loop (Propose without the record
 that says what a copy follows) is a state no code path has to reason about.
 
-One `read_prefs()` per call: `snapshot()` answers all five off a single read
-of prefs.json rather than five, and each getter is a snapshot lookup. An
+At most one `read_prefs()` per change of prefs.json (`_raw`'s stat memo):
+`snapshot()` answers all five off it, and each getter is a snapshot lookup. An
 unreadable prefs file reads as every flag off — the default, and the only
 answer that keeps today's behaviour byte for byte (§0.6).
 """
 from __future__ import annotations
 
+import os
+import threading
+
+
+_memo_lock = threading.Lock()
+_memo: dict = {}  # {"key": (path, mtime_ns, size, ino), "raw": dict}
+
 
 def _raw() -> dict:
-    """The five STORED switches as bools (opt-in: only a literal `true` is on)."""
+    """The five STORED switches as bools (opt-in: only a literal `true` is on).
+    Memoized on prefs.json's stat (path, mtime, size, inode): the flags are
+    asked on every sync, card and Doctor row, and a `stat` is all an
+    unchanged file costs. `storage.write_json` replaces the file atomically,
+    so every write is a new inode and a fresh read."""
     try:
         from fused_render.shell import prefs
 
+        p = prefs._path()
+        try:
+            st = os.stat(p)
+            key = (p, st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            key = (p, None, None, None)
+        with _memo_lock:
+            if _memo.get("key") == key:
+                return dict(_memo["raw"])
         stored = prefs.read_prefs()
     except Exception:  # noqa: BLE001 — an unreadable pref reads as the default
-        stored = {}
+        return _switches({})
+    raw = _switches(stored)
+    with _memo_lock:
+        _memo["key"], _memo["raw"] = key, raw
+    return dict(raw)
+
+
+def _switches(stored: dict) -> dict:
     return {
         "sources": stored.get("contrib_sources_enabled") is True,
         "changes": stored.get("contrib_changes_enabled") is True,

@@ -17,6 +17,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 import {
   runJob,
+  useUnmountSignal,
   sendProposal,
   startProposalDraft,
   type ProposalDraft,
@@ -31,7 +32,7 @@ import { GitHubSignIn } from "@platform/ui/GitHubSignIn";
 import { ContribDialog } from "./ContribDialog";
 import { JobProgress } from "./JobProgress";
 import { QuietAction } from "./StatusStrip";
-import { possessive, SEND_STEPS } from "./words";
+import { atStart, possessive, SEND_STEPS } from "./words";
 
 type Phase = "signin" | "form" | "sending" | "sent";
 type Draft = "drafting" | "ready" | "failed" | "own";
@@ -54,6 +55,17 @@ export function ProposeDialog({
   onSent: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>(signedIn ? "form" : "signin");
+  // Set when the SERVER said "signed out" mid-flight: the sign-in step then
+  // runs with `recheck` (a cached "signed in" is the answer not to trust,
+  // or it would advance at once and the retry refuse again, round and
+  // round), and once signed in the same send runs again by itself.
+  const [recheck, setRecheck] = useState(false);
+  const [retry, setRetry] = useState(false);
+  // At most ONE automatic retry per sheet: if GitHub's own check is ever
+  // wrong, a second "signed out" waits for the user's press instead of
+  // looping sign-in → retry → refusal.
+  const retried = useRef(false);
+  const signal = useUnmountSignal();
   const [draft, setDraft] = useState<Draft>("drafting");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -77,7 +89,7 @@ export function ProposeDialog({
   useEffect(() => {
     if (phase !== "form" || drafting.current) return;
     drafting.current = true;
-    void runJob<ProposalDraft>(startProposalDraft(dir)).then((r) => {
+    void runJob<ProposalDraft>(startProposalDraft(dir), { signal: signal() }).then((r) => {
       if (!live.current) return;
       if (!r.ok || !r.result) {
         setDraft((d) => (d === "own" ? d : "failed"));
@@ -93,6 +105,14 @@ export function ProposeDialog({
   const showSkeleton = draft === "drafting";
   const canSend = phase === "form" && title.trim().length > 0;
 
+  // The retry after a mid-flight sign-in: once the form is back with the
+  // user's text intact, send it again — exactly once.
+  useEffect(() => {
+    if (phase !== "form" || !retry) return;
+    setRetry(false);
+    void send();
+  }, [phase, retry]);
+
   const send = async () => {
     if (!canSend) return;
     setPhase("sending");
@@ -100,7 +120,7 @@ export function ProposeDialog({
     setStep(null);
     const r = await runJob<SentProposal>(
       sendProposal(dir, { title: title.trim(), description: description.trim(), note: note.trim() }),
-      { onTick: (j) => live.current && setStep(j.step ?? null) },
+      { signal: signal(), onTick: (j) => live.current && setStep(j.step ?? null) },
     );
     if (!live.current) return;
     if (r.ok) {
@@ -109,7 +129,11 @@ export function ProposeDialog({
       onSent();
       return;
     }
+    if (r.reason === "aborted") return;
     if (r.reason === "signed-out") {
+      setRecheck(true);
+      setRetry(!retried.current);
+      retried.current = true;
       setPhase("signin");
       return;
     }
@@ -120,14 +144,19 @@ export function ProposeDialog({
   const sheetTitle = again ? `Propose again to ${author}` : `Propose to ${author}`;
   const description_ =
     phase === "sent"
-      ? `${author} can review it now.`
-      : `${author} gets your changes to review. Nothing changes in ${author}'s app unless ${author} accepts them.`;
+      ? `${atStart(author)} can review it now.`
+      : `${atStart(author)} gets your changes to review. Nothing changes in ${possessive(author)} app unless ${author} accepts them.`;
 
   let body: ReactNode;
   let footer: ReactNode = null;
   if (phase === "signin") {
     body = (
-      <GitHubSignIn prompt="Sign in to GitHub to send your proposal." onSignedIn={() => setPhase("form")} onCancel={onClose} />
+      <GitHubSignIn
+        recheck={recheck}
+        prompt="Sign in to GitHub to send your proposal."
+        onSignedIn={() => setPhase("form")}
+        onCancel={onClose}
+      />
     );
   } else if (phase === "sent") {
     body = (

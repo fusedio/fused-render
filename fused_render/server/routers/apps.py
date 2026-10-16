@@ -233,8 +233,8 @@ def api_apps(offset: int = 0, limit: int | None = None, tag: str | None = None,
 
 
 def _with_contrib(rows: list[dict]) -> list[dict]:
-    """Each row's optional `contrib: {label, inbox}` card line (CONTRIB_LOOP
-    §12.2), in place on rows this request owns — never the discovery
+    """Each row's optional `contrib: {label, inbox, kind}` card line
+    (CONTRIB_LOOP §12.2), in place on rows this request owns — never the discovery
     snapshot's shared ones. One store read for the whole list and no git
     (contrib/refresh.decorate); rows are untouched while the sources phase
     is off."""

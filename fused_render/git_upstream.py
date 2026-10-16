@@ -411,8 +411,30 @@ def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     return branch, default_branch, None
 
 
+def _follows_author(root):
+    """Whether the contribution engine keeps `root` on its author's latest
+    (a GitHub-link copy, its flag on) — such a root is never this module's to
+    update or switch: the plain `--ff-only` pull would fail against the
+    user's own commits on top, or move the branch behind the engine's back.
+    False on any error (today's behaviour)."""
+    try:
+        from fused_render.contrib import engine as _contrib
+        return _contrib.follows_author(root)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_FOLLOWS_REFUSAL = ("Fused keeps this app up to date with its author's latest "
+                    "version by itself — there is nothing to do here.")
+
+
 def _record(result):
     if result is not None:
+        if _follows_author(result["root"]):
+            # No Update/Switch card (known_repos) for a copy the engine keeps.
+            with _state_lock:
+                _state.pop(result["root"], None)
+            return
         with _state_lock:
             _state[result["root"]] = result
 
@@ -507,6 +529,8 @@ def update_repo(root):
     (should not happen for the default branch under normal use, but the tree
     may have moved between the check and the click) is reported in git's own
     words, exactly like ops.py's `_pull`."""
+    if _follows_author(root):
+        return _refuse("contrib", _FOLLOWS_REFUSAL)
     with _mutation_slot() as slot:
         if not slot:
             return _refuse("busy", _BUSY_REFUSAL)
@@ -619,6 +643,8 @@ def switch_repo(root):
     raw git text, and refused (never silently taking some other action on
     the user's behalf; the fix is a terminal, the same as every other
     refusal this module surfaces)."""
+    if _follows_author(root):
+        return _refuse("contrib", _FOLLOWS_REFUSAL)
     with _mutation_slot() as slot:
         if not slot:
             return _refuse("busy", _BUSY_REFUSAL)
@@ -843,6 +869,14 @@ def _sync_locked(root, *, action, push):
     except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
         logger.exception("contrib sync failed for %s", root)
         return {"ok": True, "status": "skipped", "why": "contrib-error"}
+    try:
+        # The loop switched off after it marked `.fused/` skip-worktree:
+        # undo that once, so the plain sync below sees today's tree. Its own
+        # guard: a failure here must never cost a root the engine does not
+        # own its plain sync.
+        _contrib.settle_when_off(root)
+    except Exception:  # noqa: BLE001
+        logger.exception("contrib un-protect failed for %s", root)
     return _sync_plain(root, action=action, push=push)
 
 
@@ -1080,6 +1114,13 @@ def _background_check(path, runner=None):
                     # No remote / other branch / unreadable: the plain check
                     # still feeds the Switch card and App Doctor.
                     _record(check_repo(root))
+            elif _follows_author(root):
+                # Auto-sync off: the engine only fetches the author's latest
+                # (its own follow ref, by the record's URL) for the page's
+                # status — no tree move, and no Update card (`_record`).
+                _sync_locked(root, action="Check on app open", push=False)
+                with _state_lock:
+                    _state.pop(root, None)  # one recorded before the loop took over
             else:
                 _record(check_repo(root))
     except Exception:  # noqa: BLE001 — best-effort housekeeping
@@ -1202,8 +1243,11 @@ def known_repos():
         # With auto-sync on, the "Update" card is replaced by the automatic
         # fast-forward (a failure of it is a sync failure notification), so
         # only the off-default Switch rows remain.
-        return [dict(v) for v in _state.values()
+        rows = [dict(v) for v in _state.values()
                 if v.get("behind", 0) > 0 and not (auto and v.get("on_default"))]
+    # A state recorded before the contribution loop took the copy over:
+    # still never a card (`_record` stops new ones).
+    return [r for r in rows if not _follows_author(r["root"])]
 
 
 def repo_state_for(root):

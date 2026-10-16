@@ -8,10 +8,17 @@ forgets them, and the page simply starts again. Finished jobs are dropped an
 hour after they end.
 
 ERRORS ARE PLAIN. A job function that wants to refuse with a sentence the user
-should read raises `PlainError("...")`; that sentence becomes the job's
-`message`. Any other exception is logged with its traceback and surfaces as
+should read raises `PlainError("...", reason=...)`; that sentence becomes the
+job's `message`, and the optional `reason` (a code the page branches on, e.g.
+"signed-out" to run sign-in first; `gh.GitHubError` carries one) its
+`reason`. Any other exception is logged with its traceback and surfaces as
 the generic "Something went wrong. Try again." — raw exception text (git's
 stderr, a path, a traceback) never reaches the page.
+
+PROGRESS. A long job names the step it is on with `set_step(job_id, key)`
+(a short key the page maps to words, e.g. "fork", "push"); `step` is in the
+public dict. The function learns its own id from `current_id()`, which
+answers inside the job's own thread only.
 
 DEDUPE. By default one job per (kind, app_dir) runs at a time: a second start
 while the first is running returns the first's id, so a double click or two
@@ -33,15 +40,18 @@ KEEP_AFTER_END_S = 3600.0
 
 
 class PlainError(Exception):
-    """Raised by a job function to fail with a user-readable sentence."""
+    """Raised by a job function to fail with a user-readable sentence, and
+    optionally a `reason` code for the page to branch on."""
 
-    def __init__(self, message: str):
+    def __init__(self, message: str, reason: str | None = None):
         super().__init__(message)
         self.message = message
+        self.reason = reason
 
 
 _lock = threading.Lock()
 _jobs: dict[str, dict] = {}
+_local = threading.local()
 
 
 def _prune_locked(now: float) -> None:
@@ -56,26 +66,32 @@ def _prune_locked(now: float) -> None:
 
 def _public(job: dict) -> dict:
     return {k: job[k] for k in ("id", "kind", "app_dir", "status", "result",
-                                 "message", "started_at", "ended_at")}
+                                 "message", "reason", "step", "started_at",
+                                 "ended_at")}
 
 
 def _run(job_id: str, fn: Callable[[], dict]) -> None:
-    status, result, message = "done", None, None
+    status, result, message, reason = "done", None, None, None
+    _local.job_id = job_id
     try:
         result = fn()
         if result is not None and not isinstance(result, dict):
             result = {"value": result}
     except PlainError as e:
         status, message = "failed", e.message or GENERIC_MESSAGE
+        reason = getattr(e, "reason", None)
     except Exception:
-        job = _jobs.get(job_id) or {}
-        logger.exception("contrib job %s (%s) failed", job_id, job.get("kind"))
+        with _lock:
+            kind = (_jobs.get(job_id) or {}).get("kind")
+        logger.exception("contrib job %s (%s) failed", job_id, kind)
         status, message = "failed", GENERIC_MESSAGE
+    finally:
+        _local.job_id = None
     with _lock:
         job = _jobs.get(job_id)
         if job is not None:
             job.update(status=status, result=result, message=message,
-                       ended_at=time.time())
+                       reason=reason, ended_at=time.time())
 
 
 def start(kind: str, app_dir: str, fn: Callable[[], dict], *,
@@ -94,11 +110,26 @@ def start(kind: str, app_dir: str, fn: Callable[[], dict], *,
         _jobs[job_id] = {
             "id": job_id, "kind": kind, "app_dir": app_dir,
             "status": "running", "result": None, "message": None,
-            "started_at": now, "ended_at": None,
+            "reason": None, "step": None, "started_at": now, "ended_at": None,
         }
     threading.Thread(target=_run, args=(job_id, fn), daemon=True,
                      name=f"contrib-job-{kind}").start()
     return job_id
+
+
+def current_id() -> str | None:
+    """The id of the job running on THIS thread, else None."""
+    return getattr(_local, "job_id", None)
+
+
+def set_step(job_id: str | None, key: str | None) -> None:
+    """Name the step a running job is on (a no-op for an unknown id)."""
+    if not job_id:
+        return
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is not None and job["status"] == "running":
+            job["step"] = key
 
 
 def get(job_id: str) -> dict | None:

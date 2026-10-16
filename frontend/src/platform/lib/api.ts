@@ -2937,6 +2937,12 @@ export interface AppCheck {
    *  git repository this server can read. Used for "Open in git" — the
    *  in-app git mode opens scoped to this root, not the app subfolder. */
   gitRoot?: string | null;
+  /** `git` row only: written by the GitHub contribution engine for a copy it
+   *  syncs (app_doctor._contrib_git_row). Its one failure is a decision the
+   *  app page is waiting for (an overlap with the author's latest, or a
+   *  sign-in), so the row offers "Open app page" — never Fix with Claude,
+   *  never Open in git. */
+  contrib?: boolean;
 }
 
 export interface AppDoctorReport {

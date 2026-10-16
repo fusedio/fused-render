@@ -74,9 +74,17 @@ def env(tmp_path, monkeypatch):
     git(e.alice, "remote", "add", "origin", e.remote)
     git(e.alice, "push", "-q", "-u", "origin", "main")
     # The engine fetches https://github.com/alice/sine; git maps it here.
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    # Both spellings: the engine's own fallback fetches URL, gh.fetch URL.git
+    # (insteadOf is a prefix rewrite, so the longer one must be its own row).
+    monkeypatch.delenv("FUSED_RENDER_CONTRIB_FAKE_GH", raising=False)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", f"url.{e.remote}.insteadOf")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", URL)
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", URL + ".git")
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", f"url.{e.remote}.insteadOf")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", URL)
+    from fused_render import claude_session_move
+    monkeypatch.setattr(claude_session_move, "relocate",
+                        lambda old, new: {"moved": [], "pending": []})
     return e
 
 
@@ -197,7 +205,7 @@ def test_unrelated_author_push_keeps_changes(env):
 
     assert result["status"] == "synced"
     assert _read(bob, "b.txt") == "bob\n" and _read(bob, "c.txt") == "alice\n"
-    assert git(bob, "merge-base", "--is-ancestor", tip, "HEAD", check=False) == ""
+    git(bob, "merge-base", "--is-ancestor", tip, "HEAD")  # raises if not
     assert git(bob, "log", "-1", "--format=%s").strip() == "bob change"
     assert git_upstream.sync_failures() == []
     st = engine.status(bob)
@@ -296,7 +304,11 @@ def test_discard_backs_up_commits_and_edits(env):
     bob = _bob(env)
     mine = _commit(bob, "b.txt", "bob\n", "bob change")
     write(bob, "a.txt", "one\nUNSAVED\nthree\n")
+    write(bob, "notes/new.txt", "made by hand\n")       # untracked, not ignored
+    write(bob, "__pycache__/x.pyc", "generated\n")       # never "your edits"
+    write(bob, ".fused/data/db.json", "{}\n")            # machine state
     tip = _alice_commit(env, "c.txt", "alice\n", "alice change")
+    assert engine.status(bob)["dirty"] is True
 
     out = engine.discard(bob, withdraw=False)
 
@@ -305,13 +317,36 @@ def test_discard_backs_up_commits_and_edits(env):
     assert _head(bob) == tip
     assert not os.path.exists(os.path.join(bob, "b.txt"))
     assert _read(bob, "a.txt") == "one\ntwo\nthree\n"
+    assert not os.path.exists(os.path.join(bob, "notes"))
+    assert _read(bob, "__pycache__/x.pyc") == "generated\n"
+    assert _read(bob, ".fused/data/db.json") == "{}\n"
+    assert git(bob, "stash", "list") == ""
     refs = dict(line.split(" ", 1)[::-1] for line in git(
         bob, "for-each-ref", "--format=%(objectname) %(refname)", "refs/fused/backup/").splitlines())
     head_ref = next(r for r, sha in refs.items() if sha == mine)
     wip = refs[head_ref + "-wip"]
     assert git(bob, "show", f"{wip}:a.txt") == "one\nUNSAVED\nthree\n"
+    assert git(bob, "show", f"{wip}:notes/new.txt") == "made by hand\n"
+    assert git(bob, "rev-parse", f"{wip}^").strip() == mine
+    files = git(bob, "ls-tree", "-r", "--name-only", wip).split()
+    assert "__pycache__/x.pyc" not in files and ".fused/data/db.json" not in files
     assert engine.status(bob)["event"]["kind"] == "discarded"
     assert engine.status(bob)["state"] == "following"
+    assert engine.status(bob)["dirty"] is False
+
+
+def test_untracked_file_alone_is_dirty_and_backup_leaves_tree(env):
+    bob = _bob(env)
+    assert replay.dirty(bob) is False
+    write(bob, "extra.txt", "x\n")
+    assert replay.edits(bob) == [("??", "extra.txt")]
+    head = _head(bob)
+    wip = replay.wip_commit_locked(bob, head)
+    assert wip and git(bob, "show", f"{wip}:extra.txt") == "x\n"
+    # The real index and tree are untouched: still untracked, nothing staged.
+    assert git(bob, "status", "--porcelain").strip() == "?? extra.txt"
+    assert not [n for n in os.listdir(git_upstream._real_gitdir(bob))
+                if n.startswith("fused-backup-index")]
 
 
 def test_two_copies_of_one_repo_keep_their_own_state(env):
@@ -325,7 +360,7 @@ def test_two_copies_of_one_repo_keep_their_own_state(env):
     assert engine.status(one)["changes"] == 1
     assert engine.status(two)["changes"] == 0
     assert engine.status(two)["event"]["kind"] == "updated"
-    assert [k for k, _ in store.find_by_repo(REPO)] and len(store.find_by_repo(REPO)) == 2
+    assert len(store.find_by_repo(REPO)) == 2
 
 
 # ------------------------------------------------------ committed .fused/
@@ -337,7 +372,7 @@ def test_committed_fused_dir_stays_clean_and_still_updates(env):
     lands — with Bob's machine copy of it kept."""
     from fused_render import app_fused_dir, app_git, appfile
 
-    write(env.alice, ".fused/meta.json", json.dumps({"app_dir": "/Users/alice/sine"}))
+    write(env.alice, ".fused/meta.json", json.dumps({"app_dir": str(env.tmp / "gone")}))
     write(env.alice, ".fused/appfile.json", "{}\n")
     git(env.alice, "add", "-f", "-A")
     git(env.alice, "commit", "-q", "-m", "commit .fused")
@@ -423,10 +458,7 @@ def test_proposal_survives_integrate_and_return_keeps_unproposed(env):
     st = engine.status(bob)
     assert st["state"] == "proposed" and st["changes"] == 2 and st["unproposed"] == 1
 
-    # The author squash-merges it WITH an edit of her own to the same line.
-    write(env.alice, "a.txt", "one\nBOB, tidied\nthree\n")
-    git(env.alice, "pull", "-q", "--ff-only", "origin", "main")
-    write(env.alice, "a.txt", "one\nBOB, tidied\nthree\n")
+    # The author squash-merges it with an edit of their own to the same line.
     squash = _alice_commit(env, "a.txt", "one\nBOB, tidied\nthree\n", "Bob's change (#7)")
 
     def merged(r):
@@ -437,7 +469,7 @@ def test_proposal_survives_integrate_and_return_keeps_unproposed(env):
     assert _sync(bob)["status"] == "synced"
     assert _read(bob, "a.txt") == "one\nBOB, tidied\nthree\n"
     assert _read(bob, "u.txt") == "later\n"
-    assert git(bob, "merge-base", "--is-ancestor", squash, "HEAD", check=False) == ""
+    git(bob, "merge-base", "--is-ancestor", squash, "HEAD")  # raises if not
     st = engine.status(bob)
     assert st["changes"] == 1 and st["state"] == "merged"
     assert st["event"]["kind"] == "merged-back"
@@ -483,7 +515,7 @@ def test_own_divergence_replays_and_pushes(env):
     assert git_upstream.sync_failures() == []
     remote_tip = git(env.remote, "rev-parse", "refs/heads/main").strip()
     assert remote_tip == _head(mine)
-    assert git(mine, "merge-base", "--is-ancestor", accepted, "HEAD", check=False) == ""
+    git(mine, "merge-base", "--is-ancestor", accepted, "HEAD")  # raises if not
     assert _read(mine, "mine.txt") == "mine\n"
     st = engine.status(mine)
     assert st["kind"] == "own" and st["state"] == "own"
@@ -539,3 +571,118 @@ def test_land_refuses_when_branch_moved(env):
     new = _commit(bob, "b.txt", "b\n", "moved")
     assert replay.land(bob, branch="main", old_tip=old, new_tip=old, why="t") is False
     assert _head(bob) == new
+
+
+# ---------------------------------------------- flag off: back to today
+
+
+def test_flag_off_unprotects_once(env):
+    write(env.alice, ".fused/meta.json", "{}\n")
+    git(env.alice, "add", "-f", "-A")
+    git(env.alice, "commit", "-q", "-m", "commit .fused")
+    git(env.alice, "push", "-q", "origin", "main")
+    bob = _bob(env)
+    write(bob, ".fused/meta.json", '{"bob": 1}\n')
+    _all_on(env)
+    assert classify.protect_fused_dir(bob) == 1
+    assert store.get(bob)["protected"] is True
+    assert git(bob, "status", "--porcelain").strip() == ""
+
+    _flags(env)  # every flag off
+    _sync(bob)
+    assert git(bob, "status", "--porcelain").strip() == "M .fused/meta.json"
+    assert git(bob, "ls-files", "-v", "--", ".fused").split()[0] == "H"
+    assert "protected" not in store.get(bob)
+    assert _read(bob, ".fused/meta.json") == '{"bob": 1}\n'
+    assert engine.settle_when_off(bob) is False  # once
+
+
+# ------------------------------------------------------- doctor git row
+
+
+def _git_row(app_dir):
+    from fused_render import app_doctor
+
+    return app_doctor.report_one(app_dir, "git")
+
+
+def test_doctor_git_row_for_engine_copies(env):
+    bob = _bob(env)
+    _commit(bob, "b.txt", "bob\n", "bob change")
+    plain = _git_row(bob)
+    assert "Your changes stay" not in plain["detail"]  # flags off: today's row
+
+    _all_on(env)
+    row = _git_row(bob)
+    assert row["state"] == "pass"
+    assert row["detail"] == "Your changes stay on this computer until you propose them."
+    assert row["behind"] == 0 and row["ahead"] == 0 and row["findings"] == []
+
+    store.update(bob, lambda r: r.__setitem__("needs_merge", {"onto": "x"}))
+    row = _git_row(bob)
+    assert row["state"] == "fail" and "open the app page" in row["detail"]
+
+    own = _bob(env, "own", kind="own")
+    _flags(env, sources=True, inbox=True)
+    assert "couldn't be sent" not in _git_row(own)["detail"]
+    store.update(own, lambda r: r.__setitem__("sync_error", {"reason": "auth", "at": 0}))
+    row = _git_row(own)
+    assert row["state"] == "fail" and "couldn't be sent to GitHub" in row["detail"]
+    assert row["contrib"] is True
+
+    # Fix all never hands a contrib row to a fix session.
+    from fused_render import app_doctor
+
+    other = {"id": "readme", "label": "README", "state": "fail", "kind": "fact",
+             "detail": "no README", "findings": []}
+    prompt = app_doctor.doctor_prompt_all(os.path.join(own, "index.html"), [row, other])
+    assert "couldn't be sent" not in prompt and "`readme`" in prompt
+
+    # The page's copy carries a sentence, the code separately.
+    st = engine.status(own)
+    assert st["sync_error_code"] == "auth"
+    assert "git" not in st["sync_error"].lower().replace("github", "")
+
+
+def test_status_passes_the_merge_job_through(env, monkeypatch):
+    from fused_render.contrib import merge_job
+
+    bob = _bob(env)
+    job = {"id": "j1", "status": "landing", "summary": "s", "files": ["a.txt"],
+           "purpose": "needs-merge", "error": None, "started_at": 12.0}
+    monkeypatch.setattr(merge_job, "current", lambda root: dict(job))
+    assert engine.status(bob)["merge_job"] == job
+    assert engine._job_open(bob) is True
+
+
+# ------------------------------------------- no old Update card for copies
+
+
+def test_auto_sync_off_owned_copy_gets_no_update_card(env, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
+    bob = _bob(env)
+    mine = _commit(bob, "b.txt", "bob\n", "bob change")
+    tip = _alice_commit(env, "c.txt", "alice\n", "alice change")
+
+    # Flags off: today's card.
+    git_upstream.note_app_opened(bob, _runner=lambda fn: fn())
+    assert [r["root"] for r in git_upstream.known_repos()] == [bob]
+
+    _all_on(env)
+    assert git_upstream.known_repos() == []  # an old state no longer surfaces
+    git_upstream._checked.clear()
+    git_upstream.note_app_opened(bob, _runner=lambda fn: fn())
+    assert git_upstream.known_repos() == []
+    assert git_upstream.repo_state_for(bob) is None
+    assert _head(bob) == mine  # auto-sync off: nothing moved
+    assert git(bob, "rev-parse", replay.FOLLOW_REF).strip() == tip  # but fetched
+    assert engine.status(bob)["behind"] == 1
+
+    for fn in (git_upstream.update_repo, git_upstream.switch_repo):
+        out = fn(bob)
+        assert out["ok"] is False and out["reason"] == "contrib"
+        assert "git" not in out["message"].lower()
+    assert _head(bob) == mine
+
+    git_upstream.force_check(bob, _runner=lambda fn: fn())
+    assert git_upstream.repo_state_for(bob) is None

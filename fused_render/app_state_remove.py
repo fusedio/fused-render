@@ -211,9 +211,11 @@ def _prune_bot_builds(root: str) -> int:
 def _prune_contrib(root: str) -> int:
     """The contribution loop's records (contrib/store.py) for the folder:
     what it followed and its proposal go with it. A proposal still open on
-    GitHub stays open there — GitHub is the truth for proposals."""
-    from fused_render.contrib import store
+    GitHub stays open there — GitHub is the truth for proposals. The Try
+    copies made from it (an author's inbox) go too."""
+    from fused_render.contrib import store, trycopy
 
+    trycopy.remove_all_for(root)
     return store.prune(root)
 
 

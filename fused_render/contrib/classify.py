@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import threading
+import time
 
 from fused_render import git_upstream as gu
 from fused_render.contrib import follow, replay, store
@@ -43,6 +44,15 @@ logger = logging.getLogger(__name__)
 _GITHUB_REMOTE = re.compile(
     r"^(?:git@github\.com:|(?:https?|ssh)://(?:[^@/]+@)?(?:www\.)?github\.com/)"
     r"([A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)/([A-Za-z0-9._-]+?)(?:\.git)?/?$", re.I)
+
+
+#: `gh.org_role` answers per (login, owner), for as long as gh.py trusts the
+#: identity itself: classifying every app of one org must not ask GitHub
+#: once per app. Only definite answers are cached — an unreachable GitHub is
+#: asked again next time.
+ROLE_TTL_S = 600.0
+_role_lock = threading.Lock()
+_role_cache: dict = {}
 
 
 class _Unknown(Exception):
@@ -108,13 +118,21 @@ def _owns(owner: str, ident: dict | None) -> bool:
     gh = _gh()
     if gh is None:
         raise _Unknown()
+    ck = (str(ident.get("login") or "").lower(), owner.lower())
+    now = time.time()
+    with _role_lock:
+        hit = _role_cache.get(ck)
+    if hit and now - hit[0] < ROLE_TTL_S:
+        return hit[1]
     try:
-        role = gh.org_role(owner)
+        mine = gh.org_role(owner) == "admin"
     except Exception as exc:  # noqa: BLE001
-        if getattr(exc, "reason", None) in ("not-found", "forbidden"):
-            return False  # not an org, or not one this account belongs to
-        raise _Unknown() from exc
-    return role == "admin"
+        if getattr(exc, "reason", None) not in ("not-found", "forbidden"):
+            raise _Unknown() from exc  # unreachable: never cached
+        mine = False  # not an org, or not one this account belongs to
+    with _role_lock:
+        _role_cache[ck] = (now, mine)
+    return mine
 
 
 def _classify(repo: str | None, ident) -> tuple[str, bool]:

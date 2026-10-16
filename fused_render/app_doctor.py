@@ -751,6 +751,10 @@ def _repo_health_check(app_dir: str) -> dict:
     """
     from fused_render import git_upstream
 
+    contrib_row = _contrib_git_row(app_dir)
+    if contrib_row is not None:
+        return contrib_row
+
     g_state, g_pending = _git_pending(app_dir)
     p_state, p_subjects, p_skip_reason = _pushed_pending(app_dir)
 
@@ -895,6 +899,48 @@ def _repo_health_check(app_dir: str) -> dict:
     # would, instead of offering a button that is a guaranteed dead end.
     row["onDefault"] = on_default
     row["clean"] = clean
+    return row
+
+
+def _contrib_git_row(app_dir: str) -> dict | None:
+    """The `git` row for a folder the contribution engine syncs
+    (docs/CONTRIB_LOOP.md §6), or None for every other folder (the row
+    above, unchanged). A GitHub-link copy has no "unpushed" or "behind" in
+    the git sense — its changes are kept on top of the author's latest on
+    purpose, and the engine brings updates in itself — so the row says that
+    in plain words, and carries `behind`/`ahead` 0 so no Pull/Push action is
+    drawn. The one thing it fails on is the decision the app page is
+    waiting for: an overlap with the author's latest. An own copy the
+    engine syncs fails only on a standing push problem (`sync_error`); else
+    it gets today's row."""
+    from fused_render import git_upstream
+
+    try:
+        from fused_render.contrib import engine, store
+
+        root = git_upstream.repo_root(app_dir)
+        if root is None or root != os.path.realpath(app_dir) or not engine.owns(root):
+            return None
+        rec = store.get(root) or {}
+    except Exception:  # noqa: BLE001 — fall back to the ordinary row
+        return None
+    git_upstream.note_app_opened(app_dir)  # the engine syncs on open, as ever
+    if rec.get("kind") == "github":
+        if rec.get("needs_merge"):
+            state, detail = FAIL, ("The author's latest overlaps your changes — "
+                                   "open the app page to combine them.")
+        else:
+            state, detail = PASS, "Your changes stay on this computer until you propose them."
+    elif isinstance(rec.get("sync_error"), dict):
+        state, detail = FAIL, ("Your latest changes couldn't be sent to GitHub — "
+                               "check that you're signed in to GitHub.")
+    else:
+        return None
+    row = _check("git", "Repo in sync", state, detail, [])
+    # `contrib`: the page offers "Open app page" here instead of Fix with
+    # Claude, and Fix all leaves the row out (`doctor_prompt_all`).
+    row.update({"behind": 0, "ahead": 0, "gitRoot": root, "onDefault": True, "clean": True,
+                "contrib": True})
     return row
 
 
@@ -1280,7 +1326,9 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
     whole run, appended after every row's block — never one per row, and
     only when there was at least one failing row to maybe act on."""
     entry_name = os.path.basename(entry_html)
-    failing = [c for c in checks if c["state"] == FAIL]
+    # A `contrib` row (`_contrib_git_row`) is resolved on the app page, never
+    # by a fix session running git in the folder.
+    failing = [c for c in checks if c["state"] == FAIL and not c.get("contrib")]
     if not failing:
         return (
             f"{DOCTOR_PROMPT_PREFIX} — check `{ALL}` (`{entry_name}` is its entry page, "

@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import os
 
+
 import pytest
 
-from _contrib_gh_world import (PAGE, claude_commit, edit, git, install_engine_stub,
+from _contrib_gh_world import (APP_PY, PAGE, claude_commit, edit, git, spy_engine,
                                make_world, read)
 
 
@@ -61,11 +62,43 @@ def test_send_credits_bob_and_claude_and_changes_no_file(w):
 def test_send_includes_uncommitted_edits(w):
     claude_commit(w.app, {"app.py": "def amplitude():\n    return 5\n"}, "louder")
     edit(w.app, "index.html", PAGE.replace("blue", "green"))
+    edit(w.app, "helper.py", "HELP = 1\n")                     # made by hand, untracked
+    edit(w.app, ".gitignore", "out.csv\n")
+    edit(w.app, "out.csv", "ignored\n")
+    os.makedirs(os.path.join(w.app, "__pycache__"), exist_ok=True)
+    edit(w.app, "__pycache__/app.cpython-312.pyc", "bytes")
+    os.makedirs(os.path.join(w.app, ".fused"), exist_ok=True)
+    edit(w.app, ".fused/meta.json", "{}")
     _send(w)
     p = _proposal(w)
     assert not _p().dirty(w.app)
-    assert "green" in w.fake.read("bob/sine", "index.html", f"refs/heads/{p['head_branch']}")
+    ref = f"refs/heads/{p['head_branch']}"
+    assert "green" in w.fake.read("bob/sine", "index.html", ref)
+    assert w.fake.read("bob/sine", "helper.py", ref) == "HELP = 1\n"
+    for never in ("out.csv", "__pycache__/app.cpython-312.pyc", ".fused/meta.json"):
+        assert w.fake.read("bob/sine", never, ref) is None, never
     assert git(w.app, "log", "-1", "--format=%s") == "Your edits"
+
+
+def test_start_send_reports_steps_and_result(w, monkeypatch):
+    from fused_render.contrib import jobs
+    seen = []
+    real = jobs.set_step
+    monkeypatch.setattr(jobs, "set_step", lambda jid, key: (seen.append(key), real(jid, key)))
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    out = _p().start_send(w.app, title="Red", description="d")
+    job = jobs.wait(out["job"])
+    assert job["status"] == "done", job
+    assert seen == ["copy", "send", "open"]
+    assert job["result"]["number"] == 1 and job["result"]["url"]
+
+
+def test_signed_out_job_carries_the_reason(w):
+    from fused_render.contrib import jobs
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    job_id = _p().start_job("t", w.app, lambda step: (w.fake.sign_out(), _send(w)))
+    job = jobs.wait(job_id)
+    assert job["status"] == "failed" and job["reason"] == "signed-out"
 
 
 def test_send_with_nothing_changed_refuses(w):
@@ -102,7 +135,7 @@ def test_signed_out_is_reason_signed_out(w):
     with pytest.raises(w.gh.GitHubError) as e:
         _send(w)
     assert e.value.reason == "signed-out"
-    assert "git" not in e.value.message.lower()
+    assert "git" not in e.value.message.lower().split()
 
 
 def test_fork_name_collision_uses_the_name_github_picked(w):
@@ -169,11 +202,12 @@ def test_update_refuses_when_alices_edit_overlaps(w):
                            {"app.py": APP_PY.replace("return 1", "return 7")},
                            "Tweak", author="alice")
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
-    head = git(w.app, "rev-parse", "HEAD")
+    tree = git(w.app, "rev-parse", "HEAD^{tree}")
     with pytest.raises(PlainError, match="alice also edited this proposal"):
         _p().update(w.app)
     assert w.gh.get_pr("alice/sine", 1)["head_sha"] == remote   # hers untouched
-    assert git(w.app, "rev-parse", "HEAD") == head              # his untouched
+    assert git(w.app, "rev-parse", "HEAD^{tree}") == tree       # his files untouched
+    assert not _p().dirty(w.app)
     assert "return 9" in read(w.app, "app.py")
 
 
@@ -229,6 +263,71 @@ def test_declined_keeps_changes_and_says_so_once(w):
     assert _send(w)["number"] == 2
 
 
+def test_declined_shows_the_authors_closing_note(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    w.fake.comment_as("alice", "alice/sine", 1, "Not for now, thanks!")
+    w.fake.close("alice/sine", 1)
+    view = _p().refresh(w.app, force=True)
+    assert view["state"] == "declined"
+    assert view["comment"]["author"] == "alice"
+    assert view["comment"]["body"] == "Not for now, thanks!"
+    assert view["can_update"] is False and view["can_withdraw"] is False
+
+
+def _api_calls(w):
+    return len([c for c in w.fake.state()["calls"] if c in ("get_pull", "comments")])
+
+
+def test_a_declined_proposal_stops_being_polled(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    w.fake.comment_as("alice", "alice/sine", 1, "No thanks.")
+    w.fake.close("alice/sine", 1)
+    assert _p().refresh(w.app, force=True)["comment"]["body"] == "No thanks."
+    before = _api_calls(w)
+    _p()._last_refresh.clear()                                  # past the throttle
+    view = _p().refresh(w.app)
+    assert _api_calls(w) == before and view["state"] == "declined"
+    # Bob's explicit "check now" still asks GitHub — and sees a reopen.
+    w.fake.reopen("alice/sine", 1)
+    view = _p().refresh(w.app, force=True)
+    assert view["state"] == "commented" and view["can_update"]   # open again; her note stands
+    assert not _proposal(w)["cache"]["note_checked"]
+
+
+def test_merged_polls_until_returned_then_stops(w, monkeypatch):
+    calls = spy_engine(monkeypatch)
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    w.fake.merge("alice/sine", 1, "squash")
+    assert _p().refresh(w.app, force=True)["state"] == "merged"
+    assert _proposal(w)["returned_at"] and len(calls) == 1
+    before = _api_calls(w)
+    _p().refresh(w.app, force=True)
+    assert _api_calls(w) == before and len(calls) == 1
+
+
+def test_stale_follows_what_bob_runs_not_the_commit_count(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    assert _p().view(w.app)["stale"] is False
+    edit(w.app, "app.py", APP_PY_LOUD)                           # uncommitted
+    assert _p().view(w.app)["stale"] is True
+    git(w.app, "checkout", "--", "app.py")
+    assert _p().view(w.app)["stale"] is False
+    # What a Merge with Claude leaves: the engine carried proposed_head onto a
+    # rewritten HEAD (so nothing reads as unproposed), but the files differ
+    # from what GitHub has.
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "combined")
+    head = git(w.app, "rev-parse", "HEAD")
+    w.store.update(w.app, lambda r: r["proposal"].update(proposed_head=head))
+    view = _p().view(w.app)
+    assert view["unproposed"] == 0 and view["stale"] is True
+    _p().update(w.app)
+    assert _p().view(w.app)["stale"] is False
+
+
 def test_edits_made_on_github_are_read_back(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
@@ -238,39 +337,63 @@ def test_edits_made_on_github_are_read_back(w):
 
 @pytest.mark.parametrize("method", ["merge", "squash", "rebase"])
 def test_merged_returns_to_following_keeping_unproposed_edits(w, monkeypatch, method):
-    calls = install_engine_stub(monkeypatch)
+    calls = spy_engine(monkeypatch)
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")      # never proposed
-    _p().update  # (not sent: stays unproposed)
     w.fake.merge("alice/sine", 1, method)
     view = _p().refresh(w.app, force=True)
     assert view["state"] == "merged"
-    assert calls == [w.app]
+    assert [c[0] for c in calls] == [w.app] and calls[0][1]["ok"], calls
     head = git(w.app, "rev-parse", "HEAD")
     tip = git(w.app, "rev-parse", "refs/fused/follow")
     assert git(w.app, "rev-list", "--count", f"{tip}..{head}") == "1"   # only "louder" left
     assert "red" in read(w.app, "index.html") and "return 9" in read(w.app, "app.py")
+    assert w.store.get(w.app)["proposal"]["returned_at"]
     # Once only.
     _p().refresh(w.app, force=True)
-    assert calls == [w.app]
+    assert len(calls) == 1
 
 
-def test_merged_but_not_yet_in_the_followed_branch_waits(w, monkeypatch):
-    calls = install_engine_stub(monkeypatch)
+def test_return_overlap_waits_on_one_merge_job(w, monkeypatch):
+    from fused_render.contrib import merge_job
+    calls = spy_engine(monkeypatch)
+    started = []
+    monkeypatch.setattr(merge_job, "start",
+                        lambda app_dir, **kw: started.append(kw) or "job-1")
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")      # never proposed
+    w.fake.commit("alice/sine", "main", {"app.py": APP_PY.replace("return 1", "return 7")},
+                  "Quieter", author="alice")
+    w.fake.merge("alice/sine", 1, "squash")
+    tree = git(w.app, "rev-parse", "HEAD^{tree}")
+    _p().refresh(w.app, force=True)
+    assert len(calls) == 1 and [s["purpose"] for s in started] == ["return"]
+    assert w.store.get(w.app)["needs_merge"]
+    assert git(w.app, "rev-parse", "HEAD^{tree}") == tree        # nothing moved
+    _p().refresh(w.app, force=True)
+    assert len(calls) == 1 and len(started) == 1                 # not asked again
+
+
+def test_merged_but_not_yet_in_the_authors_latest_waits(w, monkeypatch):
+    calls = spy_engine(monkeypatch)
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    head = git(w.app, "rev-parse", "HEAD")
+    before = w.fake.tip("alice/sine")
     w.fake.merge("alice/sine", 1, "merge")
-    # Follow a different branch than the one merged into: never "contained".
-    w.store.update(w.app, lambda r: r.update(branch="other"))
-    w.fake.commit("alice/sine", "other", {"x.txt": "x\n"}, "other line", author="alice")
+    # GitHub says merged, but main no longer carries it (Alice reset it).
+    git(w.fake.bare_path("alice/sine"), "update-ref", "refs/heads/main", before)
     assert _p().refresh(w.app, force=True)["state"] == "merged"
-    assert calls == []
+    assert calls and calls[-1][1]["reason"] == "not-yet"
+    assert git(w.app, "rev-parse", "HEAD") == head
+    assert not w.store.get(w.app)["proposal"]["returned_at"]
 
 
 def test_merged_with_loop_off_does_not_return(w, monkeypatch):
     from fused_render.contrib import flags
-    calls = install_engine_stub(monkeypatch)
+    calls = spy_engine(monkeypatch)
     monkeypatch.setattr(flags, "_raw", lambda: {"sources": True, "changes": True,
                                                 "inbox": True, "loop": False, "remix": True})
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
@@ -397,4 +520,3 @@ def test_no_git_words_in_messages():
             assert not re.search(rf"\b{word}\b", low), (word, msg)
 
 
-assert os  # imported for parity with sibling test modules

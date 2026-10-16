@@ -267,8 +267,32 @@ def _repoint_locked(root, *, full: str, original: str, branch: str, follow_tip: 
         p._git(root, "update-ref", ORIGINAL_REF, follow_tip)
 
 
-def publish(app_dir, *, name: str, credit: str) -> dict:
-    """Publish Bob's version as his own app (§11). Answers `{repo, url}`."""
+def _push_remix(root, tip: str, full: str, branch: str, name: str) -> None:
+    """Push the remix NEVER over anything we did not put there. A reused repo
+    (same owner + our description) is normally empty, or holds an earlier
+    attempt's push that `tip` already contains. If its branch holds anything
+    else — a later publish of the same name, proposals someone merged into
+    an earlier remix — that is refused, never overwritten. The push is leased
+    on the tip just read (or on "no branch yet"), so a write landing between
+    the look and the push is refused too."""
+    remote = gh.branch_tip(full, branch)
+    if remote and remote != tip and not (_replay().rev(root, remote)
+                                         and _replay().is_ancestor(root, remote, tip)):
+        raise PlainError(f"Your {name} on GitHub already has other changes in it. "
+                         "Pick another name.")
+    if remote == tip:
+        return
+    try:
+        gh.push(root, tip, full, branch, lease=remote or "")
+    except gh.GitHubError as exc:
+        if exc.reason == "conflict":
+            raise PlainError(f"Your {name} on GitHub changed while publishing. Try again.")
+        raise
+
+
+def publish(app_dir, *, name: str, credit: str, step=None) -> dict:
+    """Publish Bob's version as his own app (§11). Answers `{repo, url,
+    share_url}`; `step(key)` hears "create" → "send"."""
     name = (name or "").strip()
     credit = " ".join((credit or "").split())[:_CREDIT_MAX]
     if not credit:
@@ -285,8 +309,10 @@ def publish(app_dir, *, name: str, credit: str) -> dict:
         # Can't tell: a remix of something we cannot see must not be made
         # public by default.
         private = True
+    p._say(step, "create")
     full = _target_repo(name, original, me["login"], private)
 
+    p._say(step, "send")
     p.prepare(root, record, me)
     replay = _replay()
     with replay.slot() as held:
@@ -297,9 +323,7 @@ def publish(app_dir, *, name: str, credit: str) -> dict:
         raise PlainError("Couldn't prepare your remix. Try again.")
     gu = _gu()
     local_branch = gu._current_branch(root) or branch
-    # Bob's brand-new repo (or the empty one his failed attempt made):
-    # nothing of anyone else's can be there to overwrite.
-    gh.push(root, tip, full, local_branch, force=True)
+    _push_remix(root, tip, full, local_branch, name)
 
     follow_tip = None
     try:
@@ -326,7 +350,10 @@ def publish(app_dir, *, name: str, credit: str) -> dict:
         _store().add_event(root, "remixed", who=me["login"])
     except Exception:  # noqa: BLE001
         logger.exception("remix: event failed for %s", root)
-    return {"repo": full, "url": f"https://github.com/{full}"}
+    url = f"https://github.com/{full}"
+    # The GitHub link IS the share link (handoff A1/A5: people who install
+    # it are GitHub-link users of Bob's repo).
+    return {"repo": full, "url": url, "share_url": url}
 
 
 # -------------------------------------------------------- the original
@@ -397,7 +424,7 @@ def bring_in(app_dir) -> dict:
 
 def _preflight(app_dir, *, source: bool) -> dict | None:
     if not _flags().remix():
-        return {"ok": False, "reason": "disabled", "message": "This isn't switched on yet."}
+        return {"ok": False, "reason": "disabled", "message": "This isn't turned on."}
     try:
         (_source_record if source else _remix_record)(app_dir)
     except PlainError as exc:
@@ -406,27 +433,24 @@ def _preflight(app_dir, *, source: bool) -> dict | None:
 
 
 def start_draft(app_dir) -> dict:
+    """Job result `{name, credit}`."""
     refusal = _preflight(app_dir, source=True)
     if refusal:
         return refusal
-    from fused_render.contrib import jobs
-    return {"ok": True, "job": jobs.start("remix-draft", _store().key(app_dir),
-                                          lambda: draft(app_dir))}
+    return {"ok": True, "job": _p().start_job("remix-draft", app_dir,
+                                              lambda step: draft(app_dir))}
 
 
 def start_publish(app_dir, *, name: str, credit: str) -> dict:
     refusal = _preflight(app_dir, source=True)
     if refusal:
         return refusal
-    try:
-        if not gh.identity(strict=True):
-            return {"ok": False, "reason": "signed-out",
-                    "message": "Sign in to GitHub to publish your remix."}
-    except gh.GitHubError as exc:
-        return {"ok": False, "reason": exc.reason, "message": exc.message}
-    from fused_render.contrib import jobs
-    return {"ok": True, "job": jobs.start("remix-publish", _store().key(app_dir),
-                                          lambda: publish(app_dir, name=name, credit=credit))}
+    refusal = _p().identity_refusal("Sign in to GitHub to publish your remix.")
+    if refusal:
+        return refusal
+    return {"ok": True, "job": _p().start_job(
+        "remix-publish", app_dir,
+        lambda step: publish(app_dir, name=name, credit=credit, step=step))}
 
 
 def start_bring_in(app_dir) -> dict:

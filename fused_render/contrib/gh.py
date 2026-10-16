@@ -78,6 +78,10 @@ FETCH_TIMEOUT_S = 120.0
 #: middle of signing in right now.
 IDENTITY_TTL_S = 600.0
 _SIGNED_OUT_TTL_S = 15.0
+#: GitHub could not be asked (offline, rate-limited): non-strict callers are
+#: answered None from cache this long (see `identity`).
+_UNREACHABLE_TTL_S = 30.0
+_UNREACHABLE = object()
 
 REASONS = ("signed-out", "not-found", "forbidden", "offline", "conflict",
            "rate-limited", "failed")
@@ -362,7 +366,13 @@ def identity(*, strict: bool = False, refresh: bool = False) -> dict | None:
     → None too by default, which is what classification wants ("could not
     tell, check again later"); `strict=True` raises `GitHubError("offline")`
     instead, for a caller that must not mistake a dropped connection for
-    "please sign in"."""
+    "please sign in".
+
+    "Could not tell" (offline, rate-limited, …) is cached too, for
+    _UNREACHABLE_TTL_S, but ONLY for non-strict callers: offline, every gated
+    POST's preflight would otherwise re-run `gh api user` on the request
+    thread. A strict caller is about to act on the answer, so it skips that
+    entry and asks again."""
     key = os.environ.get(FAKE_ENV) or "real"
     now = time.time()
     if not refresh:
@@ -370,17 +380,23 @@ def identity(*, strict: bool = False, refresh: bool = False) -> dict | None:
             hit = _identity_cache.get(key)
         if hit is not None:
             at, value = hit
-            ttl = IDENTITY_TTL_S if value is not None else _SIGNED_OUT_TTL_S
-            if 0 <= now - at <= ttl:
-                return dict(value) if value else None
+            if value is _UNREACHABLE:
+                if not strict and 0 <= now - at <= _UNREACHABLE_TTL_S:
+                    return None
+            else:
+                ttl = IDENTITY_TTL_S if value is not None else _SIGNED_OUT_TTL_S
+                if 0 <= now - at <= ttl:
+                    return dict(value) if value else None
     try:
         user = _backend().user()
     except GitHubError as exc:
         if exc.reason == "signed-out":
             user = None
-        elif strict:
-            raise
         else:
+            with _identity_lock:
+                _identity_cache[key] = (now, _UNREACHABLE)
+            if strict:
+                raise
             return None
     value = None
     if user and user.get("login"):
@@ -390,6 +406,16 @@ def identity(*, strict: bool = False, refresh: bool = False) -> dict | None:
     with _identity_lock:
         _identity_cache[key] = (now, value)
     return dict(value) if value else None
+
+
+def unreachable() -> bool:
+    """Whether the last `identity` answer of None meant "GitHub could not be
+    asked" (cached, still fresh) rather than "nobody is signed in" — so a
+    preflight can say "offline" instead of offering sign-in."""
+    key = os.environ.get(FAKE_ENV) or "real"
+    with _identity_lock:
+        hit = _identity_cache.get(key)
+    return bool(hit) and hit[1] is _UNREACHABLE and 0 <= time.time() - hit[0] <= _UNREACHABLE_TTL_S
 
 
 def forget_identity() -> None:
@@ -449,6 +475,14 @@ def ensure_fork(full: str) -> str:
             raise GitHubError(
                 "failed", "GitHub is still setting up your copy. Try again in a minute.")
         time.sleep(_FORK_POLL_STEP_S)
+
+
+def branch_tip(full: str, branch: str) -> str | None:
+    """The commit at `branch` of `full` on GitHub; None when the branch does
+    not exist (an empty repo has none)."""
+    if not _BRANCH_RE.match(branch or ""):
+        return None
+    return _backend().branch_tip(_full(full), branch)
 
 
 def find_open_pr(full: str, head_owner: str, head_branch: str | None = None) -> dict | None:
@@ -701,15 +735,19 @@ class _Real:
         return _repo_out(self._api("GET", f"repos/{full}") or {})
 
     def has_branch(self, full: str, branch: str) -> bool:
+        return self.branch_tip(full, branch) is not None
+
+    def branch_tip(self, full: str, branch: str) -> str | None:
         if not branch:
-            return False
+            return None
         try:
-            self._api("GET", f"repos/{full}/branches/{branch}")
-            return True
+            data = self._api("GET", f"repos/{full}/branches/{branch}") or {}
         except GitHubError as exc:
             if exc.reason == "not-found":
-                return False
+                return None
             raise
+        sha = (data.get("commit") or {}).get("sha")
+        return sha if isinstance(sha, str) and _SHA_RE.match(sha) else None
 
     def create_fork(self, full: str) -> str:
         data = self._api("POST", f"repos/{full}/forks", {"default_branch_only": True}) or {}
@@ -835,13 +873,13 @@ class FakeGitHub:
                     yield state
                 finally:
                     self._local.depth, self._local.state = 0, None
-                # Saved even when the body raised: a `fail_next` counter the
-                # raising call just consumed must stay consumed.
-                if json.dumps(state, sort_keys=True) != before:
-                    tmp = self._path() + ".tmp"
-                    with open(tmp, "w", encoding="utf-8") as fh:
-                        json.dump(state, fh, indent=1, sort_keys=True)
-                    os.replace(tmp, self._path())
+                    # Saved even when the body raised: a `fail_next` counter
+                    # the raising call just consumed must stay consumed.
+                    if json.dumps(state, sort_keys=True) != before:
+                        tmp = self._path() + ".tmp"
+                        with open(tmp, "w", encoding="utf-8") as fh:
+                            json.dump(state, fh, indent=1, sort_keys=True)
+                        os.replace(tmp, self._path())
             finally:
                 lockf.close()
 
@@ -1133,6 +1171,12 @@ class FakeGitHub:
 
     def has_branch(self, full: str, branch: str) -> bool:
         return bool(branch) and self.tip(full, branch) is not None
+
+    def branch_tip(self, full: str, branch: str) -> str | None:
+        with self._txn() as st:
+            self._call(st, "branch_tip")
+            self._visible(st, full)
+        return self.tip(full, branch) if branch else None
 
     def create_fork(self, full: str) -> str:
         with self._txn() as st:

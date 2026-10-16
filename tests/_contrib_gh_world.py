@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
-import time
 import types
 
 PAGE = """<!doctype html>
@@ -100,30 +98,18 @@ def make_world(tmp_path, monkeypatch) -> World:
     return World(fake=fake, repo=repo, app=store.key(app), gh=gh, store=store)
 
 
-def install_engine_stub(monkeypatch):
-    """A minimal stand-in for WS-A's `engine.return_to_following`, enough to
-    exercise the A4 trigger: replay `proposed_head..HEAD` onto the follow tip
-    (unproposed edits kept), land, mark `returned_at`."""
-    from fused_render.contrib import follow, replay, store
+def spy_engine(monkeypatch):
+    """The REAL `engine.return_to_following`, with every call and answer
+    recorded — the A4 trigger is proposals', the return itself the engine's."""
+    from fused_render.contrib import engine
 
     calls = []
+    real = engine.return_to_following
 
-    def return_to_following(root):
-        calls.append(root)
-        rec = store.get(root)
-        p = rec["proposal"]
-        f = follow.for_record(rec)
-        tip = follow.tip(root, f)
-        head = replay.rev(root, "HEAD")
-        res = replay.replay(root, onto=tip, upstream=p["proposed_head"], branch="main")
-        assert res["ok"], res
-        assert replay.land(root, branch="main", old_tip=head, new_tip=res["tip"], why="return")
-        store.update(root, lambda r: r["proposal"].update(returned_at=time.time()))
-        return {"ok": True}
+    def spy(root):
+        out = real(root)
+        calls.append((root, out))
+        return out
 
-    mod = types.ModuleType("fused_render.contrib.engine")
-    mod.return_to_following = return_to_following
-    monkeypatch.setitem(sys.modules, "fused_render.contrib.engine", mod)
-    import fused_render.contrib as pkg
-    monkeypatch.setattr(pkg, "engine", mod, raising=False)
+    monkeypatch.setattr(engine, "return_to_following", spy)
     return calls

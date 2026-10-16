@@ -273,10 +273,15 @@ def api_share_status(path: str = ""):
     the local share record if there is one. No control-plane call — this runs
     when a dialog opens, and must answer instantly."""
     _entry, aid, refusal = _resolve_app(path)
+    github_copy = refusal is None and _github_copy_repo(path) is not None
+    if github_copy:
+        refusal = GITHUB_COPY_REFUSAL
     return {
         "app_id": aid,
         "can_share": refusal is None,
         "refusal": refusal,
+        # Which refusal, for a sheet that offers the GitHub link instead.
+        "refusal_code": "github_copy" if github_copy else None,
         "cli_found": fused_cli() is not None,
         "logged_in": _logged_in(),
         "creds_stamp": _creds_stamp(),
@@ -310,6 +315,11 @@ def api_share_publish(
     _entry, aid, refusal = _resolve_app(path)
     if refusal is not None:
         return _error(refusal)
+    if _github_copy_repo(path) is not None:
+        # Someone else's code never uploads to Fused (contribution loop):
+        # refused here, not only hidden in the sheet.
+        return JSONResponse({"error": GITHUB_COPY_REFUSAL, "code": "github_copy"},
+                            status_code=409)
     if not _logged_in():
         return _not_signed_in()
     preview_bytes: bytes | None = None
@@ -480,7 +490,52 @@ def _origin_default_branch(gu, root: str) -> str | None:
     return None
 
 
-def github_link_state(path: str) -> dict:
+def _github_copy_repo(path: str) -> str | None:
+    """The AUTHOR's `owner/name` when the folder at `path` is a GitHub-link
+    copy (contribution loop on, contrib record kind "github"), else None —
+    the loop off, no record, any other kind, or the store unreadable (then
+    today's behaviour answers). The record lives outside the folder, so no
+    file in the repo can make a copy look like the user's own."""
+    try:
+        from fused_render.contrib import flags, store
+
+        if not flags.sources():
+            return None
+        record = store.get(path)
+        if record and record.get("kind") == "github" and record.get("repo"):
+            return record["repo"]
+    except Exception:  # noqa: BLE001 — never worse than today's checks
+        logger.warning("contrib: reading the install source failed for %s", path, exc_info=True)
+    return None
+
+
+#: Why a GitHub-link copy is never uploaded to Fused storage: it is someone
+#: else's code, and its public way to be shared is the author's own link.
+GITHUB_COPY_REFUSAL = "This app came from someone else's GitHub — share its GitHub link instead."
+
+
+def _contributor_link(path: str, copy_status: dict | None = None) -> dict | None:
+    """The author's link for a GitHub-link copy, or None (`_github_copy_repo`).
+    `changes` is the engine's local count of this copy's own edits (no
+    network) — from `copy_status` when the caller already has it (the app
+    page's read does), else one `engine.status`."""
+    repo = _github_copy_repo(path)
+    if repo is None:
+        return None
+    try:
+        if copy_status is None:
+            from fused_render.contrib import engine
+
+            copy_status = engine.status(path)
+        changes = int((copy_status or {}).get("changes") or 0)
+    except Exception:  # noqa: BLE001 — the count is a hint, the link stands
+        logger.warning("contrib: change count failed for %s", path, exc_info=True)
+        changes = 0
+    return {"ok": True, "url": f"{GITHUB_LINK_BASE}?repo={repo}", "repo": repo,
+            "reason": None, "code": "contributor", "changes": changes}
+
+
+def github_link_state(path: str, *, copy_status: dict | None = None) -> dict:
     """Whether the folder at `path` can be shared as a GitHub link, and why not.
 
     Three conditions, checked in order, the first failure being the `reason`:
@@ -499,7 +554,16 @@ def github_link_state(path: str) -> dict:
     `no_remote`, `not_github`, `dirty`, `unpushed`, `no_default`; None when
     ok) for a surface that must not show `reason`'s git words — the
     contribution loop's share sheet maps it to its own sentence
-    (docs/CONTRIB_LOOP.md §15).
+    (docs/CONTRIB_LOOP.md §15). `copy_status`: the engine's CopyStatus for
+    this folder when the caller already computed it, so a contributor's link
+    does not run `engine.status` a second time.
+
+    A CONTRIBUTOR'S COPY shares the AUTHOR'S app (`_contributor_link`): with
+    the contribution loop on, a copy recorded as installed from someone
+    else's GitHub link answers that repo's link, `code: "contributor"`, and
+    how many of its own edits the link does NOT carry — whatever its local
+    tree holds, since Bob's unpublished edits were never what he is sharing.
+    Own apps and remixes keep the checks below.
     """
     from fused_render import git_upstream as gu
 
@@ -508,6 +572,9 @@ def github_link_state(path: str) -> dict:
 
     if not path or not os.path.isabs(path) or not os.path.isdir(path):
         return no("not_repo", "path must be an absolute app folder path")
+    contributor = _contributor_link(path, copy_status)
+    if contributor is not None:
+        return contributor
     root = gu.repo_root(path)
     if root is None:
         return no("not_repo", "This app is not a git repository.")

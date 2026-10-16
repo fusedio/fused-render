@@ -47,7 +47,9 @@ export type MergePurpose = "needs-merge" | "return" | "own-sync" | "original";
 
 export interface MergeJobView {
   id: string;
-  status: "running" | "ready" | "failed" | "accepted" | "discarded";
+  /** `landing`: Keep the merge was pressed and the result is being moved
+   *  into the real folder — still in flight, drawn as running. */
+  status: "running" | "landing" | "ready" | "failed" | "accepted" | "discarded";
   /** Claude's 2–4 plain sentences about what it combined (ready). */
   summary: string;
   files: string[];
@@ -93,6 +95,9 @@ export interface CopyStatus {
   can_push: boolean | null;
   /** Author updates waiting to come in. */
   behind?: number;
+  /** False when the automatic-update preference is off: the author's
+   *  updates then wait for the user's "Bring them in". */
+  auto_sync?: boolean;
   /** Own copy: a plain sentence when sending the user's edits to GitHub
    *  failed (there is no activity-dock failure row for these apps). */
   sync_error?: string | null;
@@ -105,7 +110,16 @@ export interface ProposalView {
   state: "waiting" | "commented" | "merged" | "declined";
   comment?: { author: string; body: string; at: string };
   needs_merge: boolean;
+  /** Committed edits made since the last send (uncommitted ones are
+   *  `copy.dirty`, counted on top by the page). */
   unproposed: number;
+  /** Open, on a GitHub-link copy: Update proposal is offered. */
+  can_update?: boolean;
+  /** Any open proposal, a remix's included. */
+  can_withdraw?: boolean;
+  /** What this copy runs differs from what was last sent — the one signal
+   *  for offering Update proposal (WS-B). */
+  stale?: boolean;
 }
 
 export interface ReviewRisk {
@@ -138,6 +152,12 @@ export interface InboxItem {
   /** Sent from Fused (false = opened on github.com directly). */
   from_fused: boolean;
   summary: string;
+  /** Who wrote `summary`: "review" = Claude's safety review on THIS machine;
+   *  anything else (the sender's own text, their Claude's draft) is the
+   *  sender's words and is labelled so — never passed off as Claude's. */
+  summary_source?: string;
+  /** The proposal's own description, as the sender wrote it. Untrusted. */
+  description?: string;
   review: Review | null;
   review_status: "pending" | "running" | "ready" | "failed";
   try: TryCopy | null;
@@ -156,9 +176,15 @@ export interface AppContrib {
   flags: ContribFlags;
   copy: CopyStatus;
   proposal: ProposalView | null;
-  inbox: { items: InboxItem[]; count: number } | null;
+  /** `loading`: the list has never been read from GitHub yet (a cold
+   *  cache) — not the same as an empty inbox. `unavailable`: it could not be
+   *  read at all. */
+  inbox: { items: InboxItem[]; count: number; loading?: boolean; unavailable?: boolean } | null;
   contributors: Contributor[] | null;
-  github: { signed_in: boolean; login: string | null };
+  /** `checking`: this machine has not asked GitHub yet — "signed out" is
+   *  not known, so nothing says "Sign in" on its strength (the sign-in
+   *  step checks for itself). */
+  github: { signed_in: boolean; login: string | null; checking?: boolean };
   share_url: string | null;
 }
 
@@ -267,6 +293,8 @@ export const withdrawProposal = (path: string) => post<ContribAnswer>("propose/w
 export const discardChanges = (path: string, withdraw: boolean) =>
   post<ContribAnswer>("discard", { path, withdraw });
 export const pushToMain = (path: string) => post<ContribAnswer>("push-main", { path });
+/** Bring the author's waiting updates in now (auto-update off). */
+export const updateCopy = (path: string) => post<ContribAnswer>("update-copy", { path });
 export const startMerge = (path: string) => post<JobStarted>("merge/start", { path });
 export const acceptMerge = (path: string, job: string) => post<ContribAnswer>("merge/accept", { path, job });
 export const discardMerge = (path: string, job: string) => post<ContribAnswer>("merge/discard", { path, job });
@@ -276,13 +304,58 @@ export const reviewProposal = (path: string, number: number) =>
 export const tryProposal = (path: string, number: number, confirm: boolean) =>
   post<ContribAnswer & Partial<TryCopy>>("inbox/try", { path, number, confirm });
 export const removeTry = (path: string, number: number) => post<ContribAnswer>("inbox/try/remove", { path, number });
-export const acceptProposal = (path: string, number: number) => post<JobStarted>("inbox/accept", { path, number });
+/** `confirm`: the user accepted a "needs a look" proposal knowingly — the
+ *  server refuses one without it (job fails with reason "confirm"). */
+export const acceptProposal = (path: string, number: number, confirm = false) =>
+  post<JobStarted>("inbox/accept", { path, number, confirm });
 export const declineProposal = (path: string, number: number, note: string) =>
   post<ContribAnswer>("inbox/decline", { path, number, note });
 export const startRemixDraft = (path: string) => post<JobStarted>("remix/draft", { path });
 export const publishRemix = (path: string, v: { name: string; credit: string }) =>
   post<JobStarted>("remix/publish", { path, ...v });
 export const bringInOriginal = (path: string) => post<JobStarted>("remix/bring-in", { path });
+
+/** Retry sending an own app's edits to GitHub (`copy.sync_error`): the same
+ *  background sync the app's own changes trigger (POST /api/git-upstream
+ *  `action:"sync"`, which the contrib engine intercepts). Answers at once —
+ *  the sync is queued — so the caller re-reads a moment later. */
+export async function retrySync(path: string): Promise<ContribAnswer> {
+  try {
+    return await postJson<ContribAnswer>("/api/git-upstream", { action: "sync", path, trigger: "retry" });
+  } catch {
+    return { ok: false };
+  }
+}
+
+/** A success toast's text: the server's own `message` when the answer (or a
+ *  job's result) carries one, else the page's sentence. */
+export function okMessage(answer: unknown, fallback: string): string {
+  if (answer && typeof answer === "object") {
+    const a = answer as { message?: unknown; result?: { message?: unknown } | null };
+    if (typeof a.message === "string" && a.message.trim()) return a.message;
+    const m = a.result?.message;
+    if (typeof m === "string" && m.trim()) return m;
+  }
+  return fallback;
+}
+
+/** The signal of a controller that aborts when the calling component
+ *  unmounts — for the job polls a sheet or card starts, so an unmounted page
+ *  stops polling. A GETTER, read at the moment a poll starts: StrictMode's
+ *  mount-unmount-mount replaces the controller after the first render, so a
+ *  signal captured during render could already be aborted. */
+export function useUnmountSignal(): () => AbortSignal {
+  const ref = useRef<AbortController | null>(null);
+  if (ref.current === null) ref.current = new AbortController();
+  useEffect(() => {
+    // StrictMode mounts twice: a controller aborted by the first cleanup is
+    // replaced so the real mount gets a live one.
+    if (ref.current?.signal.aborted) ref.current = new AbortController();
+    const c = ref.current!;
+    return () => c.abort();
+  }, []);
+  return useCallback(() => ref.current!.signal, []);
+}
 
 // ---- job polling -------------------------------------------------------------
 
@@ -317,22 +390,27 @@ export async function pollJob<R = Record<string, unknown>>(
       onTick?.(job);
     }
     await new Promise<void>((resolve, reject) => {
-      const t = window.setTimeout(resolve, JOB_POLL_MS);
-      signal?.addEventListener(
-        "abort",
-        () => {
-          window.clearTimeout(t);
-          reject(new DOMException("aborted", "AbortError"));
-        },
-        { once: true },
-      );
+      const onAbort = () => {
+        window.clearTimeout(t);
+        reject(new DOMException("aborted", "AbortError"));
+      };
+      // Removed on the ordinary path too: one listener per tick would
+      // otherwise pile up on a long-lived signal for the job's whole life.
+      const t = window.setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, JOB_POLL_MS);
+      signal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 }
 
 /** Start a job route and wait for it: one call for the dialog that only
  *  needs the outcome. `{ok:false, message, reason?}` for a refusal at start
- *  (reason e.g. "signed-out") or a failed job; `{ok:true, result}` when done. */
+ *  (reason e.g. "signed-out") or a failed job; `{ok:true, result}` when done.
+ *  An aborted wait (the component unmounted) answers `reason:"aborted"` —
+ *  callers drop it — rather than rejecting. The JOB keeps running server-side
+ *  either way: abort only stops this page watching it. */
 export async function runJob<R = Record<string, unknown>>(
   start: Promise<JobStarted>,
   opts: { signal?: AbortSignal; onTick?: (job: ContribJob<R>) => void } = {},
@@ -341,7 +419,12 @@ export async function runJob<R = Record<string, unknown>>(
   if (!started.ok || !started.job) {
     return { ok: false, message: plainMessage(started), reason: started.reason };
   }
-  const job = await pollJob<R>(started.job, opts);
+  let job: ContribJob<R>;
+  try {
+    job = await pollJob<R>(started.job, opts);
+  } catch {
+    return { ok: false, message: "", reason: "aborted" };
+  }
   if (job.status === "done") return { ok: true, result: job.result ?? null };
   return { ok: false, message: plainMessage(job), reason: job.reason ?? undefined };
 }
@@ -357,12 +440,19 @@ const BUSY_POLL_MS = 5_000;
  *  answer to a focus is usually one step behind GitHub. One more read this
  *  long after a focus picks up what that refresh found. */
 const FOCUS_FOLLOWUP_MS = 5_000;
+/** A busy state that never settles (a stuck review, a server that keeps
+ *  saying "pending") must not poll at 5 s forever: after this many fast
+ *  ticks the poll backs off to BACKOFF_POLL_MS until the state changes. */
+const BUSY_TICKS_BEFORE_BACKOFF = 12;
+const BACKOFF_POLL_MS = 30_000;
 
 /** Is anything on the server mid-flight that the page is showing progress
  *  for? Drives the fast poll. */
 export function contribBusy(c: AppContrib | null): boolean {
   if (!c) return false;
-  if (c.copy.merge_job?.status === "running") return true;
+  const m = c.copy.merge_job?.status;
+  if (m === "running" || m === "landing") return true;
+  if (c.inbox?.loading) return true;
   return !!c.inbox?.items.some((i) => i.review_status === "pending" || i.review_status === "running");
 }
 
@@ -411,8 +501,11 @@ export function useAppContrib(dir: string | null): AppContribState {
         setPending(false);
         setData(null);
       } else if (next.pending || !next.copy) {
-        // Still classifying a first open — poll again soon, show nothing yet.
+        // Still classifying a first open — poll again soon, show nothing yet,
+        // and stay UNSETTLED: a `?_tab=proposals` link must not fall back to
+        // the Overview on an answer that is not one yet.
         setPending(true);
+        return;
       } else {
         setPending(false);
         setData(next as AppContrib);
@@ -435,10 +528,23 @@ export function useAppContrib(dir: string | null): AppContribState {
   const busy = pending || contribBusy(data);
   useEffect(() => {
     if (!enabled) return;
-    const tick = pauseWhileHidden(() => void read());
-    const id = window.setInterval(tick, busy ? BUSY_POLL_MS : REST_POLL_MS);
+    // A timeout chain, not an interval: the gap changes mid-stream when a
+    // busy state outlives BUSY_TICKS_BEFORE_BACKOFF fast ticks.
+    let fast = 0;
+    let timer: number | undefined;
+    let stopped = false;
+    const gap = () => (!busy ? REST_POLL_MS : fast < BUSY_TICKS_BEFORE_BACKOFF ? BUSY_POLL_MS : BACKOFF_POLL_MS);
+    const tick = pauseWhileHidden(() => {
+      if (stopped) return;
+      if (busy) fast += 1;
+      void read().finally(() => {
+        if (!stopped) timer = window.setTimeout(tick, gap());
+      });
+    });
+    timer = window.setTimeout(tick, gap());
     return () => {
-      window.clearInterval(id);
+      stopped = true;
+      window.clearTimeout(timer);
       tick.cancel();
     };
   }, [enabled, busy, read]);

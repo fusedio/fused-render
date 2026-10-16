@@ -54,6 +54,9 @@ logger = logging.getLogger(__name__)
 OPEN_TTL_S = 60.0
 #: POST /api/contrib/refresh ("check now"): at most one per app per this long.
 FORCE_TTL_S = 10.0
+#: A never-listed inbox the page is waiting on is asked for at most this often
+#: (an unreachable GitHub must not be re-asked on every page poll).
+INBOX_KICK_TTL_S = 15.0
 #: The inbox count sweep: first pass a little after startup, then every 10 min.
 SWEEP_FIRST_S = 90.0
 SWEEP_EVERY_S = 600.0
@@ -74,6 +77,8 @@ _last_force: dict[str, float] = {}
 _queued: set[tuple[str, str]] = set()
 _classify_tried: dict[str, bool] = {}
 _counts: dict[str, int] = {}
+_inbox_kicked: dict[str, float] = {}   # key -> monotonic time of the last kick
+_inbox_tried: dict[str, bool] = {}     # key -> a listing attempt has finished
 _queue: queue.PriorityQueue = queue.PriorityQueue()
 _seq = itertools.count()
 _workers: list[threading.Thread] = []
@@ -154,6 +159,74 @@ def note_inbox(app_dir: str, items) -> None:
             _remember(_counts, key, len(items))
 
 
+def _list_inbox(app_dir: str, **kwargs) -> None:
+    """`inbox.list` for the open bundle, the sweep and the page's kick. The
+    count is recorded only when the listing actually reached GitHub —
+    `inbox.list` answers `[]` on failure too, and `cached()` staying None
+    is what tells the two apart — so a failure never reads as "no
+    proposals". Either way the attempt is marked finished."""
+    inbox = _mod("inbox")
+    items = None
+    try:
+        inbox.list(app_dir, **kwargs)
+        items = inbox.cached(app_dir)
+    finally:
+        key = _key(app_dir)
+        with _lock:
+            _remember(_inbox_tried, key, True)
+    note_inbox(app_dir, items)
+
+
+def inbox_snapshot(app_dir: str) -> dict:
+    """The page's `inbox` (§12.1) with NO network: `{items, count, loading}`.
+
+    Never listed yet → `items: [], count: 0, loading: true` and a listing is
+    kicked right away at open priority (at most once per INBOX_KICK_TTL_S);
+    `loading` stays true while that attempt — or the open bundle, which
+    lists too and so is not doubled — is queued or running. An attempt
+    that finished without reaching GitHub → `loading: false, unavailable:
+    true` — never a confident "no proposals"."""
+    inbox = _mod("inbox")
+    items = inbox.cached(app_dir)
+    if isinstance(items, list):
+        note_inbox(app_dir, items)
+        return {"items": items, "count": len(items), "loading": False}
+    key = _key(app_dir)
+    now = time.monotonic()
+    with _lock:
+        last = _inbox_kicked.get(key)
+        due = ((last is None or now - last >= INBOX_KICK_TTL_S)
+               and ("open", key) not in _queued)
+        if due:
+            _remember(_inbox_kicked, key, now)
+    if due:
+        _submit(_P_OPEN, "inbox-open", key, lambda: _list_inbox(app_dir))
+        items = inbox.cached(app_dir)  # an inline run (tests) may have listed
+        if isinstance(items, list):
+            return {"items": items, "count": len(items), "loading": False}
+    with _lock:
+        loading = (("inbox-open", key) in _queued or ("open", key) in _queued
+                   or key not in _inbox_tried)
+    out = {"items": [], "count": 0, "loading": loading}
+    if not loading:
+        out["unavailable"] = True
+    return out
+
+
+def inbox_changed(app_dir: str) -> None:
+    """A proposal just left the inbox here (Accept, Decline): `inbox` has
+    dropped its cached list, so forget this app's kick throttle and finished
+    attempt — otherwise the next read would wait out INBOX_KICK_TTL_S and
+    answer `unavailable` ("can't reach GitHub") for a list that is merely
+    stale — and list again now. The page reads `loading: true` meanwhile."""
+    key = _key(app_dir)
+    with _lock:
+        _inbox_kicked.pop(key, None)
+        _inbox_tried.pop(key, None)
+        _remember(_inbox_kicked, key, time.monotonic())
+    _submit(_P_OPEN, "inbox-open", key, lambda: _list_inbox(app_dir))
+
+
 def _card(key: str, record: dict, inbox_on: bool) -> dict | None:
     src = source(record)
     if src is None:
@@ -211,11 +284,12 @@ def decorate(rows: list[dict]) -> list[dict]:
 
 
 def github_identity() -> dict:
-    """`{signed_in, login}` for GET /api/contrib/app, from
+    """`{signed_in, login, checking}` for GET /api/contrib/app, from
     `github_setup.cached_summary()` — the snapshot as it stands, never
     measured inline (`summary()` would re-measure past 60 s: two `gh`
     spawns a page read must not wait on) — with a background re-measure when
-    it is missing or stale."""
+    it is missing or stale. `checking: true` = this machine has never been
+    measured, so `signed_in: false` is not yet an answer."""
     from fused_render import github_setup
 
     cached = github_setup.cached_summary()
@@ -223,7 +297,8 @@ def github_identity() -> dict:
         _submit(_P_OPEN, "github-status", "", github_setup.summary)
     signed_in = bool(cached and cached.get("signed_in"))
     login = cached.get("account") if signed_in else None
-    return {"signed_in": signed_in, "login": login if isinstance(login, str) else None}
+    return {"signed_in": signed_in, "login": login if isinstance(login, str) else None,
+            "checking": cached is None}
 
 
 # -- the lane --------------------------------------------------------------------
@@ -284,13 +359,13 @@ def _refresh_app(app_dir: str, *, force: bool) -> None:
     if not isinstance(record, dict):
         return
     kind = record.get("kind")
-    if flags.changes() and kind == "github" and record.get("proposal"):
+    # Any kind with a proposal on record: a remix (now "own") keeps the
+    # proposal it sent while it was a GitHub-link copy, and GitHub's answer
+    # to it still has to reach the page.
+    if flags.changes() and record.get("proposal"):
         _safely("proposal refresh", _mod("proposals").refresh, app_dir, force=force)
     if flags.inbox() and own_with_repo(record):
-        inbox = _mod("inbox")
-        if force:
-            _safely("inbox invalidate", inbox.invalidate, app_dir)
-        note_inbox(app_dir, _safely("inbox list", inbox.list, app_dir))
+        _safely("inbox list", _list_inbox, app_dir, force=force)
     if flags.remix() and kind == "own" and remix_of(record):
         _safely("original check", _mod("remix").check_original, app_dir)
 
@@ -360,7 +435,7 @@ def _count_inbox(app_dir: str) -> None:
         return
     # review=False: a background count must not start a Claude safety review
     # for every proposal on every app — reviews start when the page opens.
-    note_inbox(app_dir, _mod("inbox").list(app_dir, review=False))
+    _list_inbox(app_dir, review=False)
 
 
 def sweep_once() -> int:
@@ -380,6 +455,10 @@ def _sweep_loop() -> None:
     while not _sweep_stop.wait(wait):
         wait = SWEEP_EVERY_S
         _safely("inbox sweep", sweep_once)
+        # Whatever the flags say: with the inbox off nothing lists the Try
+        # copies, so this pass (the first one a little after startup) is
+        # what removes them.
+        _safely("try-copy sweep", _mod("trycopy").sweep_orphans)
 
 
 def start() -> None:
@@ -407,3 +486,5 @@ def _reset() -> None:
         _queued.clear()
         _classify_tried.clear()
         _counts.clear()
+        _inbox_kicked.clear()
+        _inbox_tried.clear()

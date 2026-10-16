@@ -12,7 +12,8 @@
 // PUBLISHES the new value. The `generation` counter keeps a pre-toggle GET
 // landing after the publish from writing the old value back.
 import { useEffect, useState } from "react";
-import { getPrefsShared } from "@platform/lib/api";
+import { getPrefsShared, type Prefs } from "@platform/lib/api";
+import { onPrefsReread } from "@platform/lib/prefs-reread";
 
 /** The last answer, or `null` while nobody has asked yet. Null renders as OFF
  *  (the default), so the card never flashes in before the answer lands. */
@@ -27,7 +28,20 @@ function set(next: boolean) {
   for (const listener of listeners) listener(next);
 }
 
+// Another window may have flipped the switch: re-read when this one comes
+// back (prefs-reread.ts — one shared GET for every flag module). Same guard as
+// the first read; a failed re-read keeps what is shown.
+function onReread(fresh: Promise<Prefs>) {
+  const departed = generation;
+  fresh
+    .then((p) => {
+      if (generation === departed) set(p.github_link?.enabled === true);
+    })
+    .catch(() => {});
+}
+
 function read(): Promise<void> {
+  onPrefsReread(onReread);
   if (reading) return reading;
   const departed = generation;
   reading = getPrefsShared() // single-flight across flag modules (api.ts)

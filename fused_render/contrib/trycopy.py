@@ -2,7 +2,7 @@
 separate copy of the app, next to her own, then throws it away. Her own
 copy is never touched — the Try copy is a separate clone.
 
-WHERE THEY LIVE: `<workspace>/.fused-try/<owner>-<repo>-<N>/`, i.e. inside
+WHERE THEY LIVE: `<workspace>/.fused-try/<owner>__<repo>-<N>/`, i.e. inside
 the Fused workspace (`seed.fused_dir()`, ~/Fused) under ONE dotted folder.
 Checked against every reader, because each of the four requirements is
 answered by a different module:
@@ -37,6 +37,13 @@ network; nothing shared on disk with her folder) checked out detached at the
 proposal's head, which `inbox.review` fetched into `refs/fused/pr/<N>` of her
 repo. Removed on accept, decline, and when the proposal is closed on GitHub
 (`inbox.list` sweeps copies whose proposal is no longer open).
+
+ITS PYTHON is its own: outside `app_git.app_dir_for`, `projectenv` takes the
+topmost ancestor with a `pyproject.toml` below the home ceiling — the copy
+itself — and a writable folder's venv is `<copy>/.venv`, built on first open
+by the same install flow as any app and deleted with the folder. Removal
+also stops a background app the copy started and prunes every path-keyed
+store row (autostart included).
 """
 
 from __future__ import annotations
@@ -52,7 +59,7 @@ logger = logging.getLogger(__name__)
 
 TRY_DIRNAME = ".fused-try"
 _CLONE_TIMEOUT_S = 300.0
-_lock = threading.Lock()
+_lock = threading.RLock()
 
 
 def _gu():
@@ -81,7 +88,11 @@ def _repo_of(app_dir: str) -> str | None:
 
 def path_for(repo: str, number: int) -> str:
     owner, _, name = repo.partition("/")
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{owner}-{name}").strip(".-") or "app"
+    # "__" between the parts: GitHub logins and repo names may hold "-", so
+    # "<owner>-<repo>" would let ali-ce/x and ali/ce-x share a prefix (and
+    # `sweep` would then remove the other repo's copies). Logins cannot
+    # hold "_", so "__" is unambiguous.
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{owner}__{name}").strip(".-") or "app"
     return os.path.join(try_root(), f"{slug}-{int(number)}")
 
 
@@ -180,6 +191,7 @@ def _remove_path(path: str) -> None:
     # Never delete anything that is not a direct child of the Try folder.
     if os.path.dirname(ap) != root or not os.path.lexists(ap):
         return
+    _stop_daemon(ap)
     shutil.rmtree(ap, ignore_errors=True)
     try:
         from fused_render.contrib import store
@@ -193,6 +205,21 @@ def _remove_path(path: str) -> None:
         app_state_remove.prune_stores(ap)
     except Exception:  # noqa: BLE001
         logger.exception("try copy: could not prune stores for %s", ap)
+
+
+def _stop_daemon(path: str) -> None:
+    """Stop the copy's background app if the author started one there (a
+    proposal may declare `[tool.fused-render.app]`); its autostart row goes
+    with `prune_stores` below. The Python env needs nothing: it is the
+    copy's own `.venv` (projectenv: a writable folder's venv lives inside
+    it), so it is removed with the folder."""
+    try:
+        from fused_render import background_apps
+        from fused_render.server import engine_host
+
+        engine_host.stop(background_apps.engine_id_for(path))
+    except Exception:  # noqa: BLE001 — removal goes on regardless
+        logger.exception("try copy: could not stop the background app in %s", path)
 
 
 def remove(app_dir: str, number: int) -> dict:
@@ -222,4 +249,69 @@ def sweep(app_dir: str, open_numbers) -> int:
             with _lock:
                 _remove_path(os.path.join(root, name))
             gone += 1
+    return gone
+
+
+def _orphaned(path: str) -> bool:
+    """A Try copy nothing will ever clean up through its inbox: no scratch
+    record (a crash mid-create, or a record the store lost), an author's
+    app that is gone or no longer an app of hers with a repo, or the inbox
+    switched off (then no inbox lists it, so no sweep would ever run)."""
+    from fused_render.contrib import flags, store
+
+    rec = store.get(path)
+    if not rec or rec.get("kind") != "scratch" or not isinstance(rec.get("try_of"), dict):
+        return True
+    app = rec["try_of"].get("app")
+    app_rec = store.get(app) if isinstance(app, str) and app else None
+    if not app_rec or app_rec.get("kind") != "own" or not app_rec.get("repo"):
+        return True
+    return not flags.inbox()
+
+
+def sweep_orphans() -> int:
+    """Remove every Try copy that is `_orphaned`. For a startup pass and the
+    background sweep; never raises. Returns how many went."""
+    root = try_root()
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return 0
+    gone = 0
+    for name in names:
+        path = os.path.join(root, name)
+        try:
+            if not os.path.isdir(path) or os.path.islink(path) or not _orphaned(path):
+                continue
+            with _lock:
+                _remove_path(path)
+            gone += 1
+        except Exception:  # noqa: BLE001 — one bad entry never stops the pass
+            logger.exception("try copy: orphan sweep failed for %s", path)
+    return gone
+
+
+def remove_all_for(app_dir: str) -> int:
+    """Remove every Try copy made from `app_dir` — the author's app is being
+    uninstalled or moved away (app_state_remove's hook). Never raises."""
+    from fused_render.contrib import store
+
+    root = try_root()
+    try:
+        names = os.listdir(root)
+        target = store.key(app_dir)
+    except Exception:  # noqa: BLE001
+        return 0
+    gone = 0
+    for name in names:
+        path = os.path.join(root, name)
+        try:
+            rec = store.get(path) or {}
+            app = (rec.get("try_of") or {}).get("app")
+            if isinstance(app, str) and app and store.key(app) == target:
+                with _lock:
+                    _remove_path(path)
+                gone += 1
+        except Exception:  # noqa: BLE001
+            logger.exception("try copy: removing %s failed", path)
     return gone

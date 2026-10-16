@@ -11,9 +11,11 @@ app's own Python, a Claude turn, the author's README instructions), and a
 copy re-pointed at some other repo must not start pulling that repo's code
 under Bob's changes. So the follow tip is fetched BY URL —
 `git fetch <url> +refs/heads/<branch>:refs/fused/follow` — into a private
-ref no remote config names. A private repo the https URL cannot read
-(appfile_git's clone falls back to ssh for those) is retried over the ssh
-spelling of the SAME owner/name, never anything `.git/config` says.
+ref no remote config names. The fetch goes through `gh.fetch` (gh as the
+credential helper, so private repos read; the FakeGitHub's bare repo in
+tests); without gh.py, a private repo the https URL cannot read is retried
+over the ssh spelling of the SAME owner/name, never anything `.git/config`
+says.
 
 AN OWN COPY FOLLOWS ITS `origin`, as auto-sync always has: the author's
 remote is theirs to change, and `refs/remotes/origin/<branch>` is the tip.
@@ -74,6 +76,14 @@ def for_record(record) -> Follow | None:
     return None
 
 
+def _gh():
+    try:
+        from fused_render.contrib import gh
+    except ImportError:
+        return None
+    return gh if callable(getattr(gh, "fetch", None)) else None
+
+
 def _ssh_url(url: str) -> str:
     return "git@github.com:" + url.split("github.com/", 1)[1] + ".git"
 
@@ -84,6 +94,14 @@ def fetch_detail(root, follow: Follow) -> tuple[str | None, str | None]:
     fetch writes refs)."""
     if follow.via_origin:
         r = gu._run(root, "fetch", "--", "origin", follow.branch)
+    elif _gh() is not None:
+        # gh.py's fetch: gh as the credential helper (private repos fetch
+        # without `gh auth setup-git`), the user's global/system git config
+        # switched off, and the FakeGitHub's bare repo in fake mode.
+        refspec = f"+refs/heads/{follow.branch}:{follow.ref}"
+        if not _gh().fetch(root, follow.url, refspec):
+            return None, "offline"
+        return tip(root, follow), None
     else:
         refspec = f"+refs/heads/{follow.branch}:{follow.ref}"
         args = ("fetch", "--no-tags", "--no-write-fetch-head", "--")

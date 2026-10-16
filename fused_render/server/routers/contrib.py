@@ -64,7 +64,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_GENERIC = "Something went wrong. Try again in a moment."
+# The jobs registry's own generic sentence, so a failed job and a refused
+# request read the same.
+_GENERIC = "Something went wrong. Try again."
 
 
 def _mod(name: str):
@@ -101,24 +103,30 @@ def _call(what: str, fn, *args, **kwargs) -> dict:
     return {"ok": bool(result) if isinstance(result, bool) else True}
 
 
-def _job(kind: str, app_dir: str, fn, *args, **kwargs) -> dict:
+def _job(kind: str, app_dir: str, fn, *args, after=None, **kwargs) -> dict:
     """Start `fn(*args, **kwargs)` as a contrib job and answer `{ok, job}` —
     for the one synchronous module action the route itself runs as a job
     (inbox accept). "done" means success: a module answering
     `{ok: false, …}` fails the job with that plain sentence instead of
     finishing it with a refusal buried in `result`; a raised PlainError
-    fails it the same way, in `jobs._run`."""
+    fails it the same way, in `jobs._run`. Keyed on the store's spelling
+    of the app (`store.key`), like every other contrib job, so dedupe holds
+    whichever spelling the request arrived with. `after()` runs once `fn`
+    returns, success or refusal."""
     jobs = _mod("jobs")
 
     def run():
-        result = fn(*args, **kwargs)
+        try:
+            result = fn(*args, **kwargs)
+        finally:
+            if after is not None:
+                _safely("after job", after)
         if isinstance(result, dict) and result.get("ok") is False:
-            err = jobs.PlainError(result.get("message") or _GENERIC)
-            err.reason = result.get("reason")
-            raise err
+            raise jobs.PlainError(result.get("message") or _GENERIC,
+                                  reason=result.get("reason"))
         return result
 
-    return {"ok": True, "job": jobs.start(kind, app_dir, run)}
+    return {"ok": True, "job": jobs.start(kind, _mod("store").key(app_dir), run)}
 
 
 # -- the gate ------------------------------------------------------------------
@@ -206,19 +214,14 @@ def _safely(what: str, fn, *args, **kwargs):
         return None
 
 
-def _inbox_view(app_dir: str) -> dict:
-    items = _safely("inbox", _mod("inbox").cached, app_dir)
-    items = items if isinstance(items, list) else []
-    refresh.note_inbox(app_dir, items)
-    return {"items": items, "count": len(items)}
-
-
-def _share_url(app_dir: str) -> str | None:
+def _share_url(app_dir: str, copy: dict | None) -> str | None:
     # Only the url ever leaves here: github_link_state's `reason` sentences
-    # are the share sheet's own and talk about pushing.
+    # are the share sheet's own and talk about pushing. `copy` is the status
+    # this request already computed (a contributor's link reads its count).
     from fused_render import share_app
 
-    state = _safely("share link", share_app.github_link_state, app_dir) or {}
+    state = _safely("share link", share_app.github_link_state, app_dir,
+                    copy_status=copy) or {}
     return state.get("url") if state.get("ok") else None
 
 
@@ -227,7 +230,10 @@ def api_contrib_app(path: str = ""):
     """AppContrib for the app containing `path` (§12.1). Cached data only.
 
     A folder with no record yet answers `pending: true` (the engine's own
-    status says so and classifies it in the background); the page polls."""
+    status says so and classifies it in the background) with nothing else
+    worked out — not even the share link, whose answer depends on the
+    record; the page polls. `engine.status` runs ONCE per read and is handed
+    to the share link."""
     app_dir = _app_dir(path)
     if app_dir is None:
         return _refuse("not-an-app", "That isn't an app in your Fused folder.")
@@ -240,12 +246,14 @@ def api_contrib_app(path: str = ""):
     pending = record is None or bool((copy or {}).get("pending"))
     out = {"ok": True, "flags": flags, "pending": pending, "copy": copy,
            "proposal": None, "inbox": None, "contributors": None,
-           "github": refresh.github_identity(), "share_url": _share_url(app_dir)}
+           "github": refresh.github_identity(), "share_url": None}
     if pending:
         return out
+    out["share_url"] = _share_url(app_dir, copy)
     out["proposal"] = _safely("proposal", _mod("proposals").view, app_dir)
     if flags.get("inbox") and refresh.own_with_repo(record):
-        out["inbox"] = _inbox_view(app_dir)
+        out["inbox"] = _safely("inbox", refresh.inbox_snapshot, app_dir) or {
+            "items": [], "count": 0, "loading": False, "unavailable": True}
     if flags.get("loop"):
         out["contributors"] = _safely("contributors", _mod("contributors").list, app_dir)
     return out
@@ -264,7 +272,8 @@ _MERGE_STATUS = {"running": "running", "landing": "running", "ready": "done",
 
 @router.get("/api/contrib/job")
 def api_contrib_job(id: str = ""):
-    """One shape for both registries: `{ok, status, message, reason, result}`.
+    """One shape for both registries: `{ok, status, message, reason, step,
+    result}` (`step`: the job's current stage word, when it reports one).
 
     A merge job's `ready` is `done` with the merge job as `result` (its own
     `status` inside says ready/accepted/discarded) and its summary as
@@ -272,13 +281,14 @@ def api_contrib_job(id: str = ""):
     job = _mod("jobs").get(id) if id else None
     if job is not None:
         return {"ok": True, "status": job["status"], "message": job.get("message"),
-                "reason": job.get("reason"), "result": job.get("result")}
+                "reason": job.get("reason"), "step": job.get("step"),
+                "result": job.get("result")}
     merge = _safely("merge job", _mod("merge_job").get, id) if id else None
     if isinstance(merge, dict):
         status = _MERGE_STATUS.get(merge.get("status"), "failed")
         message = merge.get("error") if status == "failed" else merge.get("summary")
         return {"ok": True, "status": status, "message": message or None,
-                "reason": None, "result": merge}
+                "reason": None, "step": None, "result": merge}
     return _refuse("unknown-job", "That task isn't running any more. Try again.",
                    status="failed", result=None)
 
@@ -336,9 +346,17 @@ def api_contrib_propose_update(body: dict = Body(...), x_fused: str | None = Hea
 
 @router.post("/api/contrib/propose/withdraw")
 def api_contrib_propose_withdraw(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    t = _gate(body, x_fused, "changes", ("github",))
+    """Gated on an OPEN proposal, not on kind: a remix (now "own") may still
+    withdraw the proposal it sent as a GitHub-link copy. Update stays
+    GitHub-link only — a remix's latest carries its credit line and new app
+    id, which must never be sent into the author's app."""
+    t = _gate(body, x_fused, "changes")
     if not isinstance(t, _Target):
         return t
+    proposal = t.record.get("proposal")
+    cache = proposal.get("cache") if isinstance(proposal, dict) else None
+    if not isinstance(proposal, dict) or (cache or {}).get("state", "open") != "open":
+        return _refuse("no-proposal", "There's no open proposal to withdraw.")
     return _call("withdraw", _mod("proposals").withdraw, t.app_dir)
 
 
@@ -392,13 +410,13 @@ def api_contrib_merge_start(body: dict = Body(...), x_fused: str | None = Header
 
 
 def _merge_job_for(t: _Target, body) -> tuple[str | None, dict | None]:
-    """`(job_id, None)` when the posted merge job is this app's live one
-    (`merge_job.current` — whoever started it: merge/start, the engine's
-    return-to-following, remix's bring-in), else `(None, refusal)`. A job id
-    is never trusted on its own: it must be the one this app is showing."""
+    """`(job_id, None)` when the posted merge job is one of this app's —
+    whoever started it (merge/start, the engine's return-to-following,
+    remix's bring-in) — else `(None, refusal)`. A job id is never trusted on
+    its own: the job's own `app_dir` must be this app's store key."""
     job_id = _text(body, "job")
-    current = _safely("merge job", _mod("merge_job").current, t.app_dir) if job_id else None
-    if not isinstance(current, dict) or current.get("id") != job_id:
+    merge = _safely("merge job", _mod("merge_job").get, job_id) if job_id else None
+    if not isinstance(merge, dict) or merge.get("app_dir") != _mod("store").key(t.app_dir):
         return None, _refuse("unknown-job", "That merge isn't waiting any more.")
     return job_id, None
 
@@ -493,11 +511,15 @@ def api_contrib_inbox_try_remove(body: dict = Body(...), x_fused: str | None = H
 def api_contrib_inbox_accept(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """`inbox.accept` is synchronous (merges on GitHub, then syncs the
     author's copy), so the route runs it as a job — one per PROPOSAL:
-    accepting #8 while #7's accept runs is a second job, not #7's."""
+    accepting #8 while #7's accept runs is a second job, not #7's. On a
+    "look" verdict `inbox.accept` refuses without `confirm` (the job fails
+    with reason "confirm"; the page asks, then posts again with it)."""
     t, number = _inbox_gate(body, x_fused)
     if not isinstance(t, _Target):
         return t
-    return _job(f"inbox-accept-{number}", t.app_dir, _mod("inbox").accept, t.app_dir, number)
+    return _job(f"inbox-accept-{number}", t.app_dir, _mod("inbox").accept, t.app_dir, number,
+                confirm=body.get("confirm") is True,
+                after=lambda: refresh.inbox_changed(t.app_dir))
 
 
 @router.post("/api/contrib/inbox/decline")
@@ -505,7 +527,10 @@ def api_contrib_inbox_decline(body: dict = Body(...), x_fused: str | None = Head
     t, number = _inbox_gate(body, x_fused)
     if not isinstance(t, _Target):
         return t
-    return _call("decline", _mod("inbox").decline, t.app_dir, number, _text(body, "note"))
+    out = _call("decline", _mod("inbox").decline, t.app_dir, number, _text(body, "note"))
+    if out.get("ok"):
+        _safely("inbox changed", refresh.inbox_changed, t.app_dir)
+    return out
 
 
 # -- mutations: A5 remix ------------------------------------------------------------

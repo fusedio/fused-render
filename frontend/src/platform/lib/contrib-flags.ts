@@ -13,12 +13,14 @@
 //
 // Same shape as github-link-flag.ts — ONE FETCH, NOT A POLL: the prefs can
 // only change on this app's Preferences page, and that page PUBLISHES the new
-// values. The `generation` counter keeps a pre-toggle GET landing after the
+// values (and another window's flip is picked up when this one comes back —
+// prefs-reread.ts). The `generation` counter keeps a pre-toggle GET landing after the
 // publish from writing the old values back. Plus a synchronous getter like
 // share-app-flag.ts `appSharingEnabled()`, for callers that are plain
 // functions built at click time (appCardMenu) rather than components.
 import { useEffect, useState } from "react";
-import { getPrefsShared, type ContribPrefs } from "@platform/lib/api";
+import { getPrefsShared, type ContribPrefs, type Prefs } from "@platform/lib/api";
+import { onPrefsReread } from "@platform/lib/prefs-reread";
 
 /** Effective phase values — prerequisites applied. */
 export interface ContribFlags {
@@ -69,7 +71,18 @@ function set(next: ContribFlags) {
   for (const listener of listeners) listener(next);
 }
 
+// Another window may have flipped a switch: re-read when this one comes back
+// (prefs-reread.ts — one shared GET for every flag module). Same guard as the
+// first read; a failed re-read keeps what is shown.
+function onReread(p: Promise<Prefs>) {
+  const departed = generation;
+  p.then((prefs) => {
+    if (generation === departed) set(effectiveContribFlags(prefs.contrib));
+  }).catch(() => {});
+}
+
 function read(): Promise<void> {
+  onPrefsReread(onReread);
   if (reading) return reading;
   const departed = generation;
   reading = getPrefsShared() // single-flight across flag modules (api.ts)

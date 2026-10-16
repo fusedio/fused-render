@@ -26,7 +26,8 @@
 // pref's own default, so the worst a click inside the first read's window can
 // do is behave like a machine that never turned the feature on.
 import { useEffect, useState } from "react";
-import { getPrefsShared } from "@platform/lib/api";
+import { getPrefsShared, type Prefs } from "@platform/lib/api";
+import { onPrefsReread } from "@platform/lib/prefs-reread";
 import { contribFlagsSync, useContribFlags } from "@platform/lib/contrib-flags";
 
 /** The last answer, or `null` while nobody has asked yet. Null renders as OFF:
@@ -43,7 +44,20 @@ function set(next: boolean) {
   for (const listener of listeners) listener(next);
 }
 
+// Another window may have flipped the switch: re-read when this one comes
+// back (prefs-reread.ts — one shared GET for every flag module). Same guard as
+// the first read; a failed re-read keeps what is shown.
+function onReread(fresh: Promise<Prefs>) {
+  const departed = generation;
+  fresh
+    .then((p) => {
+      if (generation === departed) set(p.app_sharing?.enabled === true);
+    })
+    .catch(() => {});
+}
+
 function read(): Promise<void> {
+  onPrefsReread(onReread);
   if (reading) return reading;
   const departed = generation;
   reading = getPrefsShared() // single-flight across flag modules (api.ts)

@@ -16,8 +16,9 @@
    in the barrel. Every colour is a token, so light and dark both follow. */
 
 /* ---- the header's source line ---------------------------------------------
-   Shares the folder's row: folder (shrinks, ellipsizes) then the source (never
-   shrinks), so the header keeps its two-line height. */
+   Shares the folder's row: folder then source, both able to shrink and
+   ellipsize (a long repo name must not push the header's buttons off), so the
+   header keeps its two-line height. */
 .app-page-sub {
   min-width: 0;
   max-width: 100%;
@@ -27,11 +28,14 @@
 }
 
 .contrib-source {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 12px;
   line-height: 1.3;
   color: var(--fg-muted);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .contrib-source::before {
@@ -68,6 +72,11 @@
   flex-direction: column;
   gap: 8px;
   margin-bottom: 12px;
+  /* The app under it always keeps most of the panel: a long merge summary
+     or an opened comment scrolls inside the stack instead of pushing the
+     frame down to a sliver. */
+  max-height: 40vh;
+  overflow-y: auto;
   animation: contrib-arrive 160ms ease-out;
 }
 
@@ -294,6 +303,45 @@
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+/* A second, smaller decision riding under a strip's own (the author's
+   waiting updates under "Your changes"): one line, a hairline above. */
+.contrib-strip-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--fg);
+}
+
+/* "More" opened it: the whole comment. */
+.contrib-quote.is-open {
+  display: block;
+  -webkit-line-clamp: none;
+}
+
+.contrib-quote-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+/* In the detail slot the quote sits right under the sentence. */
+.contrib-strip-detail .contrib-quote {
+  margin-top: 4px;
+}
+
+/* Extra detail lines a strip carries as children (the proposal's title
+   under a comment) — same voice as the detail slot, spaced off it. */
+.contrib-strip-main > .contrib-strip-detail {
+  margin: 4px 0 0;
 }
 
 .contrib-quote-author {
@@ -575,6 +623,48 @@
   font-size: 13px;
   line-height: 1.5;
   color: var(--fg);
+}
+
+/* Whose words: Claude's summary, and the sender's own text under an
+   "In bob's words" label — told apart by the label, never by colour alone. */
+.contrib-provenance {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.contrib-provenance-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.contrib-provenance-theirs {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.contrib-clamp {
+  margin: 0;
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.contrib-clamp.is-open {
+  display: block;
+  -webkit-line-clamp: none;
 }
 
 /* The safety review: its own inset, because it is the thing to read before

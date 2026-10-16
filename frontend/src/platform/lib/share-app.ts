@@ -71,6 +71,10 @@ export interface ShareStatus {
   app_id: string | null;
   can_share: boolean;
   refusal: string | null;
+  /** Which refusal, where a surface branches on it: "github_copy" — a
+   *  GitHub-link copy of someone else's app (contribution loop on), shared by
+   *  its GitHub link instead. Null otherwise; absent on older servers. */
+  refusal_code?: "github_copy" | null;
   cli_found: boolean;
   logged_in: boolean;
   creds_stamp: number | null;

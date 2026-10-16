@@ -12,16 +12,18 @@
 // The list is the `inbox` field of `/api/contrib/app` — the page's one
 // subscription, which polls fast while any review is still reading — so this
 // tab owns no fetch of its own; it asks for a re-read after every action.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Inbox, Loader2, ShieldAlert, ShieldCheck, Trash2 } from "lucide-react";
 import {
   acceptProposal,
   declineProposal,
+  okMessage,
   plainMessage,
   removeTry,
   reviewProposal,
   runJob,
   tryProposal,
+  useUnmountSignal,
   type AppContribState,
   type ContribAnswer,
   type InboxItem,
@@ -51,11 +53,30 @@ import { plural, possessive } from "./words";
 
 export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string; contrib: AppContribState }) {
   const inbox = contrib.data?.inbox ?? null;
-  if (!inbox) {
-    // Still asking: sized like one card so the first answer does not jump.
+  // Still asking — or asked, but the list has never been read from GitHub
+  // yet (a cold cache, `loading`): an empty answer then is not "no
+  // proposals", and saying so would be wrong for the seconds until the
+  // first read lands (the page polls fast meanwhile, `contribBusy`). Sized
+  // like one card so the first answer does not jump.
+  if (!inbox || (inbox.loading && inbox.items.length === 0)) {
     return (
       <div className="contrib-inbox" aria-busy="true">
         <Skeleton className="h-[148px] w-full rounded-[10px]" />
+      </div>
+    );
+  }
+  if (inbox.unavailable && inbox.items.length === 0) {
+    return (
+      <div className="contrib-inbox">
+        <Empty className="contrib-inbox-empty">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <Inbox />
+            </EmptyMedia>
+            <EmptyTitle>Can&rsquo;t reach GitHub right now</EmptyTitle>
+            <EmptyDescription>Proposals show up here once it answers. This page tries again on its own.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       </div>
     );
   }
@@ -109,6 +130,11 @@ function InboxCard({
   const [error, setError] = useState<string | null>(null);
   const [ask, setAsk] = useState<Ask>(null);
   const [note, setNote] = useState("");
+  // The server asked for an explicit OK on a flagged proposal (reason
+  // "confirm") although this card had not seen the verdict: the confirm then
+  // reads as the flagged one, and the next press sends `confirm: true`.
+  const [mustConfirm, setMustConfirm] = useState(false);
+  const signal = useUnmountSignal();
 
   const review = item.review_status === "ready" ? item.review : null;
   const reading = item.review_status === "pending" || item.review_status === "running";
@@ -120,6 +146,7 @@ function InboxCard({
     setBusy(key);
     setError(null);
     const r = await fn();
+    if ((r as { reason?: string }).reason === "aborted") return false; // unmounted
     if (!r.ok) setError(plainMessage(r));
     await refresh();
     setBusy(null);
@@ -131,6 +158,16 @@ function InboxCard({
   // the item itself — so "Open the copy" is there the moment Try answers.
   const [madeTry, setMadeTry] = useState<{ url: string } | null>(null);
   const tryCopy = item.try ?? madeTry;
+  // …and dropped once the server, having listed it, stops listing it (thrown
+  // away elsewhere, or removed with the proposal): the held copy is gone too.
+  const hadTry = useRef(false);
+  useEffect(() => {
+    if (item.try) hadTry.current = true;
+    else if (hadTry.current) {
+      hadTry.current = false;
+      setMadeTry(null);
+    }
+  }, [item.try]);
   const startTry = (confirm: boolean) =>
     act("try", async () => {
       const r = await tryProposal(dir, item.number, confirm);
@@ -167,7 +204,7 @@ function InboxCard({
       <h3 id={`contrib-pr-${item.number}`} className="contrib-inbox-title">
         {item.title}
       </h3>
-      {item.summary && <p className="contrib-inbox-summary">{item.summary}</p>}
+      <Provenance item={item} who={who} />
 
       <ReviewBlock
         item={item}
@@ -200,7 +237,8 @@ function InboxCard({
         </div>
       )}
 
-      {error && (
+      {/* Said once: while the Decline sheet is up it shows the error itself. */}
+      {error && ask !== "decline" && (
         <p className="contrib-error" role="alert">
           {error}
         </p>
@@ -231,8 +269,9 @@ function InboxCard({
           <AlertDialogHeader>
             <AlertDialogTitle>Try a proposal that needs a look?</AlertDialogTitle>
             <AlertDialogDescription>
-              Claude found something worth checking in {possessive(who)} changes. Trying runs them on this Mac,
-              in a separate copy — your app stays as it is.
+              Claude found something worth checking in {possessive(who)} changes. This copy runs on your
+              computer with your GitHub access — your app stays as it is, but the code inside it can do what
+              you can.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -255,7 +294,9 @@ function InboxCard({
             <AlertDialogTitle>Accept {possessive(who)} proposal?</AlertDialogTitle>
             <AlertDialogDescription>
               {possessive(who)} changes go into {slug}, and everyone who follows it gets them.
-              {flagged ? " Claude flagged something in it — make sure you've looked." : ""}
+              {flagged || mustConfirm
+                ? " Claude flagged something in it that needs a look. Accept only if you have read what it found and are fine with it."
+                : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -263,9 +304,18 @@ function InboxCard({
             <AlertDialogAction
               onClick={() => {
                 setAsk(null);
+                const confirmLook = flagged || mustConfirm;
                 void act("accept", async () => {
-                  const r = await runJob(acceptProposal(dir, item.number));
-                  if (r.ok) notify({ title: `Accepted. ${possessive(who)} change is in ${slug}.`, tone: "info" });
+                  const r = await runJob(acceptProposal(dir, item.number, confirmLook), { signal: signal() });
+                  if (r.ok) {
+                    setMustConfirm(false);
+                    notify({ title: okMessage(r, `Accepted. ${possessive(who)} change is in ${slug}.`), tone: "info" });
+                  } else if (r.reason === "confirm" && !confirmLook) {
+                    // Ask — once — with the flagged wording; no error line.
+                    setMustConfirm(true);
+                    setAsk("accept");
+                    return { ok: true };
+                  }
                   return r;
                 });
               }}
@@ -292,10 +342,16 @@ function InboxCard({
                 variant="destructive"
                 disabled={busy === "decline"}
                 onClick={async () => {
-                  const ok = await act("decline", () => declineProposal(dir, item.number, note.trim()));
+                  let answer: unknown = null;
+                  const ok = await act("decline", async () => {
+                    const r = await declineProposal(dir, item.number, note.trim());
+                    answer = r;
+                    return r;
+                  });
                   if (ok) {
                     setAsk(null);
-                    notify({ title: `Declined. ${who} has been told.`, tone: "info" });
+                    setError(null);
+                    notify({ title: okMessage(answer, `Declined. ${who} has been told.`), tone: "info" });
                   }
                 }}
               >
@@ -326,6 +382,46 @@ function InboxCard({
         </ContribDialog>
       )}
     </article>
+  );
+}
+
+/** What the proposal says it does, with whose words they are. Claude's
+ *  read (the safety review's summary) is labelled as Claude's; whatever the
+ *  sender wrote — the description, or a summary that came with the proposal —
+ *  is labelled "In bob's words", so a sender's text can never pass for
+ *  Claude's judgement. The review block below carries Claude's verdict. */
+function Provenance({ item, who }: { item: InboxItem; who: string }) {
+  const claudes = item.summary_source === "review";
+  const theirs = (item.description || (!claudes ? item.summary : "") || "").trim();
+  // Claude's summary already shows inside a ready review: once is enough.
+  const showClaude = claudes && !!item.summary && item.review?.summary !== item.summary;
+  if (!showClaude && !theirs) return null;
+  return (
+    <div className="contrib-provenance">
+      {showClaude && (
+        <p className="contrib-inbox-summary">
+          <span className="contrib-provenance-label">Claude&rsquo;s summary</span> {item.summary}
+        </p>
+      )}
+      {theirs && (
+        <div className="contrib-provenance-theirs">
+          <span className="contrib-provenance-label">In {possessive(who)} words</span>
+          <ClampedText text={theirs} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Text clamped to four lines, with More/Less when it runs longer. */
+function ClampedText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > 280 || text.split("\n").length > 4;
+  return (
+    <>
+      <p className={"contrib-clamp" + (open ? " is-open" : "")}>{text}</p>
+      {long && <QuietAction onClick={() => setOpen((o) => !o)}>{open ? "Less" : "More"}</QuietAction>}
+    </>
   );
 }
 

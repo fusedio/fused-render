@@ -14,9 +14,11 @@ reset) is recovered from GitHub too: Send adopts the open proposal from
 Bob's account that carries fused's footer marker instead of opening a
 second one.
 
-WHAT IS SENT IS EXACTLY WHAT BOB RUNS (D16). Send/Update first commit any
-uncommitted tracked edits as one "Your edits" commit, so the proposal is the
-folder as it stands, not as of the last Claude turn.
+WHAT IS SENT IS EXACTLY WHAT BOB RUNS (D16). Send/Update first commit
+everything uncommitted — edits to tracked files AND new files git does not
+ignore (a file Bob made by hand is part of what runs), minus fused's own
+state and generated files (`replay.EDITS_EXCLUDE`) — as one "Your edits" commit, so
+the proposal is the folder as it stands, not as of the last Claude turn.
 
 CREDIT (§8 step 4). Claude's turns and app_git commit as `Fused
 <apps@fused.io>` — no person. Before anything leaves the machine, every
@@ -41,8 +43,10 @@ fetched and REPLAYED ON TOP OF Bob's current version in a scratch worktree.
 Clean → Bob's copy lands that result (so he now runs, and sends, both), and
 the push replaces the branch only if it still holds the head we just read
 (`--force-with-lease`; a race is a plain "try again"). Overlap → Update
-refuses with a plain sentence and nothing moves, locally or on GitHub — her
-commits are never clobbered and his edits are never lost. There is no Merge
+refuses with a plain sentence: nothing changes on GitHub and no file of
+Bob's changes (his newest commits may already carry his credit — the same
+files, the old tip pinned by a backup ref) — her commits are never clobbered
+and his edits are never lost. There is no Merge
 with Claude purpose for this corner in stage A; withdrawing and proposing
 again is the way out. A title or description edited on github.com is simply
 read back on the next refresh.
@@ -159,11 +163,12 @@ def _owner_name(record: dict) -> str:
 
 
 def dirty(root) -> bool:
-    """Uncommitted edits to tracked files, `.fused/` excluded (it is fused's
-    own machine state, skip-worktree'd when committed)."""
-    res = _git(root, "status", "--porcelain=v1", "--untracked-files=no", "--",
-               ".", ":(exclude).fused")
-    return _ok(res) and bool(_out(res))
+    """Anything "Your edits" would send: uncommitted edits to tracked files
+    AND untracked files git does not ignore, minus fused's own state and
+    generated files. ONE definition, `replay.dirty`/`replay.EDITS_PATHSPEC`,
+    shared with engine.status's `dirty` — so "you have edits" on the page is
+    exactly what Propose sends."""
+    return _replay().dirty(root)
 
 
 def base_of(root, record) -> str | None:
@@ -205,12 +210,15 @@ def with_trailer(message: str) -> str:
 
 
 def commit_edits_locked(root, ident: dict, message: str = "Your edits") -> str | None:
-    """Commit uncommitted tracked edits as one commit by `ident`; answers the
+    """Commit everything `dirty` sees as one commit by `ident`; answers the
     new HEAD, or None when there was nothing to commit. Caller holds the
     slot (it writes the index and the branch)."""
     if not dirty(root):
         return None
-    if not _ok(_git(root, "add", "-u", "--", ".", ":(exclude).fused")):
+    # `add -A`, scoped: honours .gitignore and .git/info/exclude, and
+    # `replay.EDITS_EXCLUDE` on top. Tracked `.fused/` paths are
+    # skip-worktree'd too.
+    if not _ok(_git(root, "add", "-A", "--", *_replay().EDITS_PATHSPEC)):
         raise PlainError("Your edits couldn't be saved for sending. Try again.")
     res = _git(root, *_identity_cfg(ident), "commit", "--no-verify", "-q", "-m", message)
     if not _ok(res):
@@ -393,9 +401,10 @@ def _body(description: str, note: str | None, login: str) -> str:
 
 
 def unproposed(root, record) -> int:
-    """Edits Bob made since his open proposal was last sent — commits after
-    `proposed_head`, plus one for uncommitted edits (Update sends those
-    too). 0 without an open proposal."""
+    """Commits Bob made since his open proposal was last sent (after
+    `proposed_head`); 0 without an open proposal. Uncommitted edits are NOT
+    counted — `copy.dirty` says those, the same split `engine.status` makes
+    (Update sends them too, so the page shows Update for either)."""
     p = (record or {}).get("proposal")
     if not _is_open(p):
         return 0
@@ -417,7 +426,7 @@ def unproposed(root, record) -> int:
                 n = int(_out(res)) if _ok(res) else 0
             except ValueError:
                 n = 0
-    return n + (1 if dirty(root) else 0)
+    return n
 
 
 def view(app_dir) -> dict | None:
@@ -444,10 +453,36 @@ def view(app_dir) -> dict | None:
            "state": shown, "needs_merge": bool(record.get("needs_merge")),
            "unproposed": unproposed(root, record) if shown in ("waiting", "commented") else 0,
            "settled_seen": bool(p.get("settled_seen")),
-           "can_update": record.get("kind") == "github"}
-    if shown == "commented":
+           # After a remix (kind "own") the copy carries the credit line and
+           # a new app id, which must never be sent into the author's app:
+           # still followed, still withdrawable, never updated.
+           "can_update": shown in ("waiting", "commented") and record.get("kind") == "github",
+           "can_withdraw": shown in ("waiting", "commented"),
+           "stale": stale(root, p) if shown in ("waiting", "commented") else False}
+    if shown in ("commented", "declined") and cache.get("comment"):
+        # Declined: the author's closing note, if she left one.
         out["comment"] = dict(cache["comment"])
     return out
+
+
+def stale(root, p: dict) -> bool:
+    """What Bob runs now differs from what GitHub has from him: HEAD's tree
+    is not the last-sent tree, or there are uncommitted edits Update would
+    send. THIS — not `unproposed` — is what offers Update proposal: after a
+    Merge with Claude the re-based commits can be patch-equivalent (so
+    `unproposed` reads 0) while the version on GitHub still collides with
+    the author's latest. Two rev-parses and a status; no network."""
+    pushed = p.get("pushed_head")
+    if not pushed:
+        return False
+    # One spawn for both (`--verify` takes one name only); a pushed commit
+    # this repo lost fails the whole call → False, never a false "stale".
+    res = _git(root, "rev-parse", f"{pushed}^{{tree}}", "HEAD^{tree}")
+    trees = _out(res).split() if _ok(res) else []
+    sent, now = (trees + [None, None])[:2]
+    if not sent or not now:
+        return False
+    return sent != now or dirty(root)
 
 
 # --------------------------------------------------------------- the draft
@@ -520,9 +555,20 @@ def _require_identity() -> dict:
     return me
 
 
-def send(app_dir, *, title: str, description: str, note: str | None = None) -> dict:
+def _say(step, key: str) -> None:
+    """Report progress to the job (`jobs.set_step`) when a caller wired one."""
+    if step is not None:
+        try:
+            step(key)
+        except Exception:  # noqa: BLE001 — progress is decoration
+            logger.debug("proposals: step %s not reported", key, exc_info=True)
+
+
+def send(app_dir, *, title: str, description: str, note: str | None = None,
+         step=None) -> dict:
     """Send Bob's changes as a new proposal (contract §8 steps 1–6). Answers
-    the page's proposal object."""
+    the page's proposal object (`number`, `url`, …). `step(key)` hears
+    "copy" → "send" → "open" as the job moves on."""
     title = " ".join((title or "").split())[:_TITLE_MAX]
     if not title:
         raise PlainError("Give your proposal a title.")
@@ -540,15 +586,20 @@ def send(app_dir, *, title: str, description: str, note: str | None = None) -> d
         raise PlainError(f"{_owner_name(record)} changed the same parts you did. "
                          "Merge with Claude first, then send.")
     repo, base_branch = record["repo"], record["branch"]
+    base_now = base_of(root, record)
+    if base_now and base_now == _rev(root, "HEAD") and not dirty(root):
+        raise PlainError("There's nothing to send yet. Ask Claude for a change first.")
 
     # Network first, before anything local moves: a refusal here (signed
     # out, no permission to copy, offline) leaves the folder untouched.
+    _say(step, "copy")
     fork = gh.ensure_fork(repo)
     fork_owner = gh.split_full(fork)[0]
     adopt = gh.find_open_pr(repo, fork_owner)
     if adopt and not (adopt.get("head_repo") or "").lower() == fork.lower():
         adopt = None
 
+    _say(step, "send")
     tip, base = prepare(root, record, me)
     if tip == base:
         raise PlainError("There's nothing to send yet. Ask Claude for a change first.")
@@ -561,6 +612,7 @@ def send(app_dir, *, title: str, description: str, note: str | None = None) -> d
         tip = _keep_their_edits(root, record, tip, pushed=None, remote=adopt.get("head_sha"),
                                 fork=fork, head_branch=head_branch)
         _push(root, tip, fork, head_branch, lease=adopt.get("head_sha") or "")
+        _say(step, "open")
         pr = adopt
     else:
         head_branch = _branch_name(root)
@@ -570,6 +622,7 @@ def send(app_dir, *, title: str, description: str, note: str | None = None) -> d
             gh.push(root, tip, fork, head_branch, force=True)
         except gh.GitHubError as exc:
             raise _plain_push_error(exc, record)
+        _say(step, "open")
         try:
             pr = gh.open_pr(repo, title=title, body=_body(description, note, me["login"]),
                             head=f"{fork_owner}:{head_branch}", base=base_branch)
@@ -646,7 +699,10 @@ def update(app_dir) -> dict:
         q = rec.get("proposal")
         if isinstance(q, dict) and q.get("number") == p["number"]:
             q.update(proposed_head=tip, pushed_head=tip, proposed_onto=mb, sent_at=now)
-            q.setdefault("cache", {})["head_sha"] = tip
+            # "alice commented" answers the version she commented on; a new
+            # send starts the wait again (the next refresh re-reads it, and
+            # only comments after `sent_at` count).
+            q.setdefault("cache", {}).update(head_sha=tip, comment=None)
 
     with _replay().slot() as held:
         if held:
@@ -713,9 +769,19 @@ def _plain_push_error(exc: gh.GitHubError, record: dict) -> Exception:
 
 def withdraw(app_dir) -> dict:
     """Close Bob's open proposal on GitHub (with a short note to the author)
-    and forget it locally. Never touches Bob's changes."""
+    and forget it locally. Never touches Bob's changes.
+
+    Refused (raises, reason "busy") while a send or update job for this app
+    is still running: the send writes its proposal record only at the end,
+    so a withdraw answered "ok" now would be followed by a fresh open
+    proposal a moment later."""
     store = _store()
     root = store.key(app_dir)
+    from fused_render.contrib import jobs
+    for kind in ("propose-send", "propose-update"):
+        if (jobs.latest(kind, root) or {}).get("status") == "running":
+            raise PlainError("Your proposal is still being sent — try again in a moment.",
+                             reason="busy")
     record = store.get(root) or {}
     p = record.get("proposal")
     if not isinstance(p, dict) or not p.get("number"):
@@ -778,8 +844,11 @@ def _apply_pr(root, pr: dict, comments: list | None) -> tuple[dict | None, str |
         if comments is not None:
             cache["comment"] = _newest_comment(comments, pr.get("user") or q.get("user"),
                                                q.get("sent_at") or q.get("opened_at"))
+        if state == "closed" and comments is not None:
+            cache["note_checked"] = True        # settled: refresh stops polling
         if state == "open":
             cache.setdefault("comment", None)
+            cache["note_checked"] = False       # reopened: follow it again
         if pr.get("title"):
             q["title"] = pr["title"]
         if pr.get("url"):
@@ -809,13 +878,29 @@ def refresh(app_dir, *, force: bool = False) -> dict | None:
     without merging → declined (Bob's changes untouched); merged and the
     author's latest carries it → return to following (A4, `flags.loop()`).
     Answers the page's proposal object. Never raises for a GitHub problem —
-    the cached state stands until the next read."""
+    the cached state stands until the next read.
+
+    A SETTLED PROPOSAL IS NOT POLLED. Merged and returned (`returned_at`):
+    nothing left to learn, ever. Closed unmerged (declined or withdrawn)
+    once its closing note has been read (`cache.note_checked`): no more
+    background reads either — only an explicit `force` (Bob's "check now")
+    asks GitHub again. Merged but NOT yet returned keeps polling: A4 waits
+    on the author's latest carrying the merge. The one place this bends
+    "GitHub is the truth": a proposal the author REOPENS after declining
+    it is not noticed in the background — accepted, because Bob sees it on
+    his next "check now", and a fresh Send adopts the open proposal anyway
+    (`find_open_pr`) instead of opening a second one."""
     store = _store()
     root = store.key(app_dir)
     record = store.get(root)
     p = (record or {}).get("proposal")
     if not isinstance(p, dict) or not p.get("number"):
         return None
+    cache = p.get("cache") or {}
+    if cache.get("state") == "merged" and p.get("returned_at"):
+        return view(root)
+    if cache.get("state") == "closed" and cache.get("note_checked") and not force:
+        return view(root)
     now = time.monotonic()
     with _refresh_lock:
         last = _last_refresh.get(root)
@@ -827,7 +912,13 @@ def refresh(app_dir, *, force: bool = False) -> dict | None:
     if due:
         try:
             pr = gh.get_pr(p["repo"], p["number"])
-            comments = gh.pr_comments(p["repo"], p["number"]) if pr["state"] == "open" else None
+            # Comments while open ("alice commented"), and once more when it
+            # is closed unmerged and the closing note was not read yet: the
+            # decline note (inbox.decline comments, then closes) is what Bob
+            # is shown, and reading it settles the proposal (`note_checked`).
+            wants = pr["state"] == "open" or (not pr.get("merged")
+                                              and not cache.get("note_checked"))
+            comments = gh.pr_comments(p["repo"], p["number"]) if wants else None
         except gh.GitHubError as exc:
             reason = exc.reason
 
@@ -848,28 +939,22 @@ def refresh(app_dir, *, force: bool = False) -> dict | None:
 
 
 def _maybe_return(root, record) -> None:
-    """A4: once the author's latest (after a fetch) contains the merge, hand
-    the copy back to following. `engine.return_to_following` keeps Bob's
-    unproposed edits and records `returned_at`."""
+    """A4: hand the copy back to following once the author's latest contains
+    the merge. `engine.return_to_following` owns all of it — the fetch under
+    the slot, the containment test against `merge_commit_sha` (squash and
+    rebase merges included), keeping Bob's unproposed edits, `returned_at`
+    and the "merged-back" event — and answers "not yet" while the author's
+    branch lacks it; the next refresh (≤ 1 per REFRESH_TTL_S) asks again."""
     try:
         if not _flags().loop():
             return
-        p = record["proposal"]
-        merged = (p.get("cache") or {}).get("merge_commit_sha")
-        if not merged:
+        # An overlap already waits on Merge with Claude (purpose "return"):
+        # asking again would re-fetch and re-replay under the slot every
+        # refresh for as long as the card sits there. Accepting that job
+        # clears `needs_merge` and sets `returned_at`.
+        if record.get("needs_merge"):
             return
-        follow = _follow()
-        f = follow.for_record(record)
-        if f is None:
-            return
-        replay = _replay()
-        tip = None
-        # The follow ref is the engine's too, so this fetch holds the slot.
-        with replay.slot(block=False) as held:
-            if held:
-                tip = follow.fetch(root, f)
-        tip = tip or follow.tip(root, f)
-        if not tip or not _rev(root, merged) or not replay.is_ancestor(root, merged, tip):
+        if not ((record["proposal"].get("cache") or {}).get("merge_commit_sha")):
             return
         from fused_render.contrib import engine
         engine.return_to_following(root)
@@ -893,37 +978,60 @@ def preflight(app_dir, *, needs_identity: bool = True) -> dict | None:
     """The synchronous checks a route makes before starting a job: phase on,
     a GitHub-link copy, signed in. None = go ahead; else the refusal."""
     if not _flags().changes():
-        return _refusal("disabled", "This isn't switched on yet.")
+        return _refusal("disabled", "This isn't turned on.")
     try:
         _contributor_record(app_dir)
     except PlainError as exc:
         return _refusal("not-allowed", exc.message)
     if needs_identity:
-        try:
-            if not gh.identity(strict=True):
-                return _refusal("signed-out", "Sign in to GitHub to send your proposal.")
-        except gh.GitHubError as exc:
-            return _refusal(exc.reason, exc.message)
+        return identity_refusal("Sign in to GitHub to send your proposal.")
     return None
+
+
+def identity_refusal(signed_out_message: str) -> dict | None:
+    """None when someone is signed in to GitHub, else the refusal: reason
+    "signed-out" (the page runs sign-in) or "offline". From `gh.identity`'s
+    cache, the unreachable answer included, so an offline machine does not
+    re-ask GitHub on every gated POST; the job itself asks again, strictly."""
+    if gh.identity():
+        return None
+    if gh.unreachable():
+        return _refusal("offline", gh.GitHubError("offline").message)
+    return _refusal("signed-out", signed_out_message)
+
+
+def start_job(kind: str, app_dir, fn) -> str:
+    """`jobs.start(kind, <key>, lambda: fn(step))` where `step(key)` reports
+    progress through `jobs.set_step` on the job's own id (`jobs.current_id`,
+    thread-local to the job thread)."""
+    from fused_render.contrib import jobs
+
+    def step(key: str) -> None:
+        jobs.set_step(jobs.current_id(), key)
+
+    return jobs.start(kind, _store().key(app_dir), lambda: fn(step))
 
 
 def _start(kind: str, app_dir, fn, *, needs_identity: bool = True) -> dict:
     refusal = preflight(app_dir, needs_identity=needs_identity)
     if refusal:
         return refusal
-    from fused_render.contrib import jobs
-    root = _store().key(app_dir)
-    return {"ok": True, "job": jobs.start(kind, root, fn)}
+    return {"ok": True, "job": start_job(kind, app_dir, fn)}
 
 
 def start_draft(app_dir) -> dict:
-    return _start("propose-draft", app_dir, lambda: draft(app_dir), needs_identity=False)
+    """Job result `{title, description}`."""
+    return _start("propose-draft", app_dir, lambda step: draft(app_dir), needs_identity=False)
 
 
 def start_send(app_dir, *, title: str, description: str, note: str | None = None) -> dict:
+    """Job steps "copy" → "send" → "open"; result = the proposal object
+    (`number`, `url`, `state`, …)."""
     return _start("propose-send", app_dir,
-                  lambda: send(app_dir, title=title, description=description, note=note))
+                  lambda step: send(app_dir, title=title, description=description,
+                                    note=note, step=step))
 
 
 def start_update(app_dir) -> dict:
-    return _start("propose-update", app_dir, lambda: update(app_dir))
+    """Job result = the proposal object (+ `message` when nothing was new)."""
+    return _start("propose-update", app_dir, lambda step: update(app_dir))

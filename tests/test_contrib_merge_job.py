@@ -350,7 +350,7 @@ def test_merge_variant_clean_still_asks(tmp_path, home):
     jid = merge_job.start(str(remix), purpose="original", onto=original, upstream=original,
                           resolver=lambda *a: pytest.fail("no resolver needed"))
     job = wait(jid)
-    assert job["status"] == "ready" and job["summary"] == "No overlap with your changes."
+    assert job["status"] == "ready" and job["summary"] == merge_job.CLEAN_MERGE_SUMMARY
     assert git(remix, "rev-parse", "HEAD") == before
     assert merge_job.accept(jid)["ok"]
     assert os.path.exists(remix / "b.txt")
@@ -378,8 +378,8 @@ def test_orphan_sweep_respects_age_and_ownership(tmp_path, home, overlap):
 
 
 def test_summary_from_reply():
-    text = "I edited it.\n\n<summary>Kept **both** lines. Removed the commit markers.</summary>"
-    assert merge_job.summary_from(text) == "Kept both lines. Removed the change markers."
+    text = "I edited it.\n\n<summary>Kept **both** lines. Push alerts still work.</summary>"
+    assert merge_job.summary_from(text) == "Kept both lines. Push alerts still work."
     assert merge_job.summary_from("first\n\nlast para") == "last para"
 
 
@@ -388,3 +388,132 @@ def test_prompt_names_files_sides_and_rules():
                                       "second": "your change", "intent": "Add a button"})
     assert "- a.txt" in p and "alice's latest version" in p
     assert "Do not run git" in p and "<summary>" in p and "Add a button" in p
+
+
+def test_landing_job_is_still_open(overlap, monkeypatch):
+    bob, onto, base = overlap
+    monkeypatch.setattr(merge_job, "_run", lambda job, resolver: None)
+    first = merge_job.start(bob, purpose="needs-merge", onto=onto, upstream=base)
+    with merge_job._lock:
+        merge_job._jobs[first]["status"] = "landing"
+    assert merge_job.start(bob, purpose="needs-merge", onto=onto, upstream=base) == first
+    assert merge_job.current(bob)["id"] == first and merge_job.for_app(bob)["id"] == first
+
+
+def test_failed_job_shows_only_while_the_merge_is_needed(overlap, monkeypatch):
+    from fused_render.contrib import store
+
+    bob, onto, base = overlap
+    store.put(bob, {**store.new_record("github", repo="alice/x", branch="main"),
+                    "needs_merge": {"onto": onto, "since": 1.0}})
+    jid = merge_job.start(bob, purpose="needs-merge", onto=onto, upstream=base,
+                          resolver=lambda *a: {"ok": False, "error": "nope"})
+    assert wait(jid)["status"] == "failed"
+    assert merge_job.current(bob)["id"] == jid
+    store.update(bob, lambda r: r.__setitem__("needs_merge", None))
+    assert merge_job.current(bob) is None
+    # current() prunes too: a day-old failure is dropped from the registry.
+    with merge_job._lock:
+        merge_job._jobs[jid]["ended_at"] -= merge_job.EXPIRE_S + 1
+    merge_job.current(bob)
+    assert jid not in merge_job._jobs
+
+
+def test_merge_sessions_are_not_tasks(home, monkeypatch):
+    from fused_render import tasks_store
+    from fused_render.server.routers import tasks
+
+    work = os.path.join(str(home), "contrib", "work", "abc123")
+    assert merge_job.is_scratch_workdir(work)
+    assert merge_job.is_scratch_workdir(
+        os.path.join(str(home), "branches", "feat", "contrib", "work", "x"))
+    assert not merge_job.is_scratch_workdir(os.path.join(str(home), "contrib", "work"))
+    assert not merge_job.is_scratch_workdir("/Users/a/projects/contrib/work/x")
+    assert not merge_job.is_scratch_workdir(None)
+    heads = {"/t/merge.jsonl": work, "/t/real.jsonl": "/Users/a/Fused/app/x"}
+    monkeypatch.setattr(tasks_store, "head",
+                        lambda path, size=None: (heads[path], None, "", "", None))
+    assert tasks._merge_session({"path": "/t/merge.jsonl"}) is True
+    assert tasks._merge_session({"path": "/t/real.jsonl"}) is False
+    assert tasks._merge_session({"path": None}) is False
+
+
+def test_resolver_that_drops_a_change_fails(overlap):
+    """Claude skipping the user's step leaves `onto` with no markers: the
+    count check is what refuses that as "combined"."""
+    bob, onto, base = overlap
+
+    def skipper(wt, files, context):
+        git(wt, "-c", "core.editor=true", "rebase", "--skip")
+        return {"ok": True, "summary": "Combined everything."}
+
+    jid = merge_job.start(bob, purpose="needs-merge", onto=onto, upstream=base,
+                          resolver=skipper)
+    assert wait(jid)["status"] == "failed"
+
+
+def test_unsaved_overlapping_edit_defers_accept(overlap):
+    bob, onto, base = overlap
+    jid = merge_job.start(bob, purpose="needs-merge", onto=onto, upstream=base,
+                          resolver=resolve_with("<p>both</p>\n"))
+    assert wait(jid)["status"] == "ready"
+    write(os.path.join(bob, "index.html"), "<p>typing...</p>\n")  # not saved as a change
+    res = merge_job.accept(jid)
+    assert res["ok"] is False and res["reason"] == "busy"
+    assert read(os.path.join(bob, "index.html")) == "<p>typing...</p>\n"
+    assert merge_job.get(jid)["status"] == "ready"
+    assert merge_job.for_app(bob)["id"] == jid
+    git(bob, "checkout", "--", "index.html")
+    assert merge_job.accept(jid)["ok"]
+    assert merge_job.for_app(bob) is None
+
+
+def test_public_shape(overlap):
+    bob, onto, base = overlap
+    jid = merge_job.start(bob, purpose="needs-merge", onto=onto, upstream=base,
+                          resolver=resolve_with("<p>x</p>\n"))
+    job = wait(jid)
+    assert set(job) == {"id", "app_dir", "status", "summary", "files", "error",
+                        "purpose", "started_at"}
+    assert job["app_dir"] == os.path.realpath(bob) and job["started_at"] <= time.time()
+
+
+def test_merge_variant_clean_builds_commit_without_worktree(tmp_path, home):
+    remix = tmp_path / "remix3"
+    remix.mkdir()
+    git(remix, "init", "-q", "-b", "main")
+    write(remix / "a.txt", "one\n")
+    git(remix, "add", "-A")
+    git(remix, "commit", "-q", "-m", "base")
+    git(remix, "checkout", "-q", "-b", "orig")
+    write(remix / "b.txt", "new\n")
+    git(remix, "add", "-A")
+    git(remix, "commit", "-q", "-m", "original moved")
+    original = git(remix, "rev-parse", "HEAD")
+    git(remix, "checkout", "-q", "main")
+    write(remix / "a.txt", "mine\n")
+    git(remix, "commit", "-q", "-am", "remix edit")
+    mine = git(remix, "rev-parse", "HEAD")
+    jid = merge_job.start(str(remix), purpose="original", onto=original, upstream=mine,
+                          resolver=lambda *a: pytest.fail("no resolver needed"))
+    job = wait(jid)
+    assert job["summary"] == merge_job.CLEAN_MERGE_SUMMARY
+    assert len(worktrees(remix)) == 1
+    assert merge_job.accept(jid)["ok"]
+    assert git(remix, "log", "-1", "--format=%P").split() == [mine, original]
+    assert git(remix, "log", "-1", "--format=%s") == merge_job.MERGE_MESSAGE
+    assert read(remix / "a.txt") == "mine\n" and read(remix / "b.txt") == "new\n"
+
+
+def test_own_sync_accept_schedules_a_send(overlap, monkeypatch):
+    from fused_render import git_upstream
+
+    bob, onto, base = overlap
+    sent = []
+    monkeypatch.setattr(git_upstream, "schedule_sync",
+                        lambda path, action, *, push=True: sent.append((path, push)))
+    jid = merge_job.start(bob, purpose="own-sync", onto=onto, upstream=base,
+                          resolver=resolve_with("<p>x</p>\n"))
+    assert wait(jid)["status"] == "ready"
+    assert merge_job.accept(jid)["ok"]
+    assert sent == [(os.path.realpath(bob), True)]

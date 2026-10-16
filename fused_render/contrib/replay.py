@@ -301,6 +301,25 @@ def protect_locked(root) -> int:
     if not ok(r):
         logger.warning("contrib: skip-worktree failed in %s: %s", root, gu._text(r))
         return 0
+    # The record remembers that the bits are ours, so switching the loop off
+    # can take them back (`unprotect_locked`).
+    from fused_render.contrib import store
+
+    store.update(root, lambda rec: rec.__setitem__("protected", True))
+    return len(todo)
+
+
+def unprotect_locked(root) -> int:
+    """Clear skip-worktree on every tracked `.fused/` path — the loop was
+    switched off, and with it off `git status` must report exactly what it
+    did before (§0.6). The caller holds the slot. Answers how many."""
+    _restore_aside(root, _aside_dir(root))
+    todo = [p for tag, p in _tracked_fused(root) if tag == "S"]
+    if todo:
+        r = git(root, "update-index", "--no-skip-worktree", "--", *todo)
+        if not ok(r):
+            logger.warning("contrib: clearing skip-worktree failed in %s: %s", root, gu._text(r))
+            return 0
     return len(todo)
 
 
@@ -327,11 +346,103 @@ def _new_backup_ref(root) -> str:
     return name
 
 
+# --------------------------------------------------------------- "your edits"
+#
+# ONE definition of Bob's uncommitted edits, shared by the engine (status's
+# `dirty`, the update precheck, the Discard backup) and proposals.py ("Your
+# edits", the commit a Propose sends): edits to tracked files AND untracked
+# files git does not ignore (a file Bob made by hand is part of what runs,
+# D16), minus fused's machine state and app_git._GITIGNORE's generated set —
+# excluded here even when the app's own .gitignore forgets them (keep in
+# step with that list).
+
+EDITS_EXCLUDE = (
+    ":(exclude).fused", ":(exclude).venv", ":(exclude,glob)**/__pycache__/**",
+    ":(exclude,glob)**/*.html.json", ":(exclude,glob)**/.claude-split.json",
+    ":(exclude,glob)**/.fused-render-write-probe.*", ":(exclude,glob)**/.DS_Store",
+)
+#: The pathspec for `git status`/`git add -A`: the whole tree, minus the above.
+EDITS_PATHSPEC = (".",) + EDITS_EXCLUDE
+
+
+def edits(root) -> list[tuple[str, str]]:
+    """`[(code, path)]` — porcelain v1 `XY` codes, `??` for untracked — for
+    every uncommitted edit (section comment). Empty when there are none or
+    git cannot say."""
+    r = git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+            "--", *EDITS_PATHSPEC)
+    if not ok(r):
+        return []
+    found = []
+    items = iter(r[1].decode("utf-8", "replace").split("\0"))
+    for item in items:
+        if len(item) > 3:
+            found.append((item[:2], item[3:]))
+            if item[0] in "RC":
+                next(items, None)  # a rename's source path follows, bare
+    return found
+
+
+def dirty(root) -> bool:
+    return bool(edits(root))
+
+
+def _run_env(root, env, *args, timeout=gu.TIMEOUT_S):
+    """`git -C root …` with extra environment (a temporary index)."""
+    import subprocess
+
+    kwargs = gu._popen_kwargs()
+    kwargs["env"] = {**kwargs["env"], **env}
+    try:
+        proc = subprocess.run([gu._git_bin(), "-C", root, *args], stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout, **kwargs)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def wip_commit_locked(root, head) -> str | None:
+    """A commit (parent `head`) holding every uncommitted edit — tracked
+    changes, staged or not, AND untracked non-ignored files — or None when
+    there are none. Built through a TEMPORARY index (a copy of the real one,
+    so staged state and skip-worktree bits carry over): the real index, the
+    working tree and the shared stash stack are never touched, unlike
+    `git stash -u`, which would also remove the files it saves."""
+    if not edits(root):
+        return None
+    gitdir = gu._real_gitdir(root)
+    if not gitdir:
+        return None
+    tmp = os.path.join(gitdir, f"fused-backup-index-{uuid.uuid4().hex}")
+    try:
+        real_index = os.path.join(gitdir, "index")
+        env = {"GIT_INDEX_FILE": tmp}
+        if os.path.isfile(real_index):
+            shutil.copyfile(real_index, tmp)
+        elif not ok(_run_env(root, env, "read-tree", head)):
+            return None
+        if not ok(_run_env(root, env, "add", "-A", "--", *EDITS_PATHSPEC,
+                           timeout=REPLAY_TIMEOUT_S)):
+            return None
+        tree = out(_run_env(root, env, "write-tree"))
+        if not tree or tree == out(git(root, "rev-parse", f"{head}^{{tree}}")):
+            return None
+        commit = out(git(root, *identity_args(root), "commit-tree", tree, "-p", head,
+                         "-m", "Backup of uncommitted edits"))
+        return commit or None
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 def backup_locked(root, tip, *, why, app_dir=None) -> list[str]:
-    """Pin `tip` (and, when tracked files are dirty, a `stash create` commit
-    of them) under `refs/fused/backup/`. Answers the refs written (empty when
-    even the first could not be written — the caller must then not move the
-    branch). Names them on the record."""
+    """Pin `tip` (and, when there are uncommitted edits, a `wip_commit_locked`
+    commit of them — untracked files included) under `refs/fused/backup/`.
+    Answers the refs written (empty when even the first could not be
+    written — the caller must then not move the branch). Names them on the
+    record."""
     from fused_render.contrib import store
 
     refs = []
@@ -339,12 +450,39 @@ def backup_locked(root, tip, *, why, app_dir=None) -> list[str]:
     if not ok(git(root, "update-ref", ref, tip)):
         return []
     refs.append(ref)
-    wip = out(git(root, *identity_args(root), "stash", "create"))
+    wip = wip_commit_locked(root, tip)
     if wip and ok(git(root, "update-ref", f"{ref}-wip", wip)):
         refs.append(f"{ref}-wip")
+    before = _backup_refs_named(store.get(app_dir or root))
+    rec = None
     for r in refs:
-        store.add_backup(app_dir or root, r, why)
+        rec = store.add_backup(app_dir or root, r, why) or rec
+    if rec is not None:
+        # The record keeps the newest BACKUPS_KEEP; a ref whose entry just
+        # fell off goes with it, so a copy's repo does not grow a ref per
+        # update forever. Refs the record never named are left alone.
+        for old in before - _backup_refs_named(rec):
+            if old.startswith(BACKUP_PREFIX):
+                git(root, "update-ref", "-d", old)
     return refs
+
+
+def _unbackup_locked(root, refs, app_dir=None) -> None:
+    """Take back backups whose move then did not happen: the refs, and their
+    entries on the record."""
+    from fused_render.contrib import store
+
+    for r in refs:
+        git(root, "update-ref", "-d", r)
+    gone = set(refs)
+    store.update(app_dir or root, lambda rec: rec.__setitem__(
+        "backups", [b for b in rec.get("backups") or []
+                    if not (isinstance(b, dict) and b.get("ref") in gone)]))
+
+
+def _backup_refs_named(rec) -> set:
+    return {b.get("ref") for b in (rec or {}).get("backups") or []
+            if isinstance(b, dict) and isinstance(b.get("ref"), str)}
 
 
 # ---------------------------------------------------------------------- replay
@@ -527,12 +665,16 @@ def land_locked(root, *, branch, old_tip, new_tip, why, app_dir=None) -> bool:
             refs = backup_locked(root, old_tip, why=why, app_dir=app_dir)
             if not refs:
                 return False
+        # The S bit is what makes a set-aside `.fused/` file invisible to
+        # `reset --keep`; without it the file reads as a local deletion and
+        # the move refuses. Callers outside `engine.sync` (a merge job's
+        # accept, the return) have not protected yet.
+        _protect_after_move(root)
         with fused_aside(root, new_tip):
             moved = git(root, "reset", "--keep", new_tip, timeout=REPLAY_TIMEOUT_S)
         if not ok(moved):
             # Nothing moved: the backup pins a tip that is still the branch.
-            for r in refs:
-                git(root, "update-ref", "-d", r)
+            _unbackup_locked(root, refs, app_dir)
             logger.info("contrib land deferred in %s: %s", root, gu._text(moved))
             return False
     advance_base_locked(root, new_tip)
@@ -548,20 +690,48 @@ def advance_base_locked(root, tip) -> None:
 
 
 def reset_hard_locked(root, *, branch, target, why, app_dir=None) -> bool:
-    """Discard's move (§6.4): backup HEAD (and the dirty tree), then
-    `reset --hard target`. The one place a real folder is hard-reset."""
+    """Discard's move (§6.4): back up HEAD and every uncommitted edit
+    (untracked files included), then `reset --hard target` and remove the
+    untracked files the backup holds — "your edits" are exactly what
+    `edits()` names, so a Discard leaves nothing of Bob's behind and nothing
+    unsaved. Ignored files (`.venv`, caches) and `.fused/` are never touched.
+    Refuses — nothing moved — when there are edits the backup failed to
+    capture. The one place a real folder is hard-reset."""
     head = rev(root, "HEAD")
     if gu._current_branch(root) != branch or not head:
         return False
     if gu._operation_in_flight(root) is not None:
         return False
-    if not backup_locked(root, head, why=why, app_dir=app_dir):
+    untracked = {p for code, p in edits(root) if code == "??"}
+    refs = backup_locked(root, head, why=why, app_dir=app_dir)
+    if not refs or (dirty(root) and not any(r.endswith("-wip") for r in refs)):
+        _unbackup_locked(root, refs, app_dir)
         return False
+    _protect_after_move(root)  # see land_locked
     with fused_aside(root, target):
         moved = git(root, "reset", "--hard", target, timeout=REPLAY_TIMEOUT_S)
     if not ok(moved):
         logger.warning("contrib: reset --hard failed in %s: %s", root, gu._text(moved))
         return False
+    # Only paths STILL untracked: one the target now tracks is the author's.
+    still = {p for code, p in edits(root) if code == "??"}
+    for rel in sorted(untracked & still):
+        _remove_untracked(root, rel)
     advance_base_locked(root, target)
     _protect_after_move(root)
     return True
+
+
+def _remove_untracked(root, rel) -> None:
+    """Delete one untracked file (backed up already), then any directories it
+    leaves empty, up to `root`."""
+    path = os.path.join(root, rel)
+    try:
+        if os.path.islink(path) or os.path.isfile(path):
+            os.remove(path)
+        parent = os.path.dirname(path)
+        while parent.startswith(root.rstrip(os.sep) + os.sep) and not os.listdir(parent):
+            os.rmdir(parent)
+            parent = os.path.dirname(parent)
+    except OSError:
+        logger.warning("contrib: could not remove %s after discard", path, exc_info=True)
