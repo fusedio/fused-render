@@ -11229,6 +11229,22 @@ describe("cardTitleLine — reply fallback is plain words", () => {
 
 // ---- the view tab editor (Akshil, 2026-10-16) ---------------------------------
 
+describe("view tab editor: keyboard reorder", () => {
+  it("moves a focused chip one slot with Alt+←/→, focus following it", () => {
+    // CodeRabbit (#1704) asked for a non-drag reorder; Akshil chose a shortcut
+    // over visible move buttons — the row is a short-lived editing strip.
+    const ed = SCHEDULED.slice(SCHEDULED.indexOf("function ViewTabsEditor("));
+    const body = ed.slice(0, ed.indexOf("\n}\n"));
+    expect(body).toContain('title="Drag or Alt+←/→ to reorder"');
+    expect(body).toContain('aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"');
+    expect(body).toContain('if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;');
+    expect(body).toContain('nudge(v, e.key === "ArrowLeft" ? -1 : 1);');
+    // Clamped at the ends, and the moved chip's pick takes focus again.
+    expect(body).toContain("Math.min(tabs.length - 1, Math.max(0, from + by))");
+    expect(body).toContain('.schedule-view-chip[data-view="${view}"] .schedule-view-chip-pick');
+  });
+});
+
 describe("parseViewTabs", () => {
   it("falls back to the default row on nothing, junk or an empty list", () => {
     expect(parseViewTabs(null)).toEqual(DEFAULT_VIEW_TABS);

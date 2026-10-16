@@ -254,6 +254,22 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
     next.splice(to, 0, dragging);
     onChange(next);
   };
+  // KEYBOARD REORDER (CodeRabbit, #1704; Akshil chose shortcut over visible
+  // move buttons, 2026-10-16): Alt+←/→ on a focused chip moves it one slot,
+  // clamped at the ends, and focus follows the chip to its new place.
+  const nudge = (view: TaskView, by: -1 | 1) => {
+    const from = tabs.indexOf(view);
+    const to = Math.min(tabs.length - 1, Math.max(0, from + by));
+    if (from < 0 || to === from) return;
+    const next = tabs.filter((t) => t !== view);
+    next.splice(to, 0, view);
+    onChange(next);
+    requestAnimationFrame(() => {
+      stripRef.current
+        ?.querySelector<HTMLElement>(`.schedule-view-chip[data-view="${view}"] .schedule-view-chip-pick`)
+        ?.focus();
+    });
+  };
   // Focus lands on the first chip when the strip opens: the cog that opened it
   // is gone from the page, and focus falling to the body meant Tab restarted
   // from the top of the document.
@@ -298,7 +314,7 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
             }
             data-view={v}
             draggable
-            title="Drag to reorder"
+            title="Drag or Alt+←/→ to reorder"
             onDragStart={(e) => {
               setDragging(v);
               e.dataTransfer.effectAllowed = "move";
@@ -331,7 +347,13 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
               className="schedule-view-chip-pick"
               aria-pressed={active === v}
               title={`Show ${VIEW_LABELS[v]}`}
+              aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
               onClick={() => onPick(v)}
+              onKeyDown={(e) => {
+                if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+                e.preventDefault();
+                nudge(v, e.key === "ArrowLeft" ? -1 : 1);
+              }}
             >
               {VIEW_ICONS[v]}
               <span className="schedule-view-chip-lbl">{VIEW_LABELS[v]}</span>
