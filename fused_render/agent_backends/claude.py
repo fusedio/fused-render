@@ -61,7 +61,7 @@ CLAUDE = Backend(
         "invalid api key", "/login", "oauth token", "not logged in",
         "authentication_error",
     ),
-    limit_error_markers=("usage limit", "session limit"),
+    limit_error_markers=("usage limit reached", "session limit"),
     terminal_resume=_terminal_resume,
     health=_health,
     health_cached=_health_cached,

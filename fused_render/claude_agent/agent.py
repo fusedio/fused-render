@@ -207,7 +207,8 @@ def _registry_roots() -> list:
 
 def _transcript_backend(path: str) -> str:
     """Which backend's root `path` sits under — the root is the authority on
-    who owns a session (ids are fused-minted uuid4 for both, D2). `claude`
+    who owns a session (both are uuids — fused mints Claude's, Copilot mints
+    its own in `session/new` — so nothing in the id says which, D2). `claude`
     when under neither, which is every pre-existing session and every
     monkeypatched test root."""
     real = os.path.realpath(path)
@@ -259,7 +260,10 @@ _ACCOUNT_ERROR_MARKERS = {
                 "copilot login", "no copilot access", "not authorized"),
 }
 _LIMIT_ERROR_MARKERS = {
-    "claude": ("usage limit", "session limit"),
+    # Claude's are the two this function matched before a second backend
+    # existed, byte for byte: a looser "usage limit" would rewrite errors
+    # that were never rewritten.
+    "claude": ("usage limit reached", "session limit"),
     "copilot": ("ai credits", "premium request", "rate limit", "quota"),
 }
 
@@ -1867,10 +1871,11 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
     places that each know half: an empty `model` means "not saying", not "no
     model". Same invariant `tasks_store.record_settings` keeps on the server
     side — the two writers share one file, so they have to share one rule.
-    `backend` is written once, by `_start` — or, for a fresh Copilot chat
-    whose id `_start` cannot know, by `_record_copilot_session` (immutable
-    per session, D2); an
-    unknown value is not written at all.
+    `backend` is written for Copilot sessions only, once, by `_start` — or,
+    for a fresh Copilot chat whose id `_start` cannot know, by
+    `_record_copilot_session` (immutable per session, D2). A Claude session's
+    record carries none: absent reads as Claude. An unknown value is not
+    written at all.
 
     Locked (flock) for the whole read-modify-write, like
     `tasks_store._update`: two chats sending at the same moment is ordinary (the
@@ -3397,7 +3402,7 @@ def _start(file: str, message: str, session_id: str, model: str,
            has_pane: bool | None = None,
            extra_read_dirs: list | None = None,
            draft_key: str = "", terminal_hint: str = "",
-           backend: str = "") -> dict:
+           backend: str = "", bot: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -3420,7 +3425,11 @@ def _start(file: str, message: str, session_id: str, model: str,
         backend = backend or DEFAULT_BACKEND
     if backend not in BACKENDS:
         return {"error": f"unknown agent backend: {backend!r}"}
-    if not _backend_enabled(backend):
+    # BOTS KEEP CLAUDE (D17/Q7): the Claude switch in Preferences is about
+    # Tasks and Sessions, and a bot's turn (`bot` = its id, passed by in-
+    # process callers only — `main` never takes it) runs on Claude whatever
+    # it says. Claude only: a bot pinned to Copilot gets no exemption.
+    if not (bot and backend == "claude") and not _backend_enabled(backend):
         return _backend_disabled_error(backend)
     if backend == "copilot" and permission_mode == "plan":
         # No plan card to approve on ACP (D12/§7 plan_mode): refused rather
@@ -3548,6 +3557,10 @@ def _start(file: str, message: str, session_id: str, model: str,
     # runs on the same folders and must not look like a composer's first send.
     if draft_key:
         meta["draft_key"] = draft_key
+    if bot:
+        # Which bot started this run, for diagnosis — and what `_send` reads
+        # to give the run's follow-ups the same Claude exemption.
+        meta["bot"] = bot
     with _private_open(os.path.join(run_dir, "meta.json")) as f:
         json.dump(meta, f)
 
@@ -3574,7 +3587,8 @@ def _start(file: str, message: str, session_id: str, model: str,
            "file": file, "cwd": _workdir(file), "pane": pane,
            "cli_mode": cli_mode, "session_id": session_id, "model": model,
            "effort": effort, "extra_read_dirs": list(extra_read_dirs or []),
-           # The id minted above, "" for a resume. Its own key beside
+           # The id minted above, "" for a resume and for every Copilot
+           # chat (Copilot mints its own). Its own key beside
            # `session_id` rather than folded into it: the host builds the CLI's
            # argv from this dict (`_claude_argv`), and the two produce
            # DIFFERENT flags — `--resume` continues a conversation, and
@@ -3634,8 +3648,12 @@ def _start(file: str, message: str, session_id: str, model: str,
     # ran would answer the next chat handed the same id. `new_session_id or
     # session_id` is the conversation the turn actually happens in, the same
     # pair the return value names. A fresh Copilot chat has neither yet, so
-    # this is a no-op for it and `_poll` writes the record instead.
-    _record_settings(new_session_id or session_id, model, effort, backend)
+    # this is a no-op for it and `_poll` writes the record instead. `backend`
+    # is recorded for Copilot only: an absent one reads as Claude, so a Claude
+    # chat's record is written on exactly the condition it always was (a
+    # model or an effort to say), not for every Claude session there is.
+    _record_settings(new_session_id or session_id, model, effort,
+                     backend if backend == "copilot" else "")
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
     # the host's, to reach the CLI's whole process group. Written here, to the
@@ -3945,7 +3963,9 @@ def _run_own_session(run_dir: str, meta: dict) -> str:
     * the head of `out.jsonl` (`_session_from_out`) — the same answer, straight
       out of the CLI's first `system` row, for a run nobody has polled yet;
     * `meta["session_id"]` — the id `_start` MINTED and passed to the CLI as
-      `--session-id`. Written before the spawn, so it is the only one of the
+      `--session-id` (Claude only; a Copilot run has none, its id is
+      Copilot's own and arrives on the init row). Written before the spawn,
+      so it is the only one of the
       three that exists during the seconds this whole path is about: a fresh
       chat used to be nameless until the CLI spoke, and every lookup keyed on
       the session answered "" for it (a page re-attaching to its own run, a
@@ -4375,8 +4395,10 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # run by that agent, and Preferences turned the agent off: refused before
     # anything is written (no inbox row, no control request, no respawn), the
     # same body `_start` and the router answer. The host itself is left as
-    # it is; its idle reap ends it.
-    if not _backend_enabled(backend):
+    # it is; its idle reap ends it. A bot's Claude run is exempt, as in
+    # `_start` (`meta.bot`).
+    if not (meta.get("bot") and backend == "claude") \
+            and not _backend_enabled(backend):
         return _backend_disabled_error(backend)
     wanted = set(_attach_dirs(read_dirs))
     granted = set(host.get("read_dirs") or [])
@@ -7847,15 +7869,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # too. `_cancelled_marker_state` also backs `_stopped_last`, which needs
     # the identical staleness check off its own cursor read.
     cancelled = _cancelled_marker_state(run_dir, scan_cursor)
-    # A STOPPED COPILOT TURN IS NOT AN ERROR. Its host answers a cancel with
-    # an `is_error` result and no text (ACP's `cancelled` stopReason), which
-    # the fallback above turned into "copilot exited with an error". Claude's
-    # interrupted result carries the CLI's own words, which the page folds
-    # into "Stopped." off `cancelled`; Copilot's carries none to fold. Blanked
-    # in the ANSWER only — the commit sweep and session latch above already
-    # skipped this turn as errored, the same as they do for Claude's.
-    if cancelled and backend == "copilot":
-        error = ""
     return {"text": "" if echo_pending else text, "done": done,
             "session_id": new_session, "error": error, "backend": backend,
             "tokens": tokens_done + tokens_current, "phase": phase,
@@ -8298,7 +8311,8 @@ def _cli_sessions(file: str) -> list:
     # list: the user has one memory of chats about this folder whichever
     # agent held them, and the row says which (`backend`, D18 names the agent
     # on every surface). Same bucket name under each root (the munge rule is
-    # shared); ids cannot collide across roots (fused-minted uuid4, D2).
+    # shared); ids cannot collide across roots (uuids either way — fused
+    # mints Claude's, Copilot its own, D2).
     found = []
     for backend, root in _transcript_roots():
         proj = os.path.join(root, _munge(workdir))
@@ -9020,12 +9034,14 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
             meta = row.get("compactMetadata")
             compacted = meta if isinstance(meta, dict) else {}
-        if row.get("type") == "system" and row.get("subtype") == "task_notification":
+        if (backend == "copilot" and row.get("type") == "system"
+                and row.get("subtype") == "task_notification"):
             # The LIVE notice shape, persisted: the Copilot host writes its
             # first-turn "Handled by GitHub Copilot · model …" row (D18) in
             # the same `system/task_notification` form `out.jsonl` carries,
             # and `_segments_from_rows` already draws that as a notice chip.
-            # Onto the stretch, so it lands on the reply it precedes.
+            # Onto the stretch, so it lands on the reply it precedes. Copilot
+            # transcripts only: Claude's history reads exactly as it did.
             stretch.append(row)
         if role == "assistant" and isinstance(msg, dict):
             # Read BEFORE any of the branches below, so a reply this walk drops

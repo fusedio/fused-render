@@ -160,6 +160,9 @@ def _req_of(agent, res):
 def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     """agent.py cannot import the package, so it carries copies (D13)."""
     assert agent._ACCOUNT_ERROR_MARKERS["claude"] == backend_claude.CLAUDE.account_error_markers
+    # Claude's limit markers are the two `_account_error` matched before a
+    # second backend existed, byte for byte.
+    assert agent._LIMIT_ERROR_MARKERS["claude"] == ("usage limit reached", "session limit")
     assert agent._LIMIT_ERROR_MARKERS["claude"] == backend_claude.CLAUDE.limit_error_markers
     assert agent._ACCOUNT_ERROR_MARKERS["copilot"] == backend_copilot.COPILOT.account_error_markers
     assert agent._LIMIT_ERROR_MARKERS["copilot"] == backend_copilot.COPILOT.limit_error_markers
@@ -1243,12 +1246,16 @@ _DELTA = {"type": "stream_event", "event": {
     "type": "content_block_delta", "delta": {"type": "text_delta", "text": "x"}}}
 
 
-def test_a_stopped_copilot_turn_is_not_an_error(agent):
-    """The host answers a Stop with an `is_error` result and no text; with
-    the run cancelled, the poll says no error at all (Stop is not one)."""
+def test_a_stopped_copilot_turn_reads_as_a_stop(agent):
+    """The host answers a Stop with an `is_error` result and no text. The
+    poll reports it like Claude's interrupted turn — cancelled, WITH an error
+    (the agent-named fallback) — because the page says "Stopped." only for a
+    cancelled run whose error is non-empty (run-controller `runEnding`); an
+    empty one reads as "the turn finished before the stop landed"."""
     p = agent._poll(_ended_run(agent, "copilot", "r-stop", [_INIT, _EMPTY_ERROR],
                                cancelled=True))
-    assert p["done"] and p["cancelled"] is True and p["error"] == ""
+    assert p["done"] and p["cancelled"] is True
+    assert p["error"] == "copilot exited with an error"
     # Claude's interrupted turn keeps its error; the page folds it itself.
     p = agent._poll(_ended_run(agent, "claude", "r-stop-c", [_INIT, _EMPTY_ERROR],
                                cancelled=True))
@@ -1267,3 +1274,107 @@ def test_generic_errors_name_the_runs_agent(agent, backend):
                        )["error"] == backend + " exited unexpectedly"
     assert agent._poll(_ended_run(agent, backend, "r-3", [_INIT, _DELTA], alive=False)
                        )["error"] == backend + " exited before completing the reply"
+
+
+# ------------------------------------------ Claude stays byte-identical
+
+def test_claudes_limit_rewrite_fires_on_exactly_what_it_did(agent):
+    """"usage limit" alone was never rewritten for Claude; only the two
+    markers it always matched are."""
+    assert agent._account_error("hit a usage limit somewhere") == \
+        "hit a usage limit somewhere"
+    assert agent._account_error("Claude AI usage limit reached|1700000000") \
+        .startswith("Your Claude plan's usage limit was reached.")
+    assert agent._account_error("session limit").startswith("Your Claude plan")
+
+
+def test_a_claude_start_records_on_the_old_condition_and_no_backend(
+        agent, target, tmp_path, monkeypatch):
+    """A Claude chat's settings record is written only when there is a model
+    or an effort to say (as before), and never carries `backend` (absent
+    reads as Claude). A Copilot resume's record does."""
+    file, workdir = target
+    monkeypatch.setitem(agent._HOST_FILES, "claude", _stub_host(tmp_path))
+    path = agent._state_file(*agent.SESSION_SETTINGS)
+    res = agent._start(file, "hi", "", "", "", "", has_pane=False)
+    _req_of(agent, res)
+    assert not os.path.exists(path), "nothing to say: no record, as before"
+    res = agent._start(file, "hi", "", "opus", "", "", has_pane=False)
+    _req_of(agent, res)
+    with open(path) as fh:
+        rec = json.load(fh)[res["session_id"]]
+    assert rec["model"] == "opus" and "backend" not in rec
+
+
+def test_claude_history_ignores_a_system_task_notification_row(agent, target):
+    """The persisted-notice passthrough is Copilot's: a Claude transcript
+    carrying the same row reads exactly as it did (no notice segment)."""
+    file, workdir = target
+    rows = [{"type": "system", "subtype": "task_notification",
+             "summary": "should not show", "sessionId": SID_CLAUDE},
+            dict(_said("hello", workdir), uuid="u1"),
+            {"type": "assistant", "uuid": "a1",
+             "message": {"role": "assistant", "model": "claude-opus-5-5",
+                         "content": [{"type": "text", "text": "hi"}]}}]
+    _transcript(agent, "claude", workdir, SID_CLAUDE, rows)
+    h = agent._history(file, SID_CLAUDE)
+    assert h["backend"] == "claude"
+    assert not [s for t in h["turns"] for s in t.get("segments", [])
+                if s.get("kind") == "notice"]
+    _transcript(agent, "claude", workdir, SID_CLAUDE, rows[1:])
+    assert agent._history(file, SID_CLAUDE)["turns"] == h["turns"]
+
+
+# ----------------------------------------------- bots keep Claude (D17/Q7)
+
+def test_a_bot_starts_on_claude_while_claude_is_off(agent, target, home, tmp_path,
+                                                    monkeypatch):
+    file, _ = target
+    _prefs(home, claude_enabled=False, copilot_enabled=True)
+    monkeypatch.setitem(agent._HOST_FILES, "claude", _stub_host(tmp_path))
+    assert agent._start(file, "hi", "", "", "", "", has_pane=False,
+                        backend="claude")["reason"] == "backend_disabled"
+    res = agent._start(file, "hi", "", "", "", "", has_pane=False,
+                       backend="claude", bot="b1")
+    assert res["backend"] == "claude" and res["run_id"]
+    _req, run_dir = _req_of(agent, res)
+    with open(os.path.join(run_dir, "meta.json")) as fh:
+        assert json.load(fh)["bot"] == "b1"
+    # …and its follow-ups too (`_send` reads meta.bot).
+    with open(os.path.join(run_dir, "host.json"), "w") as fh:
+        json.dump({"pid": os.getpid(), "mode": None, "model": "", "effort": "",
+                   "read_dirs": [], "backend": "claude"}, fh)
+    assert agent._send(res["run_id"], "more") == {"sent": True}
+    # No exemption for a bot on Copilot.
+    _prefs(home, claude_enabled=True, copilot_enabled=False)
+    assert agent._start(file, "hi", "", "", "", "", has_pane=False,
+                        backend="copilot", bot="b1")["reason"] == "backend_disabled"
+    assert "bot" not in inspect.signature(agent.main).parameters
+
+
+@pytest.mark.parametrize("reason", ["backend_disabled", "unsupported"])
+def test_the_router_answers_the_handlers_own_refusal_with_400(client, monkeypatch,
+                                                              reason):
+    """A refusal `_start`/`_send` make themselves (a bare start, a resume
+    whose own agent is off) is a 400 with the same body, not a 200."""
+    body = {"error": "Copilot is turned off in Preferences", "reason": reason,
+            "backend": "copilot"}
+
+    def main(action="", file="", backend="", permission_mode="", message="",
+             run_id="", session_id=""):
+        return dict(body)
+    main.__signature__ = inspect.signature(main)
+    monkeypatch.setattr(claude_agent, "agent_module",
+                        lambda: types.SimpleNamespace(main=main))
+    monkeypatch.setattr(gate, "_folder_busy", lambda params, body=None: "")
+    monkeypatch.setattr(gate, "_file_owner",
+                        lambda params, envelope, body=None, late=False: None)
+    for action in ("start", "send"):
+        r = client.post("/api/claude/agent", headers=FUSED,
+                        json={"action": action, "file": "/w/a.html",
+                              "message": "m", "run_id": "r"})
+        assert r.status_code == 400 and r.json() == body, action
+    # Any other answer, or another action, keeps its 200.
+    r = client.post("/api/claude/agent", headers=FUSED,
+                    json={"action": "poll", "run_id": "r"})
+    assert r.status_code == 200

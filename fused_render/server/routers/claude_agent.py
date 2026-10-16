@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import logging
 import os
 import threading
@@ -135,6 +136,9 @@ def _app_entry_main(dir: str = "") -> dict:
 
 #: Actions that may spawn a session, and so carry the agent gate.
 _SPAWN_ACTIONS = ("start", "send")
+#: The `reason`s an agent refusal carries (`agent._backend_disabled_error`,
+#: the plan-mode refusal) — answered as a 400 wherever they come from.
+_REFUSAL_REASONS = ("backend_disabled", "unsupported")
 
 
 def _backend_refusal(action: str, bound: dict, agent=None) -> dict | None:
@@ -172,16 +176,27 @@ def _backend_refusal(action: str, bound: dict, agent=None) -> dict | None:
 
 def _run_backend(agent, run_id: str) -> str:
     """The backend of run `run_id` off its meta.json, "" when there is no
-    such run (or no agent module that can say where runs live)."""
+    such run (or no agent module that can say where runs live) — and "" for
+    a bot's Claude run, which the Claude switch does not govern (D17/Q7;
+    `_send` applies the same exemption)."""
     runs = getattr(agent, "RUNS", None)
     bad_id = getattr(agent, "_bad_id", None)
     run_backend = getattr(agent, "_run_backend", None)
     if not (runs and bad_id and run_backend) or bad_id(run_id):
         return ""
     run_dir = os.path.join(runs, run_id)
-    if not os.path.isfile(os.path.join(run_dir, "meta.json")):
+    meta_path = os.path.join(run_dir, "meta.json")
+    if not os.path.isfile(meta_path):
         return ""
-    return str(run_backend(run_dir) or "")
+    backend = str(run_backend(run_dir) or "")
+    if backend == "claude":
+        try:
+            with open(meta_path, encoding="utf-8") as fh:
+                if (json.load(fh) or {}).get("bot"):
+                    return ""
+        except (OSError, ValueError, AttributeError):
+            pass
+    return backend
 
 
 def _error_obj(exc: BaseException) -> dict:
@@ -421,6 +436,15 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
         resolved=claude_agent.AGENT_PATH, params=params, engine=ENGINE,
         result=envelope,
     )
+    # THE HANDLER'S OWN AGENT REFUSAL IS A 400 TOO. `_start`/`_send` gate on
+    # the agent they actually resolve — a bare start, a resume whose own
+    # agent is off, a plan-mode Copilot turn — which the request-level gate
+    # above cannot see. Same body, same status, so the page reads one shape
+    # (its `disabledBackendOf` looks at 400s only).
+    result = envelope.get("result") if status == 200 else None
+    if (action in _SPAWN_ACTIONS and isinstance(result, dict)
+            and result.get("reason") in _REFUSAL_REASONS):
+        return JSONResponse(result, status_code=400)
     return _respond(envelope, status)
 
 
