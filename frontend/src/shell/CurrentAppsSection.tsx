@@ -44,7 +44,7 @@ import { navigate, navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { openUninstallApp } from "@platform/lib/uninstall-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -733,7 +733,7 @@ export default function CurrentAppsSection() {
   // card menu carries (appCardMenu.ts) — the unified sheet with the flag on,
   // the plain `.fused` export with it off. A hook, not the sync getter: this
   // menu is built inside a component, so it follows the flag live.
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
   const menuItems = (app: CurrentApp): MenuEntry[] => [
     {
       // The app's ENTRY PAGE in the explorer — the file view, crumb bar and

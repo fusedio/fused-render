@@ -1761,6 +1761,17 @@
   opacity: 0.65;
 }
 
+/* Community: a ticked switch held back by an unticked prerequisite says so on
+   its own line under the description — the body colour so it stands apart
+   from the muted description, but no warning tone: nothing is wrong, the
+   switch just has not taken effect yet. */
+.prefs-contrib-needs {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--fg);
+}
+
 /* A labelled control plus its explanation (the Call log section's parameter
    and retention selects). Same vertical rhythm as .prefs-radio rows, but the
    label and its <select> sit on one line above the muted note. */

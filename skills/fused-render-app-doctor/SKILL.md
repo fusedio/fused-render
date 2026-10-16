@@ -110,6 +110,12 @@ Real: a line the skill's trap table names, in a view this app ships, with no fal
 
 So what you share is what you tested, matches what you pushed, and matches what origin has.
 
+## `fused-dir-committed` — the repo leaves out the .fused folder
+
+**fact** — the app's own repository tracks paths under `.fused/` (`git ls-files -- .fused`; the findings are those paths). `.fused/` holds this machine's data for the app — the install stamp, `meta.json` with this machine's absolute path, data and caches — so committing it ships the author's machine state to everyone who installs the app. Skip means the app is not its own repository.
+
+**Fix.** Untrack the folder without deleting it: `git rm -r --cached --sparse -- .fused` (fused marks these paths skip-worktree so its own writes never read as edits, and git then refuses a plain `rm` with a "sparse-checkout definition" message — `--sparse` is what lets it through; drop the flag only on a git too old to know it), add `.fused/` to the repo's `.gitignore`, and commit both (the `.gitignore` edit too, or it is itself an uncommitted change). Never delete the folder's files on disk — the app's data lives there.
+
 ## `generated` — no generated files outside .fused/
 
 **fact** — a bounded walk found `__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/` (reported as the directory), or stray `.pyc`/`.pyo`/`.log`/`.db`/`.sqlite`/`.sqlite3` outside `.fused/`.

@@ -33,11 +33,12 @@
 // empty thumb in between — an offloaded card reads the same as an app with no
 // live preview (D365).
 import { useEffect, useRef, useState } from "react";
-import type { AppInfo } from "@platform/lib/api";
+import type { AppCardContrib, AppInfo } from "@platform/lib/api";
+import { useContribFlags } from "@platform/lib/contrib-flags";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { useLivePreviewsFeature } from "@platform/lib/live-previews-flag";
 import { AppStar } from "@platform/ui/AppStar";
 import { ThumbPlaceholder } from "@platform/ui/ThumbPlaceholder";
@@ -66,6 +67,18 @@ const PREVIEW_SCALE = 0.25;
 // place that description lives (platform/lib/thumb-frame.ts).
 function entryRenderUrl(entryHtml: string): string {
   return `/render?path=${encodeURIComponent(entryHtml)}`;
+}
+
+// The card's source line, from the server's sentence (docs/CONTRIB_LOOP.md
+// §13). Null for the reader's own app (see the call site). The card is
+// narrow and already carries the folder path, so a GitHub-link copy drops the
+// sentence's leading "GitHub link · " and reads "follows alice/x"; the whole
+// sentence stays in the tooltip.
+function cardSource(c: AppCardContrib | undefined): { text: string; title: string } | null {
+  if (!c?.label) return null;
+  if (c.kind ? c.kind === "own" : c.label === "Your app") return null;
+  const text = c.kind === "github" ? c.label.replace(/^GitHub link\s*·\s*/, "") : c.label;
+  return { text, title: c.label };
 }
 
 export function AppPreviewCard({
@@ -184,7 +197,16 @@ export function AppPreviewCard({
   // would tear down a running one.
   // Whether the hover chip is Share (the sheet) or plain Export — see
   // share-app-flag.ts; default off.
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
+  // Where the copy came from, and proposals waiting on it — the contribution
+  // loop's card fields (AppInfo.contrib), each behind its own phase
+  // (contrib-flags.ts). An app of the reader's own says nothing: nearly every
+  // card is one, and a line that reads "Your app" on all of them is noise —
+  // the label earns its slot only when the app follows, or remixes, somebody
+  // else's (the app page states "Your app" for the one that asks).
+  const contribFlags = useContribFlags();
+  const source = contribFlags?.sources ? cardSource(app.contrib) : null;
+  const inbox = contribFlags?.inbox ? (app.contrib?.inbox ?? 0) : 0;
   const { started: liveStarted, settled: liveSettled } = usePreviewStart(
     wantsLive,
     hoverPriority || onScreen,
@@ -262,16 +284,32 @@ export function AppPreviewCard({
             with the icon inside the first line it could only ever be as tall
             as the name. */}
         <span className="app-pcard-lines">
-          <span className="app-pcard-title">{title}</span>
+          <span className="app-pcard-titlerow">
+            <span className="app-pcard-title">{title}</span>
+            {/* Proposals waiting on one of the reader's own apps (the
+                contribution loop's inbox, Community → Proposals inbox). In
+                the name's row so the card keeps its height; a count only,
+                the list itself is on the app page. */}
+            {inbox > 0 && (
+              <span className="app-pcard-inbox">
+                {inbox} {inbox === 1 ? "proposal" : "proposals"}
+              </span>
+            )}
+          </span>
           <span className="app-pcard-meta">
             {/* Where the app lives, as one path — `local/short-builder` — in
                 place of a bordered tag chip beside the folder name (owner:
                 the chip was visual noise). Always the full path, even when the
                 title is the folder name: the tag alone is only half an
                 address. */}
-            <span className="app-pcard-name">
+            <span className={"app-pcard-name" + (source ? " is-yielding" : "")}>
               {app.tag}/{app.name}
             </span>
+            {source && (
+              <span className="app-pcard-source" title={source.title}>
+                {source.text}
+              </span>
+            )}
             {badge && <span className="app-pcard-name">{badge}</span>}
             {ago && <span className="app-pcard-ago">{ago}</span>}
           </span>

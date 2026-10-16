@@ -106,6 +106,17 @@ _SETUP_GIT_TIMEOUT_S = 15
 _INFO_LINE_RE = re.compile(
     r"^\W*(?:First copy your one-time code|Press Enter to open github\.com)")
 
+#: The one-time code itself, out of the banner above. The browser page `gh`
+#: opens asks for it, and `gh` only ever prints it to its own (piped, unseen)
+#: terminal — so the record carries it for the sign-in UI to show
+#: (platform/ui/GitHubSignIn.tsx). Shaped like GitHub's `XXXX-XXXX`, loosely.
+_CODE_RE = re.compile(r"one-time code:\s*([A-Z0-9]{4}-[A-Z0-9]{4})\b", re.IGNORECASE)
+
+#: Where the one-time code is entered — GitHub's device page, the one `gh
+#: --web` opens. Reported so the UI can offer to reopen it if the window that
+#: `gh` opened was closed or landed behind the app.
+DEVICE_URL = "https://github.com/login/device"
+
 
 class LoginError(RuntimeError):
     """A refusal with a sentence the strip can show as-is."""
@@ -127,6 +138,9 @@ class _Login:
     #: would, but there is still no reason for a sign-in's blow-by-blow to
     #: outlive the attempt, so the tail stays in memory and dies with it.
     tail: collections.deque
+    #: The one-time code from `gh`'s banner (`_CODE_RE`), once printed. Kept
+    #: on the record, in memory only like `tail`, for the UI to show.
+    code: Optional[str] = None
     error: Optional[str] = None
     timed_out: bool = False
     canceled: bool = False
@@ -214,6 +228,10 @@ def _drain(login: _Login) -> None:
             for line in lines:
                 if line.strip():
                     login.tail.append(line.rstrip("\r"))
+                    if login.code is None:
+                        match = _CODE_RE.search(line)
+                        if match:
+                            login.code = match.group(1).upper()
     except (OSError, ValueError):
         # A killed child closes the pipe under us. Not a failure of the sign-in.
         pass
@@ -342,9 +360,14 @@ def _record(login: Optional[_Login]) -> dict:
     the only fact the strip acts on.
     """
     if login is None:
-        return {"in_flight": False, "started_at": None, "error": None}
-    return {"in_flight": login.alive(), "started_at": login.started_at,
-            "error": login.error}
+        return {"in_flight": False, "started_at": None, "error": None,
+                "code": None, "url": DEVICE_URL}
+    # `code` only while the sign-in is open — a settled attempt's code is
+    # spent, and showing it again would invite typing a dead code.
+    alive = login.alive()
+    return {"in_flight": alive, "started_at": login.started_at,
+            "error": login.error, "code": login.code if alive else None,
+            "url": DEVICE_URL}
 
 
 def status() -> dict:

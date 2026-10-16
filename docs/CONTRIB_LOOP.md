@@ -459,10 +459,10 @@ type AppContrib = {
 Cheap: never blocks on GitHub. It kicks a throttled background refresh
 (proposal state, inbox list, original check) and returns cached data.
 
-### 12.2 `GET /api/contrib/cards` → `{ [app_dir: string]: {label:string; inbox:number} }`
+### 12.2 `GET /api/contrib/cards` → `{ [app_dir: string]: {label:string; inbox:number; kind:"own"|"github"|"remix"} }`
 For the Apps grid; cached values only. `label` is the source line
 ("GitHub link · follows alice/x", "Your app", "Remix of alice/x"); `AppInfo`
-rows from `/api/apps` also gain an optional `contrib?: {label, inbox}` field
+rows from `/api/apps` also gain an optional `contrib?: {label, inbox, kind}` field
 (WS-D) so cards need no second fetch.
 
 ### 12.3 Mutations (POST, body `{path, …}`) — long ones return `{ok, job}`; poll `GET /api/contrib/job?id=` → `{status:"running"|"done"|"failed", message?, result?}`
@@ -519,3 +519,27 @@ changes; overlapping push → needs-merge, tree untouched; merge job accept /
 discard; propose → update → squash-merge → return keeps unproposed edits;
 discard backs up; dirty overlap defers; committed `.fused/` stays clean;
 flags off → `_sync_locked` behaves exactly as before.
+
+## 15. Amendments (TL, during build)
+
+- 2026-10-16: `github_login` status record gains `code: str|None` (the one-time
+  device code parsed from gh's output) and `url: "https://github.com/login/device"`
+  — owner WS-E (small edit to `github_login.py`).
+- 2026-10-16: `share_app.github_link_state` gains `code: "not_repo"|"nested"|
+  "no_remote"|"not_github"|"dirty"|"unpushed"|"no_default"|None` next to
+  `reason` — owner WS-D. The UI maps codes to sentences, never shows `reason`.
+- 2026-10-16: card `contrib` gains `kind` (§12.2); cards hide the label for `own`.
+- 2026-10-16 (WS-A notes, approved): `refs/fused/base` = the follow tip HEAD
+  sits on (lower bound of "Bob's commits"; `replay.land` advances it);
+  `refs/fused/proposed` pins `proposed_head` and the engine rewrites both on a
+  two-stage replay (base..proposed_head, proposed_head..HEAD), writing the new
+  `proposal.proposed_head` back. Record: `needs_merge` gains `head`, `purpose`
+  ("needs-merge"|"own-sync"); events gain `seen`; `store.ack`, `store.add_backup`.
+  CopyStatus gains `behind:int`, `sync_error:str|None`. `owns()` never calls
+  GitHub; migration records with `owner_checked: False` are NOT owned until the
+  one-time identity check runs. Migration only classifies workspace app
+  folders. `protect_fused_dir` + the Doctor row only when `flags.sources()`.
+  `merge_job.for_app(app_dir)`. Inbox accept → `git_upstream.sync_repo(root,
+  action="Accept proposal", push=True)`.
+- 2026-10-16: `jobs.PlainError(message, reason=None)`; job dicts carry `reason`.
+  `merge_job` owns remix bring-in (clean merge-tree → ready, no Claude).

@@ -494,39 +494,47 @@ def github_link_state(path: str) -> dict:
 
     NO NETWORK CALL — "pushed" is as of the last fetch, the same local-refs
     trade `app_doctor._pushed_pending` makes; this runs when the dialog opens.
+
+    `code` names the failed condition in a word (`not_repo`, `nested`,
+    `no_remote`, `not_github`, `dirty`, `unpushed`, `no_default`; None when
+    ok) for a surface that must not show `reason`'s git words — the
+    contribution loop's share sheet maps it to its own sentence
+    (docs/CONTRIB_LOOP.md §15).
     """
     from fused_render import git_upstream as gu
 
-    def no(reason: str, repo: str | None = None) -> dict:
-        return {"ok": False, "url": None, "repo": repo, "reason": reason}
+    def no(code: str, reason: str, repo: str | None = None) -> dict:
+        return {"ok": False, "url": None, "repo": repo, "reason": reason, "code": code}
 
     if not path or not os.path.isabs(path) or not os.path.isdir(path):
-        return no("path must be an absolute app folder path")
+        return no("not_repo", "path must be an absolute app folder path")
     root = gu.repo_root(path)
     if root is None:
-        return no("This app is not a git repository.")
+        return no("not_repo", "This app is not a git repository.")
     if os.path.realpath(path) != root:
-        return no("This app sits inside a larger git repository — "
+        return no("nested", "This app sits inside a larger git repository — "
                   "the link needs the app folder to be the repository root.")
     remote = gu._run(root, "remote", "get-url", "origin")
     if not gu._ok(remote):
-        return no("This app has no remote repository — push it to GitHub first.")
+        return no("no_remote", "This app has no remote repository — push it to GitHub first.")
     repo = _github_repo(gu._out(remote))
     if repo is None:
-        return no("The app's remote is not on GitHub.")
+        return no("not_github", "The app's remote is not on GitHub.")
     if not gu._is_clean(root):
-        return no("This app has changes that are not committed and pushed.", repo)
+        return no("dirty", "This app has changes that are not committed and pushed.", repo)
     default = _origin_default_branch(gu, root)
     if default is None:
-        return no("Can't tell the repository's default branch — push it to GitHub first.", repo)
+        return no("no_default",
+                  "Can't tell the repository's default branch — push it to GitHub first.", repo)
     count = gu._run(root, "rev-list", "--count", f"origin/{default}..HEAD")
     try:
         ahead = int(gu._out(count)) if gu._ok(count) else 1
     except ValueError:
         ahead = 1
     if ahead > 0:
-        return no(f"This app has commits not pushed to {default} yet.", repo)
-    return {"ok": True, "url": f"{GITHUB_LINK_BASE}?repo={repo}", "repo": repo, "reason": None}
+        return no("unpushed", f"This app has commits not pushed to {default} yet.", repo)
+    return {"ok": True, "url": f"{GITHUB_LINK_BASE}?repo={repo}", "repo": repo,
+            "reason": None, "code": None}
 
 
 @router.get("/api/share/github")

@@ -155,8 +155,16 @@ export const APP_PAGE_PREFIX = "/apps/";
  *  version picker (AppVersionPicker.tsx) that is read-only about git and
  *  never hides a tab. A stale `?_tab=git` deep link falls back to the
  *  default tab (appPageTabFromSearch's own silent-fallback rule below), the
- *  same as any other unknown tab. */
-export const APP_PAGE_TABS = ["overview", "tasks", "files", "api", "doctor"] as const;
+ *  same as any other unknown tab.
+ *
+ *  ONE EXCEPTION to "every tab on every folder": `proposals`, the author's
+ *  inbox for the GitHub contribution loop (shell/contrib/ProposalsTab.tsx),
+ *  is offered only on an app the user owns that has a GitHub repo, with the
+ *  inbox phase switched on — AppPage decides from `/api/contrib/app` and a
+ *  `?_tab=proposals` link on any other folder falls back to the default the
+ *  same silent way. It is LAST so its arrival after that read never shifts
+ *  the tabs the page opened with. */
+export const APP_PAGE_TABS = ["overview", "tasks", "files", "api", "doctor", "proposals"] as const;
 export type AppPageTab = (typeof APP_PAGE_TABS)[number];
 export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 

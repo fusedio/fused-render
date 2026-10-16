@@ -826,7 +826,29 @@ def _sync_locked(root, *, action, push):
     recorded failure. A `state` key (a `check_repo`-shaped dict) is included
     whenever the fetch succeeded, so the caller can refresh `_state`.
 
-    Never raises for a git problem; the background callers wrap it anyway."""
+    Never raises for a git problem; the background callers wrap it anyway.
+
+    THE CONTRIB INTERCEPT (docs/CONTRIB_LOOP.md §6.5): a root the
+    contribution engine owns — a GitHub-link copy, or an own app with a
+    GitHub repo, each only with its feature flag on — is synced by
+    `contrib.engine.sync` instead (same return shape, slot still held, never
+    a standing failure). With every contrib flag off `owns` is False and the
+    body below runs exactly as before; an engine error is logged and the
+    sync skipped, never fallen through to a plain push of a copy the engine
+    claimed."""
+    try:
+        from fused_render.contrib import engine as _contrib
+        if _contrib.owns(root):
+            return _contrib.sync(root, action=action, push=push)
+    except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
+        logger.exception("contrib sync failed for %s", root)
+        return {"ok": True, "status": "skipped", "why": "contrib-error"}
+    return _sync_plain(root, action=action, push=push)
+
+
+def _sync_plain(root, *, action, push):
+    """`_sync_locked`'s body for a root the contrib engine does not own —
+    the auto-sync rules of the section comment above, unchanged."""
     if not os.path.isdir(root):
         return _skipped("unavailable")
     if not _ok(_run(root, "remote", "get-url", "origin")):

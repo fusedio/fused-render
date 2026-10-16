@@ -44,7 +44,8 @@ def prune_stores(root: str) -> dict:
             ("registered_apps", _prune_registered),
             ("app_recents", _prune_app_recents),
             ("background_apps", _prune_background),
-            ("bot_builds", _prune_bot_builds)):
+            ("bot_builds", _prune_bot_builds),
+            ("contrib", _prune_contrib)):
         try:
             out[label] = fn(root)
         except Exception:  # noqa: BLE001 — the delete path is behind this
@@ -205,6 +206,15 @@ def _prune_bot_builds(root: str) -> int:
     if changed:
         bots_store.builds_write(builds)
     return changed
+
+
+def _prune_contrib(root: str) -> int:
+    """The contribution loop's records (contrib/store.py) for the folder:
+    what it followed and its proposal go with it. A proposal still open on
+    GitHub stays open there — GitHub is the truth for proposals."""
+    from fused_render.contrib import store
+
+    return store.prune(root)
 
 
 def canonical(path: str) -> str:

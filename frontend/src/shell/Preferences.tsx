@@ -61,6 +61,7 @@ import {
   putMonitorEnabled,
   putMarketplaceEnabled,
   putGithubLinkEnabled,
+  putContribFlag,
   putMenubarPinEnabled,
   putNativeWindowsEnabled,
   putGitAutoSyncEnabled,
@@ -89,8 +90,9 @@ import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
+import { effectiveContribFlags, publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishProjectQueueEnabled } from "@apps/claude/feature-flag";
-import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
+import type { CallsParamsMode, ContribPrefs, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { IS_QUERY_EMBED, navigate, navigateUrl } from "@platform/lib/router";
 import { displayName, isBot } from "@platform/lib/flavor";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -516,6 +518,121 @@ function GithubLinkSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pr
           <b>Enable GitHub link</b> — add a GitHub link option to the Share sheet.
         </span>
       </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Community (preview): the GitHub contribution loop's five phase switches
+// (docs/CONTRIB_LOOP.md §1), one row each, in the order they build on each
+// other. Shown AS SET (the raw prefs), never greyed out: a switch whose
+// prerequisite is off can still be ticked, and its row says what it is
+// waiting for instead — the reader may be turning them on bottom-up, and a
+// disabled box would hide that the click would have counted. Same
+// publish-after-PUT as the sections above (contrib-flags.ts), so the cards
+// and the share sheet already mounted follow the switch.
+const CONTRIB_ROWS: {
+  key: keyof ContribPrefs;
+  name: string;
+  line: string;
+  needs: (keyof ContribPrefs)[];
+}[] = [
+  {
+    key: "sources",
+    name: "Where apps come from",
+    line: "Cards and app pages say whether an app is yours or follows someone else's, and Share offers its GitHub link.",
+    needs: [],
+  },
+  {
+    key: "changes",
+    name: "Your changes",
+    line: "Edits to someone else's app are kept as your changes on top of theirs, and you can propose them to the author.",
+    needs: ["sources"],
+  },
+  {
+    key: "inbox",
+    name: "Proposals inbox",
+    line: "Changes people propose to your apps show up on the app, with a safety review, to try, accept or decline.",
+    needs: ["sources"],
+  },
+  {
+    key: "loop",
+    name: "Merged proposals",
+    line: "Once the author accepts your change, your copy goes back to following theirs and you're credited.",
+    needs: ["changes", "inbox"],
+  },
+  {
+    key: "remix",
+    name: "Remix",
+    line: "Publish your changed version as an app of your own, credited to the original.",
+    needs: ["changes"],
+  },
+];
+
+function CommunitySection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState<keyof ContribPrefs | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const raw = prefs.contrib;
+  const effective = effectiveContribFlags(raw);
+  const rowOf = (k: keyof ContribPrefs) => CONTRIB_ROWS.find((r) => r.key === k);
+  // The switches that are actually OFF somewhere under `key` — Merged
+  // proposals ticked with everything but Where apps come from names that
+  // one, not the two ticked rows it holds back in turn.
+  const offUnder = (key: keyof ContribPrefs): (keyof ContribPrefs)[] => {
+    const out: (keyof ContribPrefs)[] = [];
+    for (const n of rowOf(key)?.needs ?? []) {
+      for (const k of raw?.[n] === true ? offUnder(n) : [n]) if (!out.includes(k)) out.push(k);
+    }
+    return out;
+  };
+
+  const toggle = async (key: keyof ContribPrefs) => {
+    if (busy) return;
+    setBusy(key);
+    setError(null);
+    try {
+      const next = await putContribFlag(key, raw?.[key] !== true);
+      onChange(next);
+      publishContribFlags(next.contrib);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Community (preview)</h2>
+      <p className="deploy-muted">
+        Improve apps people share with you and send the changes back, all through your own GitHub
+        account. Each part turns on separately while it is being tried out. Off by default.
+      </p>
+      {CONTRIB_ROWS.map((row) => {
+        const on = raw?.[row.key] === true;
+        // Named only while this row is ticked but held back — an unticked
+        // row has nothing to wait for yet.
+        const missing = on && !effective[row.key] ? offUnder(row.key) : [];
+        return (
+          <label className="prefs-radio" key={row.key}>
+            <input
+              type="checkbox"
+              checked={on}
+              disabled={busy !== null}
+              onChange={() => void toggle(row.key)}
+            />
+            <span>
+              <b>{row.name}</b>
+              <span className="deploy-muted"> {row.line}</span>
+              {missing.length > 0 && (
+                <span className="prefs-contrib-needs">
+                  Needs {missing.map((k) => rowOf(k)?.name ?? k).join(" and ")} to be on.
+                </span>
+              )}
+            </span>
+          </label>
+        );
+      })}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
@@ -1967,6 +2084,7 @@ export default function Preferences() {
                 {!bot && <CanvasesSection prefs={prefs} onChange={setPrefs} />}
                 {!bot && <AppSharingSection prefs={prefs} onChange={setPrefs} />}
                 {!bot && <GithubLinkSection prefs={prefs} onChange={setPrefs} />}
+                {!bot && <CommunitySection prefs={prefs} onChange={setPrefs} />}
                 <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />}
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />

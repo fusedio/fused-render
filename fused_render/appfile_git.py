@@ -395,6 +395,12 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
                               f"({target['other_name']}); rename or uninstall it first")
     if state == appfile.STATE_LOCAL:
         if target.get("found_by") == "git":
+            if _contrib_sources():
+                # The contribution loop keeps the copy on the author's latest
+                # with the user's changes on top by itself; there is nothing
+                # for the user to run, only something to look at.
+                raise GitInstallError("You already have this app with your own changes. "
+                                      "Open it to see them.")
             raise GitInstallError(f"{target['path']} has changes of its own; update it with git "
                                   "(git pull)")
         raise GitInstallError(f"{target['path']} was edited since it was installed from a file; "
@@ -406,7 +412,16 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
 
     if state == appfile.STATE_UPDATE:
         for args in (("fetch", "-q", "origin"), ("merge", "-q", "--ff-only", src["commit"])):
-            r = _git(*args, cwd=dest)
+            if args[0] == "merge" and _contrib_sources():
+                # A committed `.fused/` the contribution loop marked
+                # skip-worktree refuses any update that changes it unless
+                # fused's local copies step aside (contrib/replay.py).
+                from fused_render.contrib import replay
+
+                with replay.fused_aside(os.path.realpath(dest), src["commit"]):
+                    r = _git(*args, cwd=dest)
+            else:
+                r = _git(*args, cwd=dest)
             if r.returncode != 0:
                 raise GitInstallError(f"git {args[0]} failed: {_err(r)}")
         action = "updated"
@@ -424,8 +439,32 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
     app_git._ensure_excludes(dest)
     app_fused_dir.ensure(dest)
     appfile.write_stamp(dest, manifest, fused_path, git=src)
+    _record_install(dest, src["url"])
     entry = os.path.join(dest, *manifest["entry"].split("/"))
     return {"action": action, "entry": entry.replace(os.sep, "/"), "pruned": [], "adopted_state": None}
+
+
+def _contrib_sources() -> bool:
+    try:
+        from fused_render.contrib import flags
+
+        return flags.sources()
+    except Exception:  # noqa: BLE001 — an unreadable flag reads as off
+        return False
+
+
+def _record_install(dest: str, url: str) -> None:
+    """Record the install source OUTSIDE the folder (contrib/store.py,
+    docs/CONTRIB_LOOP.md §4) and, with the contribution loop on, mark a
+    committed `.fused/` skip-worktree so the stamp and `meta.json` just
+    written never read as edits. Written whatever the flags (the record is
+    invisible); never fails the install that already landed."""
+    try:
+        from fused_render.contrib import classify
+
+        classify.record_install(dest, url)
+    except Exception:  # noqa: BLE001
+        logger.exception("could not record the install source of %s", dest)
 
 
 def sweep_staging(ttl_s: float = 24 * 3600) -> None:

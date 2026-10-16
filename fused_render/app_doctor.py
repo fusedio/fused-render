@@ -117,6 +117,11 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     # local refs only; "behind origin" needs a real fetch, which this never
     # performs inline — see `_repo_health_check`.
     "git": ("sharing", "warning", "fact"),
+    # The GitHub contribution loop (docs/CONTRIB_LOOP.md §4): a repo that
+    # commits its own `.fused/` ships the author's machine data to everyone
+    # who installs it. Only reported while `contrib.flags.sources()` is on
+    # (`_gated_checks`) — with the loop off the checklist is exactly today's.
+    "fused-dir-committed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
 }
@@ -560,6 +565,45 @@ def _content_family_checks(app_dir: str) -> dict[str, dict]:
     return out
 
 
+def _fused_dir_committed_check(app_dir: str) -> dict:
+    """Whether the app's own repository tracks anything under `.fused/` —
+    the folder that holds THIS machine's data for the app (D548). Local git
+    only (`ls-files`), no network. The contribution loop already keeps such
+    files from blocking a copy's updates (contrib/replay.py); this row is
+    the author's to fix at the source."""
+    from fused_render import git_upstream
+
+    label = "The repo leaves out the .fused folder"
+    root = git_upstream.repo_root(app_dir)
+    if root is None or root != os.path.realpath(app_dir):
+        return _check("fused-dir-committed", label, SKIP,
+                      "this app is not its own git repository")
+    r = git_upstream._run(root, "ls-files", "-z", "--", ".fused")
+    if not git_upstream._ok(r):
+        return _check("fused-dir-committed", label, SKIP, "could not read the repository")
+    tracked = [p for p in r[1].decode("utf-8", "replace").split("\0") if p]
+    if not tracked:
+        return _check("fused-dir-committed", label, PASS, "the .fused folder is not in the repo")
+    findings = [{"rule": "fused-dir:tracked", "path": p, "line": 0, "excerpt": p}
+                for p in tracked[:20]]
+    return _check("fused-dir-committed", label, FAIL,
+                  "This app's repo includes its .fused folder, which holds this "
+                  "machine's data. Remove it from the repo.", findings)
+
+
+def _gated_checks(app_dir: str) -> dict:
+    """Rows that exist only while a feature flag is on — absent, not skipped,
+    when it is off, so the checklist is byte-for-byte today's."""
+    try:
+        from fused_render.contrib import flags
+
+        if flags.sources():
+            return {"fused-dir-committed": _fused_dir_committed_check(app_dir)}
+    except Exception:  # noqa: BLE001 — a flag read never fails the report
+        pass
+    return {}
+
+
 def _generated_check(app_dir: str) -> dict:
     stray = _generated_paths(app_dir)
     return _check(
@@ -960,8 +1004,9 @@ def report(app_dir: str) -> dict:
         "icon": _icon_check(app_dir),
         "git": _repo_health_check(app_dir),
         "cross-browser": _cross_browser_check(app_dir),
+        **_gated_checks(app_dir),
     }
-    checks = [by_id[cid] for cid in CHECK_ORDER]
+    checks = [by_id[cid] for cid in CHECK_ORDER if cid in by_id]
 
     return {
         "path": app_dir,
@@ -1006,6 +1051,8 @@ def report_one(app_dir: str, check_id: str) -> dict | None:
         return _repo_health_check(app_dir)
     if check_id == "cross-browser":
         return _cross_browser_check(app_dir)
+    if check_id == "fused-dir-committed":
+        return _fused_dir_committed_check(app_dir)
     raise AssertionError(f"unreachable: {check_id!r} is in _CHECK_META but not dispatched")
 
 

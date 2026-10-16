@@ -27,6 +27,7 @@
 // do is behave like a machine that never turned the feature on.
 import { useEffect, useState } from "react";
 import { getPrefsShared } from "@platform/lib/api";
+import { contribFlagsSync, useContribFlags } from "@platform/lib/contrib-flags";
 
 /** The last answer, or `null` while nobody has asked yet. Null renders as OFF:
  *  the flag defaults off, so showing Export until the answer lands never
@@ -87,4 +88,24 @@ export function useAppSharingFeature(): boolean {
     };
   }, []);
   return current;
+}
+
+// Whether an APP surface offers the Share sheet: this flag, OR Community →
+// Where apps come from (contrib-flags.ts `sources`), whose whole point is that
+// the sheet's GitHub link is how an app is shared. The five app surfaces (the
+// /apps card's chip and menu, the app page header, the sidebar's current-app
+// menu, the explorer kebab and folder row) read these; FILE sharing (the
+// explorer's Preview) keeps reading `useAppSharingFeature` alone — the loop
+// shares apps, not files.
+
+/** Hook form, for the app surfaces that are components. */
+export function useAppShareOffered(): boolean {
+  const sharing = useAppSharingFeature();
+  const contrib = useContribFlags();
+  return sharing || contrib?.sources === true;
+}
+
+/** Sync form, for appCardMenu (built at click time). */
+export function appShareOffered(): boolean {
+  return appSharingEnabled() || contribFlagsSync().sources;
 }

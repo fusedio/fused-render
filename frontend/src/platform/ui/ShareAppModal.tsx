@@ -44,6 +44,10 @@
 //     (share_app.py `github_link_state`); otherwise the card stays muted with
 //     the one sentence saying which condition failed. Muted for a snapshot
 //     too, like the public link: the repo is the live app.
+//     With Community → Where apps come from on (contrib-flags.ts `sources`)
+//     it is the sheet's public link: first, primary, shown whatever
+//     `github_link_enabled` says, and the Fused-storage link card above is
+//     not offered (hidden, not deleted — removing it waits on the owner).
 //
 // NEITHER ROUTE PHOTOGRAPHS THE SCREEN. The .fused and the public link carry
 // the folder's authored preview.png or none; a missing thumbnail is App
@@ -87,6 +91,7 @@ import {
   type SharedAppRecord,
 } from "@platform/lib/share-app";
 import { useGithubLinkFeature } from "@platform/lib/github-link-flag";
+import { useContribFlags } from "@platform/lib/contrib-flags";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -128,6 +133,29 @@ interface CanvasesStatusLite {
 // One shared flag for both was the bug: an export started mid-login and the
 // login poll's `setBusy(null)` then dropped the export lock (Bugbot, #1207).
 type Busy = null | "publish" | "update" | "remove" | "export";
+
+// Why an app has no GitHub link yet, in product words (docs/CONTRIB_LOOP.md
+// §0.1, §15): keyed on share_app.github_link_state's `code`, because its
+// `reason` speaks git. An unknown or missing code (an older server) gets the
+// plain catch-all rather than the raw reason.
+function githubLinkSentence(code: GithubLinkState["code"]): string {
+  switch (code) {
+    case "not_repo":
+    case "no_remote":
+      return "Publish this app to GitHub first, then share its link here.";
+    case "dirty":
+    case "unpushed":
+      return "Your latest edits aren't on GitHub yet.";
+    case "nested":
+      return "This app lives inside a bigger project on GitHub, so it can't have a link of its own.";
+    case "not_github":
+      return "This app is stored somewhere other than GitHub, so it can't be shared by link.";
+    case "no_default":
+      return "GitHub hasn't finished setting this app up yet. Try again in a moment.";
+    default:
+      return "This app isn't on GitHub yet.";
+  }
+}
 
 // One row of the sheet: a glyph plate, a title with its one-line description,
 // the row's action at the right, and whatever the route has to show once it
@@ -198,7 +226,18 @@ export function ShareAppModal({
   const [saved, setSaved] = useState<{ name: string; path: string } | null>(null);
   const loginStampRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
-  const githubEnabled = useGithubLinkFeature();
+  // Community → Where apps come from (contrib-flags.ts) makes the GitHub link
+  // THE public way to share: its card shows whatever `github_link_enabled`
+  // says, comes first as the primary, and the Fused-storage link card is not
+  // offered (kept behind the flag until the owner confirms removing it).
+  // `null` until the prefs read lands. The link card RENDERS meanwhile (its
+  // skeleton — the flag-off sheet, unchanged), but its reads wait for the
+  // answer, so a sheet about to hide that card never asks the account.
+  const contribFlags = useContribFlags();
+  const githubFirst = contribFlags?.sources === true;
+  const fusedLinkShown = !githubFirst;
+  const fusedLinkReads = contribFlags !== null && !githubFirst;
+  const githubEnabled = useGithubLinkFeature() || githubFirst;
   const [github, setGithub] = useState<GithubLinkState | null>(null);
   const [githubErr, setGithubErr] = useState("");
   const [githubCopied, setGithubCopied] = useState(false);
@@ -289,7 +328,7 @@ export function ShareAppModal({
   // has nothing to ask.
   useEffect(() => {
     goneRef.current = false;
-    if (linkEligible) {
+    if (linkEligible && fusedLinkReads) {
       void refresh().then((s) => {
         if (!goneRef.current) lookup(s);
       });
@@ -297,7 +336,7 @@ export function ShareAppModal({
     return () => {
       goneRef.current = true;
     };
-  }, [refresh, lookup, linkEligible]);
+  }, [refresh, lookup, linkEligible, fusedLinkReads]);
 
   useEffect(
     () => () => {
@@ -579,8 +618,13 @@ export function ShareAppModal({
       : "Publish to your Fused account as a public page anyone can open.";
 
   // ---- the file card ----------------------------------------------------------
+  // The file is the primary only while the card above it has no primary of
+  // its own to offer.
+  const fileSecondary = githubFirst
+    ? linkEligible && !!github?.ok
+    : linkEligible && signedIn;
   const fileAction = (
-    <Button size="sm" variant={linkEligible && signedIn ? "outline" : "default"} disabled={working} onClick={() => void doExport()}>
+    <Button size="sm" variant={fileSecondary ? "outline" : "default"} disabled={working} onClick={() => void doExport()}>
       {busy === "export" && <Loader2 data-icon="inline-start" className="animate-spin" />}
       {busy === "export" ? "Exporting…" : isLiveFile ? "Download" : `Download ${versionLabel}`}
     </Button>
@@ -627,6 +671,96 @@ export function ShareAppModal({
     </p>
   ) : null;
 
+  // ---- the GitHub link card ----------------------------------------------------
+  // Third and secondary by default; with Community sources on it is the first
+  // card and the primary (see `githubFirst`), never dimmed for an unshareable
+  // state — its one sentence is then the most useful thing on the sheet — and
+  // the sentence is mapped from the server's `code`, never its git-worded
+  // `reason`.
+  const githubNotice =
+    linkEligible && github && !github.ok
+      ? githubFirst
+        ? githubLinkSentence(github.code)
+        : github.reason
+      : null;
+  // A GitHub-link copy of someone else's app shares the AUTHOR's version
+  // (code "contributor"); when the reader has edits of their own, one line
+  // says the link leaves them out and where they can go instead. "Publish a
+  // remix" only while that phase is on.
+  const author = github?.repo?.split("/")[0] ?? "the author";
+  const githubLeavesOut =
+    githubFirst && linkEligible && github?.ok && github.code === "contributor" && (github.changes ?? 0) > 0
+      ? contribFlags?.remix
+        ? `This shares ${author}'s version. Your changes aren't included — propose them or publish a remix.`
+        : `This shares ${author}'s version. Your changes aren't included — propose them to ${author}.`
+      : null;
+  const githubCard = (
+    <OptionCard
+      icon={<GitBranch />}
+      title="GitHub link"
+      description={
+        !linkEligible
+          ? "Links always install the live app. Pick Live in the version picker to share one."
+          : githubFirst
+            ? github?.repo
+              ? `Anyone with the link installs the app from github.com/${github.repo}, and it stays up to date.`
+              : "Anyone with the link installs the app from GitHub, and it stays up to date."
+            : github?.repo
+              ? `Installs the app straight from github.com/${github.repo}.`
+              : "Installs the app straight from its GitHub repository."
+      }
+      muted={!linkEligible || (!githubFirst && !!github && !github.ok)}
+      action={
+        linkEligible && !github && !githubErr ? (
+          <Skeleton className="h-8 w-24" />
+        ) : (
+          <Button
+            size="sm"
+            variant={githubFirst && github?.ok ? "default" : "outline"}
+            disabled={!github?.ok}
+            onClick={() => void copyGithub()}
+          >
+            {githubCopied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+            {githubCopied ? "Copied" : "Copy link"}
+          </Button>
+        )
+      }
+    >
+      {linkEligible && github?.ok && github.url && (
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="text"
+            readOnly
+            value={github.url}
+            onFocus={(e) => e.currentTarget.select()}
+            aria-label="GitHub link"
+            className="h-8 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
+          />
+          <Button
+            size="icon-sm"
+            variant="outline"
+            title="Open the install page"
+            aria-label="Open the install page"
+            render={<a href={github.url} target="_blank" rel="noopener noreferrer" />}
+          >
+            <ExternalLink />
+          </Button>
+        </div>
+      )}
+      {githubNotice && (
+        <p className="m-0 text-[13px] leading-5 text-muted-foreground">{githubNotice}</p>
+      )}
+      {githubLeavesOut && (
+        <p className="m-0 text-[13px] leading-5 text-muted-foreground">{githubLeavesOut}</p>
+      )}
+      {githubErr && (
+        <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
+          {githubErr}
+        </p>
+      )}
+    </OptionCard>
+  );
+
   return (
     <>
       <Dialog
@@ -659,26 +793,31 @@ export function ShareAppModal({
               </DialogClose>
             </div>
             <DialogDescription className="sr-only">
-              {githubEnabled
-                ? "Share this app as a public link, a .fused file, or a GitHub link."
-                : "Share this app as a public link or as a .fused file."}
+              {githubFirst
+                ? "Share this app as a GitHub link or as a .fused file."
+                : githubEnabled
+                  ? "Share this app as a public link, a .fused file, or a GitHub link."
+                  : "Share this app as a public link or as a .fused file."}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3 px-6 pb-5">
-            <OptionCard
-              icon={<Globe />}
-              title={linkTitle}
-              description={linkDescription}
-              action={linkAction}
-              muted={!linkEligible}
-            >
-              {linkBody}
-              {linkErr && (
-                <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
-                  {linkErr}
-                </p>
-              )}
-            </OptionCard>
+            {githubFirst && githubCard}
+            {fusedLinkShown && (
+              <OptionCard
+                icon={<Globe />}
+                title={linkTitle}
+                description={linkDescription}
+                action={linkAction}
+                muted={!linkEligible}
+              >
+                {linkBody}
+                {linkErr && (
+                  <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
+                    {linkErr}
+                  </p>
+                )}
+              </OptionCard>
+            )}
             <OptionCard
               icon={<Package />}
               title="App file"
@@ -697,65 +836,7 @@ export function ShareAppModal({
                 </p>
               )}
             </OptionCard>
-            {githubEnabled && (
-              <OptionCard
-                icon={<GitBranch />}
-                title="GitHub link"
-                description={
-                  !linkEligible
-                    ? "Links always install the live app. Pick Live in the version picker to share one."
-                    : github?.repo
-                      ? `Installs the app straight from github.com/${github.repo}.`
-                      : "Installs the app straight from its GitHub repository."
-                }
-                muted={!linkEligible || (!!github && !github.ok)}
-                action={
-                  linkEligible && !github && !githubErr ? (
-                    <Skeleton className="h-8 w-24" />
-                  ) : (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={!github?.ok}
-                      onClick={() => void copyGithub()}
-                    >
-                      {githubCopied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
-                      {githubCopied ? "Copied" : "Copy link"}
-                    </Button>
-                  )
-                }
-              >
-                {linkEligible && github?.ok && github.url && (
-                  <div className="flex items-center gap-1.5">
-                    <Input
-                      type="text"
-                      readOnly
-                      value={github.url}
-                      onFocus={(e) => e.currentTarget.select()}
-                      aria-label="GitHub link"
-                      className="h-8 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
-                    />
-                    <Button
-                      size="icon-sm"
-                      variant="outline"
-                      title="Open the install page"
-                      aria-label="Open the install page"
-                      render={<a href={github.url} target="_blank" rel="noopener noreferrer" />}
-                    >
-                      <ExternalLink />
-                    </Button>
-                  </div>
-                )}
-                {linkEligible && github && !github.ok && github.reason && (
-                  <p className="m-0 text-[13px] leading-5 text-muted-foreground">{github.reason}</p>
-                )}
-                {githubErr && (
-                  <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
-                    {githubErr}
-                  </p>
-                )}
-              </OptionCard>
-            )}
+            {githubEnabled && !githubFirst && githubCard}
           </div>
           {/* NESTED inside DialogContent, not a sibling of the Dialog: Base UI
               only coordinates dialogs through the React tree — a nested root

@@ -52,7 +52,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Plug, Stethoscope } from "lucide-react";
 import { addCurrentApp, getAppEntry } from "@platform/lib/api";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
@@ -188,7 +188,7 @@ export function useAppActionRows({
   // opens the sheet; OFF, it is the "Download app" row this menu carried
   // before the sheet — the same `.fused` straight to Downloads, a toast saying
   // where — with its own spinner, since there is no sheet to narrate the save.
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
   const [exporting, setExporting] = useState(false);
   const shareDisabled = snapshotPending || snapshotError || exporting;
   // One Share entry opens the unified sheet (ShareAppModal): the public link
