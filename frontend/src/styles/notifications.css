@@ -161,14 +161,14 @@
   justify-content: flex-end;
   gap: 0;
   padding: 0 var(--status-bar-gutter) 0 var(--status-bar-start-gutter);
-  /* FIXED 22px, VS Code's own status-bar height (D576, user: "lets follow
-     exactly what vscode is doing for the status bar") — `height`, not
-     `min-height`, because every item is now full-height and nothing inside
-     is allowed to grow the strip. 8px at the ends so the first and last item
-     are not flush against the window edge; NO `gap`, since each item's own
-     5px of side padding is the entire separation and adjacent items touch,
-     which is what VS Code does. */
-  height: 22px;
+  /* FIXED at `--status-bar-h` (explorer.css), VS Code's own status-bar height
+     (D576, user: "lets follow exactly what vscode is doing for the status
+     bar") — `height`, not `min-height`, because every item is now full-height
+     and nothing inside is allowed to grow the strip. 8px at the ends so the
+     first and last item are not flush against the window edge; NO `gap`,
+     since each item's own 5px of side padding is the entire separation and
+     adjacent items touch, which is what VS Code does. */
+  height: var(--status-bar-h);
   color: var(--fg);
   background: var(--bg-alt);
   border-top: 1px solid var(--border);

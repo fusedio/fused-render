@@ -424,16 +424,31 @@ html.side-reopening iframe {
    below every modal overlay (deploy.css 1000, the chat's file-preview and
    screenshot overlays 1100), so a dialog opened from inside it still covers it.
    The folder listing's pane gets the same treatment on its slot
-   (.listing-pane-slot.maximized, explorer.css). */
+   (.listing-pane-slot.maximized, explorer.css).
+
+   `bottom: 0` by default, not part of a plain `inset: 0` — `#main` renders no
+   `.status-bar` at all in embed mode (App.tsx's `!IS_EMBED` guard), so there is
+   nothing to stop above there and the overlay should still reach the window's
+   bottom edge. Where `#main` does carry the bar, the `:has()` rule below raises
+   the stop to `--status-bar-h` so full screen never paints over it; that rule's
+   higher specificity (the `#main` id) wins over this one regardless of source
+   order. Only the bar's own `.dl-panel` popovers still need to show through —
+   their z-index already clears 950 (notifications.css). */
 .preview-side.maximized {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   z-index: 950;
   flex-basis: auto !important;
   width: auto;
   min-width: 0;
   max-width: none;
   background: var(--bg-alt);
+}
+#main:has(> .status-bar) .preview-side.maximized {
+  bottom: var(--status-bar-h);
 }
 /* Centre the chat for reading: the header row and the Git iframe stay full
    width. */
