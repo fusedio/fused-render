@@ -426,7 +426,12 @@ class Runner:
         capability whose folder is missing hands the user a Download button that
         fails at spawn while the API reports the capability ready. Advertising
         is a claim; this is the check that makes it true.
+
+        Intel Macs are refused before either half: no local AI is supported
+        there, whatever a row's own platform gate would say.
         """
+        if _intel_mac():
+            return Availability(False, "local AI is not supported on Intel Macs")
         if not os.path.isfile(self.worker):
             return Availability(False, f"the {self.short} runner is not built yet")
         return self._available()
@@ -461,6 +466,17 @@ class Runner:
     @property
     def pyproject(self) -> str:
         return os.path.join(self.folder, "pyproject.toml")
+
+
+def _intel_mac() -> bool:
+    """Darwin on x86_64 — every local runner is off there (`Runner.available`).
+
+    Several rows' own gates would say yes (the torch image row, faster-whisper),
+    but wheels for Intel macOS are drying up release by release (torch has none
+    past 2.2.2), so local AI is not offered on Intel Macs at all rather than
+    row by row. Call time, not import time, so tests can monkeypatch `platform`.
+    """
+    return platform.system() == "Darwin" and platform.machine() == "x86_64"
 
 
 def _apple_silicon() -> Availability:
