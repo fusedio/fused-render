@@ -208,9 +208,11 @@ def _is_loadable(root: str, expected=()) -> bool:
 # tombstoned with an `.orphaned_at` marker the scan knew nothing about, and the
 # plugin the user removed came back. Second, discovery made the root a fact about
 # the MACHINE, which invited handing it to every session; these skills belong to
-# canvas clones alone (the gate lives in `claude_agent/agent.py:_plugin_argv`,
-# which is where the target path is known). A clone we fetch is the opposite on
-# both counts: its presence means we put it there, and its lifetime is ours.
+# canvas clones alone — this server's own under `_canvases_root()`, or Fused
+# Web's local ones under `~/Fused/canvas` (the gate lives in
+# `claude_agent/agent.py:_in_workbench_root`, which is where both target paths
+# are known). A clone we fetch is the opposite on both counts: its presence
+# means we put it there, and its lifetime is ours.
 #
 # Rejected: `claude plugin install` (or a marketplace add). It would work, and it
 # would load the workbench skills into EVERY `claude` on the machine — including

@@ -1045,6 +1045,61 @@ def test_the_gate_normalizes_before_comparing(tmp_path, monkeypatch):
     assert not agent._in_canvases_root(str(tmp_path / "canvases-evil" / "x.py"))
 
 
+def test_fused_web_canvas_root_is_a_second_gate_root(tmp_path, monkeypatch):
+    """Fused Web keeps its OWN local canvas clones at `~/Fused/canvas/<name>`
+    (each with its own `canvas.toml`) — never under the canvases-clones root
+    agent.py already knows, since those tasks go through `fused.tasks.create`
+    rather than a canvas push. That folder is a SECOND gate root, additive
+    with the first: a target inside either gets the workbench plugin."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    canvases = tmp_path / "canvases"
+    canvases.mkdir()
+    agent = _load_agent()
+    monkeypatch.setattr(agent, "_skill_plugin_dir", lambda: "/a/own")
+    monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: "/b/workbench")
+    monkeypatch.setattr(agent, "_canvases_root", lambda: str(canvases))
+    own = ["--plugin-dir", "/a/own"]
+    both = ["--plugin-dir", "/a/own", "--plugin-dir", "/b/workbench"]
+
+    fused_web = home / "Fused" / "canvas" / "my_canvas"
+    fused_web.mkdir(parents=True)
+    assert agent._plugin_argv(str(fused_web / "canvas.toml")) == both
+    assert agent._skill_plugin_roots(str(fused_web)) == ["/a/own", "/b/workbench"]
+
+    # The existing canvases root still works alongside it.
+    (canvases / "c1").mkdir()
+    assert agent._plugin_argv(str(canvases / "c1")) == both
+
+    # Elsewhere under ~/Fused, and a sibling merely starting with "canvas",
+    # are NOT inside — same commonpath rule as the canvases-root gate.
+    other = home / "Fused" / "other"
+    other.mkdir(parents=True)
+    assert agent._plugin_argv(str(other)) == own
+    evil = home / "Fused" / "canvas-evil" / "x"
+    evil.mkdir(parents=True)
+    assert agent._plugin_argv(str(evil)) == own
+
+    # A symlink standing in for part of the path (the macOS `/tmp` vs
+    # `/private/tmp` case the canvases-root gate already handles) still
+    # resolves via realpath to the same canonical clone.
+    home_link = tmp_path / "home_link"
+    os.symlink(home, home_link)
+    via_link = home_link / "Fused" / "canvas" / "my_canvas" / "canvas.toml"
+    assert agent._plugin_argv(str(via_link)) == both
+
+    # Resolved at CALL time (os.path.expanduser), not import time: moving HOME
+    # after the module is loaded changes the answer.
+    home2 = tmp_path / "home2"
+    (home2 / "Fused" / "canvas" / "other_canvas").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home2))
+    assert agent._plugin_argv(
+        str(home2 / "Fused" / "canvas" / "other_canvas" / "canvas.toml")) == both
+    # The first HOME's clone no longer resolves under the new HOME.
+    assert agent._plugin_argv(str(fused_web / "canvas.toml")) == own
+
+
 def test_the_server_exports_the_root_before_serving():
     """The vars have to be set before any child is spawned, or a session
     inherits nothing — same contract as every other FUSED_RENDER_* export."""
