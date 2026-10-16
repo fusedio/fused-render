@@ -76,11 +76,10 @@ DEFER_DEADLINE_S = 120.0
 
 # How long a folder must have been left alone before it is rescanned again.
 #
-# Every scan ends in a COMPACTION, and a compaction re-sorts and rewrites every
-# partition in the store plus dirs.parquet — keeping the rows outside the scan
-# root is a query predicate, not an incremental write (index/store.py). The
-# cost of a rescan is therefore a function of the whole index rather than of
-# the folder, and without a floor a caller that mutates on a timer rewrites a
+# Every scan ends in a COMPACTION, which rewrites the partitions the scan
+# touched (25k rows each, index/store.py) plus all of dirs.parquet. dirs.parquet
+# is still one file, so the cost of a rescan still grows with the whole index,
+# and without a floor a caller that mutates on a timer rewrites a
 # 571k-row store on that timer.
 #
 # A folder inside the floor is DEFERRED, never dropped, which is the whole

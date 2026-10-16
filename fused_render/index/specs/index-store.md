@@ -14,7 +14,7 @@ nesting come for free, and no test can write into a real home.
 
 | Path | Contents |
 |---|---|
-| `<index>/files/part-<gen>-NNNNN.parquet` | file rows, globally sorted by path; one generation per compaction (§4) |
+| `<index>/files/part-<gen>-<run>-NNNNN.parquet` | file rows, globally sorted by path; one generation per compaction (§4) |
 | `<index>/dirs.parquet` | one row per directory: signature + reuse metadata |
 | `<index>/partitions.json` | manifest: row count, per-partition path ranges |
 | `<index>/fsevents.json` | per-root journal position (`scan-incremental.md §3`) |
@@ -104,12 +104,25 @@ dropped from the index — which is how deletions and newly-ignored folders leav
 2. **Skip-rewrite fast path** — no shards, no new dir rows, nothing removed, and an
    existing index → the index is left byte-identical; only `partitions.json`'s
    `updated`/`last_root` are refreshed and the summary is flagged `skipped_rewrite`.
-3. **Merge** — `old rows WHERE outside OR kept` `UNION ALL` new shard rows, deduped by
-   `QUALIFY row_number() OVER (PARTITION BY path ORDER BY mtime DESC) = 1`, then
-   `ORDER BY path`.
-4. **Partition** — `cfg.part_rows` (500 000) rows per
-   `part-<generation>-NNNNN.parquet`, row group size 65 536, recording each partition's
-   `min`/`max` path and row count. The generation is the previous manifest's plus one.
+3. **Plan** — each old partition owns the half-open path range `[min_i, min_{i+1})`
+   (the first also everything below its min, the last everything above), assigned in
+   DuckDB so the ordering is byte-wise like `ORDER BY path`. A partition is *affected*
+   if it holds old rows the scan replaces or removes (`NOT (outside OR kept)`; the
+   count is skipped for partitions whose range cannot intersect the scan root, as in
+   `query.prune`) or any shard row falls in its owned range. With no manifest, a
+   missing partition file, nothing affected, or every partition affected, the whole
+   store is rewritten.
+4. **Merge + partition** — each maximal run of adjacent affected partitions is one
+   merge: `old rows of the run WHERE outside OR kept` `UNION ALL` the shard rows owned
+   by the run, deduped by
+   `QUALIFY row_number() OVER (PARTITION BY path ORDER BY mtime DESC) = 1`, `ORDER BY
+   path`, and split at `cfg.part_rows` (25 000) rows into
+   `part-<generation>-<run>-NNNNN.parquet` (row group size 65 536), recording each
+   partition's `min`/`max` path and row count. A run with no rows left produces zero
+   files. Unaffected partitions are carried into the new manifest untouched (same file,
+   same bytes). Old oversized partitions (500 000-row stores) are re-split when first
+   touched. The generation is the previous manifest's plus one. The summary reports
+   `merged_rewrite` (a partial rewrite happened) and `rewritten_partitions`.
 5. **Directory table** — `old WHERE outside OR kept` `UNION ALL` new dir rows, deduped
    by `dir` keeping the highest `mtime_ns`, sorted by `dir`.
 6. **Swap** — `dirs.parquet.new` and `partitions.json.new` land via `os.replace`, the
