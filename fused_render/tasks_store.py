@@ -281,11 +281,30 @@ _lease_handles: dict[str, object] = {}
 _lease_lock = threading.Lock()
 
 
+def duties_dir() -> str:
+    """Where the machine-duties lease and the queue index live: `STATE_DIR`,
+    nested per branch ref (`_branch.branch_dir`) — baseline is `STATE_DIR`
+    itself, byte-identical to before.
+
+    THE ONE BRANCH-NESTED THING IN HERE, on purpose. The scheduler's own
+    store (`schedule.store_path`, under `storage.home_dir()`) is per branch,
+    so a worktree server's scheduled messages are in its own file — but the
+    lease deciding WHO ticks was global, so while the desktop app ran it
+    held the lease for every branch and ticked only its own store: an
+    immediate task made on a dev server read `upcoming` for ever and only
+    started on Run now (Akshil, 2026-10-07 and again 2026-10-16). The lease
+    follows the store it guards, and so does the queue index the leader
+    pumps, so two leaders never pump one line. Task identity (`task_ids`,
+    drafts, read, deleted) stays global: the transcripts are."""
+    from fused_render._branch import branch_dir  # noqa: PLC0415
+    return branch_dir(STATE_DIR)
+
+
 def _open_lease_file(name: str):
-    """Open (creating if needed) `name`'s lease file in STATE_DIR WITHOUT
+    """Open (creating if needed) `name`'s lease file in `duties_dir()` WITHOUT
     EVER TRUNCATING IT (`"a+"`): a rival process may already hold the lock
     by the time this runs. Always returns the handle seeked to 0."""
-    return _open_lockfile(os.path.join(STATE_DIR, name))
+    return _open_lockfile(os.path.join(duties_dir(), name))
 
 
 def acquire_lease_blocking(name: str) -> None:

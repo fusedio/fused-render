@@ -360,6 +360,32 @@ def test_tasks_watch_sees_another_processs_queue_index_edit(tmp_path, monkeypatc
         tasks_watch.reset()
 
 
+def test_tasks_watch_watches_the_branch_nested_queue_index(tmp_path, monkeypatch):
+    """With a branch ref the index lives under `tasks_store.duties_dir()`;
+    the watch must stat THAT file, not the baseline one."""
+    from fused_render import _branch, queue_manager, tasks_store, tasks_watch
+
+    state = tmp_path / "home" / "claude-sessions"
+    state.mkdir(parents=True)
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(tasks_store, "STATE_DIR", str(state))
+    monkeypatch.setattr(tasks_store, "PROJECTS_DIR", str(tmp_path / "projects"))
+    monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(_branch, "_CACHED_REF", None)
+    monkeypatch.setenv("FUSED_RENDER_BRANCH", "Feat/X")
+    nested = state / "branches" / "feat-x"
+    nested.mkdir(parents=True)
+    tasks_watch.reset()
+    try:
+        tasks_watch.tick()
+        before = tasks_watch.generation()
+        (nested / queue_manager.INDEX_FILE).write_text('{"folders": {}}')
+        tasks_watch.tick()
+        assert tasks_watch.generation() == before + 1
+    finally:
+        tasks_watch.reset()
+
+
 def test_a_failing_orphan_close_does_not_abort_dispatch_of_due_messages(
         sched_home, monkeypatch):
     """Orphan resolution reports and rings (`_close_unwatched`), and any of

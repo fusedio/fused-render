@@ -358,7 +358,9 @@ router/route `dependencies=`, carried on the route function so they survive
 `include_router` and run inside `call_route`. Startup calls
 `queue_manager.ensure_duties_waiter()` instead of `schedule.start()`: a
 daemon thread takes the `machine-duties.lock` lease under
-`tasks_store.STATE_DIR` = `<app home>/claude-sessions/` and only then starts
+`tasks_store.duties_dir()` = `<app home>/claude-sessions/` (nested under
+`branches/<ref>/` when a branch ref is set, so a worktree server ticks its
+own per-branch schedule store) and only then starts
 the scheduler and resumes the project queue, so two FusedBot processes on
 one app home never both send scheduled messages, and a fused-render install
 (which locks under `~/.fused-render/`) never contends with FusedBot.
