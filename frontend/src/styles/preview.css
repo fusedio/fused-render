@@ -416,7 +416,7 @@ html.side-reopening iframe {
   position: relative;
 }
 
-/* FULL SCREEN (lib/side-maximized-store; the header's .side-maximize button).
+/* FULL SCREEN (lib/side-maximized-store; toggled from the chat's ⋮ menu).
    The column is lifted over the whole viewport instead of being remounted, so
    the chat keeps its state and .stat-main stays mounted underneath. No ancestor
    up to #root sets transform, filter, contain or will-change (#content only

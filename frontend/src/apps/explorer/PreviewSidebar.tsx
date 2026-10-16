@@ -35,7 +35,7 @@
 // flex children of the split container.
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { modeTitle } from "@platform/lib/mode-name";
-import { SideCloseButton, SideMaximizeButton, SideTabs } from "@apps/explorer/SideChrome";
+import { SideCloseButton, SideTabs } from "@apps/explorer/SideChrome";
 import {
   setSideMaximized,
   useSideMaximized,
@@ -148,6 +148,11 @@ export default function PreviewSidebar({
   // so a later reopen is not unexpectedly full screen.
   const maximized = useSideMaximized();
   useSideMaximizedEscape(maximized);
+  // Full screen is the chat's (its ⋮ holds the toggle), so leaving the chat
+  // tab leaves full screen too.
+  useEffect(() => {
+    if (active !== CHAT_MODE) setSideMaximized(false);
+  }, [active]);
   const onClose = () => {
     setSideMaximized(false);
     closeSide();
@@ -349,10 +354,6 @@ export default function PreviewSidebar({
               is up, so the column has nothing to fall back for. */}
           <div className="side-header-tail">
             <SideTabs tabs={entries} active={active} onSelect={onSelect} />
-            <SideMaximizeButton
-              maximized={maximized}
-              onToggle={() => setSideMaximized(!maximized)}
-            />
           </div>
         </div>
         {src === null ? (

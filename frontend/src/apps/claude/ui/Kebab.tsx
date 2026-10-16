@@ -292,6 +292,10 @@ export interface KebabProps {
    * the reader cannot act on from inside it (T:13100-13108).
    */
   queued?: boolean;
+  /** The side pane's FULL SCREEN toggle (lib/side-maximized-store), offered
+   *  first. Passed only when this chat lives in a side pane; absent elsewhere,
+   *  and the item with it. */
+  fullScreen?: { on: boolean; onToggle: () => void };
 }
 
 export function Kebab({
@@ -305,6 +309,7 @@ export function Kebab({
   locked = false,
   lockedReason,
   queued = false,
+  fullScreen,
 }: KebabProps) {
   const [open, setOpen] = useState(false);
   const [erasing, setErasing] = useState(false);
@@ -629,6 +634,11 @@ export function Kebab({
           aria-label="More options"
           className="c-overlay c-kebabpop w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0"
         >
+          {fullScreen ? (
+            <DropdownMenuItem className="c-kebab-opt" onClick={fullScreen.onToggle}>
+              {fullScreen.on ? "Exit full screen" : "Full screen"}
+            </DropdownMenuItem>
+          ) : null}
           {/* NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): the command
               hands the chat to that agent's CLI, which is exactly what the
               switch said not to do — the Explorer's item follows the same rule. */}
