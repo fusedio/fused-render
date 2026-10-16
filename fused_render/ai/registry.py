@@ -427,11 +427,12 @@ class Runner:
         fails at spawn while the API reports the capability ready. Advertising
         is a claim; this is the check that makes it true.
 
-        Intel Macs are refused before either half: no local AI is supported
-        there, whatever a row's own platform gate would say.
+        Intel Macs are refused before either half (`local_ai_disabled`),
+        whatever a row's own platform gate would say.
         """
-        if _intel_mac():
-            return Availability(False, "local AI is not supported on Intel Macs")
+        disabled = local_ai_disabled()
+        if disabled:
+            return Availability(False, disabled)
         if not os.path.isfile(self.worker):
             return Availability(False, f"the {self.short} runner is not built yet")
         return self._available()
@@ -468,15 +469,25 @@ class Runner:
         return os.path.join(self.folder, "pyproject.toml")
 
 
-def _intel_mac() -> bool:
-    """Darwin on x86_64 — every local runner is off there (`Runner.available`).
+#: The one sentence every on-device tier reports on an Intel Mac — each local
+#: runner (`Runner.available`), the apple tier (`apple.host.platform_problem`)
+#: and the catalog's `providers` block (`state: "disabled"`).
+LOCAL_AI_DISABLED_REASON = "local AI is disabled on Intel Macs; it needs Apple Silicon"
 
-    Several rows' own gates would say yes (the torch image row, faster-whisper),
-    but wheels for Intel macOS are drying up release by release (torch has none
-    past 2.2.2), so local AI is not offered on Intel Macs at all rather than
-    row by row. Call time, not import time, so tests can monkeypatch `platform`.
+
+def local_ai_disabled() -> str | None:
+    """Why on-device AI is off on this machine, or None when it is not.
+
+    Darwin on x86_64 — the Intel DMG, or the app under Rosetta, where
+    `machine()` reports the process's arch, not the chip's. Several rows' own
+    gates would say yes there (the torch image row, faster-whisper), but Intel
+    macOS wheels are drying up release by release (torch has none past 2.2.2),
+    so on-device AI is off on Intel Macs as a whole rather than row by row.
+    Call time, not import time, so tests can monkeypatch `platform`.
     """
-    return platform.system() == "Darwin" and platform.machine() == "x86_64"
+    if platform.system() == "Darwin" and platform.machine() == "x86_64":
+        return LOCAL_AI_DISABLED_REASON
+    return None
 
 
 def _apple_silicon() -> Availability:

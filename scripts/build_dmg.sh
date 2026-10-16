@@ -74,15 +74,48 @@ text = open('${REPO_ROOT}/fused_render/__init__.py').read()
 print(re.search(r'(?m)^__version__\s*=\s*\"([^\"]+)\"', text).group(1))
 ")"
 
+# Target CPU: arm64 (Apple Silicon, the default on an Apple Silicon host) or
+# x86_64 (Intel). py2app bundles the interpreter it runs under and pip picks
+# wheels for the arch that interpreter runs as, so the build cannot
+# cross-compile: an x86_64 DMG is built on an Intel host (release.yml's
+# build-sign-notarize-release-intel job), or under Rosetta from a shell started
+# with `arch -x86_64 /bin/bash` (then `uname -m` and every universal binary it
+# launches, the framework python included, run as x86_64). Step 1 checks the
+# interpreter really runs as this arch, step 4f-bis that every bundled Mach-O
+# carries it. The x86_64 build ships no Apple helper (step 4e): the apple tier
+# and every local AI runner are off on Intel Macs (ai/registry.py
+# `local_ai_disabled`).
+ARCH="${FUSED_RENDER_ARCH:-$(uname -m)}"
+case "$ARCH" in
+  arm64|x86_64) ;;
+  *) echo "FATAL: FUSED_RENDER_ARCH=$ARCH; expected arm64 or x86_64" >&2; exit 1 ;;
+esac
+if [[ "$(uname -m)" != "$ARCH" ]]; then
+  echo "FATAL: building for $ARCH on a $(uname -m) shell. Build on a $ARCH Mac, or for" >&2
+  echo "       x86_64 on Apple Silicon run this script from \`arch -x86_64 /bin/bash\`." >&2
+  exit 1
+fi
+
 BUILD_DIR="$REPO_ROOT/build"
 DIST_DIR="$REPO_ROOT/dist"
-BUILD_VENV="$BUILD_DIR/py2app-venv"
+# Per-arch venv: it is reused across builds, and an arm64 venv's compiled
+# wheels would be carried into an x86_64 bundle as-is. arm64 keeps the old
+# path so existing local build venvs stay warm.
+if [[ "$ARCH" == "arm64" ]]; then
+  BUILD_VENV="$BUILD_DIR/py2app-venv"
+  ARCH_SUFFIX=""
+else
+  BUILD_VENV="$BUILD_DIR/py2app-venv-$ARCH"
+  # In the DMG name only. The .app inside stays FusedRender.app, the name
+  # the updater swaps in /Applications and the cask installs.
+  ARCH_SUFFIX="-$ARCH"
+fi
 PY2APP_DIST="$BUILD_DIR/py2app-dist"
 ICNS_PATH="$BUILD_DIR/${APP_NAME}.icns"
 APP_DIR="$PY2APP_DIST/${APP_NAME}.app"
-DMG_PATH="$DIST_DIR/${APP_NAME}-${VERSION}.dmg"
+DMG_PATH="$DIST_DIR/${APP_NAME}-${VERSION}${ARCH_SUFFIX}.dmg"
 
-echo "==> fused-render ${VERSION} [${FLAVOR}] -> ${APP_NAME}.app (py2app) -> ${DMG_PATH##*/}"
+echo "==> fused-render ${VERSION} [${FLAVOR}, ${ARCH}] -> ${APP_NAME}.app (py2app) -> ${DMG_PATH##*/}"
 mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 # ---------------------------------------------------------------------------
@@ -138,7 +171,9 @@ mkdir -p "$BUILD_DIR" "$DIST_DIR"
 
 PORTABLE_FRAMEWORK_PYTHON="/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12"
 FRAMEWORK_FORMULA="python@3.12"
-HOMEBREW_FRAMEWORK_PYTHON="/opt/homebrew/opt/${FRAMEWORK_FORMULA}/bin/python3.12"
+# Homebrew's prefix is per arch: /opt/homebrew on Apple Silicon, /usr/local on Intel.
+if [[ "$ARCH" == "arm64" ]]; then HOMEBREW_PREFIX_GUESS="/opt/homebrew"; else HOMEBREW_PREFIX_GUESS="/usr/local"; fi
+HOMEBREW_FRAMEWORK_PYTHON="${HOMEBREW_PREFIX_GUESS}/opt/${FRAMEWORK_FORMULA}/bin/python3.12"
 
 if [[ -n "${FUSED_RENDER_FRAMEWORK_PYTHON:-}" ]]; then
   FRAMEWORK_PYTHON="$FUSED_RENDER_FRAMEWORK_PYTHON"
@@ -173,6 +208,15 @@ if [[ -z "$FRAMEWORK_TAG" ]]; then
   exit 1
 fi
 echo "==> using framework python: $FRAMEWORK_PYTHON (PYTHONFRAMEWORK=$FRAMEWORK_TAG, $("$FRAMEWORK_PYTHON" -c 'import platform, sysconfig; print(platform.python_version(), "deployment target", sysconfig.get_config_var("MACOSX_DEPLOYMENT_TARGET"))'))"
+# The arch the interpreter RUNS as is the arch of every wheel pip picks below,
+# so this is the check that makes FUSED_RENDER_ARCH true rather than a label.
+# A universal2 python.org framework passes for both; an arm64-only one fails x86_64.
+FRAMEWORK_ARCH="$("$FRAMEWORK_PYTHON" -c 'import platform; print(platform.machine())')"
+if [[ "$FRAMEWORK_ARCH" != "$ARCH" ]]; then
+  echo "FATAL: $FRAMEWORK_PYTHON runs as $FRAMEWORK_ARCH, not $ARCH (lipo: $(lipo -archs "$FRAMEWORK_PYTHON" 2>/dev/null || echo '?'))." >&2
+  echo "       A universal2 python.org framework runs as whatever the shell runs as." >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Build the wheel (dist/*.whl), then a venv: that wheel[bundled,app,fused]
@@ -229,14 +273,16 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 # Bundle numpy's macosx_11_0_arm64 (OpenBLAS) wheel, not the host-tagged 14.0
 # (Accelerate) one pip picks on this runner, so the bundle's minos stays 13.0
 # (D1325). Same version as installed above; --only-binary makes a miss fatal.
+# x86_64 has the same split (macosx_10_13_x86_64 OpenBLAS vs 14_0 Accelerate),
+# so the same tag cap picks the old one there.
 NUMPY_VER="$("$BUILD_VENV/bin/pip" show numpy | awk '/^Version:/{print $2}')"
 NUMPY_WHEELS="$BUILD_DIR/numpy-macos11-wheel"
 rm -rf "$NUMPY_WHEELS"
 "$BUILD_VENV/bin/pip" download --quiet --only-binary=:all: --no-deps \
-    --platform macosx_13_0_arm64 --implementation cp \
+    --platform "macosx_13_0_${ARCH}" --implementation cp \
     --python-version "$("$BUILD_VENV/bin/python" -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
     --dest "$NUMPY_WHEELS" "numpy==${NUMPY_VER}" \
-  || { echo "FATAL: no numpy==${NUMPY_VER} wheel for macOS 13 arm64" >&2; exit 1; }
+  || { echo "FATAL: no numpy==${NUMPY_VER} wheel for macOS 13 ${ARCH}" >&2; exit 1; }
 "$BUILD_VENV/bin/pip" install --quiet --force-reinstall --no-deps --no-cache-dir "$NUMPY_WHEELS"/numpy-*.whl
 
 # ---------------------------------------------------------------------------
@@ -965,12 +1011,22 @@ echo "    fused --help / share --help / env list OK"
 # ---------------------------------------------------------------------------
 
 echo "==> bundling uv"
-UV_SRC="$(command -v uv || true)"
+# FUSED_RENDER_UV_SRC names a uv binary for the target arch when the one on PATH
+# is not (a Rosetta x86_64 build on an Apple Silicon Mac, whose uv is arm64).
+UV_SRC="${FUSED_RENDER_UV_SRC:-$(command -v uv || true)}"
 if [[ -z "$UV_SRC" ]]; then
   echo "FATAL: uv not found on PATH, but the bundle needs it: the install loader" >&2
   echo "       cannot build a script venv without it (no venv/ensurepip/pip in" >&2
   echo "       this bundle), so heavy-dependency templates would dead-end." >&2
   echo "       Install uv (https://docs.astral.sh/uv/) and re-run." >&2
+  exit 1
+fi
+# The host's uv is copied as-is, so a host/target mismatch would ship a uv that
+# cannot exec on the user's Mac — the smoke below would not catch it under Rosetta.
+UV_ARCHS="$(lipo -archs "$UV_SRC" 2>/dev/null || true)"
+if [[ " $UV_ARCHS " != *" $ARCH "* ]]; then
+  echo "FATAL: $UV_SRC is ${UV_ARCHS:-not a Mach-O}, not $ARCH. Point FUSED_RENDER_UV_SRC at a $ARCH uv" >&2
+  echo "       (https://github.com/astral-sh/uv/releases: uv-x86_64-apple-darwin / uv-aarch64-apple-darwin)." >&2
   exit 1
 fi
 UV_DEST="$APP_DIR/Contents/Resources/bin/uv"
@@ -1000,17 +1056,22 @@ echo "    $UV_SMOKE_OUT"
 #     ("this build of the app ships without the Apple helper"). Missing is
 #     fatal only for a release build (a Developer ID identity configured), so
 #     a dev DMG on an older Mac never fails over an optional tier.
+#
+#     x86_64 builds skip it outright: FoundationModels needs Apple Silicon,
+#     host.py refuses the tier on Intel, and the helper is arm64-only.
 echo "==> bundling the apple tier helper"
 APPLE_HELPER_DEST="$APP_DIR/Contents/MacOS/fused-apple-ai"
 APPLE_HELPER_SRC="${FUSED_RENDER_APPLE_HELPER_SRC:-}"
-if [[ -z "$APPLE_HELPER_SRC" ]]; then
+if [[ -z "$APPLE_HELPER_SRC" && "$ARCH" == "arm64" ]]; then
   APPLE_SDK_MAJOR="$(xcrun --sdk macosx --show-sdk-version 2>/dev/null | cut -d. -f1 || echo 0)"
   if [[ "${APPLE_SDK_MAJOR:-0}" -ge 26 ]]; then
     APPLE_HELPER_SRC="$BUILD_DIR/fused-apple-ai"
     bash "$REPO_ROOT/scripts/build_apple_helper.sh" "$APPLE_HELPER_SRC"
   fi
 fi
-if [[ -n "$APPLE_HELPER_SRC" && -f "$APPLE_HELPER_SRC" ]]; then
+if [[ "$ARCH" != "arm64" ]]; then
+  echo "    skipped: $ARCH build (the apple tier needs Apple Silicon)"
+elif [[ -n "$APPLE_HELPER_SRC" && -f "$APPLE_HELPER_SRC" ]]; then
   cp "$APPLE_HELPER_SRC" "$APPLE_HELPER_DEST"
   chmod +x "$APPLE_HELPER_DEST"
   echo "    $(file -b "$APPLE_HELPER_DEST" | cut -c1-80)"
@@ -1074,6 +1135,37 @@ if [[ -n "$MINOS_MAX" ]] && [[ "$(printf '%s\n%s\n' "$MINOS_FLOOR" "$MINOS_MAX" 
   echo "       wheel tag on this host (see this step's comment). Fix the source, do not raise the floor." >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# 4f-bis. Every Mach-O we ship must carry a slice for $ARCH. Read-only, same
+#     scan as 4f. Two ways one would not, neither visible to the smokes above:
+#     a binary copied from the host rather than resolved for the target (uv is
+#     checked at its own step, this catches the next one), and an x86_64 build
+#     run under Rosetta, where an arm64-only binary still executes fine at build
+#     time on the Apple Silicon host and fails only on a real Intel Mac. Fat
+#     binaries pass when one of their slices is $ARCH. `lipo -archs` failing
+#     means the magic matched but the file is not Mach-O (a Java class shares
+#     `cafebabe`) — skipped, not counted.
+# ---------------------------------------------------------------------------
+echo "==> bundle sanity: every Mach-O carries ${ARCH}"
+ARCH_MISSES="$(find "$APP_DIR" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 \
+  | ARCH="$ARCH" xargs -0 -n 64 sh -c 'for f do
+      case "$(head -c 4 "$f" | od -An -tx1 | tr -d " \n")" in
+        cffaedfe|cafebabe|feedfacf) ;;
+        *) continue ;;
+      esac
+      a="$(lipo -archs "$f" 2>/dev/null)" || continue
+      case " $a " in
+        *" $ARCH "*) ;;
+        *) printf "%s %s\n" "$a" "$f" ;;
+      esac
+    done' _)"
+if [[ -n "$ARCH_MISSES" ]]; then
+  echo "FATAL: the bundle carries code with no ${ARCH} slice:" >&2
+  echo "$ARCH_MISSES" | sed "s|$APP_DIR/||; s|^|       |" >&2
+  exit 1
+fi
+echo "    OK"
 
 # ---------------------------------------------------------------------------
 # 5. Code signing (D73, realizes the D35 hook). Two modes:
