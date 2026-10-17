@@ -1290,6 +1290,12 @@ class _SyncManager:
         self._embed_gen = 0
         self._embed_prev: dict | None = None
         self._embed_applied: dict[tuple[int, int], dict] = {}
+        # Highest seq applied in this generation. A snapshot is the embed's
+        # FULL state, so one that arrives after a later seq (a 409 retry that
+        # lost the race, a replayed queue) is superseded: it is acked as
+        # applied and never touches disk — applied, it would read the newer
+        # snapshot's nodes as deletions and trash their files.
+        self._embed_max_seq = -1
         self.snapshot_seq = 0
         self._load_base()
         self._fingerprint = self._take_fingerprint()
@@ -2236,6 +2242,37 @@ class _SyncManager:
                     with self._op_lock:
                         self._pull_if_remote_changed()
 
+    def _embed_enter(self, gen: int, seq: int) -> dict | None:
+        """Bookkeeping shared by apply_snapshot / apply_rename, under _op_lock.
+        Returns the ack to answer with when nothing is to be written: the one
+        already given for this (gen, seq), or a no-op ack for a seq older than
+        one already applied in this generation. None means: apply, then record
+        the ack with _embed_record."""
+        if gen != self._embed_gen:
+            self._embed_gen = gen
+            self._embed_prev = None
+            self._embed_applied = {}
+            self._embed_max_seq = -1
+        done = self._embed_applied.get((gen, seq))
+        if done is not None:
+            return done
+        if seq < self._embed_max_seq:
+            ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                   "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
+            self._embed_applied[(gen, seq)] = ack
+            return ack
+        return None
+
+    def _embed_record(self, gen: int, seq: int, ack: dict) -> dict:
+        self._embed_max_seq = max(self._embed_max_seq, seq)
+        self.snapshot_seq += 1
+        self._embed_applied[(gen, seq)] = ack
+        # Bound the dedupe memory: the embed's queue is never deep.
+        if len(self._embed_applied) > 64:
+            for key in sorted(self._embed_applied)[:-32]:
+                del self._embed_applied[key]
+        return ack
+
     def apply_snapshot(self, gen: int, seq: int, body: dict) -> dict:
         """Fold one embed snapshot into the clone (canvas_snapshot.apply_snapshot)
         under _op_lock, so it never interleaves with a push or a pull writing
@@ -2244,13 +2281,9 @@ class _SyncManager:
         The watcher's fingerprint is deliberately NOT re-taken here: a write
         that changed canvas.toml is a local edit like any other, and the next
         scan arming the debounce is exactly how it reaches the server."""
-        if gen != self._embed_gen:
-            self._embed_gen = gen
-            self._embed_prev = None
-            self._embed_applied = {}
-        done = self._embed_applied.get((gen, seq))
-        if done is not None:
-            return done
+        stale = self._embed_enter(gen, seq)
+        if stale is not None:
+            return stale
         new = canvas_snapshot.compact_state(body)
         trash: list[str | None] = [None]
 
@@ -2261,7 +2294,6 @@ class _SyncManager:
 
         result = canvas_snapshot.apply_snapshot(self.dir, new, self._embed_prev, backup=backup)
         self._embed_prev = new
-        self.snapshot_seq += 1
         # `push_seq` is the counter BEFORE the push that will carry this write:
         # the embed applies a re-hydrate only for a remote-changed whose
         # push_seq is greater than the largest it was acked with, so a
@@ -2270,12 +2302,7 @@ class _SyncManager:
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "upserted": result["upserted"], "deleted": result["deleted"],
                "created": result["created"], "push_seq": self.push_seq}
-        self._embed_applied[(gen, seq)] = ack
-        # Bound the dedupe memory: the embed's queue is never deep.
-        if len(self._embed_applied) > 64:
-            for key in sorted(self._embed_applied)[:-32]:
-                del self._embed_applied[key]
-        return ack
+        return self._embed_record(gen, seq, ack)
 
     def apply_rename(self, gen: int, seq: int, frm: str, to: str,
                      file_from: str | None, file_to: str | None) -> dict:
@@ -2283,21 +2310,15 @@ class _SyncManager:
         _op_lock like a snapshot, acked the same way. The previous snapshot is
         renamed too, so the snapshot that follows is diffed against the new
         name rather than read as delete + add."""
-        if gen != self._embed_gen:
-            self._embed_gen = gen
-            self._embed_prev = None
-            self._embed_applied = {}
-        done = self._embed_applied.get((gen, seq))
-        if done is not None:
-            return done
+        stale = self._embed_enter(gen, seq)
+        if stale is not None:
+            return stale
         result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
         self._embed_prev = canvas_snapshot.rename_prev(self._embed_prev, frm, to, file_to)
-        self.snapshot_seq += 1
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "renamed": result["renamed"], "moved": result["moved"],
                "push_seq": self.push_seq}
-        self._embed_applied[(gen, seq)] = ack
-        return ack
+        return self._embed_record(gen, seq, ack)
 
     def status(self) -> dict:
         return {

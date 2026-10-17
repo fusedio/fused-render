@@ -266,6 +266,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // only re-posts on its next change or reload and would otherwise sit on
   // "Saving…" for a snapshot nothing was wrong with. Anything else is a
   // rejection the embed drops, reason attached.
+  // Relays run strictly IN ORDER through one promise chain: the frame posts
+  // seq 1, 2, 3 as it autosaves, and a 409 retry on seq 1 must not let seq 2
+  // reach the clone first — the server would then read seq 1's older full
+  // state as deletions of seq 2's nodes. Same chain for the rename hint,
+  // which must land before the snapshot carrying the new name.
+  const relayChainRef = useRef<Promise<void>>(Promise.resolve());
   const relaySnapshot = useCallback(
     async (
       gen: number,
@@ -328,7 +334,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           gen?: unknown; seq?: unknown; body?: unknown;
         };
         if (typeof gen !== "number" || typeof seq !== "number" || !body || typeof body !== "object") return;
-        void relaySnapshot(gen, seq, body as Record<string, unknown>);
+        relayChainRef.current = relayChainRef.current.then(() =>
+          relaySnapshot(gen, seq, body as Record<string, unknown>),
+        );
       }
       if (type === "fused-embed-rename") {
         // The rename hint: posted the moment a UDF is renamed, before any
@@ -340,12 +348,14 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         };
         if (typeof gen !== "number" || typeof seq !== "number") return;
         if (typeof from !== "string" || typeof to !== "string" || !from || !to) return;
-        void relaySnapshot(gen, seq, null, {
-          from,
-          to,
-          file_from: typeof file_from === "string" ? file_from : null,
-          file_to: typeof file_to === "string" ? file_to : null,
-        });
+        relayChainRef.current = relayChainRef.current.then(() =>
+          relaySnapshot(gen, seq, null, {
+            from,
+            to,
+            file_from: typeof file_from === "string" ? file_from : null,
+            file_to: typeof file_to === "string" ? file_to : null,
+          }),
+        );
       }
       if (type === "fused-embed-selection") {
         const name = event.data?.udfName;

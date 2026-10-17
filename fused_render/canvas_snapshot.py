@@ -487,10 +487,14 @@ def apply_snapshot(
             upserted.append(name)
 
     # Edges: the embed's set, plus disk edges touching nodes it does not know.
+    # A node deleted just above is NOT "unknown": its edges go with it, or
+    # they would be copied back dangling and fail validation on the push.
     known = set(new["nodes"])
+    gone = set(deleted)
     disk_edges = canvas.get("edges") if isinstance(canvas.get("edges"), list) else []
     kept = [e for e in disk_edges
             if isinstance(e, list) and len(e) == 2
+            and e[0] not in gone and e[1] not in gone
             and (e[0] not in known or e[1] not in known)]
     merged = [list(e) for e in new["edges"]]
     for e in kept:
