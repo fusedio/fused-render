@@ -1251,10 +1251,11 @@ class _SyncManager:
         self.last_pull_at: float | None = None
         # True for the duration of a force-pull, three-way merge, or its
         # validation-failure rollback — set/cleared around the two _run() call
-        # sites, both already under _op_lock. Read by the workspace lock
-        # (canvas-lock-lib.ts "pulling" hold): the clone's files are moving on
-        # disk right now, which is exactly the condition the push side of the
-        # lock exists for too.
+        # sites, both already under _op_lock. Surfaced in status() as
+        # `pulling`. It used to drive the workspace
+        # lock's "pulling" hold; under embed v3 there is no lock (the embed no
+        # longer writes the server, see canvas_snapshot.py), and the flag is
+        # informational — a snapshot arriving meanwhile waits on _op_lock.
         self._pulling = False
         self.merge_seq = 0
         # Sync-point state for the three-way merge: per-file md5s of the
@@ -1798,9 +1799,10 @@ class _SyncManager:
     @contextlib.contextmanager
     def _pull_writes(self):
         """Scopes the window in which a downstream leg is actually WRITING the
-        clone's files — the workspace lock (canvas-lock-lib.ts) holds the
-        embedded workbench read-only for exactly this, and for the same reason a
-        push does.
+        clone's files — reported by status() as `pulling`. The workspace lock
+        that used to hold the embedded workbench read-only for it is gone
+        (embed v3, canvas_snapshot.py); an embed snapshot arriving during the
+        window queues behind _op_lock and applies onto the pulled files.
 
         Yields a `begin()` marker rather than arming on entry, because
         probe-and-decide does not stop at the leg boundary. `_poll_remote` gets
