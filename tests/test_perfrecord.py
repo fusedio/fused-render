@@ -74,3 +74,19 @@ def test_endpoints_are_guarded(tmp_path, monkeypatch):
     assert client.post("/api/system/record", headers=HDRS).json()["recording"] is True
     perfrecord._RECORDER.join(5)
     assert len(client.get("/api/system/record").json()["recordings"]) == 1
+
+
+def test_diagnostics_plan_includes_latest_recording_and_fresh_snapshot(tmp_path, monkeypatch):
+    from fused_render import diagnostics
+    d = tmp_path / "perf-recordings"
+    d.mkdir()
+    (d / "2020-01-01T00-00-00.json").write_text("{}")
+    (d / "2021-01-01T00-00-00.json").write_text("{}")
+    monkeypatch.setattr(perfrecord, "recordings_dir", lambda: str(d))
+    monkeypatch.setattr(perfrecord, "_snapshot", lambda: {"verdict": {"level": "ok"}})
+    plan = diagnostics._Plan(0.0)
+    diagnostics._plan_perf(plan)
+    arcs = {i["arc"]: i["src"] for i in plan.items}
+    assert arcs["perf/2021-01-01T00-00-00.json"].endswith("2021-01-01T00-00-00.json")
+    assert json.load(open(arcs["perf/dashboard-now.json"]))["verdict"]["level"] == "ok"
+    assert not any("2020" in a for a in arcs)

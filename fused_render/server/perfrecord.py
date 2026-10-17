@@ -79,7 +79,7 @@ class Recorder:
     def list(self) -> list[dict]:
         d = recordings_dir()
         try:
-            names = sorted((n for n in os.listdir(d) if n.endswith(".json")), reverse=True)
+            names = sorted((n for n in os.listdir(d) if n.endswith(".json") and n != "dashboard-now.json"), reverse=True)
         except OSError:
             return []
         out = []
@@ -130,7 +130,7 @@ class Recorder:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(bundle, f, default=str)
         os.replace(tmp, path)
-        names = sorted(n for n in os.listdir(d) if n.endswith(".json"))
+        names = sorted(n for n in os.listdir(d) if n.endswith(".json") and n != "dashboard-now.json")
         for old in names[:-KEEP]:
             try:
                 os.remove(os.path.join(d, old))
