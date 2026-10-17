@@ -7,6 +7,7 @@
 import { formatBytes } from "@platform/lib/sysmon";
 import {
   sectionOk,
+  type SectionError,
   type Dashboard,
   type Level,
   type NetRow,
@@ -150,7 +151,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
     return { level: q != null && q > QUEUE_P95_MS ? "warn" : "ok", value: q == null ? "no data" : `${ms(q)} p95` };
   });
   add("server", "Server", "overview", d.server, () => {
-    const s = d.server as Extract<Dashboard["server"], { loop_lag: unknown }>;
+    const s = d.server as Exclude<Dashboard["server"], SectionError>;
     const pool = s.pool;
     const lag = s.loop_lag?.current_ms;
     const busy = !!pool && pool.total > 0 && pool.borrowed / pool.total >= POOL_BUSY_FRAC;
@@ -161,7 +162,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
     };
   });
   add("memory", "Memory and swap", "processes", d.memory, () => {
-    const m = d.memory as Extract<Dashboard["memory"], { used: unknown }>;
+    const m = d.memory as Exclude<Dashboard["memory"], SectionError>;
     const growth = m.swap_growth_10m_bytes ?? 0;
     const level: Level =
       m.pressure === "critical" ? "bad" : m.pressure === "warn" || growth > SWAP_GROWTH_BYTES ? "warn" : "ok";
@@ -173,7 +174,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
     };
   });
   add("cpu", "CPU and thermal", "processes", d.cpu, () => {
-    const c = d.cpu as Extract<Dashboard["cpu"], { cpu_pct: unknown }>;
+    const c = d.cpu as Exclude<Dashboard["cpu"], SectionError>;
     const throttled = c.thermal_limit != null && c.thermal_limit < 100;
     const base = sectionOk(d.baseline) ? d.baseline.load : null;
     const load = c.load?.[0];
@@ -184,14 +185,14 @@ export function overviewTiles(d: Dashboard): Tile[] {
     };
   });
   add("claude", "Claude CLIs", "processes", d.claude, () => {
-    const c = d.claude as Extract<Dashboard["claude"], { total: number }>;
+    const c = d.claude as Exclude<Dashboard["claude"], SectionError>;
     return {
       level: c.total > CLAUDE_MAX_COUNT || c.mem_bytes > CLAUDE_MAX_BYTES ? "warn" : "ok",
       value: `${c.total} · ${formatBytes(c.mem_bytes, true)}`,
     };
   });
   add("calls", "Python calls", "network", d.calls, () => {
-    const c = d.calls as Extract<Dashboard["calls"], { top_overhead: unknown }>;
+    const c = d.calls as Exclude<Dashboard["calls"], SectionError>;
     const top = c.top_overhead[0];
     return {
       level: "ok",
@@ -199,7 +200,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
     };
   });
   add("index", "Index", "overview", d.index, () => {
-    const i = d.index as Extract<Dashboard["index"], object>;
+    const i = d.index as Exclude<Dashboard["index"], SectionError>;
     const bad = (i.waiting ?? 0) > 0 || (i.abandoned ?? 0) > 0;
     return {
       level: bad ? "warn" : "ok",
@@ -207,12 +208,12 @@ export function overviewTiles(d: Dashboard): Tile[] {
     };
   });
   add("ai", "AI workers", "processes", d.ai, () => {
-    const a = d.ai as Extract<Dashboard["ai"], { workers: unknown }>;
+    const a = d.ai as Exclude<Dashboard["ai"], SectionError>;
     const busy = a.workers.filter((w) => w.in_flight > 0).length;
     return { level: "ok", value: `${a.workers.length} resident · ${busy} busy` };
   });
   add("jobs", "Jobs and installs", "overview", d.jobs, () => {
-    const j = d.jobs as Extract<Dashboard["jobs"], { running: number }>;
+    const j = d.jobs as Exclude<Dashboard["jobs"], SectionError>;
     const fails = sectionOk(d.installs) ? d.installs.failures.length : 0;
     return {
       level: j.stalled > 0 || fails > 0 ? "warn" : "ok",
@@ -220,14 +221,14 @@ export function overviewTiles(d: Dashboard): Tile[] {
     };
   });
   add("disk", "Disk", "overview", d.disk, () => {
-    const free = (d.disk as Extract<Dashboard["disk"], object>).free_bytes;
+    const free = (d.disk as Exclude<Dashboard["disk"], SectionError>).free_bytes;
     return {
       level: free != null && free < MIN_FREE_BYTES ? "warn" : "ok",
       value: `${formatBytes(free, true)} free`,
     };
   });
   add("errors", "Errors and outages", "overview", d.errors, () => {
-    const e = d.errors as Extract<Dashboard["errors"], { outages: unknown }>;
+    const e = d.errors as Exclude<Dashboard["errors"], SectionError>;
     const recent = e.last_outage_age_s != null && e.last_outage_age_s < RECENT_OUTAGE_S;
     return {
       level: recent ? "bad" : e.restarts_24h > 0 || e.crashes.length > 0 ? "warn" : "ok",
