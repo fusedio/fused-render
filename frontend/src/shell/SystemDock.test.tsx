@@ -166,3 +166,64 @@ test("topProcs orders unknown CPU last, memory breaking ties", () => {
   ).map((p) => p.label);
   expect(order).toEqual(["c", "b", "a"]);
 });
+
+// ---- verdict, Claude line, timeline, record --------------------------------------------------
+
+import type { Dashboard } from "@shell/monitor/monitor-api";
+
+const VERDICT_DASH = {
+  verdict: {
+    level: "bad",
+    headline: "All 6 browser connections held",
+    reasons: [{ key: "connections", level: "bad", text: "All 6 browser connections held", link: "/monitor?tab=network&source=a" }],
+  },
+  net: { summary: { rps_10s: 2, rps_60s: 1, in_flight: [], in_flight_total: 0, oldest_in_flight_s: 0, errors_60s: 0, long_held: [], browser_queue_p95_ms: null }, groups: [] },
+  server: { pool: { borrowed: 1, total: 40 }, loop_lag: { current_ms: 1, max_60s_ms: 2 }, sockets: {} },
+  memory: { used: GB, total: 2 * GB, swap_used: 0, swap_growth_10m_bytes: 0, pressure: "normal", biggest: null },
+  cpu: { cpu_pct: 10, load: [1, 1, 1], ncpu: 8, thermal_limit: 100, low_power: false },
+  baseline: { load: 0.8, swap_used: 0, rss: GB },
+  timeline: {
+    points: [1, 2, 3].map((i) => ({ t: 100 + i, rps: i, in_flight: 0, pool: 1, lag_ms: 1, cpu: 10, swap: 0 })),
+    events: [],
+  },
+} as unknown as Dashboard;
+
+test("a warn/bad verdict paints the chip dot; ok keeps the slot but hides it", () => {
+  const view = (verdict: SystemActivity["verdict"]) =>
+    create(
+      <SystemCardView data={{ ...PAYLOAD, verdict }} collapsed onToggle={() => {}} onOpenMonitor={() => {}} />,
+    ).toJSON() as ReactTestRendererJSON;
+  expect(byClass(view({ level: "bad", headline: "x" }), "sc-dot")[0].props.className).toContain("is-bad");
+  expect(byClass(view({ level: "warn", headline: "x" }), "sc-dot")[0].props.className).toContain("is-warn");
+  expect(byClass(view({ level: "ok", headline: "" }), "sc-dot")[0].props.className).toContain("is-none");
+  // The label is untouched: the dot is never part of the chip text.
+  expect(texts(view({ level: "bad", headline: "x" }))).toContain("CPU 60% · 1.4 GB");
+});
+
+test("the popover shows the headline, reason links, Claude line, timeline rows and key numbers", () => {
+  const opened: string[] = [];
+  let started = 0;
+  const r = create(
+    <SystemCardView
+      data={{ ...PAYLOAD, claude: { total: 3, fused: 2, other: 1, mem_bytes: 1.5 * GB, cpu_pct: 1, top: [] }, verdict: { level: "bad", headline: "All 6 browser connections held" } }}
+      collapsed={false}
+      onToggle={() => {}}
+      onOpenMonitor={() => {}}
+      dash={VERDICT_DASH}
+      onOpenLink={(l) => opened.push(l)}
+      record={{ recording: false, secondsLeft: 0, onStart: () => started++ }}
+    />,
+  );
+  const tree = r.toJSON() as ReactTestRendererJSON;
+  expect(texts(byClass(tree, "sys-verdict")[0])).toContain("All 6 browser connections held");
+  expect(texts(byClass(tree, "sys-claude")[0])).toBe("Claude CLIs: 3 (fused-render 2 · other 1) · 1.5 GB");
+  expect(byClass(tree, "monitor-tl-row").length).toBe(4); // compact: rps, in flight, lag, CPU
+  expect(texts(byClass(tree, "sys-keys")[0])).toContain("usual load 0.8");
+  const reason = r.root.findByProps({ className: "sys-reason" });
+  reason.props.onClick({ button: 0, preventDefault() {} });
+  expect(opened).toEqual(["/monitor?tab=network&source=a"]);
+  r.root.findByProps({ className: "sys-record" }).props.onClick();
+  expect(started).toBe(1);
+  // The pinned single "Open Monitor" link is still the only sys-link.
+  expect(r.root.findAllByProps({ className: "sys-link" })).toHaveLength(1);
+});
