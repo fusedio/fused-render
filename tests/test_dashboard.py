@@ -332,3 +332,14 @@ def test_loop_ticker_records_pool_and_lanes():
     asyncio.run(go())
     assert dashboard._fresh("pool") is not None and dashboard._fresh("lanes") is not None
     _reset_loop_state()
+
+
+def test_build_polls_the_sampler_once(monkeypatch):
+    n = {"c": 0}
+
+    def payload():
+        n["c"] += 1
+        return {"host": {}, "procs": [], "claude": None}
+    monkeypatch.setattr(dashboard, "_sampler_payload", payload)
+    dashboard.build()
+    assert n["c"] == 1

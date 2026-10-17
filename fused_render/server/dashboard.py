@@ -169,11 +169,12 @@ def _server() -> dict:
             "engines": serverstats.engine_workers()}
 
 
-def _memory() -> dict:
-    host = (_sampler_payload().get("host")) or {}
+def _memory(payload: dict | None = None) -> dict:
+    payload = payload if payload is not None else _sampler_payload()
+    host = payload.get("host") or {}
     now = time.time()
     rows = health.read_trail(1800)
-    procs = [p for p in _sampler_payload().get("procs", []) if p.get("memBytes")]
+    procs = [p for p in payload.get("procs", []) if p.get("memBytes")]
     big = max(procs, key=lambda p: p["memBytes"], default=None)
     return {"used": host.get("memUsed"), "total": host.get("memTotal"),
             "swap_used": next((r["swap_used"] for r in reversed(rows)
@@ -185,15 +186,17 @@ def _memory() -> dict:
                         if big else None)}
 
 
-def _cpu() -> dict:
-    host = (_sampler_payload().get("host")) or {}
+def _cpu(payload: dict | None = None) -> dict:
+    payload = payload if payload is not None else _sampler_payload()
+    host = payload.get("host") or {}
     power = _power() or {}
     return {"cpu_pct": host.get("cpuPct"), "load": host.get("load"), "ncpu": host.get("ncpu"),
             "thermal_limit": power.get("thermal_limit"), "low_power": power.get("low_power")}
 
 
-def _claude() -> dict:
-    return _sampler_payload().get("claude") or {"total": 0, "fused": 0, "other": 0,
+def _claude(payload: dict | None = None) -> dict:
+    payload = payload if payload is not None else _sampler_payload()
+    return payload.get("claude") or {"total": 0, "fused": 0, "other": 0,
                                                  "mem_bytes": 0, "cpu_pct": 0.0, "top": []}
 
 
@@ -499,6 +502,9 @@ SECTIONS = {"net": _net, "server": _server, "memory": _memory, "cpu": _cpu,
             "baseline": _baseline, "timeline": _timeline}
 
 
+_PAYLOAD_SECTIONS = {"memory", "cpu", "claude"}
+
+
 async def build_async() -> dict:
     """`build()` for an async handler: the loop-bound reads first, on this
     thread, then everything that blocks on a worker thread."""
@@ -509,9 +515,13 @@ async def build_async() -> dict:
 
 def build() -> dict:
     out: dict = {"t": time.time()}
+    try:
+        payload = _sampler_payload()  # one poll per build, shared by the three readers
+    except Exception:  # noqa: BLE001 — each reader then reports its own error
+        payload = None
     for name, fn in SECTIONS.items():
         try:
-            out[name] = fn()
+            out[name] = fn(payload) if name in _PAYLOAD_SECTIONS and payload is not None else fn()
         except Exception as e:  # noqa: BLE001 — one failing source never fails the page
             logger.debug("dashboard: %s failed", name, exc_info=True)
             out[name] = {"error": f"{type(e).__name__}: {e}"}
