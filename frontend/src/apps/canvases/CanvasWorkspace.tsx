@@ -36,6 +36,8 @@ import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
+import { replaceSearch } from "@platform/lib/router";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   fixWithClaude,
@@ -113,6 +115,15 @@ function nodeFile(dir: string, node: NodeSel): string {
   return `${dir.replace(/\/+$/, "")}/${node.file}`;
 }
 
+/** Which of the explorer engine's content modes the node pane shows: the
+ *  chat on the file, or the file's code. Written to the page URL as `_mode`,
+ *  which is where the engine (Preview.tsx) reads it. */
+type NodeTab = "claude" | "code";
+
+function nodeTabFromUrl(): NodeTab {
+  return new URLSearchParams(window.location.search).get("_mode") === "code" ? "code" : "claude";
+}
+
 /** The node restored from this page's own URL (`?node=` + `node_file=`), or
  *  null. An older URL with `node=` alone is read as a UDF (`<name>.py`). */
 function nodeFromUrl(): NodeSel | null {
@@ -161,6 +172,7 @@ export default function CanvasWorkspace({
   // The selected node (null = the canvas chat). Seeded from `?node=` so a
   // reload keeps the node; written back below.
   const [node, setNode] = useState<NodeSel | null>(() => nodeFromUrl());
+  const [nodeTab, setNodeTab] = useState<NodeTab>(() => nodeTabFromUrl());
   const [sync, setSync] = useState<SyncStatus | null>(null);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
@@ -335,9 +347,19 @@ export default function CanvasWorkspace({
     if (node) {
       url.searchParams.set("node", node.udfName);
       url.searchParams.set("node_file", node.file);
+      // The explorer engine reads its content mode and sidebar off this same
+      // URL (Preview.tsx `_mode` / `_side`). The node pane is ONE of the
+      // engine's content modes at a time — the chat on the file, or its code
+      // (owner, 2026-10-17) — picked by the strip above it, and the Claude /
+      // Git sidebar column stays shut beside it (`_side=off`; D326: absent
+      // means open).
+      url.searchParams.set("_mode", nodeTab);
+      url.searchParams.set("_side", "off");
     } else {
       url.searchParams.delete("node");
       url.searchParams.delete("node_file");
+      url.searchParams.delete("_mode");
+      url.searchParams.delete("_side");
     }
     if (nodeEffectRanRef.current && prevNodeKeyRef.current !== key) {
       url.searchParams.delete("session_id");
@@ -346,9 +368,11 @@ export default function CanvasWorkspace({
     nodeEffectRanRef.current = true;
     prevNodeKeyRef.current = key;
     if (url.href !== window.location.href) {
-      window.history.replaceState(window.history.state, "", url);
+      // Through the router, not a bare replaceState: the engine learns of a
+      // `_mode` change from the `fused:urlchange` event replaceSearch fires.
+      replaceSearch(url.pathname + url.search);
     }
-  }, [node]);
+  }, [node, nodeTab]);
 
   // After every push, tell the workbench to look upstream NOW — its own poll
   // is 10s, and the user just saved in the Code tab (or Claude just edited)
@@ -710,6 +734,38 @@ export default function CanvasWorkspace({
               className="canvas-node-file"
               style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
             >
+              {/* The engine's content mode, as two tabs — the same shadcn line
+                  strip the explorer's own sidebar uses (SideChrome). The
+                  engine's crumb bar still carries its full mode switcher
+                  underneath; this is the short way between the two modes a
+                  node needs. */}
+              <div className="preview-side-header">
+                <span className="canvas-node-side-name" title={nodeFile(dir, node)}>
+                  {node.udfName}
+                </span>
+                <div className="side-header-tail">
+                  <Tabs
+                    value={nodeTab}
+                    onValueChange={(v) => {
+                      if (v === "claude" || v === "code") setNodeTab(v);
+                    }}
+                    className="side-tabs self-stretch"
+                  >
+                    <TabsList
+                      variant="line"
+                      aria-label="Node panel"
+                      className="h-full justify-start gap-3 rounded-none border-b-0 p-0"
+                    >
+                      <TabsTrigger value="claude" className="flex-none px-2 text-[12px]">
+                        Claude
+                      </TabsTrigger>
+                      <TabsTrigger value="code" className="flex-none px-2 text-[12px]">
+                        Code
+                      </TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </div>
+              </div>
               {renderFile(nodeFile(dir, node))}
             </div>
           ) : chatHere && dir && !node ? (
