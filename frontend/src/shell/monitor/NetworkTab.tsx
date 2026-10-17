@@ -55,6 +55,9 @@ const OPEN_ONLY: NetFilters = {
 const DASH = "—";
 const ms = (n: number | null | undefined) => (n == null ? DASH : `${Math.round(n)}`);
 const STATUS_CLASSES = ["", "2xx", "3xx", "4xx", "5xx", "open"];
+/** How long typing in a text filter settles before it reaches the poll. */
+export const FILTER_DEBOUNCE_MS = 300;
+type TextFilters = Pick<NetFilters, "source" | "route" | "minMs">;
 /** Rows drawn at once (newest first); the full 2000 stay in memory. */
 const DRAW_CAP = 300;
 
@@ -100,6 +103,16 @@ export default function NetworkTab({
     openOnly: false,
     own: false,
   });
+  // The three text inputs type into a draft and reach `filters` (and so the
+  // poll) after FILTER_DEBOUNCE_MS; toggles, the select and group-row clicks
+  // commit at once and also overwrite the draft.
+  const [draft, setDraft] = useState<TextFilters>({
+    source: initialSource,
+    route: initialRoute,
+    minMs: "",
+  });
+  const draftRef = useRef(draft);
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cursor = useRef(0);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
@@ -146,10 +159,34 @@ export default function NetworkTab({
     (e) => setError(e.message),
   );
 
-  const setFilter = useCallback(
-    (patch: Partial<NetFilters>) => setFilters((cur) => ({ ...cur, ...patch })),
-    [],
-  );
+  const cancelDebounce = () => {
+    if (debounce.current !== null) clearTimeout(debounce.current);
+    debounce.current = null;
+  };
+  useEffect(() => cancelDebounce, []);
+
+  const typeFilter = useCallback((patch: Partial<TextFilters>) => {
+    draftRef.current = { ...draftRef.current, ...patch };
+    setDraft(draftRef.current);
+    cancelDebounce();
+    debounce.current = setTimeout(() => {
+      debounce.current = null;
+      setFilters((cur) => ({ ...cur, ...draftRef.current }));
+    }, FILTER_DEBOUNCE_MS);
+  }, []);
+
+  const setFilter = useCallback((patch: Partial<NetFilters>) => {
+    if ("source" in patch || "route" in patch || "minMs" in patch) {
+      cancelDebounce();
+      draftRef.current = {
+        source: patch.source ?? draftRef.current.source,
+        route: patch.route ?? draftRef.current.route,
+        minMs: patch.minMs ?? draftRef.current.minMs,
+      };
+      setDraft(draftRef.current);
+    }
+    setFilters((cur) => ({ ...cur, ...patch }));
+  }, []);
 
   const client = mainClient(summary);
   const clientStats = summary?.in_flight.find((c) => c.client === client) ?? null;
@@ -268,15 +305,15 @@ export default function NetworkTab({
             className="field-control monitor-net-input"
             placeholder="Page"
             aria-label="Filter by page"
-            value={filters.source}
-            onChange={(e) => setFilter({ source: e.target.value })}
+            value={draft.source}
+            onChange={(e) => typeFilter({ source: e.target.value })}
           />
           <input
             className="field-control monitor-net-input"
             placeholder="Route"
             aria-label="Filter by route"
-            value={filters.route}
-            onChange={(e) => setFilter({ route: e.target.value })}
+            value={draft.route}
+            onChange={(e) => typeFilter({ route: e.target.value })}
           />
           <select
             className="field-control monitor-net-select"
@@ -295,8 +332,8 @@ export default function NetworkTab({
             placeholder="min ms"
             aria-label="Minimum server ms"
             inputMode="numeric"
-            value={filters.minMs}
-            onChange={(e) => setFilter({ minMs: e.target.value })}
+            value={draft.minMs}
+            onChange={(e) => typeFilter({ minMs: e.target.value })}
           />
           <button
             type="button"

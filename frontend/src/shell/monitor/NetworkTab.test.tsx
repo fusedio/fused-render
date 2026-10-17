@@ -1,6 +1,6 @@
 // The Network tab rendered against fixed payloads (the api injected, the poll
 // parked on a huge interval).
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { NetFilters, NetGroup, NetRow, NetSummary } from "@shell/monitor/monitor-api";
@@ -100,4 +100,45 @@ test("?source=&route= seed the filters, and Pause stops fetching the list", asyn
   const pause = r.root.find((n) => n.type === "button" && text(n) === "Pause");
   act(() => pause.props.onClick());
   expect(text(r.root.find((n) => n.type === "button" && n.props["aria-pressed"] === true))).toBe("Resume");
+});
+
+test("text filters debounce 300 ms before the poll sees them; toggles are immediate; unmount clears the timer", async () => {
+  jest.useFakeTimers();
+  try {
+    const { r, calls } = await mount();
+    const input = r.root.findByProps({ "aria-label": "Filter by page" });
+    const fire = async () => {
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+        for (let i = 0; i < 8; i++) await Promise.resolve();
+      });
+    };
+    const before = calls.length;
+    await act(async () => input.props.onChange({ target: { value: "p" } }));
+    await act(async () => input.props.onChange({ target: { value: "pa" } }));
+    // the box shows the draft at once; no request carries it yet
+    expect(r.root.findByProps({ "aria-label": "Filter by page" }).props.value).toBe("pa");
+    await act(async () => jest.advanceTimersByTime(100));
+    await fire();
+    expect(calls.slice(before).some((c) => c.f.source === "pa")).toBe(false);
+    await act(async () => jest.advanceTimersByTime(200));
+    await fire();
+    expect(calls.slice(before).some((c) => c.f.source === "pa")).toBe(true);
+
+    // a toggle commits immediately
+    const open = r.root.findAll((n) => n.type === "button" && text(n) === "open only")[0];
+    const mark = calls.length;
+    await act(async () => open.props.onClick());
+    await fire();
+    expect(calls.slice(mark).some((c) => c.f.openOnly)).toBe(true);
+
+    // a pending debounce is cleared on unmount (nothing left to fire)
+    await act(async () => r.root.findByProps({ "aria-label": "Filter by route" }).props.onChange({ target: { value: "/x" } }));
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+    act(() => renderer?.unmount());
+    renderer = null;
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
 });
