@@ -759,13 +759,13 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         remove_server_json()
 
     # Event-loop lag gauge (serverstats.py) for the Monitor's Overview: a task
-    # on the serving loop, cancelled at shutdown. Always on — it is one sleep
-    # per half second.
-    @on_startup_always
+    # on the serving loop, cancelled at shutdown. Skipped in `lean` like the
+    # other background gauges: a lean server has no Monitor to read it.
+    @on_startup_full
     async def _startup_loop_lag():
         serverstats.loop_lag().start()
 
-    @on_shutdown_always
+    @on_shutdown
     async def _shutdown_loop_lag():
         await serverstats.loop_lag().stop()
 
