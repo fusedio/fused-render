@@ -914,6 +914,47 @@ def _custom_env(origin: str, file: str) -> bool | None:
         return None
 
 
+# A clone file that IS a node: the source kinds canvas_snapshot names, minus
+# the folder's own files, so canvas.toml or CLAUDE.md opened from Recent gets
+# the plain file prompt instead of being called "one node of a canvas".
+_NODE_FILE_SUFFIXES = (".py", ".json", ".md", ".html")
+_NOT_NODE_FILES = frozenset({"canvas.toml", "CLAUDE.md", "README.md"})
+
+
+def _is_canvas_node_file(file: str) -> bool:
+    name = os.path.basename(file)
+    return name.endswith(_NODE_FILE_SUFFIXES) and name not in _NOT_NODE_FILES
+
+
+def _canvas_node_prompt(file: str) -> str:
+    """The prompt for ONE FILE INSIDE A CANVAS CLONE — a node picked in the
+    embedded workbench on fused-render's /canvases/<name> page, which opens
+    the explorer's file engine on `<clone>/<udfName>.py` beside it.
+
+    The FILE prompt, then the canvas facts on top. The file half is exactly
+    `_system_prompt`'s, because the pane IS the same one the explorer shows
+    (the code template, this origin's, readable — the app_state tool is
+    real here). What that prompt cannot know is the folder's shape: the
+    canvas.toml beside the file names the node, every node's code is the
+    file named after it, publishing is `fused workbench canvas push .` (D350)
+    with the auto-push held while this session is live, and the user's own
+    edits to this file arrive through the same code pane. The clone's
+    CLAUDE.md (D340) carries the skills and layout.
+    """
+    name = os.path.basename(file)
+    folder = os.path.dirname(file)
+    return _system_prompt(file) + (
+        f" {name} is one node of a Fused workbench canvas: the user selected "
+        f"it in the live canvas, which is on screen beside this chat in a "
+        f"cross-origin frame you cannot read. The canvas folder is {folder}: "
+        "its canvas.toml defines the nodes and edges, and every node's code "
+        "is the file named after it — a change that needs a canvas.toml entry "
+        "(a rename, a new node) belongs in the same change set. Edits from "
+        "either side land in that folder and the sync publishes them to the "
+        "canvas."
+    )
+
+
 def _system_prompt(file: str) -> str:
     """The FILE target's prompt: what to work on, plus the same app-state
     disclosure the directory prompt makes (D235).
@@ -2962,9 +3003,13 @@ def _appended_prompt(file: str, pane: bool, backend: str = "") -> str:
     `--append-system-prompt` and Copilot's generated agent file (D8) can never
     say different things about the same target — except where a sentence is
     about Claude Code itself (`_fused_cli_note`'s `backend`)."""
-    return ((_split_system_prompt(file, pane) if os.path.isdir(file)
-             else _system_prompt(file)) + _fused_cli_note(backend)
-            + _origin_note())
+    if os.path.isdir(file):
+        shape = _split_system_prompt(file, pane)
+    elif _in_workbench_root(file) and _is_canvas_node_file(file):
+        shape = _canvas_node_prompt(file)
+    else:
+        shape = _system_prompt(file)
+    return shape + _fused_cli_note(backend) + _origin_note()
 
 
 # The plugin root a Copilot session is handed (D8): its manifest, the one

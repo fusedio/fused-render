@@ -102,6 +102,32 @@ export const logout = () => postJson<{ ok: boolean }>("/api/canvases/logout", {}
 export const cloneCanvas = (name: string) =>
   postJson<{ ok: boolean; dir: string }>("/api/canvases/clone", { name });
 
+/** Embed v3: one workbench snapshot → the clone's canvas.toml
+ *  (canvas_snapshot.py). Throws with `.status` 409 while a sync leg holds
+ *  the clone, 400 when the snapshot is rejected. */
+export const applySnapshot = (
+  name: string,
+  gen: number,
+  seq: number,
+  body: Record<string, unknown>,
+) =>
+  postJson<{ ok: boolean; gen: number; seq: number; changed: boolean; push_seq: number }>(
+    "/api/canvases/snapshot",
+    { name, gen, seq, body },
+  );
+
+/** Embed v3: the workbench's rename hint, same endpoint, same ack shape. */
+export const applyRename = (
+  name: string,
+  gen: number,
+  seq: number,
+  rename: { from: string; to: string; file_from?: string | null; file_to?: string | null },
+) =>
+  postJson<{ ok: boolean; gen: number; seq: number; changed: boolean; push_seq: number }>(
+    "/api/canvases/snapshot",
+    { name, gen, seq, rename },
+  );
+
 export const startSync = (name: string) =>
   postJson<SyncStatus>("/api/canvases/sync/start", { name });
 

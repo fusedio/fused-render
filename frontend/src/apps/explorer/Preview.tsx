@@ -101,6 +101,9 @@ import { OPEN_CHAT_EVENT, armFocusOnRegister } from "@platform/lib/chat-focus";
 
 /** The chat companion's mode key, in `templates` and in `_side` alike. */
 const CHAT_MODE = "claude";
+// `?_noann=1` on this document's URL (an embed a host frames): the content-pane
+// chat renders without its annotate seats (ChatMount `noAnnTools`).
+const NO_ANN_TOOLS = new URLSearchParams(location.search).get("_noann") === "1";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
@@ -2249,6 +2252,13 @@ function TemplatePreview({
                      model call for a fold nobody reads as it is of the keyboard
                      (ChatMount's `recap`). */
                   {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
+                  {...(NO_ANN_TOOLS
+                    ? // `_noann=1`: a host framing this route where the chat's
+                      // pane must stay out of reach (the canvas node pane) asks
+                      // for no annotate seats and no view toggle. Read off this
+                      // document's URL, the embed's own.
+                      { noAnnTools: true }
+                    : {})}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}

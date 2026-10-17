@@ -208,7 +208,7 @@ def test_wrapper_default_matches_the_canvases_default(monkeypatch):
     reads it rather than keeping a default of its own (D146: a duplicated
     rule needs a test)."""
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
-    assert fusedcli.workbench_env() == "prod"
+    assert fusedcli.workbench_env() == "unstable"
     import fused_render.canvases as canvases
     src = open(canvases.__file__, encoding="utf-8").read()
     assert "WORKBENCH_ENV = workbench_env()" in src

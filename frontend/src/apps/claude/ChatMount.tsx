@@ -203,6 +203,8 @@ export interface ChatMountProps {
   noFocus?: boolean;
   /** `_preview=1` (IS_PREVIEW thumbnails). */
   preview?: boolean;
+  /** `_noann=1` — no annotate seats, no narrow-view toggle (ClaudeChat). */
+  noAnnTools?: boolean;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -285,6 +287,7 @@ export function ChatMount(props: ChatMountProps) {
         // frame scrolls that frame into view (D348, platform/lib/frame-focus).
         autoFocus={!props.preview && !props.noFocus}
         {...(props.preview ? { preview: true } : {})}
+        {...(props.noAnnTools ? { noAnnTools: true } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}
