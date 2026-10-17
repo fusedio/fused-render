@@ -189,6 +189,40 @@ ABANDON_S = 15.0
 # thread actually finishes, whenever that turns out to be.
 _abandoned_reads: "set" = set()
 
+# Wall time of the last 503 either path above answered (pool exhausted, or a
+# read that timed out), for `lane_stats`. Bookkeeping only.
+_last_503_at: float | None = None
+_LANE_WIDTHS = (("interactive", _interactive_lane_loops, 2), ("query", _query_lane_loops, 1))
+
+
+def lane_stats() -> dict:
+    """What the Monitor's Overview shows for the index read lanes: per lane its
+    width, how many reads hold a permit and how many wait for one; the dedicated
+    pool's size and queue; abandoned reads; the last 503. Read-only — does not
+    create a lane or touch behaviour. Call it on the event-loop thread: the
+    semaphores are per loop (`_lane`), and an unknown loop reads as idle."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    lanes = {}
+    for name, loops, width in _LANE_WIDTHS:
+        sem = loops.get(loop) if loop is not None else None
+        value = getattr(sem, "_value", width) if sem is not None else width
+        waiters = getattr(sem, "_waiters", None) if sem is not None else None
+        lanes[name] = {"width": width, "in_use": max(0, width - value),
+                       "waiting": sum(1 for w in (waiters or ()) if not w.cancelled())}
+    queue = getattr(_INDEX_READ_POOL, "_work_queue", None)
+    return {
+        "lanes": lanes,
+        "in_use": sum(l["in_use"] for l in lanes.values()),
+        "waiting": sum(l["waiting"] for l in lanes.values()),
+        "abandoned": len(_abandoned_reads),
+        "pool_size": _INDEX_READ_POOL_SIZE,
+        "pool_queued": queue.qsize() if queue is not None else None,
+        "last_503_at": _last_503_at,
+    }
+
 
 def _index_pool_exhausted() -> bool:
     """True once every `_INDEX_READ_POOL` thread is tied up by abandoned work.
@@ -215,6 +249,8 @@ def _pool_exhausted_response(op: str, q: str, root: str) -> JSONResponse:
     (review finding D). One shared body/log line for all three
     `/api/index/{stats,search,rank}` routes, so a reader sees the same shape
     for the same condition regardless of which route hit it."""
+    global _last_503_at
+    _last_503_at = time.time()
     logger.error(
         "index %s: read pool exhausted (%d/%d abandoned reads); refusing "
         "%r under %s", op, len(_abandoned_reads), _INDEX_READ_POOL_SIZE, q, root)
@@ -279,6 +315,8 @@ async def _bounded_index_read(op: str, cancel_token: CancelToken, log_q: str,
         logger.warning(
             "index %s: %r under %s timed out after %.1fms waiting for the "
             "worker; abandoning it", op, log_q, log_root, elapsed_ms)
+        global _last_503_at
+        _last_503_at = time.time()
         _abandoned_reads.add(fut)
         fut.add_done_callback(_reap_abandoned)
         return None, JSONResponse(status_code=503,

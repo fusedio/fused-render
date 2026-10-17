@@ -70,6 +70,7 @@ from fused_render.server.routers.git_upstream import router as git_upstream_rout
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
+from fused_render.server import serverstats
 from fused_render.server.routers.system import router as system_router
 from fused_render.server.routers.system_net import router as system_net_router
 from fused_render.server.routers.ai_models import router as ai_models_router
@@ -756,6 +757,17 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     @on_shutdown
     async def _shutdown_server_json():
         remove_server_json()
+
+    # Event-loop lag gauge (serverstats.py) for the Monitor's Overview: a task
+    # on the serving loop, cancelled at shutdown. Always on — it is one sleep
+    # per half second.
+    @on_startup_always
+    async def _startup_loop_lag():
+        serverstats.loop_lag().start()
+
+    @on_shutdown_always
+    async def _shutdown_loop_lag():
+        await serverstats.loop_lag().stop()
 
     # Resource trail (health.py, SPEC §50): one RSS/swap/load line per INTERVAL_S
     # into resources.jsonl, so a diagnostics bundle shows what memory looked
