@@ -245,3 +245,35 @@ def test_restarts_counted_from_boot_id_changes():
     rows = [{"t": 1, "boot_id": "a"}, {"t": 2, "boot_id": "a"}, {"t": 3, "boot_id": "b"},
             {"t": 4, "boot_id": "c"}]
     assert dashboard.boot_changes(rows) == [{"t": 3, "boot_id": "b"}, {"t": 4, "boot_id": "c"}]
+
+
+def test_spawns_use_posix_spawn_shape(monkeypatch):
+    """sysctl/pmset/lsof: absolute exe, close_fds=False, no cwd, utf-8 (a fork
+    with libproj resident SIGSEGVs; see app_git.py)."""
+    import subprocess
+    import types
+    from fused_render.sysmon import detail
+    calls = []
+
+    def spy(argv, **kw):
+        calls.append((argv, kw))
+        return types.SimpleNamespace(stdout="")
+    monkeypatch.setattr(subprocess, "run", spy)
+    dashboard._run(["sysctl", "-n", "x"])
+    dashboard._run(["pmset", "-g"])
+    detail._lsof_ports(1)
+    assert calls
+    for argv, kw in calls:
+        assert argv[0].startswith("/")
+        assert kw["close_fds"] is False and "cwd" not in kw and kw["encoding"] == "utf-8"
+
+
+def test_empty_machine_read_is_unknown_and_retried(monkeypatch):
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    dashboard._machine_cache.clear()
+    out = {"v": ""}
+    monkeypatch.setattr(dashboard, "_run", lambda argv: out["v"])
+    assert dashboard._pressure() is None            # int('') must not raise
+    out["v"] = "2\n"
+    assert dashboard._pressure() == "warn"          # the empty read was not cached
+    dashboard._machine_cache.clear()

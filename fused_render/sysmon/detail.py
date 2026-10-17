@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import subprocess
 
 from fused_render.sysmon import labels
@@ -20,9 +21,16 @@ _PORT = re.compile(r":(\d+)\s+\(LISTEN\)")
 
 def _lsof_ports(pid: int) -> list[int]:
     """TCP ports `pid` listens on (lsof; macOS ships it, many Linux boxes too)."""
+    # Absolute exe + close_fds=False + no cwd: posix_spawn, never a fork() (a
+    # fork with libproj resident dies with SIGSEGV; see app_git.py).
+    exe = next((p for p in ("/usr/sbin/lsof", "/usr/bin/lsof") if os.path.exists(p)),
+               None) or shutil.which("lsof")
+    if not exe:
+        return []
     proc = subprocess.run(
-        ["lsof", "-nP", "-a", "-p", str(int(pid)), "-iTCP", "-sTCP:LISTEN"],
-        capture_output=True, text=True, timeout=_LSOF_TIMEOUT_S, close_fds=True)
+        [os.path.abspath(exe), "-nP", "-a", "-p", str(int(pid)), "-iTCP", "-sTCP:LISTEN"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=_LSOF_TIMEOUT_S, close_fds=False)
     return sorted({int(m.group(1)) for m in _PORT.finditer(proc.stdout or "")})
 
 

@@ -62,14 +62,37 @@ def _cached(key: str, fn):
     try:
         value = fn()
     except Exception:  # noqa: BLE001
-        value = None
-    _machine_cache[key] = (now, value)
+        return None  # not cached: the next call retries
+    if value is not None:
+        _machine_cache[key] = (now, value)
     return value
 
 
+def _abs_exe(name: str, *candidates: str) -> str:
+    """An ABSOLUTE executable path: CPython only takes posix_spawn (no atfork
+    handlers) when the path has a directory part, and a fork() in a process
+    with libproj resident dies with SIGSEGV (see app_git.py)."""
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    found = shutil.which(name)
+    if not found:
+        raise FileNotFoundError(name)
+    return os.path.abspath(found)
+
+
 def _run(argv: list[str]) -> str:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=2.0,
-                          close_fds=True).stdout
+    exe = {"sysctl": ("/usr/sbin/sysctl",), "pmset": ("/usr/bin/pmset",)}.get(argv[0], ())
+    return subprocess.run([_abs_exe(argv[0], *exe), *argv[1:]], capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", timeout=2.0,
+                          close_fds=False).stdout or ""
+
+
+def _to_int(text: str) -> int | None:
+    try:
+        return int(text.strip())
+    except ValueError:
+        return None
 
 
 def _pressure() -> str | None:
@@ -77,7 +100,7 @@ def _pressure() -> str | None:
         return None
 
     def read():
-        level = int(_run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"]).strip())
+        level = _to_int(_run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"]))
         return {1: "normal", 2: "warn", 4: "critical"}.get(level)
     return _cached("pressure", read)
 
@@ -91,7 +114,7 @@ def _power() -> dict | None:
         limit = None
         for line in _run(["pmset", "-g", "therm"]).splitlines():
             if "CPU_Speed_Limit" in line:
-                limit = int(line.split("=")[-1].strip())
+                limit = _to_int(line.split("=")[-1])
         low = None
         for line in _run(["pmset", "-g"]).splitlines():
             if line.strip().startswith("lowpowermode"):
