@@ -12244,3 +12244,75 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
 workers; the 6-connection cap itself and OpenBot's `HEAD` poll; App Nap; the
 ~40 fork-path spawns; a JSONL app log (SV-3); pruning claude run dirs and
 capping template `daemon.log`.
+
+---
+
+## 51. Code Editor — CodeMirror 6 as an IDE Buffer (D1375)
+
+The `code` view (`fused_render/templates/code/template.html`) is the editor
+behind every source/config/text binding in `registry.json`. It is CodeMirror 6
+from the shared vendored bundle (`/template-assets/codemirror.bundle.js`,
+built from `scripts/vendor-codemirror/entry.js`); nothing in it is a
+hand-rolled editor. The save contract (autosave, optimistic mtime lock,
+conflict banner, `__fusedFlushEdits`, read-only lock — D37, RO-5) is
+unchanged by this section.
+
+- **CE-1 Languages.** One `LANGUAGES` table drives both detection and the
+  status-bar picker. A whole-basename match (`Dockerfile`, `CMakeLists.txt`,
+  `.env`, `.zshrc`, …) outranks the last extension; unknown → Plain Text.
+  First-class Lezer grammars: Python, JavaScript/JSX, TypeScript/TSX, JSON
+  (+ JSONC, JSON Lines), HTML, CSS/SCSS/Sass/Less, XML (svg, plist, kml,
+  gpx, …), Markdown, YAML, SQL. Legacy (CM5) stream modes, wrapped on first
+  use: TOML, INI/properties, shell, PowerShell, Dockerfile, diff, C, C++,
+  C#, Java, Kotlin, Scala, Dart, Objective-C, Swift, Go, Rust, Groovy,
+  Ruby, Lua, Perl, R, Julia, Haskell, LaTeX, Nginx, CMake, Protobuf. C-family,
+  Go and Rust ride the legacy modes deliberately: their Lezer packages are
+  ~300 KB minified together in a bundle the markdown and notebook views also
+  load. `tsconfig*.json`, `jsconfig*.json`, `.vscode/*.json` and
+  devcontainer files open as JSONC so a valid commented config is never
+  flagged.
+- **CE-2 Editing.** `basicSetup` (line numbers, folding, bracket matching and
+  auto-close, multiple cursors / rectangular selection, search & replace
+  `Mod-F`, go-to-line `Mod-Alt-G`, toggle comment `Mod-/`, history,
+  highlight-selection-matches, autocompletion) plus: Tab / Shift-Tab indent
+  and dedent (an open completion takes Tab first; Escape then Tab leaves the
+  editor), indentation guides, buffer-word completion for every grammar
+  without a completion source of its own.
+- **CE-3 Status bar.** Under the buffer: problems (only for languages with a
+  validator; click opens the lint panel, `Mod-Shift-M`), `Ln N, Col M`
+  (VS Code counting: 1-based, tabs to the next tab stop, `(k selected)` /
+  `(k selections)`; click = go to line), indentation, line endings,
+  language, word wrap (`Alt-Z`, remembered per browser), and Format where
+  available. Every control reconfigures the running view through a
+  `Compartment` — never a rebuild, which would lose undo history, caret and
+  scroll.
+- **CE-4 Indentation.** Detected from the file: tab-led lines outvoting
+  space-led ones means tabs; otherwise the most common step between
+  consecutive indented lines (2/4/8). A file with nothing indented takes the
+  language's default (Python 4, web/data formats 2, Go tabs, else 4).
+- **CE-5 Line endings are preserved.** A file whose breaks are mostly CRLF is
+  edited with `EditorState.lineSeparator` = `"\r\n"`, and every write uses
+  `state.sliceDoc()` — `doc.toString()` always joins with `"\n"`, which
+  silently converted CRLF files to LF on their first save. Mixed files settle
+  on the majority. Switching LF/CRLF in the status bar is an edit (dirty →
+  autosave), and a switch that lands during an in-flight write keeps the
+  buffer dirty.
+- **CE-6 Validation only where a real validator exists.** JSON
+  (`jsonParseLinter`), JSON Lines (per-record `JSON.parse`, capped at 100
+  problems), XML (the browser's own `DOMParser`; line/column read from the
+  libxml2 or Gecko phrasing). Empty buffers are never flagged. **Rejected:** a
+  "syntax error" linter over Lezer error nodes for every grammar — Lezer is
+  error-tolerant by design, and on this repo's own valid sources it reported
+  error nodes in ~46% of `.tsx` and ~10% of `.py` files.
+- **CE-7 Format (JSON / JSON Lines, `Shift-Alt-F`).** Re-indents with the
+  buffer's indent unit (JSON Lines: each record compacted to one line) by
+  walking tokens and copying every string and literal verbatim — never
+  `JSON.parse` → `JSON.stringify`, which rewrites values (`1.0` → `1`, `1e3`
+  → `1000`, integers past 2^53 rounded). Invalid JSON is refused with a
+  status message, never half-formatted.
+- **CE-8 Tests.** `tests/test_code_template.py` executes the template's
+  helpers against the committed bundle via
+  `scripts/vendor-codemirror/code-editor-probe.mjs` (node only — no
+  `node_modules`): every listed language builds from the shipped bundle,
+  detection, indentation, CRLF round-trip, Format's verbatim literals, the
+  JSONL linter.

@@ -105,6 +105,45 @@
   }
   .cm-editor { height: 100%; font-size: 13px; }
   .cm-scroller { font-family: ui-monospace, Menlo, Consolas, monospace; }
+  /* Status bar (CE-3): the editor facts an IDE keeps under the buffer —
+     problems on the left, caret / indentation / line endings / language /
+     wrap on the right. Every item is a control, not just a label: clicking
+     the caret position jumps to a line, the selects reconfigure the running
+     view in place. Hidden until a file loads, like #bar. */
+  #statusbar {
+    display: none;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 2px;
+    min-height: 24px;
+    padding: 0 8px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-alt);
+    color: var(--fg-muted);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  #statusbar .grow { flex: 1 1 auto; }
+  #statusbar button, #statusbar select {
+    font: inherit;
+    color: inherit;
+    background: transparent;
+    border: 0;
+    border-radius: 4px;
+    padding: 2px 6px;
+    cursor: pointer;
+  }
+  #statusbar select { appearance: none; -webkit-appearance: none; }
+  #statusbar select option { color: var(--fg); background: var(--bg); }
+  #statusbar button:hover, #statusbar select:hover:not(:disabled) {
+    background: var(--border);
+    color: var(--fg);
+  }
+  #statusbar select:disabled { cursor: default; }
+  #statusbar button[aria-pressed="true"] { color: var(--fg); }
+  #problems.has-errors { color: var(--error); }
   #status {
     padding: 24px;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -169,6 +208,24 @@
     <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:33%; margin-left:20px"></span></div>
     <div class="skel-line"><span class="skel-gutter"></span><span class="skel-bar" style="width:15%"></span></div>
   </div></div>
+  <div id="statusbar">
+    <button id="problems" type="button" title="Problems (Mod-Shift-M)" hidden></button>
+    <span class="grow"></span>
+    <button id="cursor" type="button" title="Go to line (Mod-Alt-G)"></button>
+    <select id="indent" title="Indentation">
+      <option value="2">Spaces: 2</option>
+      <option value="4">Spaces: 4</option>
+      <option value="8">Spaces: 8</option>
+      <option value="tab">Tabs</option>
+    </select>
+    <select id="eol" title="Line endings">
+      <option value="lf">LF</option>
+      <option value="crlf">CRLF</option>
+    </select>
+    <select id="lang" title="Language"></select>
+    <button id="wrap" type="button" title="Word wrap (Alt-Z)" aria-pressed="false">Wrap</button>
+    <button id="format" type="button" title="Format document (Shift-Alt-F)" hidden>Format</button>
+  </div>
   <script>
     fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
 
@@ -183,8 +240,36 @@
     const reloadBtn = document.getElementById("reload");
     const overwriteBtn = document.getElementById("overwrite");
     const root = document.getElementById("root");
+    const statusbarEl = document.getElementById("statusbar");
+    const problemsBtn = document.getElementById("problems");
+    const cursorBtn = document.getElementById("cursor");
+    const indentSel = document.getElementById("indent");
+    const eolSel = document.getElementById("eol");
+    const langSel = document.getElementById("lang");
+    const wrapBtn = document.getElementById("wrap");
+    const formatBtn = document.getElementById("format");
+
+    // Per-viewer convenience only (wrap is a reading preference, not a file
+    // fact), so a blocked or empty storage just means "off".
+    const WRAP_KEY = "fused-render:code:wrap";
+    // A linter that reports one problem per line of a broken 2 MB JSONL file
+    // would build a lint panel nobody can read; the count still says "100+".
+    const MAX_DIAGNOSTICS = 100;
+
+    // One Compartment per live toggle (CE-3), so the status bar reconfigures
+    // the RUNNING view — rebuilding it would throw away the undo history, the
+    // caret and the scroll position.
+    const themeC = new CM.Compartment();
+    const langC = new CM.Compartment();
+    const indentC = new CM.Compartment();
+    const wrapC = new CM.Compartment();
+    const eolC = new CM.Compartment();
 
     let view = null;
+    let lang = null;      // LANGUAGES entry the view is configured with (CE-1)
+    let indent = "4";     // indentSel value: "2" | "4" | "8" | "tab" (CE-4)
+    let eol = "lf";       // eolSel value: "lf" | "crlf" (CE-5)
+    let wrap = false;
     let file = null;
     let mtime = null;   // last known on-disk mtime; the optimistic-lock token
     let writable = true; // stat.writable — false locks the buffer read-only
@@ -202,24 +287,345 @@
         .replace(/"/g, "&quot;");
     }
 
-    // Extension → CodeMirror language extension. Values are either a language
-    // function to call or a ready extension (the legacy StreamLanguage modes).
-    function languageFor(ext) {
-      switch (ext) {
-        case "py": return CM.python();
-        case "js": return CM.javascript();
-        case "ts": return CM.javascript({ typescript: true });
-        case "json": return CM.json();
-        case "yaml":
-        case "yml": return CM.yaml();
-        case "html":
-        case "htm": return CM.html();
-        case "css": return CM.css();
-        case "sh": return CM.shellLang;
-        case "toml": return CM.tomlLang;
-        default: return null; // unknown → plain text, no highlighting
+    // Legacy (CodeMirror 5) modes are wrapped into CM6 languages on first use
+    // and cached, so a bundle load never builds one nobody opened.
+    const legacyCache = new Map();
+    const legacy = (name) => () => {
+      if (!legacyCache.has(name)) {
+        legacyCache.set(name, CM.StreamLanguage.define(CM.legacyModes[name]));
       }
+      return legacyCache.get(name);
+    };
+
+    // CE-1: every language the editor knows, in the order the status bar's
+    // picker lists them. `ext` matches the last extension, `files` a whole
+    // basename (both lower-cased; `files` wins, so `CMakeLists.txt` is CMake
+    // and not plain text). `words: false` marks a grammar that ships its own
+    // completion source; every other one completes from the buffer's words
+    // instead. `indent` is the unit used when the file itself has no
+    // indentation to detect (CE-4). `lint`/`format` name the validators and
+    // formatter below — only languages with a REAL validator get one: Lezer
+    // grammars are error-tolerant by design, and on this repo's own valid
+    // sources they report error nodes in ~46% of .tsx and ~10% of .py files,
+    // so a tree-based "syntax error" linter would cry wolf constantly.
+    const LANGUAGES = [
+      { id: "plain", name: "Plain Text", ext: ["txt", "log", "csv", "tsv", "text"], load: () => [] },
+      { id: "python", name: "Python", ext: ["py", "pyw", "pyi"], load: () => CM.python(), words: false, indent: "4" },
+      { id: "javascript", name: "JavaScript", ext: ["js", "mjs", "cjs"], load: () => CM.javascript(), words: false, indent: "2" },
+      { id: "jsx", name: "JavaScript JSX", ext: ["jsx"], load: () => CM.javascript({ jsx: true }), words: false, indent: "2" },
+      { id: "typescript", name: "TypeScript", ext: ["ts", "mts", "cts"], load: () => CM.javascript({ typescript: true }), words: false, indent: "2" },
+      { id: "tsx", name: "TypeScript JSX", ext: ["tsx"], load: () => CM.javascript({ jsx: true, typescript: true }), words: false, indent: "2" },
+      { id: "json", name: "JSON", ext: ["json", "geojson", "topojson", "gltf", "webmanifest", "har", "ipynb"], load: () => CM.json(), indent: "2", lint: "json", format: "json" },
+      { id: "jsonc", name: "JSON with Comments", ext: ["jsonc", "json5"], load: () => CM.json(), indent: "2" },
+      { id: "jsonl", name: "JSON Lines", ext: ["jsonl", "ndjson"], load: () => CM.json(), indent: "2", lint: "jsonl", format: "jsonl" },
+      { id: "html", name: "HTML", ext: ["html", "htm", "xhtml"], load: () => CM.html(), words: false, indent: "2" },
+      { id: "css", name: "CSS", ext: ["css"], load: () => CM.css(), words: false, indent: "2" },
+      { id: "scss", name: "SCSS", ext: ["scss"], load: () => CM.sass(), words: false, indent: "2" },
+      { id: "sass", name: "Sass", ext: ["sass"], load: () => CM.sass({ indented: true }), words: false, indent: "2" },
+      { id: "less", name: "Less", ext: ["less"], load: () => CM.less(), words: false, indent: "2" },
+      { id: "xml", name: "XML", ext: ["xml", "svg", "plist", "xsd", "xsl", "xslt", "kml", "gpx", "rss", "atom", "csproj", "twb", "tds", "dae", "wsdl"], load: () => CM.xml(), words: false, indent: "2", lint: "xml" },
+      { id: "markdown", name: "Markdown", ext: ["md", "markdown", "mdx"], load: () => CM.markdown({ base: CM.markdownLanguage }), indent: "2" },
+      { id: "yaml", name: "YAML", ext: ["yaml", "yml"], load: () => CM.yaml(), indent: "2" },
+      { id: "toml", name: "TOML", ext: ["toml"], load: legacy("toml") },
+      { id: "ini", name: "INI / Properties", ext: ["ini", "cfg", "conf", "properties", "env", "editorconfig", "gitconfig"], files: [".env", ".gitconfig", ".editorconfig", ".npmrc", ".pypirc"], load: legacy("properties") },
+      { id: "shell", name: "Shell", ext: ["sh", "bash", "zsh", "ksh", "csh", "fish", "zsh-theme", "command"], files: [".bashrc", ".bash_profile", ".zshrc", ".zprofile", ".zshenv", ".profile"], load: legacy("shell"), indent: "2" },
+      { id: "powershell", name: "PowerShell", ext: ["ps1", "psm1", "psd1"], load: legacy("powerShell") },
+      { id: "sql", name: "SQL", ext: ["sql"], load: () => CM.sql(), words: false, indent: "2" },
+      { id: "dockerfile", name: "Dockerfile", ext: ["dockerfile"], files: ["dockerfile", "containerfile"], load: legacy("dockerFile") },
+      { id: "diff", name: "Diff", ext: ["diff", "patch"], load: legacy("diff") },
+      { id: "c", name: "C", ext: ["c", "h"], load: legacy("c") },
+      { id: "cpp", name: "C++", ext: ["cpp", "cc", "cxx", "hpp", "hh", "hxx", "ino"], load: legacy("cpp") },
+      { id: "csharp", name: "C#", ext: ["cs"], load: legacy("csharp") },
+      { id: "java", name: "Java", ext: ["java"], load: legacy("java") },
+      { id: "kotlin", name: "Kotlin", ext: ["kt", "kts"], load: legacy("kotlin") },
+      { id: "scala", name: "Scala", ext: ["scala", "sc"], load: legacy("scala"), indent: "2" },
+      { id: "dart", name: "Dart", ext: ["dart"], load: legacy("dart"), indent: "2" },
+      { id: "objc", name: "Objective-C", ext: ["m", "mm"], load: legacy("objectiveC") },
+      { id: "swift", name: "Swift", ext: ["swift"], load: legacy("swift") },
+      { id: "go", name: "Go", ext: ["go"], load: legacy("go"), indent: "tab" },
+      { id: "rust", name: "Rust", ext: ["rs"], load: legacy("rust") },
+      { id: "groovy", name: "Groovy", ext: ["groovy", "gradle"], files: ["jenkinsfile"], load: legacy("groovy") },
+      { id: "ruby", name: "Ruby", ext: ["rb", "rake", "gemspec"], files: ["gemfile", "rakefile"], load: legacy("ruby"), indent: "2" },
+      { id: "lua", name: "Lua", ext: ["lua"], load: legacy("lua"), indent: "2" },
+      { id: "perl", name: "Perl", ext: ["pl", "pm"], load: legacy("perl") },
+      { id: "r", name: "R", ext: ["r"], load: legacy("r"), indent: "2" },
+      { id: "julia", name: "Julia", ext: ["jl"], load: legacy("julia") },
+      { id: "haskell", name: "Haskell", ext: ["hs"], load: legacy("haskell"), indent: "2" },
+      { id: "latex", name: "LaTeX", ext: ["tex", "ltx", "latex", "sty", "cls"], load: legacy("stex"), indent: "2" },
+      { id: "nginx", name: "Nginx", files: ["nginx.conf"], load: legacy("nginx") },
+      { id: "cmake", name: "CMake", ext: ["cmake"], files: ["cmakelists.txt"], load: legacy("cmake") },
+      { id: "protobuf", name: "Protocol Buffers", ext: ["proto"], load: legacy("protobuf"), indent: "2" },
+    ];
+    const languageById = (id) => LANGUAGES.find((l) => l.id === id) || LANGUAGES[0];
+
+    // Path → LANGUAGES entry. JSON files that are conventionally JSONC
+    // (tsconfig/jsconfig, VS Code settings, devcontainers) get the comment-
+    // tolerant entry, so a valid config is never flagged by the JSON linter.
+    function detectLanguage(path) {
+      const base = path.split("/").pop().toLowerCase();
+      if (/^(ts|js)config(\..+)?\.json$/.test(base) || /\/\.vscode\/[^/]+\.json$/i.test(path)
+          || base === "devcontainer.json" || base === ".devcontainer.json") {
+        return languageById("jsonc");
+      }
+      const byFile = LANGUAGES.find((l) => l.files && l.files.includes(base));
+      if (byFile) return byFile;
+      const ext = base.includes(".") ? base.split(".").pop() : "";
+      return LANGUAGES.find((l) => l.ext && l.ext.includes(ext)) || languageById("plain");
     }
+
+    // CE-4: the file's own indentation, read the way editors do — the most
+    // common step between consecutive indented lines (not the smallest indent,
+    // which a single odd line would decide). Tab-led lines outvoting
+    // space-led ones means tabs. Returns an indentSel value, or null when the
+    // file has nothing indented to go by.
+    function detectIndent(text) {
+      let tabs = 0, spaced = 0, prev = 0;
+      const steps = new Map();
+      for (const line of text.slice(0, 256 * 1024).split("\n")) {
+        if (!line.trim()) continue;
+        const lead = /^[ \t]*/.exec(line)[0];
+        if (lead[0] === "\t") { tabs++; continue; }
+        if (lead.includes("\t")) continue;
+        if (lead.length) spaced++;
+        const step = Math.abs(lead.length - prev);
+        prev = lead.length;
+        if (step >= 2 && step <= 8) steps.set(step, (steps.get(step) || 0) + 1);
+      }
+      if (tabs > spaced) return "tab";
+      let best = 0, bestCount = 0;
+      for (const [step, count] of steps) {
+        if (count > bestCount || (count === bestCount && step < best)) { best = step; bestCount = count; }
+      }
+      if (!best) return null;
+      if (best === 2 || best === 4 || best === 8) return String(best);
+      return best % 4 === 0 ? "4" : best % 2 === 0 ? "2" : null;
+    }
+
+    // CE-5: CodeMirror normalizes every line break to "\n" by default, which
+    // silently rewrote a CRLF file to LF on its first save. A file whose breaks
+    // are mostly CRLF is edited with CRLF as the separator, so the bytes it is
+    // saved with are the bytes it had. Mixed files settle on the majority (as
+    // VS Code does); the stray breaks only change if the buffer is saved.
+    function detectEol(text) {
+      const crlf = (text.match(/\r\n/g) || []).length;
+      const lf = (text.match(/\n/g) || []).length - crlf;
+      return crlf > 0 && crlf >= lf ? "crlf" : "lf";
+    }
+    const eolExtension = (value) =>
+      value === "crlf" ? CM.EditorState.lineSeparator.of("\r\n") : [];
+    const textForEol = (text, value) =>
+      value === "crlf" ? text.replace(/\r?\n/g, "\r\n") : text;
+
+    function indentExtension(value) {
+      const unit = value === "tab" ? "\t" : " ".repeat(Number(value));
+      return [
+        CM.indentUnit.of(unit),
+        CM.EditorState.tabSize.of(value === "tab" ? 4 : Number(value)),
+      ];
+    }
+
+    // CE-6: the validators. Each is a REAL parser of the format, so a reported
+    // problem is a real one. Empty buffers are never flagged — a new file is
+    // not a broken one.
+    function jsonLinesLinter(view) {
+      const doc = view.state.doc;
+      const out = [];
+      for (let n = 1; n <= doc.lines && out.length < MAX_DIAGNOSTICS; n++) {
+        const line = doc.line(n);
+        if (!line.text.trim()) continue;
+        try {
+          JSON.parse(line.text);
+        } catch (err) {
+          out.push({ from: line.from, to: line.to, severity: "error",
+            message: "Line " + n + ": " + err.message });
+        }
+      }
+      return out;
+    }
+
+    // XML well-formedness via the browser's own XML parser. Its <parsererror>
+    // names the line and column in one of two phrasings: libxml2's (Chromium,
+    // WebKit) "error on line 3 at column 7: …" or Gecko's "Line Number 3,
+    // Column 7". An unrecognized phrasing still reports, at the top.
+    function xmlLinter(view) {
+      const text = view.state.doc.toString();
+      if (!text.trim()) return [];
+      const parsed = new DOMParser().parseFromString(text, "application/xml");
+      const err = parsed.getElementsByTagName("parsererror")[0];
+      if (!err) return [];
+      const detail = (err.querySelector("div") || err).textContent.trim();
+      const at = /line (\d+) at column (\d+)/i.exec(detail)
+        || /Line Number (\d+), Column (\d+)/i.exec(err.textContent);
+      const doc = view.state.doc;
+      const line = doc.line(at ? Math.min(Math.max(1, Number(at[1])), doc.lines) : 1);
+      const from = at ? Math.min(line.from + Math.max(0, Number(at[2]) - 1), line.to) : line.from;
+      const message = detail.replace(/^.*?line \d+ at column \d+:\s*/i, "").split("\n")[0]
+        || "Malformed XML";
+      return [{ from, to: Math.min(from + 1, line.to), severity: "error", message }];
+    }
+
+    const LINTERS = {
+      json: (view) => (view.state.doc.length && view.state.sliceDoc().trim()
+        ? CM.jsonParseLinter()(view) : []),
+      jsonl: jsonLinesLinter,
+      xml: xmlLinter,
+    };
+
+    // CE-7: re-indent JSON without round-tripping it through JSON.parse →
+    // JSON.stringify, which would rewrite the VALUES: 1.0 → 1, 1e3 → 1000, and
+    // any integer past 2^53 rounded. This walks the tokens and copies every
+    // string and literal through verbatim, changing only the whitespace
+    // between them. JSON.parse runs first purely as the validator, so an
+    // invalid buffer is refused rather than half-formatted. `unit` null emits
+    // the compact one-line form (each record of a JSON Lines file).
+    function reformatJson(text, unit, nl) {
+      JSON.parse(text);
+      let out = "", depth = 0, i = 0;
+      const pad = () => (unit === null ? "" : nl + unit.repeat(depth));
+      while (i < text.length) {
+        const ch = text[i];
+        if (ch === '"') {
+          let j = i + 1;
+          while (text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+          out += text.slice(i, j + 1);
+          i = j + 1;
+        } else if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+          i++;
+        } else if (ch === "{" || ch === "[") {
+          let j = i + 1;
+          while (" \t\n\r".includes(text[j])) j++;
+          if (text[j] === (ch === "{" ? "}" : "]")) { // empty container stays {} / []
+            out += ch + text[j];
+            i = j + 1;
+          } else {
+            depth++;
+            out += ch + pad();
+            i++;
+          }
+        } else if (ch === "}" || ch === "]") {
+          depth--;
+          out += pad() + ch;
+          i++;
+        } else if (ch === ",") {
+          out += "," + pad();
+          i++;
+        } else if (ch === ":") {
+          out += unit === null ? ":" : ": ";
+          i++;
+        } else { // number, true, false, null
+          let j = i;
+          while (j < text.length && !' \t\n\r,:[]{}"'.includes(text[j])) j++;
+          out += text.slice(i, j);
+          i = j;
+        }
+      }
+      return out;
+    }
+
+    function formatDocument() {
+      if (!view || !writable || !lang || !lang.format) return false;
+      const state = view.state;
+      const nl = state.lineBreak;
+      const text = state.sliceDoc();
+      const unit = indent === "tab" ? "\t" : " ".repeat(Number(indent));
+      let next;
+      try {
+        if (lang.format === "jsonl") {
+          next = text.split(nl).map((line) => (line.trim() ? reformatJson(line, null, nl) : line)).join(nl);
+        } else {
+          next = reformatJson(text, unit, nl) + (text.endsWith(nl) ? nl : "");
+        }
+      } catch (err) {
+        statusTextEl.textContent = "Can't format: " + (err.message || "invalid JSON");
+        statusTextEl.classList.add("error");
+        return true;
+      }
+      if (next !== text) {
+        view.dispatch({ changes: { from: 0, to: state.doc.length, insert: next }, userEvent: "input.format" });
+      }
+      return true;
+    }
+
+    // Everything the language decides, as one Compartment's content: the
+    // grammar, buffer-word completion where the grammar has none of its own,
+    // and the validator plus its gutter where one exists.
+    function languageExtension(l) {
+      const exts = [l.load()];
+      if (l.words !== false) {
+        exts.push(CM.EditorState.languageData.of(() => [{ autocomplete: CM.completeAnyWord }]));
+      }
+      if (l.lint) exts.push(CM.linter(LINTERS[l.lint], { delay: 500 }), CM.lintGutter());
+      return exts;
+    }
+
+    function readWrapPref() {
+      try { return localStorage.getItem(WRAP_KEY) === "1"; } catch (err) { return false; }
+    }
+
+    function setWrap(on) {
+      wrap = on;
+      wrapBtn.setAttribute("aria-pressed", String(on));
+      try { localStorage.setItem(WRAP_KEY, on ? "1" : "0"); } catch (err) { /* per-viewer nicety */ }
+      if (view) view.dispatch({ effects: wrapC.reconfigure(on ? CM.EditorView.lineWrapping : []) });
+    }
+
+    function setLanguage(id) {
+      lang = languageById(id);
+      langSel.value = lang.id;
+      formatBtn.hidden = !lang.format || !writable;
+      if (view) view.dispatch({ effects: langC.reconfigure(languageExtension(lang)) });
+      paintProblems();
+    }
+
+    function setIndent(value) {
+      indent = value;
+      indentSel.value = value;
+      if (view) view.dispatch({ effects: indentC.reconfigure(indentExtension(value)) });
+      paintCursor(); // Col counts a tab as tabSize columns
+    }
+
+    // Switching line endings rewrites every break on save, so it is an edit:
+    // the buffer goes dirty and autosaves like any other.
+    function setEol(value) {
+      if (value === eol) return;
+      eol = value;
+      eolSel.value = value;
+      view.dispatch({ effects: eolC.reconfigure(eolExtension(value)) });
+      setDirty(true);
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(autosave, 250);
+    }
+
+    // "Ln 12, Col 5", the way VS Code counts it: 1-based, a tab advancing to
+    // the next tab stop, and the selection size (or count) appended.
+    function paintCursor() {
+      if (!view) { cursorBtn.textContent = ""; return; }
+      const state = view.state;
+      const main = state.selection.main;
+      const line = state.doc.lineAt(main.head);
+      let col = 0;
+      for (const ch of line.text.slice(0, main.head - line.from)) {
+        col = ch === "\t" ? col + state.tabSize - (col % state.tabSize) : col + 1;
+      }
+      let text = "Ln " + line.number + ", Col " + (col + 1);
+      const ranges = state.selection.ranges.length;
+      if (ranges > 1) text += " (" + ranges + " selections)";
+      else if (!main.empty) text += " (" + (main.to - main.from) + " selected)";
+      cursorBtn.textContent = text;
+    }
+
+    function paintProblems() {
+      if (!view || !lang || !lang.lint) { problemsBtn.hidden = true; return; }
+      let count = 0;
+      CM.forEachDiagnostic(view.state, () => { count++; });
+      problemsBtn.hidden = false;
+      problemsBtn.classList.toggle("has-errors", count > 0);
+      problemsBtn.textContent = count === 0 ? "✓ No problems"
+        : "✕ " + (count >= MAX_DIAGNOSTICS ? MAX_DIAGNOSTICS + "+" : count)
+          + (count === 1 ? " problem" : " problems");
+    }
+
+    for (const l of LANGUAGES) langSel.append(new Option(l.name, l.id));
 
     // The line count the bar prints, from the live document (CM's Text keeps it
     // as a field, so this is a read and not a scan). Painted on load and on
@@ -283,7 +689,11 @@
       // write was in flight — those must NOT be masked by setDirty(false), or
       // "Saved" lies and the 250ms autosave (which checks dirty) skips them.
       const docState = view.state.doc;
-      const doc = docState.toString();
+      // sliceDoc, never doc.toString(): only sliceDoc joins lines with the
+      // state's own separator, so a CRLF buffer saves as CRLF (CE-5).
+      const doc = view.state.sliceDoc();
+      // A line-ending switch is an edit the doc compare cannot see (CE-5).
+      const eolWritten = eol;
       saveBtn.disabled = true;
       statusTextEl.textContent = "Saving…";
       statusTextEl.classList.remove("error");
@@ -292,7 +702,7 @@
         const st = await fused.writeFile(file, doc, { expectedMtime: mtime });
         mtime = st.mtime;
         hideConflict();
-        if (view.state.doc === docState) {
+        if (view.state.doc === docState && eol === eolWritten) {
           setDirty(false);
         } else {
           // Newer edits arrived during the write: stay dirty, re-arm autosave.
@@ -328,7 +738,16 @@
           if (await load()) hideConflict();
           return;
         }
-        const text = await fused.readFile(file);
+        const raw = await fused.readFile(file);
+        // The disk copy may have changed line endings too (CE-5): switch the
+        // separator first, so the incoming text is split by the new one.
+        const nextEol = detectEol(raw);
+        if (nextEol !== eol) {
+          eol = nextEol;
+          eolSel.value = eol;
+          view.dispatch({ effects: eolC.reconfigure(eolExtension(eol)) });
+        }
+        const text = textForEol(raw, eol);
         view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
         mtime = st.mtime;
         hideConflict();
@@ -341,7 +760,7 @@
 
     // Overwrite forces the write with no lock, then re-arms from the response.
     async function overwrite() {
-      const doc = view.state.doc.toString();
+      const doc = view.state.sliceDoc();
       try {
         const st = await fused.writeFile(file, doc);
         mtime = st.mtime;
@@ -376,14 +795,35 @@
         return false;
       }
 
-      const ext = (file.split("/").pop().split(".").pop() || "").toLowerCase();
+      lang = detectLanguage(file);
+      indent = detectIndent(text) || lang.indent || "4";
+      eol = detectEol(text);
+      wrap = readWrapPref();
+      text = textForEol(text, eol);
       // The editor surface follows the shell's appearance (SPEC §30). oneDark
       // is the only theme in the vendored bundle, so light mode simply leaves
       // it out and basicSetup's own default (light) highlight style applies.
       const wantsDark = () => document.documentElement.getAttribute("data-theme") !== "light";
       const extensions = [
         CM.basicSetup,
-        ...(wantsDark() ? [CM.oneDark] : []),
+        themeC.of(wantsDark() ? CM.oneDark : []),
+        langC.of(languageExtension(lang)),
+        indentC.of(indentExtension(indent)),
+        wrapC.of(wrap ? CM.EditorView.lineWrapping : []),
+        eolC.of(eolExtension(eol)),
+        CM.indentationMarkers({
+          thickness: 1,
+          colors: { dark: "#2c3038", activeDark: "#4a505b", light: "#e6e8eb", activeLight: "#c4c8ce" },
+        }),
+        // CE-2: Tab indents the selection (Shift-Tab dedents) instead of
+        // leaving the editor — Escape then Tab still moves focus on — but an
+        // open completion takes Tab first, the way every IDE accepts one.
+        CM.keymap.of([
+          { key: "Tab", run: CM.acceptCompletion },
+          CM.indentWithTab,
+          { key: "Alt-z", run: () => { setWrap(!wrap); return true; } },
+          { key: "Shift-Alt-f", run: formatDocument },
+        ]),
         // docChanged fires on any user edit → mark the buffer modified.
         CM.EditorView.updateListener.of((update) => {
           if (update.docChanged) {
@@ -392,10 +832,11 @@
             clearTimeout(saveTimer);
             saveTimer = setTimeout(autosave, 250);
           }
+          if (update.docChanged || update.selectionSet) paintCursor();
+          // Lint results land as their own transaction, after the delay.
+          if (update.transactions.length) paintProblems();
         }),
       ];
-      const lang = languageFor(ext);
-      if (lang) extensions.push(lang);
       // Read-only file: lock the buffer, so dirty can never flip and no save
       // path (autosave, Cmd+S, flush hook) ever fires. The server refuses the
       // write anyway (403 readonly); this makes the UI honest up front. Both
@@ -407,8 +848,17 @@
       }
 
       root.innerHTML = "";
+      view?.destroy(); // a rebuild (reloadFromDisk after a chmod) replaces the old view
       view = new CM.EditorView({ doc: text, extensions, parent: root });
+      langSel.value = lang.id;
+      indentSel.value = indent;
+      eolSel.value = eol;
+      eolSel.disabled = !writable;
+      wrapBtn.setAttribute("aria-pressed", String(wrap));
+      formatBtn.hidden = !lang.format || !writable;
       paintLines();
+      paintCursor();
+      paintProblems();
       // A live appearance change (the shell's menu, or the OS flipping while
       // the setting is System) reconfigures the RUNNING view — rebuilding it
       // would throw away unsaved edits, the caret and the scroll position.
@@ -421,11 +871,7 @@
         if (next === themedDark) return;
         themedDark = next;
         try {
-          view.dispatch({
-            effects: CM.StateEffect.reconfigure.of(
-              extensions.filter((e) => e !== CM.oneDark).concat(next ? [CM.oneDark] : [])
-            ),
-          });
+          view.dispatch({ effects: themeC.reconfigure(next ? CM.oneDark : []) });
         } catch (err) {
           /* keep the current editor theme — cosmetic only */
         }
@@ -437,6 +883,7 @@
       });
       filenameEl.textContent = file.split("/").pop();
       barEl.style.display = "flex";
+      statusbarEl.style.display = "flex";
       setDirty(false);
       if (!writable) {
         saveBtn.hidden = true;
@@ -454,9 +901,17 @@
     saveBtn.addEventListener("click", save);
     reloadBtn.addEventListener("click", reloadFromDisk);
     overwriteBtn.addEventListener("click", overwrite);
+    problemsBtn.addEventListener("click", () => { if (view) CM.openLintPanel(view); });
+    cursorBtn.addEventListener("click", () => { if (view) CM.gotoLine(view); });
+    indentSel.addEventListener("change", () => { setIndent(indentSel.value); view?.focus(); });
+    eolSel.addEventListener("change", () => { if (view) { setEol(eolSel.value); view.focus(); } });
+    langSel.addEventListener("change", () => { setLanguage(langSel.value); view?.focus(); });
+    wrapBtn.addEventListener("click", () => { setWrap(!wrap); view?.focus(); });
+    formatBtn.addEventListener("click", () => { formatDocument(); view?.focus(); });
 
-    // CM's own save keymap isn't bundled (keymap isn't exported), so bind
-    // Cmd/Ctrl+S at the window instead and swallow the browser's Save dialog.
+    // Bound at the window rather than in the editor's keymap, so Cmd/Ctrl+S
+    // saves (and the browser's Save dialog is swallowed) even while focus is
+    // on the bar or the status bar.
     window.addEventListener("keydown", (e) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === "s" || e.key === "S")) {
         e.preventDefault();
