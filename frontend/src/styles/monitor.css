@@ -946,6 +946,11 @@ th[aria-sort="descending"] .monitor-sort {
   text-decoration: underline;
 }
 
+.monitor-name-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* ---- process detail drawer ---- */
 .monitor-drawer {
   flex: 0 0 320px;
