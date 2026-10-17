@@ -492,3 +492,22 @@ def test_scrollback_ring_holds_exactly_the_cap_and_the_tail(registry, tmp_path, 
     assert len(ring) == pty_session.SCROLLBACK_CAP
     assert ring == bytes(sent[-pty_session.SCROLLBACK_CAP:])
     assert session.attach()[0] == ring
+
+
+def test_exited_child_drains_without_a_wait_per_read(monkeypatch):
+    """A pause still held when the child has exited must not cost a
+    _FLOW_POLL_S wait per remaining read: _wait_flowing returns at once, so
+    EOF, the reap and the exit item follow without 0.5 s per buffered read.
+    Driven on a bare session object: on macOS a real child cannot exit while
+    its output sits undrained in the pty, so the state cannot be staged."""
+    import threading
+    monkeypatch.setattr(pty_session, "_FLOW_POLL_S", 0.5)
+    session = object.__new__(pty_session.PtySession)
+    session._lock = threading.Lock()
+    session._flowing = threading.Event()
+    session._paused = {object(): time.monotonic()}
+    session.proc = type("P", (), {"poll": lambda self: 0})()
+    t0 = time.monotonic()
+    for _ in range(10):  # ten buffered reads' worth
+        session._wait_flowing()
+    assert time.monotonic() - t0 < 0.2

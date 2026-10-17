@@ -251,7 +251,9 @@ class PtySession:
         a stale pause expires and a child that exited is still noticed: once
         the process is gone the reader must keep reading to reach EOF/EIO and
         reap it, whatever any client asked for."""
-        while not self._flowing.wait(_FLOW_POLL_S):
+        while not self._flowing.is_set():
+            # Checked before the wait: an exited child must drain at once, not
+            # pay _FLOW_POLL_S for every read left in the pty buffer.
             if self.proc.poll() is not None:
                 return
             now = time.monotonic()
@@ -260,6 +262,7 @@ class PtySession:
                     del self._paused[q]
                 if not self._paused:
                     self._flowing.set()
+            self._flowing.wait(_FLOW_POLL_S)
 
     def pause(self, q) -> None:
         """Stop reading the pty on behalf of subscriber `q` until `resume(q)`,
