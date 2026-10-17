@@ -36,7 +36,7 @@ import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { embedUrlForFsPath } from "@platform/lib/router";
+import { EMBED_PREFIX, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
@@ -133,8 +133,52 @@ function nodeTabFromUrl(): NodeTab {
  * explorer does (the app-state block names the file); its `session_id` lives
  * on the frame's URL, not this page's.
  */
-function nodeEmbedSrc(file: string, tab: NodeTab): string {
-  return embedUrlForFsPath(file, "?_mode=" + tab + "&_side=off");
+function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): string {
+  // `_noann=1` on the chat: its Screenshot / Annotate seats and view toggle
+  // would open the chat's own preview of the file, which is the Code tab's
+  // job here (owner, 2026-10-17). `session_id` when a Recent row on the
+  // canvas chat hopped here: the frame's chat resumes that conversation.
+  return embedUrlForFsPath(
+    file,
+    "?_mode=" + tab + "&_side=off" +
+      (tab === "claude" ? "&_noann=1" : "") +
+      (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
+  );
+}
+
+/** The clone file a chat hop names, when it is one of this canvas's nodes.
+ *  A Recent row on the canvas chat that is a FILE chat navigates to the
+ *  explorer's view of that file (`paneChatUrl`: `/explorer/view/<path>?_side=
+ *  claude&session_id=…`); here that file is a node, so the hop becomes
+ *  "select the node, open that chat". Null for anything else — a folder chat,
+ *  a file outside the clone, a nested path — which navigates as it always did. */
+function nodeHopFromUrl(url: string, dir: string): { node: NodeSel; sessionId: string | null } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url, window.location.origin);
+  } catch {
+    return null;
+  }
+  const prefix = [VIEW_PREFIX, EMBED_PREFIX].find((p) => parsed.pathname.startsWith(p));
+  if (!prefix) return null;
+  const fsPath =
+    "/" +
+    parsed.pathname
+      .slice(prefix.length)
+      .split("/")
+      .filter((seg) => seg.length > 0)
+      .map(decodeURIComponent)
+      .join("/");
+  const base = dir.replace(/\/+$/, "") + "/";
+  if (!fsPath.startsWith(base)) return null;
+  const file = fsPath.slice(base.length);
+  if (!file || file.includes("/")) return null;
+  const dot = file.lastIndexOf(".");
+  const udfName = dot > 0 ? file.slice(0, dot) : file;
+  return {
+    node: { udfName, kind: file.endsWith(".py") ? "udf" : "widget", file },
+    sessionId: parsed.searchParams.get("session_id"),
+  };
 }
 
 /** The node restored from this page's own URL (`?node=` + `node_file=`), or
@@ -165,6 +209,10 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // reload keeps the node; written back below.
   const [node, setNode] = useState<NodeSel | null>(() => nodeFromUrl());
   const [nodeTab, setNodeTab] = useState<NodeTab>(() => nodeTabFromUrl());
+  // A session the node pane's chat should resume (a Recent row's hop, below),
+  // keyed to the file it belongs to: it applies only while that node is the
+  // one shown, so no clearing is needed when the node changes.
+  const [nodeSession, setNodeSession] = useState<{ file: string; sessionId: string } | null>(null);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
@@ -753,7 +801,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
                 // explorer's content-mode swap is for its own switcher.
                 key={nodeTab}
                 className="preview-side-frame"
-                src={nodeEmbedSrc(nodeFile(dir, node), nodeTab)}
+                src={nodeEmbedSrc(
+                  nodeFile(dir, node),
+                  nodeTab,
+                  nodeSession && nodeSession.file === node.file ? nodeSession.sessionId : null,
+                )}
                 title={`${node.udfName} — ${nodeTab === "code" ? "Code" : "Claude"}`}
               />
             </div>
@@ -778,6 +830,21 @@ export default function CanvasWorkspace({ name }: { name: string }) {
               paramsSource="url"
               {...(fixRunId ? { runId: fixRunId } : {})}
               annotateTarget={() => frameRef.current}
+              // A Recent row that is a FILE chat on one of this canvas's nodes
+              // does not leave for the explorer: it selects the node in the
+              // workbench and opens that chat in the node pane. Everything
+              // else hops as the chat always did.
+              onNavigate={(url) => {
+                const hop = nodeHopFromUrl(url, dir);
+                if (!hop) {
+                  navigateUrl(url);
+                  return;
+                }
+                sendSelect(hop.node.udfName);
+                setNodeTab("claude");
+                setNodeSession(hop.sessionId ? { file: hop.node.file, sessionId: hop.sessionId } : null);
+                setNode(hop.node);
+              }}
             />
           ) : (
             !error && <p style={{ padding: 16 }}>Loading editor…</p>
