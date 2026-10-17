@@ -821,6 +821,12 @@ function ChatBody(props: ChatBodyProps) {
     if (hasPane.current || appFrame()) return true;
     // Our own decision is outstanding.
     if (!pane.noPane && pane.status === "resolving") return null;
+    // A host that STATED the file is a host whose pane cannot be read (the
+    // canvas node sidebar beside the cross-origin workbench): a definite no,
+    // never the `null` below — that falls back to agent.py's `_has_pane`,
+    // which answers True for any file and would put the `app_state` tool
+    // back in the roster for a document nothing can answer about.
+    if (entryRef.current) return false;
     // Or the HOST has an app-state slot it has not marked yet — the sidebar's
     // copy of the same race, and the one with the same price: the mark lands
     // when the content frame paints, and a message typed before that would
