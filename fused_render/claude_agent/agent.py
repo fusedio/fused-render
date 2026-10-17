@@ -915,40 +915,31 @@ def _custom_env(origin: str, file: str) -> bool | None:
 
 
 def _canvas_node_prompt(file: str) -> str:
-    """The prompt for ONE FILE INSIDE A CANVAS CLONE — the canvas node sidebar
-    (fused-render's /canvases/<name> page, a node clicked in the embedded
-    workbench): the chat is about `<clone>/<udfName>.py` (or a widget's
-    `.json`), beside the LIVE WORKBENCH CANVAS, not beside fused-render's own
-    preview of the file.
+    """The prompt for ONE FILE INSIDE A CANVAS CLONE — a node picked in the
+    embedded workbench on fused-render's /canvases/<name> page, which opens
+    the explorer's file engine on `<clone>/<udfName>.py` beside it.
 
-    A third shape because `_system_prompt` is wrong here twice: it promises a
-    readable preview pane and an `app_state` tool, and the workbench frame is
-    cross-origin — no document, no tool (the page sends `has_pane:"0"`). And
-    it says nothing about the canvas, which is the one thing this file cannot
-    be edited without: `canvas.toml` beside it names the node, and publishing
-    is `fused workbench canvas push .` (D350), with the auto-push held while
-    this session is live. The clone's CLAUDE.md (D340) carries the skills and
-    layout; this only has to say WHICH file the user picked and where it sits.
+    The FILE prompt, then the canvas facts on top. The file half is exactly
+    `_system_prompt`'s, because the pane IS the same one the explorer shows
+    (the code template, this origin's, readable — the app_state tool is
+    real here). What that prompt cannot know is the folder's shape: the
+    canvas.toml beside the file names the node, every node's code is the
+    file named after it, publishing is `fused workbench canvas push .` (D350)
+    with the auto-push held while this session is live, and the user's own
+    edits to this file arrive through the same code pane. The clone's
+    CLAUDE.md (D340) carries the skills and layout.
     """
     name = os.path.basename(file)
     folder = os.path.dirname(file)
-    return (
-        f"You are working on one node of a Fused workbench canvas: the user "
-        f"selected it in the live canvas beside this chat, and its source is "
-        f"{file}. Treat {name} as the subject of this conversation — answer "
-        "questions about it and make requested edits to it. Keep your work "
-        "scoped to this file (and its entry in the canvas.toml beside it, "
-        "when a change needs one) unless the user explicitly asks for "
-        "something broader; this is guidance, not a hard rule. The canvas "
-        f"folder is {folder}: its canvas.toml defines the nodes and edges, "
-        "and every node's code is the file named after it. Beside this chat "
-        "the user sees the hosted workbench canvas itself, rendered by "
-        "fused.io in a cross-origin frame — you cannot read it, there is no "
-        "app-state tool for it, and the user's annotations or screenshots of "
-        "it point at the canvas, not at a local page. The user's own code "
-        "editor for this node is this page's Code tab, which autosaves into "
-        "the same folder you edit; edits from either side land in the clone "
-        "and are published to the canvas by the sync."
+    return _system_prompt(file) + (
+        f" {name} is one node of a Fused workbench canvas: the user selected "
+        f"it in the live canvas, which is on screen beside this chat in a "
+        f"cross-origin frame you cannot read. The canvas folder is {folder}: "
+        "its canvas.toml defines the nodes and edges, and every node's code "
+        "is the file named after it — a change that needs a canvas.toml entry "
+        "(a rename, a new node) belongs in the same change set. Edits from "
+        "either side land in that folder and the sync publishes them to the "
+        "canvas."
     )
 
 

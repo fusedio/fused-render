@@ -11,7 +11,7 @@
 // is posted with an EXACT targetOrigin — never "*" — so it cannot leak to a
 // frame that navigated elsewhere.
 //
-// Node selection (the node sidebar, apps/canvases/NodeSidebar.tsx): the same
+// Node selection (the explorer engine in the right pane, `renderFile`): the same
 // listener carries three more messages once the workbench is told this host
 // speaks v2 (`fused_embed_v=2` on the frame URL — the flag also hides the
 // workbench's own code editor, so an OLD host keeps that editor and an old
@@ -33,10 +33,9 @@
 // workbench iframe — the hosted workbench refreshes itself on upstream
 // changes.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ChatMount } from "@apps/claude";
-import { statPath, type TemplateEntry } from "@platform/lib/api";
-import NodeSidebar, { type NodeTab } from "./NodeSidebar";
+import { statPath } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   fixWithClaude,
@@ -129,7 +128,28 @@ export function canvasNameFromPath(pathname: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-export default function CanvasWorkspace({ name }: { name: string }) {
+export default function CanvasWorkspace({
+  name,
+  renderFile,
+}: {
+  name: string;
+  /**
+   * THE EXPLORER'S FILE ENGINE, handed down by the shell (App.tsx mounts its
+   * own `StatView`): stat → the registry's preview of the file (the code
+   * template for a `.py`, writable, autosaving into the clone) → the
+   * Claude / Git sidebar beside it, with Claude's Recent list filed per
+   * FILE the way the explorer already does it (the content frame is this
+   * origin's, so every send carries an app-state block whose url names the
+   * file). A node selected in the workbench is exactly "the explorer open on
+   * `<clone>/<udfName>.py`", so that is what the right pane renders — not a
+   * second sidebar built beside it (owner, 2026-10-17: "we should be just
+   * using that entire engine").
+   *
+   * A render prop rather than an import because `StatView` is the shell's
+   * and an app may not import the explorer (scripts/check-boundaries.mjs).
+   */
+  renderFile: (fsPath: string) => ReactNode;
+}) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
@@ -138,18 +158,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // too. Needed because the chat is framed DIRECTLY via /render (below), not
   // through /explorer/embed.
   const [chatTpl, setChatTpl] = useState<string | null>(null);
-  const [chatEntry, setChatEntry] = useState<TemplateEntry | null>(null);
   // The selected node (null = the canvas chat). Seeded from `?node=` so a
   // reload keeps the node; written back below.
   const [node, setNode] = useState<NodeSel | null>(() => nodeFromUrl());
-  const [nodeTab, setNodeTab] = useState<NodeTab>("claude");
-  // What stat says about the node's file: does it exist yet, and which
-  // template renders it as code.
-  const [nodeStat, setNodeStat] = useState<{
-    file: string;
-    exists: boolean;
-    code: TemplateEntry | null;
-  } | null>(null);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
@@ -204,9 +215,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         setDir(started.dir);
         const st = await statPath(started.dir);
         if (!cancelled) {
-          const claude = st.templates?.find((t) => t.mode === "claude") ?? null;
-          setChatTpl(claude?.path ?? null);
-          setChatEntry(claude);
+          setChatTpl(
+            st.templates?.find((t) => t.mode === "claude")?.path ?? null,
+          );
         }
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
@@ -337,36 +348,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     if (url.href !== window.location.href) {
       window.history.replaceState(window.history.state, "", url);
     }
-    setNodeTab("claude");
   }, [node]);
-
-  // Stat the node's file: the code template that renders it, and whether it
-  // exists yet (a `?node=` restored before the first pull lands does not).
-  // Re-stat on every sync op until it does.
-  const syncSeq = sync ? sync.push_seq + sync.pull_seq : 0;
-  useEffect(() => {
-    if (!node || !dir) {
-      setNodeStat(null);
-      return;
-    }
-    const file = nodeFile(dir, node);
-    let cancelled = false;
-    void statPath(file)
-      .then((st) => {
-        if (cancelled) return;
-        setNodeStat({
-          file,
-          exists: !st.is_dir,
-          code: st.templates?.find((t) => t.mode === "code") ?? null,
-        });
-      })
-      .catch(() => {
-        if (!cancelled) setNodeStat({ file, exists: false, code: null });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [node, dir, syncSeq]);
 
   // After every push, tell the workbench to look upstream NOW — its own poll
   // is 10s, and the user just saved in the Code tab (or Claude just edited)
@@ -663,12 +645,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
               ref={frameRef}
               src={frameSrc}
               title={`Workbench: ${name}`}
-              /* The annotate-target mark, same contract as Preview.tsx's: the
-                 claude chat beside this frame finds it via parent.document and
-                 aims its comment mode here. The workbench is cross-origin, so
-                 the template's own overlay (its annXO branch) draws point
-                 notes over this frame's box rather than inside its DOM. */
-              data-fused-annotate-target=""
+              /* NO `data-fused-annotate-target` here, deliberately: the canvas
+                 chat gets this frame as a getter (`annotateTarget` below), and
+                 the explorer engine in the right pane finds its own content
+                 frame by that attribute — a marked workbench frame earlier in
+                 the DOM would win the query, a cross-origin frame the file
+                 chat can neither read nor pin into. */
               style={{ width: "100%", height: "100%", border: 0 }}
             />
           ) : (
@@ -713,29 +695,23 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           style={{
             flex: 1,
             minWidth: 0,
+            display: "flex",
+            flexDirection: "column",
             pointerEvents: dragging ? "none" : "auto",
           }}
         >
-          {chatHere && dir && node && nodeStat && nodeStat.file === nodeFile(dir, node) ? (
-            // A node is selected: the node sidebar (Claude on the node's file,
-            // or its Code tab) replaces the canvas chat. Keyed per node so a
-            // switch is a fresh chat boot on the new file.
-            <NodeSidebar
-              key={node.file}
-              file={nodeStat.file}
-              udfName={node.udfName}
-              exists={nodeStat.exists}
-              codeTemplate={nodeStat.code}
-              claudeTemplate={chatEntry}
-              tab={nodeTab}
-              onTab={setNodeTab}
-              onClose={() => {
-                sendSelect(null);
-                setNode(null);
-              }}
-              annotateTarget={() => frameRef.current}
-              chatKey={node.file}
-            />
+          {chatHere && dir && node ? (
+            // A node is selected: the explorer, open on the node's file —
+            // its preview (the code template, writable) and its Claude / Git
+            // sidebar, per-file sessions and all. Keyed per file so a node
+            // switch is a fresh open.
+            <div
+              key={nodeFile(dir, node)}
+              className="canvas-node-file"
+              style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
+            >
+              {renderFile(nodeFile(dir, node))}
+            </div>
           ) : chatHere && dir && !node ? (
             // key forces a REMOUNT when a fix run starts: the run id is read at
             // BOOT (the chat adopts the session and clears the param), so an
