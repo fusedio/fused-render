@@ -1653,6 +1653,135 @@
     }
   }
 
+  // ---- browser request wait time (Monitor > Network) ----------------------
+  // WebKit allows 6 HTTP/1.1 connections per host:port across ALL windows, so
+  // a request can sit in the browser's queue where the server never sees it.
+  // This document measures its own: per resource-timing entry for a same-origin
+  // /api/ URL, queue = requestStart - startTime. Only entries whose response
+  // carried `Server-Timing: fr-watch` (the server adds it while a dashboard is
+  // open) are collected, and a beacon goes out at most every 10 s while such an
+  // entry is under 15 s old, so an idle page pays one cheap observer callback
+  // and nothing else. MIRRORS frontend/src/platform/lib/netTiming.ts (this file
+  // has no bundler) and fused_render/netlog.py's route rule; the block between
+  // the markers is extracted and executed by netTiming-runtime.test.ts.
+  // <net-timing>
+  var NET_BEACON = "/api/system/net/client";
+  var NET_WATCH_MS = 15000;
+  var NET_FLUSH_MS = 10000;
+  function netNormalizeRoute(path) {
+    var bare = String(path).split("?")[0].split("#")[0];
+    return bare
+      .split("/")
+      .map(function (s) {
+        return s &&
+          (s.length > 40 ||
+            /^\d+$/.test(s) ||
+            /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(s) ||
+            /^[0-9a-fA-F]{8,}$/.test(s))
+          ? "{id}"
+          : s;
+      })
+      .join("/");
+  }
+  function netQueueMs(e) {
+    var sent = e.requestStart || e.connectStart || e.fetchStart || e.startTime;
+    return Math.max(0, sent - e.startTime);
+  }
+  function netHasWatch(e) {
+    var st = e.serverTiming || [];
+    for (var i = 0; i < st.length; i++) if (st[i].name === "fr-watch") return true;
+    return false;
+  }
+  function netCreateCollector(o) {
+    var routes = {};
+    var count = 0;
+    var lastWatch = -Infinity;
+    var lastFlush = -Infinity;
+    var timer = null;
+    function flush() {
+      var now = o.now();
+      if (now - lastWatch > NET_WATCH_MS) {
+        routes = {};
+        count = 0;
+        return false;
+      }
+      if (!count || now - lastFlush < NET_FLUSH_MS) return false;
+      var body = JSON.stringify({ page: o.page(), routes: routes });
+      routes = {};
+      count = 0;
+      lastFlush = now;
+      o.send(body);
+      return true;
+    }
+    function schedule() {
+      if (timer !== null) return;
+      timer = o.setTimer(function () {
+        timer = null;
+        flush();
+      }, Math.max(0, NET_FLUSH_MS - (o.now() - lastFlush)));
+    }
+    return {
+      flush: flush,
+      add: function (e) {
+        var u;
+        try {
+          u = new URL(e.name, o.origin);
+        } catch (err) {
+          return;
+        }
+        if (u.origin !== o.origin || u.pathname.indexOf("/api/") !== 0) return;
+        if (u.pathname === NET_BEACON || !netHasWatch(e)) return;
+        lastWatch = o.now();
+        var route = netNormalizeRoute(u.pathname);
+        var st = routes[route];
+        if (!st) {
+          if (count >= 200) return;
+          st = routes[route] = { count: 0, sum: 0, max: 0, samples: [] };
+          count++;
+        }
+        var q = Math.round(netQueueMs(e) * 10) / 10;
+        st.count++;
+        st.sum += q;
+        if (q > st.max) st.max = q;
+        if (st.samples.length >= 64) st.samples.shift();
+        st.samples.push(q);
+        schedule();
+      },
+    };
+  }
+  // </net-timing>
+  (function installNetTiming() {
+    if (typeof PerformanceObserver === "undefined" || !navigator.sendBeacon) return;
+    try {
+      var collector = netCreateCollector({
+        page: function () {
+          var p = ownQuery("path");
+          return p ? encodeURIComponent(p) : encodeURIComponent(window.location.pathname);
+        },
+        now: function () {
+          return performance.now();
+        },
+        send: function (body) {
+          try {
+            navigator.sendBeacon(NET_BEACON, body);
+          } catch (e) {
+            /* a beacon is best effort */
+          }
+        },
+        origin: window.location.origin,
+        setTimer: function (fn, ms) {
+          return setTimeout(fn, ms);
+        },
+      });
+      new PerformanceObserver(function (list) {
+        var es = list.getEntries();
+        for (var i = 0; i < es.length; i++) collector.add(es[i]);
+      }).observe({ type: "resource", buffered: true });
+    } catch (e) {
+      /* no resource timing here: no queue stats, nothing else changes */
+    }
+  })();
+
   function newCallId() {
     try {
       if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
