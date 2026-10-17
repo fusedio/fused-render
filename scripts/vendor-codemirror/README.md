@@ -25,3 +25,19 @@ the template.
 Read-only editing is achieved in the template via `CM.EditorState.readOnly.of(true)`
 and `CM.EditorView.editable.of(false)` — both facets ride on the exported
 `EditorState`/`EditorView`, so nothing extra needs exporting for that.
+
+## Probes
+
+- `code-editor-probe.mjs` — runs `code/template.html`'s helpers against the
+  **committed** bundle (no `node_modules` needed); driven by
+  `tests/test_code_template.py` (SPEC §51 CE-8). Its `everyLanguageBuilds`
+  case fails if a language the template lists is missing from `entry.js`.
+- `live-preview-probe.mjs` / `renumber-probe.mjs` — the markdown template's,
+  via `template-harness.mjs`; these need `node_modules`.
+
+## Bundle size
+
+Every view that loads this bundle pays for every grammar in it. Prefer a
+`@codemirror/legacy-modes` stream mode (re-exported through `legacyModes`,
+wrapped on demand by the code template) over a full Lezer package unless the
+language needs what only a syntax tree gives; see SPEC §51 CE-1.
