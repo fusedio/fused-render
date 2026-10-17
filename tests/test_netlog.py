@@ -297,3 +297,16 @@ def test_tracked_ws_counts_open_and_frames():
     asyncio.run(handler(FakeWS()))
     assert seen["open"][0]["open"] == 1 and seen["open"][0]["source"] == "shell /monitor"
     assert [s for s in netlog.get().sockets() if s["kind"] == "unit-test"] == []
+
+
+def test_source_name_does_no_filesystem_io(monkeypatch):
+    # runs on the event loop: a hung mount must not be able to stall it
+    def boom(*a, **k):
+        raise AssertionError("filesystem touched")
+    for name in ("isdir", "isfile", "exists", "realpath"):
+        monkeypatch.setattr(netlog.os.path, name, boom)
+    monkeypatch.setattr(netlog.os, "stat", boom)
+    assert netlog.source_name("/Users/x/apps/myapp/sub/view.html", None) == "sub"
+    assert netlog.source_name("/Users/x/apps/myapp/view.html", None) == "myapp"
+    assert netlog.source_name(None, "http://h/?path=/a/b/view.html") == "b"
+    assert netlog.source_name("/monitor", None) == "shell /monitor"

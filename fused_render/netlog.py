@@ -25,7 +25,6 @@ import os
 import re
 import threading
 import time
-from functools import lru_cache
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 RETAIN_S = 300.0
@@ -97,14 +96,11 @@ def client_key(addr: str, ua: str) -> str:
     return f"{addr or '?'} {ua_family(ua)}"
 
 
-@lru_cache(maxsize=512)
 def _app_name(page: str) -> str:
-    try:
-        from fused_render import jobs
-        app = jobs.app_for_page(page)
-    except Exception:  # noqa: BLE001 — a label must never fail a request
-        app = ""
-    return os.path.basename((app or page).rstrip("/\\")) or page
+    """The page file's folder name. Pure string work: this runs on the event
+    loop (middleware, websocket wrapper), so no stat, no project lookup."""
+    folder = os.path.dirname(page.rstrip("/\\"))
+    return os.path.basename(folder.rstrip("/\\")) or os.path.basename(page) or page
 
 
 def source_name(page: str | None, referer: str | None) -> str:
