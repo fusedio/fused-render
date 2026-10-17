@@ -101,6 +101,20 @@ async def api_system_activity_detail(pid: str = ""):
     return body
 
 
+@router.post("/api/system/record")
+async def api_system_record_start(x_fused: str | None = Header(default=None)):
+    if (error := _require_fused(x_fused)) is not None:
+        return error
+    from fused_render.server import perfrecord
+    return perfrecord._RECORDER.start()
+
+
+@router.get("/api/system/record")
+async def api_system_record_status():
+    from fused_render.server import perfrecord
+    return perfrecord._RECORDER.status()
+
+
 @router.get("/api/system/activity/history")
 def api_system_activity_history(pids: str = ""):
     try:
