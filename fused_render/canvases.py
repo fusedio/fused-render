@@ -83,6 +83,7 @@ import zipfile
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
+from fused_render import canvas_snapshot
 from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
 
 logger = logging.getLogger(__name__)
@@ -1276,6 +1277,17 @@ class _SyncManager:
         # the plain-attribute rule the class docstring states still holds.
         self._agent_run_id = ""
         self._agent_checked_at = 0.0
+        # Embed v3 snapshots (canvas_snapshot.py): the last compact state this
+        # manager applied from the embedded workbench, per hydration
+        # generation, and the (gen, seq) pairs already applied so a replayed
+        # snapshot (the embed re-posts its unacked queue after a reload) is
+        # acked again without a second write. Both reset when `gen` moves:
+        # a new generation means the embed re-hydrated from the server, so
+        # its base is whatever the clone held at that push, not our memory.
+        self._embed_gen = 0
+        self._embed_prev: dict | None = None
+        self._embed_applied: dict[tuple[int, int], dict] = {}
+        self.snapshot_seq = 0
         self._load_base()
         self._fingerprint = self._take_fingerprint()
         # A fresh manager (server restart, self-heal after a dropped
@@ -2220,6 +2232,42 @@ class _SyncManager:
                     with self._op_lock:
                         self._pull_if_remote_changed()
 
+    def apply_snapshot(self, gen: int, seq: int, body: dict) -> dict:
+        """Fold one embed snapshot into the clone (canvas_snapshot.apply_snapshot)
+        under _op_lock, so it never interleaves with a push or a pull writing
+        the same files. Returns the ack the page relays to the frame.
+
+        The watcher's fingerprint is deliberately NOT re-taken here: a write
+        that changed canvas.toml is a local edit like any other, and the next
+        scan arming the debounce is exactly how it reaches the server."""
+        if gen != self._embed_gen:
+            self._embed_gen = gen
+            self._embed_prev = None
+            self._embed_applied = {}
+        done = self._embed_applied.get((gen, seq))
+        if done is not None:
+            return done
+        new = canvas_snapshot.compact_state(body)
+        trash: list[str | None] = [None]
+
+        def backup(rel: str, data: bytes) -> None:
+            if trash[0] is None:
+                trash[0] = self._new_trash_dir()
+            self._backup_to(trash[0], rel, data)
+
+        result = canvas_snapshot.apply_snapshot(self.dir, new, self._embed_prev, backup=backup)
+        self._embed_prev = new
+        self.snapshot_seq += 1
+        ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
+               "upserted": result["upserted"], "deleted": result["deleted"],
+               "created": result["created"]}
+        self._embed_applied[(gen, seq)] = ack
+        # Bound the dedupe memory: the embed's queue is never deep.
+        if len(self._embed_applied) > 64:
+            for key in sorted(self._embed_applied)[:-32]:
+                del self._embed_applied[key]
+        return ack
+
     def status(self) -> dict:
         return {
             "name": self.name,
@@ -2313,6 +2361,59 @@ def api_canvases_sync_stop(body: dict = Body(...), x_fused: str | None = Header(
     if manager is not None:
         manager.stop()
     return {"ok": True, "stopped": manager is not None}
+
+
+@router.post("/api/canvases/snapshot")
+def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Apply one embedded-workbench snapshot to the clone (embed v3).
+
+    The workspace page relays the frame's `fused-embed-snapshot {gen, seq,
+    body}` here and posts the answer back as `-applied` / `-rejected`. The
+    embed never writes the server itself under v3 — this is how its canvas
+    edits reach disk, and the watcher's push is how they reach the server
+    (canvas_snapshot.py's docstring has the model).
+
+    Refuses with 409 `busy` (same shape as sync/push) when another sync leg
+    holds the lock for longer than MANUAL_PUSH_LOCK_WAIT_S; the embed keeps
+    the snapshot queued and re-posts on its next change or reload. A
+    malformed snapshot or a clone with no readable canvas.toml is a 400
+    `rejected` with the reason — the embed drops that one and the user sees
+    the reason on the chip.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    gen, seq, snapshot = body.get("gen"), body.get("seq"), body.get("body")
+    if not isinstance(gen, int) or not isinstance(seq, int) or not isinstance(snapshot, dict):
+        return _error("'gen' and 'seq' must be integers and 'body' an object")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return JSONResponse(
+            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+        return _busy(
+            "a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        with manager.pause_lock:
+            if manager.pause_count > 0:
+                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+        try:
+            return JSONResponse(manager.apply_snapshot(gen, seq, snapshot))
+        except FileNotFoundError:
+            return JSONResponse(
+                {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
+                 "error": "the clone has no canvas.toml yet"}, status_code=400)
+        except Exception as exc:  # noqa: BLE001 — the reason goes to the chip
+            logger.warning("canvas %s: snapshot %s/%s rejected: %s", name, gen, seq, exc)
+            return JSONResponse(
+                {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
+                 "error": f"{type(exc).__name__}: {exc}"}, status_code=400)
+    finally:
+        manager._op_lock.release()
 
 
 @router.post("/api/canvases/sync/push")
