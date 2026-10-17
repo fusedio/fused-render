@@ -39,6 +39,26 @@ def test_recording_writes_bundle_and_forces_watch(rec, tmp_path):
     assert {"groups", "sockets"} <= set(data)
 
 
+def test_recording_covers_the_whole_duration_on_a_fake_clock(tmp_path, monkeypatch):
+    monkeypatch.setattr(perfrecord, "recordings_dir", lambda: str(tmp_path / "perf-recordings"))
+    now = [100.0]
+    ends = []
+    monkeypatch.setattr(perfrecord, "_snapshot", lambda: {"at": now[0]})
+    monkeypatch.setattr(perfrecord, "_procs", lambda: ends.append(now[0]) or [])
+
+    def wait(s):
+        now[0] += s
+        return False
+
+    r = perfrecord.Recorder(duration=60.0, interval=2.0, clock=lambda: now[0], wait=wait)
+    r._deadline = now[0] + 60.0
+    r._run()
+    assert now[0] == 160.0                 # slept all the way to the deadline
+    assert ends[-1] == 160.0               # the end-state process list is taken there
+    snaps = json.load(open(os.path.join(rec_dir(tmp_path), r.list()[0]["name"])))["snapshots"]
+    assert len(snaps) == 30 and snaps[-1]["at"] == 158.0
+
+
 def rec_dir(tmp_path):
     return str(tmp_path / "perf-recordings")
 

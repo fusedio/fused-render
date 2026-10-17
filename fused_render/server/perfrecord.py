@@ -40,7 +40,12 @@ def _procs() -> list[dict]:
 
 
 class Recorder:
-    def __init__(self, duration: float = DURATION_S, interval: float = INTERVAL_S):
+    def __init__(self, duration: float = DURATION_S, interval: float = INTERVAL_S,
+                 clock=time.monotonic, wait=None):
+        # `clock`/`wait` are seams: a test drives a fake clock, and `wait`
+        # (default: the stop event's, so stop() still cuts a sleep short).
+        self._clock = clock
+        self._wait = wait
         self.duration = duration
         self.interval = interval
         self._lock = threading.Lock()
@@ -53,7 +58,7 @@ class Recorder:
             if self._thread is not None and self._thread.is_alive():
                 return {**self.status(), "already": True}
             self._stop.clear()
-            self._deadline = time.monotonic() + self.duration
+            self._deadline = self._clock() + self.duration
             netlog.get().force_watch(self.duration + 5)
             self._thread = threading.Thread(target=self._run, name="perf-record", daemon=True)
             self._thread.start()
@@ -73,7 +78,7 @@ class Recorder:
     def status(self) -> dict:
         rec = self._recording()
         return {"recording": rec,
-                "seconds_left": round(max(0.0, self._deadline - time.monotonic()), 1) if rec else 0,
+                "seconds_left": round(max(0.0, self._deadline - self._clock()), 1) if rec else 0,
                 "dir": recordings_dir(), "recordings": self.list()}
 
     def list(self) -> list[dict]:
@@ -96,9 +101,16 @@ class Recorder:
         procs_start = self._safe(_procs, [])
         while not self._stop.is_set():
             snapshots.append(self._safe(_snapshot, {"error": "snapshot failed"}))
-            if time.monotonic() + self.interval >= self._deadline:
+            wait = self._wait or self._stop.wait
+            left = self._deadline - self._clock()
+            if left <= self.interval:
+                # The last interval is shorter than a full one: sleep out what
+                # remains so the end state is taken AT the deadline and a 60 s
+                # recording covers 60 s, not 60 minus one interval.
+                if left > 0:
+                    wait(left)
                 break
-            self._stop.wait(self.interval)
+            wait(self.interval)
         log = netlog.get()
         bundle = {
             "started": began, "ended": time.time(), "snapshots": snapshots,
