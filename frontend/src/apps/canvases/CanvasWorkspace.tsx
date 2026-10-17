@@ -304,11 +304,20 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   }, [seedToken, sendLock, sendSelect, locked]);
 
   // Mirror the node onto this page's URL so a reload lands on it, and drop the
-  // chat ids when the node CHANGES: `session_id`/`run` belong to whichever
-  // chat the URL names (one ChatMount at a time, both on "url" params), and a
-  // node switch is a different chat. The previous chat's session is one click
-  // away in its own Recent list.
+  // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
+  // chat the URL names (one ChatMount at a time, both on "url" params), and
+  // canvas → node, node → canvas and node → node are all a different chat.
+  // The previous chat's session is one click away in its own Recent list.
+  //
+  // Every transition clears, not only node → node: with canvas → node left
+  // alone, the node sidebar's fresh ChatMount read the canvas chat's
+  // `session_id` off the URL and RESUMED it — a folder session shown under a
+  // node, which the node's Recent list (filed by the transcript's leading
+  // app-state `entry`, which a folder chat never has) could not find again
+  // after the next remount. The mount itself is exempt: a reload lands on
+  // `?node=` + `session_id` together and must resume that node's chat.
   const prevNodeKeyRef = useRef<string | null>(null);
+  const nodeEffectRanRef = useRef(false);
   useEffect(() => {
     const key = node ? node.file : null;
     const url = new URL(window.location.href);
@@ -319,10 +328,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       url.searchParams.delete("node");
       url.searchParams.delete("node_file");
     }
-    if (prevNodeKeyRef.current !== null && prevNodeKeyRef.current !== key) {
+    if (nodeEffectRanRef.current && prevNodeKeyRef.current !== key) {
       url.searchParams.delete("session_id");
       url.searchParams.delete("run");
     }
+    nodeEffectRanRef.current = true;
     prevNodeKeyRef.current = key;
     if (url.href !== window.location.href) {
       window.history.replaceState(window.history.state, "", url);
