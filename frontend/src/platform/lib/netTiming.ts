@@ -35,6 +35,15 @@ export function normalizeRoute(path: string): string {
     .join("/");
 }
 
+/** The shell's page identity, by the server's netlog.source_name rule: the
+ *  `path` query param (how the shell addresses a file) when present, else the
+ *  pathname; percent-encoded the way runtime.js encodes X-Fused-Page, so the
+ *  beacon's (source, route) keys join the server groups. */
+export function shellPageIdentity(loc: { search: string; pathname: string }): string {
+  const p = new URLSearchParams(loc.search).get("path");
+  return encodeURIComponent(p || loc.pathname);
+}
+
 export interface TimingLike {
   name: string;
   startTime: number;

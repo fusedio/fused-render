@@ -6,6 +6,7 @@ import {
   FLUSH_MS,
   NetCollector,
   hasWatch,
+  shellPageIdentity,
   normalizeRoute,
   queueMs,
   serverMs,
@@ -121,4 +122,12 @@ test("samples are capped", () => {
   h.c.flush();
   expect(h.sent[0].routes["/api/fs/list"].samples).toHaveLength(64);
   expect(h.sent[0].routes["/api/fs/list"].count).toBe(100);
+});
+
+test("shell page identity prefers the path param, else the pathname", () => {
+  expect(shellPageIdentity({ search: "?path=/a%20b/app/x.html&q=1", pathname: "/" })).toBe(
+    encodeURIComponent("/a b/app/x.html")
+  );
+  expect(shellPageIdentity({ search: "", pathname: "/monitor" })).toBe("%2Fmonitor");
+  expect(shellPageIdentity({ search: "?tab=net", pathname: "/monitor" })).toBe("%2Fmonitor");
 });
