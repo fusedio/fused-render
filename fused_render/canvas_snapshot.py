@@ -205,6 +205,14 @@ def compact_state(body: dict) -> dict:
         if not isinstance(slug, str) or not isinstance(file, str) or "/" in file:
             continue
         files[slug] = file
+        # Canvas visibility lives on the UDF row (`canvasVisible` →
+        # `is_visible`); `data.config.visible` is its serialization-only
+        # mirror, which the server's import reads. Take the mirror when the
+        # node carries it, the row otherwise — never leave it unset when the
+        # workbench said something.
+        row = nodes.get(slug)
+        if row is not None and "visible" not in row and isinstance(udf.get("is_visible"), bool):
+            row["visible"] = udf["is_visible"]
         udf_body = udf.get("udf_body")
         if udf.get("id") in (None, "") and isinstance(udf_body, str):
             new_files.append({"file": file, "body": udf_body})

@@ -275,8 +275,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       };
       for (let attempt = 0; ; attempt++) {
         try {
-          await applySnapshot(name, gen, seq, body);
-          post({ type: "fused-embed-snapshot-applied", gen, seq });
+          const ack = await applySnapshot(name, gen, seq, body);
+          post({ type: "fused-embed-snapshot-applied", gen, seq, push_seq: ack.push_seq });
           return;
         } catch (e) {
           const status = (e as { status?: number }).status;

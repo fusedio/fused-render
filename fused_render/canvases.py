@@ -139,6 +139,8 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 # watcher's own legs are what hold this lock, and they finish in seconds
 # outside a stuck network call.
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
+# How long /api/canvases/snapshot waits on _op_lock before answering 409.
+SNAPSHOT_LOCK_WAIT_S = 1.0
 
 # Fused environment the canvases feature targets. One knob drives BOTH the
 # workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
@@ -2260,9 +2262,14 @@ class _SyncManager:
         result = canvas_snapshot.apply_snapshot(self.dir, new, self._embed_prev, backup=backup)
         self._embed_prev = new
         self.snapshot_seq += 1
+        # `push_seq` is the counter BEFORE the push that will carry this write:
+        # the embed applies a re-hydrate only for a remote-changed whose
+        # push_seq is greater than the largest it was acked with, so a
+        # refetch can never show it the server state from before its own edit
+        # (the delete-then-it-reappears race).
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "upserted": result["upserted"], "deleted": result["deleted"],
-               "created": result["created"]}
+               "created": result["created"], "push_seq": self.push_seq}
         self._embed_applied[(gen, seq)] = ack
         # Bound the dedupe memory: the embed's queue is never deep.
         if len(self._embed_applied) > 64:
@@ -2396,7 +2403,10 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
         return JSONResponse(
             {"error": f"canvas {name!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
-    if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+    # A short wait, not sync/push's 5 s: the page retries a 409 on its own
+    # (SNAPSHOT_BUSY_RETRIES), and holding the request open for the length of
+    # a pull would only delay the ack past the chip's "reconnecting" line.
+    if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
         return _busy(
             "a sync operation is in flight for this canvas; try again in a moment")
     try:

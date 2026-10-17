@@ -111,7 +111,7 @@ export const applySnapshot = (
   seq: number,
   body: Record<string, unknown>,
 ) =>
-  postJson<{ ok: boolean; gen: number; seq: number; changed: boolean }>(
+  postJson<{ ok: boolean; gen: number; seq: number; changed: boolean; push_seq: number }>(
     "/api/canvases/snapshot",
     { name, gen, seq, body },
   );
