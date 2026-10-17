@@ -314,6 +314,19 @@ def classify(pid: int, args: list[str] | None) -> Owner | None:
     return None
 
 
+def classify_template(args: list[str] | None) -> Owner | None:
+    """`classify(...)` narrowed to what a caller needing only a template daemon
+    wants: the same answer for a template, None for everything else, without the
+    Claude session-name lookup (a file read) `classify` does for `claude`."""
+    if not args:
+        return None
+    exe = _basename(args[0])
+    if exe == "claude" or (_is_python(exe) and any(_basename(a) == "_child.py" for a in args[1:3])):
+        return None
+    kind, label = describe(args)
+    return Owner("template", label, {}) if kind == "template" else None
+
+
 # ---- Claude CLI count ---------------------------------------------------------
 
 def claude_summary(clis: list[dict], procs: list[dict]) -> dict:

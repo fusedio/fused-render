@@ -325,14 +325,15 @@ class Sampler:
                   "memBytes": sum(r["memBytes"] or 0 for r in rows)}
 
         whole = self._sample_all(t, now, samples, rows, record) if self._all_active else None
-        clis = [{"pid": r["pid"], "ppid": r["ppid"], "label": r["label"], "cpu": r["cpuPct"],
-                 "mem": r["memBytes"], "fused": True}
-                for r in rows if r["kind"] == "claude" and self._is_claude_exe(r["pid"], samples)]
-        claude = labels.claude_summary(clis, [
-            {"pid": r["pid"], "ppid": r["ppid"], "label": r["label"], "cpu": r["cpuPct"],
-             "mem": r["memBytes"]} for r in rows])
         if whole is not None:
             claude = whole[4]
+        else:
+            clis = [{"pid": r["pid"], "ppid": r["ppid"], "label": r["label"], "cpu": r["cpuPct"],
+                     "mem": r["memBytes"], "fused": True}
+                    for r in rows if r["kind"] == "claude" and self._is_claude_exe(r["pid"], samples)]
+            claude = labels.claude_summary(clis, [
+                {"pid": r["pid"], "ppid": r["ppid"], "label": r["label"], "cpu": r["cpuPct"],
+                 "mem": r["memBytes"]} for r in rows])
 
         with self._lock:
             readings = samples
@@ -396,9 +397,7 @@ class Sampler:
             f = fused.get(pid)
             daemon = None
             if f is None and args and ident.ppid == 1 and ident.uid == my_uid:
-                daemon = labels.classify(pid, args)
-                if daemon is not None and daemon.kind != "template":
-                    daemon = None
+                daemon = labels.classify_template(args)
             rows.append({
                 "pid": pid, "ppid": ident.ppid or None, "user": user_name(ident.uid),
                 "command": command,

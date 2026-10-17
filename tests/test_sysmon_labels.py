@@ -86,3 +86,17 @@ def test_claude_summary_splits_fused_and_other_and_sums_subtrees():
 def test_claude_summary_survives_a_ppid_cycle():
     a, b = _p(1, 2, 1.0, 1), _p(2, 1, 1.0, 1)
     assert labels.claude_summary([a], [a, b])["total"] == 1
+
+
+def test_classify_template_matches_classify_for_templates_and_skips_the_session_lookup(tmp_path, monkeypatch):
+    core = tmp_path / "core"
+    (core / "map").mkdir(parents=True)
+    monkeypatch.setenv("FUSED_RENDER_CORE_TEMPLATES", str(core))
+    monkeypatch.setattr(labels, "_claude_session_name",
+                        lambda pid: (_ for _ in ()).throw(AssertionError("session lookup")))
+    args = ["/usr/bin/python3.12", str(core / "map" / "daemon.py")]
+    owner = labels.classify_template(args)
+    assert owner.kind == "template" and owner.label == "map template › daemon"
+    assert labels.classify_template(["/usr/local/bin/claude", "--x"]) is None
+    assert labels.classify_template(["/usr/bin/python3", "/tmp/_child.py"]) is None
+    assert labels.classify_template(["/bin/ls"]) is None and labels.classify_template(None) is None
