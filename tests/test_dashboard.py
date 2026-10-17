@@ -60,6 +60,25 @@ def test_sections_are_isolated(monkeypatch):
     assert out["verdict"]["level"] in ("ok", "warn", "bad")
 
 
+@pytest.fixture(autouse=True)
+def _stop_global_sampler():
+    """The dashboard polls the process-wide sysmon sampler, whose daemon loop
+    outlives the test and then shows up in the next file's thread counts
+    (test_system_activity counts "sysmon-sampler" threads). Stop and drop it."""
+    from fused_render.sysmon import sampler as smp
+    yield
+    s = smp._SAMPLER
+    smp._SAMPLER = None
+    if s is None:
+        return
+    if dashboard._tick in s.tick_hooks:
+        s.tick_hooks.remove(dashboard._tick)
+    s.idle_after = 0
+    s._wake.set()
+    if s._thread is not None:
+        s._thread.join(timeout=5)
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     fdir = tmp_path / "Fused"
