@@ -1069,17 +1069,6 @@ export default function App({ config }: { config: Config }) {
           <CanvasWorkspace
             key={canvasWorkspaceName}
             name={canvasWorkspaceName}
-            // The explorer's file engine for a selected node: the shell's own
-            // StatView (stat → preview → Claude/Git sidebar), keyed like every
-            // fs route so a different file is a fresh open.
-            renderFile={(fsPath) => (
-              <StatView
-                key={epoch + ":" + fsPath}
-                fsPath={fsPath}
-                epoch={epoch}
-                home={config.home}
-              />
-            )}
           />
         </Suspense>
       </div>
