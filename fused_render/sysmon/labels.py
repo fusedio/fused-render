@@ -312,3 +312,38 @@ def classify(pid: int, args: list[str] | None) -> Owner | None:
     if kind == "template":
         return Owner("template", label, {})
     return None
+
+
+# ---- Claude CLI count ---------------------------------------------------------
+
+def claude_summary(clis: list[dict], procs: list[dict]) -> dict:
+    """Roll the live Claude CLIs up for the Monitor. `clis` are the CLI
+    processes themselves, `procs` every process considered (to find each CLI's
+    subtree). Rows are `{pid, ppid, label, cpu, mem, fused}`; cpu may be None."""
+    children: dict[int, list[dict]] = {}
+    for p in procs:
+        children.setdefault(p.get("ppid") or 0, []).append(p)
+
+    def subtree(root: dict) -> tuple[float, int]:
+        cpu, mem, seen, stack = 0.0, 0, {root["pid"]}, [root]
+        while stack:
+            p = stack.pop()
+            cpu += p.get("cpu") or 0.0
+            mem += p.get("mem") or 0
+            for c in children.get(p["pid"], ()):
+                if c["pid"] not in seen:
+                    seen.add(c["pid"])
+                    stack.append(c)
+        return cpu, mem
+
+    top, cpu_sum, mem_sum = [], 0.0, 0
+    for c in clis:
+        cpu, mem = subtree(c)
+        cpu_sum += cpu
+        mem_sum += mem
+        top.append({"pid": c["pid"], "label": c.get("label") or "Claude",
+                    "mem": mem, "cpu": round(cpu, 1)})
+    top.sort(key=lambda r: -r["mem"])
+    fused = sum(1 for c in clis if c.get("fused"))
+    return {"total": len(clis), "fused": fused, "other": len(clis) - fused,
+            "mem_bytes": mem_sum, "cpu_pct": round(cpu_sum, 1), "top": top[:5]}

@@ -65,3 +65,24 @@ def test_engine_under_templates_dir_is_named_template_engine(tmp_path, monkeypat
     assert labels.engine_label(str(core / "map"), "e1") == "map template engine"
     assert labels.engine_label("/w/app", "e1") == "Engine: app"
     assert labels.engine_label("", "e1") == "Engine: e1"
+
+
+def _p(pid, ppid, cpu, mem, label="Claude", fused=True):
+    return {"pid": pid, "ppid": ppid, "label": label, "cpu": cpu, "mem": mem, "fused": fused}
+
+
+def test_claude_summary_splits_fused_and_other_and_sums_subtrees():
+    clis = [_p(10, 1, 5.0, 100, "Claude: a"), _p(20, 1, 1.0, 50, "Claude", fused=False)]
+    procs = clis + [_p(11, 10, 20.0, 400, "node"), _p(12, 11, 10.0, 300, "tool"),
+                    _p(21, 20, None, 25, "node")]
+    got = labels.claude_summary(clis, procs)
+    assert (got["total"], got["fused"], got["other"]) == (2, 1, 1)
+    assert got["mem_bytes"] == 100 + 400 + 300 + 50 + 25
+    assert got["cpu_pct"] == 5.0 + 20.0 + 10.0 + 1.0
+    assert got["top"][0] == {"pid": 10, "label": "Claude: a", "mem": 800, "cpu": 35.0}
+    assert labels.claude_summary([], [])["total"] == 0
+
+
+def test_claude_summary_survives_a_ppid_cycle():
+    a, b = _p(1, 2, 1.0, 1), _p(2, 1, 1.0, 1)
+    assert labels.claude_summary([a], [a, b])["total"] == 1
