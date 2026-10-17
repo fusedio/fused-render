@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   FLOW_HIGH_BYTES,
   FLOW_LOW_BYTES,
+  REPAUSE_MS,
   createFlowControl,
 } from "@platform/lib/terminalFlowControl";
 
@@ -62,5 +63,51 @@ describe("terminal flow control", () => {
     // Fresh accounting: a new flood pauses again.
     fc.chunk(FLOW_HIGH_BYTES + 1);
     expect(calls).toEqual(["pause", "pause"]);
+  });
+
+  describe("re-pause after the server's pause expiry", () => {
+    function clocked() {
+      const calls: string[] = [];
+      let t = 1000;
+      const fc = createFlowControl(
+        { pause: () => calls.push("pause"), resume: () => calls.push("resume") },
+        { now: () => t },
+      );
+      return { calls, fc, advance: (ms: number) => (t += ms) };
+    }
+
+    test("still above HIGH past REPAUSE_MS sends a second pause", () => {
+      const { calls, fc, advance } = clocked();
+      fc.chunk(FLOW_HIGH_BYTES + 1);
+      advance(REPAUSE_MS);
+      fc.chunk(10);
+      expect(calls).toEqual(["pause", "pause"]);
+      advance(REPAUSE_MS - 1);
+      fc.chunk(10);
+      expect(calls).toEqual(["pause", "pause"]);
+    });
+
+    test("under REPAUSE_MS sends none", () => {
+      const { calls, fc, advance } = clocked();
+      fc.chunk(FLOW_HIGH_BYTES + 1);
+      advance(REPAUSE_MS - 1);
+      fc.chunk(10);
+      expect(calls).toEqual(["pause"]);
+    });
+
+    test("REPAUSE_MS stays below the server's 5 s expiry", () => {
+      expect(REPAUSE_MS).toBeLessThan(5000);
+    });
+
+    test("draining below LOW resumes once and never re-pauses", () => {
+      const { calls, fc, advance } = clocked();
+      const a = fc.chunk(FLOW_HIGH_BYTES + 1);
+      advance(REPAUSE_MS * 3);
+      a();
+      expect(calls).toEqual(["pause", "resume"]);
+      advance(REPAUSE_MS * 3);
+      fc.chunk(10);
+      expect(calls).toEqual(["pause", "resume"]);
+    });
   });
 });
