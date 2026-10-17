@@ -62,9 +62,9 @@ def redact_argv(argv: list[str]) -> list[str]:
 
 @router.get("/api/system/activity")
 def api_system_activity(scope: str = "fused"):
-    # The chip polls this: reading it is "someone is watching" for the request
-    # timing too (netlog.WATCH_S), not only for the sampler.
-    netlog.get().touch_watch()
+    # The chip polls this every second even when closed, so it must NOT set the
+    # netlog "watched" flag (that turns on Server-Timing headers and browser
+    # queue reports). Only the dashboard and net endpoints do.
     body = sysmon_sampler.get_sampler().poll("all" if scope == "all" else "fused")
     for row in body["procs"]:
         if "args" in row:

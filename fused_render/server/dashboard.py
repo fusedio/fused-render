@@ -530,13 +530,18 @@ def build() -> dict:
 
 
 _compact: tuple[float, dict] | None = None
+_compact_lock = threading.Lock()
+COMPACT_TTL_S = 10.0
 
 
-def compact_verdict(ttl: float = 2.0) -> dict:
-    """`{level, headline}` for the chip, from a dashboard at most `ttl` s old."""
+def compact_verdict(ttl: float = COMPACT_TTL_S) -> dict:
+    """`{level, headline}` for the chip, from a dashboard at most `ttl` s old.
+    Single-flight: concurrent pollers wait on one build and share it, so a
+    closed chip polling every second costs at most one build per `ttl`."""
     global _compact
-    now = time.monotonic()
-    if _compact is None or now - _compact[0] >= ttl:
-        v = build()["verdict"]
-        _compact = (now, {"level": v["level"], "headline": v["headline"]})
-    return _compact[1]
+    with _compact_lock:
+        now = time.monotonic()
+        if _compact is None or now - _compact[0] >= ttl:
+            v = build()["verdict"]
+            _compact = (time.monotonic(), {"level": v["level"], "headline": v["headline"]})
+        return _compact[1]

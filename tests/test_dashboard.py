@@ -343,3 +343,32 @@ def test_build_polls_the_sampler_once(monkeypatch):
     monkeypatch.setattr(dashboard, "_sampler_payload", payload)
     dashboard.build()
     assert n["c"] == 1
+
+
+def test_polling_activity_does_not_set_watched(client):
+    from fused_render import netlog
+    netlog.get()._last_watch = netlog.get()._forced_until = float("-inf")
+    assert not netlog.get().watched()
+    assert client.get("/api/system/activity").status_code == 200
+    assert not netlog.get().watched()
+
+
+def test_compact_verdict_is_single_flight_with_ttl(monkeypatch):
+    import threading
+    n = {"c": 0}
+
+    def fake_build():
+        n["c"] += 1
+        time.sleep(0.05)
+        return {"verdict": {"level": "ok", "headline": ""}}
+    monkeypatch.setattr(dashboard, "build", fake_build)
+    monkeypatch.setattr(dashboard, "_compact", None)
+    ts = [threading.Thread(target=dashboard.compact_verdict) for _ in range(8)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert n["c"] == 1
+    dashboard.compact_verdict()
+    assert n["c"] == 1  # inside the 10 s TTL
+    dashboard._compact = (time.monotonic() - 11, dashboard._compact[1])
+    dashboard.compact_verdict()
+    assert n["c"] == 2
