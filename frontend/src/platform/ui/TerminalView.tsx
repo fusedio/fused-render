@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import { TerminalSession, type TerminalStatus } from "@platform/lib/terminalSession";
@@ -158,6 +159,23 @@ export default function TerminalView({
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(el);
+      // GPU renderer. xterm 6 dropped the canvas renderer, so without this the
+      // pane paints through the DOM renderer, which falls behind on big
+      // bursts (one element per cell run, restyled on every frame). WebGL is
+      // an addon that must load AFTER `open()`. Any failure leaves the DOM
+      // renderer in place: the constructor/`loadAddon` throw when WebGL2 is
+      // unavailable (headless, a blocklisted GPU, happy-dom in tests), and a
+      // lost context later disposes the addon, which hands painting back to
+      // the DOM renderer. The repaint watchdog below stays: it only calls
+      // `term.refresh()`, which works with either renderer.
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+        teardown.push(() => webgl.dispose());
+      } catch (err) {
+        console.warn("terminal: WebGL renderer unavailable, using the DOM renderer", err);
+      }
       if (autoFocus) term.focus();
       term.attachCustomKeyEventHandler((e) => {
         if (isAskSelectionChord(e, isMac) && term.hasSelection() && onAskSelectionRef.current) {
