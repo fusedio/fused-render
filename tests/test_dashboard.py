@@ -371,25 +371,145 @@ def test_polling_activity_does_not_set_watched(client):
     assert not netlog.get().watched()
 
 
-def test_compact_verdict_is_single_flight_with_ttl(monkeypatch):
+def _wait_refresh(timeout=5.0):
+    """Block until the background refresh thread (if any) has finished."""
     import threading
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if not any(t.name == "dashboard-verdict" and t.is_alive() for t in threading.enumerate()):
+            return
+        time.sleep(0.005)
+    raise AssertionError("verdict refresh did not finish")
+
+
+@pytest.fixture()
+def compact_state(monkeypatch):
+    # An earlier test's request (the activity endpoint) may have left a real
+    # refresh running in this process: let it land before taking the state.
+    _wait_refresh()
+    monkeypatch.setattr(dashboard, "_compact", None)
+    monkeypatch.setattr(dashboard, "_compact_refreshing", False)
+    yield
+    _wait_refresh()
+
+
+def test_compact_verdict_first_call_is_unknown_and_never_builds_in_the_request(monkeypatch, compact_state):
+    import threading
+    gate = threading.Event()
+    seen = {"thread": None, "n": 0}
+
+    def slow_build():
+        seen["n"] += 1
+        seen["thread"] = threading.current_thread()
+        gate.wait(5)  # a request that waited on this would hang the test
+        return {"verdict": {"level": "warn", "headline": "slow"}}
+    monkeypatch.setattr(dashboard, "build_for_verdict", slow_build)
+    monkeypatch.setattr(dashboard, "build", lambda: pytest.fail("compact_verdict must not call build()"))
+    t0 = time.monotonic()
+    assert dashboard.compact_verdict() == {"level": "unknown", "headline": ""}
+    assert time.monotonic() - t0 < 1.0           # returned while the build is still blocked
+    gate.set()
+    _wait_refresh()
+    assert seen["thread"] is not threading.main_thread() and seen["thread"].daemon
+    assert dashboard.compact_verdict()["headline"] == "slow"
+
+
+def test_compact_verdict_concurrent_callers_start_one_refresh(monkeypatch, compact_state):
+    import threading
+    gate = threading.Event()
     n = {"c": 0}
 
-    def fake_build():
+    def fake():
         n["c"] += 1
-        time.sleep(0.05)
+        gate.wait(5)
         return {"verdict": {"level": "ok", "headline": ""}}
-    monkeypatch.setattr(dashboard, "build", fake_build)
-    monkeypatch.setattr(dashboard, "_compact", None)
-    ts = [threading.Thread(target=dashboard.compact_verdict) for _ in range(8)]
+    monkeypatch.setattr(dashboard, "build_for_verdict", fake)
+    results = []
+    ts = [threading.Thread(target=lambda: results.append(dashboard.compact_verdict())) for _ in range(8)]
     [t.start() for t in ts]
-    [t.join() for t in ts]
+    [t.join() for t in ts]                        # every caller returned with the build still blocked
+    assert len(results) == 8 and all(r["level"] == "unknown" for r in results)
+    gate.set()
+    _wait_refresh()
     assert n["c"] == 1
+
+
+def test_compact_verdict_stale_cache_serves_old_and_refreshes_once(monkeypatch, compact_state):
+    n = {"c": 0}
+
+    def fake():
+        n["c"] += 1
+        return {"verdict": {"level": "bad", "headline": f"v{n['c']}"}}
+    monkeypatch.setattr(dashboard, "build_for_verdict", fake)
     dashboard.compact_verdict()
-    assert n["c"] == 1  # inside the 10 s TTL
+    _wait_refresh()
+    assert n["c"] == 1
+    assert dashboard.compact_verdict()["headline"] == "v1"
+    assert n["c"] == 1                            # inside the 10 s TTL: no refresh
     dashboard._compact = (time.monotonic() - 11, dashboard._compact[1])
-    dashboard.compact_verdict()
+    assert dashboard.compact_verdict()["headline"] == "v1"   # stale value served at once
+    _wait_refresh()
     assert n["c"] == 2
+    assert dashboard.compact_verdict()["headline"] == "v2"
+
+
+def test_compact_verdict_failed_refresh_keeps_the_last_verdict_and_retries(monkeypatch, compact_state):
+    calls = {"c": 0}
+
+    def flaky():
+        calls["c"] += 1
+        if calls["c"] == 2:
+            raise RuntimeError("boom")
+        return {"verdict": {"level": "warn", "headline": "w"}}
+    monkeypatch.setattr(dashboard, "build_for_verdict", flaky)
+    dashboard.compact_verdict()
+    _wait_refresh()
+    dashboard._compact = (time.monotonic() - 11, dashboard._compact[1])
+    assert dashboard.compact_verdict()["headline"] == "w"
+    _wait_refresh()                               # this refresh raised
+    assert dashboard._compact_refreshing is False
+    assert calls["c"] == 2
+    assert dashboard.compact_verdict()["headline"] == "w"   # still stale: the next poll retries
+    _wait_refresh()
+    assert calls["c"] == 3
+
+
+def test_build_for_verdict_reads_only_the_sections_the_rules_use(monkeypatch):
+    called = []
+
+    def stub(name):
+        return lambda *_: called.append(name) or {}
+    monkeypatch.setattr(dashboard, "_VERDICT_READERS", {k: stub(k) for k in dashboard._VERDICT_READERS})
+    out = dashboard.build_for_verdict()
+    assert set(called) == {"net", "server", "memory", "cpu", "claude", "index", "disk", "errors"}
+    assert not {"jobs", "calls", "ai", "installs", "baseline", "timeline"} & set(out)
+    assert "verdict" in out
+
+
+def test_verdict_readers_cover_every_section_the_rules_read():
+    """verdict.py reads d.get(<section>) for exactly these names."""
+    import re
+    src = open(dashboard.sysmon_verdict.__file__, encoding="utf-8").read()
+    read = set(re.findall(r'd\.get\("(\w+)"\)', src))
+    assert read <= set(dashboard._VERDICT_READERS)
+
+
+def test_light_verdict_readers_skip_the_expensive_work(monkeypatch, tmp_path):
+    monkeypatch.setattr(dashboard, "server_log_errors", lambda *_: pytest.fail("log tail"))
+    monkeypatch.setattr(dashboard, "_crashes", lambda: pytest.fail("crash listing"))
+    monkeypatch.setattr(dashboard, "_disk_sizes", lambda: pytest.fail("dir walk"))
+    monkeypatch.setattr(health, "read_outages", lambda n: [{"t_down": time.time() - 5}])
+    monkeypatch.setattr("fused_render.logs.log_dir", lambda: str(tmp_path))
+    e = dashboard._errors_for_verdict()
+    assert 0 <= e["last_outage_age_s"] < 60
+    assert dashboard._disk_for_verdict()["free_bytes"] > 0
+
+
+def test_activity_verdict_is_unknown_when_the_dashboard_raises(client, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("x")
+    monkeypatch.setattr(dashboard, "compact_verdict", boom)
+    assert client.get("/api/system/activity").json()["verdict"] == {"level": "unknown", "headline": ""}
 
 
 def test_trail_reader_spans_more_than_one_megabyte(tmp_path, monkeypatch):

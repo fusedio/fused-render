@@ -518,12 +518,16 @@ async def build_async() -> dict:
 
 
 def build() -> dict:
+    return _assemble(SECTIONS)
+
+
+def _assemble(readers: dict) -> dict:
     out: dict = {"t": time.time()}
     try:
         payload = _sampler_payload()  # one poll per build, shared by the three readers
     except Exception:  # noqa: BLE001 — each reader then reports its own error
         payload = None
-    for name, fn in SECTIONS.items():
+    for name, fn in readers.items():
         try:
             out[name] = fn(payload) if name in _PAYLOAD_SECTIONS and payload is not None else fn()
         except Exception as e:  # noqa: BLE001 — one failing source never fails the page
@@ -533,19 +537,77 @@ def build() -> dict:
     return out
 
 
+def _errors_for_verdict() -> dict:
+    """Only what the verdict's outage rule reads: no log tail, crash-dir listing
+    or 24 h trail scan."""
+    outages = health.read_outages(20)
+    last = max((o.get("t_down") or 0 for o in outages), default=0)
+    return {"outages": outages, "last_outage_age_s": round(time.time() - last, 1) if last else None}
+
+
+def _disk_for_verdict() -> dict:
+    """Free space only (the verdict's disk rule): the cached dir-size walks
+    are the dashboard's, not the verdict's."""
+    from fused_render.logs import log_dir
+    path = log_dir()
+    os.makedirs(path, exist_ok=True)
+    return {"free_bytes": shutil.disk_usage(path).free}
+
+
+# The sections verdict.py's rules read (net, server, memory, cpu, claude, index,
+# disk, errors), each at the weight the rules need. Jobs, calls, ai, installs,
+# baseline and timeline feed only the Overview tiles, so the chip's verdict
+# never pays for them.
+_VERDICT_READERS = {
+    **{name: SECTIONS[name] for name in ("net", "server", "memory", "cpu", "claude", "index")},
+    "disk": _disk_for_verdict, "errors": _errors_for_verdict,
+}
+
+
+def build_for_verdict() -> dict:
+    """A dashboard with only the inputs the verdict reads, and its verdict."""
+    return _assemble(_VERDICT_READERS)
+
+
 _compact: tuple[float, dict] | None = None
-_compact_lock = threading.Lock()
+_compact_refreshing = False
+_compact_lock = threading.Lock()  # guards the two names above, never a build
 COMPACT_TTL_S = 10.0
+UNKNOWN_VERDICT = {"level": "unknown", "headline": ""}
+
+
+def _refresh_compact() -> None:
+    global _compact, _compact_refreshing
+    try:
+        v = build_for_verdict()["verdict"]
+        fresh = (time.monotonic(), {"level": v["level"], "headline": v["headline"]})
+        with _compact_lock:
+            _compact = fresh
+    except Exception:  # noqa: BLE001 — keep the last verdict; the next poll retries
+        logger.debug("dashboard: compact verdict refresh failed", exc_info=True)
+    finally:
+        with _compact_lock:
+            _compact_refreshing = False
 
 
 def compact_verdict(ttl: float = COMPACT_TTL_S) -> dict:
-    """`{level, headline}` for the chip, from a dashboard at most `ttl` s old.
-    Single-flight: concurrent pollers wait on one build and share it, so a
-    closed chip polling every second costs at most one build per `ttl`."""
-    global _compact
+    """`{level, headline}` for the chip. Stale-while-revalidate: never builds in
+    the request. It returns the cached verdict at once ("unknown" before the
+    first one lands) and, when the cache is older than `ttl` and no refresh is
+    running, starts ONE refresh on a daemon thread (not the anyio pool the
+    dashboard is reporting on). The lock guards the cache and the in-flight flag
+    only."""
+    global _compact_refreshing
     with _compact_lock:
-        now = time.monotonic()
-        if _compact is None or now - _compact[0] >= ttl:
-            v = build()["verdict"]
-            _compact = (time.monotonic(), {"level": v["level"], "headline": v["headline"]})
-        return _compact[1]
+        cached = _compact
+        stale = cached is None or time.monotonic() - cached[0] >= ttl
+        start = stale and not _compact_refreshing
+        if start:
+            _compact_refreshing = True
+    if start:
+        try:
+            threading.Thread(target=_refresh_compact, name="dashboard-verdict", daemon=True).start()
+        except RuntimeError:  # no thread to be had: try again next poll
+            with _compact_lock:
+                _compact_refreshing = False
+    return cached[1] if cached else dict(UNKNOWN_VERDICT)

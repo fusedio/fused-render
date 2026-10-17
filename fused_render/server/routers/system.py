@@ -73,7 +73,9 @@ def api_system_activity(scope: str = "fused"):
         from fused_render.server import dashboard
         body["verdict"] = dashboard.compact_verdict()
     except Exception:  # noqa: BLE001 — the chip works without a verdict
-        body["verdict"] = {"level": "ok", "headline": ""}
+        # "unknown", not "ok": a verdict that could not be computed must not
+        # read as a clean bill of health (the chip draws no dot for it).
+        body["verdict"] = {"level": "unknown", "headline": ""}
     return body
 
 
