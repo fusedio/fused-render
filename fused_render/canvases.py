@@ -145,8 +145,8 @@ SNAPSHOT_LOCK_WAIT_S = 1.0
 # Fused environment the canvases feature targets. One knob drives BOTH the
 # workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
 # variable it reads) so the canvas the iframe shows is the same one the local
-# clone syncs against. Prod is the default; set FUSED_RENDER_WORKBENCH_ENV=
-# unstable to point canvases back at the unstable environment.
+# clone syncs against. Unstable is the default for now (fusedcli.workbench_env
+# says why); set FUSED_RENDER_WORKBENCH_ENV=prod to target production.
 # FUSED_RENDER_WORKBENCH_URL still overrides the iframe URL alone.
 # Resolved in fusedcli.workbench_env because the `fused` wrapper handed to
 # Claude sessions bakes in the same default (D334) — one knob, one reader.
