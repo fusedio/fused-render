@@ -613,13 +613,7 @@ export function createAppStateWatcher(
     block,
     offloadDom,
     async blockForSend() {
-      // No window and no console yet is "nothing to say" for a pane that has
-      // simply not loaded (`snapshot` answers null) — but a host that STATED
-      // the file (`setEntry`, ClaudeChat `entry`) has one fact to send on
-      // every message regardless: `entry` is what agent.py's `_cli_sessions`
-      // files the chat by. `pull()` is the honest block for that case
-      // (`{unreadable, entry}`, nothing read from any pane).
-      return block(await offloadDom(push() ?? (appEntry ? pull() : null)));
+      return block(await offloadDom(push()));
     },
   };
 }

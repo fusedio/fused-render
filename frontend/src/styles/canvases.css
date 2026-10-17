@@ -194,28 +194,3 @@
   color: var(--fg-muted);
   padding: 32px 0;
 }
-
-/* The canvas workspace's NODE SIDEBAR (apps/canvases/NodeSidebar.tsx): the
-   right pane while a node is selected in the embedded workbench. Shares the
-   explorer file sidebar's header and frame rules (.preview-side-header,
-   .preview-side-frame, preview.css) but not .preview-side itself — that one
-   sets its own width, and this column is sized by the workspace's divider. */
-.canvas-node-side {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-alt);
-}
-
-.canvas-node-side-name {
-  font-size: 12px;
-  font-weight: 600;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
-}
