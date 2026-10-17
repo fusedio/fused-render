@@ -39,10 +39,37 @@ LOG_TAIL_BYTES = 256 * 1024
 TIMELINE_S = 600.0
 CALLS_WINDOW_S = 600.0
 
-# What only the event-loop thread may read, captured by `build_async` just
-# before it hands the rest to a worker. Shared (not thread-local) so the
-# sampler's 1 Hz timeline tick and a Record 60s snapshot see the latest values.
-_loop_state = types.SimpleNamespace(pool=None, lanes=None)
+# What only the event-loop thread may read: the thread-pool limiter and the
+# index lane semaphores. Recorded on the loop by `record_loop_state` (the
+# loop-lag ticker, twice a second, and `build_async`), each with a monotonic
+# timestamp. `build()` runs off the loop and only ever reads these; a value
+# older than LOOP_STATE_MAX_AGE_S (or never set) is unknown.
+LOOP_STATE_MAX_AGE_S = 15.0
+_loop_state = types.SimpleNamespace(pool=None, pool_t=None, lanes=None, lanes_t=None)
+
+
+def record_loop_state() -> None:
+    """Take the loop-bound reads. Call on the event-loop thread only."""
+    from fused_render.server import serverstats
+    now = time.monotonic()
+    try:
+        _loop_state.pool, _loop_state.pool_t = serverstats.pool_stats(), now
+    except Exception:  # noqa: BLE001
+        logger.debug("dashboard: pool stats failed", exc_info=True)
+    try:
+        from fused_render.server.routers import index
+        _loop_state.lanes, _loop_state.lanes_t = index.lane_stats(), now
+    except Exception:  # noqa: BLE001
+        logger.debug("dashboard: lane stats failed", exc_info=True)
+
+
+def _fresh(name: str):
+    """The recorded `pool` / `lanes` value, or None when never set or stale."""
+    value = getattr(_loop_state, name)
+    stamp = getattr(_loop_state, name + "_t")
+    if value is None or stamp is None or time.monotonic() - stamp > LOOP_STATE_MAX_AGE_S:
+        return None
+    return value
 
 
 def swap_growth(rows: list[dict], now: float, window_s: float) -> int | None:
@@ -135,7 +162,7 @@ def _net() -> dict:
 def _server() -> dict:
     from fused_render.server import serverstats
     lag = serverstats.loop_lag()
-    pool = _loop_state.pool or serverstats.pool_stats()
+    pool = _fresh("pool")
     return {"pool": pool,
             "loop_lag": {"current_ms": lag.current(), "max_60s_ms": lag.max_over(60)},
             "sockets": netlog.get().socket_total(),
@@ -173,8 +200,8 @@ def _claude() -> dict:
 def _index() -> dict:
     from fused_render.index import runner
     from fused_render.index.config import load_config
-    from fused_render.server.routers import index
-    out = dict(_loop_state.lanes or index.lane_stats())
+    lanes = _fresh("lanes")
+    out = dict(lanes) if lanes is not None else {"unavailable": True}
     cfg = load_config()
     now = time.time()
     running = []
@@ -438,7 +465,7 @@ def timeline_point() -> dict:
     rows = safe(lambda: health.read_trail(1800)) or []
     return {"t": time.time(), "rps": summary.get("rps_10s"),
             "in_flight": max((c.get("in_flight") or 0 for c in clients), default=0),
-            "pool": (_loop_state.pool or {}).get("borrowed"),
+            "pool": (_fresh("pool") or {}).get("borrowed"),
             "lag_ms": safe(lambda: serverstats.loop_lag().current()),
             "cpu": host.get("cpuPct"),
             "swap": next((r["swap_used"] for r in reversed(rows)
@@ -476,13 +503,7 @@ async def build_async() -> dict:
     """`build()` for an async handler: the loop-bound reads first, on this
     thread, then everything that blocks on a worker thread."""
     import anyio.to_thread
-    from fused_render.server import serverstats
-    _loop_state.pool = serverstats.pool_stats()
-    try:
-        from fused_render.server.routers import index
-        _loop_state.lanes = index.lane_stats()
-    except Exception:  # noqa: BLE001 — the index section reports its own error
-        logger.debug("dashboard: lane stats failed", exc_info=True)
+    record_loop_state()
     return await anyio.to_thread.run_sync(build)
 
 

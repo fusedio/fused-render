@@ -42,6 +42,9 @@ class LoopLag:
         self._ring: collections.deque = collections.deque(
             maxlen=int(LAG_RETAIN_S / interval) + 8)
         self._task: asyncio.Task | None = None
+        # Called on the loop thread after every tick (dashboard.record_loop_state):
+        # the reads that only work on the event loop piggyback on this task.
+        self.on_tick: list = []
 
     def record(self, lag_ms: float) -> None:
         self._ring.append((self._wall(), max(0.0, lag_ms)))
@@ -51,6 +54,11 @@ class LoopLag:
             t0 = self._clock()
             await asyncio.sleep(self.interval)
             self.record((self._clock() - t0 - self.interval) * 1000)
+            for hook in list(self.on_tick):
+                try:
+                    hook()
+                except Exception:  # noqa: BLE001 — a gauge must never kill the ticker
+                    logger.debug("loop tick hook failed", exc_info=True)
 
     def start(self) -> None:
         """Start the sampler on the running loop. A bare task: it holds no

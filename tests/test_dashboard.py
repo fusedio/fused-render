@@ -215,8 +215,10 @@ def test_timeline_point_reads_the_sections_it_can(monkeypatch):
             return {"rps_10s": 4.0, "in_flight": [{"in_flight": 3}, {"in_flight": 1}]}
     monkeypatch.setattr(dashboard.netlog, "get", lambda: FakeLog())
     dashboard._loop_state.pool = {"borrowed": 5, "total": 40}
+    dashboard._loop_state.pool_t = time.monotonic()
     pt = dashboard.timeline_point()
     assert pt["rps"] == 4.0 and pt["in_flight"] == 3 and pt["pool"] == 5
+    _reset_loop_state()
     assert "t" in pt and "lag_ms" in pt and "cpu" in pt and "swap" in pt
 
 
@@ -277,3 +279,56 @@ def test_empty_machine_read_is_unknown_and_retried(monkeypatch):
     out["v"] = "2\n"
     assert dashboard._pressure() == "warn"          # the empty read was not cached
     dashboard._machine_cache.clear()
+
+
+def _reset_loop_state():
+    dashboard._loop_state.pool = dashboard._loop_state.pool_t = None
+    dashboard._loop_state.lanes = dashboard._loop_state.lanes_t = None
+
+
+def test_never_recorded_loop_state_is_unknown_not_an_error(monkeypatch):
+    _reset_loop_state()
+    # the off-loop fallback must be gone: neither read may be attempted
+    from fused_render.server import serverstats
+    monkeypatch.setattr(serverstats, "pool_stats",
+                        lambda: (_ for _ in ()).throw(AssertionError("off-loop read")))
+    server = dashboard._server()
+    assert server["pool"] is None
+    assert dashboard._index()["unavailable"] is True
+    out = dashboard.build()
+    assert "error" not in out["server"] and "error" not in out["index"]
+    assert not any(r["key"] in ("threads", "index") for r in out["verdict"].get("reasons", []))
+
+
+def test_stale_loop_state_does_not_fire_rules():
+    _reset_loop_state()
+    dashboard._loop_state.pool = {"borrowed": 40, "total": 40}
+    dashboard._loop_state.lanes = {"waiting": 3, "abandoned": 0, "lanes": {}}
+    dashboard._loop_state.pool_t = dashboard._loop_state.lanes_t = time.monotonic()
+    fresh = dashboard.build()
+    assert dashboard._fresh("pool") is not None
+    ids = {r["key"] for r in fresh["verdict"].get("reasons", [])}
+    assert {"threads", "index"} <= ids
+    old = time.monotonic() - dashboard.LOOP_STATE_MAX_AGE_S - 1
+    dashboard._loop_state.pool_t = dashboard._loop_state.lanes_t = old
+    stale = dashboard.build()
+    assert stale["server"]["pool"] is None
+    ids = {r["key"] for r in stale["verdict"].get("reasons", [])}
+    assert not ids & {"threads", "index"}
+    _reset_loop_state()
+
+
+def test_loop_ticker_records_pool_and_lanes():
+    import asyncio
+    from fused_render.server import serverstats
+    _reset_loop_state()
+
+    async def go():
+        lag = serverstats.LoopLag(interval=0.01)
+        lag.on_tick.append(dashboard.record_loop_state)
+        lag.start()
+        await asyncio.sleep(0.05)
+        await lag.stop()
+    asyncio.run(go())
+    assert dashboard._fresh("pool") is not None and dashboard._fresh("lanes") is not None
+    _reset_loop_state()

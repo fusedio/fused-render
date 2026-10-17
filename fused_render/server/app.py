@@ -763,7 +763,11 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # other background gauges: a lean server has no Monitor to read it.
     @on_startup_full
     async def _startup_loop_lag():
-        serverstats.loop_lag().start()
+        from fused_render.server import dashboard
+        lag = serverstats.loop_lag()
+        if dashboard.record_loop_state not in lag.on_tick:
+            lag.on_tick.append(dashboard.record_loop_state)
+        lag.start()
 
     @on_shutdown
     async def _shutdown_loop_lag():
