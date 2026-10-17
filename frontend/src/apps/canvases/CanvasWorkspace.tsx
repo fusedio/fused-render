@@ -47,6 +47,7 @@ import { EMBED_PREFIX, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@plat
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
+  applyRename,
   applySnapshot,
   fixWithClaude,
   getAccessToken,
@@ -266,7 +267,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // "Saving…" for a snapshot nothing was wrong with. Anything else is a
   // rejection the embed drops, reason attached.
   const relaySnapshot = useCallback(
-    async (gen: number, seq: number, body: Record<string, unknown>) => {
+    async (
+      gen: number,
+      seq: number,
+      body: Record<string, unknown> | null,
+      rename: { from: string; to: string; file_from?: string | null; file_to?: string | null } | null = null,
+    ) => {
       const post = (msg: Record<string, unknown>) => {
         const frame = frameRef.current;
         const origin = baseOriginRef.current;
@@ -275,7 +281,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       };
       for (let attempt = 0; ; attempt++) {
         try {
-          const ack = await applySnapshot(name, gen, seq, body);
+          const ack = rename
+            ? await applyRename(name, gen, seq, rename)
+            : await applySnapshot(name, gen, seq, body ?? {});
           post({ type: "fused-embed-snapshot-applied", gen, seq, push_seq: ack.push_seq });
           return;
         } catch (e) {
@@ -321,6 +329,23 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         };
         if (typeof gen !== "number" || typeof seq !== "number" || !body || typeof body !== "object") return;
         void relaySnapshot(gen, seq, body as Record<string, unknown>);
+      }
+      if (type === "fused-embed-rename") {
+        // The rename hint: posted the moment a UDF is renamed, before any
+        // snapshot carries the new name, so disk follows the name (file, row,
+        // edges) instead of reading the next snapshot as delete + add.
+        const { gen, seq, from, to, file_from, file_to } = (event.data ?? {}) as {
+          gen?: unknown; seq?: unknown; from?: unknown; to?: unknown;
+          file_from?: unknown; file_to?: unknown;
+        };
+        if (typeof gen !== "number" || typeof seq !== "number") return;
+        if (typeof from !== "string" || typeof to !== "string" || !from || !to) return;
+        void relaySnapshot(gen, seq, null, {
+          from,
+          to,
+          file_from: typeof file_from === "string" ? file_from : null,
+          file_to: typeof file_to === "string" ? file_to : null,
+        });
       }
       if (type === "fused-embed-selection") {
         const name = event.data?.udfName;

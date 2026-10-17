@@ -7,22 +7,27 @@ code — over the postMessage bridge, the workspace page relays it to
 `POST /api/canvases/snapshot`, and this module folds it into the clone. The
 watcher then publishes the folder exactly as it publishes a Claude edit.
 
-Two halves, both pure except for the final write:
+Three entry points, all pure except for the final writes:
 
   `compact_state(body)`   — the studio JSON the workbench sends → the compact
                             shape `canvas.toml` holds (one row per node keyed
-                            by udfName, edges as name pairs, viewport). This
-                            mirrors the application server's
-                            `toml_translator._studio_node_to_compact`; the
-                            key table below is the contract, pinned by a test
-                            against the translator's own list.
+                            by udfName, edges as name pairs, viewport), plus
+                            what the rows alone cannot say: each node's server
+                            id, the bodies of text notes, and the names the
+                            embed held when it last hydrated. The node key
+                            table mirrors the application server's
+                            `toml_translator._studio_node_to_compact`.
   `apply_snapshot(...)`   — merge that compact state into the toml on disk at
                             NODE granularity, given the previous snapshot from
-                            the same embed:
+                            the same embed generation:
 
       node in new, row differs from disk    → upsert the row (keys the embed
                                               does not send are kept)
-      node in prev but not in new           → the embed deleted it: drop the
+      node known before but not in new,
+        and its id reappears under a new
+        name                                → a RENAME the hint missed: row,
+                                              edges and file follow the name
+      node known before but not in new      → the embed deleted it: drop the
                                               row and its edges, move its
                                               source file to trash
       node on disk, unknown to the embed    → kept untouched (Claude added it
@@ -31,18 +36,32 @@ Two halves, both pure except for the final write:
                                               edge touching a node the embed
                                               does not know
       viewport / viewportBounds / comments  → the embed's, always
-      a new UDF (no backend id, udf_body present) → its source file is CREATED
-                                              from the body; an existing file
-                                              is never overwritten (code is
-                                              disk-owned, S10)
+      a text note's body (`.md`, the one
+        kind editable on the canvas itself) → written when it CHANGED since
+                                              the previous snapshot — never
+                                              compared against disk, so a note
+                                              Claude edited meanwhile is not
+                                              overwritten by a stale re-send
+      a new UDF (no server id, body given)  → its source file is CREATED; an
+                                              existing file is never
+                                              overwritten (code is disk-owned)
 
-  `prev is None` (the first snapshot after a hydration, or after a server
-  restart) means "the embed's base is whatever it just loaded": nothing is
-  deleted and only rows that actually differ are written, so the first
-  snapshot of a generation is a no-op on a clean clone. That no-op matters:
-  a write that changed nothing would still bump mtimes, the watcher would
-  push, the push would ping the embed, the embed would re-hydrate and send
-  another first snapshot — a loop. Every write here is content-gated.
+  `apply_rename(...)`     — the rename hint the workbench posts the moment a
+                            UDF is renamed, before any snapshot carries the
+                            new name: file, row, edges, in one write.
+
+  "Known before" is the previous snapshot's node set when there is one, else
+  the embed's own `base_nodes` — the names it held right after hydrating. So
+  a node deleted in the first moments of a generation is still a deletion,
+  and a node Claude added on disk meanwhile (in neither set) survives.
+
+  Code files (`.py`), JSON-UI (`.json`) and HTML (`.html`) bodies are
+  DISK-OWNED: with the workbench's code editor hidden under v3 they cannot be
+  edited in the embed, so they are never written from this leg.
+
+  Every write is content-gated. A write that changed nothing would still bump
+  mtimes, the watcher would push, the push would ping the embed, the embed
+  would re-hydrate and send another first snapshot — a loop.
 
 No import of fused_render.server (canvases.py includes this; keep it
 acyclic). `rtoml` comes from the bundled fused-py; a missing module is a
@@ -50,18 +69,17 @@ clear error, not a silent skip.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
-from typing import Any
+from typing import Any, Callable
 
 # -- the studio → compact key table ---------------------------------------
 #
 # Mirrors toml_translator._studio_node_to_compact in fusedlabs/application.
-# Geometry comes from `position`/`style`/top-level, chrome from `data`, the
-# styling keys straight off `data`. A new key the workbench starts emitting
-# must be added HERE (and to the test that pins this list against the
-# translator), or it silently stops persisting from the embed — which is the
-# one failure mode an ops-shaped sync has, and why the list is explicit.
+# A new key the workbench starts emitting must be added HERE (and to the test
+# that pins this list against the translator), or it silently stops
+# persisting from the embed — the one failure mode an ops-shaped sync has.
 NODE_DATA_KEYS = (
     "textBoxColor",
     "textBoxGradient",
@@ -73,7 +91,6 @@ NODE_DATA_KEYS = (
     "folderColor",
     "childUdfOrder",
 )
-# Catalog keys the translator copies off `data` for non-folder nodes.
 NODE_CATALOG_KEYS = (
     "assetUrl",
     "tags",
@@ -83,16 +100,15 @@ NODE_CATALOG_KEYS = (
     "filePreviewRegex",
     "filePreviewMenuOrder",
 )
-# Every key a compact row may carry from the embed. Keys on a disk row that
-# are NOT in this set are never touched by an upsert (they are the server's
-# or Claude's business).
 EMBED_ROW_KEYS = frozenset(
     ("udfName", "x", "y", "zIndex", "width", "height", "type", "title",
      "description", "visible", "isLocked")
     + NODE_DATA_KEYS + NODE_CATALOG_KEYS
 )
-# `[canvas]` scalars the embed owns outright.
 CANVAS_KEYS = ("viewport", "viewportBounds", "comments")
+
+# The one file kind whose body the embed can change without its code editor.
+EMBED_BODY_SUFFIXES = (".md",)
 
 _SYNTHETIC_DESCRIPTION = "Exported from Fused UDF Workbench"
 
@@ -130,7 +146,6 @@ def compact_node(node: dict, index: int) -> dict:
     node_type = str(node.get("type") or "simple-udf")
     if node_type != "simple-udf":
         row["type"] = node_type
-    # Title / description, resolved as toml_text.resolve_node_title_and_description.
     description = _trimmed(data.get("nodeDescription"))
     if not description:
         cfg_desc = config.get("description")
@@ -160,18 +175,36 @@ def compact_node(node: dict, index: int) -> dict:
         for key in NODE_CATALOG_KEYS:
             if key in data and data.get(key) is not None:
                 row[key] = data.get(key)
-    # None geometry is "unknown", never a value to write.
     return {k: v for k, v in row.items() if v is not None}
 
 
+def _udf_code_from_body(udf_body: Any) -> str | None:
+    """The source text inside a serialized `udf_body` (the workbench's
+    `toJobJson(...).udf` JSON: `code` is the file's content)."""
+    if not isinstance(udf_body, str):
+        return None
+    try:
+        parsed = json.loads(udf_body)
+    except ValueError:
+        return None
+    if isinstance(parsed, dict):
+        code = parsed.get("code")
+        if isinstance(code, str):
+            return code
+    return None
+
+
 def compact_state(body: dict) -> dict:
-    """The embed's snapshot body → `{nodes: {name: row}, edges: [[a,b]],
-    canvas: {viewport, ...}, new_files: [{file, body}], files: {name: file}}`."""
+    """The embed's snapshot body → ::
+
+        {nodes: {name: row}, edges: [[a, b]], canvas: {viewport, ...},
+         files: {name: basename}, ids: {name: server id},
+         bodies: {name: file text}   (text notes only),
+         new_files: [{file, body}]   (UDFs with no server id yet),
+         base_nodes: set[name] | None}
+    """
     dashboard = body.get("dashboard_body") or {}
-    # The workbench serializes dashboard_body as a JSON STRING (that is what
-    # the server's collection save takes); an object is accepted too.
     if isinstance(dashboard, str):
-        import json
         try:
             dashboard = json.loads(dashboard)
         except ValueError as exc:
@@ -195,7 +228,10 @@ def compact_state(body: dict) -> dict:
         if isinstance(src, str) and src and isinstance(dst, str) and dst:
             edges.append([src, dst])
     canvas = {k: studio[k] for k in CANVAS_KEYS if k in studio}
+
     files: dict[str, str] = {}
+    ids: dict[str, str] = {}
+    bodies: dict[str, str] = {}
     new_files: list[dict] = []
     for udf in body.get("udfs") or []:
         if not isinstance(udf, dict):
@@ -205,19 +241,34 @@ def compact_state(body: dict) -> dict:
         if not isinstance(slug, str) or not isinstance(file, str) or "/" in file:
             continue
         files[slug] = file
+        server_id = udf.get("id")
+        if isinstance(server_id, str) and server_id:
+            ids[slug] = server_id
         # Canvas visibility lives on the UDF row (`canvasVisible` →
         # `is_visible`); `data.config.visible` is its serialization-only
-        # mirror, which the server's import reads. Take the mirror when the
-        # node carries it, the row otherwise — never leave it unset when the
-        # workbench said something.
+        # mirror. Take the mirror when the node carries it, the row otherwise.
         row = nodes.get(slug)
         if row is not None and "visible" not in row and isinstance(udf.get("is_visible"), bool):
             row["visible"] = udf["is_visible"]
-        udf_body = udf.get("udf_body")
-        if udf.get("id") in (None, "") and isinstance(udf_body, str):
-            new_files.append({"file": file, "body": udf_body})
-    return {"nodes": nodes, "edges": edges, "canvas": canvas,
-            "files": files, "new_files": new_files}
+        # `file_body` is the exact file text as `fused canvas pull` would
+        # write it (a note's README-shaped markdown, not its raw text);
+        # `udf_body.code` is the file for a never-saved code UDF.
+        text = udf.get("file_body")
+        if not isinstance(text, str):
+            text = _udf_code_from_body(udf.get("udf_body"))
+        if text is None:
+            continue
+        if not server_id:
+            new_files.append({"file": file, "body": text})
+        elif file.endswith(EMBED_BODY_SUFFIXES):
+            bodies[slug] = text
+    base_raw = body.get("base_nodes")
+    base_nodes = (
+        {n for n in base_raw if isinstance(n, str)} if isinstance(base_raw, list) else None
+    )
+    return {"nodes": nodes, "edges": edges, "canvas": canvas, "files": files,
+            "ids": ids, "bodies": bodies, "new_files": new_files,
+            "base_nodes": base_nodes}
 
 
 # -- applying to disk -----------------------------------------------------
@@ -240,19 +291,87 @@ def _write_atomic(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _udf_code_from_body(udf_body: str) -> str | None:
-    """The source text inside a serialized `udf_body` (the workbench's
-    `toJobJson(...).udf` JSON: `code` is the file's content)."""
-    import json
+def _read_bytes(path: str) -> bytes | None:
     try:
-        parsed = json.loads(udf_body)
-    except ValueError:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError:
         return None
-    if isinstance(parsed, dict):
-        code = parsed.get("code")
-        if isinstance(code, str):
-            return code
+
+
+# Every file kind a node's source may be, as the clone names them.
+_SOURCE_SUFFIXES = (".py", ".json", ".md", ".html")
+
+
+def _find_source(clone_dir: str, name: str) -> str | None:
+    """The clone's source file for a node named `name`, when nothing else
+    names it (a deletion in the first snapshot of a generation, where there
+    is no previous file map and the node is no longer in the snapshot)."""
+    for suffix in _SOURCE_SUFFIXES:
+        candidate = name + suffix
+        if os.path.isfile(os.path.join(clone_dir, candidate)):
+            return candidate
     return None
+
+
+def _rename_in_doc(canvas: dict, frm: str, to: str) -> bool:
+    """Rename a node in a parsed `[canvas]` table: its row's `udfName` (and a
+    title that was just the name), every edge endpoint. True if anything
+    changed."""
+    changed = False
+    for row in canvas.get("nodes") or []:
+        if isinstance(row, dict) and row.get("udfName") == frm:
+            row["udfName"] = to
+            if row.get("title") == frm:
+                row["title"] = to
+            changed = True
+    edges = canvas.get("edges")
+    if isinstance(edges, list):
+        for edge in edges:
+            if isinstance(edge, list):
+                for i, end in enumerate(edge):
+                    if end == frm:
+                        edge[i] = to
+                        changed = True
+    return changed
+
+
+def _move_file(clone_dir: str, file_from: str | None, file_to: str | None) -> str | None:
+    """Move a node's source file with its rename; None when nothing moved
+    (no source yet, or the target already exists — then the target is kept,
+    since code is disk-owned and never overwritten from this leg)."""
+    if not file_from or not file_to or file_from == file_to:
+        return None
+    src = os.path.join(clone_dir, file_from)
+    dst = os.path.join(clone_dir, file_to)
+    if not os.path.isfile(src) or os.path.exists(dst):
+        return None
+    try:
+        os.replace(src, dst)
+    except OSError:
+        return None
+    return file_to
+
+
+def apply_rename(clone_dir: str, frm: str, to: str,
+                 file_from: str | None, file_to: str | None) -> dict:
+    """The rename hint: `frm` → `to` on disk, file included. Raises on a
+    clone with no canvas.toml; a `to` that already names a row is rejected
+    (ValueError) rather than merged into."""
+    path = os.path.join(clone_dir, "canvas.toml")
+    doc = _load_toml(path)
+    canvas = doc.setdefault("canvas", {})
+    if not isinstance(canvas, dict):
+        raise ValueError("canvas.toml: [canvas] is not a table")
+    rows = canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []
+    if any(isinstance(r, dict) and r.get("udfName") == to for r in rows):
+        raise ValueError(f"a node named {to!r} already exists")
+    changed = _rename_in_doc(canvas, frm, to)
+    moved = _move_file(clone_dir, file_from, file_to)
+    if changed:
+        _write_atomic(path, _dump_toml(doc))
+    return {"changed": changed or moved is not None, "renamed": [frm, to],
+            "moved": moved, "at": time.time()}
 
 
 def apply_snapshot(
@@ -260,15 +379,16 @@ def apply_snapshot(
     new: dict,
     prev: dict | None,
     *,
-    backup: Any = None,
+    backup: Callable[[str, bytes], None] | None = None,
 ) -> dict:
     """Fold `new` (a `compact_state`) into `<clone_dir>/canvas.toml`.
 
     `prev` is the previous compact state from the same embed generation, or
-    None. `backup(rel, data)` receives every file about to be deleted.
-    Returns `{changed: bool, upserted: [...], deleted: [...], created: [...]}`.
-    Raises FileNotFoundError when the clone has no canvas.toml, and whatever
-    `rtoml` raises on a malformed one (the caller reports both as rejections).
+    None. `backup(rel, data)` receives every file about to be deleted or
+    overwritten. Returns `{changed, upserted, deleted, renamed, created,
+    written}`. Raises FileNotFoundError when the clone has no canvas.toml, and
+    whatever `rtoml` raises on a malformed one (the caller reports both as
+    rejections).
     """
     path = os.path.join(clone_dir, "canvas.toml")
     doc = _load_toml(path)
@@ -287,30 +407,64 @@ def apply_snapshot(
     changed = False
     upserted: list[str] = []
     deleted: list[str] = []
+    renamed: list[list[str]] = []
     created: list[str] = []
+    written: list[str] = []
 
-    # Deletions: only nodes the embed KNEW (in prev) and dropped.
-    known_before = set(prev["nodes"]) if prev else set()
-    for name in sorted(known_before - set(new["nodes"])):
+    def trash(rel: str) -> None:
+        if backup is None:
+            return
+        data = _read_bytes(os.path.join(clone_dir, rel))
+        if data is not None:
+            backup(rel, data)
+
+    # What the embed KNEW: the previous snapshot, else its own hydration base.
+    if prev is not None:
+        known_before = set(prev["nodes"])
+        files_before = dict(prev.get("files", {}))
+        ids_before = dict(prev.get("ids", {}))
+    else:
+        known_before = set(new.get("base_nodes") or ())
+        files_before = {}
+        ids_before = {}
+    vanished = sorted(known_before - set(new["nodes"]))
+
+    # Renames the hint missed: a vanished name whose server id reappears under
+    # a new name that is not on disk yet.
+    id_to_new_name = {sid: name for name, sid in new["ids"].items()}
+    for name in list(vanished):
+        sid = ids_before.get(name)
+        to = id_to_new_name.get(sid) if sid else None
+        if not to or to == name or to in by_name or name not in by_name:
+            continue
+        _rename_in_doc(canvas, name, to)
+        by_name[to] = by_name.pop(name)
+        _move_file(clone_dir, files_before.get(name) or _find_source(clone_dir, name),
+                   new["files"].get(to))
+        renamed.append([name, to])
+        vanished.remove(name)
+        changed = True
+
+    # Deletions.
+    for name in vanished:
         row = by_name.pop(name, None)
         if row is None:
             continue
         rows.remove(row)
         changed = True
         deleted.append(name)
-        file = (prev or {}).get("files", {}).get(name) or new["files"].get(name)
+        file = files_before.get(name) or new["files"].get(name) or _find_source(clone_dir, name)
         if file:
             fpath = os.path.join(clone_dir, file)
-            try:
-                with open(fpath, "rb") as fh:
-                    data = fh.read()
-                if backup is not None:
-                    backup(file, data)
-                os.remove(fpath)
-            except OSError:
-                pass
+            if os.path.isfile(fpath):
+                trash(file)
+                try:
+                    os.remove(fpath)
+                except OSError:
+                    pass
 
     # Upserts: rows that differ on the keys the embed owns.
+    prev_nodes = prev["nodes"] if prev else {}
     for name, row in new["nodes"].items():
         disk = by_name.get(name)
         if disk is None:
@@ -325,8 +479,7 @@ def apply_snapshot(
                 if disk.get(key) != row[key]:
                     disk[key] = row[key]
                     diff = True
-            elif key in disk and prev and key in prev["nodes"].get(name, {}):
-                # The embed used to send this key and stopped: it cleared it.
+            elif key in disk and key in prev_nodes.get(name, {}):
                 del disk[key]
                 diff = True
         if diff:
@@ -347,28 +500,70 @@ def apply_snapshot(
         canvas["edges"] = merged
         changed = True
 
-    # Canvas scalars the embed owns.
     for key in CANVAS_KEYS:
         if key in new["canvas"] and canvas.get(key) != new["canvas"][key]:
             canvas[key] = new["canvas"][key]
             changed = True
+
+    # Note bodies: written only when the EMBED changed them since its
+    # previous snapshot. The first snapshot of a generation (prev None)
+    # writes nothing — its bodies are what it just hydrated.
+    prev_bodies = prev.get("bodies", {}) if prev else {}
+    for name, text in new["bodies"].items():
+        if prev is None or prev_bodies.get(name) == text:
+            continue
+        file = new["files"].get(name)
+        if not file or not file.endswith(EMBED_BODY_SUFFIXES):
+            continue
+        fpath = os.path.join(clone_dir, file)
+        current = _read_bytes(fpath)
+        if current is not None and current.decode("utf-8", "replace") == text:
+            continue
+        if current is not None:
+            trash(file)
+        try:
+            with open(fpath, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            written.append(file)
+        except OSError:
+            pass
 
     # New UDFs: create their source file, never overwrite one.
     for entry in new["new_files"]:
         fpath = os.path.join(clone_dir, entry["file"])
         if os.path.exists(fpath):
             continue
-        code = _udf_code_from_body(entry["body"])
-        if code is None:
-            continue
         try:
             with open(fpath, "w", encoding="utf-8") as fh:
-                fh.write(code)
+                fh.write(entry["body"])
             created.append(entry["file"])
         except OSError:
             pass
 
     if changed:
         _write_atomic(path, _dump_toml(doc))
-    return {"changed": changed or bool(created), "upserted": upserted,
-            "deleted": deleted, "created": created, "at": time.time()}
+    return {"changed": changed or bool(created) or bool(written),
+            "upserted": upserted, "deleted": deleted, "renamed": renamed,
+            "created": created, "written": written, "at": time.time()}
+
+
+def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> dict | None:
+    """The previous snapshot with one node renamed, so the snapshot that
+    follows a rename hint is diffed against the name it will carry."""
+    if prev is None:
+        return None
+    out = dict(prev)
+    for key in ("nodes", "files", "ids", "bodies"):
+        table = dict(prev.get(key, {}))
+        if frm in table:
+            table[to] = table.pop(frm)
+            if key == "nodes" and isinstance(table[to], dict):
+                table[to] = dict(table[to], udfName=to)
+        out[key] = table
+    if file_to:
+        out["files"] = dict(out.get("files", {}), **{to: file_to})
+    base = prev.get("base_nodes")
+    if base is not None and frm in base:
+        out["base_nodes"] = (set(base) - {frm}) | {to}
+    out["edges"] = [[to if a == frm else a, to if b == frm else b] for a, b in prev.get("edges", [])]
+    return out
