@@ -11,6 +11,22 @@
 // is posted with an EXACT targetOrigin — never "*" — so it cannot leak to a
 // frame that navigated elsewhere.
 //
+// Node selection (the node sidebar, apps/canvases/NodeSidebar.tsx): the same
+// listener carries three more messages once the workbench is told this host
+// speaks v2 (`fused_embed_v=2` on the frame URL — the flag also hides the
+// workbench's own code editor, so an OLD host keeps that editor and an old
+// WORKBENCH simply never sends a selection):
+//   iframe → { type: "fused-embed-selection", udfName, backendId, kind }
+//            on every change and once after ready; a null name (pane click,
+//            folder node, multi-select) returns this pane to the canvas chat
+//            (owner call: the right pane follows the canvas)
+//   parent → { type: "fused-embed-select", udfName }  (restore ?node= on
+//            load; null from the sidebar's close button, so both sides agree)
+//   parent → { type: "fused-embed-remote-changed", push_seq }  after a push,
+//            so the workbench re-fetches now instead of on its 10s poll.
+// Keyed by UDF NAME, never a React Flow node id (those are regenerated every
+// load): the node's source is `<clone>/<udfName>.py` (widgets: `.json`).
+//
 // Sync: the server watches the clone folder and pushes on every quiet period
 // (local wins — an edit made inside the embedded workbench is overwritten by
 // the next local push; the banner says so). This page never reloads the
@@ -19,7 +35,8 @@
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMount } from "@apps/claude";
-import { statPath } from "@platform/lib/api";
+import { statPath, type TemplateEntry } from "@platform/lib/api";
+import NodeSidebar, { type NodeTab } from "./NodeSidebar";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   fixWithClaude,
@@ -82,6 +99,28 @@ const LOCK_ACK_TIMEOUT_MS = 2000;
 const WORKBENCH_UPSTREAM_POLL_MS = 10000;
 const LOCK_RELEASE_GRACE_MS = WORKBENCH_UPSTREAM_POLL_MS + 3000;
 
+/** The selected node, as the workbench names it. */
+interface NodeSel {
+  udfName: string;
+  kind: "udf" | "widget";
+}
+
+/** `<clone>/<udfName>.py`, or the widget's `.json` — the clone's own layout
+ *  (canvases.py's seeded CLAUDE.md: every node's source is the file named
+ *  after it). */
+function nodeFile(dir: string, node: NodeSel): string {
+  return `${dir.replace(/\/+$/, "")}/${node.udfName}.${node.kind === "widget" ? "json" : "py"}`;
+}
+
+/** The node restored from this page's own URL (`?node=`, plus `node_kind=`
+ *  only for a widget), or null. */
+function nodeFromUrl(): NodeSel | null {
+  const q = new URLSearchParams(window.location.search);
+  const name = q.get("node");
+  if (!name) return null;
+  return { udfName: name, kind: q.get("node_kind") === "widget" ? "widget" : "udf" };
+}
+
 export function canvasNameFromPath(pathname: string): string | null {
   const match = /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname);
   return match ? decodeURIComponent(match[1]) : null;
@@ -96,6 +135,18 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // too. Needed because the chat is framed DIRECTLY via /render (below), not
   // through /explorer/embed.
   const [chatTpl, setChatTpl] = useState<string | null>(null);
+  const [chatEntry, setChatEntry] = useState<TemplateEntry | null>(null);
+  // The selected node (null = the canvas chat). Seeded from `?node=` so a
+  // reload keeps the node; written back below.
+  const [node, setNode] = useState<NodeSel | null>(() => nodeFromUrl());
+  const [nodeTab, setNodeTab] = useState<NodeTab>("claude");
+  // What stat says about the node's file: does it exist yet, and which
+  // template renders it as code.
+  const [nodeStat, setNodeStat] = useState<{
+    file: string;
+    exists: boolean;
+    code: TemplateEntry | null;
+  } | null>(null);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
@@ -150,9 +201,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         setDir(started.dir);
         const st = await statPath(started.dir);
         if (!cancelled) {
-          setChatTpl(
-            st.templates?.find((t) => t.mode === "claude")?.path ?? null,
-          );
+          const claude = st.templates?.find((t) => t.mode === "claude") ?? null;
+          setChatTpl(claude?.path ?? null);
+          setChatEntry(claude);
         }
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
@@ -190,6 +241,20 @@ export default function CanvasWorkspace({ name }: { name: string }) {
 
   const locked = lockHold !== null;
 
+  // Ask the workbench to select a node (or, with null, to deselect). Exact
+  // targetOrigin, like every message to the frame.
+  const sendSelect = useCallback((udfName: string | null) => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
+  }, []);
+
+  // The node this page currently shows, readable from the message handler
+  // without re-subscribing it on every selection.
+  const nodeRef = useRef<NodeSel | null>(node);
+  nodeRef.current = node;
+
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== baseOriginRef.current) return;
@@ -200,14 +265,110 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         // comes back editable otherwise, and this is the one message that tells
         // us a fresh frame is listening.
         if (locked) sendLock(true);
+        // Restore the node this page is on (a reload, or a frame that
+        // reloaded): the workbench answers with a selection message, which is
+        // what keeps the two sides in step — see the handler below.
+        if (type === "fused-embed-auth-ready" && nodeRef.current) {
+          sendSelect(nodeRef.current.udfName);
+        }
       }
       if (type === "fused-embed-lock-ack") {
         setAckState((a) => nextAckState(a, "ack"));
       }
+      if (type === "fused-embed-selection") {
+        const name = event.data?.udfName;
+        if (typeof name === "string" && name) {
+          const kind = event.data?.kind === "widget" ? "widget" : "udf";
+          setNode((cur) =>
+            cur && cur.udfName === name && cur.kind === kind ? cur : { udfName: name, kind },
+          );
+        } else {
+          // The canvas deselected (pane click, folder node, multi-select, or
+          // the node is gone after a re-hydrate): follow it back to the
+          // canvas chat. Owner call — the canvas is the one source of truth
+          // for what the right pane is about.
+          setNode(null);
+        }
+      }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendLock, locked]);
+  }, [seedToken, sendLock, sendSelect, locked]);
+
+  // Mirror the node onto this page's URL so a reload lands on it, and drop the
+  // chat ids when the node CHANGES: `session_id`/`run` belong to whichever
+  // chat the URL names (one ChatMount at a time, both on "url" params), and a
+  // node switch is a different chat. The previous chat's session is one click
+  // away in its own Recent list.
+  const prevNodeKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = node ? `${node.kind}:${node.udfName}` : null;
+    const url = new URL(window.location.href);
+    if (node) {
+      url.searchParams.set("node", node.udfName);
+      if (node.kind === "widget") url.searchParams.set("node_kind", "widget");
+      else url.searchParams.delete("node_kind");
+    } else {
+      url.searchParams.delete("node");
+      url.searchParams.delete("node_kind");
+    }
+    if (prevNodeKeyRef.current !== null && prevNodeKeyRef.current !== key) {
+      url.searchParams.delete("session_id");
+      url.searchParams.delete("run");
+    }
+    prevNodeKeyRef.current = key;
+    if (url.href !== window.location.href) {
+      window.history.replaceState(window.history.state, "", url);
+    }
+    setNodeTab("claude");
+  }, [node]);
+
+  // Stat the node's file: the code template that renders it, and whether it
+  // exists yet (a `?node=` restored before the first pull lands does not).
+  // Re-stat on every sync op until it does.
+  const syncSeq = sync ? sync.push_seq + sync.pull_seq : 0;
+  useEffect(() => {
+    if (!node || !dir) {
+      setNodeStat(null);
+      return;
+    }
+    const file = nodeFile(dir, node);
+    let cancelled = false;
+    void statPath(file)
+      .then((st) => {
+        if (cancelled) return;
+        setNodeStat({
+          file,
+          exists: !st.is_dir,
+          code: st.templates?.find((t) => t.mode === "code") ?? null,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setNodeStat({ file, exists: false, code: null });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [node, dir, syncSeq]);
+
+  // After every push, tell the workbench to look upstream NOW — its own poll
+  // is 10s, and the user just saved in the Code tab (or Claude just edited)
+  // and is looking at the canvas for the result.
+  const lastPushSeqRef = useRef<number | null>(null);
+  useEffect(() => {
+    const seq = sync?.push_seq ?? null;
+    if (seq === null) return;
+    const prev = lastPushSeqRef.current;
+    lastPushSeqRef.current = seq;
+    if (prev === null || seq <= prev) return;
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    frame.contentWindow.postMessage(
+      { type: "fused-embed-remote-changed", push_seq: seq },
+      origin,
+    );
+  }, [sync?.push_seq]);
 
   // Decide whether the workbench should be locked, from the polled status. The
   // rule itself lives in canvas-lock-lib (pure, and tested — the release half
@@ -344,6 +505,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     setFixError(null);
     try {
       const { run_id } = await fixWithClaude(name);
+      // The fix runs on the CLONE (canvases.py spawns on the dir), so it is
+      // the canvas chat's to show: leave the node, on both sides.
+      if (nodeRef.current) {
+        sendSelect(null);
+        setNode(null);
+      }
       setFixRunId(run_id);
       // Don't wait for the next poll (up to SYNC_POLL_MS away) to reflect
       // that a fix is now running — the gap let a double-click through to a
@@ -359,7 +526,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
 
   const frameSrc =
     baseUrl && handle
-      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1`
+      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=2`
       : null;
 
   // No header strip (owner call): the workspace is the two panes, full
@@ -532,7 +699,27 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             pointerEvents: dragging ? "none" : "auto",
           }}
         >
-          {chatHere && dir ? (
+          {chatHere && dir && node && nodeStat && nodeStat.file === nodeFile(dir, node) ? (
+            // A node is selected: the node sidebar (Claude on the node's file,
+            // or its Code tab) replaces the canvas chat. Keyed per node so a
+            // switch is a fresh chat boot on the new file.
+            <NodeSidebar
+              key={`${node.kind}:${node.udfName}`}
+              file={nodeStat.file}
+              udfName={node.udfName}
+              exists={nodeStat.exists}
+              codeTemplate={nodeStat.code}
+              claudeTemplate={chatEntry}
+              tab={nodeTab}
+              onTab={setNodeTab}
+              onClose={() => {
+                sendSelect(null);
+                setNode(null);
+              }}
+              annotateTarget={() => frameRef.current}
+              chatKey={`${node.kind}:${node.udfName}`}
+            />
+          ) : chatHere && dir && !node ? (
             // key forces a REMOUNT when a fix run starts: the run id is read at
             // BOOT (the chat adopts the session and clears the param), so an
             // already-running chat has to be rebooted to see it — the "have to

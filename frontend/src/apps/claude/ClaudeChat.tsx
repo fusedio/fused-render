@@ -258,6 +258,19 @@ export interface ClaudeChatProps {
    * PR3 hangs the notes off the same getter.
    */
   annotateTarget?: () => HTMLIFrameElement | null;
+  /**
+   * THE FILE THIS CHAT IS ABOUT, stated by a host whose pane cannot be read.
+   *
+   * agent.py's `_cli_sessions` lists a FILE target's sessions by `_pane_file`,
+   * which reads `entry` off the leading `<live-app-state>` block — and that
+   * block was only ever pushed when a readable app frame existed. The canvas
+   * node sidebar mounts this chat on `<clone>/<udf>.py` beside a CROSS-ORIGIN
+   * workbench frame (no document to read, and `hostFrame` below disowns it),
+   * so without this the chat would be filed under the folder and vanish from
+   * the node's Recent list. With it the block still goes out — carrying
+   * `entry` and `unreadable`, nothing read from any pane — on every send.
+   */
+  entry?: string;
   /** `_preview=1` — this mount is a thumbnail, so the pane's own render is too. */
   preview?: boolean;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
@@ -577,7 +590,16 @@ function ChatBody(props: ChatBodyProps) {
       if (!frame) return null;
       // A frame still loading answers with its own `about:blank` document,
       // which is readable and no reason to disown it — the watcher polls.
-      if (!frame.contentDocument && !frame.contentWindow) return null;
+      //
+      // A CROSS-ORIGIN frame (the canvas workspace's hosted workbench) answers
+      // a WindowProxy but a null `contentDocument`, and that is a frame whose
+      // document is NOT ours to read: it used to pass here, which put
+      // `has_pane:"1"` on the wire — the `app_state` tool in the roster and
+      // the app-folder prompt for a page the model could never read. The
+      // annotation overlay is unaffected: it takes the frame straight from
+      // `annotateTarget` (useAnnotations `markedFrame`), never through here,
+      // because it only needs the frame's BOX, not its document.
+      if (!frame.contentDocument) return null;
       return frame;
     } catch {
       return null; // the getter threw, or the document is not ours to read
@@ -598,6 +620,10 @@ function ChatBody(props: ChatBodyProps) {
    *  watcher asks at block time (`appState.ts:231`, `:533`), which is what makes
    *  a lazy read the right shape here. */
   const paneNounRef = useRef<PaneNoun>("preview");
+  // The host-stated file (see the prop). A ref for the same reason every
+  // send-time read here is one: the controller below is built once.
+  const entryRef = useRef(props.entry);
+  entryRef.current = props.entry;
   const [watcher] = useState(() =>
     createAppStateWatcher(appFrame, {
       // THE THREE OPTIONS THIS WAS ALWAYS MEANT TO CARRY. `createAppStateWatcher`
@@ -623,6 +649,11 @@ function ChatBody(props: ChatBodyProps) {
       shotsDir: () => shotsDir(),
     }),
   );
+  // Push the stated file into the watcher so `pull()` carries it (AppPane
+  // does the same for its own entry page; a hosted chat has no AppPane).
+  useEffect(() => {
+    if (props.entry) watcher.setEntry(props.entry);
+  }, [props.entry, watcher]);
   // The framed document's console stays the app's own once we are gone.
   useEffect(() => () => watcher.dispose(), [watcher]);
   // A thumbnail's pane must neither pull the keyboard nor be recorded as the
@@ -1204,8 +1235,15 @@ function ChatBody(props: ChatBodyProps) {
         // Through a ref, like every other send-time read here: the watcher
         // outlives a pane reload and rebuilding the controller for it would
         // restart the run loop.
+        //
+        // …OR a host that STATED the file (`entry` prop): no frame to read,
+        // but the block still carries the one fact `_cli_sessions` files the
+        // chat by. `pull()` answers `{unreadable, entry}` for a watcher with
+        // no window, which is exactly the honest block for that case.
         appStateBlock: () =>
-          appFrame() ? watcher.blockForSend() : Promise.resolve(""),
+          appFrame() || entryRef.current
+            ? watcher.blockForSend()
+            : Promise.resolve(""),
         // Which status-bar terminal the user means: metadata only, "" when the
         // drawer holds no live terminal (platform/lib/terminalFocus.ts).
         terminalHint,

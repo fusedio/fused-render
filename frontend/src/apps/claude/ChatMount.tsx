@@ -223,6 +223,11 @@ export interface ChatMountProps {
   focusRef?: MutableRefObject<HTMLTextAreaElement | null>;
   /** PR3's annotate target — the sibling workbench iframe (canvas). */
   annotateTarget?: () => HTMLIFrameElement | null;
+  /** The file this chat is ABOUT when the pane beside it cannot be read (the
+   *  canvas node sidebar: `<clone>/<udf>.py` beside a cross-origin workbench).
+   *  Rides on the app-state block as `entry`, which is what files the session
+   *  under that file's Recent list (ClaudeChat `entry`). */
+  entry?: string;
   /** Replaces `window.top.location` hops; defaults to `navigateUrl`. */
   onNavigate?: (url: string) => void;
   /**
@@ -290,6 +295,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}
         {...(props.focusRef ? { focusRef: props.focusRef } : {})}
         {...(props.annotateTarget ? { annotateTarget: props.annotateTarget } : {})}
+        {...(props.entry ? { entry: props.entry } : {})}
         {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
         {...(props.recap ? { recap: true } : {})}
       />
