@@ -60,6 +60,7 @@ import {
   dropAction,
   dropLanes,
   filterTasks,
+  emptyTasksLabel,
   filtersForView,
   firstLine,
   groupByColumn,
@@ -6462,6 +6463,105 @@ describe("filtersForView — the calendar's Archive facet (2026-08-20)", () => {
     const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
     const out = filterTasks(tasks, filtersForView(f, "calendar"));
     expect(out.map((t) => t.key)).toEqual(["a", "b"]);
+  });
+});
+
+describe("filtersForView — the grouped lists hide Archive by default (2026-10-17)", () => {
+  // Time / Project / PR are the List cut into sections about live work, and
+  // "in group by time, project and pr can we not show archived tasks, unless
+  // selected in status" (Akshil). An EMPTY status list on those views means
+  // every lane but Archive; a ticked Archive shows what it names, as always.
+  const tasks = [
+    task({ key: "a", task_id: "TASK-001", title: "Upcoming thing", status: "upcoming" }),
+    task({ key: "b", task_id: "TASK-002", title: "Archived thing", status: "archived" }),
+    task({ key: "c", task_id: "TASK-003", title: "Done thing", status: "done" }),
+    task({ key: "d", task_id: "TASK-004", title: "Queued thing", status: "queued" }),
+    // A draft row (lane Upcoming) and a parked run (lane Blocked) both stay.
+    task({ key: "e", task_id: "", title: "Draft thing", status: "upcoming", kind: "draft", draft: null }),
+    task({ key: "f", task_id: "TASK-006", title: "Parked thing", status: "needs_attention" }),
+  ];
+
+  it("drops archived rows from each grouped view when no status is ticked", () => {
+    for (const view of GROUP_VIEWS) {
+      const out = filterTasks(tasks, filtersForView(EMPTY_FILTERS, view));
+      expect(out.map((t) => t.key)).toEqual(["a", "c", "d", "e", "f"]);
+    }
+  });
+
+  it("shows archived rows once Archive is ticked, alone or with others", () => {
+    for (const view of GROUP_VIEWS) {
+      const alone = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+      expect(filtersForView(alone, view)).toBe(alone);
+      expect(filterTasks(tasks, filtersForView(alone, view)).map((t) => t.key)).toEqual(["b"]);
+      const withDone = { ...EMPTY_FILTERS, statuses: ["done" as const, "archived" as const] };
+      expect(filterTasks(tasks, filtersForView(withDone, view)).map((t) => t.key)).toEqual([
+        "b",
+        "c",
+      ]);
+    }
+  });
+
+  it("leaves any other status selection alone — same reference back", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["done" as const] };
+    for (const view of GROUP_VIEWS) expect(filtersForView(f, view)).toBe(f);
+  });
+
+  it("keeps the other facets on the effective query", () => {
+    const f = { ...EMPTY_FILTERS, projects: ["/p"], draft: true, search: "x" };
+    const out = filtersForView(f, "time");
+    expect(out.projects).toEqual(["/p"]);
+    expect(out.draft).toBe(true);
+    expect(out.search).toBe("x");
+    expect(out.statuses).not.toContain("archived");
+    expect(out.statuses.length).toBeGreaterThan(0);
+  });
+
+  it("does not touch the plain List, the Board, Cards or the Calendar", () => {
+    for (const view of BASE_VIEWS) {
+      expect(filtersForView(EMPTY_FILTERS, view)).toBe(EMPTY_FILTERS);
+      expect(filterTasks(tasks, filtersForView(EMPTY_FILTERS, view)).map((t) => t.key)).toEqual([
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        "f",
+      ]);
+    }
+  });
+});
+
+describe("emptyTasksLabel — the grouped archived-only empty state (2026-10-17)", () => {
+  const ARCHIVE_HINT = "Only archived tasks here. Tick Archive under Status to see them.";
+  const NO_MATCH = "Nothing matches these filters.";
+
+  it("names the hidden Archive lane on a grouped view with no filter on", () => {
+    for (const view of GROUP_VIEWS) {
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, false)).toBe(ARCHIVE_HINT);
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, true)).toBe(ARCHIVE_HINT);
+    }
+  });
+
+  it("blames the filter once one is on, grouped or not", () => {
+    const withProject = { ...EMPTY_FILTERS, projects: ["/p"] };
+    const withSearch = { ...EMPTY_FILTERS, search: "x" };
+    const withStatus = { ...EMPTY_FILTERS, statuses: ["done" as const] };
+    for (const view of [...GROUP_VIEWS, ...BASE_VIEWS]) {
+      for (const f of [withProject, withSearch, withStatus]) {
+        expect(emptyTasksLabel(view, f, 3, false)).toBe(NO_MATCH);
+      }
+    }
+  });
+
+  it("never offers the Archive hint on List, Board, Cards or Calendar", () => {
+    for (const view of BASE_VIEWS) expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, false)).toBe(NO_MATCH);
+  });
+
+  it("says there are no tasks at all when the scope is empty, whatever the view", () => {
+    for (const view of [...GROUP_VIEWS, ...BASE_VIEWS]) {
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 0, true)).toBe("No tasks for this app yet.");
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 0, false)).toMatch(/^No tasks yet\./);
+    }
   });
 });
 
