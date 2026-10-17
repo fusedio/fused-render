@@ -31,6 +31,37 @@ def _short_model(model: str) -> str:
     return str(model).rstrip("/").rsplit("/", 1)[-1] or str(model)
 
 
+def _template_roots() -> list[str]:
+    """Every dir a core template can run from: the staged copy, the in-package
+    source and the dev override."""
+    from fused_render import core_templates
+    roots = [core_templates.core_templates_dir(), core_templates.PACKAGE_TEMPLATES_DIR]
+    override = os.environ.get("FUSED_RENDER_CORE_TEMPLATES")
+    if override:
+        roots.append(override)
+    return [os.path.abspath(r) for r in roots]
+
+
+def _template_of(path: str) -> str:
+    """The template name when `path` is inside a core templates dir, else ""."""
+    try:
+        target = os.path.abspath(path)
+        for root in _template_roots():
+            rel = os.path.relpath(target, root)
+            if not rel.startswith("..") and not os.path.isabs(rel) and rel != ".":
+                return rel.split(os.sep, 1)[0]
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
+
+
+def engine_label(folder: str, engine_id: str) -> str:
+    if folder:
+        tpl = _template_of(folder)
+        return f"{tpl} template engine" if tpl else f"Engine: {_basename(folder)}"
+    return f"Engine: {engine_id}"
+
+
 def _engines(out: dict[int, Owner]) -> None:
     from fused_render.server import engine_host
     with engine_host._lock:
@@ -43,10 +74,8 @@ def _engines(out: dict[int, Owner]) -> None:
         folder = str(getattr(c, "folder", "") or "")
         if engine_id.startswith("bg_") and folder:
             label = f"App: {_basename(folder)}"
-        elif folder:
-            label = f"Engine: {_basename(folder)}"
         else:
-            label = f"Engine: {engine_id}"
+            label = engine_label(folder, engine_id)
         out[pid] = Owner("engine", label, {"engine_id": engine_id})
 
 
@@ -86,7 +115,14 @@ def _installs(out: dict[int, Owner]) -> None:
         out[int(pid)] = Owner("install", "Installing env", {})
 
 
-_READERS = (_engines, _models, _apple, _terminals, _installs)
+def _runs(out: dict[int, Owner]) -> None:
+    from fused_render import executor
+    for pid, (folder, target) in executor.active_runs().items():
+        out[int(pid)] = Owner("run", f"Run: {_basename(folder)} › {_basename(target)}",
+                              {"path": target})
+
+
+_READERS = (_engines, _models, _apple, _terminals, _installs, _runs)
 
 
 def registry_owners() -> dict[int, Owner]:
@@ -202,14 +238,36 @@ def _is_python(exe: str) -> bool:
     return exe.lower().startswith("python")
 
 
-def command_name(args: list[str] | None) -> str:
-    """A short human name for a command line: the script or module for a
-    Python process, the executable's basename otherwise."""
+def _venv_project(exe_path: str) -> str:
+    """The project folder name when the interpreter is `<proj>/.venv|venv/bin/python`."""
+    parts = os.path.normpath(exe_path).split(os.sep)
+    if len(parts) >= 4 and parts[-2] == "bin" and parts[-3] in (".venv", "venv"):
+        return parts[-4]
+    return ""
+
+
+def _in_shared_venvs(exe_path: str) -> bool:
+    try:
+        from fused_render import projectenv
+        root = os.path.abspath(projectenv.venvs_root())
+        return os.path.abspath(exe_path).startswith(root + os.sep)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _parent_script(script: str) -> str:
+    parent = _basename(os.path.dirname(script))
+    return f"{parent}/{_basename(script)}" if parent else _basename(script)
+
+
+def describe(args: list[str] | None) -> tuple[str, str]:
+    """(kind, label) for a command line. kind is "template" for a script that
+    lives in the core templates dir, else "other"."""
     if not args:
-        return "process"
+        return "other", "process"
     exe = _basename(args[0])
     if not _is_python(exe):
-        return exe
+        return "other", exe
     rest = args[1:]
     for i, a in enumerate(rest):
         if a == "-m" and i + 1 < len(rest):
@@ -217,13 +275,27 @@ def command_name(args: list[str] | None) -> str:
             if module.startswith("fused_render."):
                 # fused_render.index.worker -> "fused-render index worker"
                 tail = module[len("fused_render."):].replace(".", " ").replace("_", " ")
-                return f"fused-render {tail}"
-            return module
+                return "other", f"fused-render {tail}"
+            return "other", module
         if a == "-c":
-            return "python -c"
+            code = re.sub(r"\s+", " ", rest[i + 1] if i + 1 < len(rest) else "").strip()
+            return "other", f'python -c "{code[:40]}"'
         if not a.startswith("-"):
-            return _basename(a)
-    return exe
+            tpl = _template_of(a) if os.path.isabs(a) else ""
+            if tpl:
+                return "template", f"{tpl} template › {os.path.splitext(_basename(a))[0]}"
+            proj = _venv_project(args[0])
+            if proj:
+                return "other", f"{proj} › {_basename(a)}"
+            return "other", _parent_script(a) if (_in_shared_venvs(args[0]) or os.sep in a) \
+                else _basename(a)
+    return "other", exe
+
+
+def command_name(args: list[str] | None) -> str:
+    """A short human name for a command line: the script or module for a
+    Python process, the executable's basename otherwise."""
+    return describe(args)[1]
 
 
 def classify(pid: int, args: list[str] | None) -> Owner | None:
@@ -236,4 +308,7 @@ def classify(pid: int, args: list[str] | None) -> Owner | None:
         return Owner("claude", f"Claude: {name}" if name else "Claude", {})
     if _is_python(exe) and any(_basename(a) == "_child.py" for a in args[1:3]):
         return Owner("run", "Run: Python", {})
+    kind, label = describe(args)
+    if kind == "template":
+        return Owner("template", label, {})
     return None
