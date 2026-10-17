@@ -29,6 +29,7 @@ def test_recording_writes_bundle_and_forces_watch(rec, tmp_path):
     rec.join(5)
     st = rec.status()
     assert st["recording"] is False and len(st["recordings"]) == 1
+    assert st["dir"] == rec_dir(tmp_path)          # the UI links the saved file by this path
     path = os.path.join(rec_dir(tmp_path), st["recordings"][0]["name"])
     data = json.load(open(path))
     assert len(data["snapshots"]) >= 2

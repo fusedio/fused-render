@@ -184,6 +184,8 @@ export interface ProcessDetail {
 export interface RecordStatus {
   recording: boolean;
   seconds_left: number;
+  /** Absolute folder the recordings are saved in. */
+  dir?: string;
   recordings: { name: string; bytes: number }[];
   already?: boolean;
 }

@@ -74,7 +74,7 @@ class Recorder:
         rec = self._recording()
         return {"recording": rec,
                 "seconds_left": round(max(0.0, self._deadline - time.monotonic()), 1) if rec else 0,
-                "recordings": self.list()}
+                "dir": recordings_dir(), "recordings": self.list()}
 
     def list(self) -> list[dict]:
         d = recordings_dir()

@@ -41,6 +41,13 @@ export function parseMonitorParams(search: string): MonitorParams {
   };
 }
 
+/** The params a verdict reason's `/monitor?...` link (or any monitorUrl)
+ *  names, so a click switches tab and filters in place rather than reloading. */
+export function paramsFromLink(link: string): MonitorParams {
+  const i = link.indexOf("?");
+  return parseMonitorParams(i < 0 ? "" : link.slice(i));
+}
+
 export function monitorUrl(p: {
   tab: Tab;
   source?: string;
@@ -86,6 +93,17 @@ export function appendRows(cur: NetRow[], incoming: NetRow[], cap = ROW_LIMIT): 
   for (const r of incoming) byId.set(r.id, r);
   const all = [...byId.values()].sort((a, b) => a.seq - b.seq);
   return all.length > cap ? all.slice(all.length - cap) : all;
+}
+
+/** "Claude CLIs: 3 (fused-render 2 · other 1) · 1.4 GB" — the Processes tab's
+ *  summary line and the chip popover's. */
+export function claudeLine(c: {
+  total: number;
+  fused: number;
+  other: number;
+  mem_bytes: number;
+}): string {
+  return `Claude CLIs: ${c.total} (fused-render ${c.fused} · other ${c.other}) · ${formatBytes(c.mem_bytes, true)}`;
 }
 
 export type TileLevel = Level | "unavailable";

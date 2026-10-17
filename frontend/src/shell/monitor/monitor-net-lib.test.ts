@@ -5,9 +5,11 @@ import type { Dashboard, NetRow } from "@shell/monitor/monitor-api";
 import { netRequestsUrl } from "@shell/monitor/monitor-api";
 import {
   appendRows,
+  claudeLine,
   mainClient,
   monitorUrl,
   overviewTiles,
+  paramsFromLink,
   parseMonitorParams,
   slotStrip,
   timelineSeries,
@@ -181,4 +183,18 @@ test("timelineSeries gives one row per figure and skips nulls", () => {
   expect(rows.map((r) => r.key)).toEqual(["rps", "in_flight", "pool", "lag_ms", "cpu", "swap"]);
   expect(rows[0].points.map((p) => p.v)).toEqual([1, null]);
   expect(rows[5].points.map((p) => p.v)).toEqual([1, 2]);
+});
+
+test("claudeLine names the split and the memory", () => {
+  expect(claudeLine({ total: 3, fused: 2, other: 1, mem_bytes: 1.5 * (1 << 30) })).toBe(
+    "Claude CLIs: 3 (fused-render 2 · other 1) · 1.5 GB",
+  );
+});
+
+test("paramsFromLink reads a verdict reason's deep link", () => {
+  expect(paramsFromLink("/monitor?tab=network&source=a%20b&route=%2Fapi%2Fx")).toEqual({
+    tab: "network", source: "a b", route: "/api/x", pid: null,
+  });
+  expect(paramsFromLink("/monitor?tab=processes&pid=7").pid).toBe(7);
+  expect(paramsFromLink("/monitor").tab).toBe("overview");
 });

@@ -13,6 +13,8 @@ export type SystemProcKind =
   | "terminal"
   | "install"
   | "run"
+  | "template"
+  | "daemon"
   | "other";
 
 export interface SystemProc {
@@ -48,6 +50,22 @@ export interface SystemHistoryPoint {
   appMemBytes: number | null;
 }
 
+/** The live Claude CLIs rolled up (sysmon/labels.claude_summary). */
+export interface ClaudeSummary {
+  total: number;
+  fused: number;
+  other: number;
+  mem_bytes: number;
+  cpu_pct: number;
+  top: { pid: number; label: string; mem: number; cpu: number }[];
+}
+
+/** The chip's compact verdict (`GET /api/system/activity`). */
+export interface SystemVerdict {
+  level: "ok" | "warn" | "bad";
+  headline: string;
+}
+
 export interface SystemActivity {
   supported: boolean;
   host: SystemHost | null;
@@ -55,6 +73,8 @@ export interface SystemActivity {
   history: SystemHistoryPoint[];
   /** Summed over fused-render's processes: what fused-render costs you. */
   totals: { cpuPct: number | null; memBytes: number | null };
+  claude?: ClaudeSummary | null;
+  verdict?: SystemVerdict;
 }
 
 /** One row of `?scope=all` — every process on the machine. `fused` rows keep
