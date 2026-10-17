@@ -116,8 +116,8 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
       } catch {
         // A failed poll is "nothing new"; the next tick asks again.
       }
-      lastState.current = state;
       if (dead) return;
+      lastState.current = state;
       const delay = nextPollDelay({ running, state, ended: false }, clock);
       if (delay != null) timer = setTimeout(() => void tick(), delay);
     };

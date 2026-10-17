@@ -242,6 +242,32 @@ test("the card hides at once when the pref turns off", async () => {
   expect(api.note).toBeNull();
 });
 
+test("a poll in flight when the effect is torn down never writes lastState", async () => {
+  const realF = globalThis.fetch;
+  let release!: (r: Response) => void;
+  let calls = 0;
+  (globalThis as { fetch: unknown }).fetch = (url: string, init?: { method?: string }) => {
+    if (init?.method === "POST") return Promise.resolve(new Response("{}", { status: 200 }));
+    calls++;
+    polls.push(String(url));
+    if (calls === 1) return new Promise<Response>((res) => (release = res));
+    // The new effect's first poll fails, so it falls back to lastState.
+    if (calls === 2) return Promise.reject(new Error("offline"));
+    return Promise.resolve(new Response(JSON.stringify({ state: "idle" }), { status: 200 }));
+  };
+  const p: Props = { runId: "r1", running: true, enabled: true, userTurns: 0 };
+  const r = mount(p);
+  await wait(25);
+  act(() => r.update(<Probe {...p} enabled={false} />));
+  act(() => r.update(<Probe {...p} enabled={true} />));
+  await act(async () => {
+    release(new Response(JSON.stringify({ state: "disabled" }), { status: 200 }));
+  });
+  await wait(100);
+  expect(calls).toBeGreaterThan(2);
+  (globalThis as { fetch: unknown }).fetch = realF;
+});
+
 test("countUserTurns skips interrupt markers", () => {
   const turns = [
     { role: "user", text: "hi" },
