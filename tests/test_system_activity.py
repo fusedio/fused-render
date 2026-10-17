@@ -598,7 +598,7 @@ def test_detached_template_daemon_is_fused_in_scope_all(client, fake, monkeypatc
     monkeypatch.setattr(labels, "_template_roots", lambda: [str(core)])
     _add_proc(backend, 960, 1, ["/usr/bin/python3", str(core / "map" / "daemon.py")])
     _add_proc(backend, 961, 1, ["/usr/bin/python3", "/elsewhere/daemon.py"])
-    _add_proc(backend, 962, 1, ["/usr/bin/python3", str(core / "map" / "daemon.py")], uid=0)
+    _add_proc(backend, 962, 1, ["/usr/bin/python3", str(core / "map" / "daemon.py")], uid=backend.uid + 1)
     rows = {r["pid"]: r for r in client.get("/api/system/activity?scope=all").json()["procs"]}
     assert (rows[960]["fused"], rows[960]["kind"]) == (True, "template")
     assert rows[960]["label"] == "map template › daemon"
