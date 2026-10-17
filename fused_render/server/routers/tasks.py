@@ -130,6 +130,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from fused_render import netlog
 from fused_render import (
     app_listing,
     current_apps,
@@ -5707,6 +5708,7 @@ def _changes_answer(since: int, gen: int, keys, scope_dir: str) -> dict:
 
 
 @router.websocket("/api/tasks/changes/ws")
+@netlog.tracked_ws("tasks-changes")
 async def api_tasks_changes_ws(ws: WebSocket):
     """`/api/tasks/changes`, as requests multiplexed over one WebSocket.
 

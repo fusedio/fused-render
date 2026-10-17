@@ -137,7 +137,7 @@ def test_get_is_unguarded_and_has_the_documented_shape(client, fake):
     backend, clock, s = fake
     body = client.get("/api/system/activity").json()
     assert body["supported"] is True
-    assert set(body) == {"supported", "host", "procs", "history", "totals"}
+    assert set(body) == {"supported", "host", "procs", "history", "totals", "claude", "verdict"}
     assert set(body["host"]) == {"cpuPct", "cpuUser", "cpuSystem", "ncpu", "load",
                                  "memTotal", "memUsed", "memApp", "memWired",
                                  "memCompressed", "windowS"}
@@ -196,7 +196,7 @@ def test_claude_roots_outside_the_tree_are_sampled(monkeypatch, registries):
 def test_command_name_reads_scripts_and_modules():
     assert labels.command_name(["/x/python3.12", "-m", "fused_render.index.worker"]) == \
         "fused-render index worker"
-    assert labels.command_name(["/x/python", "/a/b/serve.py", "--port", "1"]) == "serve.py"
+    assert labels.command_name(["/x/python", "/a/b/serve.py", "--port", "1"]) == "b/serve.py"
     assert labels.command_name(["/bin/zsh", "-l"]) == "zsh"
     assert labels.command_name(None) == "process"
     assert labels.classify(1, ["/x/python", "/pkg/fused_render/_child.py"]).kind == "run"
@@ -312,7 +312,7 @@ ALL_ROW_KEYS = {"pid", "ppid", "user", "command", "args", "cpuPct", "memBytes",
 def test_scope_all_lists_every_process_with_identity(client, fake):
     backend, clock, s = fake
     body = client.get("/api/system/activity?scope=all").json()
-    assert set(body) == {"supported", "host", "procs", "history", "totals"}
+    assert set(body) == {"supported", "host", "procs", "history", "totals", "claude", "verdict"}
     rows = {r["pid"]: r for r in body["procs"]}
     assert set(rows) == {1, ROOT, 201, 202, 203, 204, 900, 950}
     assert all(set(r) == ALL_ROW_KEYS for r in rows.values())
@@ -580,3 +580,79 @@ def test_a_claude_run_pid_file_naming_a_recycled_pid_is_not_claude(tmp_path):
     assert not labels._is_run_process(B(["/bin/zsh", "-l"], written - 10), 4242, run)
     # A claude that started after the pid file was written reused the pid.
     assert not labels._is_run_process(B(["/u/.local/bin/claude"], written + 60), 4242, run)
+
+
+# ---- detached daemons and the Claude count ------------------------------------
+
+def _add_proc(backend, pid, ppid, args, uid=None, cpu=0, mem=10):
+    uid = backend.uid if uid is None else uid
+    backend.cpu_ns[pid] = cpu
+    backend.mem[pid] = mem
+    backend.args[pid] = args
+    backend.idents[pid] = ProcIdent(pid, ppid, uid, 1_700_000_000.0 + pid, f"proc{pid}", False)
+
+
+def test_detached_template_daemon_is_fused_in_scope_all(client, fake, monkeypatch, tmp_path):
+    backend, clock, s = fake
+    core = tmp_path / "core"
+    monkeypatch.setattr(labels, "_template_roots", lambda: [str(core)])
+    _add_proc(backend, 960, 1, ["/usr/bin/python3", str(core / "map" / "daemon.py")])
+    _add_proc(backend, 961, 1, ["/usr/bin/python3", "/elsewhere/daemon.py"])
+    _add_proc(backend, 962, 1, ["/usr/bin/python3", str(core / "map" / "daemon.py")], uid=backend.uid + 1)
+    rows = {r["pid"]: r for r in client.get("/api/system/activity?scope=all").json()["procs"]}
+    assert (rows[960]["fused"], rows[960]["kind"]) == (True, "template")
+    assert rows[960]["label"] == "map template › daemon"
+    assert rows[961]["fused"] is False       # not a template script
+    assert rows[962]["fused"] is False       # another user's process
+
+
+def test_claude_count_splits_fused_and_other(client, fake):
+    backend, clock, s = fake
+    _add_proc(backend, 970, 1, ["/usr/local/bin/claude"], cpu=0, mem=100)   # not ours
+    _add_proc(backend, 971, 970, ["/usr/bin/node"], mem=50)
+    backend.args[900] = ["/usr/local/bin/claude"]                       # a run, via roots
+    s._roots = lambda: {900: labels.Owner("claude", "Claude: x", {"run_id": "r"})}
+    body = client.get("/api/system/activity?scope=all").json()
+    c = body["claude"]
+    assert (c["total"], c["fused"], c["other"]) == (2, 1, 1)
+    assert c["mem_bytes"] == 1 + 100 + 50
+
+
+def test_claude_count_in_default_scope_covers_fused_runs_only(client, fake):
+    backend, clock, s = fake
+    _add_proc(backend, 970, 1, ["/usr/local/bin/claude"])   # someone else's
+    backend.args[900] = ["/usr/local/bin/claude"]
+    s._roots = lambda: {900: labels.Owner("claude", "Claude: x", {"run_id": "r"})}
+    c = client.get("/api/system/activity").json()["claude"]
+    assert (c["total"], c["fused"], c["other"]) == (1, 1, 0)
+
+
+# ---- process detail -------------------------------------------------------------
+
+def test_detail_reports_argv_cwd_parents_owner_and_ports(client, fake, monkeypatch):
+    from fused_render.sysmon import detail
+    backend, clock, s = fake
+    backend.args[203] = ["/w/proj/.venv/bin/python", "serve.py", "--token", "hunter2"]
+    backend.cwd = lambda pid: "/w/proj" if pid == 203 else None
+    monkeypatch.setattr(detail, "_lsof_ports", lambda pid: [8123] if pid == 203 else [])
+    client.get("/api/system/activity")
+    d = client.get("/api/system/activity/detail?pid=203").json()
+    assert d["pid"] == 203 and d["cwd"] == "/w/proj"
+    assert d["argv"] == ["/w/proj/.venv/bin/python", "serve.py", "--token", "•••"]
+    assert d["venv"] == "/w/proj/.venv"
+    assert d["ports"] == [8123]
+    assert [p["pid"] for p in d["parents"]] == [ROOT, 1]
+    assert d["owner"]["kind"] == "other" and d["owner"]["label"]
+    assert d["started_at"] == 1_700_000_000.0 + 203
+
+
+def test_detail_unknown_pid_and_bad_pid(client, fake):
+    assert client.get("/api/system/activity/detail?pid=999999").status_code == 404
+    assert client.get("/api/system/activity/detail?pid=abc").status_code == 400
+
+
+def test_detail_survives_missing_readers(client, fake, monkeypatch):
+    from fused_render.sysmon import detail
+    monkeypatch.setattr(detail, "_lsof_ports", lambda pid: (_ for _ in ()).throw(OSError("x")))
+    d = client.get("/api/system/activity/detail?pid=204").json()
+    assert d["cwd"] is None and d["ports"] == [] and d["venv"] is None

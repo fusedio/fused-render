@@ -1,0 +1,156 @@
+// The Overview tab (and the tab shell) rendered against a fixed dashboard.
+import { afterEach, expect, jest, test } from "bun:test";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+
+import type { Dashboard } from "@shell/monitor/monitor-api";
+import OverviewTab from "@shell/monitor/OverviewTab";
+
+const GB = 1 << 30;
+const DASH = {
+  t: 1000,
+  verdict: {
+    level: "bad",
+    headline: "All 6 browser connections held for 9s+ by page-a x /api/x",
+    reasons: [
+      { key: "connections", level: "bad", text: "All 6 browser connections held for 9s+ by page-a x /api/x", link: "/monitor?tab=network&source=page-a&route=%2Fapi%2Fx" },
+      { key: "claude", level: "warn", text: "9 Claude CLIs open using 5.0 GB", link: "/monitor?tab=processes" },
+    ],
+  },
+  net: { summary: { rps_10s: 4, rps_60s: 3, in_flight: [{ client: "c", in_flight: 6, saturated_s: 9, top: null }], in_flight_total: 6, oldest_in_flight_s: 9, errors_60s: 0, long_held: [], browser_queue_p95_ms: 700 }, groups: [] },
+  server: { pool: { borrowed: 3, total: 40 }, loop_lag: { current_ms: 4, max_60s_ms: 9 }, sockets: {} },
+  memory: { used: 8 * GB, total: 16 * GB, swap_used: GB, swap_growth_10m_bytes: 0, pressure: "normal", biggest: null },
+  cpu: { cpu_pct: 20, load: [1.2, 1, 1], ncpu: 8, thermal_limit: 100, low_power: false },
+  claude: { total: 9, fused: 5, other: 4, mem_bytes: 5 * GB, cpu_pct: 1, top: [] },
+  calls: { window_s: 600, top_overhead: [{ entrypoint: "/x/slow.py", count: 3, run_p95_ms: 50, overhead_p50_ms: 100, overhead_p95_ms: 800 }] },
+  index: { waiting: 0, abandoned: 0, scans: { running: 0, limit: 2 } },
+  ai: { workers: [] },
+  jobs: { running: 1, stalled: 1, queued: 0, stalled_list: [{ id: "j1", title: "Stuck export" }] },
+  installs: { in_flight: [], failures: [] },
+  disk: { error: "OSError: boom" },
+  errors: { outages: [], last_outage_age_s: null, server_log_errors: ["2026 ERROR [x] bad thing"], crashes: [], restarts_24h: 0 },
+  baseline: { load: 1.0, swap_used: GB, rss: GB },
+  timeline: {
+    points: [1, 2, 3].map((i) => ({ t: 990 + i, rps: i, in_flight: i, pool: 1, lag_ms: 1, cpu: 10, swap: GB })),
+    events: [{ t: 992, kind: "outage" }],
+  },
+} as unknown as Dashboard;
+
+let renderer: ReactTestRenderer | null = null;
+afterEach(() => {
+  act(() => renderer?.unmount());
+  renderer = null;
+});
+const text = (n: ReactTestInstance | string): string =>
+  typeof n === "string" ? n : n.children.map((c) => text(c as ReactTestInstance | string)).join("");
+const byClass = (r: ReactTestRenderer, c: string) =>
+  r.root.findAll((n) => typeof n.type === "string" && n.props.className?.split(" ").includes(c));
+
+async function mount(onNavigate: (l: string) => void = () => {}, extra: Record<string, unknown> = {}) {
+  await act(async () => {
+    renderer = create(
+      <OverviewTab
+        load={async () => DASH}
+        pollMs={1e9}
+        onNavigate={onNavigate}
+        recordApi={{
+          start: async () => ({ recording: true, seconds_left: 60, recordings: [] }),
+          status: async () => ({ recording: false, seconds_left: 0, dir: "/logs/perf-recordings", recordings: [{ name: "a.json", bytes: 1 }] }),
+        }}
+        {...extra}
+      />,
+    );
+  });
+  await act(async () => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  });
+  return renderer!;
+}
+
+test("the banner names the cause and each reason is a link that navigates in place", async () => {
+  const seen: string[] = [];
+  const r = await mount((l) => seen.push(l));
+  const banner = byClass(r, "monitor-verdict")[0];
+  expect(banner.props.className).toContain("is-bad");
+  expect(text(banner)).toContain("All 6 browser connections held");
+  const links = byClass(r, "monitor-verdict-reasons")[0].findAll((n) => n.type === "a");
+  expect(links).toHaveLength(2);
+  let prevented = false;
+  links[0].props.onClick({ button: 0, preventDefault: () => (prevented = true) });
+  expect(prevented).toBe(true);
+  expect(seen).toEqual(["/monitor?tab=network&source=page-a&route=%2Fapi%2Fx"]);
+  seen.length = 0;
+  links[1].props.onClick({ button: 0, metaKey: true, preventDefault: () => {} });
+  expect(seen).toEqual([]);
+});
+
+test("twelve tiles; a failed section is unavailable in its own tile only", async () => {
+  const r = await mount();
+  const tiles = byClass(r, "monitor-tile");
+  expect(tiles).toHaveLength(12);
+  const disk = tiles.find((t) => t.props["data-tile"] === "disk")!;
+  expect(disk.props.className).toContain("is-unavailable");
+  expect(text(disk)).toContain("unavailable");
+  const req = tiles.find((t) => t.props["data-tile"] === "requests")!;
+  expect(req.props.className).toContain("is-bad");
+  const cpu = tiles.find((t) => t.props["data-tile"] === "cpu")!;
+  expect(text(cpu)).toContain("usual load 1.0");
+});
+
+test("timeline rows share the axis and carry the outage marker; lists fill from the sections", async () => {
+  const r = await mount();
+  expect(byClass(r, "monitor-tl-row")).toHaveLength(6);
+  expect(byClass(r, "monitor-tl-mark").length).toBeGreaterThan(0);
+  expect(text(r.root)).toContain("Stuck export");
+  expect(text(r.root)).toContain("/x/slow.py");
+  expect(text(r.root)).toContain("bad thing");
+});
+
+test("Record 60s counts down, Copy report copies the dashboard JSON, the saved file is linked", async () => {
+  let copied = "";
+  const r = await mount(() => {}, { copy: (t: string) => void (copied = t) });
+  const btn = (label: string) => r.root.find((n) => n.type === "button" && text(n).startsWith(label));
+  expect(text(r.root)).toContain("Saved: a.json");
+  const link = r.root.find((n) => n.props.className === "monitor-recording-link");
+  expect(link.props.href).toContain("perf-recordings");
+  await act(async () => btn("Record 60s").props.onClick());
+  expect(text(btn("Recording")).includes("60s")).toBe(true);
+  await act(async () => btn("Copy report").props.onClick());
+  expect(JSON.parse(copied).verdict.level).toBe("bad");
+});
+
+const btnOf = (r: ReactTestRenderer, label: string) =>
+  r.root.find((n) => n.type === "button" && text(n).startsWith(label));
+
+test("Copy report says 'Copy failed' when the clipboard write rejects", async () => {
+  const r = await mount(() => {}, { copy: () => Promise.reject(new Error("denied")) });
+  await act(async () => btnOf(r, "Copy report").props.onClick());
+  expect(text(btnOf(r, "Copy failed"))).toBe("Copy failed");
+});
+
+test("Copy report says 'Copy failed' when navigator.clipboard is undefined", async () => {
+  const had = Object.getOwnPropertyDescriptor(globalThis.navigator, "clipboard");
+  Object.defineProperty(globalThis.navigator, "clipboard", { value: undefined, configurable: true });
+  try {
+    const r = await mount(); // the default copy reads navigator.clipboard
+    await act(async () => btnOf(r, "Copy report").props.onClick());
+    expect(text(btnOf(r, "Copy failed"))).toBe("Copy failed");
+  } finally {
+    if (had) Object.defineProperty(globalThis.navigator, "clipboard", had);
+    else delete (globalThis.navigator as unknown as Record<string, unknown>).clipboard;
+  }
+});
+
+test("the 'Copied' reset timer is cleared on unmount", async () => {
+  jest.useFakeTimers();
+  try {
+    const r = await mount(() => {}, { copy: () => {} });
+    await act(async () => btnOf(r, "Copy report").props.onClick());
+    expect(text(btnOf(r, "Copied"))).toBe("Copied");
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+    act(() => renderer?.unmount());
+    renderer = null;
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});

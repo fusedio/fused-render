@@ -2230,3 +2230,120 @@ a.sys-link {
   font-display: block;
   src: url("../assets/fonts/JetBrainsMonoNerdFontMono-Bold.woff2") format("woff2");
 }
+
+/* The System chip's verdict dot. The slot is always there (`is-none` only
+   hides the paint), so the chip's width never changes when a verdict appears. */
+.sc-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.sc-dot.is-none {
+  visibility: hidden;
+}
+
+.sc-dot.is-warn {
+  background: var(--warning);
+}
+
+.sc-dot.is-bad {
+  background: var(--error);
+}
+
+/* The System popover's verdict, Claude line, timeline and key numbers. */
+.sys-verdict {
+  margin: 0 10px 6px;
+  padding: 6px 8px;
+  border-left: 3px solid var(--success);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+
+.sys-verdict.is-warn {
+  border-left-color: var(--warning);
+}
+
+.sys-verdict.is-bad {
+  border-left-color: var(--error);
+}
+
+.sys-verdict-head {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sys-reasons {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  font-size: 11px;
+}
+
+.sys-reason {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.sys-reason:hover {
+  text-decoration: underline;
+}
+
+.sys-claude {
+  padding: 0 10px 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.sys-tl-wrap {
+  padding: 2px 10px 8px;
+}
+
+.sys-keys {
+  margin: 0;
+  padding: 0 10px 6px;
+}
+
+.sys-key {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 6px;
+  padding: 1px 0;
+  font-size: 11px;
+}
+
+.sys-key dt {
+  color: var(--fg-muted);
+}
+
+.sys-key dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.sys-key.is-warn dd {
+  color: var(--warning);
+}
+
+.sys-key.is-bad dd {
+  color: var(--error);
+}
+
+.sys-key-base {
+  color: var(--fg-muted);
+}
+
+.sys-record {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.sys-record:disabled {
+  color: var(--fg-muted);
+  cursor: default;
+}
