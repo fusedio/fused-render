@@ -57,6 +57,7 @@ import {
   hfLogout,
   putAppSharingEnabled,
   putCanvasesEnabled,
+  putChatHeadsupEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
   putMarketplaceEnabled,
@@ -92,7 +93,11 @@ import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
-import { publishProjectQueueEnabled, publishTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
+import {
+  publishChatHeadsupEnabled,
+  publishProjectQueueEnabled,
+  publishTaskRecapTitlesEnabled,
+} from "@apps/claude/feature-flag";
 import {
   agentLabel,
   modelLabelsOf,
@@ -930,6 +935,48 @@ function TaskRecapSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
           <b>Task recaps</b> (opt-in beta).
+        </span>
+      </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Heads-up notes in chat: while Claude works, a side check may put one short
+// note above the message box. Opt-in, the recap section's shape, because every
+// check spends tokens from the user's Claude plan.
+function ChatHeadsupSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // `=== true`: OPT-IN, so a server that predates the field has no notes.
+  const enabled = prefs.chat_headsup?.enabled === true;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putChatHeadsupEnabled(!enabled);
+      onChange(next);
+      publishChatHeadsupEnabled(next.chat_headsup?.enabled === true);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Heads-up notes</h2>
+      <p className="deploy-muted">
+        While Claude works, a side check looks for something important you might miss and shows a
+        short note above the message box. Uses extra tokens from your Claude plan.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Heads-up notes in chat</b>
         </span>
       </label>
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -2171,6 +2218,7 @@ export default function Preferences() {
                 {!bot && <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />}
                 <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <LivePreviewsSection prefs={prefs} onChange={setPrefs} />}
+                <ChatHeadsupSection prefs={prefs} onChange={setPrefs} />
                 <MonitorSection prefs={prefs} onChange={setPrefs} />
                 {!bot && <MarketplaceSection prefs={prefs} onChange={setPrefs} />}
                 <PhoneSection />

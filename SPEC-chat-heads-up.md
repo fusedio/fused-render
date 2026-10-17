@@ -192,3 +192,17 @@ Style it after `ui/PermCard.tsx` and `PlanCard.tsx`, using existing classes and 
 ## Builder log
 
 (append here)
+
+### Decisions and deviations (builder)
+
+- **Fork cwd without `Popen(cwd=)`.** `--resume` finds the session under the cwd's project dir, so the fork must start in the main session's cwd. But recap spawns with no cwd (a `cwd=` forces fork+exec, PROJ SIGSEGV). So on POSIX `headsup._spawn_argv` wraps the argv as `/bin/sh -c 'cd "$1" || exit 1; shift; exec "$@"' sh <cwd> <argv...>` (absolute `/bin/sh`, `close_fds=False`, no `cwd=` kwarg). On Windows it passes `cwd=` (no fork path there). Test: stub CLI reports its getcwd.
+- **`_recap_result` not reused.** It ends in the recap's plain-text and length rules, which would mangle a structured note, so `headsup._result_text` re-implements the terminal-`result` scan (same clean-success rule).
+- **`turn_index` meaning.** `main_steps` returns the 0-based index of the turn the steps belong to (results seen BEFORE it), not the raw count of `result` rows. With the raw count, the closing `result` would renumber the turn and defeat the per-turn bucket dedupe and the one-note-per-turn rule.
+- **launch.json includes `backend`.** Beyond the spec's field list, so a Copilot run is never forked as if it were Claude (`build_fork_argv` returns None for non-claude). `argv` (Copilot only) is excluded.
+- **`build_fork_argv` returns a `Fork(argv, cwd, dir, session_id)` namedtuple**, not `(argv, cwd)`: the caller needs the temp dir to remove it and the session id for `_spawn_env`.
+- **Prefs shape.** The server/GET key is `chat_headsup: {enabled}` (the shape every other flag uses, e.g. `live_previews`), PUT body key `chat_headsup_enabled`. The frontend `Prefs` type has `chat_headsup?: {enabled: boolean}`, not a flat `chat_headsup_enabled`.
+- **Auto-clear counting.** The card clears after 2 more user rows in `state.turns` (counted in ClaudeChat with `useMemo`, passed as `userTurns`); the base is the count when the note first arrived.
+- **Poll timing seam.** `useHeadsUp` takes an optional `timing` (tests use ms-scale intervals); `nextPollDelay` is exported and unit-tested for the 10 s / 5 s / 1.5 s rules. A run that is not running and not checking does no initial poll on mount.
+- **Settings toggle** is its own section "Heads-up notes" (heading + the spec's description + a "Heads-up notes in chat" checkbox), in the Live previews section's position. Markup copied from the Task recaps section (opt-in, not the inverted live-previews checkbox).
+- **Card placement.** Rendered in the Transcript `recap` slot before `RecapFold`, per spec. Claude-backend chats only (`chatBackend === "claude"`).
+- **Pre-existing failures** (not from this branch; reproduced with agent.py reverted to HEAD): `tests/test_agent_backend.py::test_copilot_spawn_env_strips_claude_and_adds_the_gh_token` and `::test_poll_context_has_no_window_until_known_and_claude_is_untouched`.
