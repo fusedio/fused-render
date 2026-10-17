@@ -260,6 +260,11 @@ export interface ClaudeChatProps {
   annotateTarget?: () => HTMLIFrameElement | null;
   /** `_preview=1` — this mount is a thumbnail, so the pane's own render is too. */
   preview?: boolean;
+  /** `_noann=1` — no Screenshot / Comment / Annotate seats and no narrow-view
+   *  toggle: the host shows this chat where its pane must stay out of reach
+   *  (the canvas node pane, whose Code tab is the file's view). The pane
+   *  itself stays mounted — it is what files the chat under its file. */
+  noAnnTools?: boolean;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -577,7 +582,16 @@ function ChatBody(props: ChatBodyProps) {
       if (!frame) return null;
       // A frame still loading answers with its own `about:blank` document,
       // which is readable and no reason to disown it — the watcher polls.
-      if (!frame.contentDocument && !frame.contentWindow) return null;
+      //
+      // A CROSS-ORIGIN frame (the canvas workspace's hosted workbench) answers
+      // a WindowProxy but a null `contentDocument`, and that is a frame whose
+      // document is NOT ours to read: it used to pass here, which put
+      // `has_pane:"1"` on the wire — the `app_state` tool in the roster and
+      // the app-folder prompt for a page the model could never read. The
+      // annotation overlay is unaffected: it takes the frame straight from
+      // `annotateTarget` (useAnnotations `markedFrame`), never through here,
+      // because it only needs the frame's BOX, not its document.
+      if (!frame.contentDocument) return null;
       return frame;
     } catch {
       return null; // the getter threw, or the document is not ours to read
@@ -4960,7 +4974,7 @@ function ChatBody(props: ChatBodyProps) {
               // The row itself follows the ANNOTATE TARGET — ours or the
               // host's — because all three seats act on it
               // (`enterNoPane`'s step 6 note).
-              shown={annTarget}
+              shown={annTarget && !props.noAnnTools}
               // NO CAMERA GATE — T RENDERS THIS SEAT IN THE NARROW CHAT VIEW,
               // and the owner's rule is identical UX (visual pass 2, FIX-18).
               // T:3823's `body.view-chat .viewshot { display: none }` has
@@ -5029,7 +5043,7 @@ function ChatBody(props: ChatBodyProps) {
                 leftMode={leftMode}
               />
             ) : null}
-            {narrowView.narrow ? <ViewToggle narrowView={narrowView} /> : null}
+            {narrowView.narrow && !props.noAnnTools ? <ViewToggle narrowView={narrowView} /> : null}
             {/* The menu rides the same seat in BOTH views (T's `#kebab` is on
                 the one strip they share), so it never appears out of nowhere on
                 entering a chat. On the landing it is the one item that can mean

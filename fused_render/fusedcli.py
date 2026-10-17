@@ -197,13 +197,17 @@ def log_cli_provenance() -> str | None:
 
 def workbench_env() -> str:
     """The Fused environment the workbench features target — ONE knob
-    (FUSED_RENDER_WORKBENCH_ENV, default prod) shared by canvases.py's
+    (FUSED_RENDER_WORKBENCH_ENV, default UNSTABLE for now — owner,
+    2026-10-17, while embed v3 lands on the unstable workbench first; flip
+    back to prod once it is live there) shared by canvases.py's
     iframe URL + CLI runs AND the `fused` wrapper handed to Claude sessions
     (export_fused_cli_env), so what Claude pushes lands in the same
     environment the canvases iframe shows. Lives here rather than in
     canvases.py because canvases imports this module, not the other way
-    around. Set FUSED_RENDER_WORKBENCH_ENV=unstable to switch back."""
-    return os.environ.get("FUSED_RENDER_WORKBENCH_ENV", "prod")
+    around. Set FUSED_RENDER_WORKBENCH_ENV=prod to target production. The
+    same knob drives file / app SHARING uploads (share_file.py,
+    share_app.py), so those land in the same environment."""
+    return os.environ.get("FUSED_RENDER_WORKBENCH_ENV", "unstable")
 
 
 # The env var that carries the wrapper dir to the templates (SPEC PY-15):
