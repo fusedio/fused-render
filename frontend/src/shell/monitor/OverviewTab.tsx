@@ -11,7 +11,7 @@
 // visible. Every section is computed independently on the server, so one that
 // failed is "unavailable" in its own tile and the rest still draw. Links are
 // handed to `onNavigate`; the shell owns the URL (written on user action only).
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { spaLinkProps } from "@platform/lib/router";
 import { formatBytes } from "@platform/lib/sysmon";
 import { getDashboard, sectionOk, type Dashboard } from "./monitor-api";
@@ -47,7 +47,14 @@ export default function OverviewTab({
 }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<"ok" | "failed" | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
+    },
+    [],
+  );
   const record = useRecord(recordApi);
 
   usePolled(
@@ -67,9 +74,21 @@ export default function OverviewTab({
   };
   const doCopy = async () => {
     if (!data) return;
-    await copy(JSON.stringify(data, null, 2));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2_000);
+    // A rejected write, or no clipboard at all (navigator.clipboard is
+    // undefined outside a secure context), reads "Copy failed" rather than
+    // an unhandled rejection and a button that never answers.
+    let state: "ok" | "failed" = "ok";
+    try {
+      await copy(JSON.stringify(data, null, 2));
+    } catch {
+      state = "failed";
+    }
+    setCopied(state);
+    if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => {
+      copiedTimer.current = null;
+      setCopied(null);
+    }, 2_000);
   };
 
   const v = data?.verdict;
@@ -108,7 +127,7 @@ export default function OverviewTab({
               : "Record 60s"}
           </button>
           <button type="button" className="btn btn-secondary monitor-btn" disabled={!data} onClick={() => void doCopy()}>
-            {copied ? "Copied" : "Copy report"}
+            {copied === "ok" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy report"}
           </button>
           {!record.recording && record.latest && record.dir && (
             <a className="monitor-recording-link" {...spaLinkProps(`${record.dir}/${record.latest.name}`)}>

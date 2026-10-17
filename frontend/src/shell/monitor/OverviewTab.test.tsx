@@ -1,5 +1,5 @@
 // The Overview tab (and the tab shell) rendered against a fixed dashboard.
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Dashboard } from "@shell/monitor/monitor-api";
@@ -116,4 +116,41 @@ test("Record 60s counts down, Copy report copies the dashboard JSON, the saved f
   expect(text(btn("Recording")).includes("60s")).toBe(true);
   await act(async () => btn("Copy report").props.onClick());
   expect(JSON.parse(copied).verdict.level).toBe("bad");
+});
+
+const btnOf = (r: ReactTestRenderer, label: string) =>
+  r.root.find((n) => n.type === "button" && text(n).startsWith(label));
+
+test("Copy report says 'Copy failed' when the clipboard write rejects", async () => {
+  const r = await mount(() => {}, { copy: () => Promise.reject(new Error("denied")) });
+  await act(async () => btnOf(r, "Copy report").props.onClick());
+  expect(text(btnOf(r, "Copy failed"))).toBe("Copy failed");
+});
+
+test("Copy report says 'Copy failed' when navigator.clipboard is undefined", async () => {
+  const had = Object.getOwnPropertyDescriptor(globalThis.navigator, "clipboard");
+  Object.defineProperty(globalThis.navigator, "clipboard", { value: undefined, configurable: true });
+  try {
+    const r = await mount(); // the default copy reads navigator.clipboard
+    await act(async () => btnOf(r, "Copy report").props.onClick());
+    expect(text(btnOf(r, "Copy failed"))).toBe("Copy failed");
+  } finally {
+    if (had) Object.defineProperty(globalThis.navigator, "clipboard", had);
+    else delete (globalThis.navigator as unknown as Record<string, unknown>).clipboard;
+  }
+});
+
+test("the 'Copied' reset timer is cleared on unmount", async () => {
+  jest.useFakeTimers();
+  try {
+    const r = await mount(() => {}, { copy: () => {} });
+    await act(async () => btnOf(r, "Copy report").props.onClick());
+    expect(text(btnOf(r, "Copied"))).toBe("Copied");
+    expect(jest.getTimerCount()).toBeGreaterThan(0);
+    act(() => renderer?.unmount());
+    renderer = null;
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
 });
