@@ -193,6 +193,14 @@ Style it after `ui/PermCard.tsx` and `PlanCard.tsx`, using existing classes and 
 
 (append here)
 
+### Fix round 1
+
+- Server: a note expires once the current turn index reaches the offered turn + 2 (cleared in `_poll`); `_worker` drops a note when a newer turn is open at completion.
+- `build_fork_argv`: model/effort come from `host.json` when valid (set_model rewrites only that file), else launch.json; adds `--settings '{"disableAllHooks": true}'`.
+- `main_steps` is incremental: per-run_dir LRU cache (offset, last-64-byte tail check, counters), complete lines only. Beyond the brief, a mismatch of the tail bytes before the offset also forces a rescan, so a same-size rewrite is caught.
+- Frontend: `useHeadsUp` resets note and poll state on `runId` change (the shown note also carries its runId); `disabled` stops polling; `askInChat` sends first and only then hides and dismisses, with a rejection caught and `console.warn`ed.
+- prefs.py docstring: removed the stray blank line.
+
 ### Decisions and deviations (builder)
 
 - **Fork cwd without `Popen(cwd=)`.** `--resume` finds the session under the cwd's project dir, so the fork must start in the main session's cwd. But recap spawns with no cwd (a `cwd=` forces fork+exec, PROJ SIGSEGV). So on POSIX `headsup._spawn_argv` wraps the argv as `/bin/sh -c 'cd "$1" || exit 1; shift; exec "$@"' sh <cwd> <argv...>` (absolute `/bin/sh`, `close_fds=False`, no `cwd=` kwarg). On Windows it passes `cwd=` (no fork path there). Test: stub CLI reports its getcwd.

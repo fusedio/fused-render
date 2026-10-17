@@ -45,6 +45,7 @@ export function nextPollDelay(
   s: { running: boolean; state: HeadsUpState; ended: boolean },
   t: HeadsUpTiming = DEFAULT_TIMING,
 ): number | null {
+  if (s.state === "disabled") return null;
   if (s.ended) return t.settle;
   if (s.state === "checking") return t.checking;
   return s.running ? t.running : null;
@@ -70,7 +71,7 @@ export interface HeadsUpApi {
 }
 
 export function useHeadsUp({ runId, running, enabled, userTurns, controller, timing }: UseHeadsUpArgs): HeadsUpApi {
-  const [shown, setShown] = useState<{ id: string; note: HeadsUpNote; baseTurns: number } | null>(null);
+  const [shown, setShown] = useState<{ runId: string; id: string; note: HeadsUpNote; baseTurns: number } | null>(null);
   const lastState = useRef<HeadsUpState>("idle");
   const wasRunning = useRef(running);
   const turnsRef = useRef(userTurns);
@@ -78,6 +79,12 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
   const dismissed = useRef(new Set<string>());
   const t = timing ?? DEFAULT_TIMING;
   const { running: runMs, checking: checkMs, settle: settleMs } = t;
+
+  // A note belongs to one conversation: never carry it (or its poll state) over.
+  useEffect(() => {
+    lastState.current = "idle";
+    setShown(null);
+  }, [runId]);
 
   useEffect(() => {
     const ended = wasRunning.current && !running;
@@ -96,7 +103,7 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
         if (!dead && r.state === "note" && r.id && r.note && !dismissed.current.has(r.id)) {
           const note = r.note;
           const id = r.id;
-          setShown((cur) => (cur?.id === id ? cur : { id, note, baseTurns: turnsRef.current }));
+          setShown((cur) => (cur?.id === id && cur.runId === runId ? cur : { runId, id, note, baseTurns: turnsRef.current }));
         }
       } catch {
         // A failed poll is "nothing new"; the next tick asks again.
@@ -115,7 +122,7 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
   }, [enabled, runId, running, runMs, checkMs, settleMs]);
 
   const visible =
-    shown && userTurns - shown.baseTurns < CLEAR_AFTER_USER_TURNS && !dismissed.current.has(shown.id)
+    shown && shown.runId === runId && userTurns - shown.baseTurns < CLEAR_AFTER_USER_TURNS && !dismissed.current.has(shown.id)
       ? shown
       : null;
 
@@ -135,9 +142,15 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
     const cur = visible;
     if (!cur) return;
     const text = `Tell me more about this: ${cur.note.title}\n\n${cur.note.bullets.join("\n")}`;
+    try {
+      if (running) await controller.sendFollowUp(text);
+      else await controller.sendMessage(text);
+    } catch (err) {
+      // The card stays so the user can retry; callers fire this with `void`.
+      console.warn("heads-up: could not send the follow-up", err);
+      return;
+    }
     await hide();
-    if (running) await controller.sendFollowUp(text);
-    else await controller.sendMessage(text);
   }, [visible, running, controller, hide]);
 
   return { note: visible?.note ?? null, id: visible?.id ?? "", dismiss: hide, gotIt: hide, askInChat };

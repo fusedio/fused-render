@@ -44,6 +44,8 @@ test("nextPollDelay: 10 s while running, 5 s while checking, one settle poll, th
   expect(nextPollDelay({ running: false, state: "idle", ended: false })).toBeNull();
   expect(nextPollDelay({ running: false, state: "note", ended: false })).toBeNull();
   expect(nextPollDelay({ running: false, state: "idle", ended: true })).toBe(SETTLE_MS);
+  expect(nextPollDelay({ running: true, state: "disabled", ended: false })).toBeNull();
+  expect(nextPollDelay({ running: false, state: "disabled", ended: true })).toBeNull();
   expect(RUNNING_MS).toBe(10_000);
   expect(CHECKING_MS).toBe(5_000);
   expect(SETTLE_MS).toBe(1_500);
@@ -158,5 +160,62 @@ test("the card clears itself after the user sends two more messages", async () =
   act(() => r.update(<Probe runId="r1" running enabled userTurns={4} />));
   expect(api.note).not.toBeNull();
   act(() => r.update(<Probe runId="r1" running enabled userTurns={5} />));
+  expect(api.note).toBeNull();
+});
+
+test("a disabled answer from the server stops polling that run", async () => {
+  answers = [{ state: "disabled" }];
+  mount({ runId: "r1", running: true, enabled: true, userTurns: 0 });
+  await wait(100);
+  expect(polls.length).toBe(1);
+});
+
+test("a note never carries into another conversation", async () => {
+  answers = [{ state: "note", id: "n1", note: NOTE }];
+  const r = mount({ runId: "r1", running: true, enabled: true, userTurns: 0 });
+  await wait(40);
+  expect(api.note).not.toBeNull();
+  answers = [{ state: "idle" }];
+  act(() => r.update(<Probe runId="r2" running enabled userTurns={0} />));
+  expect(api.note).toBeNull();
+  await wait(40);
+  expect(api.note).toBeNull();
+});
+
+test("askInChat keeps the card and does not dismiss when the send fails", async () => {
+  const controller = {
+    sendFollowUp: async () => {
+      throw new Error("offline");
+    },
+    sendMessage: async () => {
+      throw new Error("offline");
+    },
+  };
+  answers = [{ state: "note", id: "n1", note: NOTE }];
+  mount({ runId: "r1", running: true, enabled: true, userTurns: 0, controller });
+  await wait(40);
+  posts = [];
+  await act(async () => {
+    await api.askInChat(); // must not reject
+  });
+  expect(api.note).not.toBeNull();
+  expect(posts).toEqual([]);
+});
+
+test("askInChat on success hides the card and posts the dismiss after the send", async () => {
+  const order: string[] = [];
+  const controller = {
+    sendFollowUp: async () => void order.push("send"),
+    sendMessage: async () => void order.push("send"),
+  };
+  answers = [{ state: "note", id: "n1", note: NOTE }];
+  mount({ runId: "r1", running: true, enabled: true, userTurns: 0, controller });
+  await wait(40);
+  posts = [];
+  await act(async () => {
+    await api.askInChat();
+  });
+  expect(order).toEqual(["send"]);
+  expect(posts).toEqual([{ run_id: "r1", id: "n1" }]);
   expect(api.note).toBeNull();
 });
