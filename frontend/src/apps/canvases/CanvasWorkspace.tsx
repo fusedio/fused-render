@@ -63,7 +63,12 @@ const SYNC_POLL_MS = 2000;
 // A snapshot that met a busy clone (409) is retried this many times, this far
 // apart — long enough to outlast a push, short enough that "Saving…" on the
 // workbench's chip stays honest.
-const SNAPSHOT_BUSY_RETRIES = 8;
+// A 409 (`busy`: a push or pull holds the clone's lock; `no_watcher`: the
+// watcher is being re-armed) is retried for up to this long. A snapshot the
+// embed sees REJECTED is dropped on its side, so a busy spell must never end
+// in a rejection; past the window the relay gives up silently and the embed
+// keeps the snapshot queued for its next change or reload.
+const SNAPSHOT_BUSY_WINDOW_MS = 120_000;
 const SNAPSHOT_BUSY_RETRY_MS = 750;
 
 // A status poll that keeps failing is treated, after this many consecutive
@@ -260,18 +265,19 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
 
-  // One embed snapshot → the clone, answered to the frame. A 409 (`busy`: a
-  // push or pull holds the clone's lock; `no_watcher`: the watcher is being
-  // re-armed) is retried here a few times a second apart, because the embed
-  // only re-posts on its next change or reload and would otherwise sit on
-  // "Saving…" for a snapshot nothing was wrong with. Anything else is a
-  // rejection the embed drops, reason attached.
+  // One embed snapshot → the clone, answered to the frame. A 409 is retried
+  // here (SNAPSHOT_BUSY_WINDOW_MS), because the embed only re-posts on its
+  // next change or reload and would otherwise sit on "Saving…" for a
+  // snapshot nothing was wrong with; a retry is abandoned the moment a newer
+  // relay is queued behind it, since that one carries the full state anyway.
+  // Anything else is a rejection the embed drops, reason attached.
   // Relays run strictly IN ORDER through one promise chain: the frame posts
   // seq 1, 2, 3 as it autosaves, and a 409 retry on seq 1 must not let seq 2
   // reach the clone first — the server would then read seq 1's older full
   // state as deletions of seq 2's nodes. Same chain for the rename hint,
   // which must land before the snapshot carrying the new name.
   const relayChainRef = useRef<Promise<void>>(Promise.resolve());
+  const relayTicketRef = useRef(0);
   const relaySnapshot = useCallback(
     async (
       gen: number,
@@ -285,7 +291,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         if (!frame?.contentWindow || !origin) return;
         frame.contentWindow.postMessage(msg, origin);
       };
-      for (let attempt = 0; ; attempt++) {
+      const ticket = relayTicketRef.current;
+      const started = Date.now();
+      for (;;) {
         try {
           const ack = rename
             ? await applyRename(name, gen, seq, rename)
@@ -294,7 +302,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           return;
         } catch (e) {
           const status = (e as { status?: number }).status;
-          if (status === 409 && attempt < SNAPSHOT_BUSY_RETRIES) {
+          if (status === 409) {
+            if (relayTicketRef.current !== ticket) return; // a newer relay waits
+            if (Date.now() - started > SNAPSHOT_BUSY_WINDOW_MS) return; // still queued on the embed
             await new Promise((r) => window.setTimeout(r, SNAPSHOT_BUSY_RETRY_MS));
             continue;
           }
@@ -334,6 +344,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           gen?: unknown; seq?: unknown; body?: unknown;
         };
         if (typeof gen !== "number" || typeof seq !== "number" || !body || typeof body !== "object") return;
+        relayTicketRef.current += 1;
         relayChainRef.current = relayChainRef.current.then(() =>
           relaySnapshot(gen, seq, body as Record<string, unknown>),
         );
@@ -348,6 +359,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         };
         if (typeof gen !== "number" || typeof seq !== "number") return;
         if (typeof from !== "string" || typeof to !== "string" || !from || !to) return;
+        relayTicketRef.current += 1;
         relayChainRef.current = relayChainRef.current.then(() =>
           relaySnapshot(gen, seq, null, {
             from,

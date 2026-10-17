@@ -2458,7 +2458,7 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
             {"error": f"canvas {name!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     # A short wait, not sync/push's 5 s: the page retries a 409 on its own
-    # (SNAPSHOT_BUSY_RETRIES), and holding the request open for the length of
+    # (SNAPSHOT_BUSY_WINDOW_MS), and holding the request open for the length of
     # a pull would only delay the ack past the chip's "reconnecting" line.
     if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
         return _busy(
@@ -2477,6 +2477,11 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
             return JSONResponse(
                 {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
                  "error": "the clone has no canvas.toml yet"}, status_code=400)
+        except OSError as exc:
+            # A file write failed (disk full, a vanished folder): a 409 keeps
+            # the snapshot queued on the embed, where a 400 would drop it.
+            logger.warning("canvas %s: snapshot %s/%s write failed: %s", name, gen, seq, exc)
+            return _busy(f"could not write the snapshot: {exc}")
         except Exception as exc:  # noqa: BLE001 — the reason goes to the chip
             logger.warning("canvas %s: snapshot %s/%s rejected: %s", name, gen, seq, exc)
             return JSONResponse(

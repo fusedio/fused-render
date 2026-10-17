@@ -210,8 +210,12 @@ def compact_state(body: dict) -> dict:
         except ValueError as exc:
             raise ValueError(f"dashboard_body is not JSON: {exc}") from exc
     studio = dashboard.get("studioState") if isinstance(dashboard, dict) else None
-    studio = studio if isinstance(studio, dict) else {}
-    raw_nodes = [n for n in (studio.get("nodes") or []) if isinstance(n, dict)]
+    # No studioState, or no nodes list, is a MALFORMED body, not an empty
+    # canvas: read as empty it would delete every node the previous snapshot
+    # knew. The workbench clears a canvas with `nodes: []`, which still passes.
+    if not isinstance(studio, dict) or not isinstance(studio.get("nodes"), list):
+        raise ValueError("snapshot has no dashboard_body.studioState.nodes")
+    raw_nodes = [n for n in studio["nodes"] if isinstance(n, dict)]
     nodes: dict[str, dict] = {}
     name_by_id: dict[str, str] = {}
     for index, node in enumerate(raw_nodes):
@@ -364,7 +368,12 @@ def apply_rename(clone_dir: str, frm: str, to: str,
     if not isinstance(canvas, dict):
         raise ValueError("canvas.toml: [canvas] is not a table")
     rows = canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []
-    if any(isinstance(r, dict) and r.get("udfName") == to for r in rows):
+    names = {r.get("udfName") for r in rows if isinstance(r, dict)}
+    if frm == to or (to in names and frm not in names):
+        # Already on disk: a snapshot carrying the new name landed first, or
+        # the embed re-posted the hint after a restart emptied the dedupe.
+        return {"changed": False, "renamed": [frm, to], "moved": None, "at": time.time()}
+    if to in names:
         raise ValueError(f"a node named {to!r} already exists")
     changed = _rename_in_doc(canvas, frm, to)
     moved = _move_file(clone_dir, file_from, file_to)
@@ -525,24 +534,21 @@ def apply_snapshot(
             continue
         if current is not None:
             trash(file)
-        try:
-            with open(fpath, "w", encoding="utf-8") as fh:
-                fh.write(text)
-            written.append(file)
-        except OSError:
-            pass
+        # Atomic, and an OSError PROPAGATES (the route answers 409 so the
+        # embed keeps the snapshot queued): swallowed, the toml below would
+        # still be written and the ack say ok for an edit that never landed.
+        _write_atomic(fpath, text)
+        written.append(file)
 
-    # New UDFs: create their source file, never overwrite one.
+    # New UDFs: create their source file, never overwrite one. A failure
+    # propagates for the same reason — a row whose file is missing fails the
+    # canvas validation on the push.
     for entry in new["new_files"]:
         fpath = os.path.join(clone_dir, entry["file"])
         if os.path.exists(fpath):
             continue
-        try:
-            with open(fpath, "w", encoding="utf-8") as fh:
-                fh.write(entry["body"])
-            created.append(entry["file"])
-        except OSError:
-            pass
+        _write_atomic(fpath, entry["body"])
+        created.append(entry["file"])
 
     if changed:
         _write_atomic(path, _dump_toml(doc))

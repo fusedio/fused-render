@@ -914,6 +914,18 @@ def _custom_env(origin: str, file: str) -> bool | None:
         return None
 
 
+# A clone file that IS a node: the source kinds canvas_snapshot names, minus
+# the folder's own files, so canvas.toml or CLAUDE.md opened from Recent gets
+# the plain file prompt instead of being called "one node of a canvas".
+_NODE_FILE_SUFFIXES = (".py", ".json", ".md", ".html")
+_NOT_NODE_FILES = frozenset({"canvas.toml", "CLAUDE.md", "README.md"})
+
+
+def _is_canvas_node_file(file: str) -> bool:
+    name = os.path.basename(file)
+    return name.endswith(_NODE_FILE_SUFFIXES) and name not in _NOT_NODE_FILES
+
+
 def _canvas_node_prompt(file: str) -> str:
     """The prompt for ONE FILE INSIDE A CANVAS CLONE — a node picked in the
     embedded workbench on fused-render's /canvases/<name> page, which opens
@@ -2993,7 +3005,7 @@ def _appended_prompt(file: str, pane: bool, backend: str = "") -> str:
     about Claude Code itself (`_fused_cli_note`'s `backend`)."""
     if os.path.isdir(file):
         shape = _split_system_prompt(file, pane)
-    elif _in_workbench_root(file):
+    elif _in_workbench_root(file) and _is_canvas_node_file(file):
         shape = _canvas_node_prompt(file)
     else:
         shape = _system_prompt(file)
