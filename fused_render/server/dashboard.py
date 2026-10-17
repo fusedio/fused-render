@@ -108,11 +108,15 @@ def _abs_exe(name: str, *candidates: str) -> str:
     return os.path.abspath(found)
 
 
-def _run(argv: list[str]) -> str:
+def _run(argv: list[str]) -> str | None:
+    """The tool's stdout, or None when the tool is absent or cannot run."""
     exe = {"sysctl": ("/usr/sbin/sysctl",), "pmset": ("/usr/bin/pmset",)}.get(argv[0], ())
-    return subprocess.run([_abs_exe(argv[0], *exe), *argv[1:]], capture_output=True,
-                          text=True, encoding="utf-8", errors="replace", timeout=2.0,
-                          close_fds=False).stdout or ""
+    try:
+        return subprocess.run([_abs_exe(argv[0], *exe), *argv[1:]], capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=2.0,
+                              close_fds=False).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def _to_int(text: str) -> int | None:
@@ -127,7 +131,7 @@ def _pressure() -> str | None:
         return None
 
     def read():
-        level = _to_int(_run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"]))
+        level = _to_int(_run(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"]) or "")
         return {1: "normal", 2: "warn", 4: "critical"}.get(level)
     return _cached("pressure", read)
 
@@ -139,11 +143,11 @@ def _power() -> dict | None:
 
     def read():
         limit = None
-        for line in _run(["pmset", "-g", "therm"]).splitlines():
+        for line in (_run(["pmset", "-g", "therm"]) or "").splitlines():
             if "CPU_Speed_Limit" in line:
                 limit = _to_int(line.split("=")[-1])
         low = None
-        for line in _run(["pmset", "-g"]).splitlines():
+        for line in (_run(["pmset", "-g"]) or "").splitlines():
             if line.strip().startswith("lowpowermode"):
                 low = line.split()[-1] == "1"
         return {"thermal_limit": limit, "low_power": low}

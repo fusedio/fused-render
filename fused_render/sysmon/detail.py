@@ -27,10 +27,13 @@ def _lsof_ports(pid: int) -> list[int]:
                None) or shutil.which("lsof")
     if not exe:
         return []
-    proc = subprocess.run(
-        [os.path.abspath(exe), "-nP", "-a", "-p", str(int(pid)), "-iTCP", "-sTCP:LISTEN"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=_LSOF_TIMEOUT_S, close_fds=False)
+    try:
+        proc = subprocess.run(
+            [os.path.abspath(exe), "-nP", "-a", "-p", str(int(pid)), "-iTCP", "-sTCP:LISTEN"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=_LSOF_TIMEOUT_S, close_fds=False)
+    except (OSError, subprocess.SubprocessError):
+        return []
     return sorted({int(m.group(1)) for m in _PORT.finditer(proc.stdout or "")})
 
 

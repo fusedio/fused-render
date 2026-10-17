@@ -261,6 +261,9 @@ def test_spawns_use_posix_spawn_shape(monkeypatch):
         calls.append((argv, kw))
         return types.SimpleNamespace(stdout="")
     monkeypatch.setattr(subprocess, "run", spy)
+    # platform-agnostic: pretend the tools exist wherever the OS keeps them
+    monkeypatch.setattr(dashboard.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(dashboard.os.path, "exists", lambda p: True)
     dashboard._run(["sysctl", "-n", "x"])
     dashboard._run(["pmset", "-g"])
     detail._lsof_ports(1)
@@ -268,6 +271,21 @@ def test_spawns_use_posix_spawn_shape(monkeypatch):
     for argv, kw in calls:
         assert argv[0].startswith("/")
         assert kw["close_fds"] is False and "cwd" not in kw and kw["encoding"] == "utf-8"
+
+
+def test_missing_exe_yields_none(monkeypatch):
+    monkeypatch.setattr(dashboard.os.path, "exists", lambda p: False)
+    monkeypatch.setattr(dashboard.shutil, "which", lambda name: None)
+    assert dashboard._run(["pmset", "-g"]) is None
+    from fused_render.sysmon import detail
+    assert detail._lsof_ports(1) == []
+    monkeypatch.undo()
+    monkeypatch.setattr(dashboard.sys, "platform", "darwin")
+    monkeypatch.setattr(dashboard, "_run", lambda argv: None)
+    dashboard._machine_cache.clear()
+    assert dashboard._pressure() is None
+    assert dashboard._power() == {"thermal_limit": None, "low_power": None}
+    dashboard._machine_cache.clear()
 
 
 def test_empty_machine_read_is_unknown_and_retried(monkeypatch):
