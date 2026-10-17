@@ -344,3 +344,57 @@ def stop_resource_trail() -> None:
     with _TRAIL_LOCK:
         if _TRAIL is not None:
             _TRAIL.stop()
+
+
+# ---- reading the trail back (the Monitor's Overview) ------------------------------
+
+_TRAIL_TTL_S = 30.0
+_TRAIL_TAIL_BYTES = 1_000_000
+_trail_cache: dict[float, tuple[float, list[dict]]] = {}
+
+
+def read_trail(window_s: float) -> list[dict]:
+    """`resources.jsonl` rows from the last `window_s` seconds, oldest first.
+    Reads only the file's tail and caches the answer for 30 s, so a page that
+    polls every 2 s costs one small read per half minute."""
+    now = time.time()
+    hit = _trail_cache.get(window_s)
+    if hit is not None and now - hit[0] < _TRAIL_TTL_S:
+        return hit[1]
+    rows: list[dict] = []
+    try:
+        with open(resources_path(), "rb") as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - _TRAIL_TAIL_BYTES))
+            data = f.read()
+        lines = data.split(b"\n")
+        for line in lines[1:] if size > _TRAIL_TAIL_BYTES else lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and isinstance(row.get("t"), (int, float)) \
+                    and row["t"] >= now - window_s:
+                rows.append(row)
+    except OSError:
+        pass
+    _trail_cache[window_s] = (now, rows)
+    return rows
+
+
+def read_outages(limit: int = 20) -> list[dict]:
+    """The last `limit` rows of `outages.jsonl`, oldest first."""
+    try:
+        with open(outages_path(), "rb") as f:
+            tail = collections.deque(f, maxlen=limit)
+    except OSError:
+        return []
+    out = []
+    for line in tail:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+    return out

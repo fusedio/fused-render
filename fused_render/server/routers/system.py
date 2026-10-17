@@ -69,7 +69,19 @@ def api_system_activity(scope: str = "fused"):
     for row in body["procs"]:
         if "args" in row:
             row["args"] = redact_args(row["args"])
+    try:
+        from fused_render.server import dashboard
+        body["verdict"] = dashboard.compact_verdict()
+    except Exception:  # noqa: BLE001 — the chip works without a verdict
+        body["verdict"] = {"level": "ok", "headline": ""}
     return body
+
+
+@router.get("/api/system/dashboard")
+async def api_system_dashboard():
+    from fused_render.server import dashboard
+    netlog.get().touch_watch()
+    return dashboard.build()
 
 
 @router.get("/api/system/activity/detail")

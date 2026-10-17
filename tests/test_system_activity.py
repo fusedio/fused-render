@@ -137,7 +137,7 @@ def test_get_is_unguarded_and_has_the_documented_shape(client, fake):
     backend, clock, s = fake
     body = client.get("/api/system/activity").json()
     assert body["supported"] is True
-    assert set(body) == {"supported", "host", "procs", "history", "totals", "claude"}
+    assert set(body) == {"supported", "host", "procs", "history", "totals", "claude", "verdict"}
     assert set(body["host"]) == {"cpuPct", "cpuUser", "cpuSystem", "ncpu", "load",
                                  "memTotal", "memUsed", "memApp", "memWired",
                                  "memCompressed", "windowS"}
@@ -312,7 +312,7 @@ ALL_ROW_KEYS = {"pid", "ppid", "user", "command", "args", "cpuPct", "memBytes",
 def test_scope_all_lists_every_process_with_identity(client, fake):
     backend, clock, s = fake
     body = client.get("/api/system/activity?scope=all").json()
-    assert set(body) == {"supported", "host", "procs", "history", "totals", "claude"}
+    assert set(body) == {"supported", "host", "procs", "history", "totals", "claude", "verdict"}
     rows = {r["pid"]: r for r in body["procs"]}
     assert set(rows) == {1, ROOT, 201, 202, 203, 204, 900, 950}
     assert all(set(r) == ALL_ROW_KEYS for r in rows.values())
