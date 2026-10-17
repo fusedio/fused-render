@@ -175,6 +175,13 @@ test("a failed section is unavailable in its own tile and nowhere else", () => {
   expect(tiles.filter((t) => t.level === "unavailable")).toHaveLength(1);
 });
 
+test("an index section with unavailable lane state shows ? not 0 waiting", () => {
+  const tile = overviewTiles(dash({ index: { unavailable: true } })).find((t) => t.key === "index");
+  expect(tile?.value).not.toMatch(/0 waiting|^0/);
+  expect(tile?.value).toContain("?");
+  expect(tile?.level).toBe("ok");
+});
+
 test("timelineSeries gives one row per figure and skips nulls", () => {
   const rows = timelineSeries([
     { t: 1, rps: 1, in_flight: 0, pool: 2, lag_ms: 3, cpu: 10, swap: 1 << 20 },

@@ -138,6 +138,8 @@ export interface Dashboard {
     }[];
   }>;
   index: Section<{
+    /** Lane reads not recorded yet (or stale): unknown, NOT idle. */
+    unavailable?: boolean;
     waiting?: number;
     abandoned?: number;
     scans?: { running: number; limit: number };

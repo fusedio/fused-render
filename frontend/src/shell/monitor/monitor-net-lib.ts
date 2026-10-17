@@ -219,6 +219,10 @@ export function overviewTiles(d: Dashboard): Tile[] {
   });
   add("index", "Index", "overview", d.index, () => {
     const i = d.index as Exclude<Dashboard["index"], SectionError>;
+    if (i.unavailable) {
+      // lane state unknown: never render it as "0 waiting" (that reads as idle)
+      return { level: "ok", value: "lanes ? · ? abandoned · ? scans" };
+    }
     const bad = (i.waiting ?? 0) > 0 || (i.abandoned ?? 0) > 0;
     return {
       level: bad ? "warn" : "ok",
