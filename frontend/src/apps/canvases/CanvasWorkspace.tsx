@@ -99,26 +99,29 @@ const LOCK_ACK_TIMEOUT_MS = 2000;
 const WORKBENCH_UPSTREAM_POLL_MS = 10000;
 const LOCK_RELEASE_GRACE_MS = WORKBENCH_UPSTREAM_POLL_MS + 3000;
 
-/** The selected node, as the workbench names it. */
+/** The selected node, as the workbench names it. `file` is the node's
+ *  source file IN THE CLONE, basename only (`<name>.py`, or a widget's
+ *  `.json` / `.md` / `.html`), as the workbench's selection message states
+ *  it — the authority on which file a node is. */
 interface NodeSel {
   udfName: string;
   kind: "udf" | "widget";
+  file: string;
 }
 
-/** `<clone>/<udfName>.py`, or the widget's `.json` — the clone's own layout
- *  (canvases.py's seeded CLAUDE.md: every node's source is the file named
- *  after it). */
+/** The node's source under the clone. */
 function nodeFile(dir: string, node: NodeSel): string {
-  return `${dir.replace(/\/+$/, "")}/${node.udfName}.${node.kind === "widget" ? "json" : "py"}`;
+  return `${dir.replace(/\/+$/, "")}/${node.file}`;
 }
 
-/** The node restored from this page's own URL (`?node=`, plus `node_kind=`
- *  only for a widget), or null. */
+/** The node restored from this page's own URL (`?node=` + `node_file=`), or
+ *  null. An older URL with `node=` alone is read as a UDF (`<name>.py`). */
 function nodeFromUrl(): NodeSel | null {
   const q = new URLSearchParams(window.location.search);
   const name = q.get("node");
   if (!name) return null;
-  return { udfName: name, kind: q.get("node_kind") === "widget" ? "widget" : "udf" };
+  const file = q.get("node_file") || `${name}.py`;
+  return { udfName: name, kind: file.endsWith(".py") ? "udf" : "widget", file };
 }
 
 export function canvasNameFromPath(pathname: string): string | null {
@@ -279,8 +282,13 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         const name = event.data?.udfName;
         if (typeof name === "string" && name) {
           const kind = event.data?.kind === "widget" ? "widget" : "udf";
+          const stated = event.data?.file;
+          const file =
+            typeof stated === "string" && stated && !stated.includes("/")
+              ? stated
+              : `${name}.${kind === "widget" ? "json" : "py"}`;
           setNode((cur) =>
-            cur && cur.udfName === name && cur.kind === kind ? cur : { udfName: name, kind },
+            cur && cur.udfName === name && cur.file === file ? cur : { udfName: name, kind, file },
           );
         } else {
           // The canvas deselected (pane click, folder node, multi-select, or
@@ -302,15 +310,14 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // away in its own Recent list.
   const prevNodeKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    const key = node ? `${node.kind}:${node.udfName}` : null;
+    const key = node ? node.file : null;
     const url = new URL(window.location.href);
     if (node) {
       url.searchParams.set("node", node.udfName);
-      if (node.kind === "widget") url.searchParams.set("node_kind", "widget");
-      else url.searchParams.delete("node_kind");
+      url.searchParams.set("node_file", node.file);
     } else {
       url.searchParams.delete("node");
-      url.searchParams.delete("node_kind");
+      url.searchParams.delete("node_file");
     }
     if (prevNodeKeyRef.current !== null && prevNodeKeyRef.current !== key) {
       url.searchParams.delete("session_id");
@@ -704,7 +711,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             // or its Code tab) replaces the canvas chat. Keyed per node so a
             // switch is a fresh chat boot on the new file.
             <NodeSidebar
-              key={`${node.kind}:${node.udfName}`}
+              key={node.file}
               file={nodeStat.file}
               udfName={node.udfName}
               exists={nodeStat.exists}
@@ -717,7 +724,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
                 setNode(null);
               }}
               annotateTarget={() => frameRef.current}
-              chatKey={`${node.kind}:${node.udfName}`}
+              chatKey={node.file}
             />
           ) : chatHere && dir && !node ? (
             // key forces a REMOUNT when a fix run starts: the run id is read at
