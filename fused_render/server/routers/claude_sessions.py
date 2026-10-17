@@ -1342,6 +1342,40 @@ def api_claude_session_recap(file: str, session_id: str, for_uuid: str):
             "at": datetime.now(timezone.utc).isoformat()}
 
 
+@router.get("/api/claude-sessions/headsup")
+def api_claude_session_headsup(run_id: str = ""):
+    """The heads-up card state for one live run: `disabled` (pref off), `idle`,
+    `checking`, or `note` with the card. Polled by the chat while a turn runs;
+    the poll itself decides when a side check is due (`claude_agent.headsup`).
+    Same 400/503 posture as the recap above."""
+    from fused_render.claude_agent import headsup
+    from fused_render.server.routers import tasks as _tasks
+    from fused_render.shell import prefs as shell_prefs
+
+    if not shell_prefs.chat_headsup_enabled():
+        return {"state": "disabled"}
+    agent = _tasks._agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503,
+                            detail="the claude agent module did not load")
+    if not run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+    return headsup.poll(agent, run_id)
+
+
+class _HeadsupDismiss(BaseModel):
+    run_id: str
+    id: str
+
+
+@router.post("/api/claude-sessions/headsup/dismiss")
+def api_claude_session_headsup_dismiss(body: _HeadsupDismiss):
+    from fused_render.claude_agent import headsup
+
+    headsup.dismiss(body.run_id, body.id)
+    return {"ok": True}
+
+
 @router.get("/api/claude-sessions/liveness")
 def api_claude_session_liveness(path: str):
     """`(mtime, size, running)` for ONE transcript file — the cheapest possible
