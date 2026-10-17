@@ -36,6 +36,7 @@ from queue import Empty
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 
+from fused_render import netlog
 from fused_render import claude_cmd_log, pty_session
 from fused_render.server.common import _error, _require_fused
 
@@ -223,6 +224,7 @@ async def _stream_claude(ws: WebSocket, chat: str) -> None:
 
 
 @router.websocket("/api/terminal/{sid}/stream")
+@netlog.tracked_ws("terminal")
 async def api_terminal_stream(ws: WebSocket, sid: str):
     chat = claude_cmd_log.chat_of(sid)
     if chat is not None:

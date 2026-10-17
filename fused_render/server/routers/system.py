@@ -20,6 +20,7 @@ import re
 
 from fastapi import APIRouter, Body, Header
 
+from fused_render import netlog
 from fused_render.server.common import _error, _require_fused
 from fused_render.sysmon import sampler as sysmon_sampler
 
@@ -50,6 +51,9 @@ def redact_args(args: str) -> str:
 
 @router.get("/api/system/activity")
 def api_system_activity(scope: str = "fused"):
+    # The chip polls this: reading it is "someone is watching" for the request
+    # timing too (netlog.WATCH_S), not only for the sampler.
+    netlog.get().touch_watch()
     body = sysmon_sampler.get_sampler().poll("all" if scope == "all" else "fused")
     for row in body["procs"]:
         if "args" in row:
