@@ -90,3 +90,29 @@ def test_streamed_response_stays_in_flight_until_body_ends(client):
     rows = client.get("/api/system/net/requests").json()["rows"]
     row = next(x for x in rows if x["route"] == "/static/runtime.js")
     assert row["outcome"] == "ok" and row["bytes"] == len(r.content)
+
+
+def _beacon(c, origin=None):
+    headers = {"Content-Type": "text/plain"}
+    if origin is not None:
+        headers["Origin"] = origin
+    body = {"page": "/monitor", "routes": {"/api/health": {
+        "count": 1, "sum": 5, "max": 5, "samples": [5]}}}
+    return c.post("/api/system/net/client", content=json.dumps(body), headers=headers)
+
+
+def test_beacon_refuses_a_cross_origin_post(tmp_path, monkeypatch):
+    monkeypatch.setattr(netlog, "_log", netlog.NetLog())
+    c = TestClient(create_app(start_dir=str(tmp_path)), base_url="http://127.0.0.1:8765")
+    assert _beacon(c, "https://evil.example").status_code == 403
+    assert _beacon(c, "http://localhost:9999").status_code == 403  # another port
+    assert _beacon(c, "null").status_code == 403
+    assert netlog.get()._client == {}
+
+
+def test_beacon_accepts_same_origin_or_no_origin(tmp_path, monkeypatch):
+    monkeypatch.setattr(netlog, "_log", netlog.NetLog())
+    c = TestClient(create_app(start_dir=str(tmp_path)), base_url="http://127.0.0.1:8765")
+    assert _beacon(c, "http://127.0.0.1:8765").status_code == 204
+    assert _beacon(c, "http://localhost:8765").status_code == 204
+    assert _beacon(c).status_code == 204

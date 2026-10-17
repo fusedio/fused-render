@@ -40,6 +40,9 @@ STALE_OPEN_S = 900.0
 SATURATION_SLOTS = 6
 SOCKET_WINDOW_S = 10.0
 CLIENT_STATS_S = 300.0
+# Distinct (source, route) keys the beacon may hold: it is unauthenticated, so
+# a hostile poster could otherwise mint keys without bound.
+MAX_CLIENT_KEYS = 512
 MAX_REQUEST_ROWS = 1000
 # The beacon is excluded from the ring entirely; every other dashboard poll is
 # recorded but flagged `self` so the UI can hide it.
@@ -366,6 +369,14 @@ class NetLog:
         max, samples}}`. Bounded: routes per report, samples per route."""
         now = self._clock()
         with self._lock:
+            # Expired entries go on every report, not only when a rollup reads
+            # them, so a beacon nobody is watching still cannot grow the map.
+            for key in list(self._client):
+                dq = self._client[key]
+                while dq and now - dq[0][0] > CLIENT_STATS_S:
+                    dq.popleft()
+                if not dq:
+                    del self._client[key]
             for route, st in list(routes.items())[:200]:
                 try:
                     entry = (now, int(st.get("count", 0)), float(st.get("sum", 0)),
@@ -373,9 +384,14 @@ class NetLog:
                              [float(x) for x in (st.get("samples") or [])[:64]])
                 except (TypeError, ValueError, AttributeError):
                     continue
-                dq = self._client.setdefault((source, normalize_route(str(route))),
-                                             collections.deque(maxlen=200))
-                dq.append(entry)
+                key = (source, normalize_route(str(route)))
+                if key not in self._client:
+                    if len(self._client) >= MAX_CLIENT_KEYS:
+                        # Evict the key that was updated longest ago.
+                        oldest = min(self._client, key=lambda k: self._client[k][-1][0])
+                        del self._client[oldest]
+                    self._client[key] = collections.deque(maxlen=200)
+                self._client[key].append(entry)
 
     def _client_stats(self, window_s: float = CLIENT_STATS_S) -> dict:
         now = self._clock()

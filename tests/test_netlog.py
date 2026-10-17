@@ -229,6 +229,26 @@ def test_client_report_normalises_route(log):
     assert log.groups()[0]["queue_max_ms"] == 5
 
 
+def test_client_report_prunes_expired_entries_on_each_report(log):
+    log.client_report("a", {"/old": {"count": 1, "sum": 1, "max": 1, "samples": [1]}})
+    log.c.t += netlog.CLIENT_STATS_S + 1
+    log.client_report("b", {"/new": {"count": 1, "sum": 1, "max": 1, "samples": [1]}})
+    assert list(log._client) == [("b", "/new")]
+
+
+def test_client_report_caps_keys_and_evicts_the_oldest_updated(log):
+    st = {"count": 1, "sum": 1, "max": 1, "samples": [1]}
+    for i in range(netlog.MAX_CLIENT_KEYS):
+        log.client_report(f"s{i}", {"/r": st})
+        log.c.t += 0.001
+    log.client_report("s0", {"/r": st})  # refreshes s0: s1 is now the oldest
+    log.c.t += 0.001
+    log.client_report("fresh", {"/r": st})
+    assert len(log._client) == netlog.MAX_CLIENT_KEYS
+    assert ("fresh", "/r") in log._client and ("s0", "/r") in log._client
+    assert ("s1", "/r") not in log._client
+
+
 def test_watch_flag(log):
     assert not log.watched()
     log.touch_watch()

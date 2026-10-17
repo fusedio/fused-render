@@ -8,11 +8,15 @@ of in-memory state.
 
 Reading any of them marks the server "watched" for 15 s, which is what makes
 the middleware add `Server-Timing: ..., fr-watch` so documents start measuring
-and beaconing (`POST /api/system/net/client`). The beacon is unguarded on
-purpose: `navigator.sendBeacon` cannot set the X-Fused header. It carries only
-numbers, is size-capped, and is kept out of the request ring.
+and beaconing (`POST /api/system/net/client`). The beacon takes no
+X-Fused guard: `navigator.sendBeacon` cannot set that header. Instead a request
+that carries an `Origin` must carry this server's (a blind cross-origin POST
+from another site is refused); no Origin is a non-browser client and passes. It
+carries only numbers, is size-capped, bounded in keys, and is kept out of the
+request ring.
 """
 import json
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, Response
 
@@ -22,6 +26,23 @@ from fused_render.server.common import _error
 router = APIRouter()
 
 _MAX_BEACON_BYTES = 256 * 1024
+
+
+def _origin_is_self(request: Request, origin: str) -> bool:
+    """Is `origin` this server? Loopback host and the port this request came
+    in on (`127.0.0.1` and `localhost` are both this server; another localhost
+    port is another site). A port-less Origin means the scheme's default."""
+    try:
+        parsed = urlsplit(origin)
+        theirs = parsed.port
+    except ValueError:
+        return False
+    if parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
+        return False
+    if theirs is None:
+        theirs = 443 if parsed.scheme == "https" else 80
+    ours = request.url.port or (443 if request.url.scheme == "https" else 80)
+    return theirs == ours
 
 
 @router.get("/api/system/net/summary")
@@ -58,6 +79,9 @@ async def api_net_client(request: Request):
     """One document's browser-side queue stats: `{page, routes: {route:
     {count, sum, max, samples}}}`. Content-Type is whatever sendBeacon sent
     (text/plain for a string), so the body is parsed by hand."""
+    origin = request.headers.get("origin")
+    if origin and not _origin_is_self(request, origin):
+        return _error("cross-origin beacon refused", status=403)
     raw = await request.body()
     if len(raw) > _MAX_BEACON_BYTES:
         return _error("beacon too large", status=413)
