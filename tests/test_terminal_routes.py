@@ -302,3 +302,38 @@ def test_disconnect_leaves_no_subscriber_behind(client, scratch_registry):
         time.sleep(0.02)
     assert session._subscribers == []
     assert session._loops == {}
+
+
+def test_bulk_output_arrives_intact_in_merged_frames(client, scratch_registry, tmp_path, monkeypatch):
+    total = 4_000_000
+    # The sleep lets the socket attach before the flood starts, so nothing
+    # lands in the scrollback replay and every byte is counted from the stream.
+    cmd = f"sleep 0.5; head -c {total} /dev/zero | tr '\\0' 'Z'"
+    monkeypatch.setattr(
+        pty_session, "resolve_profile",
+        lambda cwd=None: TerminalProfile(
+            shell="/bin/sh", argv=["/bin/sh", "-c", cmd], env=dict(os.environ),
+            cwd=str(tmp_path)))
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+
+    got = 0
+    frames = 0
+    last_kind = None
+    exit_frame = None
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        while True:
+            msg = ws.receive()
+            if msg.get("bytes") is not None:
+                assert set(msg["bytes"]) <= {ord("Z")}
+                got += len(msg["bytes"])
+                frames += 1
+                last_kind = "bytes"
+            elif msg.get("text") is not None:
+                exit_frame = json.loads(msg["text"])
+                last_kind = "text"
+                break
+    assert got == total
+    assert exit_frame == {"exit": 0}
+    assert last_kind == "text"
+    # 4 KB reads unmerged would be ~976 frames.
+    assert frames < total / 16384

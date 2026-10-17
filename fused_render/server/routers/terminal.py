@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 
@@ -39,6 +40,13 @@ from fused_render import claude_cmd_log, pty_session
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
+
+#: Most output bytes `pump_output` merges into one WS frame.
+_MERGE_CAP = 256 * 1024
+#: Output arriving closer together than this counts as a flood, and
+#: `pump_output` then waits `_FLOOD_TICK_S` for more before sending.
+_FLOOD_GAP_S = 0.01
+_FLOOD_TICK_S = 0.004
 
 @router.post("/api/terminal")
 def api_terminal_create(body: dict = Body(default={}),
@@ -270,12 +278,48 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
         # default-executor shutdown at loop close would hang forever on it.
         # An asyncio queue `get` is natively cancellable, so that hazard is
         # gone and so is the poll.
+        last_send = 0.0
         while True:
             kind, payload = await out_queue.get()
-            if kind == "data":
-                await ws.send_bytes(payload)
-            else:  # "exit"
+            if kind != "data":  # "exit"
                 await ws.send_text(json.dumps({"exit": payload}))
+                return
+            # Merge whatever else is already queued into this one frame. A
+            # flooding program makes the reader enqueue ~one item per read
+            # (a pty read returns 1-4 KB on macOS however big the buffer);
+            # a WS frame per item costs a send, a JS message event and an
+            # xterm `write` each. Capped so one frame stays a sane size and
+            # the loop still yields to the receive side between sends.
+            # Order is never changed: an "exit" met while draining is held
+            # until the merged data has been sent.
+            chunks = [payload]
+            size = len(payload)
+            exited = False
+            code = None
+            # A consumer that keeps up finds the queue empty every time and
+            # merges nothing, so while output is arriving back to back (the
+            # previous frame went out < _FLOOD_GAP_S ago) wait one tick for
+            # the reader to get ahead. A lone keystroke echo has no recent
+            # frame, skips the wait and pays no latency.
+            waited = time.monotonic() - last_send >= _FLOOD_GAP_S
+            while size < _MERGE_CAP:
+                try:
+                    kind, payload = out_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    if waited:
+                        break
+                    waited = True
+                    await asyncio.sleep(_FLOOD_TICK_S)
+                    continue
+                if kind != "data":
+                    exited, code = True, payload
+                    break
+                chunks.append(payload)
+                size += len(payload)
+            await ws.send_bytes(b"".join(chunks) if len(chunks) > 1 else chunks[0])
+            last_send = time.monotonic()
+            if exited:
+                await ws.send_text(json.dumps({"exit": code}))
                 return
 
     pumper = asyncio.create_task(pump_output())

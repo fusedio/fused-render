@@ -49,7 +49,7 @@ _HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_pty_exec_he
 
 #: Enough to repaint a screen on reattach without keeping unbounded history.
 SCROLLBACK_CAP = 256 * 1024
-_READ_CHUNK = 4096
+_READ_CHUNK = 65536
 #: SIGHUP, then SIGKILL after this long if the shell (or something it spawned,
 #: e.g. vim) is still holding the terminal.
 _KILL_GRACE_S = 2.0
