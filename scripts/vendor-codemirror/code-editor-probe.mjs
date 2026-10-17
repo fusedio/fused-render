@@ -47,8 +47,8 @@ const html = fs.readFileSync(templatePath, "utf8");
 const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 if (inline.length !== 1) throw new Error("expected exactly one inline <script>, got " + inline.length);
 const T = new Function(inline[0] + `
-  return { LANGUAGES, detectLanguage, detectIndent, detectEol, textForEol,
-           eolExtension, reformatJson, jsonLinesLinter, languageExtension };`)();
+  return { LANGUAGES, detectLanguage, detectIndent, detectEol, serialize,
+           reformatJson, jsonLinesLinter, languageExtension };`)();
 
 const fakeView = (doc, extensions = []) => ({ state: CM.EditorState.create({ doc, extensions }) });
 
@@ -58,9 +58,15 @@ const OPS = {
   eol: (text) => T.detectEol(text),
   // What a load-then-save of `raw` writes back, untouched: the CE-5 contract.
   roundTrip: (raw) => {
-    const eol = T.detectEol(raw);
-    const state = CM.EditorState.create({ doc: T.textForEol(raw, eol), extensions: [T.eolExtension(eol)] });
-    return state.sliceDoc();
+    const state = CM.EditorState.create({ doc: raw });
+    return T.serialize(state, T.detectEol(raw));
+  },
+  // Load `raw`, insert `text` at `at` (a paste), save: how many lines the
+  // buffer has afterwards and the bytes written.
+  insertThenSave: (raw, at, text) => {
+    let state = CM.EditorState.create({ doc: raw });
+    state = state.update({ changes: { from: at, insert: text } }).state;
+    return { lines: state.doc.lines, saved: T.serialize(state, T.detectEol(raw)) };
   },
   reformat: (text, unit, nl) => T.reformatJson(text, unit, nl),
   lintJsonl: (doc) => T.jsonLinesLinter(fakeView(doc))

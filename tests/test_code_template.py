@@ -104,6 +104,14 @@ def test_crlf_file_saves_back_as_crlf():
     assert ok(["eol", raw], ["roundTrip", raw]) == ["crlf", raw]
 
 
+def test_lf_paste_into_a_crlf_file_splits_into_lines_and_saves_as_crlf():
+    # A paste from a macOS/Linux clipboard is LF. It must become real lines in
+    # the buffer (not "\n"s inside one line, which a "\r\n" lineSeparator
+    # facet would do) and be written back with the file's CRLF endings.
+    assert ok(["insertThenSave", "a\r\nb\r\n", 1, "x\ny"]) == [
+        {"lines": 4, "saved": "ax\r\ny\r\nb\r\n"}]
+
+
 def test_lf_file_saves_back_as_lf():
     raw = "a\nb\n"
     assert ok(["eol", raw], ["roundTrip", raw]) == ["lf", raw]

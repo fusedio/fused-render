@@ -263,7 +263,6 @@
     const langC = new CM.Compartment();
     const indentC = new CM.Compartment();
     const wrapC = new CM.Compartment();
-    const eolC = new CM.Compartment();
 
     let view = null;
     let lang = null;      // LANGUAGES entry the view is configured with (CE-1)
@@ -402,19 +401,20 @@
     }
 
     // CE-5: CodeMirror normalizes every line break to "\n" by default, which
-    // silently rewrote a CRLF file to LF on its first save. A file whose breaks
-    // are mostly CRLF is edited with CRLF as the separator, so the bytes it is
-    // saved with are the bytes it had. Mixed files settle on the majority (as
-    // VS Code does); the stray breaks only change if the buffer is saved.
+    // silently rewrote a CRLF file to LF on its first save. The buffer stays
+    // LF-only inside the editor — so a pasted LF block in a CRLF file still
+    // splits into lines (an `EditorState.lineSeparator` of "\r\n" would keep
+    // its "\n"s inside one line and write them back as bare LFs) — and the
+    // file's own ending is applied only when the bytes leave the editor.
+    // Mixed files settle on the majority (as VS Code does); the stray breaks
+    // only change if the buffer is saved.
     function detectEol(text) {
       const crlf = (text.match(/\r\n/g) || []).length;
       const lf = (text.match(/\n/g) || []).length - crlf;
       return crlf > 0 && crlf >= lf ? "crlf" : "lf";
     }
-    const eolExtension = (value) =>
-      value === "crlf" ? CM.EditorState.lineSeparator.of("\r\n") : [];
-    const textForEol = (text, value) =>
-      value === "crlf" ? text.replace(/\r?\n/g, "\r\n") : text;
+    const serialize = (state, value) =>
+      state.doc.sliceString(0, state.doc.length, value === "crlf" ? "\r\n" : "\n");
 
     function indentExtension(value) {
       const unit = value === "tab" ? "\t" : " ".repeat(Number(value));
@@ -525,7 +525,7 @@
     function formatDocument() {
       if (!view || !writable || !lang || !lang.format) return false;
       const state = view.state;
-      const nl = state.lineBreak;
+      const nl = "\n"; // the buffer's own separator, whatever the file's (CE-5)
       const text = state.sliceDoc();
       const unit = indent === "tab" ? "\t" : " ".repeat(Number(indent));
       let next;
@@ -590,7 +590,6 @@
       if (value === eol) return;
       eol = value;
       eolSel.value = value;
-      view.dispatch({ effects: eolC.reconfigure(eolExtension(value)) });
       setDirty(true);
       clearTimeout(saveTimer);
       saveTimer = setTimeout(autosave, 250);
@@ -689,9 +688,8 @@
       // write was in flight — those must NOT be masked by setDirty(false), or
       // "Saved" lies and the 250ms autosave (which checks dirty) skips them.
       const docState = view.state.doc;
-      // sliceDoc, never doc.toString(): only sliceDoc joins lines with the
-      // state's own separator, so a CRLF buffer saves as CRLF (CE-5).
-      const doc = view.state.sliceDoc();
+      // Joined with the FILE's line ending, not the buffer's "\n" (CE-5).
+      const doc = serialize(view.state, eol);
       // A line-ending switch is an edit the doc compare cannot see (CE-5).
       const eolWritten = eol;
       saveBtn.disabled = true;
@@ -739,16 +737,10 @@
           return;
         }
         const raw = await fused.readFile(file);
-        // The disk copy may have changed line endings too (CE-5): switch the
-        // separator first, so the incoming text is split by the new one.
-        const nextEol = detectEol(raw);
-        if (nextEol !== eol) {
-          eol = nextEol;
-          eolSel.value = eol;
-          view.dispatch({ effects: eolC.reconfigure(eolExtension(eol)) });
-        }
-        const text = textForEol(raw, eol);
-        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+        // The disk copy may have changed line endings too (CE-5).
+        eol = detectEol(raw);
+        eolSel.value = eol;
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: raw } });
         mtime = st.mtime;
         hideConflict();
         setDirty(false); // after dispatch, whose docChanged had flipped us dirty
@@ -760,7 +752,7 @@
 
     // Overwrite forces the write with no lock, then re-arms from the response.
     async function overwrite() {
-      const doc = view.state.sliceDoc();
+      const doc = serialize(view.state, eol);
       try {
         const st = await fused.writeFile(file, doc);
         mtime = st.mtime;
@@ -799,7 +791,6 @@
       indent = detectIndent(text) || lang.indent || "4";
       eol = detectEol(text);
       wrap = readWrapPref();
-      text = textForEol(text, eol);
       // The editor surface follows the shell's appearance (SPEC §30). oneDark
       // is the only theme in the vendored bundle, so light mode simply leaves
       // it out and basicSetup's own default (light) highlight style applies.
@@ -810,7 +801,6 @@
         langC.of(languageExtension(lang)),
         indentC.of(indentExtension(indent)),
         wrapC.of(wrap ? CM.EditorView.lineWrapping : []),
-        eolC.of(eolExtension(eol)),
         CM.indentationMarkers({
           thickness: 1,
           colors: { dark: "#2c3038", activeDark: "#4a505b", light: "#e6e8eb", activeLight: "#c4c8ce" },

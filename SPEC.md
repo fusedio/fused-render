@@ -12290,11 +12290,15 @@ unchanged by this section.
   space-led ones means tabs; otherwise the most common step between
   consecutive indented lines (2/4/8). A file with nothing indented takes the
   language's default (Python 4, web/data formats 2, Go tabs, else 4).
-- **CE-5 Line endings are preserved.** A file whose breaks are mostly CRLF is
-  edited with `EditorState.lineSeparator` = `"\r\n"`, and every write uses
-  `state.sliceDoc()` — `doc.toString()` always joins with `"\n"`, which
-  silently converted CRLF files to LF on their first save. Mixed files settle
-  on the majority. Switching LF/CRLF in the status bar is an edit (dirty →
+- **CE-5 Line endings are preserved.** The buffer is LF-only inside the
+  editor; the file's ending (mostly-CRLF → CRLF, mixed files settle on the
+  majority) is applied only when bytes leave it, via
+  `doc.sliceString(0, len, sep)`. The old template wrote `doc.toString()`,
+  which always joins with `"\n"`, so CRLF files silently became LF on their
+  first save. **Rejected:** `EditorState.lineSeparator = "\r\n"` — CodeMirror
+  then splits inserted text on that exact string only, so an LF paste (every
+  macOS/Linux clipboard) stays one line holding raw `"\n"`s and is written
+  back as bare LFs. Switching LF/CRLF in the status bar is an edit (dirty →
   autosave), and a switch that lands during an in-flight write keeps the
   buffer dirty.
 - **CE-6 Validation only where a real validator exists.** JSON
@@ -12314,5 +12318,5 @@ unchanged by this section.
   helpers against the committed bundle via
   `scripts/vendor-codemirror/code-editor-probe.mjs` (node only — no
   `node_modules`): every listed language builds from the shipped bundle,
-  detection, indentation, CRLF round-trip, Format's verbatim literals, the
-  JSONL linter.
+  detection, indentation, CRLF round-trip (including an LF paste into a CRLF
+  file), Format's verbatim literals, the JSONL linter.
