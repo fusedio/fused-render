@@ -340,6 +340,11 @@ def agent(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "PROJECTS", str(tmp_path / "projects"))
     monkeypatch.setattr(mod, "RUNS", str(tmp_path / "runs"))
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: mod)
+    # CI has no `claude` on PATH; never depend on the machine's install.
+    # Tests that spawn a stub CLI point FUSED_RENDER_CLAUDE_BIN at it.
+    monkeypatch.setattr(
+        mod, "_claude_bin",
+        lambda: os.environ.get("FUSED_RENDER_CLAUDE_BIN") or "/fake/bin/claude")
     return mod
 
 
