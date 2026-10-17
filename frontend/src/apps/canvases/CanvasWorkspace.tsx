@@ -11,7 +11,7 @@
 // is posted with an EXACT targetOrigin — never "*" — so it cannot leak to a
 // frame that navigated elsewhere.
 //
-// Node selection (the explorer engine in the right pane, `renderFile`): the same
+// Node selection (the explorer's embed route framed in the right pane): the same
 // listener carries three more messages once the workbench is told this host
 // speaks v2 (`fused_embed_v=2` on the frame URL — the flag also hides the
 // workbench's own code editor, so an OLD host keeps that editor and an old
@@ -33,10 +33,10 @@
 // workbench iframe — the hosted workbench refreshes itself on upstream
 // changes.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { replaceSearch } from "@platform/lib/router";
+import { embedUrlForFsPath } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
@@ -115,13 +115,26 @@ function nodeFile(dir: string, node: NodeSel): string {
   return `${dir.replace(/\/+$/, "")}/${node.file}`;
 }
 
-/** Which of the explorer engine's content modes the node pane shows: the
- *  chat on the file, or the file's code. Written to the page URL as `_mode`,
- *  which is where the engine (Preview.tsx) reads it. */
+/** Which of the explorer's content modes the node pane frames: the chat on
+ *  the file, or the file's code. It is the `_mode` of the framed embed URL and
+ *  rides this page's URL as `node_tab` so a reload keeps it. */
 type NodeTab = "claude" | "code";
 
 function nodeTabFromUrl(): NodeTab {
-  return new URLSearchParams(window.location.search).get("_mode") === "code" ? "code" : "claude";
+  return new URLSearchParams(window.location.search).get("node_tab") === "code" ? "code" : "claude";
+}
+
+/**
+ * THE EXPLORER, HEADLESS, on the node's file (owner, 2026-10-17: "use embed —
+ * that's the true headless thing"): the explorer's own embed route framed in
+ * the right pane, chrome-free (no crumb bar, no sidebar column), with its
+ * content mode set to the chat or the code. Same origin, so the chat inside
+ * keeps its own file pane and files its sessions per FILE exactly as the
+ * explorer does (the app-state block names the file); its `session_id` lives
+ * on the frame's URL, not this page's.
+ */
+function nodeEmbedSrc(file: string, tab: NodeTab): string {
+  return embedUrlForFsPath(file, "?_mode=" + tab + "&_side=off");
 }
 
 /** The node restored from this page's own URL (`?node=` + `node_file=`), or
@@ -139,28 +152,7 @@ export function canvasNameFromPath(pathname: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
-export default function CanvasWorkspace({
-  name,
-  renderFile,
-}: {
-  name: string;
-  /**
-   * THE EXPLORER'S FILE ENGINE, handed down by the shell (App.tsx mounts its
-   * own `StatView`): stat → the registry's preview of the file (the code
-   * template for a `.py`, writable, autosaving into the clone) → the
-   * Claude / Git sidebar beside it, with Claude's Recent list filed per
-   * FILE the way the explorer already does it (the content frame is this
-   * origin's, so every send carries an app-state block whose url names the
-   * file). A node selected in the workbench is exactly "the explorer open on
-   * `<clone>/<udfName>.py`", so that is what the right pane renders — not a
-   * second sidebar built beside it (owner, 2026-10-17: "we should be just
-   * using that entire engine").
-   *
-   * A render prop rather than an import because `StatView` is the shell's
-   * and an app may not import the explorer (scripts/check-boundaries.mjs).
-   */
-  renderFile: (fsPath: string) => ReactNode;
-}) {
+export default function CanvasWorkspace({ name }: { name: string }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
@@ -347,19 +339,12 @@ export default function CanvasWorkspace({
     if (node) {
       url.searchParams.set("node", node.udfName);
       url.searchParams.set("node_file", node.file);
-      // The explorer engine reads its content mode and sidebar off this same
-      // URL (Preview.tsx `_mode` / `_side`). The node pane is ONE of the
-      // engine's content modes at a time — the chat on the file, or its code
-      // (owner, 2026-10-17) — picked by the strip above it, and the Claude /
-      // Git sidebar column stays shut beside it (`_side=off`; D326: absent
-      // means open).
-      url.searchParams.set("_mode", nodeTab);
-      url.searchParams.set("_side", "off");
+      if (nodeTab === "code") url.searchParams.set("node_tab", "code");
+      else url.searchParams.delete("node_tab");
     } else {
       url.searchParams.delete("node");
       url.searchParams.delete("node_file");
-      url.searchParams.delete("_mode");
-      url.searchParams.delete("_side");
+      url.searchParams.delete("node_tab");
     }
     if (nodeEffectRanRef.current && prevNodeKeyRef.current !== key) {
       url.searchParams.delete("session_id");
@@ -368,9 +353,7 @@ export default function CanvasWorkspace({
     nodeEffectRanRef.current = true;
     prevNodeKeyRef.current = key;
     if (url.href !== window.location.href) {
-      // Through the router, not a bare replaceState: the engine learns of a
-      // `_mode` change from the `fused:urlchange` event replaceSearch fires.
-      replaceSearch(url.pathname + url.search);
+      window.history.replaceState(window.history.state, "", url);
     }
   }, [node, nodeTab]);
 
@@ -734,11 +717,9 @@ export default function CanvasWorkspace({
               className="canvas-node-file"
               style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
             >
-              {/* The engine's content mode, as two tabs — the same shadcn line
-                  strip the explorer's own sidebar uses (SideChrome). The
-                  engine's crumb bar still carries its full mode switcher
-                  underneath; this is the short way between the two modes a
-                  node needs. */}
+              {/* The framed embed's content mode, as two tabs — the same shadcn
+                  line strip the explorer's own sidebar uses (SideChrome). The
+                  strip is this page's; everything under it is the explorer's. */}
               <div className="preview-side-header">
                 <span className="canvas-node-side-name" title={nodeFile(dir, node)}>
                   {node.udfName}
@@ -766,7 +747,15 @@ export default function CanvasWorkspace({
                   </Tabs>
                 </div>
               </div>
-              {renderFile(nodeFile(dir, node))}
+              <iframe
+                // Keyed on the mode so a tab switch is a fresh document: the
+                // chat's own `session_id` lives on the frame URL, and the
+                // explorer's content-mode swap is for its own switcher.
+                key={nodeTab}
+                className="preview-side-frame"
+                src={nodeEmbedSrc(nodeFile(dir, node), nodeTab)}
+                title={`${node.udfName} — ${nodeTab === "code" ? "Code" : "Claude"}`}
+              />
             </div>
           ) : chatHere && dir && !node ? (
             // key forces a REMOUNT when a fix run starts: the run id is read at
