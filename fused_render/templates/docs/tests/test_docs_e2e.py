@@ -186,7 +186,8 @@ def test_saves_queue_and_recover_from_conflict(server, doc, page):
     subprocess.run([PANDOC, "-f", "markdown", "-t", "docx", "-o", path], input="Changed elsewhere\n", text=True, encoding="utf-8", check=True)
     page.keyboard.type(" Gamma")
     _until(lambda: frame.locator("#banner").is_visible())
-    assert "Gamma" not in _docx_html(path)
+    on_disk = _docx_html(path)
+    assert "Changed elsewhere" in on_disk and "Gamma" not in on_disk
     frame.get_by_role("button", name="Keep my version").click()
     _until(lambda: "Alpha Beta Gamma" in _docx_html(path))
     page.keyboard.type(" Delta")

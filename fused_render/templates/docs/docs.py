@@ -439,7 +439,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         if not stem:
             raise ValueError("enter a name")
         dest = os.path.join(os.path.dirname(src), stem + os.path.splitext(src)[1])
-        if os.path.exists(dest) and not os.path.samefile(src, dest):
+        if os.path.lexists(dest) and not (os.path.exists(dest) and os.path.samefile(src, dest)):
             raise FileExistsError(f"{os.path.basename(dest)} already exists in this folder")
         os.rename(src, dest)
         return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest),
