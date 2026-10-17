@@ -469,3 +469,26 @@ def test_exit_while_paused_still_ends_the_session(registry, tmp_path, monkeypatc
     assert _wait_until(lambda: not session.alive, timeout=3.0)
     assert session.exit_code == 0
     assert b"hi" in session.scrollback()
+
+
+def test_scrollback_ring_holds_exactly_the_cap_and_the_tail(registry, tmp_path, monkeypatch):
+    """The ring is a deque of chunks; trimming must land on exactly the cap and
+    keep the newest bytes, including when one chunk straddles the boundary."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session = registry.create()
+    assert _wait_until(lambda: len(session.scrollback()) > 0)
+    with session._lock:
+        session._scrollback.clear()
+        session._scrollback_len = 0
+        sent = bytearray()
+        chunk_sizes = [1000, 65536, 70001, 3, 65536, 100000, 65536]  # > 2 * cap in total
+        for n, size in enumerate(chunk_sizes):
+            chunk = bytes([n + 1]) * size
+            sent += chunk
+            session._append_scrollback(chunk)
+            assert session._scrollback_len == min(len(sent), pty_session.SCROLLBACK_CAP)
+    ring = session.scrollback()
+    assert len(ring) == pty_session.SCROLLBACK_CAP
+    assert ring == bytes(sent[-pty_session.SCROLLBACK_CAP:])
+    assert session.attach()[0] == ring

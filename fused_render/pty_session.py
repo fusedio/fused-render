@@ -30,6 +30,7 @@ this code.
 from __future__ import annotations
 
 import asyncio
+import collections
 import os
 import re
 import signal
@@ -199,7 +200,11 @@ class PtySession:
         self._paused: dict = {}
         self._flowing = threading.Event()
         self._flowing.set()
-        self._scrollback = bytearray()
+        #: The ring: whole read chunks plus their running byte total. A flat
+        #: bytearray trimmed with `del buf[:overflow]` memmoves the entire
+        #: 256 KiB on EVERY read once full; a deque trims from the left in O(1).
+        self._scrollback: collections.deque = collections.deque()
+        self._scrollback_len = 0
 
         master_fd, slave_fd = os.openpty()
         self.master_fd = master_fd
@@ -284,10 +289,7 @@ class PtySession:
             with self._lock:
                 self.last_activity = time.time()
                 self.shell_state.feed(data)
-                self._scrollback.extend(data)
-                overflow = len(self._scrollback) - SCROLLBACK_CAP
-                if overflow > 0:
-                    del self._scrollback[:overflow]
+                self._append_scrollback(data)
                 subs = list(self._subscribers)
             for q in subs:
                 self._put(q, ("data", data))
@@ -303,6 +305,24 @@ class PtySession:
             os.close(self.master_fd)
         except OSError:
             pass
+
+    def _append_scrollback(self, data: bytes) -> None:
+        """Append to the ring and drop the oldest bytes past SCROLLBACK_CAP.
+        Whole chunks are popped; only the one straddling the cap is sliced
+        (at most one read's worth of copying). Caller holds `_lock`."""
+        self._scrollback.append(data)
+        self._scrollback_len += len(data)
+        excess = self._scrollback_len - SCROLLBACK_CAP
+        while excess > 0:
+            head = self._scrollback[0]
+            if len(head) <= excess:
+                self._scrollback.popleft()
+                self._scrollback_len -= len(head)
+                excess -= len(head)
+            else:
+                self._scrollback[0] = head[excess:]
+                self._scrollback_len -= excess
+                excess = 0
 
     def _put(self, q, item) -> None:
         """Deliver `item` to one subscriber from the reader thread. An asyncio
@@ -394,7 +414,7 @@ class PtySession:
 
     def text(self, lines: int = DEFAULT_TEXT_LINES) -> str:
         with self._lock:
-            data = bytes(self._scrollback)
+            data = b"".join(self._scrollback)
             rows, cols = self.rows, self.cols
         return render_screen_text(data, rows, cols, lines)
 
@@ -422,7 +442,7 @@ class PtySession:
 
     def scrollback(self) -> bytes:
         with self._lock:
-            return bytes(self._scrollback)
+            return b"".join(self._scrollback)
 
     def attach(self, loop: Optional[asyncio.AbstractEventLoop] = None
                ) -> tuple[bytes, bool, Optional[int], "SimpleQueue | asyncio.Queue"]:
@@ -448,7 +468,7 @@ class PtySession:
         with self._lock:
             if loop is not None:
                 self._loops[q] = loop
-            snapshot = bytes(self._scrollback)
+            snapshot = b"".join(self._scrollback)
             alive = self.alive
             exit_code = self.exit_code
             self._subscribers.append(q)
