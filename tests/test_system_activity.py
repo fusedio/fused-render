@@ -625,3 +625,34 @@ def test_claude_count_in_default_scope_covers_fused_runs_only(client, fake):
     s._roots = lambda: {900: labels.Owner("claude", "Claude: x", {"run_id": "r"})}
     c = client.get("/api/system/activity").json()["claude"]
     assert (c["total"], c["fused"], c["other"]) == (1, 1, 0)
+
+
+# ---- process detail -------------------------------------------------------------
+
+def test_detail_reports_argv_cwd_parents_owner_and_ports(client, fake, monkeypatch):
+    from fused_render.sysmon import detail
+    backend, clock, s = fake
+    backend.args[203] = ["/w/proj/.venv/bin/python", "serve.py", "--token", "hunter2"]
+    backend.cwd = lambda pid: "/w/proj" if pid == 203 else None
+    monkeypatch.setattr(detail, "_lsof_ports", lambda pid: [8123] if pid == 203 else [])
+    client.get("/api/system/activity")
+    d = client.get("/api/system/activity/detail?pid=203").json()
+    assert d["pid"] == 203 and d["cwd"] == "/w/proj"
+    assert d["argv"] == ["/w/proj/.venv/bin/python", "serve.py", "--token", "•••"]
+    assert d["venv"] == "/w/proj/.venv"
+    assert d["ports"] == [8123]
+    assert [p["pid"] for p in d["parents"]] == [ROOT, 1]
+    assert d["owner"]["kind"] == "other" and d["owner"]["label"]
+    assert d["started_at"] == 1_700_000_000.0 + 203
+
+
+def test_detail_unknown_pid_and_bad_pid(client, fake):
+    assert client.get("/api/system/activity/detail?pid=999999").status_code == 404
+    assert client.get("/api/system/activity/detail?pid=abc").status_code == 400
+
+
+def test_detail_survives_missing_readers(client, fake, monkeypatch):
+    from fused_render.sysmon import detail
+    monkeypatch.setattr(detail, "_lsof_ports", lambda pid: (_ for _ in ()).throw(OSError("x")))
+    d = client.get("/api/system/activity/detail?pid=204").json()
+    assert d["cwd"] is None and d["ports"] == [] and d["venv"] is None

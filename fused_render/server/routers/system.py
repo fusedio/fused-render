@@ -49,6 +49,17 @@ def redact_args(args: str) -> str:
     return _SECRET_PAIR.sub(lambda m: m.group(1) + m.group(2) + REDACTED, " ".join(parts))
 
 
+def redact_argv(argv: list[str]) -> list[str]:
+    """`redact_args` for an argv list (each element kept whole)."""
+    out = []
+    for i, a in enumerate(argv):
+        if i and argv[i - 1].lower() in _SECRET_FLAGS and a:
+            out.append(REDACTED)
+        else:
+            out.append(_SECRET_PAIR.sub(lambda m: m.group(1) + m.group(2) + REDACTED, a))
+    return out
+
+
 @router.get("/api/system/activity")
 def api_system_activity(scope: str = "fused"):
     # The chip polls this: reading it is "someone is watching" for the request
@@ -58,6 +69,23 @@ def api_system_activity(scope: str = "fused"):
     for row in body["procs"]:
         if "args" in row:
             row["args"] = redact_args(row["args"])
+    return body
+
+
+@router.get("/api/system/activity/detail")
+async def api_system_activity_detail(pid: str = ""):
+    import anyio
+    from fused_render.sysmon import detail
+    try:
+        n = int(pid)
+    except ValueError:
+        return _error("pid must be an integer", status=400)
+    sampler = sysmon_sampler.get_sampler()
+    # lsof and procfs block: off the event loop.
+    body = await anyio.to_thread.run_sync(
+        lambda: detail.process_detail(sampler, n, redact_argv))
+    if body is None:
+        return _error("no such process", status=404)
     return body
 
 
