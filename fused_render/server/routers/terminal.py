@@ -15,7 +15,12 @@ server frames are typed by their WebSocket frame kind rather than by a field
 inside one shape:
   * client -> server: a BINARY frame is keystrokes/paste, written straight to
     the pty; a TEXT frame is a JSON control message, today only
-    `{"resize": [rows, cols]}`.
+    `{"resize": [rows, cols]}`, `{"pause": true}` or `{"resume": true}`.
+    Pause/resume are flow control: a client whose terminal is behind on
+    rendering asks the server to stop reading the pty (the kernel buffer then
+    fills and a flooding program blocks), so Ctrl-C and keystrokes are not
+    queued behind megabytes of output. A pause expires on the server after a
+    few seconds, and a disconnect clears it.
   * server -> client: a BINARY frame is the shell's output; a TEXT frame is
     JSON, today only `{"exit": code}` sent once, when the child dies (or
     `{"exit": null}` immediately, for an id the registry no longer knows).
@@ -344,6 +349,14 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
             # tearing down the socket with an AttributeError the same way the
             # JSONDecodeError guard above it is.
             if not isinstance(control, dict):
+                continue
+            # Flow control: the client's xterm is behind on rendering
+            # (`pause`) or has caught up (`resume`); see PtySession.pause.
+            if control.get("pause") is True:
+                session.pause(out_queue)
+                continue
+            if control.get("resume") is True:
+                session.resume(out_queue)
                 continue
             resize = control.get("resize")
             if isinstance(resize, list) and len(resize) == 2:

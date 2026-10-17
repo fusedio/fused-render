@@ -33,6 +33,7 @@ import {
 } from "@platform/ui/terminalTheme";
 import { rememberTerminalSize } from "@platform/ui/terminalSizeHint";
 import { fitWhenVisible, isLaidOut } from "@platform/ui/terminalFit";
+import { createFlowControl } from "@platform/lib/terminalFlowControl";
 import { isMac, isMod } from "@platform/lib/platform";
 import {
   initialOscState,
@@ -274,10 +275,16 @@ export default function TerminalView({
       // comment on `teardown` above), and that handler dereferences
       // `session`. Constructing it first means there is no window where a
       // synchronous callback can observe a not-yet-initialized `session`.
+      // Flow control (terminalFlowControl.ts): `session` is assigned just below;
+      // the sink only dereferences it from callbacks that fire later.
+      const flow = createFlowControl({
+        pause: () => session.pause(),
+        resume: () => session.resume(),
+      });
       const session = new TerminalSession({
         id,
         onData: (chunk) => {
-          term.write(chunk);
+          term.write(chunk, flow.chunk(chunk.length));
           scheduleRepaintWatchdog();
         },
         onExit: (code) => onExit?.(code),
@@ -301,6 +308,9 @@ export default function TerminalView({
             // opens, for the same reason: it no-ops too, so there is no
             // second eager-resize path to worry about here.
             term.reset();
+            // Same moment, same reason for flow control: the replay is about
+            // to arrive on a fresh socket whose server-side pause is gone.
+            flow.reset();
             // Re-measure first (an earlier fit against a not-yet-laid-out box
             // left the 80x24 default), but only against a real box.
             fitWhenVisible(el, fit, term);

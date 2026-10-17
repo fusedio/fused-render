@@ -337,3 +337,25 @@ def test_bulk_output_arrives_intact_in_merged_frames(client, scratch_registry, t
     assert last_kind == "text"
     # 4 KB reads unmerged would be ~976 frames.
     assert frames < total / 16384
+
+
+def test_pause_and_resume_control_frames_reach_the_session(client, scratch_registry):
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    session = scratch_registry.get(sid)
+
+    def _wait(pred):
+        deadline = time.time() + 5
+        while not pred() and time.time() < deadline:
+            time.sleep(0.02)
+        return pred()
+
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        ws.receive_bytes()
+        ws.send_text(json.dumps({"pause": True}))
+        assert _wait(lambda: len(session._paused) == 1)
+        ws.send_text(json.dumps({"resume": True}))
+        assert _wait(lambda: len(session._paused) == 0)
+        ws.send_text(json.dumps({"pause": True}))
+        assert _wait(lambda: len(session._paused) == 1)
+    # Disconnecting while paused must not leave the shell frozen.
+    assert _wait(lambda: session._paused == {} and session._flowing.is_set())

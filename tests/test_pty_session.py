@@ -398,3 +398,74 @@ def test_closed_loop_subscriber_is_dropped_not_fatal(registry, tmp_path, monkeyp
     assert _wait_until(lambda: not session.alive)
     assert q not in session._subscribers
     assert b"hi" in session.scrollback()
+
+
+# -- flow control (pause / resume) ---------------------------------------------
+
+def _flood_session(registry, tmp_path, monkeypatch):
+    """A session whose child writes forever, with one subscriber attached."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "yes"]))
+    session = registry.create()
+    _snap, _alive, _code, q = session.attach()
+    assert _wait_until(lambda: len(session.scrollback()) > 1000)
+    return session, q
+
+
+def _grows(session, window=0.4):
+    """True if the ring got new bytes over `window` seconds. The ring is full
+    (256 KiB of `yes`), so compare the tail of activity via last_activity."""
+    before = session.last_activity
+    time.sleep(window)
+    return session.last_activity > before
+
+
+def test_pause_stops_reads_and_resume_restarts_them(registry, tmp_path, monkeypatch):
+    session, q = _flood_session(registry, tmp_path, monkeypatch)
+    assert _grows(session)
+    session.pause(q)
+    time.sleep(0.3)  # let a read already in flight land
+    assert not _grows(session, 0.6)
+    session.resume(q)
+    assert _wait_until(lambda: _grows(session, 0.1), timeout=3.0)
+
+
+def test_pause_auto_expires(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "_PAUSE_MAX_S", 0.5)
+    monkeypatch.setattr(pty_session, "_FLOW_POLL_S", 0.1)
+    session, q = _flood_session(registry, tmp_path, monkeypatch)
+    session.pause(q)
+    time.sleep(0.3)
+    assert not _grows(session, 0.1)
+    assert _wait_until(lambda: _grows(session, 0.1), timeout=3.0)
+    assert q not in session._paused
+
+
+def test_unsubscribe_clears_the_pause(registry, tmp_path, monkeypatch):
+    session, q = _flood_session(registry, tmp_path, monkeypatch)
+    session.pause(q)
+    time.sleep(0.3)
+    assert not _grows(session, 0.4)
+    session.unsubscribe(q)
+    assert session._paused == {}
+    assert _wait_until(lambda: _grows(session, 0.1), timeout=3.0)
+
+
+def test_pause_from_a_non_subscriber_is_ignored(registry, tmp_path, monkeypatch):
+    session, q = _flood_session(registry, tmp_path, monkeypatch)
+    session.unsubscribe(q)
+    session.pause(q)
+    assert session._paused == {}
+    assert session._flowing.is_set()
+
+
+def test_exit_while_paused_still_ends_the_session(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "sleep 0.4; printf hi"]))
+    session = registry.create()
+    _snap, _alive, _code, q = session.attach()
+    session.pause(q)
+    # Well inside the 5 s auto-expiry: only the exit check can free the reader.
+    assert _wait_until(lambda: not session.alive, timeout=3.0)
+    assert session.exit_code == 0
+    assert b"hi" in session.scrollback()

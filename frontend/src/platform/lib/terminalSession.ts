@@ -13,7 +13,9 @@
 // one shape — see fused_render/server/routers/terminal.py's module docstring
 // for the exact contract this mirrors:
 //   client -> server: BINARY = keystrokes/paste; TEXT = a JSON control frame,
-//     today only `{"resize": [rows, cols]}`.
+//     `{"resize": [rows, cols]}`, `{"pause": true}` or `{"resume": true}`
+//     (flow control: stop/restart the server's pty reads while xterm is
+//     behind on rendering; see terminalFlowControl.ts).
 //   server -> client: BINARY = shell output; TEXT = JSON, today only
 //     `{"exit": code}`, sent once, when the child dies.
 //
@@ -254,6 +256,19 @@ export class TerminalSession {
   resize(rows: number, cols: number): void {
     if (!this.sock || this.sock.readyState !== OPEN) return;
     this.sock.send(JSON.stringify({ resize: [rows, cols] }));
+  }
+
+  /** Ask the server to stop reading the pty (flow control; a TEXT frame). The
+   * server expires a pause on its own after a few seconds. */
+  pause(): void {
+    if (!this.sock || this.sock.readyState !== OPEN) return;
+    this.sock.send(JSON.stringify({ pause: true }));
+  }
+
+  /** Undo `pause()`. */
+  resume(): void {
+    if (!this.sock || this.sock.readyState !== OPEN) return;
+    this.sock.send(JSON.stringify({ resume: true }));
   }
 
   /** Tear down: clears any pending reconnect timer and closes a live socket.

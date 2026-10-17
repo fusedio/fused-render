@@ -50,6 +50,15 @@ _HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_pty_exec_he
 #: Enough to repaint a screen on reattach without keeping unbounded history.
 SCROLLBACK_CAP = 256 * 1024
 _READ_CHUNK = 65536
+#: Longest a client's `pause` holds the reader off the pty. The pause is a
+#: courtesy from a browser that is behind on rendering; a tab that wedged (or
+#: a socket that died without a clean close) would otherwise leave the shell
+#: blocked on a full pty buffer forever, so a pause older than this expires on
+#: its own and the flood resumes.
+_PAUSE_MAX_S = 5.0
+#: How often a paused reader wakes to expire stale pauses and check whether the
+#: child has exited.
+_FLOW_POLL_S = 0.5
 #: SIGHUP, then SIGKILL after this long if the shell (or something it spawned,
 #: e.g. vim) is still holding the terminal.
 _KILL_GRACE_S = 2.0
@@ -182,6 +191,14 @@ class PtySession:
         #: loop for the latter, and is how `_put` tells them apart.
         self._subscribers: list = []
         self._loops: dict = {}
+        #: Subscribers that asked the stream to pause -> when (monotonic).
+        #: `_flowing` is set exactly while this is empty; the reader waits on
+        #: it before each pty read, so a paused client makes the kernel pty
+        #: buffer fill and the producing program block, which is what lets
+        #: Ctrl-C and keystrokes get through a flood.
+        self._paused: dict = {}
+        self._flowing = threading.Event()
+        self._flowing.set()
         self._scrollback = bytearray()
 
         master_fd, slave_fd = os.openpty()
@@ -224,8 +241,38 @@ class PtySession:
 
     # -- I/O ---------------------------------------------------------------
 
+    def _wait_flowing(self) -> None:
+        """Block while any subscriber has the stream paused, in short waits so
+        a stale pause expires and a child that exited is still noticed: once
+        the process is gone the reader must keep reading to reach EOF/EIO and
+        reap it, whatever any client asked for."""
+        while not self._flowing.wait(_FLOW_POLL_S):
+            if self.proc.poll() is not None:
+                return
+            now = time.monotonic()
+            with self._lock:
+                for q in [q for q, t in self._paused.items() if now - t >= _PAUSE_MAX_S]:
+                    del self._paused[q]
+                if not self._paused:
+                    self._flowing.set()
+
+    def pause(self, q) -> None:
+        """Stop reading the pty on behalf of subscriber `q` until `resume(q)`,
+        `unsubscribe(q)` or `_PAUSE_MAX_S`, whichever comes first."""
+        with self._lock:
+            if q in self._subscribers:
+                self._paused[q] = time.monotonic()
+                self._flowing.clear()
+
+    def resume(self, q) -> None:
+        with self._lock:
+            self._paused.pop(q, None)
+            if not self._paused:
+                self._flowing.set()
+
     def _read_loop(self) -> None:
         while True:
+            self._wait_flowing()
             try:
                 data = os.read(self.master_fd, _READ_CHUNK)
             except OSError:
@@ -418,6 +465,9 @@ class PtySession:
             if q in self._subscribers:
                 self._subscribers.remove(q)
             self._loops.pop(q, None)
+            self._paused.pop(q, None)
+            if not self._paused:
+                self._flowing.set()
 
     # -- lifecycle -----------------------------------------------------------
 
