@@ -137,8 +137,8 @@ def test_a_declaring_folder_still_runs_when_nothing_actually_breaks(tmp_path):
     """The whole point of explaining instead of refusing.
 
     This is the shape of `geotiff`'s `ensure()`, `model_card`'s
-    `inspect_model.py`, `pano`, `docs` and `latex`: a manifest naming something
-    heavy, an entry point that never touches it. A pre-flight refusal failed
+    `inspect_model.py` and `pano`: a manifest naming something heavy, an entry
+    point that never touches it. A pre-flight refusal failed
     every one of these; this must not.
     """
     path = _project(tmp_path, ["a-distribution-nobody-has-installed"])
@@ -242,8 +242,7 @@ def test_every_declaring_core_template_can_explain_its_own_dependency(
     for `map`, `vector`, `pdf_studio` and `geometry_editor`.
 
     Also covers the module-name -> distribution step for every name the shipped
-    manifests actually use, including `pypandoc-binary`, whose import name is
-    `pypandoc` and which no reverse lookup could resolve on its own.
+    manifests actually use.
     """
     declared = projectenv.applicable_dependencies_of(os.path.join(_TEMPLATES, folder))
     assert declared, f"{folder} declares nothing; this parametrization is stale"
@@ -272,7 +271,7 @@ def _equirect_image(tmp_path):
     return {"action": "open", "file": str(path)}
 
 
-# (folder, entry point, params). The five templates a folder-scoped refusal
+# (folder, entry point, params). The templates a folder-scoped refusal
 # broke, each driven through the entry point and action its own manifest or
 # docstring documents as the stdlib-only one. `params` is a callable so a case
 # can build a fixture file; every action here is side-effect-free — a status
@@ -281,14 +280,6 @@ _STDLIB_ONLY_RUNS = [
     ("geotiff", "tiff_reader.py", lambda tmp: {}),
     ("model_card", "inspect_model.py", lambda tmp: {"path": str(tmp)}),
     ("pano", "pano.py", _equirect_image),
-    ("docs", "docs.py", lambda tmp: {"action": "typst_status"}),
-    # `engine.py`, not `daemon.py`, even though #513 made the daemon the primary
-    # runPython entry point: `daemon.main()` SPAWNS a long-lived localhost server
-    # and would leave one running per test session. `engine.py` is still a real
-    # entry point — template.html falls back to `runPython("./engine.py")`
-    # whenever the daemon cannot be reached — and it is the one that answers a
-    # status action in-process.
-    ("latex", "engine.py", lambda tmp: {"action": "tectonic_status"}),
 ]
 
 
@@ -301,10 +292,10 @@ def test_a_stdlib_only_template_really_runs_under_this_engine(
 ):
     """The headline claim of this whole change, actually executed.
 
-    These five predate D276 and each declares something heavy and optional —
-    `imagecodecs`, `tokenizers`, `py360convert`, `pypandoc-binary` — while the
-    entry point below stays stdlib-only on purpose. A folder-scoped pre-flight
-    refusal took all five down, and the version of this test that replaced it
+    These predate D276 and each declares something heavy and optional
+    (`imagecodecs`, `tokenizers`, `py360convert`) while the entry point below
+    stays stdlib-only on purpose. A folder-scoped pre-flight refusal took them
+    all down, and the version of this test that replaced it
     only ever called `explain_missing_module`, so a refusal reinstated ANYWHERE
     ELSE in `run_python` left it green. It goes through the front door now.
 

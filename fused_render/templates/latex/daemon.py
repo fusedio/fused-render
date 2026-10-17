@@ -5,9 +5,8 @@ brutal for this chatty template (compile → outline+bib, ~1.5 s status polls, a
 synctex probe per cursor settle). So the page spawns this daemon once (one
 runPython → `{port, token}`) and makes every later engine call over direct HTTP,
 dispatched straight to `engine.main()` — no second copy of the domain logic (the
-geotiff/netcdf/zarr pattern). Runs in the folder's project venv. A random
-per-run token gates every request; the server self-exits after 30 min idle and
-respawns when daemon.py/engine.py/pyproject.toml change.
+geotiff/netcdf/zarr pattern). A random per-run token gates every request; the
+server self-exits after 30 min idle and respawns when daemon.py/engine.py change.
 
 Run detached:  python daemon.py --serve
 """
@@ -41,11 +40,10 @@ _hit_lock = threading.Lock()
 
 
 def _version() -> str:
-    """Content hash of the code + manifest (NOT the interpreter path — that was
-    the db_console churn bug). An edit or a dependency change respawns a fresh
-    daemon onto the rebuilt venv."""
+    """Content hash of the code, not the interpreter path (that was the
+    db_console churn bug). An edit respawns a fresh daemon."""
     h = hashlib.sha1()
-    for f in ("daemon.py", "engine.py", "pyproject.toml"):
+    for f in ("daemon.py", "engine.py"):
         try:
             with open(os.path.join(HERE, f), "rb") as fh:
                 h.update(fh.read())

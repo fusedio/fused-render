@@ -1,51 +1,23 @@
-import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
 
+from procutil import pid_alive
+
 VERSION = "3.12.1"
-MIN_VERSION = (3, 1, 2)
 BIN_DIR = os.path.join(os.path.expanduser("~"), ".fused-render", "bin")
 STAGE_DIR = os.path.join(os.path.expanduser("~"), ".fused-render", "cache", "_pandoc_install")
 CHUNK = 1 << 20
-
-
-def _load_sibling_procutil():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "procutil.py")
-    spec = importlib.util.spec_from_file_location("_pandoc_bin_procutil", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-procutil = _load_sibling_procutil()
 
 
 def _local():
     return os.path.join(BIN_DIR, "pandoc")
 
 
-def _usable(exe):
-    try:
-        out = subprocess.run([exe, "--version"], capture_output=True, text=True, encoding="utf-8", timeout=30).stdout
-        version = tuple(int(n) for n in out.split("\n", 1)[0].split()[-1].split(".")[:3])
-    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
-        return False
-    return version >= MIN_VERSION
-
-
 def path():
-    try:
-        import pypandoc
-        return pypandoc.get_pandoc_path()
-    except (ImportError, OSError):
-        pass
-    if os.path.exists(_local()):
-        return _local()
-    found = shutil.which("pandoc")
-    return found if found and _usable(found) else None
+    return _local() if os.path.exists(_local()) else None
 
 
 def _report(stage, pct, detail, pid=None, done=False, error=None):
@@ -64,7 +36,7 @@ def _progress():
             data = json.load(f)
     except (OSError, ValueError):
         return None
-    if not data.get("done") and not procutil.pid_alive(data.get("pid", -1)):
+    if not data.get("done") and not pid_alive(data.get("pid", -1)):
         data["done"] = True
         data["error"] = data.get("error") or "installer exited unexpectedly"
     return data
@@ -145,8 +117,8 @@ def _run():
     except Exception as e:
         if os.path.exists(part):
             os.remove(part)
-        message = (f"{type(e).__name__}: {e}. Install pandoc from "
-                   "https://pandoc.org/installing.html and try again")
+        message = (f"{type(e).__name__}: {e}. To install by hand, put pandoc {VERSION} from "
+                   f"https://github.com/jgm/pandoc/releases at {_local()}")
         _report("error", 100, message, done=True, error=message)
 
 

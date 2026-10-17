@@ -1,5 +1,3 @@
-# Dependencies are declared once for the whole folder in `pyproject.toml`
-# (SPEC PY-16) — `pypandoc-binary`, and see that file for why NOT `pypandoc`.
 """Backend for the docs preview template (fused-render).
 
 The document is one user file — a Microsoft Word .docx or OpenDocument .odt

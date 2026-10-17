@@ -128,7 +128,7 @@ def test_no_template_ships_an_in_folder_venv(folder):
 
     A `.venv` inside a core template would be destroyed on every release by
     `core_templates.py`'s rmtree+os.replace swap, costing a full re-download of
-    numpy/pyproj/imagecodecs/pypandoc-binary each upgrade — and rmtree over a
+    numpy/pyproj/imagecodecs each upgrade — and rmtree over a
     30k-file venv is slow.
     """
     assert not os.path.exists(os.path.join(_TEMPLATES, folder, ".venv")), (

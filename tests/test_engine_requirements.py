@@ -94,7 +94,7 @@ _TEMPLATES = os.path.join(_REPO, "fused_render", "templates")
 #
 # Nothing else is checked: this is a guard on what the app ships versus what a
 # script venv would contain, not a general dependency linter (on-demand binary
-# fetches like pxr/pypandoc/typst and genuinely optional readers like rawpy have
+# fetches like pxr/pandoc/typst and genuinely optional readers like rawpy have
 # their own mechanisms and their own tests).
 #
 # `test_the_import_map_covers_everything_the_app_ships` keeps the first half
@@ -238,7 +238,7 @@ _IMPORT_TO_DIST = {
 # exemption resolves.
 #
 # Kept as a named exemption rather than a missing mapping so it is visible and
-# reasoned — the same shape as the on-demand binary fetches (pxr/pypandoc/typst)
+# reasoned — the same shape as the on-demand binary fetches (pxr/pandoc/typst)
 # and optional readers (rawpy) noted above.
 _COMPLETENESS_EXEMPT = {"fused"}
 
@@ -599,12 +599,10 @@ def test_the_runtime_module_alias_table_covers_every_mismatch_here():
     `_IMPORT_TO_DIST` above is the test-side map. `projectenv._MODULE_TO_DIST` is
     the RUNTIME one, read by `executor.explain_missing_module` to decide whether
     a failed import is the thing the folder's manifest asked for. They exist for
-    different reasons and cover different sets — the runtime one also carries
-    `pypandoc` -> `pypandoc-binary`, which is a template's declaration and never
-    the app's — so they are not merged. What must not happen is the runtime one
-    lacking a mismatch this one knows about: the enrichment would then silently
-    fail to fire for that distribution, and every test of it would still pass on
-    its "no match" branch.
+    different reasons and cover different sets, so they are not merged. What
+    must not happen is the runtime one lacking a mismatch this one knows about:
+    the enrichment would then silently fail to fire for that distribution, and
+    every test of it would still pass on its "no match" branch.
 
     Only the genuine mismatches are checked. Everything else is resolved by
     normalisation on both sides, which needs no table and cannot drift.

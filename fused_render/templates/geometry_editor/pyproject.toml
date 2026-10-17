@@ -11,8 +11,7 @@
 # pyarrow is here for a reason no import scan can see: `load` calls
 # `gpd.read_parquet` and `export` calls `gdf.to_parquet`, and geopandas' parquet
 # IO is an OPTIONAL backend it does not require. Without this line the venv
-# builds cleanly, every import succeeds and both actions fail at runtime — the
-# same trap as `pypandoc` vs `pypandoc-binary` in the latex template.
+# builds cleanly, every import succeeds and both actions fail at runtime.
 #
 # pyogrio and pyproj are NOT listed — they arrive as geopandas' own required
 # dependencies and no file here imports or calls into either one.

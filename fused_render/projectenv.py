@@ -1001,19 +1001,11 @@ def _tool_uv_index_urls(uv: dict) -> list[str]:
 # ecosystem's other famous mismatches (bs4, yaml, sklearn, cv2) would be a list
 # nobody maintains and nothing checks; a user manifest naming one of those simply
 # gets no enrichment, which is the same outcome as before this existed.
-#
-# `pypandoc` -> `pypandoc-binary` is the load-bearing one: the two distributions
-# share an import name and only the `-binary` wheel carries the pandoc
-# executable, so the latex and docs templates declare the heavier sibling (the
-# `_MUST_USE_HEAVIER_SIBLING` pairing in tests/test_bundle_contents.py) and a
-# module->distribution lookup that did not know this would fail to connect the
-# failed import to the manifest entry that asks for it.
 _MODULE_TO_DIST = {
     "pil": "pillow",
     "pptx": "python-pptx",
     "fitz": "pymupdf",
     "fpdf": "fpdf2",
-    "pypandoc": "pypandoc-binary",
     "google": "google-auth",
     # A second import name for one distribution is as much a mismatch as a
     # different one: a manifest declaring matplotlib and a script importing

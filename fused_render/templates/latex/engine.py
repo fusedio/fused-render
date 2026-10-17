@@ -1,6 +1,3 @@
-# Dependencies are declared once for the whole folder in `pyproject.toml`
-# (SPEC PY-16) — `pypandoc-binary`, and see that file for why NOT `pypandoc`.
-# Only the `export` action imports it; compile/outline/bib/synctex are stdlib.
 """Backend for the latex template — a local, live-preview LaTeX viewer/editor.
 
 One bare `main(action=...)` dispatcher (the fused-render contract; see the note

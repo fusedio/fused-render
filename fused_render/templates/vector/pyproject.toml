@@ -16,8 +16,7 @@
 # pyarrow is here for a reason no import scan can see: `convert_parquet.py` calls
 # `gdf.to_parquet(...)`, and geopandas' parquet IO is an OPTIONAL backend it does
 # not require. Without this line the venv builds cleanly, every import succeeds
-# and the convert action fails at runtime — the same trap as `pypandoc` vs
-# `pypandoc-binary` in the latex template, which is why "is it importable" is
+# and the convert action fails at runtime, which is why "is it importable" is
 # never the completeness question.
 [project]
 name = "fused-render-template-vector"
