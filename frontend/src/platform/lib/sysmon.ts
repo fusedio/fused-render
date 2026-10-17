@@ -60,9 +60,10 @@ export interface ClaudeSummary {
   top: { pid: number; label: string; mem: number; cpu: number }[];
 }
 
-/** The chip's compact verdict (`GET /api/system/activity`). */
+/** The chip's compact verdict (`GET /api/system/activity`). "unknown" is a
+ *  verdict the server could not compute yet or at all: rendered neutral. */
 export interface SystemVerdict {
-  level: "ok" | "warn" | "bad";
+  level: "ok" | "warn" | "bad" | "unknown";
   headline: string;
 }
 

@@ -25,7 +25,7 @@ import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
 import { isMac } from "@platform/lib/platform";
 import { navigateUrl } from "@platform/lib/router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SystemActivity, SystemProc } from "@platform/lib/sysmon";
 import { formatBytes, formatCpu, useSystemActivity } from "@shell/system-lib";
 import { Sparkline } from "@shell/monitor/Sparkline";
@@ -107,7 +107,10 @@ export function SystemCardView({
   const top = topProcs(data.procs);
   const cpuNow = data.totals.cpuPct;
   const verdict = dash?.verdict ?? data.verdict;
-  const dot = verdict && verdict.level !== "ok" ? verdict.level : "none";
+  // Only warn/bad paint the dot or speak: "ok" and "unknown" (the server could
+  // not compute a verdict) are neutral.
+  const alert = verdict && (verdict.level === "warn" || verdict.level === "bad") ? verdict : null;
+  const dot: "warn" | "bad" | "none" = alert ? (alert.level as "warn" | "bad") : "none";
   const timeline = dash && sectionOk(dash.timeline) ? dash.timeline : null;
   const keyTiles = dash ? overviewTiles(dash).filter((t) => KEY_TILES.includes(t.key)) : [];
   return (
@@ -118,7 +121,9 @@ export function SystemCardView({
         open={!collapsed}
         pinned={pinned}
         title={collapsed ? "Show what fused-render is using" : "Hide"}
-        ariaLabel={`fused-render is using ${label}`}
+        ariaLabel={`fused-render is using ${label}${
+          alert?.headline ? ` · ${alert.headline}` : ""
+        }`}
         onClick={onToggle}
         dot={dot}
       />
@@ -239,6 +244,32 @@ export function SystemCardView({
   );
 }
 
+/** The dashboard, read every 2 s only while `open`. Closing drops it, so a
+ *  reopen never paints the old verdict as current while the first fresh read
+ *  is in flight (and a read that lands after the close is discarded). */
+export function useOpenDashboard(
+  open: boolean,
+  load: () => Promise<Dashboard> = getDashboard,
+  pollMs = 2_000,
+): Dashboard | null {
+  const [dash, setDash] = useState<Dashboard | null>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
+  useEffect(() => {
+    if (!open) setDash(null);
+  }, [open]);
+  usePolled(
+    async () => {
+      if (!open) return;
+      const d = await load();
+      if (openRef.current) setDash(d);
+    },
+    open ? pollMs : 3_600_000,
+    open,
+  );
+  return dash;
+}
+
 export default function SystemDock() {
   const chip = useStatusChip("system");
   const data = useSystemActivity(chip.open);
@@ -248,15 +279,8 @@ export default function SystemDock() {
   };
   // The dashboard only while the popover is open: the closed chip's cost stays
   // the one `/api/system/activity` poll.
-  const [dash, setDash] = useState<Dashboard | null>(null);
-  usePolled(
-    async () => {
-      if (chip.open) setDash(await getDashboard());
-    },
-    chip.open ? 2_000 : 3_600_000,
-    chip.open,
-  );
-  const rec = useRecord();
+  const dash = useOpenDashboard(chip.open);
+  const rec = useRecord(undefined, undefined, chip.open);
   return (
     <SystemCardView
       data={data}

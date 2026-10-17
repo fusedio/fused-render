@@ -1,9 +1,9 @@
 // The System chip's presentational rules, rendered through the pure
 // `SystemCardView` with a fixed payload (no poll, no network).
 import { expect, test } from "bun:test";
-import { create, type ReactTestRendererJSON } from "react-test-renderer";
+import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
-import { MONITOR_PATH, chipLabel, hostLine, SystemCardView, topProcs } from "@shell/SystemDock";
+import { MONITOR_PATH, chipLabel, hostLine, SystemCardView, topProcs, useOpenDashboard } from "@shell/SystemDock";
 import type { SystemActivity, SystemProc } from "@platform/lib/sysmon";
 
 const GB = 1024 ** 3;
@@ -226,4 +226,55 @@ test("the popover shows the headline, reason links, Claude line, timeline rows a
   expect(started).toBe(1);
   // The pinned single "Open Monitor" link is still the only sys-link.
   expect(r.root.findAllByProps({ className: "sys-link" })).toHaveLength(1);
+});
+
+test("the chip's accessible name carries a warn/bad verdict, not ok or unknown", () => {
+  const label = (verdict: SystemActivity["verdict"]) =>
+    create(
+      <SystemCardView data={{ ...PAYLOAD, verdict }} collapsed onToggle={() => {}} onOpenMonitor={() => {}} />,
+    ).root.find((n) => n.type === "button").props["aria-label"] as string;
+  expect(label({ level: "bad", headline: "All 6 connections held" })).toBe(
+    "fused-render is using CPU 60% · 1.4 GB · All 6 connections held",
+  );
+  expect(label({ level: "warn", headline: "Swap growing" })).toContain("· Swap growing");
+  expect(label({ level: "ok", headline: "Nothing wrong" })).toBe("fused-render is using CPU 60% · 1.4 GB");
+  expect(label({ level: "unknown", headline: "" })).toBe("fused-render is using CPU 60% · 1.4 GB");
+});
+
+test("an unknown verdict paints no dot", () => {
+  const tree = create(
+    <SystemCardView
+      data={{ ...PAYLOAD, verdict: { level: "unknown", headline: "" } }}
+      collapsed
+      onToggle={() => {}}
+      onOpenMonitor={() => {}}
+    />,
+  ).toJSON() as ReactTestRendererJSON;
+  expect(byClass(tree, "sc-dot")[0].props.className).toContain("is-none");
+});
+
+test("the dashboard is dropped when the popover closes and not shown stale on reopen", async () => {
+  let n = 0;
+  const load = async () => ({ verdict: { level: "bad", headline: `read ${++n}`, reasons: [] } }) as unknown as Dashboard;
+  let seen: Dashboard | null = null;
+  function Probe({ open }: { open: boolean }) {
+    seen = useOpenDashboard(open, load, 1e9);
+    return null;
+  }
+  let r!: ReturnType<typeof create>;
+  const flush = async () => {
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+  };
+  await act(async () => {
+    r = create(<Probe open />);
+  });
+  await act(flush);
+  expect(seen!.verdict.headline).toBe("read 1");
+  await act(async () => r.update(<Probe open={false} />));
+  expect(seen).toBeNull();
+  await act(async () => r.update(<Probe open />));
+  // the very first paint of the reopen carries no old verdict
+  await act(flush);
+  expect(seen!.verdict.headline).toBe("read 2");
+  act(() => r.unmount());
 });

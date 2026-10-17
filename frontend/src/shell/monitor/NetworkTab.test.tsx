@@ -118,10 +118,14 @@ test("text filters debounce 300 ms before the poll sees them; toggles are immedi
     await act(async () => input.props.onChange({ target: { value: "pa" } }));
     // the box shows the draft at once; no request carries it yet
     expect(r.root.findByProps({ "aria-label": "Filter by page" }).props.value).toBe("pa");
-    await act(async () => jest.advanceTimersByTime(100));
+    await act(async () => {
+      jest.advanceTimersByTime(100);
+    });
     await fire();
     expect(calls.slice(before).some((c) => c.f.source === "pa")).toBe(false);
-    await act(async () => jest.advanceTimersByTime(200));
+    await act(async () => {
+      jest.advanceTimersByTime(200);
+    });
     await fire();
     expect(calls.slice(before).some((c) => c.f.source === "pa")).toBe(true);
 
