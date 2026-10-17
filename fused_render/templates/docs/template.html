@@ -208,8 +208,8 @@
   .ol-item.drop { box-shadow: inset 0 2px 0 var(--note); }
   .ol-empty { padding: 4px 8px; color: var(--fg-faint); font-size: 12.5px; line-height: 1.5; }
 
-  #scroll { flex: 1 1 auto; min-width: 0; overflow-y: auto; position: relative; }
-  #sheet { position: relative; max-width: calc(740px * var(--zoom)); margin: 0 auto; padding: 20px 56px 40vh; }
+  #scroll { flex: 1 1 auto; min-width: 0; overflow: auto; position: relative; }
+  #sheet { position: relative; max-width: calc(740px * var(--zoom)); min-width: calc(320px * var(--zoom)); margin: 0 auto; padding: 20px 56px 40vh; }
   body.layout-page #scroll { background: var(--bg-alt); }
   body.layout-page #sheet { max-width: calc(816px * var(--zoom)); margin: 28px auto 72px; padding: calc(64px * var(--zoom)) calc(80px * var(--zoom));
     min-height: calc(1056px * var(--zoom)); background: var(--bg); box-shadow: var(--shadow-sheet); border-radius: 3px; }
@@ -418,7 +418,8 @@
   .home-empty p { margin: 0 0 16px; line-height: 1.5; }
 
   @media (max-width: 1000px) {
-    #comments { position: absolute; right: 0; top: 0; bottom: 0; z-index: 12; box-shadow: var(--shadow-pop); }
+    #comments { flex-basis: 272px; }
+    #main:has(#comments:not(.hidden)) #outline { display: none; }
     #outline { flex-basis: 200px; }
     body.outline-on #wcChip { left: 216px; }
     #sheet { padding-left: 36px; padding-right: 36px; }
@@ -428,6 +429,7 @@
     body.outline-on #wcChip { left: 16px; }
   }
   @media (max-width: 640px) {
+    #comments { position: absolute; right: 0; top: 0; bottom: 0; z-index: 12; box-shadow: var(--shadow-pop); }
     #sheet { padding-left: 20px; padding-right: 20px; }
     #menubar { display: none; }
     #saveState span { display: none; }
