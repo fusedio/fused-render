@@ -32,6 +32,7 @@ TIER_ONE_TEMPLATES = (
     "api",
     "bundle",
     "code",
+    "docs",
     "duckdb",
     "fusedapp",
     "git",
@@ -54,7 +55,6 @@ TIER_ONE_TEMPLATES = (
 
 # Light by design: these views are light in both modes and ignore the setting.
 EXEMPT_TEMPLATES = (
-    "docs",
     "latex",
     "map",
     "pano",
