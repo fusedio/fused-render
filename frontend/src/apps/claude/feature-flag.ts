@@ -40,6 +40,17 @@ let settledOnce = false;
 let recapTitles = false;
 const recapListeners = new Set<(v: boolean) => void>();
 
+/** The heads-up notes switch (`prefs.chat_headsup.enabled`): opt-in like the
+ *  others, read by the same single prefs GET. */
+let headsup = false;
+const headsupListeners = new Set<(v: boolean) => void>();
+
+function setHeadsup(next: boolean) {
+  if (headsup === next) return;
+  headsup = next;
+  for (const listener of headsupListeners) listener(next);
+}
+
 function setRecapTitles(next: boolean) {
   if (recapTitles === next) return;
   recapTitles = next;
@@ -131,6 +142,7 @@ function read(): Promise<void> {
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
       setRecapTitles(p.task_recap?.enabled === true);
+      setHeadsup(p.chat_headsup?.enabled === true);
     })
     .catch(() => {
       // A failed read keeps whatever answer the page already has (the default,
@@ -188,6 +200,19 @@ export const QUEUE_FLAG_BROADCAST_KEY = "fused-render:project-queue";
 /** The same announcement for the recap titles switch. */
 export const RECAP_FLAG_BROADCAST_KEY = "fused-render:task-recap-titles";
 
+/** The same announcement for the heads-up notes switch. */
+export const HEADSUP_FLAG_BROADCAST_KEY = "fused-render:chat-headsup";
+
+/** Hand over a known-fresh heads-up answer (a PUT's prefs payload). */
+export function publishChatHeadsupEnabled(next: boolean) {
+  setHeadsup(next);
+  try {
+    localStorage.setItem(HEADSUP_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
+  } catch {
+    // Storage may be unavailable; the other tabs still re-read on focus.
+  }
+}
+
 /** Hand over a known-fresh recap-titles answer (a PUT's prefs payload). */
 export function publishTaskRecapTitlesEnabled(next: boolean) {
   setRecapTitles(next);
@@ -225,6 +250,14 @@ if (typeof window !== "undefined") {
     if (ev.key !== RECAP_FLAG_BROADCAST_KEY || !ev.newValue) return;
     try {
       setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
+    } catch {
+      // Malformed: the next focus re-reads.
+    }
+  });
+  window.addEventListener("storage", (ev) => {
+    if (ev.key !== HEADSUP_FLAG_BROADCAST_KEY || !ev.newValue) return;
+    try {
+      setHeadsup((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
     } catch {
       // Malformed: the next focus re-reads.
     }
@@ -271,6 +304,21 @@ export function useTaskRecapTitlesEnabled(): boolean {
   return current;
 }
 
+/** Subscribe to the heads-up notes switch (see `headsup`). Triggers the one
+ *  prefs read, like `useProjectQueueEnabled`. */
+export function useChatHeadsupEnabled(): boolean {
+  const [current, setCurrent] = useState<boolean>(() => headsup);
+  useEffect(() => {
+    headsupListeners.add(setCurrent);
+    setCurrent(headsup);
+    void read();
+    return () => {
+      headsupListeners.delete(setCurrent);
+    };
+  }, []);
+  return current;
+}
+
 /** Test-only: how many components are currently subscribed. `bun test` runs
  *  every suite in ONE process, so this Set is shared globally for the run —
  *  a tree a test forgets to unmount leaves its subscription here forever,
@@ -291,4 +339,5 @@ export function resetFlagsForTests() {
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
   setRecapTitles(false);
+  setHeadsup(false);
 }

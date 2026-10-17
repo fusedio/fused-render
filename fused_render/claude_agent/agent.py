@@ -3646,6 +3646,12 @@ def _start(file: str, message: str, session_id: str, model: str,
            "backend": backend}
     if argv is not None:
         req["argv"] = argv
+    # The heads-up fork (headsup.py) reads this to rebuild an argv identical to
+    # the main session's, so its prompt cache hits. `backend` rides along so a
+    # Copilot run is never forked as if it were Claude.
+    with _private_open(os.path.join(run_dir, "launch.json")) as f:
+        json.dump({k: v for k, v in req.items()
+                   if k not in ("agent", "run_dir", "argv")}, f)
     # The HOST's own stderr goes to `host.err.log`, appended, 0600 — not
     # DEVNULL (SPEC §50, D5). A host that crashed (an import error, a native
     # fault its faulthandler prints) used to leave nothing anywhere, and the

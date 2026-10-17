@@ -1451,6 +1451,10 @@ export interface Prefs {
   // older server answers without it, and the reader (live-previews-flag.ts)
   // treats absence as off.
   live_previews?: { enabled: boolean };
+  // Whether a running Claude chat gets heads-up notes above the composer
+  // (opt-in, default off — shell/prefs.py `chat_headsup_enabled`). OPTIONAL: an
+  // older server answers without it, and absence means off.
+  chat_headsup?: { enabled: boolean };
   // Whether the process Monitor is OFFERED (opt-in, default off —
   // shell/prefs.py `monitor_enabled`): the status bar's System chip and the
   // /monitor page. Gates the entry points, not /api/system/activity. OPTIONAL:
@@ -1834,6 +1838,10 @@ export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putLivePreviewsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { live_previews_enabled: enabled });
+}
+
+export function putChatHeadsupEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { chat_headsup_enabled: enabled });
 }
 
 export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
