@@ -349,14 +349,45 @@ def stop_resource_trail() -> None:
 # ---- reading the trail back (the Monitor's Overview) ------------------------------
 
 _TRAIL_TTL_S = 30.0
-_TRAIL_TAIL_BYTES = 1_000_000
+_TRAIL_CHUNK_BYTES = 256 * 1024
+_TRAIL_MAX_BYTES = 8 * 1024 * 1024
 _trail_cache: dict[float, tuple[float, list[dict]]] = {}
+
+
+def _row_time(line: bytes):
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    t = row.get("t") if isinstance(row, dict) else None
+    return t if isinstance(t, (int, float)) else None
+
+
+def _read_tail_until(f, cutoff: float) -> bytes:
+    """The file's tail, read backwards in chunks until its first complete line
+    is older than `cutoff`, the start of the file, or `_TRAIL_MAX_BYTES`. A line
+    cut by the chunk boundary is dropped."""
+    size = f.seek(0, os.SEEK_END)
+    pos, data = size, b""
+    while pos > 0 and len(data) < _TRAIL_MAX_BYTES:
+        step = min(_TRAIL_CHUNK_BYTES, pos)
+        pos -= step
+        f.seek(pos)
+        data = f.read(step) + data
+        nl = data.find(b"\n")
+        if pos > 0 and nl >= 0:
+            first = next((t for t in map(_row_time, data[nl + 1:].split(b"\n")[:5])
+                          if t is not None), None)
+            if first is not None and first < cutoff:
+                break
+    return data if pos == 0 else data[data.find(b"\n") + 1:]
 
 
 def read_trail(window_s: float) -> list[dict]:
     """`resources.jsonl` rows from the last `window_s` seconds, oldest first.
-    Reads only the file's tail and caches the answer for 30 s, so a page that
-    polls every 2 s costs one small read per half minute."""
+    Reads backwards from the end only as far as the window needs (capped at
+    8 MB) and caches the answer for 30 s, so a page that polls every 2 s costs
+    one small read per half minute."""
     now = time.time()
     hit = _trail_cache.get(window_s)
     if hit is not None and now - hit[0] < _TRAIL_TTL_S:
@@ -364,11 +395,8 @@ def read_trail(window_s: float) -> list[dict]:
     rows: list[dict] = []
     try:
         with open(resources_path(), "rb") as f:
-            size = f.seek(0, os.SEEK_END)
-            f.seek(max(0, size - _TRAIL_TAIL_BYTES))
-            data = f.read()
-        lines = data.split(b"\n")
-        for line in lines[1:] if size > _TRAIL_TAIL_BYTES else lines:
+            data = _read_tail_until(f, now - window_s)
+        for line in data.split(b"\n"):
             try:
                 row = json.loads(line)
             except ValueError:

@@ -372,3 +372,24 @@ def test_compact_verdict_is_single_flight_with_ttl(monkeypatch):
     dashboard._compact = (time.monotonic() - 11, dashboard._compact[1])
     dashboard.compact_verdict()
     assert n["c"] == 2
+
+
+def test_trail_reader_spans_more_than_one_megabyte(tmp_path, monkeypatch):
+    """A day of rows is ~1.2 MB: the 24 h read must reach past the old 1 MB tail."""
+    p = tmp_path / "resources.jsonl"
+    now = time.time()
+    n = 4300  # 20 s apart: just under 24 h
+    pad = "x" * 230
+    rows = [{"t": now - (n - i) * 20.0, "i": i, "pad": pad} for i in range(n)]
+    _write(p, rows)
+    assert p.stat().st_size > 1_100_000
+    monkeypatch.setattr(health, "resources_path", lambda: str(p))
+    health._trail_cache.clear()
+    got = health.read_trail(86400)
+    assert got[0]["i"] == 0 and got[-1]["i"] == n - 1 and len(got) == n
+    health._trail_cache.clear()
+    short = health.read_trail(600)           # a short window stops early
+    assert 25 <= len(short) <= 31 and short[-1]["i"] == n - 1
+    # a window older than the whole file returns every row, no error at the start
+    health._trail_cache.clear()
+    assert len(health.read_trail(10 * 86400)) == n
