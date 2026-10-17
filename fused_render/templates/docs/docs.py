@@ -194,7 +194,7 @@ def _first_line(path: str) -> str:
     try:
         with zipfile.ZipFile(path) as z, z.open("word/document.xml") as f:
             xml = f.read(64 * 1024).decode("utf-8", "replace")
-    except (OSError, KeyError, RuntimeError, NotImplementedError, zipfile.BadZipFile, zlib.error):
+    except (OSError, EOFError, KeyError, ValueError, RuntimeError, NotImplementedError, zipfile.BadZipFile, zlib.error):
         return ""
     for para in re.finditer(r"<w:p[ >].*?</w:p>", xml, re.S):
         text = "".join(re.findall(r"<w:t(?: [^>]*)?>([^<]*)</w:t>", para.group(0))).strip()
@@ -294,8 +294,10 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
             full = os.path.join(DOCS_DIR, nm)
             if not os.path.isfile(full) or not nm.lower().endswith((".docx", ".odt")):
                 continue
+            stem = nm.rsplit(".", 1)[0]
+            default_name = re.fullmatch(r"Untitled document( \d+)?", stem)
             docs.append({"path": full.replace(os.sep, "/"), "name": nm,
-                         "title": _first_line(full) or nm.rsplit(".", 1)[0],
+                         "title": (_first_line(full) or stem) if default_name else stem,
                          "mtime": os.path.getmtime(full), "size": os.path.getsize(full)})
         docs.sort(key=lambda e: -e["mtime"])
         return {"docs": docs, "dir": DOCS_DIR.replace(os.sep, "/")}

@@ -92,5 +92,7 @@ def test_library_lists_drafts_by_first_line(docs, tmp_path, monkeypatch):
     monkeypatch.setattr(docs, "DOCS_DIR", str(tmp_path))
     _docx(tmp_path / "Untitled document.docx", "", "Groceries &amp; more", "milk")
     _docx(tmp_path / "Untitled document 2.docx")
+    _docx(tmp_path / "Budget.docx", "rent")
+    (tmp_path / "Untitled document 3.docx").write_bytes(b"PK\x03\x04 truncated")
     titles = sorted(d["title"] for d in docs.main(action="list")["docs"])
-    assert titles == ["Groceries & more", "Untitled document 2"]
+    assert titles == ["Budget", "Groceries & more", "Untitled document 2", "Untitled document 3"]

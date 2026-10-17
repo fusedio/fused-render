@@ -908,7 +908,7 @@
     document.head.append(h("style", { text: css.replace(/url\(fonts\/([^)]+)\)/g, (_, f) => `url(${KATEX_FONT_CDN}${f})`) }));
   }).catch(() => {}));
 
-  const { Schema, DOMParser: PMDOMParser, DOMSerializer, Fragment } = PM.pmModel;
+  const { Schema, DOMParser: PMDOMParser, DOMSerializer, Fragment, Slice } = PM.pmModel;
   const { EditorState, Plugin, PluginKey, TextSelection, AllSelection } = PM.pmState;
   const { EditorView, Decoration, DecorationSet } = PM.pmView;
   const C = PM.pmCommands;
@@ -1114,30 +1114,43 @@
     return { doc: domParser.parse(body), meta, revisions };
   }
 
-  function exportHtml(doc, { comments, styled }) {
+  function exportHtml(doc, { comments, lead }) {
     const out = document.implementation.createHTMLDocument("");
     const make = (tag) => out.createElement(tag);
     const div = make("div");
     div.append(domSerializer.serializeFragment(doc.content, { document: out }));
     const head = [];
-    for (const [cls, style, tag] of [["title", "Title", (t) => `<title>${esc(t)}</title>`], ["subtitle", "Subtitle", (t) => `<meta name="subtitle" content="${esc(t)}">`]]) {
-      const lead = div.querySelector(`:scope > p.${cls}`);
-      if (!lead) continue;
-      const t = lead.textContent.trim();
-      if (!t || !styled) {
-        if (t) head.push(tag(t));
-        lead.remove();
-        continue;
-      }
+    const styledPara = (style, content) => {
       const wrap = make("div");
       wrap.setAttribute("custom-style", style);
-      lead.removeAttribute("class");
-      lead.replaceWith(wrap);
-      wrap.append(lead);
+      if (typeof content === "string") { const p = make("p"); p.textContent = content; wrap.append(p); } else wrap.append(content);
+      return wrap;
+    };
+    let anchor = null;
+    const place = (el) => { if (anchor) anchor.after(el); else div.prepend(el); anchor = el; };
+    for (const [cls, style, tag] of [["title", "Title", (t) => `<title>${esc(t)}</title>`], ["subtitle", "Subtitle", (t) => `<meta name="subtitle" content="${esc(t)}">`]]) {
+      const el = div.querySelector(`:scope > p.${cls}`);
+      if (!el) continue;
+      const t = el.textContent.trim();
+      el.removeAttribute("class");
+      if (!t) { el.remove(); continue; }
+      if (lead === "style") { el.remove(); place(styledPara(style, el)); }
+      else if (lead === "body") {
+        const out = make(cls === "title" ? "h1" : "p");
+        if (cls === "title") out.append(...el.childNodes); else { const em = make("em"); em.append(...el.childNodes); out.append(em); }
+        el.replaceWith(out);
+        anchor = out;
+      } else { head.push(tag(t)); el.remove(); }
     }
-    S.meta.author.forEach((a) => head.push(`<meta name="author" content="${esc(a)}">`));
-    if (S.meta.date) head.push(`<meta name="date" content="${esc(S.meta.date)}">`);
-    if (S.meta.abstract) head.push(`<meta name="abstract" content="${esc(S.meta.abstract)}">`);
+    if (lead === "style") {
+      S.meta.author.forEach((a) => place(styledPara("Author", a)));
+      if (S.meta.date) place(styledPara("Date", S.meta.date));
+      if (S.meta.abstract) place(styledPara("Abstract", S.meta.abstract));
+    } else if (lead !== "body") {
+      S.meta.author.forEach((a) => head.push(`<meta name="author" content="${esc(a)}">`));
+      if (S.meta.date) head.push(`<meta name="date" content="${esc(S.meta.date)}">`);
+      if (S.meta.abstract) head.push(`<meta name="abstract" content="${esc(S.meta.abstract)}">`);
+    }
     div.querySelectorAll("li[data-checked]").forEach((li) => {
       const box = make("input");
       box.type = "checkbox";
@@ -1387,6 +1400,7 @@
   const enterLead = (state, dispatch) => {
     const { $from, empty } = state.selection;
     if ($from.parent.type !== N.title && $from.parent.type !== N.subtitle) return false;
+    if (empty && $from.parentOffset === 0 && $from.parent.content.size) return true;
     if (C.splitBlockAs(() => ({ type: N.paragraph }))(state, dispatch)) return true;
     if (!empty || $from.parentOffset !== $from.parent.content.size) return hardBreak(state, dispatch);
     if (dispatch) dispatch(state.tr.setSelection(TextSelection.near(state.doc.resolve($from.after() + 1))).scrollIntoView());
@@ -1448,13 +1462,16 @@
   const imageFiles = (list) => [...(list || [])].filter((f) => f.type.startsWith("image/"));
   const readDataUrl = (file) => new Promise((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(r.result); r.onerror = () => reject(r.error); r.readAsDataURL(file); });
   async function insertImages(files, pos) {
-    for (const f of files) {
-      if (f.size > 15 * 1024 * 1024) { toast(`${f.name} is larger than 15 MB. Use a smaller image.`, { ms: 5000 }); continue; }
-      const node = N.image.create({ src: await readDataUrl(f), alt: f.name.replace(/\.[^.]+$/, "") });
-      const tr = S.view.state.tr;
-      if (pos != null) tr.insert(pos, node); else tr.replaceSelectionWith(node);
-      S.view.dispatch(tr.scrollIntoView());
-    }
+    const big = files.filter((f) => f.size > 15 * 1024 * 1024);
+    if (big.length) toast(`${big.map((f) => f.name).join(", ")} ${big.length === 1 ? "is" : "are"} larger than 15 MB. Use a smaller image.`, { ms: 5000 });
+    const ok = files.filter((f) => !big.includes(f));
+    const nodes = await Promise.all(ok.map(async (f) => N.image.create({ src: await readDataUrl(f), alt: f.name.replace(/\.[^.]+$/, "") })));
+    if (!nodes.length || !editing()) return;
+    const tr = S.view.state.tr;
+    const content = Fragment.fromArray(nodes);
+    if (pos != null && pos <= tr.doc.content.size) tr.insert(pos, content);
+    else tr.replaceSelection(new Slice(content, 0, 0));
+    S.view.dispatch(tr.scrollIntoView());
   }
 
   function mountEditor(doc) {
@@ -1540,7 +1557,7 @@
   }
 
   const refreshChrome = coalesce(() => { syncToolbar(); syncActiveComment(); positionCommentButton(); updateWordChip(); });
-  const refreshDoc = coalesce(() => { buildOutline(); buildFootnotes(); renderComments(); updateFindUI(false); if (untitled && !title) renderTitle(); });
+  const refreshDoc = coalesce(() => { buildOutline(); buildFootnotes(); renderComments(); updateFindUI(false); if (untitled) renderTitle(); });
 
   function focusView() { if (!S.view.hasFocus()) S.view.focus(); }
   function exec(cmd) {
@@ -1572,6 +1589,7 @@
     return "p";
   }
   function styleCmd(id) {
+    if ((id === "title" || id === "subtitle") && !IS_DOCX) return () => false;
     if (id === "p") return C.setBlockType(N.paragraph);
     if (id === "title") return C.setBlockType(N.title);
     if (id === "subtitle") return C.setBlockType(N.subtitle);
@@ -1692,7 +1710,7 @@
     ["strike", "Strikethrough", "Mod-Shift-x", "strike"], ["highlight", "Highlight", "Mod-Shift-e", "highlight"],
     ["sup", "Superscript", "Mod-.", "sup"], ["sub", "Subscript", "Mod-,", "sub"], ["code", "Inline code", "Mod-e", "code"],
   ];
-  for (const [id, label, kbd, mark] of MARK_ACTIONS) ACTIONS[id] = { label, icon: id, kbd, mark, run: () => exec(C.toggleMark(MK[mark])), enabled: editing };
+  for (const [id, label, kbd, mark] of MARK_ACTIONS) ACTIONS[id] = { label, icon: id, kbd, mark, run: () => exec(C.toggleMark(MK[mark])), enabled: mark === "highlight" && !IS_DOCX ? () => false : editing };
   Object.assign(ACTIONS, {
     undo: { label: "Undo", icon: "undo", kbd: "Mod-z", run: () => exec(undo), enabled: () => editing() && undoDepth(S.view.state) > 0 },
     redo: { label: "Redo", icon: "redo", kbd: "Mod-Shift-z", run: () => exec(redo), enabled: () => editing() && redoDepth(S.view.state) > 0 },
@@ -2300,7 +2318,7 @@
     while (force || S.rev !== S.savedRev) {
       const rev = S.rev;
       try {
-        const out = await py({ action: "save", file: FILE, html: exportHtml(S.view.state.doc, { comments: IS_DOCX, styled: true }), expected_mtime: force ? "" : String(S.mtime ?? "") });
+        const out = await py({ action: "save", file: FILE, html: exportHtml(S.view.state.doc, { comments: IS_DOCX, lead: "style" }), expected_mtime: force ? "" : String(S.mtime ?? "") });
         if (out.conflict) { S.conflict = true; showConflict(); return; }
         S.mtime = out.mtime;
         S.savedRev = rev;
@@ -2383,7 +2401,7 @@
     if (fmt === "pdf" && !(await ensureTool("typst", "PDF export needs the typst compiler", "The first PDF export downloads the typst compiler (about 30 MB). This happens once."))) return;
     toast(`Preparing ${fmt.toUpperCase()}…`, { ms: 20000 });
     try {
-      const out = await py({ action: "export", file: FILE, title: displayName(), html: exportHtml(S.view.state.doc, { comments: fmt === "docx", styled: fmt === "docx" || fmt === "odt" }), fmt });
+      const out = await py({ action: "export", file: FILE, title: displayName(), html: exportHtml(S.view.state.doc, { comments: fmt === "docx", lead: fmt === "docx" || fmt === "odt" ? "style" : fmt === "pdf" ? "body" : "meta" }), fmt });
       if (out.error) { toast("Couldn't export: " + out.error, { ms: 6000 }); return; }
       h("a", { href: fused.rawUrl(out.path), download: out.name }).click();
       toast("Downloaded " + out.name);
@@ -2397,13 +2415,12 @@
     catch (e) { toast("Couldn't create a document: " + e.message, { ms: 6000 }); }
   }
 
-  let title = "";
   const firstLine = () => {
     let t = "";
     S.view.state.doc.descendants((n) => { if (t) return false; if (n.isTextblock && n.textContent.trim()) { t = n.textContent.trim(); return false; } return true; });
     return t.replace(/[\\/:*?"<>|]+/g, "").replace(/\s+/g, " ").slice(0, 60).trim();
   };
-  const displayName = () => title || (untitled && S.view && firstLine()) || STEM;
+  const displayName = () => (untitled && /^Untitled document( \d+)?$/.test(STEM) && S.view && firstLine()) || STEM;
   function renderTitle() {
     $("docTitle").textContent = displayName();
     document.title = displayName();
@@ -2424,7 +2441,6 @@
     dt.contentEditable = "false";
     const name = dt.textContent.replace(/\s+/g, " ").trim().replace(/[\\/:*?"<>|]+/g, "");
     if (cancel || !name || name === displayName()) { renderTitle(); return; }
-    if (untitled) { title = name; renderTitle(); return; }
     if (!(await flushSave())) { toast("Save your changes before renaming."); renderTitle(); return; }
     freeze(true);
     try { openPath((await py({ action: "rename", file: FILE, title: name })).path); }
@@ -2460,12 +2476,12 @@
           if (firstSave) {
             await flushSave();
             freeze(true);
-            const out = await py({ action: "save_new", html: exportHtml(S.view.state.doc, { comments: true, styled: true }), path: name, directory: dir, file: FILE }).catch((e) => { freeze(false); throw e; });
+            const out = await py({ action: "save_new", html: exportHtml(S.view.state.doc, { comments: true, lead: "style" }), path: name, directory: dir, file: FILE }).catch((e) => { freeze(false); throw e; });
             S.savedRev = S.rev;
             openPath(out.path);
             return;
           }
-          const out = await py({ action: "save_as", html: exportHtml(S.view.state.doc, { comments: true, styled: true }), path: name, directory: dir });
+          const out = await py({ action: "save_as", html: exportHtml(S.view.state.doc, { comments: true, lead: "style" }), path: name, directory: dir });
           toast("Saved a copy to " + out.path, { action: { label: "Open", run: () => openPath(out.path) }, ms: 6000 });
         } catch (e) { toast("Couldn't save: " + e.message, { ms: 6000 }); }
       } }] });
