@@ -81,7 +81,7 @@ def api_system_activity(scope: str = "fused"):
 async def api_system_dashboard():
     from fused_render.server import dashboard
     netlog.get().touch_watch()
-    return dashboard.build()
+    return await dashboard.build_async()
 
 
 @router.get("/api/system/activity/detail")
@@ -105,14 +105,17 @@ async def api_system_activity_detail(pid: str = ""):
 async def api_system_record_start(x_fused: str | None = Header(default=None)):
     if (error := _require_fused(x_fused)) is not None:
         return error
+    import anyio
     from fused_render.server import perfrecord
-    return perfrecord._RECORDER.start()
+    # start() lists the recordings dir for its status: off the event loop.
+    return await anyio.to_thread.run_sync(perfrecord._RECORDER.start)
 
 
 @router.get("/api/system/record")
 async def api_system_record_status():
+    import anyio
     from fused_render.server import perfrecord
-    return perfrecord._RECORDER.status()
+    return await anyio.to_thread.run_sync(perfrecord._RECORDER.status)
 
 
 @router.get("/api/system/activity/history")

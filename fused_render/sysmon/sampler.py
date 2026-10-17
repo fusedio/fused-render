@@ -89,6 +89,9 @@ class Sampler:
         self._last_poll = float("-inf")
         self._all_last_poll = float("-inf")
         self._sample_lock = threading.Lock()
+        # Called after every sample the loop takes (1 Hz while watched): the
+        # dashboard's timeline ring is fed from here. Must not block.
+        self.tick_hooks: list = []
         self._reset()
 
     @property
@@ -173,6 +176,11 @@ class Sampler:
                 self._running = False
                 return False
         self._safe_sample()
+        for hook in list(self.tick_hooks):
+            try:
+                hook()
+            except Exception:  # noqa: BLE001 — a hook never stops the sampler
+                logger.debug("sysmon: tick hook failed", exc_info=True)
         return True
 
     def _loop(self) -> None:
