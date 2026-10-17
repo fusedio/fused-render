@@ -133,14 +133,19 @@ def _lane(loops: "weakref.WeakKeyDictionary", width: int) -> asyncio.Semaphore:
     return sem
 
 
+# Lane widths, shared by the semaphores below and `lane_stats`.
+INTERACTIVE_LANE_WIDTH = 2
+QUERY_LANE_WIDTH = 1
+
+
 def _interactive_read_concurrency() -> asyncio.Semaphore:
     """The `rank`/`search`/`stats` lane. See the block comment above."""
-    return _lane(_interactive_lane_loops, 2)
+    return _lane(_interactive_lane_loops, INTERACTIVE_LANE_WIDTH)
 
 
 def _query_read_concurrency() -> asyncio.Semaphore:
     """The `query`/`ask` (caller-authored SQL) lane. See the block comment above."""
-    return _lane(_query_lane_loops, 1)
+    return _lane(_query_lane_loops, QUERY_LANE_WIDTH)
 
 
 # --- Dedicated thread pool for index reads (SPEC-index-search-wedge.md item 3) ---
@@ -192,7 +197,8 @@ _abandoned_reads: "set" = set()
 # Wall time of the last 503 either path above answered (pool exhausted, or a
 # read that timed out), for `lane_stats`. Bookkeeping only.
 _last_503_at: float | None = None
-_LANE_WIDTHS = (("interactive", _interactive_lane_loops, 2), ("query", _query_lane_loops, 1))
+_LANE_WIDTHS = (("interactive", _interactive_lane_loops, INTERACTIVE_LANE_WIDTH),
+                ("query", _query_lane_loops, QUERY_LANE_WIDTH))
 
 
 def lane_stats() -> dict:
