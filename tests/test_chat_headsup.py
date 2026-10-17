@@ -104,6 +104,56 @@ def test_main_steps_closed_and_next_open_turn(tmp_path):
     assert headsup.main_steps(d) == (1, 2, True)
 
 
+def test_main_steps_incremental_appends(tmp_path):
+    d = tmp_path / "run"
+    d.mkdir()
+    out = d / "out.jsonl"
+    out.write_text(json.dumps(_asst(2)) + "\n")
+    assert headsup.main_steps(str(d)) == (0, 2, True)
+    # A half-written trailing line stays unconsumed until it completes.
+    with open(out, "a") as fh:
+        fh.write(json.dumps(_asst(3))[:20])
+    assert headsup.main_steps(str(d)) == (0, 2, True)
+    with open(out, "a") as fh:
+        fh.write(json.dumps(_asst(3))[20:] + "\n")
+    assert headsup.main_steps(str(d)) == (0, 5, True)
+    with open(out, "a") as fh:
+        fh.write(json.dumps(RESULT) + "\n")
+    assert headsup.main_steps(str(d)) == (0, 5, False)
+    with open(out, "a") as fh:
+        fh.write(json.dumps(_asst(1)) + "\n")
+    assert headsup.main_steps(str(d)) == (1, 1, True)
+
+
+def test_main_steps_incremental_reads_only_new_bytes(tmp_path, monkeypatch):
+    d = tmp_path / "run"
+    d.mkdir()
+    out = d / "out.jsonl"
+    out.write_text(json.dumps(_asst(2)) + "\n")
+    headsup.main_steps(str(d))
+    with open(out, "a") as fh:
+        fh.write(json.dumps(_asst(1)) + "\n")
+    seen = []
+    real_loads = json.loads
+    monkeypatch.setattr(headsup.json, "loads",
+                        lambda line, *a, **k: (seen.append(line), real_loads(line))[1])
+    assert headsup.main_steps(str(d)) == (0, 3, True)
+    assert len(seen) == 1
+
+
+def test_main_steps_truncation_resets(tmp_path):
+    d = tmp_path / "run"
+    d.mkdir()
+    out = d / "out.jsonl"
+    out.write_text(json.dumps(_asst(4)) + "\n" + json.dumps(RESULT) + "\n")
+    assert headsup.main_steps(str(d)) == (0, 4, False)
+    out.write_text(json.dumps(_asst(1)) + "\n")
+    assert headsup.main_steps(str(d)) == (0, 1, True)
+    # Rewritten at the same size with different content also resets.
+    out.write_text(json.dumps(_asst(2)) + "\n")
+    assert headsup.main_steps(str(d)) == (0, 2, True)
+
+
 # ------------------------------------------------------------------ poll
 
 class FakeAgent:
@@ -122,8 +172,10 @@ class FakeAgent:
 @pytest.fixture(autouse=True)
 def fresh_state():
     headsup._state.clear()
+    headsup._steps_cache.clear()
     yield
     headsup._state.clear()
+    headsup._steps_cache.clear()
 
 
 @pytest.fixture
@@ -240,6 +292,35 @@ def test_poll_never_raises(runs, monkeypatch):
     assert headsup.poll(FakeAgent(runs), "r1") == {"state": "idle"}
 
 
+def test_poll_note_expires_two_turns_later(runs, gen):
+    calls, answer = gen
+    agent = FakeAgent(runs)
+    answer["note"] = dict(NOTE_FIXTURE)
+    _rows(runs, _asst(7))
+    assert _wait(agent, 0)["state"] == "note"
+    _rows(runs, _asst(7), RESULT, _asst(1))          # turn 1: still offered
+    assert headsup.poll(agent, "r1")["state"] == "note"
+    _rows(runs, _asst(7), RESULT, _asst(1), RESULT, _asst(1))  # turn 2: expired
+    assert headsup.poll(agent, "r1")["state"] == "idle"
+    assert headsup._state["r1"]["note"] is None
+
+
+def test_worker_discards_note_when_a_new_turn_began(runs, monkeypatch):
+    agent = FakeAgent(runs)
+    _rows(runs, _asst(7))
+
+    def fake(agent_, run_dir):
+        _rows(runs, _asst(7), RESULT, _asst(1))      # user moved on mid-check
+        return dict(NOTE_FIXTURE)
+
+    monkeypatch.setattr(headsup, "generate", fake)
+    _wait(agent, 0)
+    assert headsup._state["r1"]["note"] is None
+
+
+NOTE_FIXTURE = {"learn": "x", "tag": "Heads up", "title": "T", "bullets": ["b"]}
+
+
 def test_state_is_lru_bounded():
     with headsup._lock:
         for i in range(80):
@@ -296,6 +377,45 @@ def test_build_fork_argv(agent, tmp_path):
         assert not mcp.startswith(run_dir)
         assert os.path.dirname(mcp) == fork.dir
         assert fork.cwd == str(tmp_path / "work")
+    finally:
+        import shutil
+        shutil.rmtree(fork.dir, ignore_errors=True)
+
+
+def test_build_fork_argv_disables_hooks(agent, tmp_path):
+    fork = headsup.build_fork_argv(agent, _launch_run(agent, tmp_path))
+    try:
+        argv = fork.argv
+        assert argv[argv.index("--settings") + 1] == '{"disableAllHooks": true}'
+    finally:
+        import shutil
+        shutil.rmtree(fork.dir, ignore_errors=True)
+
+
+def test_build_fork_argv_prefers_host_json_model_and_effort(agent, tmp_path):
+    run_dir = _launch_run(agent, tmp_path)
+    with open(os.path.join(run_dir, "host.json"), "w") as fh:
+        json.dump({"model": "sonnet", "effort": "low"}, fh)
+    fork = headsup.build_fork_argv(agent, run_dir)
+    try:
+        argv = fork.argv
+        assert argv[argv.index("--model") + 1] == "sonnet"
+        assert argv[argv.index("--effort") + 1] == "low"
+    finally:
+        import shutil
+        shutil.rmtree(fork.dir, ignore_errors=True)
+
+
+@pytest.mark.parametrize("host", ["{not json", '{"model": 5, "effort": ""}', "[]"])
+def test_build_fork_argv_bad_host_json_uses_launch(agent, tmp_path, host):
+    run_dir = _launch_run(agent, tmp_path)
+    with open(os.path.join(run_dir, "host.json"), "w") as fh:
+        fh.write(host)
+    fork = headsup.build_fork_argv(agent, run_dir)
+    try:
+        argv = fork.argv
+        assert argv[argv.index("--model") + 1] == "opus"
+        assert argv[argv.index("--effort") + 1] == "high"
     finally:
         import shutil
         shutil.rmtree(fork.dir, ignore_errors=True)

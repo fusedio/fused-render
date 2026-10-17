@@ -130,6 +130,12 @@ def _result_text(stdout: str) -> str:
 
 # ------------------------------------------------------------ transcript
 
+_steps_lock = threading.Lock()
+#: run_dir -> incremental scan state of its `out.jsonl`. LRU-bounded like `_state`.
+_steps_cache: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
+_TAIL = 64
+
+
 def main_steps(run_dir: str, agent=None) -> tuple:
     """`(turn_index, steps, turn_open)` read off the run's `out.jsonl`.
 
@@ -138,41 +144,72 @@ def main_steps(run_dir: str, agent=None) -> tuple:
     `turn_index` is the 0-based index of THAT turn (results seen before it),
     so the closing `result` does not move a turn to a new index mid-dedupe.
     Same row rules as `agent._turn_state`: subagent rows and
-    non-turn rows are skipped."""
-    try:
-        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
-                  errors="replace") as fh:
-            lines = fh.read().splitlines()
-    except OSError:
-        lines = []
+    non-turn rows are skipped.
+
+    Incremental: a per-run cache keeps the byte offset of the last fully
+    consumed line plus the running counters, so a poll reads only new bytes.
+    A file that shrank, or whose bytes before the offset changed, is rescanned
+    from the start. A partial trailing line is left unconsumed."""
     not_a_turn = getattr(agent, "_not_a_turn_row", None) or _fallback_not_a_turn
-    results = 0
-    steps = 0
-    last_steps = 0
-    idle = False
-    for line in lines:
+    with _steps_lock:
+        c = _steps_cache.get(run_dir)
+        if c is None:
+            c = {"offset": 0, "tail": b"", "results": 0, "steps": 0,
+                 "last_steps": 0, "idle": False}
+            _steps_cache[run_dir] = c
+        _steps_cache.move_to_end(run_dir)
+        while len(_steps_cache) > _MAX_RUNS:
+            _steps_cache.popitem(last=False)
         try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict) or row.get("parent_tool_use_id"):
-            continue
-        t = row.get("type")
-        if not_a_turn(row):
-            continue
-        idle = t == "result"
-        if t == "result":
-            results += 1
-            last_steps = steps
-            steps = 0
-        elif t == "assistant":
-            content = (row.get("message") or {}).get("content")
-            if isinstance(content, list):
-                steps += sum(1 for b in content
-                             if isinstance(b, dict) and b.get("type") == "tool_use")
-    if idle:
-        return max(results - 1, 0), last_steps, False
-    return results, steps, True
+            with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+                size = os.fstat(fh.fileno()).st_size
+                ok = size >= c["offset"]
+                if ok and c["offset"]:
+                    start = max(c["offset"] - len(c["tail"]), 0)
+                    fh.seek(start)
+                    ok = fh.read(c["offset"] - start) == c["tail"]
+                if not ok:
+                    c.update(offset=0, tail=b"", results=0, steps=0,
+                             last_steps=0, idle=False)
+                fh.seek(c["offset"])
+                data = fh.read()
+        except OSError:
+            c.update(offset=0, tail=b"", results=0, steps=0, last_steps=0, idle=False)
+            data = b""
+        end = data.rfind(b"\n") + 1
+        if end:
+            consumed = data[:end]
+            for raw in consumed.split(b"\n"):
+                _consume(c, raw, not_a_turn)
+            c["offset"] += end
+            c["tail"] = (c["tail"] + consumed)[-_TAIL:]
+        if c["idle"]:
+            return max(c["results"] - 1, 0), c["last_steps"], False
+        return c["results"], c["steps"], True
+
+
+def _consume(c: dict, raw: bytes, not_a_turn) -> None:
+    if not raw.strip():
+        return
+    try:
+        row = json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return
+    if not isinstance(row, dict) or row.get("parent_tool_use_id"):
+        return
+    t = row.get("type")
+    if not_a_turn(row):
+        return
+    c["idle"] = t == "result"
+    if t == "result":
+        c["results"] += 1
+        c["last_steps"] = c["steps"]
+        c["steps"] = 0
+    elif t == "assistant":
+        content = (row.get("message") or {}).get("content")
+        if isinstance(content, list):
+            c["steps"] += sum(1 for b in content
+                              if isinstance(b, dict) and b.get("type") == "tool_use")
 
 
 def _fallback_not_a_turn(row: dict) -> bool:
@@ -205,17 +242,32 @@ def build_fork_argv(agent, run_dir: str):
         return None
     # A dir of its own: the fork's MCP config and permission server must never
     # write into the live run's directory.
+    # set_model rewrites only host.json, so the live model/effort win over launch.json.
+    model, effort = launch.get("model") or "", launch.get("effort") or ""
+    try:
+        with open(os.path.join(run_dir, "host.json"), encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        host = None
+    if isinstance(host, dict):
+        if isinstance(host.get("model"), str) and host["model"]:
+            model = host["model"]
+        if isinstance(host.get("effort"), str) and host["effort"]:
+            effort = host["effort"]
     fork_dir = tempfile.mkdtemp(prefix="headsup-")
     try:
         argv = agent._claude_argv(
             fork_dir, bool(launch.get("pane")), None, session_id,
-            launch.get("model") or "", launch.get("effort") or "",
+            model, effort,
             launch.get("extra_read_dirs") or [], launch.get("file") or "")
     except Exception:
         shutil.rmtree(fork_dir, ignore_errors=True)
         raise
+    # The fork must not fire the user's SessionStart/Stop hooks; measured to
+    # keep a full cache hit (134k read, 0 written).
     argv += ["--fork-session", "--no-session-persistence",
-             "--permission-mode", "dontAsk", "--max-turns", "1"]
+             "--permission-mode", "dontAsk", "--max-turns", "1",
+             "--settings", '{"disableAllHooks": true}']
     cwd = launch.get("cwd") or ""
     if not os.path.isdir(cwd):
         cwd = tempfile.gettempdir()
@@ -295,9 +347,14 @@ def _worker(agent, run_id: str, run_dir: str, turn_index: int) -> None:
         note = generate(agent, run_dir)
     except Exception:  # noqa: BLE001 — a decoration, never a fault
         logger.exception("heads-up check failed for run %s", run_id)
+    # A new user turn began while the check ran: the note is about the past.
+    stale = False
+    if note:
+        cur, _, cur_open = main_steps(run_dir, agent)
+        stale = cur > turn_index and cur_open
     with _lock:
         st = _run_state(run_id)
-        if note:
+        if note and not stale:
             st["note"] = note
             st["note_id"] = uuid.uuid4().hex[:12]
             st["offered_turn"] = turn_index
@@ -319,6 +376,15 @@ def _poll(agent, run_id: str) -> dict:
     run_dir = os.path.join(agent.RUNS, run_id)
     if not os.path.isdir(run_dir):
         return {"state": "idle"}
+    with _lock:
+        st = _run_state(run_id)
+        has_note = st["note"] is not None
+        offered = st["offered_turn"]
+    if has_note and offered is not None and main_steps(run_dir, agent)[0] >= offered + 2:
+        with _lock:
+            st = _run_state(run_id)
+            if st["offered_turn"] == offered:
+                st["note"] = None
     with _lock:
         st = _run_state(run_id)
         if st["note"] is not None and st["note_id"] not in st["dismissed"]:

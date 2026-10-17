@@ -26,7 +26,6 @@ offered at all — opt-in, default off; see ``canvases_enabled``),
 Export action — opt-in, default off; see ``app_sharing_enabled``),
 **live_previews_enabled** (whether card thumbnails may render the live app
 in a scaled iframe — opt-in, default off; see ``live_previews_enabled``),
-
 **chat_headsup_enabled** (whether a running Claude chat gets side-check
 "heads-up" notes above the composer — opt-in, default off; see
 ``chat_headsup_enabled``),
