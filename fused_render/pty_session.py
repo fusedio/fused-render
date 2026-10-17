@@ -30,6 +30,7 @@ this code.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import struct
 import subprocess
@@ -65,6 +66,15 @@ MAX_TEXT_LINES = 2000
 DEFAULT_TEXT_LINES = 200
 
 
+#: Private-mode device status reports (`ESC[?<Ps>n`, e.g. Copilot's `?996n`).
+#: pyte routes every `n` through `Screen.report_device_status(*args, **kwargs)`
+#: and forwards the `?` as `private=True`, which that method does not accept:
+#: a TypeError out of `feed()`. The reports only ask the terminal a question
+#: (the live xterm.js answers them); they paint nothing, so dropping them
+#: before the replay loses no visible text.
+_PRIVATE_DSR = re.compile(rb"\x1b\[\?[0-9;]*n")
+
+
 def render_screen_text(data: bytes, rows: int, cols: int, lines: int) -> str:
     """What a human would see after `data` was written to a `rows` x `cols`
     terminal: scrolled-off history plus the current screen, trailing blank
@@ -84,7 +94,7 @@ def render_screen_text(data: bytes, rows: int, cols: int, lines: int) -> str:
     rows = max(1, rows)
     cols = max(1, cols)
     screen = pyte.HistoryScreen(cols, rows, history=_TEXT_HISTORY)
-    pyte.ByteStream(screen).feed(data)
+    pyte.ByteStream(screen).feed(_PRIVATE_DSR.sub(b"", data))
 
     def row_text(line) -> str:
         return "".join(line[x].data for x in range(cols)).rstrip()
