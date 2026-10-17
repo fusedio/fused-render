@@ -353,3 +353,161 @@ def test_invalid_initial_size_is_ignored(registry, tmp_path, monkeypatch, rows, 
                          lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "stty size; sleep 1"]))
     session = registry.create(rows=rows, cols=cols)
     assert _wait_until(lambda: b"0 0" in bytes(session.scrollback()))
+
+
+def test_asyncio_subscriber_receives_data_then_exit(registry, tmp_path, monkeypatch):
+    """`attach(loop=...)` hands back an asyncio.Queue the reader thread feeds
+    through `call_soon_threadsafe`: ("data", ...) frames, then one ("exit", code)."""
+    import asyncio
+
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "sleep 0.3; printf hi"]))
+
+    async def main():
+        session = registry.create()
+        _snap, _alive, _code, q = session.attach(asyncio.get_running_loop())
+        assert isinstance(q, asyncio.Queue)
+        seen, exit_code = b"", "unset"
+        while True:
+            kind, payload = await asyncio.wait_for(q.get(), timeout=5)
+            if kind == "data":
+                seen += payload
+            else:
+                exit_code = payload
+                break
+        return session, q, seen, exit_code
+
+    session, q, seen, exit_code = asyncio.run(main())
+    assert b"hi" in seen
+    assert exit_code == 0
+    session.unsubscribe(q)
+    assert q not in session._subscribers and q not in session._loops
+
+
+def test_closed_loop_subscriber_is_dropped_not_fatal(registry, tmp_path, monkeypatch):
+    """A subscriber whose loop has closed is unsubscribed by the reader instead
+    of killing the reader thread."""
+    import asyncio
+
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "sleep 0.3; printf hi"]))
+    session = registry.create()
+    loop = asyncio.new_event_loop()
+    _snap, _alive, _code, q = session.attach(loop)
+    loop.close()
+    assert _wait_until(lambda: not session.alive)
+    assert q not in session._subscribers
+    assert b"hi" in session.scrollback()
+
+
+# -- flow control (pause / resume) ---------------------------------------------
+
+def _flood_session(registry, tmp_path, monkeypatch):
+    """A session whose child writes forever, with one subscriber attached."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "yes"]))
+    session = registry.create()
+    _snap, _alive, _code, q = session.attach()
+    assert _wait_until(lambda: len(session.scrollback()) > 1000)
+    return session, q
+
+
+def _grows(session, window=0.4):
+    """True if the ring got new bytes over `window` seconds. The ring is full
+    (256 KiB of `yes`), so compare the tail of activity via last_activity."""
+    before = session.last_activity
+    time.sleep(window)
+    return session.last_activity > before
+
+
+def test_pause_stops_reads_and_resume_restarts_them(registry, tmp_path, monkeypatch):
+    session, q = _flood_session(registry, tmp_path, monkeypatch)
+    assert _grows(session)
+    session.pause(q)
+    time.sleep(0.3)  # let a read already in flight land
+    assert not _grows(session, 0.6)
+    session.resume(q)
+    assert _wait_until(lambda: _grows(session, 0.1), timeout=3.0)
+
+
+def test_pause_auto_expires(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "_PAUSE_MAX_S", 0.5)
+    monkeypatch.setattr(pty_session, "_FLOW_POLL_S", 0.1)
+    session, q = _flood_session(registry, tmp_path, monkeypatch)
+    session.pause(q)
+    time.sleep(0.3)
+    assert not _grows(session, 0.1)
+    assert _wait_until(lambda: _grows(session, 0.1), timeout=3.0)
+    assert q not in session._paused
+
+
+def test_unsubscribe_clears_the_pause(registry, tmp_path, monkeypatch):
+    session, q = _flood_session(registry, tmp_path, monkeypatch)
+    session.pause(q)
+    time.sleep(0.3)
+    assert not _grows(session, 0.4)
+    session.unsubscribe(q)
+    assert session._paused == {}
+    assert _wait_until(lambda: _grows(session, 0.1), timeout=3.0)
+
+
+def test_pause_from_a_non_subscriber_is_ignored(registry, tmp_path, monkeypatch):
+    session, q = _flood_session(registry, tmp_path, monkeypatch)
+    session.unsubscribe(q)
+    session.pause(q)
+    assert session._paused == {}
+    assert session._flowing.is_set()
+
+
+def test_exit_while_paused_still_ends_the_session(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "sleep 0.4; printf hi"]))
+    session = registry.create()
+    _snap, _alive, _code, q = session.attach()
+    session.pause(q)
+    # Well inside the 5 s auto-expiry: only the exit check can free the reader.
+    assert _wait_until(lambda: not session.alive, timeout=3.0)
+    assert session.exit_code == 0
+    assert b"hi" in session.scrollback()
+
+
+def test_scrollback_ring_holds_exactly_the_cap_and_the_tail(registry, tmp_path, monkeypatch):
+    """The ring is a deque of chunks; trimming must land on exactly the cap and
+    keep the newest bytes, including when one chunk straddles the boundary."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session = registry.create()
+    assert _wait_until(lambda: len(session.scrollback()) > 0)
+    with session._lock:
+        session._scrollback.clear()
+        session._scrollback_len = 0
+        sent = bytearray()
+        chunk_sizes = [1000, 65536, 70001, 3, 65536, 100000, 65536]  # > 2 * cap in total
+        for n, size in enumerate(chunk_sizes):
+            chunk = bytes([n + 1]) * size
+            sent += chunk
+            session._append_scrollback(chunk)
+            assert session._scrollback_len == min(len(sent), pty_session.SCROLLBACK_CAP)
+    ring = session.scrollback()
+    assert len(ring) == pty_session.SCROLLBACK_CAP
+    assert ring == bytes(sent[-pty_session.SCROLLBACK_CAP:])
+    assert session.attach()[0] == ring
+
+
+def test_exited_child_drains_without_a_wait_per_read(monkeypatch):
+    """A pause still held when the child has exited must not cost a
+    _FLOW_POLL_S wait per remaining read: _wait_flowing returns at once, so
+    EOF, the reap and the exit item follow without 0.5 s per buffered read.
+    Driven on a bare session object: on macOS a real child cannot exit while
+    its output sits undrained in the pty, so the state cannot be staged."""
+    import threading
+    monkeypatch.setattr(pty_session, "_FLOW_POLL_S", 0.5)
+    session = object.__new__(pty_session.PtySession)
+    session._lock = threading.Lock()
+    session._flowing = threading.Event()
+    session._paused = {object(): time.monotonic()}
+    session.proc = type("P", (), {"poll": lambda self: 0})()
+    t0 = time.monotonic()
+    for _ in range(10):  # ten buffered reads' worth
+        session._wait_flowing()
+    assert time.monotonic() - t0 < 0.2
