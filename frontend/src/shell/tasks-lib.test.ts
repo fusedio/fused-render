@@ -60,6 +60,7 @@ import {
   dropAction,
   dropLanes,
   filterTasks,
+  emptyTasksLabel,
   filtersForView,
   firstLine,
   groupByColumn,
@@ -6526,6 +6527,40 @@ describe("filtersForView — the grouped lists hide Archive by default (2026-10-
         "e",
         "f",
       ]);
+    }
+  });
+});
+
+describe("emptyTasksLabel — the grouped archived-only empty state (2026-10-17)", () => {
+  const ARCHIVE_HINT = "Only archived tasks here. Tick Archive under Status to see them.";
+  const NO_MATCH = "Nothing matches these filters.";
+
+  it("names the hidden Archive lane on a grouped view with no filter on", () => {
+    for (const view of GROUP_VIEWS) {
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, false)).toBe(ARCHIVE_HINT);
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, true)).toBe(ARCHIVE_HINT);
+    }
+  });
+
+  it("blames the filter once one is on, grouped or not", () => {
+    const withProject = { ...EMPTY_FILTERS, projects: ["/p"] };
+    const withSearch = { ...EMPTY_FILTERS, search: "x" };
+    const withStatus = { ...EMPTY_FILTERS, statuses: ["done" as const] };
+    for (const view of [...GROUP_VIEWS, ...BASE_VIEWS]) {
+      for (const f of [withProject, withSearch, withStatus]) {
+        expect(emptyTasksLabel(view, f, 3, false)).toBe(NO_MATCH);
+      }
+    }
+  });
+
+  it("never offers the Archive hint on List, Board, Cards or Calendar", () => {
+    for (const view of BASE_VIEWS) expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, false)).toBe(NO_MATCH);
+  });
+
+  it("says there are no tasks at all when the scope is empty, whatever the view", () => {
+    for (const view of [...GROUP_VIEWS, ...BASE_VIEWS]) {
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 0, true)).toBe("No tasks for this app yet.");
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 0, false)).toMatch(/^No tasks yet\./);
     }
   });
 });

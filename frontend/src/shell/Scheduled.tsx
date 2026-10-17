@@ -115,8 +115,8 @@ import {
   VIEW_LABELS,
   VIEW_TABS_KEY,
   applyQueueOverrides,
+  emptyTasksLabel,
   groupOfView,
-  hasActiveFilters,
   parseViewTabs,
   expireQueueOverrides,
   isChatDraftTask,
@@ -1276,25 +1276,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // and the pane scrolls sideways. Floored is a subset of tight (500 < any
   // baseline), so nothing the floor did is lost.
   const scrolls = peek.open && peek.tight;
-  // ONE sentence for "there is nothing here", handed to all four views, so a
+  // ONE sentence for "there is nothing here", handed to every view, so a
   // reader flipping List → Board → Cards → Calendar over the same empty set
   // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
-  // is the page's call, not a view's: only the page knows whether the set is
-  // empty because the machine has no tasks, this app has none, or the filters
-  // matched none.
-  // THE GROUPED LISTS HIDE ARCHIVE WITH NOTHING TICKED (tasks-lib.filtersForView,
-  // 2026-10-17), so a Time / Project / PR view can be empty with the badge off
-  // and tasks in scope — every one of them filed away. "Nothing matches these
-  // filters" would name a filter the reader did not set; this names the one
-  // that is on and where to lift it.
-  const emptyLabel =
-    inScope.length === 0
-      ? scope
-        ? "No tasks for this app yet."
-        : "No tasks yet. Everything Claude runs for you shows up here."
-      : groupOfView(view) && !hasActiveFilters(filters)
-        ? "Only archived tasks here. Tick Archive under Status to see them."
-        : "Nothing matches these filters.";
+  // is the page's call, not a view's — tasks-lib.emptyTasksLabel knows whether
+  // the set is empty because the machine has no tasks, this app has none, the
+  // filters matched none, or a grouped view is hiding an all-archived scope.
+  const emptyLabel = emptyTasksLabel(view, filters, inScope.length, scope != null);
 
   // PUT THE CARD AWAY — the modal's ✕, and the source chip's press, which opens
   // the task it names and cannot do that under an open card. One function, so

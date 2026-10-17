@@ -3190,6 +3190,32 @@ export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
 }
 
 /**
+ * The sentence a view shows when it has NOTHING to draw. The page's call, not a
+ * view's: only the page knows whether the set is empty because the machine has
+ * no tasks, this app (`scoped`) has none, or the filters matched none — and,
+ * since 2026-10-17, whether a grouped view is hiding an all-archived scope with
+ * nothing ticked (filtersForView). That last one must not read "Nothing matches
+ * these filters": the badge is off and the reader set no filter, so it names
+ * the lane that is hidden and where to lift it instead.
+ */
+export function emptyTasksLabel(
+  view: TaskView,
+  filters: TaskFilters,
+  inScope: number,
+  scoped: boolean,
+): string {
+  if (inScope === 0) {
+    return scoped
+      ? "No tasks for this app yet."
+      : "No tasks yet. Everything Claude runs for you shows up here.";
+  }
+  if (groupOfView(view) && !hasActiveFilters(filters)) {
+    return "Only archived tasks here. Tick Archive under Status to see them.";
+  }
+  return "Nothing matches these filters.";
+}
+
+/**
  * Does the list a view is DRAWING span more than one project?
  *
  * Which is the whole of the folder chip's reason to exist. With the Project filter
