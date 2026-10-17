@@ -286,3 +286,19 @@ def test_create_ignores_an_invalid_initial_size(client, scratch_registry, monkey
     resp = client.post("/api/terminal", json=body, headers=_HEADERS)
     assert resp.status_code == 200
     assert _wait_for(scratch_registry, resp.json()["id"], b"0 0")
+
+
+def test_disconnect_leaves_no_subscriber_behind(client, scratch_registry):
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    session = scratch_registry.get(sid)
+
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        ws.receive_bytes()
+        assert len(session._subscribers) == 1
+        assert len(session._loops) == 1
+
+    deadline = time.time() + 5
+    while (session._subscribers or session._loops) and time.time() < deadline:
+        time.sleep(0.02)
+    assert session._subscribers == []
+    assert session._loops == {}

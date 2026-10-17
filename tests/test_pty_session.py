@@ -353,3 +353,48 @@ def test_invalid_initial_size_is_ignored(registry, tmp_path, monkeypatch, rows, 
                          lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "stty size; sleep 1"]))
     session = registry.create(rows=rows, cols=cols)
     assert _wait_until(lambda: b"0 0" in bytes(session.scrollback()))
+
+
+def test_asyncio_subscriber_receives_data_then_exit(registry, tmp_path, monkeypatch):
+    """`attach(loop=...)` hands back an asyncio.Queue the reader thread feeds
+    through `call_soon_threadsafe`: ("data", ...) frames, then one ("exit", code)."""
+    import asyncio
+
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "sleep 0.3; printf hi"]))
+
+    async def main():
+        session = registry.create()
+        _snap, _alive, _code, q = session.attach(asyncio.get_running_loop())
+        assert isinstance(q, asyncio.Queue)
+        seen, exit_code = b"", "unset"
+        while True:
+            kind, payload = await asyncio.wait_for(q.get(), timeout=5)
+            if kind == "data":
+                seen += payload
+            else:
+                exit_code = payload
+                break
+        return session, q, seen, exit_code
+
+    session, q, seen, exit_code = asyncio.run(main())
+    assert b"hi" in seen
+    assert exit_code == 0
+    session.unsubscribe(q)
+    assert q not in session._subscribers and q not in session._loops
+
+
+def test_closed_loop_subscriber_is_dropped_not_fatal(registry, tmp_path, monkeypatch):
+    """A subscriber whose loop has closed is unsubscribed by the reader instead
+    of killing the reader thread."""
+    import asyncio
+
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "sleep 0.3; printf hi"]))
+    session = registry.create()
+    loop = asyncio.new_event_loop()
+    _snap, _alive, _code, q = session.attach(loop)
+    loop.close()
+    assert _wait_until(lambda: not session.alive)
+    assert q not in session._subscribers
+    assert b"hi" in session.scrollback()

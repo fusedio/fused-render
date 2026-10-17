@@ -29,6 +29,7 @@ this code.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import signal
@@ -176,7 +177,11 @@ class PtySession:
         self.rows, self.cols = size if size is not None else (DEFAULT_ROWS, DEFAULT_COLS)
 
         self._lock = threading.RLock()
-        self._subscribers: list[SimpleQueue] = []
+        #: SimpleQueue (thread consumers: `subscribe()`, tests) or asyncio.Queue
+        #: (the WS route, via `attach(loop=...)`); `_loops` holds the owning
+        #: loop for the latter, and is how `_put` tells them apart.
+        self._subscribers: list = []
+        self._loops: dict = {}
         self._scrollback = bytearray()
 
         master_fd, slave_fd = os.openpty()
@@ -238,7 +243,7 @@ class PtySession:
                     del self._scrollback[:overflow]
                 subs = list(self._subscribers)
             for q in subs:
-                q.put(("data", data))
+                self._put(q, ("data", data))
 
         code = self.proc.wait()
         with self._lock:
@@ -246,11 +251,26 @@ class PtySession:
             self.exit_code = code
             subs = list(self._subscribers)
         for q in subs:
-            q.put(("exit", code))
+            self._put(q, ("exit", code))
         try:
             os.close(self.master_fd)
         except OSError:
             pass
+
+    def _put(self, q, item) -> None:
+        """Deliver `item` to one subscriber from the reader thread. An asyncio
+        queue is not thread-safe, so it is fed through its loop; a loop that
+        has already closed (server shutdown racing the reader) raises
+        RuntimeError, and that subscriber is dropped rather than killing the
+        reader thread for every other one."""
+        loop = self._loops.get(q)
+        if loop is None:
+            q.put(item)
+            return
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, item)
+        except RuntimeError:
+            self.unsubscribe(q)
 
     def write(self, data: bytes) -> None:
         if not self.alive:
@@ -357,7 +377,8 @@ class PtySession:
         with self._lock:
             return bytes(self._scrollback)
 
-    def attach(self) -> tuple[bytes, bool, Optional[int], SimpleQueue]:
+    def attach(self, loop: Optional[asyncio.AbstractEventLoop] = None
+               ) -> tuple[bytes, bool, Optional[int], "SimpleQueue | asyncio.Queue"]:
         """Snapshot scrollback, the alive/exit_code pair, and register a new
         subscriber queue — all under one lock acquisition.
 
@@ -369,9 +390,17 @@ class PtySession:
         client entirely. Worse, if the child exits in that window, the
         `("exit", code)` broadcast could predate the subscription entirely,
         so the client would never learn the shell died. One lock hold closes
-        both gaps."""
-        q: SimpleQueue = SimpleQueue()
+        both gaps.
+
+        With `loop`, the subscriber is an `asyncio.Queue` the reader thread
+        feeds via `loop.call_soon_threadsafe`, so the WS route can `await
+        q.get()` on the event loop instead of parking a thread-pool worker on
+        a blocking `SimpleQueue.get` for the terminal's whole life. Without
+        it, a `SimpleQueue`, as before."""
+        q = asyncio.Queue() if loop is not None else SimpleQueue()
         with self._lock:
+            if loop is not None:
+                self._loops[q] = loop
             snapshot = bytes(self._scrollback)
             alive = self.alive
             exit_code = self.exit_code
@@ -384,10 +413,11 @@ class PtySession:
             self._subscribers.append(q)
         return q
 
-    def unsubscribe(self, q: SimpleQueue) -> None:
+    def unsubscribe(self, q) -> None:
         with self._lock:
             if q in self._subscribers:
                 self._subscribers.remove(q)
+            self._loops.pop(q, None)
 
     # -- lifecycle -----------------------------------------------------------
 

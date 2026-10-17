@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from queue import Empty
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 
@@ -250,7 +249,7 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
     # with awaits between them, would lose output the reader thread produces
     # in that window — and, worse, could miss the child's exit entirely if
     # it died during the gap).
-    scrollback, alive, exit_code, out_queue = session.attach()
+    scrollback, alive, exit_code, out_queue = session.attach(asyncio.get_running_loop())
     # Replay scrollback first so a reattach repaints the screen before any
     # new output arrives; a plain empty bytes frame for a session with none
     # yet is harmless (xterm.js writes zero bytes and moves on).
@@ -259,23 +258,20 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
         await ws.send_text(json.dumps({"exit": exit_code}))
 
     async def pump_output():
-        # A plain `await asyncio.to_thread(out_queue.get)` would block a
-        # thread-pool worker on the underlying blocking call forever whenever
-        # nothing more ever arrives (a disconnect with the shell still
-        # alive). Cancelling THIS task then does not stop that worker
-        # thread — `Future.cancel()` is a no-op once a work item is already
-        # running — so on cleanup asyncio's default-executor shutdown
-        # (`loop.shutdown_default_executor`, run whenever the loop backing
-        # this test/portal closes) blocks forever waiting for a worker that
-        # will never return, hanging the whole process. Polling with a short
-        # timeout instead means a cancelled task's current `to_thread` call
-        # returns (Empty) well within one tick, so cancellation actually
-        # takes effect and no thread outlives this task.
+        # `out_queue` is an asyncio.Queue the reader thread feeds through
+        # `loop.call_soon_threadsafe` (see `PtySession.attach`), so this is a
+        # plain `await` on the event loop. It used to be `await
+        # asyncio.to_thread(out_queue.get, timeout=0.2)` on a blocking
+        # SimpleQueue: that parked one default-executor worker per attached
+        # terminal for the terminal's whole life (the rest of the server
+        # shares that pool), and the 0.2 s timeout existed only because a
+        # worker blocked in an un-timed `get` can never be cancelled —
+        # `Future.cancel()` is a no-op once the work item runs, so the
+        # default-executor shutdown at loop close would hang forever on it.
+        # An asyncio queue `get` is natively cancellable, so that hazard is
+        # gone and so is the poll.
         while True:
-            try:
-                kind, payload = await asyncio.to_thread(out_queue.get, timeout=0.2)
-            except Empty:
-                continue
+            kind, payload = await out_queue.get()
             if kind == "data":
                 await ws.send_bytes(payload)
             else:  # "exit"
