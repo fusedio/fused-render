@@ -3156,14 +3156,36 @@ export function hasActiveFilters(f: TaskFilters): boolean {
 // unsent words, and that chip is now the same pressable tag the List and the
 // Board draw (TaskCards → DraftChip). So the wall has a control, the facet has
 // something to keep, and the one view left dropping it is the calendar.
+//
+// THE GROUPED LISTS HIDE ARCHIVE BY DEFAULT (Akshil, 2026-10-17: "in group by
+// time, project and pr can we not show archived tasks, unless selected in
+// status"). Time, Project and PR are the List cut into sections, and every
+// section is a question about live work — what ran this hour, what each folder
+// is up to, where each pull request stands. A task somebody has filed away
+// answers none of them, and with no status ticked (the common case) the
+// archive outnumbered the rest in every section. So on those three views an
+// EMPTY status list means "every lane but Archive" — the same shape as a
+// person ticking all the other lanes — and ticking Archive (alone or with
+// others) shows exactly what it names, as it does everywhere else. The plain
+// List and the Board keep Archive in the unfiltered page: the Board has a lane
+// for it, and the List is the one place "everything" is meant to mean that.
+// Effective query only, as above — the stored filters do not change, so the
+// badge still reads as no filter and the popover shows nothing ticked.
+/** Every Board lane except Archive — what an unfiltered grouped list asks for. */
+const LANES_BUT_ARCHIVE: BoardColumn[] = BOARD_LANES.map((l) => l.key).filter(
+  (k) => k !== "archived",
+);
+
 export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
   const draft = view === "calendar" && f.draft;
   const archived = view === "calendar" && f.statuses.includes("archived");
-  if (!draft && !archived) return f;
+  const unfilteredGroup = groupOfView(view) !== null && f.statuses.length === 0;
+  if (!draft && !archived && !unfilteredGroup) return f;
   return {
     ...f,
     ...(draft ? { draft: false } : {}),
     ...(archived ? { statuses: f.statuses.filter((s) => s !== "archived") } : {}),
+    ...(unfilteredGroup ? { statuses: LANES_BUT_ARCHIVE } : {}),
   };
 }
 

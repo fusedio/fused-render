@@ -116,6 +116,7 @@ import {
   VIEW_TABS_KEY,
   applyQueueOverrides,
   groupOfView,
+  hasActiveFilters,
   parseViewTabs,
   expireQueueOverrides,
   isChatDraftTask,
@@ -1281,12 +1282,19 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // is the page's call, not a view's: only the page knows whether the set is
   // empty because the machine has no tasks, this app has none, or the filters
   // matched none.
+  // THE GROUPED LISTS HIDE ARCHIVE WITH NOTHING TICKED (tasks-lib.filtersForView,
+  // 2026-10-17), so a Time / Project / PR view can be empty with the badge off
+  // and tasks in scope — every one of them filed away. "Nothing matches these
+  // filters" would name a filter the reader did not set; this names the one
+  // that is on and where to lift it.
   const emptyLabel =
     inScope.length === 0
       ? scope
         ? "No tasks for this app yet."
         : "No tasks yet. Everything Claude runs for you shows up here."
-      : "Nothing matches these filters.";
+      : groupOfView(view) && !hasActiveFilters(filters)
+        ? "Only archived tasks here. Tick Archive under Status to see them."
+        : "Nothing matches these filters.";
 
   // PUT THE CARD AWAY — the modal's ✕, and the source chip's press, which opens
   // the task it names and cannot do that under an open card. One function, so
