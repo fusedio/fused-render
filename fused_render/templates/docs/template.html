@@ -618,6 +618,30 @@
   }
   fused.autoReload(false);
 
+  const APPEARANCE_KEY = "fused-docs:appearance";
+  const rootEl = document.documentElement;
+  let printing = false;
+  const appearance = () => { const v = localStorage.getItem(APPEARANCE_KEY); return v === "light" || v === "dark" ? v : "app"; };
+  const appTheme = () => {
+    try {
+      const t = window.parent !== window && window.parent.document.documentElement.getAttribute("data-theme");
+      if (t === "light" || t === "dark") return t;
+    } catch (e) {}
+    return matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  };
+  function paintTheme() {
+    const want = appearance() === "app" ? appTheme() : appearance();
+    if (rootEl.getAttribute("data-theme") !== want) rootEl.setAttribute("data-theme", want);
+    if (rootEl.style.colorScheme !== want) rootEl.style.colorScheme = want;
+  }
+  function setAppearance(value) {
+    if (value === "app") localStorage.removeItem(APPEARANCE_KEY);
+    else localStorage.setItem(APPEARANCE_KEY, value);
+    paintTheme();
+  }
+  new MutationObserver(() => { if (!printing && appearance() !== "app") paintTheme(); }).observe(rootEl, { attributes: true, attributeFilter: ["data-theme", "style"] });
+  paintTheme();
+
   const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   const KEY_NAMES = IS_MAC ? { Mod: "⌘", Shift: "⇧", Alt: "⌥" } : { Mod: "Ctrl", Shift: "Shift", Alt: "Alt" };
   const keyLabel = (k) => k.split(/-(?!$)/).map((p) => KEY_NAMES[p] || (p.length === 1 ? p.toUpperCase() : p)).join(IS_MAC ? "" : "+");
@@ -1214,7 +1238,10 @@
         const node = (display ? N.math_display : N.math_inline).create(null, schema.text(tex));
         const tr = this.view.state.tr;
         if (display === this.display) tr.replaceWith(pos, pos + this.node.nodeSize, node);
-        else tr.delete(pos, pos + this.node.nodeSize).replaceSelectionWith(node);
+        else {
+          tr.delete(pos, pos + this.node.nodeSize);
+          tr.setSelection(TextSelection.near(tr.doc.resolve(Math.min(pos, tr.doc.content.size)))).replaceSelectionWith(node);
+        }
         this.view.dispatch(tr);
         this.view.focus();
       });
@@ -1359,7 +1386,7 @@
     const { $from, empty } = state.selection;
     if ($from.parent.type !== N.title && $from.parent.type !== N.subtitle) return false;
     if (C.splitBlockAs(() => ({ type: N.paragraph }))(state, dispatch)) return true;
-    if (!empty || $from.parentOffset !== $from.parent.content.size) return false;
+    if (!empty || $from.parentOffset !== $from.parent.content.size) return hardBreak(state, dispatch);
     if (dispatch) dispatch(state.tr.setSelection(TextSelection.near(state.doc.resolve($from.after() + 1))).scrollIntoView());
     return true;
   };
@@ -1791,6 +1818,7 @@
       "-",
       { label: "Pageless", checked: () => param("layout") !== "page", run: () => setParam("layout", "pageless") },
       { label: "Pages", checked: () => param("layout") === "page", run: () => setParam("layout", "page") },
+      { label: "Appearance", icon: "page", sub: () => [["app", "Match app"], ["light", "Light"], ["dark", "Dark"]].map(([v, label]) => ({ label, checked: () => appearance() === v, run: () => setAppearance(v) })) },
       { label: "Zoom", icon: "zoom", sub: () => ["75", "90", "100", "125", "150", "200"].map((z) => ({ label: z + "%", checked: () => param("zoom") === z, run: () => setParam("zoom", z) })) },
     ] },
     { label: "Insert", items: () => [
@@ -2359,9 +2387,8 @@
       toast("Downloaded " + out.name);
     } catch (e) { toast("Couldn't export: " + e.message, { ms: 6000 }); }
   }
-  let printTheme = null;
-  window.addEventListener("beforeprint", () => { const r = document.documentElement; printTheme = r.getAttribute("data-theme") || ""; r.setAttribute("data-theme", "light"); });
-  window.addEventListener("afterprint", () => { const r = document.documentElement; if (printTheme) r.setAttribute("data-theme", printTheme); else r.removeAttribute("data-theme"); printTheme = null; });
+  window.addEventListener("beforeprint", () => { printing = true; rootEl.setAttribute("data-theme", "light"); rootEl.style.colorScheme = "light"; });
+  window.addEventListener("afterprint", () => { printing = false; paintTheme(); });
   async function newDocument() {
     if (!(await flushSave()) && !RO) { toast("Save your changes before creating a new document."); return; }
     try { openPath((await py({ action: "new", title: "Untitled document" })).path); }
