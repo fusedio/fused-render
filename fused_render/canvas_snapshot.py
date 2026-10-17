@@ -168,6 +168,14 @@ def compact_state(body: dict) -> dict:
     """The embed's snapshot body → `{nodes: {name: row}, edges: [[a,b]],
     canvas: {viewport, ...}, new_files: [{file, body}], files: {name: file}}`."""
     dashboard = body.get("dashboard_body") or {}
+    # The workbench serializes dashboard_body as a JSON STRING (that is what
+    # the server's collection save takes); an object is accepted too.
+    if isinstance(dashboard, str):
+        import json
+        try:
+            dashboard = json.loads(dashboard)
+        except ValueError as exc:
+            raise ValueError(f"dashboard_body is not JSON: {exc}") from exc
     studio = dashboard.get("studioState") if isinstance(dashboard, dict) else None
     studio = studio if isinstance(studio, dict) else {}
     raw_nodes = [n for n in (studio.get("nodes") or []) if isinstance(n, dict)]
