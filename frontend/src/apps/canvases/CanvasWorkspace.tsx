@@ -13,7 +13,7 @@
 //
 // Node selection (the explorer's embed route framed in the right pane): the same
 // listener carries three more messages once the workbench is told this host
-// speaks v2 (`fused_embed_v=2` on the frame URL — the flag also hides the
+// speaks v2 or later (`fused_embed_v=3` on the frame URL — the flag also hides the
 // workbench's own code editor, so an OLD host keeps that editor and an old
 // WORKBENCH simply never sends a selection):
 //   iframe → { type: "fused-embed-selection", udfName, backendId, kind }
