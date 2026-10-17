@@ -196,7 +196,7 @@ def test_claude_roots_outside_the_tree_are_sampled(monkeypatch, registries):
 def test_command_name_reads_scripts_and_modules():
     assert labels.command_name(["/x/python3.12", "-m", "fused_render.index.worker"]) == \
         "fused-render index worker"
-    assert labels.command_name(["/x/python", "/a/b/serve.py", "--port", "1"]) == "serve.py"
+    assert labels.command_name(["/x/python", "/a/b/serve.py", "--port", "1"]) == "b/serve.py"
     assert labels.command_name(["/bin/zsh", "-l"]) == "zsh"
     assert labels.command_name(None) == "process"
     assert labels.classify(1, ["/x/python", "/pkg/fused_render/_child.py"]).kind == "run"
