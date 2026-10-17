@@ -207,7 +207,7 @@ export { RecapFold } from "./RecapFold";
 export type { RecapFoldProps } from "./RecapFold";
 export { HeadsUp } from "./HeadsUp";
 export type { HeadsUpProps } from "./HeadsUp";
-export { useHeadsUp } from "./useHeadsUp";
+export { useHeadsUp, countUserTurns } from "./useHeadsUp";
 export type { HeadsUpApi, HeadsUpNote } from "./useHeadsUp";
 export { useAwayRecap, AWAY_MS, MAX_FAILURES } from "./useAwayRecap";
 export type { AwayRecapOptions, AwayRecapResult } from "./useAwayRecap";

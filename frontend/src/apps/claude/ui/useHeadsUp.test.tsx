@@ -6,7 +6,7 @@ installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 
-const { useHeadsUp, nextPollDelay, RUNNING_MS, CHECKING_MS, SETTLE_MS } = await import("./useHeadsUp");
+const { useHeadsUp, countUserTurns, nextPollDelay, RUNNING_MS, CHECKING_MS, SETTLE_MS } = await import("./useHeadsUp");
 import type { HeadsUpApi } from "./useHeadsUp";
 
 const realFetch = globalThis.fetch;
@@ -218,4 +218,36 @@ test("askInChat on success hides the card and posts the dismiss after the send",
   expect(order).toEqual(["send"]);
   expect(posts).toEqual([{ run_id: "r1", id: "n1" }]);
   expect(api.note).toBeNull();
+});
+
+test("re-enabling after a disabled answer resumes polling", async () => {
+  answers = [{ state: "disabled" }];
+  const p: Props = { runId: "r1", running: true, enabled: true, userTurns: 0 };
+  const r = mount(p);
+  await wait(60);
+  expect(polls.length).toBe(1);
+  act(() => r.update(<Probe {...p} enabled={false} />));
+  act(() => r.update(<Probe {...p} enabled={true} />));
+  await wait(60);
+  expect(polls.length).toBeGreaterThan(1);
+});
+
+test("the card hides at once when the pref turns off", async () => {
+  answers = [{ state: "note", id: "n1", note: NOTE }];
+  const p: Props = { runId: "r1", running: true, enabled: true, userTurns: 0 };
+  const r = mount(p);
+  await wait(60);
+  expect(api.note).not.toBeNull();
+  act(() => r.update(<Probe {...p} enabled={false} />));
+  expect(api.note).toBeNull();
+});
+
+test("countUserTurns skips interrupt markers", () => {
+  const turns = [
+    { role: "user", text: "hi" },
+    { role: "assistant", text: "yo" },
+    { role: "user", text: "[Request interrupted by user]" },
+    { role: "user", text: "again" },
+  ];
+  expect(countUserTurns(turns)).toBe(2);
 });

@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, postJson } from "@platform/lib/api";
 
 import type { ChatController } from "../protocol/controller-api";
+import { isInterruptMark } from "../protocol/wire";
 
 export const RUNNING_MS = 10_000;
 export const CHECKING_MS = 5_000;
@@ -70,6 +71,11 @@ export interface HeadsUpApi {
   askInChat(): Promise<void>;
 }
 
+/** User rows the reader actually sent: the CLI's interrupt marker is a user row nobody typed. */
+export function countUserTurns(turns: ReadonlyArray<{ role: string; text?: string }>): number {
+  return turns.reduce((n, t) => (t.role === "user" && !isInterruptMark(t.text) ? n + 1 : n), 0);
+}
+
 export function useHeadsUp({ runId, running, enabled, userTurns, controller, timing }: UseHeadsUpArgs): HeadsUpApi {
   const [shown, setShown] = useState<{ runId: string; id: string; note: HeadsUpNote; baseTurns: number } | null>(null);
   const lastState = useRef<HeadsUpState>("idle");
@@ -90,6 +96,8 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
     const ended = wasRunning.current && !running;
     wasRunning.current = running;
     if (!enabled || !runId) return;
+    // A fresh enable (or run) polls again, even after a `disabled` answer.
+    lastState.current = "idle";
     const clock: HeadsUpTiming = { running: runMs, checking: checkMs, settle: settleMs };
     let dead = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -122,6 +130,7 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
   }, [enabled, runId, running, runMs, checkMs, settleMs]);
 
   const visible =
+    enabled &&
     shown && shown.runId === runId && userTurns - shown.baseTurns < CLEAR_AFTER_USER_TURNS && !dismissed.current.has(shown.id)
       ? shown
       : null;

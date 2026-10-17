@@ -130,6 +130,7 @@ import {
   useAttachments,
   useAwayRecap,
   useHeadsUp,
+  countUserTurns,
   useFitStrip,
   useComposerDefaults,
   useRecentTasks,
@@ -4772,10 +4773,7 @@ function ChatBody(props: ChatBodyProps) {
   // a turn runs. Claude chats only. The card clears itself after the reader's
   // next two messages, counted off the transcript's own user rows.
   const headsupOn = useChatHeadsupEnabled();
-  const userTurnCount = useMemo(
-    () => state.turns.reduce((n, t) => (t.role === "user" ? n + 1 : n), 0),
-    [state.turns],
-  );
+  const userTurnCount = useMemo(() => countUserTurns(state.turns), [state.turns]);
   const headsup = useHeadsUp({
     runId: state.runId || state.lastRunId || "",
     running,
