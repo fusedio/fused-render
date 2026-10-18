@@ -106,7 +106,8 @@ export const PEEK_WALK_ATTR = "data-peek-walk";
  * reader who shut it themselves (design.md, Make-room rule 3). Kept only in
  * module memory it did not survive a RELOAD — and reloading with `?peek=` in
  * the URL is an ordinary thing to do: the peek came back, the sidebar came back
- * collapsed (it is in localStorage, see `setSidebarState` below), and the flag
+ * collapsed (it is persisted layout — the ui-layout document since D1384, see
+ * `setSidebarState` below), and the flag
  * did not — so closing the panel left the sidebar shut for good, with no
  * gesture anywhere that would have shut it.
  *
@@ -1031,7 +1032,7 @@ export function setPeekHost(on: boolean): void {
   // not resizes and the new rules give them no say at all.
   if (state.autoCollapsed && hostSidebar().collapsed) {
     // …written the way the collapse was: a rail we persisted has to be undone
-    // in `localStorage` too, or the reload the reader does next puts it back.
+    // in the persisted layout too, or the reload the reader does next puts it back.
     setSidebar(false, heldPersisted);
     markAutoCollapsed(false);
     publish({ ...state, autoCollapsed: false, baseline: null });
@@ -1470,7 +1471,7 @@ function viewportWidth(): number {
  * this store; every width, room and crossing input goes through here.
  *
  * EMBEDDED (`/tasks?embed=1`, an app page's iframe) there is no sidebar in this
- * document: `sidebarstate` is shared localStorage, so what it holds is the HOST
+ * document: `sidebarstate` is the shared layout document (D1384), so what it holds is the HOST
  * shell's column, not one beside this frame. Reading it would reserve space that
  * is not there. So embedded, the sidebar is a column of width 0 that occupies
  * nothing — EXPANDED at 0 rather than "collapsed", because a collapsed sidebar
@@ -1541,7 +1542,7 @@ export function applyResize(): RoomPlan {
       //
       //   * something the READER did during this opening (`userMoved`) — write
       //     it down: the trigger just overrode a decision they can see, and a
-      //     `localStorage` that still holds the decision we overrode is a
+      //     persisted layout that still holds the decision we overrode is a
       //     sidebar that snaps back on the next reload;
       //   * a collapse WE already wrote down (`heldPersisted`) — write the
       //     expand down too, or we leave the same disagreement behind from the
@@ -1570,7 +1571,8 @@ export function applyResize(): RoomPlan {
  * `persist: false` is the whole of it, and it is the same seam a resize drag
  * uses (sidebarstate's own note). An auto-collapse is the layout getting out of
  * the peek's way for as long as the peek is open; writing it to
- * `localStorage["fused-render:sidebar"]` filed it as a CHOICE, indistinguishable
+ * the persisted sidebar state (now `sidebar` in the ui-layout document, D1384;
+ * then `localStorage["fused-render:sidebar"]`) filed it as a CHOICE, indistinguishable
  * from the reader pressing the collapse button — so a crash, a closed tab or a
  * navigation in the wrong moment left them with a sidebar they never shut and
  * no record that anything had shut it.
@@ -1579,7 +1581,7 @@ export function applyResize(): RoomPlan {
  * the sidebar without that counting as the reader changing their mind.
  */
 function setSidebar(collapsed: boolean, persist = false): void {
-  // EMBEDDED, HANDS OFF: `sidebarstate` is shared localStorage, so a write from
+  // EMBEDDED, HANDS OFF: `sidebarstate` is the shared layout document, so a write from
   // a framed Tasks page would collapse the PARENT shell's sidebar — a column
   // this document does not even draw.
   if (IS_EMBED) return;
@@ -1598,7 +1600,7 @@ function setSidebar(collapsed: boolean, persist = false): void {
  * the layout getting out of the way and must not be filed as a preference (the
  * note above). But a trigger that overrides a toggle the reader just made is a
  * different act — it overwrites a decision they took and can see, and leaving
- * `localStorage` holding the decision we overrode is how the sidebar came to
+ * persisted layout holding the decision we overrode is how the sidebar came to
  * snap back to a rail on the next reload with nothing on screen explaining it
  * (UX pass 2, 2026-09-14): DOM 232, storage `collapsed: true`, reload → 44.
  *

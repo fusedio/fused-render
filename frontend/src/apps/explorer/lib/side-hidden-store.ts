@@ -16,17 +16,15 @@
 // only, on the argument that a refresh clearing it was the escape hatch from a
 // sidebar that otherwise stays shut. The owner asked to remember the open/closed
 // state globally instead ("lets globally remember the sidebar open/close state"),
-// so it is a preference now: stored in `localStorage` under `SIDE_HIDDEN_KEY`,
-// seeded once at module load (both consumers read it in a `useState`
-// initializer, so it has to be there before the first render), and written
-// through on every set — the same pattern `side-store.ts` uses for the width.
-// The open/closed bit and the width are stored preferences; the selected tab is
-// deliberately NOT, and resets on a reload (see `side-tab-store.ts`).
-//
-// Every storage access is wrapped — a private window, cleared site data, or a
-// browser set to block storage makes the accessor itself throw — and a failure
-// costs the persistence, never the flag: the module variable is still the live
-// answer.
+// so it is a preference now: `explorerSide.hidden` in the server-held layout
+// document (platform/lib/ui-layout.ts, D1384), read synchronously off that
+// module's cache — which main.tsx fills before the first render, so the two
+// consumers' `useState` initializers see it. It was the localStorage key
+// `fused-render:explorer-side-hidden` until the desktop app's port walk (a new
+// origin, so empty storage, on most relaunches) was found resetting it; that
+// key is imported once by ui-layout.ts. The open/closed bit and the width are
+// stored preferences; the selected tab is deliberately NOT, and resets on a
+// reload (see `side-tab-store.ts`).
 //
 // The flag is a LOSING signal, not a command: an explicit `_side` in the URL — a
 // deep link, a carried-in link from the other surface, a legacy `_mode` bookmark
@@ -35,34 +33,13 @@
 // and reopening on EITHER surface (a click, or a deep link that opens: see
 // `sideReopenedByUrl`) clears it so the next silent URL opens the sidebar again.
 
-/** The key the flag is stored under (`fused-render:` namespace, like every other
- *  key this app writes). Stored as "1" while shut; the key is absent when open. */
-export const SIDE_HIDDEN_KEY = "fused-render:explorer-side-hidden";
-
-function readStored(): boolean {
-  try {
-    return localStorage.getItem(SIDE_HIDDEN_KEY) === "1";
-  } catch {
-    return false; // blocked storage: the module variable is the whole answer
-  }
-}
-
-function writeStored(next: boolean): void {
-  try {
-    if (next) localStorage.setItem(SIDE_HIDDEN_KEY, "1");
-    else localStorage.removeItem(SIDE_HIDDEN_KEY);
-  } catch {
-    // Costs the persistence, never the flag.
-  }
-}
-
-let hidden = readStored();
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 
 export function getSideHidden(): boolean {
-  return hidden;
+  return getUiLayout().explorerSide?.hidden === true;
 }
 
 export function setSideHidden(next: boolean): void {
-  hidden = next;
-  writeStored(next);
+  if (getSideHidden() === next) return;
+  patchUiLayout((d) => ({ ...d, explorerSide: { ...d.explorerSide, hidden: next } }));
 }

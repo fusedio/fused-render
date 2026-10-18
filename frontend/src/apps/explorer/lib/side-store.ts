@@ -40,7 +40,7 @@
 //
 // So it is a preference now, and the escape hatch it cost is replaced by making
 // a stored width UNABLE to strand anybody:
-//   • only a COMPLETED drag is ever written (see `chosen` below), so nothing
+//   • only a COMPLETED drag is ever written (see `getSideWidth` below), so nothing
 //     lands here that the user did not choose;
 //   • a stored number is validated on read — finite, and at least `MIN_W` — so
 //     a corrupted or hand-edited value can never open the column below the
@@ -50,17 +50,17 @@
 //     pane), so a width stored on a wide monitor and reopened on a laptop is
 //     narrowed to fit rather than swallowing the content pane. That was always
 //     true; it is what makes persistence safe rather than merely wanted.
-// The sibling `side-hidden-store.ts` still states the old policy for the
-// OPEN/CLOSED flag, and it still holds there — nobody asked for that one, and a
-// sidebar that stays shut across a reload is a much easier thing to be lost by
-// than one that stays wide.
+// The sibling `side-hidden-store.ts` (the OPEN/CLOSED flag) was later made a
+// stored preference too, at the owner's request; its header says why.
 //
-// `localStorage`, not `sessionStorage`: the request was "across reload", and a
-// width is a preference about this machine's screen rather than about one tab's
-// visit. Every access is wrapped — a private window, cleared site data, or a
-// browser set to block storage makes the getter itself throw — and a failure
-// costs the persistence, never the drag: the module variable is still the live
-// answer and the column behaves exactly as it did before this existed.
+// WHERE IT IS STORED: `explorerSide.width` in the server-held layout document
+// (platform/lib/ui-layout.ts, D1384), read synchronously off that module's
+// cache, which main.tsx fills before the first render. It was the localStorage
+// key `fused-render:explorer-side-width` until the desktop app's port walk (a
+// new origin, so empty storage, on most relaunches) was found resetting it —
+// "across reload" had quietly stopped meaning "across relaunch". ui-layout.ts
+// imports that key once. A failed write costs the persistence, never the drag:
+// the cache is still the live answer and the column behaves exactly as before.
 //
 // WHY THIS IS PIXELS, AND WHY IT IS NOW THE ONLY STORE. Until D460 the listing
 // pane kept its own store (`listing/pane-store.ts`, deleted) holding a FRACTION
@@ -77,22 +77,21 @@
 // `paneFracFromSharedWidth`), clamped into its OWN floors rather than this
 // column's — sharing the number does not mean sharing the floor.
 
+import { getUiLayout, patchUiLayout, subscribeUiLayout } from "@platform/lib/ui-layout";
 import { MIN_W } from "./side-width";
 
-/** The key the width is stored under. Namespaced like every other key this app
- *  writes (`fused-render:` — see ClaudeChat's activity stamp). */
-export const SIDE_WIDTH_KEY = "fused-render:explorer-side-width";
-
 /**
- * A stored string as a width this module will admit, or `null`.
+ * A stored width as a width this module will admit, or `null`.
  *
- * Exported for the test rather than reached through storage, because the three
- * ways this can go wrong are all data and none of them are the browser: a
+ * Exported for the test rather than reached through the store, because the
+ * three ways this can go wrong are all data and none of them are the browser: a
  * non-number, a number below the legibility floor, and the absent case that has
- * to stay `null` (which is a REAL state — see `chosen`) instead of becoming a 0
- * the consumers would treat as a choice.
+ * to stay `null` (which is a REAL state — see `getSideWidth`) instead of
+ * becoming a 0 the consumers would treat as a choice. Takes the string the old
+ * localStorage key held as well as the document's number, so the tests that pin
+ * the floor did not have to change with the storage.
  */
-export function parseStoredSideWidth(raw: string | null | undefined): number | null {
+export function parseStoredSideWidth(raw: string | number | null | undefined): number | null {
   if (raw === null || raw === undefined || raw === "") return null;
   const px = Number(raw);
   if (!Number.isFinite(px)) return null;
@@ -103,48 +102,36 @@ export function parseStoredSideWidth(raw: string | null | undefined): number | n
   return Math.max(MIN_W, Math.round(px));
 }
 
-function readStored(): number | null {
-  try {
-    return parseStoredSideWidth(localStorage.getItem(SIDE_WIDTH_KEY));
-  } catch {
-    return null; // blocked storage: the module variable is the whole answer
-  }
-}
-
-function writeStored(px: number | null): void {
-  try {
-    if (px === null) localStorage.removeItem(SIDE_WIDTH_KEY);
-    else localStorage.setItem(SIDE_WIDTH_KEY, String(px));
-  } catch {
-    // Costs the persistence, never the drag.
-  }
-}
-
 // null = NO CHOICE MADE, which is a real state and not a missing number: the
 // column then opens at the container's share (side-width.ts). Only a COMPLETED
 // drag sets it — the resize clamp narrows what is on screen without recording a
 // choice the user did not make, so widening the window back re-reads this number
 // rather than the clamped one.
 //
-// SEEDED FROM STORAGE, once, at module load: the two consumers both read
-// `getSideWidth()` in a `useState` initializer (PreviewSidebar, listing/pane),
-// so the number has to be there before the first render or the column paints at
-// the default share and then jumps.
-let chosen: number | null = readStored();
+// READ THROUGH ON EVERY CALL rather than seeded into a module variable: the
+// module is evaluated before main.tsx's hydrate lands, so a load-time seed would
+// be the default every time. The two consumers read `getSideWidth()` in a
+// `useState` initializer (PreviewSidebar, listing/pane), which runs after it.
 const listeners = new Set<() => void>();
 
 export function getSideWidth(): number | null {
-  return chosen;
+  return parseStoredSideWidth(getUiLayout().explorerSide?.width);
 }
 
 export function setSideWidth(px: number | null): void {
-  if (chosen === px) return;
-  chosen = px;
-  writeStored(px);
+  // Whole pixels: the document holds an int (the server 400s anything else),
+  // and a sub-pixel difference is not a different choice.
+  const next = px === null ? null : Math.round(px);
+  if ((getUiLayout().explorerSide?.width ?? null) === next) return;
+  patchUiLayout((d) => ({ ...d, explorerSide: { ...d.explorerSide, width: next } }));
   listeners.forEach((fn) => fn());
 }
 
-/** Test seam: forget the width and what storage holds of it. Nothing in the app
+// A layout hydrate that landed after the first render (ui-layout.ts) may carry
+// a width the mounted column has not seen; the subscribers re-read and clamp.
+subscribeUiLayout(() => listeners.forEach((fn) => fn()));
+
+/** Test seam: forget the width and what the store holds of it. Nothing in the app
  *  calls this — the app has no "reset the width" gesture, and inventing one
  *  here would be a UI decision made in a store. */
 export function clearSideWidth(): void {

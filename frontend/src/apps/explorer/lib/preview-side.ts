@@ -37,9 +37,9 @@
 //                 (`localStorage`). Consulted only where the URL is silent;
 //                 an explicit `_side` (or legacy `_mode`) wins, and a deep link
 //                 that opens clears the flag (`sideReopenedByUrl`).
-//   width         `lib/side-store.ts` — PERSISTED across reloads
-//                 (`localStorage`, `SIDE_WIDTH_KEY`), shared by both surfaces.
-//                 Unchanged from before this branch.
+//   width         `lib/side-store.ts` — PERSISTED across reloads in the
+//                 server-held layout document (`explorerSide.width`,
+//                 ui-layout.ts, D1384), shared by both surfaces.
 //   selected tab  `lib/side-tab-store.ts` — memory only, shared by both
 //                 surfaces, cleared by a reload. Used by `resolveSide` where the
 //                 URL names no mode and the remembered companion is `ready` on

@@ -1,32 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 
+import { _setUiLayoutForTest, getUiLayout } from "@platform/lib/ui-layout";
 import { MIN_W } from "./side-width";
 
-// bun's test runner has no DOM, so the store's one browser dependency is
-// supplied here — a real Storage-shaped object, installed BEFORE the module is
-// imported, because the seed runs at load.
-const cells = new Map<string, string>();
-Object.defineProperty(globalThis, "localStorage", {
-  configurable: true,
-  writable: true,
-  value: {
-    getItem: (k: string) => (cells.has(k) ? (cells.get(k) as string) : null),
-    setItem: (k: string, v: string) => void cells.set(k, String(v)),
-    removeItem: (k: string) => void cells.delete(k),
-    clear: () => cells.clear(),
-    key: (i: number) => [...cells.keys()][i] ?? null,
-    get length() {
-      return cells.size;
-    },
-  } as Storage,
-});
-
-// The width store PERSISTS since R1 feedback #29, so unlike its sibling
-// `side-hidden-store.test.ts` there IS storage to clear between tests — and the
-// seed happens at module load, so anything asserting about the seed has to
-// import the module fresh rather than reuse the one this file already holds.
+// The width is the layout document's `explorerSide.width` (platform/lib/
+// ui-layout.ts, D1384). `_setUiLayoutForTest` seeds that module's cache — what
+// main.tsx's boot hydrate does in the app — and takes it offline, so nothing
+// here fetches.
 const {
-  SIDE_WIDTH_KEY,
   clearSideWidth,
   getSideWidth,
   parseStoredSideWidth,
@@ -34,19 +15,9 @@ const {
   subscribeSideWidth,
 } = await import("./side-store");
 
-/** A fresh copy of the module, so its load-time seed runs against whatever is
- *  in storage now. Bun caches by specifier, so the query string is what makes
- *  each import a new module instance. */
-let freshSeq = 0;
-async function reloadStore() {
-  return (await import(`./side-store?seed=${++freshSeq}`)) as typeof import("./side-store");
-}
-
 beforeEach(() => {
-  localStorage.removeItem(SIDE_WIDTH_KEY);
-  clearSideWidth();
+  _setUiLayoutForTest();
 });
-afterEach(() => localStorage.removeItem(SIDE_WIDTH_KEY));
 
 describe("parseStoredSideWidth", () => {
   it("no stored value is NO CHOICE, not a zero", () => {
@@ -76,35 +47,32 @@ describe("parseStoredSideWidth", () => {
   });
 });
 
-describe("side-store persistence (#29)", () => {
-  it("a completed drag is written to storage", () => {
-    setSideWidth(MIN_W + 120);
-    expect(localStorage.getItem(SIDE_WIDTH_KEY)).toBe(String(MIN_W + 120));
+describe("side-store persistence (#29, D1384)", () => {
+  it("a completed drag is written to the layout document, in whole pixels", () => {
+    setSideWidth(MIN_W + 120.4);
+    expect(getUiLayout().explorerSide?.width).toBe(MIN_W + 120);
   });
 
-  it("a stored width is the store's answer before the first render", async () => {
-    localStorage.setItem(SIDE_WIDTH_KEY, String(MIN_W + 220));
-    const fresh = await reloadStore();
+  it("a hydrated width is the store's answer before the first render", () => {
     // The two consumers read this in a `useState` initializer, so a seed that
     // arrived in an effect would paint the default share and then jump.
-    expect(fresh.getSideWidth()).toBe(MIN_W + 220);
+    _setUiLayoutForTest({ v: 1, explorerSide: { width: MIN_W + 220 } });
+    expect(getSideWidth()).toBe(MIN_W + 220);
   });
 
-  it("with nothing stored the store still starts at NO CHOICE", async () => {
-    const fresh = await reloadStore();
-    expect(fresh.getSideWidth()).toBeNull();
+  it("with nothing stored the store still starts at NO CHOICE", () => {
+    expect(getSideWidth()).toBeNull();
   });
 
-  it("a stored value under the floor is clamped on the way in", async () => {
-    localStorage.setItem(SIDE_WIDTH_KEY, "12");
-    const fresh = await reloadStore();
-    expect(fresh.getSideWidth()).toBe(MIN_W);
+  it("a stored value under the floor is clamped on the way in", () => {
+    _setUiLayoutForTest({ v: 1, explorerSide: { width: 12 } });
+    expect(getSideWidth()).toBe(MIN_W);
   });
 
-  it("clearing the width removes the key rather than storing a null", () => {
+  it("clearing the width stores NO CHOICE, not a zero", () => {
     setSideWidth(MIN_W + 90);
     clearSideWidth();
-    expect(localStorage.getItem(SIDE_WIDTH_KEY)).toBeNull();
+    expect(getUiLayout().explorerSide?.width).toBeNull();
     expect(getSideWidth()).toBeNull();
   });
 
@@ -117,28 +85,5 @@ describe("side-store persistence (#29)", () => {
     off();
     setSideWidth(MIN_W + 42);
     expect(seen).toBe(2);
-  });
-
-  it("blocked storage costs the persistence, never the drag", () => {
-    // A private window, cleared site data, or a browser set to block storage
-    // makes the accessor itself throw.
-    const real = globalThis.localStorage;
-    Object.defineProperty(globalThis, "localStorage", {
-      configurable: true,
-      get() {
-        throw new Error("SecurityError");
-      },
-    });
-    try {
-      expect(() => setSideWidth(MIN_W + 60)).not.toThrow();
-      expect(getSideWidth()).toBe(MIN_W + 60);
-      expect(() => parseStoredSideWidth("500")).not.toThrow();
-    } finally {
-      Object.defineProperty(globalThis, "localStorage", {
-        configurable: true,
-        value: real,
-        writable: true,
-      });
-    }
   });
 });

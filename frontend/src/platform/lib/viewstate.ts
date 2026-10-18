@@ -7,16 +7,24 @@
 // This is deliberately a plain path->search store, not a param-carry across
 // navigation: two sibling folders keep independent sorts (Desktop by Modified,
 // fused by Size) and neither leaks into the other.
-const KEY = "fused-render:viewstate";
-
-// The stored string → the map, VALIDATED rather than cast. This is the only
-// door into the store, so it is the one place that can honour the
-// Record<string, string> the rest of the file is written against; it used to be
-// a bare `JSON.parse(raw) as Record<string, string>`, and a cast checks nothing.
 //
-// What is on the other side of that door is a string written by someone else:
-// an older build of this app, a foreign one sharing the origin, a hand-edited
-// devtools value, a write interrupted half way. Three shapes have to survive:
+// WHERE IT LIVES: the `viewState` field of the server-held layout document
+// (ui-layout.ts, D1384), read synchronously off that module's cache. It was the
+// localStorage key `fused-render:viewstate` until the desktop app's port walk
+// (a new origin, so empty storage, on most relaunches) was found resetting every
+// folder's sort; ui-layout.ts imports that key once. Bounded there to the
+// newest 500 folders (the server's cap), which is why `setViewState` moves a
+// re-set folder to the end.
+import { getUiLayout, patchUiLayout, whenUiLayoutReady } from "./ui-layout";
+
+// A stored value → the map, VALIDATED rather than cast. This is the one door
+// into the store, so it is the one place that can honour the
+// Record<string, string> the rest of the file is written against.
+//
+// What is on the other side of that door was written by someone else: an older
+// build of this app, the one-shot import of an old localStorage string, a
+// hand-edited file. So it takes the old raw string as well as the document's
+// object, and three shapes have to survive:
 //   • not JSON at all              → {}
 //   • JSON but not an object       → {}. `null` is the one that used to get
 //     through, because the guard was on the RAW string being non-empty and
@@ -25,18 +33,14 @@ const KEY = "fused-render:viewstate";
 //     kept, because one bad key must not cost a user every folder's sort. A
 //     non-string would otherwise reach `new URLSearchParams(42)`, which parses
 //     the number's string form as a query — silently, and as nonsense.
-//
-// A hard failure here got much more expensive when purgeViewStateParams moved
-// to pane.ts's MODULE INIT: the other callers are lazy and inside components,
-// where a throw degrades one thing, but a throw at module init aborts a module
-// that Listing.tsx and Preview.tsx both import — a blank app, not a blank pane.
-// Exported for the tests, which have no localStorage to reach it through.
-export function parseViewStateMap(raw: string | null): Record<string, string> {
-  let parsed: unknown;
-  try {
-    parsed = raw ? JSON.parse(raw) : null;
-  } catch {
-    return {}; // malformed JSON — behave as empty
+export function parseViewStateMap(raw: unknown): Record<string, string> {
+  let parsed: unknown = raw;
+  if (typeof raw === "string" || raw === null || raw === undefined) {
+    try {
+      parsed = raw ? JSON.parse(raw) : null;
+    } catch {
+      return {}; // malformed JSON — behave as empty
+    }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const out: Record<string, string> = {};
@@ -47,19 +51,7 @@ export function parseViewStateMap(raw: string | null): Record<string, string> {
 }
 
 function load(): Record<string, string> {
-  try {
-    return parseViewStateMap(localStorage.getItem(KEY));
-  } catch {
-    return {}; // private-mode / storage unavailable — behave as empty
-  }
-}
-
-function save(map: Record<string, string>): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(map));
-  } catch {
-    // storage unavailable — state is best-effort, so a failed write is fine
-  }
+  return parseViewStateMap(getUiLayout().viewState);
 }
 
 // Saved search string for `path` ("" when nothing is stored). Carries a leading
@@ -68,12 +60,18 @@ export function getViewState(path: string): string {
   return load()[path] || "";
 }
 
-// Persist (or, with an empty search, clear) the saved state for `path`.
+// Persist (or, with an empty search, clear) the saved state for `path`. The
+// patch SETS this one folder's entry (ui-layout.ts replays it onto the server's
+// copy, so another window's folders are kept); delete-then-add moves the folder
+// to the end, which is the "newest" end the document's 500 cap keeps.
 export function setViewState(path: string, search: string): void {
-  const map = load();
-  if (search) map[path] = search;
-  else delete map[path];
-  save(map);
+  if ((getUiLayout().viewState?.[path] ?? "") === search) return;
+  patchUiLayout((d) => {
+    const map = { ...d.viewState };
+    delete map[path];
+    if (search) map[path] = search;
+    return { ...d, viewState: map };
+  });
 }
 
 // Drop a param from EVERY entry — the shape a retirement takes here. A key the
@@ -81,10 +79,10 @@ export function setViewState(path: string, search: string): void {
 // thing a later reader misinterprets, and while it is there the old behaviour
 // is one accidental read away from coming back.
 //
-// Pure, and separate from the storage below, for a testing reason: there is no
-// localStorage in the bun suite, so the rewriting of every folder's query
-// string — the part with rules (see the empty-entry case) — has to be reachable
-// without one. Returns a new map; the caller decides whether to write it.
+// Pure, and separate from the store below, for a testing reason: the bun suite
+// has no server, so the rewriting of every folder's query string — the part
+// with rules (see the empty-entry case) — has to be reachable without one.
+// Returns a new map; the caller decides whether to write it.
 //
 // An entry left with no params at all is DELETED rather than stored as "?" or
 // "": setViewState already treats an empty search as absence, so keeping one
@@ -123,18 +121,32 @@ export function stripParam(map: Record<string, string>, name: string): Record<st
 // There is no "have I already done this?" flag, and there should not be: a flag
 // is a second piece of state that can itself go stale, and this migration is
 // idempotent by construction — a store with nothing left to strip strips to
-// itself. What that costs is one READ per document load, over a map holding a
+// itself. What that costs is one pass per document load, over a map holding a
 // query string per folder the user has visited.
 //
 // The WRITE is the part that is conditional, on stripParam having actually
 // removed something (which it signals by returning a different object). That is
 // not the flag argued against above — it is a fact about this run, read from the
-// data rather than remembered beside it. Writing unconditionally would re-encode
-// every entry in the store on every single document load, for the one load in a
-// user's life that has anything to strip.
+// data rather than remembered beside it.
+//
+// DEFERRED UNTIL THE LAYOUT IS IN (`whenUiLayoutReady`): the caller is a module
+// init (listing/pane.ts), which runs before main.tsx's hydrate lands, and a
+// purge over the not-yet-hydrated defaults would strip nothing — then the real
+// map, imported legacy entries included, would arrive with the params intact.
 export function purgeViewStateParams(...names: string[]): void {
-  const map = load();
-  let out = map;
-  for (const name of names) out = stripParam(out, name);
-  if (out !== map) save(out);
+  whenUiLayoutReady(() => {
+    const map = load();
+    let out = map;
+    for (const name of names) out = stripParam(out, name);
+    if (out === map) return;
+    // Setting the whole map is right here, unlike setViewState: the purge is
+    // re-run by every document, so a replay onto another window's copy strips
+    // that copy too rather than putting this one's back.
+    patchUiLayout((d) => {
+      const base = parseViewStateMap(d.viewState);
+      let next = base;
+      for (const name of names) next = stripParam(next, name);
+      return next === base ? d : { ...d, viewState: next };
+    });
+  });
 }
