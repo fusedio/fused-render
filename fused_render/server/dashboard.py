@@ -295,14 +295,20 @@ def server_log_errors(path: str, limit: int = 20) -> list[str]:
 
 
 def boot_changes(rows: list[dict]) -> list[dict]:
-    """The trail rows where `boot_id` differs from the row before: restarts."""
-    out, prev = [], None
+    """Restarts: the first appearance of a `boot_id` not seen earlier. Several
+    servers (worktrees, the installed app) share one trail, so their rows
+    interleave; ids already present in the window's first 120 s are baseline."""
+    out, seen, t0 = [], set(), None
     for r in rows:
         bid = r.get("boot_id")
-        if prev is not None and bid is not None and bid != prev:
-            out.append({"t": r["t"], "boot_id": bid})
-        if bid is not None:
-            prev = bid
+        if bid is None:
+            continue
+        if t0 is None:
+            t0 = r["t"]
+        if bid not in seen:
+            seen.add(bid)
+            if r["t"] - t0 > 120:
+                out.append({"t": r["t"], "boot_id": bid})
     return out
 
 

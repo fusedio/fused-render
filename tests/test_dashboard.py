@@ -263,9 +263,18 @@ def test_new_sections_registered_and_isolated():
 
 
 def test_restarts_counted_from_boot_id_changes():
-    rows = [{"t": 1, "boot_id": "a"}, {"t": 2, "boot_id": "a"}, {"t": 3, "boot_id": "b"},
-            {"t": 4, "boot_id": "c"}]
-    assert dashboard.boot_changes(rows) == [{"t": 3, "boot_id": "b"}, {"t": 4, "boot_id": "c"}]
+    rows = [{"t": 1, "boot_id": "a"}, {"t": 2, "boot_id": "a"}, {"t": 200, "boot_id": "b"},
+            {"t": 300, "boot_id": "c"}]
+    assert dashboard.boot_changes(rows) == [{"t": 200, "boot_id": "b"}, {"t": 300, "boot_id": "c"}]
+
+
+def test_interleaved_boot_ids_are_not_restarts():
+    rows = []
+    for i in range(30):
+        rows.append({"t": i * 10, "boot_id": "abc"[i % 3]})
+    rows += [{"t": 400, "boot_id": "d"}, {"t": 410, "boot_id": "a"}, {"t": 420, "boot_id": "d"},
+             {"t": 430, "boot_id": "b"}]
+    assert dashboard.boot_changes(rows) == [{"t": 400, "boot_id": "d"}]
 
 
 def test_spawns_use_posix_spawn_shape(monkeypatch):
