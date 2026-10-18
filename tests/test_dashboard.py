@@ -231,7 +231,7 @@ def test_timeline_ring_keeps_ten_minutes():
 def test_timeline_point_reads_the_sections_it_can(monkeypatch):
     class FakeLog:
         def summary(self):
-            return {"rps_10s": 4.0, "in_flight": [{"in_flight": 3}, {"in_flight": 1}]}
+            return {"rps_10s": 4.0, "concurrency": [{"series": [0, 3]}, {"series": [5, 1]}]}
     monkeypatch.setattr(dashboard.netlog, "get", lambda: FakeLog())
     dashboard._loop_state.pool = {"borrowed": 5, "total": 40}
     dashboard._loop_state.pool_t = time.monotonic()

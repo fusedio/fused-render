@@ -149,6 +149,60 @@ def _status_class(rec: dict) -> str:
     return f"{s // 100}xx" if s else ("open" if rec.get("outcome") is None else "none")
 
 
+def concurrency(finished, open_recs, now: float, window_s: float = 60.0,
+                step_s: float = 1.0) -> dict[str, dict]:
+    """Per-client simultaneous-request stats over the last `window_s`, computed
+    from request intervals (not snapshots, which miss millisecond requests).
+    Returns {client: {peak, series, at_limit_s}}; `series` has window_s/step_s
+    buckets, oldest first, each the max overlap seen inside that bucket."""
+    t0 = now - window_s
+    nbuckets = max(1, int(round(window_s / step_s)))
+    per: dict[str, list[tuple[float, float]]] = collections.defaultdict(list)
+    for r in finished:
+        if r.get("self") or r.get("end_t") is None:
+            continue
+        if r["end_t"] >= t0:
+            per[r["client"]].append((r["start_mono"], r["end_t"]))
+    for r in open_recs:
+        if not r.get("self"):
+            per[r["client"]].append((r["start_mono"], now))
+    out: dict[str, dict] = {}
+    for client, ivs in per.items():
+        events = []
+        for a, b in ivs:
+            a, b = max(a, t0), min(max(b, a), now)
+            events.append((a, 1))
+            events.append((b, -1))
+        events.sort(key=lambda e: (e[0], e[1]))  # ends before starts at a tie
+        series = [0] * nbuckets
+        cur = peak = 0
+        at_limit = 0.0
+        last = t0
+
+        def mark(lo: float, hi: float, level: int) -> None:
+            # Level holds on [lo, hi]; credit every bucket it touches.
+            if level <= 0:
+                return
+            i0 = min(nbuckets - 1, max(0, int((lo - t0) / step_s)))
+            i1 = min(nbuckets - 1, max(0, int((hi - t0) / step_s)))
+            for i in range(i0, i1 + 1):
+                if series[i] < level:
+                    series[i] = level
+
+        for t, d in events:
+            if cur >= SATURATION_SLOTS:
+                at_limit += t - last
+            mark(last, t, cur)
+            cur += d
+            peak = max(peak, cur)
+            mark(t, t, cur)
+            last = t
+        if cur >= SATURATION_SLOTS:
+            at_limit += now - last
+        out[client] = {"peak": peak, "series": series, "at_limit_s": round(at_limit, 1)}
+    return out
+
+
 def summarize(finished, open_recs, now: float, queue_samples=()) -> dict:
     """req/s over 10 s and 60 s, per-client in-flight and saturation, errors,
     and the long-held list. `finished` are records newest-last; `queue_samples`
@@ -184,7 +238,11 @@ def summarize(finished, open_recs, now: float, queue_samples=()) -> dict:
             long_held.append(_row(r, now))
     long_held.sort(key=lambda r: -(r.get("held_ms") or 0))
     qp95 = percentile(queue_samples, 95) if queue_samples else None
+    conc = [{"client": k, **v} for k, v in concurrency(finished, open_recs, now).items()]
+    conc.sort(key=lambda c: -c["peak"])
     return {
+        "concurrency": conc,
+        "main_client": conc[0]["client"] if conc else None,
         "rps_10s": round(n10 / 10.0, 2),
         "rps_60s": round(len(recent) / 60.0, 2),
         "in_flight": clients,

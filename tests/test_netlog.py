@@ -330,3 +330,46 @@ def test_source_name_does_no_filesystem_io(monkeypatch):
     assert netlog.source_name("/Users/x/apps/myapp/view.html", None) == "myapp"
     assert netlog.source_name(None, "http://h/?path=/a/b/view.html") == "b"
     assert netlog.source_name("/monitor", None) == "shell /monitor"
+
+
+def _rec(client="c", start=0.0, end=None, self_=False):
+    return {"client": client, "start_mono": start, "end_t": end, "self": self_}
+
+
+def test_concurrency_overlap_peak_and_series():
+    fin = [_rec(start=90, end=95), _rec(start=92, end=97), _rec(start=93, end=94)]
+    c = netlog.concurrency(fin, [], 100.0)["c"]
+    assert c["peak"] == 3 and c["at_limit_s"] == 0.0
+    assert len(c["series"]) == 60 and max(c["series"]) == 3
+    assert c["series"][-1] == 0  # nothing in the last second
+
+
+def test_concurrency_at_limit_seconds():
+    fin = [_rec(start=90, end=95) for _ in range(8)]
+    c = netlog.concurrency(fin, [], 100.0)["c"]
+    assert c["peak"] == 8 and c["at_limit_s"] == 5.0
+
+
+def test_concurrency_sequential_is_one():
+    fin = [_rec(start=10, end=11), _rec(start=11, end=12), _rec(start=20, end=21)]
+    assert netlog.concurrency(fin, [], 30.0)["c"]["peak"] == 1
+
+
+def test_concurrency_excludes_self_and_old():
+    fin = [_rec(start=90, end=95, self_=True), _rec(client="d", start=1, end=2)]
+    assert netlog.concurrency(fin, [], 100.0) == {}
+
+
+def test_concurrency_open_record_counts_until_now():
+    fin = [_rec(start=90, end=91)]
+    opens = [_rec(start=95, end=None), _rec(start=96, end=None)]
+    c = netlog.concurrency(fin, opens, 100.0)["c"]
+    assert c["peak"] == 2 and c["series"][-1] == 2
+
+
+def test_summarize_reports_main_client():
+    fin = [_rec(client="a", start=90, end=95), _rec(client="b", start=90, end=95),
+           _rec(client="b", start=91, end=96)]
+    s = netlog.summarize(fin, [], 100.0)
+    assert s["main_client"] == "b" and s["concurrency"][0]["peak"] == 2
+    assert netlog.summarize([], [], 100.0)["main_client"] is None

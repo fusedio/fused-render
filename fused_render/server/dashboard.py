@@ -473,11 +473,13 @@ def timeline_point() -> dict:
             return None
 
     summary = safe(lambda: netlog.get().summary()) or {}
-    clients = summary.get("in_flight") or []
+    conc = summary.get("concurrency") or []
     host = safe(lambda: sysmon_sampler.get_sampler().payload("fused").get("host")) or {}
     rows = safe(lambda: health.read_trail(1800)) or []
     return {"t": time.time(), "rps": summary.get("rps_10s"),
-            "in_flight": max((c.get("in_flight") or 0 for c in clients), default=0),
+            # Peak simultaneous requests in the last ~1 s for the busiest client
+            # (interval overlap, not an instantaneous count that misses fast calls).
+            "in_flight": max((c["series"][-1] for c in conc if c.get("series")), default=0),
             "pool": (_fresh("pool") or {}).get("borrowed"),
             "lag_ms": safe(lambda: serverstats.loop_lag().current()),
             "cpu": host.get("cpuPct"),
