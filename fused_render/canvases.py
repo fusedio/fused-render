@@ -1799,13 +1799,21 @@ class _SyncManager:
                         rtoml.loads(remote_toml.decode("utf-8", "replace")))
                 except Exception:  # noqa: BLE001 — keep the previous base
                     pass
-        self._rotate_remote(probe)
+            # The remote is reconciled: it is the new sync point, and the
+            # canvas is no longer server-stale.
+            self._rotate_remote(probe)
+        # Rolled back: the remote baseline stays at the sync point, so the
+        # next probe re-detects the move and the chip stays up — the held
+        # push must NOT ship local over a remote change the merge could not
+        # take. (It used to advance to avoid re-attempting every poll; with an
+        # explicit Pull there is no loop to avoid.)
         self._save_base()
         if rollback:
             self.merge_seq += 1
             self.last_pull_at = time.time()
         return True
 
+    @contextlib.contextmanager
     def _pull_writes(self):
         """Scopes the window in which a downstream leg is actually WRITING the
         clone's files — reported by status() as `pulling`. The workspace lock
@@ -2034,9 +2042,10 @@ class _SyncManager:
 
     def _pull_if_remote_changed(self) -> None:
         """Legacy downstream probe — external-CLI fallback only (no manifest
-        shim). A `pull --dry-run` that reports a diff means the REMOTE moved
-        (local == remote is the steady state at a sync point); that marks the
-        canvas server-stale, nothing more. pull() applies it on request
+        shim), CLEAN clones only (the caller gates it). A `pull --dry-run`
+        that reports a diff then means the REMOTE moved (local == remote is
+        the steady state at a sync point); that marks the canvas
+        server-stale, nothing more. pull() applies it on request
         (`_apply_legacy_pull`), whose post-pull `--dry-run` recheck catches a
         local edit that landed while `--force` ran (local wins, goes dirty).
         """
@@ -2166,8 +2175,12 @@ class _SyncManager:
                             # engagement the 2s status poll could sample — a
                             # read-only flicker for a pull that never happened.
                             self._poll_remote(probe)
-                else:
-                    # External CLI (no shims): legacy dry-run probe, detect only.
+                elif self._dirty_since is None and self.push_state == "idle":
+                    # External CLI (no shims): legacy dry-run probe, detect
+                    # only, and CLEAN clones only — a `pull --dry-run` cannot
+                    # tell a local edit from a remote move, so on a dirty
+                    # clone it would read every unpushed edit as "server
+                    # changed" and hold the push forever.
                     with self._op_lock:
                         self._pull_if_remote_changed()
 
@@ -2240,10 +2253,16 @@ class _SyncManager:
             if probe is None:
                 return {"ok": False, "error": "could not read the canvas from the server"}
             if dirty and self._base_files is not None:
+                rollbacks_before = self.merge_rollback_seq
                 with self._pull_writes() as begin_writes:
                     if not self._merge_remote(probe, begin_writes=begin_writes):
                         return {"ok": False,
                                 "error": "could not download the canvas from the server; try again"}
+                if self.merge_rollback_seq != rollbacks_before:
+                    return {"ok": False,
+                            "error": "merging the server's changes would break the canvas "
+                                     "(fused canvas validate failed); nothing was changed. "
+                                     "Publish or revert your local edits, then pull again"}
                 self.pull_seq += 1
                 self.last_pull_at = time.time()
                 _seed_clone_claude_files(self.dir, self.name)
