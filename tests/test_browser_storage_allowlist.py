@@ -33,21 +33,16 @@ ALLOWED = {
     "platform/lib/pending-claude-ask.ts": "tab",
     "platform/lib/presence.ts": "signal",
     "platform/lib/restart-store.ts": "signal",
-    "platform/lib/side-maximized-store.ts": "display",   # layout subset: stacked PR
-    "platform/lib/sidebarstate.ts": "display",           # layout subset: stacked PR
     "platform/lib/theme.ts": "display",
-    "platform/lib/viewstate.ts": "display",              # layout subset: stacked PR
     "platform/lib/tours/index.ts": "display",       # one-shot tour seen (per viewer)
+    "platform/lib/ui-layout.ts": "import",
     "platform/ui/IconPicker.tsx": "display",        # picker recents / colour (per viewer)
     "platform/ui/ServerStatusBanner.tsx": "dev",
     "platform/ui/UpdateNotifier.tsx": "tab",
     # ---- shell ------------------------------------------------------------
-    "shell/CurrentAppsSection.tsx": "signal",       # desk-changed nudge (+ order import; fold = layout subset)
-    "shell/NewJobModal.tsx": "display",             # layout subset: stacked PR
-    "shell/ScheduleCalendar.tsx": "display",        # layout subset: stacked PR
-    "shell/TasksSkeleton.tsx": "display",           # layout subset: stacked PR
+    "shell/CurrentAppsSection.tsx": "signal",       # desk-changed nudge (+ order import)
     "shell/ScheduleTaskViews.tsx": "tab",           # list memory (+ lane/group import)
-    "shell/Scheduled.tsx": "import",                # tabs import; view + facets = per-viewer/tab
+    "shell/Scheduled.tsx": "import",
     "shell/TaskCards.tsx": "tab",
     "shell/TerminalDrawer.tsx": "cache",            # pty ids re-checked against GET /api/terminal
     "shell/UpdateCard.tsx": "tab",
@@ -65,9 +60,6 @@ ALLOWED = {
     "apps/claude/ui/debug-sent.ts": "dev",
     "apps/claude/ui/useRecentTasks.ts": "tab",
     "apps/explorer/lib/fs-clipboard.ts": "tab",
-    "apps/explorer/lib/side-hidden-store.ts": "display",   # layout subset: stacked PR
-    "apps/explorer/lib/side-store.ts": "display",          # layout subset: stacked PR
-    "apps/explorer/sidebar/BookmarksSection.tsx": "display",  # layout subset: stacked PR
     "apps/marketplace/install-flow.tsx": "import",
     # ---- lan (phone UI; per-device origin by nature, SPEC §52 BS-5) -----------
     "lan/App.tsx": "display",
@@ -183,6 +175,18 @@ def test_the_functional_keys_are_gone_from_the_shell():
         "fused-render:scheduled-view-tabs",
         "fused-render:marketplace:python-ack",
         "fused-render.claude-health.dismissed",
+        # the durable layout subset (ui_layout.json)
+        "fused-render:sidebar",
+        "fused-render:bookmarks-collapsed",
+        "fused-render:current-apps-collapsed",
+        "fused-render:explorer-side-hidden",
+        "fused-render:explorer-side-width",
+        "fused-render:explorer-side-maximized",
+        "fused-render:viewstate",
+        "fused-render:scheduled-view",
+        "fused-render:scheduled-cal-range",
+        "fused-render:scheduled-board-lanes",
+        "fused-render:recent-paths",
     ]
     sources = list(_sources())
     problems = []

@@ -34,6 +34,7 @@ import {
   useState,
 } from "react";
 import type { DragEvent as ReactDragEvent } from "react";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import { agentLabel, agentNamed, useAgentBackends } from "@platform/lib/agent-backends";
 import { AgentMark } from "@platform/ui/AgentMark";
 import {
@@ -69,7 +70,6 @@ import type { BoardColumn, BoardLane } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
   EMPTY_LIST_MEMORY,
-  LANE_CHOICE_KEY,
   listMemoryKey,
   UNREAD_LABEL,
   basename,
@@ -5299,13 +5299,23 @@ const RUN_DROP_WORDS = {
 // toggle here, and a lane with none remembers nothing at all (the peek, in
 // TaskBoard). So a lane nobody has touched keeps following the rule as it fills
 // and empties, and so does one they touched while it was empty.
+//
+// The lane half lives in the layout document's `tasks.boardLanes`
+// (platform/lib/ui-layout.ts, D1386) — it was the localStorage key
+// `fused-render:scheduled-board-lanes` until the desktop app's port walk (a new
+// origin, so empty storage, on most relaunches) was found resetting it.
+// parseLaneChoices keeps only choices for lanes this build knows.
 function readLaneChoices(): LaneChoices {
-  try {
-    return parseLaneChoices(localStorage.getItem(LANE_CHOICE_KEY));
-  } catch {
-    // A blocked/private store costs the memory, never the board.
-    return {};
-  }
+  return parseLaneChoices(getUiLayout().tasks?.boardLanes);
+}
+
+/** The whole choice map, SET (ui-layout replays a patch onto the server's copy,
+ *  so it must not be a toggle). */
+function writeLaneChoices(next: LaneChoices): void {
+  const boardLanes = Object.fromEntries(
+    Object.entries(next).filter((e): e is [string, boolean] => typeof e[1] === "boolean")
+  );
+  patchUiLayout((d) => ({ ...d, tasks: { ...d.tasks, boardLanes } }));
 }
 
 export function TaskBoard({
@@ -5709,11 +5719,7 @@ export function TaskBoard({
     }
     setChoices((cur) => {
       const next = { ...cur, [key]: !nowCollapsed };
-      try {
-        localStorage.setItem(LANE_CHOICE_KEY, JSON.stringify(next));
-      } catch {
-        // best-effort; a full or blocked store never breaks the board
-      }
+      writeLaneChoices(next);
       return next;
     });
   };
