@@ -23,7 +23,7 @@ import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import StatusChip from "@platform/ui/StatusChip";
 import { isMac } from "@platform/lib/platform";
 import { navigateUrl } from "@platform/lib/router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 import type { SystemActivity, SystemProc } from "@platform/lib/sysmon";
 import { formatBytes, formatCpu, useSystemActivity } from "@shell/system-lib";
 import { Sparkline } from "@shell/monitor/Sparkline";
@@ -120,6 +120,16 @@ export function SystemCardView({
   const alert = verdict && (verdict.level === "warn" || verdict.level === "bad") ? verdict : null;
   const dot: "warn" | "bad" | "none" = alert ? (alert.level as "warn" | "bad") : "none";
   const stats = dash ? quickStats(dash) : [];
+  // A reason whose text repeats the headline is not a second line: the
+  // headline itself becomes its link.
+  const reasons = dash && verdict ? dash.verdict.reasons.filter((r) => r.text !== verdict.headline) : [];
+  const headLink =
+    dash && verdict ? dash.verdict.reasons.find((r) => r.text === verdict.headline && r.link)?.link : undefined;
+  const openLink = (link: string) => (e: MouseEvent<HTMLAnchorElement>) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    onOpenLink?.(link);
+  };
   return (
     <div className="dl-host sys-chip" {...hostProps}>
       <StatusChip
@@ -139,19 +149,23 @@ export function SystemCardView({
           <div className="sys-host">{hostLine(data)}</div>
           {verdict && verdict.headline && (
             <div className={`sys-verdict is-${verdict.level}`}>
-              <p className="sys-verdict-head">{verdict.headline}</p>
-              {dash && dash.verdict.reasons.length > 0 && (
+              <p className="sys-verdict-head">
+                {headLink ? (
+                  <a className="sys-reason" href={headLink} onClick={openLink(headLink)}>
+                    {verdict.headline}
+                  </a>
+                ) : (
+                  verdict.headline
+                )}
+              </p>
+              {reasons.length > 0 && (
                 <ul className="sys-reasons">
-                  {dash.verdict.reasons.map((r) => (
+                  {reasons.map((r) => (
                     <li key={r.key}>
                       <a
                         className="sys-reason"
                         href={r.link}
-                        onClick={(e) => {
-                          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                          e.preventDefault();
-                          onOpenLink?.(r.link);
-                        }}
+                        onClick={openLink(r.link)}
                       >
                         {r.text}
                       </a>

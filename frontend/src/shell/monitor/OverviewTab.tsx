@@ -107,6 +107,10 @@ export default function OverviewTab({
   };
 
   const v = data?.verdict;
+  // A reason whose text repeats the headline is not a second line: the
+  // headline itself becomes its link.
+  const reasons = v ? v.reasons.filter((r) => r.text !== v.headline) : [];
+  const headLink = v?.reasons.find((r) => r.text === v.headline && r.link)?.link;
   const allTiles = data ? overviewTiles(data) : [];
   const alerting = (l: string) => l === "warn" || l === "bad";
   const tiles = allTiles.filter((t) => HEADLINE.includes(t.key) || alerting(t.level));
@@ -136,10 +140,20 @@ export default function OverviewTab({
       {error && <p className="monitor-denied">Can't read the dashboard: {error}</p>}
 
       <section className={`monitor-verdict is-${v?.level ?? "ok"}`} aria-label="Verdict">
-        <p className="monitor-verdict-head">{v ? v.headline : "Reading…"}</p>
-        {v && v.reasons.length > 0 && (
+        <p className="monitor-verdict-head">
+          {headLink ? (
+            <a href={headLink} onClick={go(headLink)}>
+              {v?.headline}
+            </a>
+          ) : v ? (
+            v.headline
+          ) : (
+            "Reading…"
+          )}
+        </p>
+        {reasons.length > 0 && (
           <ul className="monitor-verdict-reasons">
-            {v.reasons.map((r) => (
+            {reasons.map((r) => (
               <li key={r.key} className={`is-${r.level}`}>
                 <a href={r.link} onClick={go(r.link)}>
                   {r.text}

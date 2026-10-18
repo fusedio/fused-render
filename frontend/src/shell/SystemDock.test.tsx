@@ -234,6 +234,34 @@ test("the popover shows the headline, reason links, Claude line and the three st
   expect(r.root.findAllByProps({ className: "sys-link" })).toHaveLength(1);
 });
 
+test("a reason repeating the headline makes the headline the link, not a second line", () => {
+  const opened: string[] = [];
+  const dash = {
+    ...VERDICT_DASH,
+    verdict: {
+      ...VERDICT_DASH.verdict,
+      headline: "Server outage 4 min ago",
+      reasons: [{ key: "outage", level: "bad", text: "Server outage 4 min ago", link: "/monitor?tab=server" }],
+    },
+  } as unknown as Dashboard;
+  const r = create(
+    <SystemCardView
+      data={{ ...PAYLOAD, verdict: { level: "bad", headline: "Server outage 4 min ago" } }}
+      collapsed={false}
+      onToggle={() => {}}
+      onOpenMonitor={() => {}}
+      dash={dash}
+      onOpenLink={(l) => opened.push(l)}
+    />,
+  );
+  const tree = r.toJSON() as ReactTestRendererJSON;
+  expect(byClass(tree, "sys-reasons")).toHaveLength(0);
+  expect(texts(byClass(tree, "sys-verdict")[0]).split("Server outage 4 min ago")).toHaveLength(2);
+  const head = r.root.findByProps({ className: "sys-verdict-head" });
+  head.findByProps({ className: "sys-reason" }).props.onClick({ button: 0, preventDefault() {} });
+  expect(opened).toEqual(["/monitor?tab=server"]);
+});
+
 test("the chip's accessible name carries a warn/bad verdict, not ok or unknown", () => {
   const label = (verdict: SystemActivity["verdict"]) =>
     create(

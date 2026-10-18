@@ -69,21 +69,38 @@ async function mount(onNavigate: (l: string) => void = () => {}, extra: Record<s
   return renderer!;
 }
 
-test("the banner names the cause and each reason is a link that navigates in place", async () => {
+test("the banner names the cause as a link; other reasons are bullets that navigate in place", async () => {
   const seen: string[] = [];
   const r = await mount((l) => seen.push(l));
   const banner = byClass(r, "monitor-verdict")[0];
   expect(banner.props.className).toContain("is-bad");
   expect(text(banner)).toContain("All 6 browser connections held");
+  // The reason repeating the headline is not a second bullet: the headline is its link.
+  const head = byClass(r, "monitor-verdict-head")[0].findAll((n) => n.type === "a");
+  expect(head).toHaveLength(1);
   const links = byClass(r, "monitor-verdict-reasons")[0].findAll((n) => n.type === "a");
-  expect(links).toHaveLength(2);
+  expect(links).toHaveLength(1);
   let prevented = false;
-  links[0].props.onClick({ button: 0, preventDefault: () => (prevented = true) });
+  head[0].props.onClick({ button: 0, preventDefault: () => (prevented = true) });
   expect(prevented).toBe(true);
   expect(seen).toEqual(["/monitor?tab=network&source=page-a&route=%2Fapi%2Fx"]);
   seen.length = 0;
-  links[1].props.onClick({ button: 0, metaKey: true, preventDefault: () => {} });
+  links[0].props.onClick({ button: 0, metaKey: true, preventDefault: () => {} });
   expect(seen).toEqual([]);
+});
+
+test("a lone reason equal to the headline renders no list", async () => {
+  const dash = {
+    ...DASH,
+    verdict: {
+      level: "bad",
+      headline: "Server outage 4 min ago",
+      reasons: [{ key: "outage", level: "bad", text: "Server outage 4 min ago", link: "/monitor?tab=server" }],
+    },
+  } as unknown as Dashboard;
+  const r = await mount(() => {}, { load: async () => dash });
+  expect(byClass(r, "monitor-verdict-reasons")).toHaveLength(0);
+  expect(text(byClass(r, "monitor-verdict")[0]).split("Server outage 4 min ago")).toHaveLength(2);
 });
 
 test("four headline tiles by default; the rest sit behind Show all checks", async () => {
