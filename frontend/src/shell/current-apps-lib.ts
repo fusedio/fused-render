@@ -217,93 +217,35 @@ export function appPageTabFromSearch(search: string): AppPageTab {
   return isTab(tab) ? tab : DEFAULT_APP_PAGE_TAB;
 }
 
-// ---- the displayed order: a sequence per app --------------------------------
+// ---- the displayed order: the server's array --------------------------------
 //
-// Rows render by DESCENDING sequence number, and a sequence changes for exactly
-// two reasons: an app that is not in the list gets one, and the user drags a
-// row. The store's added order seeds the sequences and then stops mattering —
-// this list is something the user reads and points at, and a list that
-// reshuffles itself under the cursor cannot be pointed at.
+// The order is the server's `apps` array, top first (`current_apps.json`,
+// D1386) — the client never numbers anything. `GET /api/current-apps` answers
+// in display order, a drag POSTs the WHOLE list (`setCurrentAppsOrder`) and
+// adopts the table that comes back, and the server inserts a new app (an
+// `observe` from a fresh task, an `add` from the explorer) at index 0 — on top,
+// where the "+ New app" row sits — so new work still lands where the user
+// looks, and nothing reshuffles the rows under the cursor in between.
 //
-// The store is a plain Map held at MODULE level by the section, hydrated from
-// and written back to localStorage (`ORDER_KEY` there) — so the order the user
-// dragged survives a reload and the next launch, per machine. The owner picked
-// localStorage over a server-side pref: a synchronous read means no load race
-// against the list fetch, and there is no endpoint, no file format and no
-// multi-window write conflict to arbitrate. The cost is that it is per browser
-// profile and does not follow the user to another machine.
+// It used to be a per-browser sequence map in localStorage. That made the
+// arrangement a fact of the ORIGIN, and the desktop app's origin is not fixed:
+// it walks ports 1777..1787 and then an ephemeral one, and every port is a new
+// origin with empty storage — so a relaunch that landed on another port lost
+// the order the user dragged (D1386). The old key is read ONCE, pushed through
+// the same POST, and removed (CurrentAppsSection's one-shot import); the
+// parser below survives only for that.
 //
-// An app that LEAVES the list (removed by its cross) is FORGOTTEN — sequence and
-// all — so if it comes back it comes back as new, at the top. Nothing removed is
-// remembered; that is the owner's rule. It also bounds the store by
-// construction: what is held, and what is saved, is the apps on the desk and
-// nothing else.
-//
-// The prune is guarded on a non-empty input so a list that has not loaded yet
-// cannot wipe the order.
-//
-// Pruning makes assignment NON-MONOTONE, which is dangerous for state two tabs
-// share — pruning per-tab against a per-tab live set is a write loop waiting to
-// happen (Bugbot, 2026-08-26, on exactly that). What makes it safe here is that
-// the tabs do not race to describe the world: only a DRAG writes to the store
-// (see CurrentAppsSection), and a drag is one user gesture, not a poll. A fetch
-// changes the order on screen and saves nothing, so there is no second writer to
-// disagree with.
+// The cross-window story is unchanged in shape: a drag is one user gesture, so
+// there is still exactly one writer per gesture, and the other windows hear the
+// existing `DESK_CHANGED_KEY` nudge and refetch the table (Q4: the nudge says
+// "look again", never carries the order itself).
 
-/** app path -> sequence. Higher sorts earlier. */
-export type AppOrder = Map<string, number>;
-
-/** Give every app in `apps` a sequence, and forget every app that is gone.
- *  `apps` must arrive OLDEST-ADDED FIRST (the store's order): fresh apps are
- *  numbered from the first up, so the newest ends with the highest sequence
- *  and lands at the top. Idempotent — an app that already has a sequence keeps
- *  it, which is what makes this safe to call during a render.
- *
- *  The prune is why the store never needs a size limit: it holds the desk, and
- *  the desk is folders a person made by hand. */
-export function assignSequences(order: AppOrder, apps: CurrentApp[]): void {
-  if (!apps.length) return;
-  const live = new Set(apps.map((a) => a.path));
-  for (const path of [...order.keys()]) if (!live.has(path)) order.delete(path);
-  const fresh = apps.filter((a) => !order.has(a.path));
-  if (!fresh.length) return;
-  let next = 0;
-  for (const seq of order.values()) next = Math.max(next, seq);
-  for (const app of fresh) order.set(app.path, ++next);
-}
-
-/** `apps` in display order. Sequences are assumed assigned; an app without one
- *  sorts last rather than throwing, so a caller that skipped `assignSequences`
- *  still gets a list. */
-export function bySequence(apps: CurrentApp[], order: AppOrder): CurrentApp[] {
-  return [...apps].sort(
-    (a, b) => (order.get(b.path) ?? 0) - (order.get(a.path) ?? 0),
-  );
-}
-
-/** Write `paths` (display order, top first) into the store as the new order.
- *  Renumbers the whole visible list from `paths.length` down to 1 in one go, so
- *  no drag can leave two rows sharing a sequence. */
-export function reorderTo(order: AppOrder, paths: string[]): void {
-  let seq = paths.length;
-  for (const path of paths) order.set(path, seq--);
-}
-
-/** The store as a display-ordered path list — what a drag saves, and the input
- *  `reorderTo` takes back. Since the store is pruned to the apps on the desk,
- *  this is exactly the rows on screen: there is no remembered tail that could
- *  interleave itself into an order the user arranged by hand. */
-export function orderedSlugs(order: AppOrder): string[] {
-  return [...order.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => p);
-}
-
-/** A saved order, read back. What came out of localStorage is a string written
- *  by SOMEONE ELSE (an older build, a hand-edited devtools row), so anything
- *  unreadable degrades to "no saved order" — the list seeds from the store's
- *  order, which is exactly where it started — rather than throwing inside a
- *  render. Non-string entries are dropped and duplicates collapse to their
- *  first appearance: two rows sharing a sequence would make the display order
- *  depend on sort stability, and that is not a thing to leave to a corrupt row. */
+/** import-only (D1386) — the pre-server saved order, read back once so the
+ *  one-shot import can POST it. The string was written by SOMEONE ELSE (an
+ *  older build, a hand-edited devtools row), so anything unreadable degrades to
+ *  "no saved order" — nothing is imported and the server's order stands —
+ *  rather than throwing. Non-string entries are dropped and duplicates collapse
+ *  to their first appearance, so the POST names each path at most once. */
 export function parseSavedOrder(raw: string | null): string[] {
   if (!raw) return [];
   let parsed: unknown;

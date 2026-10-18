@@ -30,6 +30,10 @@ this file is written around:
   wrong for a time axis, and one field cannot mean both.
 * ``POST /api/tasks/read`` — mark one message read, or (``all: true``) every
   message in one task, in one request and one store write.
+* ``POST /api/tasks/seen`` — replace the sidebar's "seen it finished" map
+  (`tasks_store.set_seen_done`); the pulse carries it back as ``seen``. Moved off
+  localStorage by D1386 (the desktop app's port walk is a new origin, and so
+  empty storage, per launch). See `api_tasks_seen`.
 * ``POST /api/tasks/archive`` — file one task away. ONE gesture with two halves
   (cancel the work, archive the session), which is why it is a verb here rather
   than a triage write the client composes. See the archiving section at the end.
@@ -116,6 +120,7 @@ import hashlib
 import heapq
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -123,6 +128,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import unquote, urlencode
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -6116,14 +6122,76 @@ def api_tasks_pulse():
     section are about work that is happening; a form somebody has not finished
     is not news, and design.md puts task drafts in the List and the Board only
     — never the Cards wall, never the Calendar, and by the same reasoning never
-    here (Akshil, 2026-09-11)."""
+    here (Akshil, 2026-09-11).
+
+    `seen` is the sidebar's "seen it finished" map (`tasks_store.seen_done`),
+    riding on the poll the sidebar already makes rather than a second fetch: the
+    two are read together (a finished row lights until its key's stamp matches)
+    and it is one small JSON read, the same cost class as the prefs read the
+    listing already pays. Server-side since D1386 — see `api_tasks_seen`."""
     return {
         "tasks": [
             {field: row[field] for field in _PULSE_FIELDS}
             for row in _task_rows()
             if row.get("kind") != "draft"
-        ]
+        ],
+        "seen": tasks_store.seen_done(),
     }
+
+
+def _seen_map(body) -> dict | None:
+    """`body["seen"]` if it is the exact shape the store keeps — a dict of
+    non-empty string keys to finite, non-bool numbers — else None.
+
+    Hand-validated rather than a pydantic model on purpose: `dict[str, float]`
+    in lax mode coerces `"5"` and `true` to numbers and answers a missing field
+    with 422, and the contract is a 400 on any bad shape. Python's json also
+    accepts a bare `NaN` token, hence `isfinite`."""
+    if not isinstance(body, dict):
+        return None
+    seen = body.get("seen")
+    if not isinstance(seen, dict):
+        return None
+    for key, at in seen.items():
+        if not isinstance(key, str) or not key:
+            return None
+        if isinstance(at, bool) or not isinstance(at, (int, float)) \
+                or not math.isfinite(at):
+            return None
+    return seen
+
+
+@router.post("/api/tasks/seen")
+def api_tasks_seen(body: Any = Body(default=None),
+        x_fused: str | None = Header(default=None)):
+    """Replace the sidebar's "seen it finished" map: `{seen: {key: last_active}}`.
+
+    WHY IT IS ON THE SERVER (D1386). This map — which finished tasks the user
+    has already looked at, stamped with the `last_active` they were seen at — was
+    the page's localStorage (`fused-render:tasks-seen`). The desktop app walks
+    ports 1777..1787 and then an ephemeral one; each port is a new browser origin
+    with empty storage, so every relaunch that landed elsewhere forgot the map
+    and re-announced every finished task the user had dismissed. A thing the
+    user would miss across a relaunch belongs behind an API.
+
+    WHOLE-MAP REPLACE: the client computes the next map (its `seenAfterVisit`
+    already drops keys the listing no longer carries), so the server stores what
+    it is given — merging would revive the keys just pruned. Two windows racing
+    is last-write-wins, which is the right answer for "what I have seen".
+
+    No `tasks_watch.notify`: nothing on a ROW changed (`unread` is per-message
+    and lives in the same file under other keys), and the other windows learn
+    through the client's own storage-event nudge (D1386 Q4)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    seen = _seen_map(body)
+    if seen is None:
+        raise HTTPException(
+            status_code=400,
+            detail="expected {seen: {key: number}} with non-empty string keys "
+                   "and finite numbers")
+    return {"ok": True, "seen": tasks_store.set_seen_done(seen)}
 
 
 class RunningPatch(BaseModel):

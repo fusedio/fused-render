@@ -12324,3 +12324,45 @@ unchanged by this section.
   `node_modules`): every listed language builds from the shipped bundle,
   detection, indentation, CRLF round-trip (including an LF paste into a CRLF
   file), Format's verbatim literals, the JSONL linter.
+
+## 52. Browser Storage Policy — Signals, Caches and Hand-offs Only (D1386)
+
+Every fact the user would miss across a relaunch lives behind an API; the
+browser's `localStorage` / `sessionStorage` is never the record. The desktop
+app's port walk (a new origin per launch) is why this is a correctness rule
+and not a sync nicety.
+
+- **BS-1 Allowed uses.** (a) Cross-window SIGNALS — a stamp other documents
+  hear through the `storage` event and answer with a refetch
+  (`CHAT_ACTIVITY_KEY`, `fused-render:jobs-ping`, `fused-render:current-apps-changed`,
+  the restart stamp, presence). (b) CACHES of server-owned state (terminal pty
+  ids checked against `GET /api/terminal`, hub pool state). (c) PER-TAB
+  hand-offs in `sessionStorage` (armed bookmark, pending Claude ask, chat seed,
+  explorer clipboard, list expansion / selection). (d) Pre-paint per-browser
+  display choice: theme and theme preset (D134), read synchronously before React
+  exists. `tests/test_browser_storage_allowlist.py` lists the files allowed to
+  touch storage in code, each with its category; a new storage use anywhere
+  else fails the suite.
+- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`
+  (`POST /api/current-apps/order`). Notifications seen/dismissed =
+  `notifications.json` (`GET`/merge-`POST /api/notifications/state`). Tasks
+  done-and-seen = `__seen_done__` in tasks `read.json`, carried by
+  `/api/tasks/pulse`, replaced by `POST /api/tasks/seen`. Bot unread baseline =
+  `seen_seq` on the bot (`POST /api/bots/{id}/seen`). Bots page switches and the
+  Tasks tab row = `prefs.json` keys (`bots_autostage`, `bots_sounds`,
+  `bots_clear_enabled`, `tasks_view_tabs`). Marketplace Python ack =
+  `marketplace/acks.json`. The durable per-viewer layout subset (sidebar
+  width/fold, section folds, explorer companion, folder sort, Tasks view /
+  range / lanes, New-task recents) follows in a stacked change as one
+  `ui_layout.json` document.
+- **BS-3 Boot.** Each store hydrates once per document from its GET (the
+  notifications record at boot, the tasks seen map with the first pulse, bot
+  marks with the bot list, the Projects order with the rows themselves), reads
+  synchronously from the cache afterwards and writes through to the server.
+  A failed write keeps the cache; nothing persists from an effect keyed on
+  polled data — only from the user's gesture.
+- **BS-4 Import.** On first load of this build, each old key still present is
+  pushed through its new write path once and removed. No server marker.
+- **BS-5 Out of scope.** Template-side keys written by page HTML (photos
+  roots, autocad recents) — no page-level pref API exists yet. LAN phone
+  per-bot seen baseline (per-device origin by nature).

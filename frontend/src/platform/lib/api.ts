@@ -1355,7 +1355,8 @@ export function thumbUrl(fsPath: string, size = 160): string {
 // Bookmark store (server-side, ~/.fused-render/bookmarks.json). The tree shape
 // is BookmarkItem[] (lib/bookmarks.ts); kept as unknown[] here so api.ts has no
 // dependency on the bookmark data layer. `exists` is false only until the file
-// is first written — the shell's one-time localStorage-import gate. `missing`
+// is first written (D104 deleted the localStorage import that once keyed on
+// it; nothing reads it for that now). `missing`
 // is a side-channel, recomputed fresh on every GET: bookmark ids whose target
 // is confirmed gone from disk — display-only, never written back through PUT.
 export interface BookmarksResult {
@@ -1497,6 +1498,17 @@ export interface Prefs {
   // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
+  /** Page-wide Bots switches (shell/prefs.py `bots_autostage`, `bots_sounds`,
+   *  `bots_clear_enabled`). Server-side since 2026-10-18 (D1386): they used to
+   *  be per-browser localStorage flags, which the desktop app's port walk
+   *  (a new origin per launch) silently reset. Optional because a server that
+   *  predates them sends nothing — the client applies the defaults (on, on, off). */
+  bots?: { autostage: boolean; sounds: boolean; clear_enabled: boolean };
+  /** The Tasks switcher's own row of view tabs (shell/prefs.py
+   *  `tasks_view_tabs`; the four defaults when absent or empty). Validated
+   *  server-side as short identifiers only — the client still filters against
+   *  tasks-lib.TASK_VIEWS, the one place a view NAME is decided. */
+  tasks_view_tabs?: string[];
   /** Whether a task on the Tasks page opens in a side panel beside the list
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
    *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
@@ -1873,6 +1885,53 @@ export function putTaskSummaryTitlesEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_recap_titles_enabled: enabled });
+}
+
+/** One PUT per Bots page-wide switch (`Prefs.bots`). */
+export function putBotsPref(
+  key: "bots_autostage" | "bots_sounds" | "bots_clear_enabled",
+  on: boolean,
+): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { [key]: on });
+}
+
+/** The Tasks switcher's tab row (`Prefs.tasks_view_tabs`). */
+export function putTasksViewTabs(tabs: string[]): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { tasks_view_tabs: tabs });
+}
+
+// ---- Notifications panel state (shell/notifications.py) ---------------------
+// Seen keys + first-seen clock (shell/notifications-seen-store.ts) and the two
+// dismissal maps (repo rows, waiting-task rows) that RepoUpdatesDock kept in
+// localStorage until D1386. GET is the whole record; POST is a MERGE: `seen`
+// unions, `firstSeenAt` keeps the earlier stamp, the dismissal maps take the
+// posted value per id. The server prunes to 30 days / 500 keys on every write.
+export interface NotificationsState {
+  seen: string[];
+  firstSeenAt: Record<string, number>;
+  repoDismissed: Record<string, string>;
+  attentionDismissed: Record<string, string>;
+}
+
+export function getNotificationsState(): Promise<NotificationsState> {
+  return getJson<NotificationsState>("/api/notifications/state");
+}
+
+export function mergeNotificationsState(
+  patch: Partial<NotificationsState>,
+): Promise<NotificationsState> {
+  return postJson<NotificationsState>("/api/notifications/state", patch);
+}
+
+// ---- Marketplace "Before you install" acknowledgements ----------------------
+// Slugs whose Python warning the user accepted (apps/marketplace/install-flow).
+// `~/.fused-render/marketplace/acks.json` since D1386.
+export function getMarketplaceAcks(): Promise<{ slugs: string[] }> {
+  return getJson<{ slugs: string[] }>("/api/marketplace/acks");
+}
+
+export function ackMarketplacePython(slug: string): Promise<{ ok: boolean; slugs: string[] }> {
+  return postJson<{ ok: boolean; slugs: string[] }>("/api/marketplace/ack", { slug });
 }
 
 export interface LanDevice {
@@ -3185,6 +3244,18 @@ export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
   return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
 }
 
+/** The user dragged a Projects row: `paths` is the whole visible list, top
+ *  first, and the SERVER's `apps` array becomes that order (D1386 — the order
+ *  lives in current_apps.json, not in this browser). Unknown paths are ignored;
+ *  live apps the list does not name keep their place ABOVE the named ones (the
+ *  tab that dragged did not have them, so its arrangement says nothing about
+ *  where they go). Answers with the table as it now stands. */
+export function setCurrentAppsOrder(
+  paths: string[],
+): Promise<{ ok: boolean; apps: CurrentAppEntry[] }> {
+  return postJson<{ ok: boolean; apps: CurrentAppEntry[] }>("/api/current-apps/order", { paths });
+}
+
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
  *  or any file inside it — the server's ownership rule), or `icon: null`. */
 export interface AppIconResult {
@@ -3957,8 +4028,21 @@ export function getTaskChanges(
   );
 }
 
-export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
-  return getJson<{ tasks: TaskPulseTask[] }>("/api/tasks/pulse");
+/** The sidebar's "done & unread" dismissals: task key → the `last_active` of
+ *  the done row the user has already seen (shell/tasks-lib `TasksSeen`).
+ *  Server-side in tasks `read.json` since D1386; rides along with the pulse so
+ *  the dot and its dismissal arrive in ONE answer. Absent from a server that
+ *  predates it. */
+export type TasksSeenMap = Record<string, number>;
+
+export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[]; seen?: TasksSeenMap }> {
+  return getJson<{ tasks: TaskPulseTask[]; seen?: TasksSeenMap }>("/api/tasks/pulse");
+}
+
+/** Replace the seen map (the sidebar computes the whole next map on a /tasks
+ *  visit — `seenAfterVisit` — so this is a PUT-shaped POST, not a merge). */
+export function putTasksSeen(seen: TasksSeenMap): Promise<{ ok: boolean; seen: TasksSeenMap }> {
+  return postJson<{ ok: boolean; seen: TasksSeenMap }>("/api/tasks/seen", { seen });
 }
 
 // ---- the project queue (prefs `queue.enabled`) --------------------------------
