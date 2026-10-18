@@ -1,11 +1,12 @@
 // /monitor, Overview tab — "why does fused-render feel slow?" at a glance.
 //
 // Top to bottom: the verdict banner (the likeliest cause first; each reason is
-// a link that switches to the tab and filters that show it); a grid of twelve
-// health tiles (green / amber / red, the key number, "usual ..." where a 24 h
-// baseline exists, a link to the detail); the ten-minute stacked timeline with
-// outage and restart markers; the errors tail, stalled jobs and the slowest
-// .py targets; and Record 60s / Copy report.
+// a link that switches to the tab and filters that show it); four headline
+// tiles (Requests, Browser queue, Server, Memory and swap) plus any other tile
+// that is warn/bad; the ten-minute stacked timeline with outage markers; and
+// behind "Show all checks": the remaining tiles, the errors tail, stalled jobs,
+// the slowest .py targets and the disk footer. Record 60s / Copy report sit in
+// the banner.
 //
 // DATA: `GET /api/system/dashboard` every 2 s while mounted and the document
 // visible. Every section is computed independently on the server, so one that
@@ -19,6 +20,19 @@ import { monitorUrl, overviewTiles, type Tab } from "./monitor-net-lib";
 import TimelineStack from "./TimelineStack";
 import { useRecord, type RecordApi } from "./useRecord";
 import { usePolled } from "./usePolled";
+
+const HEADLINE = ["requests", "queue", "server", "memory"];
+
+/** Identical consecutive labels collapse to one with a count: "Outage ×3". */
+export function collapseRuns(labels: string[]): { label: string; n: number }[] {
+  const out: { label: string; n: number }[] = [];
+  for (const label of labels) {
+    const last = out[out.length - 1];
+    if (last && last.label === label) last.n += 1;
+    else out.push({ label, n: 1 });
+  }
+  return out;
+}
 
 const ms = (n: number | null | undefined) => (n == null ? "–" : `${Math.round(n)} ms`);
 
@@ -47,6 +61,7 @@ export default function OverviewTab({
 }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState<"ok" | "failed" | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -92,11 +107,29 @@ export default function OverviewTab({
   };
 
   const v = data?.verdict;
-  const tiles = data ? overviewTiles(data) : [];
+  const allTiles = data ? overviewTiles(data) : [];
+  const alerting = (l: string) => l === "warn" || l === "bad";
+  const tiles = allTiles.filter((t) => HEADLINE.includes(t.key) || alerting(t.level));
+  tiles.sort((a, b) => Number(!HEADLINE.includes(a.key)) - Number(!HEADLINE.includes(b.key)));
+  const hiddenTiles = allTiles.filter((t) => !tiles.includes(t));
   const tl = data && sectionOk(data.timeline) ? data.timeline : null;
   const errors = data && sectionOk(data.errors) ? data.errors : null;
   const jobs = data && sectionOk(data.jobs) ? data.jobs : null;
   const calls = data && sectionOk(data.calls) ? data.calls : null;
+
+  const renderTile = (t: (typeof allTiles)[number]) => {
+    const link = monitorUrl({ tab: t.tab as Tab });
+    return (
+      <a key={t.key} className={`monitor-tile is-${t.level}`} data-tile={t.key} href={link} onClick={go(link)}>
+        <span className="monitor-tile-title">
+          <span className="monitor-tile-dot" aria-hidden="true" />
+          {t.title}
+        </span>
+        <span className="monitor-tile-value">{t.value}</span>
+        <span className="monitor-tile-base">{t.baseline ?? " "}</span>
+      </a>
+    );
+  };
 
   return (
     <div className="monitor-tab monitor-tab-scroll monitor-overview">
@@ -122,11 +155,14 @@ export default function OverviewTab({
             disabled={record.recording}
             onClick={() => void record.start()}
           >
-            {record.recording
-              ? `Recording… ${Math.ceil(record.status?.seconds_left ?? 0)}s`
-              : "Record 60s"}
+            {record.recording ? `Recording… ${Math.ceil(record.status?.seconds_left ?? 0)}s` : "Record 60s"}
           </button>
-          <button type="button" className="btn btn-secondary monitor-btn" disabled={!data} onClick={() => void doCopy()}>
+          <button
+            type="button"
+            className="btn btn-secondary monitor-btn"
+            disabled={!data}
+            onClick={() => void doCopy()}
+          >
             {copied === "ok" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy report"}
           </button>
           {!record.recording && record.latest && record.dir && (
@@ -138,27 +174,7 @@ export default function OverviewTab({
         </div>
       </section>
 
-      <div className="monitor-tiles">
-        {tiles.map((t) => {
-          const link = monitorUrl({ tab: t.tab as Tab });
-          return (
-            <a
-              key={t.key}
-              className={`monitor-tile is-${t.level}`}
-              data-tile={t.key}
-              href={link}
-              onClick={go(link)}
-            >
-              <span className="monitor-tile-title">
-                <span className="monitor-tile-dot" aria-hidden="true" />
-                {t.title}
-              </span>
-              <span className="monitor-tile-value">{t.value}</span>
-              <span className="monitor-tile-base">{t.baseline ?? " "}</span>
-            </a>
-          );
-        })}
-      </div>
+      <div className="monitor-tiles">{tiles.map(renderTile)}</div>
 
       <section className="monitor-net-sec">
         <h2 className="monitor-sec-title">Last 10 minutes</h2>
@@ -169,71 +185,82 @@ export default function OverviewTab({
         )}
       </section>
 
-      <div className="monitor-lists">
-        <section className="monitor-list-card">
-          <h2 className="monitor-sec-title">Errors and outages</h2>
-          {errors ? (
-            <ul className="monitor-list">
-              {errors.outages.slice(-3).map((o, i) => (
-                <li key={`o${i}`}>
-                  Outage {o.t_down ? new Date(o.t_down * 1000).toLocaleString() : ""}
-                </li>
-              ))}
-              {errors.crashes.slice(0, 3).map((c) => (
-                <li key={c.name}>Crash dump {c.name}</li>
-              ))}
-              {errors.server_log_errors.slice(-5).map((l, i) => (
-                <li key={`l${i}`} className="monitor-list-mono" title={l}>
-                  {l}
-                </li>
-              ))}
-              {!errors.outages.length && !errors.crashes.length && !errors.server_log_errors.length && (
-                <li className="monitor-list-empty">Nothing recent.</li>
+      <button type="button" className="monitor-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
+        {showAll ? "Hide checks" : `Show all checks (${hiddenTiles.length})`}
+      </button>
+
+      {showAll && (
+        <>
+          {hiddenTiles.length > 0 && <div className="monitor-tiles">{hiddenTiles.map(renderTile)}</div>}
+          <div className="monitor-lists">
+            <section className="monitor-list-card">
+              <h2 className="monitor-sec-title">Errors and outages</h2>
+              {errors ? (
+                <ul className="monitor-list">
+                  {collapseRuns(
+                    errors.outages
+                      .slice(-3)
+                      .map((o) => `Outage ${o.t_down ? new Date(o.t_down * 1000).toLocaleString() : ""}`.trim()),
+                  ).map((o, i) => (
+                    <li key={`o${i}`}>{o.n > 1 ? `${o.label} ×${o.n}` : o.label}</li>
+                  ))}
+                  {errors.crashes.slice(0, 3).map((c) => (
+                    <li key={c.name}>Crash dump {c.name}</li>
+                  ))}
+                  {collapseRuns(errors.server_log_errors.slice(-5)).map((l, i) => (
+                    <li key={`l${i}`} className="monitor-list-mono" title={l.label}>
+                      {l.n > 1 ? `${l.label} ×${l.n}` : l.label}
+                    </li>
+                  ))}
+                  {!errors.outages.length && !errors.crashes.length && !errors.server_log_errors.length && (
+                    <li className="monitor-list-empty">Nothing recent.</li>
+                  )}
+                </ul>
+              ) : (
+                <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
               )}
-            </ul>
-          ) : (
-            <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
-          )}
-        </section>
+            </section>
 
-        <section className="monitor-list-card">
-          <h2 className="monitor-sec-title">Stalled jobs</h2>
-          {jobs ? (
-            <ul className="monitor-list">
-              {jobs.stalled_list.map((j, i) => (
-                <li key={j.id ?? i}>{j.title ?? j.id ?? "job"}</li>
-              ))}
-              {!jobs.stalled_list.length && <li className="monitor-list-empty">None.</li>}
-            </ul>
-          ) : (
-            <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
-          )}
-        </section>
+            <section className="monitor-list-card">
+              <h2 className="monitor-sec-title">Stalled jobs</h2>
+              {jobs ? (
+                <ul className="monitor-list">
+                  {jobs.stalled_list.map((j, i) => (
+                    <li key={j.id ?? i}>{j.title ?? j.id ?? "job"}</li>
+                  ))}
+                  {!jobs.stalled_list.length && <li className="monitor-list-empty">None.</li>}
+                </ul>
+              ) : (
+                <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
+              )}
+            </section>
 
-        <section className="monitor-list-card">
-          <h2 className="monitor-sec-title">Slowest .py targets (overhead)</h2>
-          {calls ? (
-            <ul className="monitor-list">
-              {calls.top_overhead.map((c) => (
-                <li key={c.entrypoint} title={c.entrypoint}>
-                  <span className="monitor-list-mono">{c.entrypoint}</span>
-                  <span className="monitor-list-num">
-                    {ms(c.overhead_p95_ms)} over a {ms(c.run_p95_ms)} run
-                  </span>
-                </li>
-              ))}
-              {!calls.top_overhead.length && <li className="monitor-list-empty">No calls in the last 10 min.</li>}
-            </ul>
-          ) : (
-            <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
+            <section className="monitor-list-card">
+              <h2 className="monitor-sec-title">Slowest .py targets (overhead)</h2>
+              {calls ? (
+                <ul className="monitor-list">
+                  {calls.top_overhead.map((c) => (
+                    <li key={c.entrypoint} title={c.entrypoint}>
+                      <span className="monitor-list-mono">{c.entrypoint}</span>
+                      <span className="monitor-list-num">
+                        {ms(c.overhead_p95_ms)} over a {ms(c.run_p95_ms)} run
+                      </span>
+                    </li>
+                  ))}
+                  {!calls.top_overhead.length && <li className="monitor-list-empty">No calls in the last 10 min.</li>}
+                </ul>
+              ) : (
+                <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
+              )}
+            </section>
+          </div>
+          {data && sectionOk(data.disk) && data.disk.log_home != null && (
+            <p className="monitor-net-note">
+              Disk use: logs {formatBytes(data.disk.log_home, true)} · calls {formatBytes(data.disk.call_store, true)} ·
+              index {formatBytes(data.disk.index_db, true)}
+            </p>
           )}
-        </section>
-      </div>
-      {data && sectionOk(data.disk) && data.disk.log_home != null && (
-        <p className="monitor-net-note">
-          Disk use: logs {formatBytes(data.disk.log_home, true)} · calls {formatBytes(data.disk.call_store, true)} ·
-          index {formatBytes(data.disk.index_db, true)}
-        </p>
+        </>
       )}
     </div>
   );

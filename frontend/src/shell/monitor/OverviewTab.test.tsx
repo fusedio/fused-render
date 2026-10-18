@@ -3,7 +3,7 @@ import { afterEach, expect, jest, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Dashboard } from "@shell/monitor/monitor-api";
-import OverviewTab from "@shell/monitor/OverviewTab";
+import OverviewTab, { collapseRuns } from "@shell/monitor/OverviewTab";
 
 const GB = 1 << 30;
 const DASH = {
@@ -45,6 +45,9 @@ const text = (n: ReactTestInstance | string): string =>
 const byClass = (r: ReactTestRenderer, c: string) =>
   r.root.findAll((n) => typeof n.type === "string" && n.props.className?.split(" ").includes(c));
 
+const btnOf = (r: ReactTestRenderer, label: string) =>
+  r.root.find((n) => n.type === "button" && text(n).startsWith(label));
+
 async function mount(onNavigate: (l: string) => void = () => {}, extra: Record<string, unknown> = {}) {
   await act(async () => {
     renderer = create(
@@ -83,26 +86,58 @@ test("the banner names the cause and each reason is a link that navigates in pla
   expect(seen).toEqual([]);
 });
 
-test("twelve tiles; a failed section is unavailable in its own tile only", async () => {
+test("four headline tiles by default; the rest sit behind Show all checks", async () => {
   const r = await mount();
+  const keys = () => byClass(r, "monitor-tile").map((t) => t.props["data-tile"]);
+  // The fixture's claude and jobs tiles are warn: shown after the headline four.
+  expect(keys()).toEqual(["requests", "queue", "server", "memory", "claude", "jobs"]);
+  expect(byClass(r, "monitor-tile")[0].props.className).toContain("is-bad");
+  expect(byClass(r, "monitor-lists")).toHaveLength(0);
+  expect(text(r.root)).not.toContain("Stuck export");
+  await act(async () => btnOf(r, "Show all checks (6)").props.onClick());
+  expect(keys()).toHaveLength(12);
   const tiles = byClass(r, "monitor-tile");
-  expect(tiles).toHaveLength(12);
   const disk = tiles.find((t) => t.props["data-tile"] === "disk")!;
   expect(disk.props.className).toContain("is-unavailable");
   expect(text(disk)).toContain("unavailable");
-  const req = tiles.find((t) => t.props["data-tile"] === "requests")!;
-  expect(req.props.className).toContain("is-bad");
   const cpu = tiles.find((t) => t.props["data-tile"] === "cpu")!;
   expect(text(cpu)).toContain("usual load 1.0");
+  await act(async () => btnOf(r, "Hide checks").props.onClick());
+  expect(keys()).toHaveLength(6);
 });
 
-test("timeline rows share the axis and carry the outage marker; lists fill from the sections", async () => {
+test("a warn/bad tile outside the headline four shows without expanding", async () => {
+  const r = await mount(() => {}, {
+    load: async () => ({ ...DASH, cpu: { ...(DASH as any).cpu, low_power: true } }) as Dashboard,
+  });
+  expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual([
+    "requests",
+    "queue",
+    "server",
+    "memory",
+    "cpu",
+    "claude",
+    "jobs",
+  ]);
+  expect(btnOf(r, "Show all checks")).toBeTruthy();
+});
+
+test("timeline shows four rows and the outage marker; lists fill once expanded", async () => {
   const r = await mount();
-  expect(byClass(r, "monitor-tl-row")).toHaveLength(6);
+  expect(byClass(r, "monitor-tl-row")).toHaveLength(4);
   expect(byClass(r, "monitor-tl-mark").length).toBeGreaterThan(0);
+  await act(async () => btnOf(r, "Show all checks").props.onClick());
   expect(text(r.root)).toContain("Stuck export");
   expect(text(r.root)).toContain("/x/slow.py");
   expect(text(r.root)).toContain("bad thing");
+});
+
+test("collapseRuns merges identical consecutive labels", () => {
+  expect(collapseRuns(["a", "a", "a", "b", "a"])).toEqual([
+    { label: "a", n: 3 },
+    { label: "b", n: 1 },
+    { label: "a", n: 1 },
+  ]);
 });
 
 test("Record 60s counts down, Copy report copies the dashboard JSON, the saved file is linked", async () => {
@@ -117,9 +152,6 @@ test("Record 60s counts down, Copy report copies the dashboard JSON, the saved f
   await act(async () => btn("Copy report").props.onClick());
   expect(JSON.parse(copied).verdict.level).toBe("bad");
 });
-
-const btnOf = (r: ReactTestRenderer, label: string) =>
-  r.root.find((n) => n.type === "button" && text(n).startsWith(label));
 
 test("Copy report says 'Copy failed' when the clipboard write rejects", async () => {
   const r = await mount(() => {}, { copy: () => Promise.reject(new Error("denied")) });
