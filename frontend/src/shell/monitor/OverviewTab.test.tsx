@@ -108,7 +108,7 @@ test("four chart cards with figures; alerting tiles sit above them; the rest beh
   const cards = byClass(r, "monitor-overview-card");
   expect(cards.map((c) => c.props["data-card"])).toEqual(["requests", "queue", "server", "cpu"]);
   expect(byClass(r, "monitor-overview-cards")).toHaveLength(1);
-  expect(text(byClass(r, "monitor-overview-window")[0])).toBe("Since restart · 1 min");
+  expect(text(byClass(r, "monitor-overview-window")[0])).toBe("Last 1 min");
   const fig = (i: number) => text(cards[i].findAll((n) => n.props.className === "monitor-card-figure")[0]);
   expect(fig(0)).toBe("4/s");
   expect(fig(1)).toBe("700 ms wait");
@@ -220,4 +220,14 @@ test("the 'Copied' reset timer is cleared on unmount", async () => {
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("figures fall back to the latest timeline value when the live sample is missing; title tracks the plotted window", async () => {
+  const pts = (n: number, step: number) => Array.from({ length: n }, (_, i) => ({ t: 1000 - (n - 1 - i) * step, rps: 2.4, in_flight: 1, pool: 1, lag_ms: 7.4, cpu: i === n - 1 ? null : 19.4, swap: GB }));
+  const dash = { ...DASH, cpu: { cpu_pct: null, load: [1, 1, 1], ncpu: 8, thermal_limit: 100, low_power: false }, timeline: { points: pts(11, 60), events: [] } } as unknown as Dashboard;
+  const r = await mount(() => {}, { load: async () => dash });
+  const cards = byClass(r, "monitor-overview-card");
+  const fig = (i: number) => text(cards[i].findAll((n) => n.props.className === "monitor-card-figure")[0]);
+  expect(fig(3)).toBe("19%");
+  expect(text(byClass(r, "monitor-overview-window")[0])).toBe("Last 10 minutes");
 });

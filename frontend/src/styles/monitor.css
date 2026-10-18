@@ -1025,6 +1025,11 @@ th[aria-sort="descending"] .monitor-sort {
   max-width: 1080px;
 }
 
+/* Overview: the flex gap alone spaces blocks (24px); blocks add no margins of their own. */
+.monitor-overview {
+  gap: 24px;
+}
+
 .monitor-net-sec {
   flex: 0 0 auto;
   margin-top: 24px;
@@ -1035,12 +1040,9 @@ th[aria-sort="descending"] .monitor-sort {
 }
 
 .monitor-overview .monitor-tiles,
-.monitor-overview .monitor-lists {
-  margin-top: 24px;
-}
-
+.monitor-overview .monitor-lists,
 .monitor-overview .monitor-more {
-  margin-top: 18px;
+  margin-top: 0;
 }
 
 .monitor-net .monitor-net-strip {
@@ -1456,7 +1458,7 @@ th[aria-sort="descending"] .monitor-sort {
 
 /* ---- Overview chart cards (the Processes card form, as links) ---- */
 .monitor-overview-window {
-  margin: 24px 0 6px;
+  margin: 0 0 -16px; /* 24px flex gap - 16px = 8px to the card grid */
   font-weight: 400;
   color: var(--fg-muted);
 }
@@ -1466,11 +1468,6 @@ th[aria-sort="descending"] .monitor-sort {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  margin-top: 24px;
-}
-
-.monitor-overview-window + .monitor-overview-cards {
-  margin-top: 0;
 }
 
 @media (max-width: 899px) {

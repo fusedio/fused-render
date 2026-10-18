@@ -324,7 +324,7 @@ export function timelineWindowS(points: TimelinePoint[]): number {
 
 export function timelineTitle(points: TimelinePoint[]): string {
   const w = timelineWindowS(points);
-  return w >= FULL_WINDOW_S ? "Last 10 minutes" : `Since restart · ${Math.max(1, Math.round(w / 60))} min`;
+  return w >= FULL_WINDOW_S ? "Last 10 minutes" : `Last ${Math.max(1, Math.round(w / 60))} min`;
 }
 
 /** Smallest 1/2/5 x 10^n at or above `v`, never below `min`: a readable axis ceiling. */

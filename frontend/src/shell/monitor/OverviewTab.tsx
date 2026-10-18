@@ -139,6 +139,14 @@ export default function OverviewTab({
     { v: max / 2, label: `${max / 2}${unit}` },
     { v: max, label: `${max}${unit}` },
   ];
+  const latest = (pts: { v: number | null }[]): number | null => {
+    for (let i = pts.length - 1; i >= 0; i--) if (pts[i].v != null) return pts[i].v;
+    return null;
+  };
+  const withFallback = (primary: string | undefined, v: number | null, fmt: (n: number) => string): string => {
+    if (primary && primary !== "-%" && !primary.startsWith("–") && primary !== "no data") return primary;
+    return v == null ? "–" : fmt(v);
+  };
   const rps = series("rps");
   const inFlight = series("in_flight");
   const lag = series("lag_ms");
@@ -151,7 +159,7 @@ export default function OverviewTab({
       key: "requests",
       title: "Requests",
       tile: tile("requests"),
-      figure: tile("requests")?.primary ?? "–",
+      figure: withFallback(tile("requests")?.primary, latest(rps), (n) => `${Math.round(n * 10) / 10}/s`),
       sub: tile("requests")?.caption ?? "",
       points: rps,
       max: rpsMax,
@@ -178,7 +186,7 @@ export default function OverviewTab({
       key: "server",
       title: "Server",
       tile: tile("server"),
-      figure: tile("server")?.primary ?? "–",
+      figure: withFallback(tile("server")?.primary, latest(lag), (n) => `${Math.round(n)} ms lag`),
       sub: tile("server")?.caption ?? "",
       points: lag,
       max: lagMax,
@@ -188,7 +196,7 @@ export default function OverviewTab({
       key: "cpu",
       title: "CPU",
       tile: tile("cpu"),
-      figure: tile("cpu")?.primary ?? "–",
+      figure: withFallback(tile("cpu")?.primary, latest(series("cpu")), (n) => `${Math.round(n)}%`),
       sub: [tile("memory")?.primary, memCaption].filter(Boolean).join(" · "),
       points: series("cpu"),
       max: 100,
@@ -265,7 +273,7 @@ export default function OverviewTab({
 
       {tiles.length > 0 && <div className="monitor-tiles">{tiles.map(renderTile)}</div>}
 
-      <h2 className="monitor-sec-title monitor-overview-window">{timelineTitle(tl?.points ?? [])}</h2>
+      <h2 className="monitor-sec-title monitor-overview-window">{title}</h2>
       <div className="monitor-overview-cards">
         {cards.map((c) => {
           const t = c.tile;
