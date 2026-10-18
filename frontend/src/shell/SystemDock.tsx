@@ -8,7 +8,7 @@
 // number its context.
 //
 // Hover previews, click pins (`lib/statusChip.ts`), like every other chip.
-// The popover holds the verdict (headline, and while open the reasons as links
+// The popover holds the verdict (only when not ok: the reasons as links
 // into the Monitor), the Claude CLI line, one row of three stats (requests,
 // browser wait, server lag), the top five processes by CPU (before the dashboard loads, the 60 s CPU sparkline stands in for the stats), "Record 60s" and "Open Monitor" — the process monitor page at /monitor
 // (shell/monitor/MonitorPage.tsx).
@@ -120,11 +120,8 @@ export function SystemCardView({
   const alert = verdict && (verdict.level === "warn" || verdict.level === "bad") ? verdict : null;
   const dot: "warn" | "bad" | "none" = alert ? (alert.level as "warn" | "bad") : "none";
   const stats = dash ? quickStats(dash) : [];
-  // A reason whose text repeats the headline is not a second line: the
-  // headline itself becomes its link.
-  const reasons = dash && verdict ? dash.verdict.reasons.filter((r) => r.text !== verdict.headline) : [];
-  const headLink =
-    dash && verdict ? dash.verdict.reasons.find((r) => r.text === verdict.headline && r.link)?.link : undefined;
+  // Nothing when ok; when not, just the reason lines (as on the Monitor Overview).
+  const reasons = dash && alert ? dash.verdict.reasons : [];
   const openLink = (link: string) => (e: MouseEvent<HTMLAnchorElement>) => {
     if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
     e.preventDefault();
@@ -147,33 +144,17 @@ export function SystemCardView({
       {!collapsed && (
         <div className="dl-panel sys-panel">
           <div className="sys-host">{hostLine(data)}</div>
-          {verdict && verdict.headline && (
-            <div className={`sys-verdict is-${verdict.level}`}>
-              <p className="sys-verdict-head">
-                {headLink ? (
-                  <a className="sys-reason" href={headLink} onClick={openLink(headLink)}>
-                    {verdict.headline}
+          {alert && reasons.length > 0 && (
+            <ul className="sys-reasons" aria-label="What looks wrong">
+              {reasons.map((r) => (
+                <li key={r.key} className={`is-${r.level}`}>
+                  <span className="sys-reason-dot" aria-hidden="true" />
+                  <a className="sys-reason" href={r.link} onClick={openLink(r.link)}>
+                    {r.text}
                   </a>
-                ) : (
-                  verdict.headline
-                )}
-              </p>
-              {reasons.length > 0 && (
-                <ul className="sys-reasons">
-                  {reasons.map((r) => (
-                    <li key={r.key}>
-                      <a
-                        className="sys-reason"
-                        href={r.link}
-                        onClick={openLink(r.link)}
-                      >
-                        {r.text}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+                </li>
+              ))}
+            </ul>
           )}
           {data.claude && data.claude.total > 0 && (
             <div className="sys-claude">{claudeLine(data.claude)}</div>

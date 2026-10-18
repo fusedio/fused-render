@@ -2253,46 +2253,36 @@ a.sys-link {
 }
 
 /* The System popover's verdict, Claude line, timeline and key numbers. */
-.sys-verdict {
-  margin: 0 10px 6px;
-  padding: 6px 8px;
-  border-left: 3px solid var(--success);
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--fg) 5%, transparent);
-}
-
-.sys-verdict.is-warn {
-  border-left-color: var(--warning);
-}
-
-.sys-verdict.is-bad {
-  border-left-color: var(--error);
-}
-
-.sys-verdict-head {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.sys-verdict-head a {
-  color: inherit;
-  text-decoration: none;
-}
-
-.sys-verdict-head a:hover {
-  text-decoration: underline;
-}
-
-.sys-verdict-head a:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 .sys-reasons {
-  margin: 4px 0 0;
-  padding-left: 16px;
-  font-size: 11px;
+  margin: 0 10px 8px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.sys-reasons li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sys-reason-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.sys-reasons li.is-warn .sys-reason-dot {
+  background: var(--warning);
+}
+
+.sys-reasons li.is-bad .sys-reason-dot {
+  background: var(--error);
 }
 
 .sys-reason {
