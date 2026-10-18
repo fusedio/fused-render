@@ -12,6 +12,7 @@ from fastapi.responses import (
 
 from fused_render import calls as shell_calls
 from fused_render import jobs as shell_jobs
+from fused_render import netlog
 
 
 
@@ -331,8 +332,68 @@ async def no_cache_and_log(request, call_next):
     # producer's own explicit `source=` resolves empty.
     raw_source = request.headers.get("x-fused-source")
     ambient_source = unquote(raw_source) if raw_source else ""
-    with shell_jobs.ambient_source(ambient_source):
-        return await _no_cache_and_log_inner(request, call_next, call, path, logged, start)
+    # The request ring behind the Monitor's Network tab (netlog.py). Opened
+    # here and closed in `_track_body` when the last byte is sent, or below if
+    # the request dies first — a request is "in flight" for as long as it holds
+    # one of the browser's 6 connections, which is until the body ends.
+    net = netlog.get()
+    nrec = _net_begin(net, request, path)
+    try:
+        with shell_jobs.ambient_source(ambient_source):
+            response = await _no_cache_and_log_inner(request, call_next, call, path, logged, start)
+    except asyncio.CancelledError:
+        net.finish(nrec, outcome="disconnected")
+        raise
+    except Exception:
+        net.finish(nrec, status=500, outcome="error")
+        raise
+    server_ms = (time.monotonic() - start) * 1000
+    net.headers_sent(nrec, response.status_code, server_ms)
+    # While a dashboard is open, tell the browser how long the server took, so
+    # the page's own timing can split "queued in the browser" from "slow server"
+    # (platform/lib/netTiming.ts, static/runtime.js). `fr-watch` is the signal
+    # to flush; nothing is sent when nobody watches.
+    if path.startswith("/api/") and net.watched():
+        response.headers["Server-Timing"] = f"fr;dur={server_ms:.1f}, fr-watch"
+    _track_body(net, nrec, response, server_ms)
+    return response
+
+
+def _net_begin(net, request, path):
+    # Bookkeeping must never fail a request.
+    try:
+        client = request.client.host if request.client else ""
+        return net.begin(request.method, path, request.url.query, request.headers, client)
+    except Exception:  # noqa: BLE001
+        logger.debug("netlog.begin failed", exc_info=True)
+        return None
+
+
+def _track_body(net, nrec, response, server_ms):
+    """Close `nrec` when the response body has been fully sent (or abandoned)."""
+    if nrec is None:
+        return
+    it = getattr(response, "body_iterator", None)
+    if it is None:
+        net.finish(nrec, server_ms=server_ms)
+        return
+
+    async def body():
+        sent, outcome = 0, "ok"
+        try:
+            async for chunk in it:
+                sent += len(chunk)
+                yield chunk
+        except Exception:
+            outcome = "error"
+            raise
+        except BaseException:  # GeneratorExit / cancellation: the client left
+            outcome = "disconnected"
+            raise
+        finally:
+            net.finish(nrec, server_ms=server_ms, nbytes=sent, outcome=outcome)
+
+    response.body_iterator = body()
 
 
 async def _no_cache_and_log_inner(request, call_next, call, path, logged, start):

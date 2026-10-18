@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi import (APIRouter, Body, Header, Response, WebSocket,
                      WebSocketDisconnect)
 
+from fused_render import netlog
 from fused_render import capture
 from fused_render.server.common import STATIC_DIR, _error, _require_fused
 
@@ -191,6 +192,7 @@ def api_capture_shot_region(body: dict = Body(...),
 
 
 @router.websocket("/api/capture/{cid}/stream")
+@netlog.tracked_ws("capture")
 async def api_capture_stream(cid: str, ws: WebSocket):
     """The chunk feed for a recording the PAGE encodes (Linux).
 

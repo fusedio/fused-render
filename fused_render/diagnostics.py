@@ -490,12 +490,30 @@ def _plan_desktop(plan: _Plan) -> None:
             plan.add(f"desktop/{name}", p, tail=TAIL_CAP)
 
 
+def _plan_perf(plan: _Plan) -> None:
+    """The Monitor's latest 60 s recording plus a dashboard snapshot taken now."""
+    import json as _json
+    from fused_render.server import perfrecord
+    d = perfrecord.recordings_dir()
+    names = sorted((n for n in os.listdir(d) if n.endswith(".json")
+                    and n != "dashboard-now.json"), reverse=True) if os.path.isdir(d) else []
+    if names:
+        plan.add(f"perf/{names[0]}", os.path.join(d, names[0]))
+    else:
+        plan.skip("perf recordings", "none recorded")
+    os.makedirs(d, exist_ok=True)
+    now_path = os.path.join(d, "dashboard-now.json")
+    with open(now_path, "w", encoding="utf-8") as f:
+        _json.dump(perfrecord._snapshot(), f, default=str)
+    plan.add("perf/dashboard-now.json", now_path)
+
+
 def _build_plan(since_s: float | None, now: float) -> _Plan:
     plan = _Plan(_window_start(since_s, now))
     # Priority order: the cap bites whatever comes last.
     for step in (_plan_state, _plan_app_logs, _plan_diagnostic_reports, _plan_desktop,
                  _plan_index, _plan_ai_workers, _plan_engines, _plan_envinstall,
-                 _plan_claude, _plan_calls):
+                 _plan_claude, _plan_calls, _plan_perf):
         try:
             step(plan)
         except Exception as e:  # noqa: BLE001 — one broken source never sinks the bundle

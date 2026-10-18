@@ -18,6 +18,7 @@ from fastapi.responses import (
 )
 from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 
+from fused_render import netlog
 from fused_render.server import dirpicker
 from fused_render.server.common import _error, _require_fused, logger
 from fused_render.server.gitignore import _git_ignored, _is_repo_root
@@ -407,6 +408,7 @@ def _not_modified(request: Request, etag: str | None, mtime: float) -> bool:
     return False
 
 @router.websocket("/api/fs/events")
+@netlog.tracked_ws("fs-events")
 async def api_fs_events(ws: WebSocket):
     # File-change feed (SPEC §13.2), WebSocket not SSE (D74): every rendered
     # pane holds one of these open for the lifetime of the page, and SSE
