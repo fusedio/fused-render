@@ -2313,9 +2313,11 @@ class _SyncManager:
         return {slug: info["id"] for slug, info in udfs.items()
                 if isinstance(info, dict) and isinstance(info.get("id"), str) and info["id"]}
 
-    def _refresh_view_after_write(self, ids: dict | None) -> None:
+    def _refresh_view_after_write(self, ids: dict | None, embed_rows: dict | None) -> None:
         """After a snapshot or rename landed on disk: the embed holds disk.
-        Under _op_lock (the callers are)."""
+        `embed_rows` are the rows the embed itself sent (what its next
+        snapshot's key deletions are measured against). Under _op_lock (the
+        callers are)."""
         self._note_disk()
         try:
             view = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
@@ -2326,6 +2328,8 @@ class _SyncManager:
             return
         if ids is not None:
             view["ids"] = dict(ids)
+        if embed_rows is not None:
+            view["embed_rows"] = {k: dict(v) for k, v in embed_rows.items()}
         self._embed_view = view
         self._view_rev = self.disk_rev
 
@@ -2398,7 +2402,7 @@ class _SyncManager:
         # The embed now holds what it just sent, and disk holds it too: the
         # view is re-read from disk (never built from the snapshot — see
         # canvas_snapshot's delta section), with the snapshot's own ids.
-        self._refresh_view_after_write(new["ids"])
+        self._refresh_view_after_write(new["ids"], new["nodes"])
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "upserted": result["upserted"], "deleted": result["deleted"],
                "created": result["created"], "push_seq": self.push_seq}
@@ -2415,7 +2419,8 @@ class _SyncManager:
             return stale
         result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
         renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
-        self._refresh_view_after_write(renamed["ids"] if renamed else None)
+        self._refresh_view_after_write(renamed["ids"] if renamed else None,
+                                       renamed.get("embed_rows") if renamed else None)
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "renamed": result["renamed"], "moved": result["moved"],
                "push_seq": self.push_seq}

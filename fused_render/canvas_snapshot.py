@@ -474,8 +474,14 @@ def apply_snapshot(
                 except OSError:
                     pass
 
-    # Upserts: rows that differ on the keys the embed owns.
-    prev_nodes = prev["nodes"] if prev else {}
+    # Upserts: rows that differ on the keys the embed owns. A key the embed's
+    # row LACKS is deleted from disk only when the embed's own PREVIOUS row
+    # carried it (`embed_rows`, recorded on the view by the host after each
+    # snapshot) — never because the DISK row has it: `compact_node` emits
+    # several keys conditionally (an empty description, a catalog key that is
+    # None), so measured against the disk row every snapshot after a delta
+    # would strip them and rewrite the toml for nothing.
+    prev_nodes = (prev.get("embed_rows") or {}) if prev else {}
     for name, row in new["nodes"].items():
         disk = by_name.get(name)
         if disk is None:
@@ -565,8 +571,10 @@ def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> di
     if prev is None:
         return None
     out = dict(prev)
-    for key in ("nodes", "files", "ids", "bodies"):
-        table = dict(prev.get(key, {}))
+    for key in ("nodes", "files", "ids", "bodies", "embed_rows"):
+        if key not in prev:
+            continue
+        table = dict(prev.get(key) or {})
         if frm in table:
             table[to] = table.pop(frm)
             if key == "nodes" and isinstance(table[to], dict):

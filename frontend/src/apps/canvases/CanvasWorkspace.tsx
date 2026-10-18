@@ -24,6 +24,8 @@
 //            load; null from the sidebar's close button, so both sides agree)
 //   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
 //            workbench's save chip ("Published"); it triggers no reload.
+//            (`fused-embed-remote-changed` is still sent beside it for a
+//            workbench build from before the delta leg — see the effect.)
 // Keyed by UDF NAME, never a React Flow node id (those are regenerated every
 // load): the node's source is `<clone>/<udfName>.py` (widgets: `.json`).
 //
@@ -546,6 +548,15 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-pushed", push_seq: seq }, origin);
+    // COMPAT: a workbench build from before the delta leg (application
+    // #8298) has no other way to learn about a push — without this it would
+    // sit on stale state for good. A build with the delta leg does not relay
+    // `remote-changed` at all, so sending both is harmless. Drop this once
+    // #8298 is live on every environment this app points at.
+    frame.contentWindow.postMessage(
+      { type: "fused-embed-remote-changed", push_seq: seq },
+      origin,
+    );
   }, [sync?.push_seq]);
 
 
