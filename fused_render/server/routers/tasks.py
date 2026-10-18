@@ -1662,12 +1662,21 @@ def _parked_runs() -> dict:
 
 # run_dir -> (bytes of out.jsonl already parsed, the background list as
 # `((task_id, description), ...)`, empty when nothing is held).
-# See `_holding_background`.
+# See `_holding_background`. Unlocked on purpose: two listing builds racing on
+# one run parse the same append-only bytes to the same answer, so the worst a
+# lost update costs is one re-read.
 _bg_memo: dict[str, tuple] = {}
 
 
 #: The most background jobs one row names (`background_jobs.jobs`).
 _BG_JOBS_CAP = 20
+#: How far back a COLD read (offset 0: first sight of a run, after a server
+#: restart, or after the run left the scan window) starts from the end of a
+#: long `out.jsonl`. A background Agent streams rows for hours, and only the
+#: newest `background_tasks_changed` row matters — the CLI re-sends its whole
+#: list on every change, so the last one in a 16 MB tail is the answer unless a
+#: single job has streamed more than that since the last change.
+_BG_COLD_TAIL = 16 * 1024 * 1024
 
 
 def _bg_pending_since(path: str, offset: int, jobs: tuple) -> tuple:
@@ -1681,10 +1690,20 @@ def _bg_pending_since(path: str, offset: int, jobs: tuple) -> tuple:
     the next read. The rule is `_turn_state`'s own: the newest top-level
     `system/background_tasks_changed` row's `tasks` list, non-empty. A file
     shorter than `offset` was replaced, and is read from the top."""
-    if os.path.getsize(path) < offset:
+    size = os.path.getsize(path)
+    if size < offset:
         offset, jobs = 0, ()
+    if size == offset:
+        return offset, jobs  # nothing new: one stat, no open
+    partial = False
+    if offset == 0 and size > _BG_COLD_TAIL:
+        offset, partial = size - _BG_COLD_TAIL, True
     with open(path, "rb") as fh:
         fh.seek(offset)
+        if partial:
+            # Mid-line after the seek: drop up to the first newline so only
+            # whole rows are parsed.
+            offset += len(fh.readline())
         for line in fh:
             if not line.endswith(b"\n"):
                 break

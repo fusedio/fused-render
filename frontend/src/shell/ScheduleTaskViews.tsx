@@ -511,6 +511,8 @@ export const ICON_UNARCHIVE = icon(
 //
 // 12px, the row's mark size, so it sits on the "Folder missing" line it prefixes
 // rather than out-weighing the words it belongs to.
+/** A filled-outline square: the Cards wall's "stop the background job" door. */
+export const ICON_STOP = icon(<rect x="6" y="6" width="12" height="12" rx="1.5" />, 12);
 export const ICON_TRASH = icon(
   <><path d="M3 6h18" />
     <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
@@ -659,11 +661,17 @@ export async function stopJobs(
       ),
     ),
   );
-  const failed = answers.find((a) => a && "error" in a && a.error) as
-    | { error: string }
-    | undefined;
-  if (failed) {
-    notify({ title: "Could not stop the background job", detail: failed.error, tone: "error" });
+  const failed = answers.filter((a) => a && "error" in a && a.error) as Array<{ error: string }>;
+  if (failed.length) {
+    const total = badge.jobIds.length;
+    notify({
+      title:
+        total === 1
+          ? "Could not stop the background job"
+          : `Could not stop ${failed.length} of ${total} background jobs`,
+      detail: failed[0]!.error,
+      tone: "error",
+    });
   }
 }
 
@@ -680,20 +688,28 @@ export async function stopJobs(
  */
 export function StopJobButton({
   badge,
+  taskId,
   className,
   disabled,
+  icon,
 }: {
   badge: NonNullable<ReturnType<typeof jobBadge>>;
+  /** The row's id, for the accessible name ("Stop background job for T001"),
+   *  the way Force start beside it names its row. */
+  taskId: string;
   className: string;
   disabled?: boolean;
+  /** The Cards wall's doors are glyphs; the List and Board strips print words. */
+  icon?: React.ReactNode;
 }) {
   const [stopping, setStopping] = useState(false);
+  const jobs = badge.jobIds.length === 1 ? "background job" : "background jobs";
   return (
     <button
       type="button"
       className={`${className} tasks-job-stop`}
-      title={badge.hint}
-      aria-label={`Stop ${badge.text}`}
+      data-hint={`Stop ${jobs}: ${badge.hint.split("\n").slice(1).join(", ")}`}
+      aria-label={`Stop ${jobs} for ${shortTaskId(taskId)}`}
       disabled={disabled || stopping}
       onClick={(e) => {
         e.stopPropagation();
@@ -701,7 +717,7 @@ export function StopJobButton({
         void stopJobs(badge).finally(() => setStopping(false));
       }}
     >
-      {stopping ? "Stopping…" : "Stop job"}
+      {icon ?? (stopping ? "Stopping…" : "Stop job")}
     </button>
   );
 }
@@ -4421,7 +4437,14 @@ function TaskNode({
             opacity rather than display, so a keyboard still reaches it. */}
         {/* STOP THE LIVE BACKGROUND JOB (tasks-lib.jobBadge), the badge's
             press — here and not inline, see `StopJobButton`. */}
-        {jobs && <StopJobButton badge={jobs} className="tasks-act tasks-act--skip" disabled={acting} />}
+        {jobs && (
+          <StopJobButton
+            badge={jobs}
+            taskId={task.task_id}
+            className="tasks-act tasks-act--skip"
+            disabled={acting}
+          />
+        )}
         {canForceStart(task) && (
           <button
             type="button"
@@ -6397,7 +6420,12 @@ function TaskCard({
           {/* STOP THE BACKGROUND JOB, the List badge's own press — here,
               because the card is a button and cannot hold one. */}
           {jobs && (
-            <StopJobButton badge={jobs} className="tasks-act tasks-card-act tasks-act--skip" disabled={busy} />
+            <StopJobButton
+              badge={jobs}
+              taskId={task.task_id}
+              className="tasks-act tasks-card-act tasks-act--skip"
+              disabled={busy}
+            />
           )}
           {canForceStart(task) && (
             <button

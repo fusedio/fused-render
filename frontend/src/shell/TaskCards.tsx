@@ -40,12 +40,14 @@ import {
   discardDraft,
   ICON_ARCHIVE,
   ICON_OPEN_FOLDER_PATH,
+  ICON_STOP,
   ICON_TRASH,
   ICON_UNARCHIVE,
   OPEN_DOOR_LABEL,
   DraftChip,
   IdentityChip,
   StatusIcon,
+  StopJobButton,
 } from "./ScheduleTaskViews";
 import { EraseTaskModal } from "./EraseTaskModal";
 import {
@@ -59,6 +61,8 @@ import {
   ERASE_BLOCKED_HINT,
   emptyPaneFailed,
   draftRing,
+  jobBadge,
+  JOB_TITLE_SUFFIX,
   liveJobRow,
   emptyPaneText,
   eraseBlocked,
@@ -524,6 +528,10 @@ function TaskCard({
   /** "Usage limit · resumes 4:00 AM" on a session the plan's window stopped, ""
    *  on every other card. */
   const limit = usageLimitCaption(task);
+  /** A live background job under this Done card (tasks-lib.jobBadge): the
+   *  List row's badge words under the title, and its Stop among the doors —
+   *  the same rule and the same words on all three views. */
+  const jobs = limit ? null : jobBadge(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
   // THE DELETE DOOR, on EVERY card (design.md §2's open question, answered:
@@ -697,6 +705,7 @@ function TaskCard({
           data-hint={line.hint}
         >
           {title}
+          {jobs && <span className="tasks-title-suffix">{JOB_TITLE_SUFFIX}</span>}
         </span>
         {/* THE PLAN'S PAUSE, under the title — the List row's and the Board
             card's own sentence, from the same function (`usageLimitCaption`), so
@@ -706,6 +715,11 @@ function TaskCard({
             waiting for a clock, and names the clock. Nothing at all on every
             other card. */}
         {limit && <span className="task-card-limit">{limit}</span>}
+        {jobs && (
+          <span className="task-card-limit tasks-job-badge" data-hint={jobs.hint}>
+            {jobs.text}
+          </span>
+        )}
         {/* Inside the head (so hovering them keeps the head hovered) but not OF
             it: a press here stops before the head's onClick, so a door never
             also opens the popup. Keys are already the head's concern only when
@@ -719,7 +733,7 @@ function TaskCard({
 
             Drawn only when it has a door to hold (a card with nothing to file,
             a folder that opens, and a folder that is not gone has none). */}
-        {(filing || explorer || gone) && (
+        {(filing || explorer || gone || jobs) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
           {/* DISCARD THE UNSENT WORDS — the List row's and the Board card's own
               trash, on this wall too (design "one record", §5: the same actions
@@ -771,6 +785,15 @@ function TaskCard({
           >
             {ICON_TRASH}
           </button>
+          )}
+          {jobs && (
+            <StopJobButton
+              badge={jobs}
+              taskId={task.task_id}
+              className="task-card-door"
+              disabled={acting}
+              icon={ICON_STOP}
+            />
           )}
           {filing && (
             <button

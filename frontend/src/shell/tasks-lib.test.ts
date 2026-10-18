@@ -4557,7 +4557,7 @@ describe("the delete affordance", () => {
     expect(at).toBeGreaterThan(0);
     // GATED on `gone` (Akshil, 2026-09-07): a task that still opens is archived.
     expect(head.slice(del, at)).toContain("{gone && (");
-    expect(head).toContain("{(filing || explorer || gone) && (");
+    expect(head).toContain("{(filing || explorer || gone || jobs) && (");
     // Trash, then Archive, then the folder (Akshil: "left-side of the archive button").
     expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_ARCHIVE"));
     expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));

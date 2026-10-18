@@ -4419,6 +4419,45 @@ def test_background_jobs_name_every_job_and_follow_the_newest_list(
     assert [j["id"] for j in jobs["jobs"]] == ["b1"]
 
 
+def test_a_cold_read_of_a_long_run_parses_only_its_tail(
+        client, projects_dir, parked, monkeypatch, registry):
+    """A background Agent streams rows into `out.jsonl` for hours, and a cold
+    memo (first sight, a server restart) used to parse the whole file on the
+    request thread. Only the tail is read now, from the first whole row — the
+    CLI re-sends its full list on every change, so the newest one is there."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["old_job"], os.getpid())
+    for i in range(200):
+        _append(run, {"type": "system", "subtype": "task_progress",
+                      "description": f"line {i} " + "x" * 80})
+    _append(run, _bg_row([("b1", "npm run dev")]))
+    monkeypatch.setattr(tasks_mod, "_BG_COLD_TAIL", 4096)
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    jobs = _by_key(client)["sess-a"]["background_jobs"]
+    assert jobs["jobs"] == [{"id": "b1", "title": "npm run dev"}]
+    offset, held = tasks_mod._bg_memo[str(run)]
+    assert offset == (run / "out.jsonl").stat().st_size
+    assert held == (("b1", "npm run dev"),)
+
+
+def test_a_cold_read_stops_at_its_tail(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The bound's accepted cost, pinned so it is a decision: a list older than
+    the tail is not seen on a cold read (a full parse would have found
+    `old_job`). Only reachable when one job streams more than the tail since
+    the CLI last changed its list."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["old_job"], os.getpid())
+    for i in range(200):
+        _append(run, {"type": "system", "subtype": "task_progress",
+                      "description": f"line {i} " + "x" * 80})
+    monkeypatch.setattr(tasks_mod, "_BG_COLD_TAIL", 4096)
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+
+
 def test_a_parked_card_still_outranks_background_work(
         client, projects_dir, parked, monkeypatch, registry):
     _replied(projects_dir)
