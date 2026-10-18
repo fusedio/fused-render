@@ -995,6 +995,8 @@ function httpUrl(source) {
   return new URL(`/api/fs/raw?path=${encodeURIComponent(source)}`, location.origin).href;
 }
 const RASTER_EXT = new Set([".tif", ".tiff", ".cog"]);
+const SAMPLE_TILES = 64;
+const BROWSER_CODECS = new Set([1, 5, 7, 8, 32946, 34887, 50000, 50001]);
 const VECTOR_FORMAT = {
   ".geojson": "geojson", ".json": "geojson", ".parquet": "geoparquet", ".geoparquet": "geoparquet",
   ".pq": "geoparquet", ".fgb": "flatgeobuf", ".csv": "csv", ".tsv": "csv", ".gpkg": "geopackage",
@@ -1110,10 +1112,15 @@ const raster = {
   async add(layer, plan, r) {
     const mgr = this.manager();
     r.handle = `r-${layer.id}-${++seq}`;
-    await mgr.addRaster(httpUrl(plan.path), { id: r.handle, name: layer.name, zoomTo: false,
-                                             state: this.state(layer, r, true) });
+    const url = plan.url ? new URL(plan.url, location.origin).href : httpUrl(plan.path);
+    await mgr.addRaster(url, { id: r.handle, name: layer.name, zoomTo: false, state: this.state(layer, r, true) });
     const rl = mgr.getLayer(r.handle);
     if (!rl || rl.error) throw rl && rl.error || new Error("raster did not load");
+    const tiff = rl.geotiff, coarsest = tiff?.overviews.at(-1) || tiff;
+    if (tiff && !rl.members && !plan.url && (rl.palette && tiff.overviews.length && /^(https?:|\/)/i.test(plan.path)
+        || !isRemote(plan.path) && (![8, 16, 32, 64].includes(tiff.cachedTags.bitsPerSample[0])
+            || !BROWSER_CODECS.has(tiff.cachedTags.compression) || coarsest.tileCount.x * coarsest.tileCount.y > SAMPLE_TILES)))
+      throw Object.assign(new Error("This TIFF cannot be streamed by the browser as it is."), { stream: true });
     if (rl.geotiff && typeof rl.geotiff === "object") void rl.geotiff.crs;
     r.auto = { mode: rl.state.mode, bands: rl.state.bands.slice(), colormap: rl.state.colormap };
     r.kind = "raster";
@@ -1698,16 +1705,13 @@ const pointcloudEngine = {
 const ENGINES = { raster, vector, zarr: zarrEngine, pmtiles: pmtilesEngine, pointcloud: pointcloudEngine };
 
 /* ---- loading ------------------------------------------------------------------ */
-// When the first reader fails, the one retry that can succeed: Python
-// re-encodes a raster (or fetches one the browser was refused), and reads a
-// vector DuckDB-WASM could not (its wasm comes from a CDN; offline, it can't).
-async function fallbackPlan(plan) {
+async function fallbackPlan(plan, error) {
   if (plan.fallback) return null;
   // LAS 1.4 or a CRS the browser cannot read: Python rewrites the file.
   if (plan.load === "pointcloud" && !isEpt(plan.path) && !/\.copc\.laz$/i.test(String(plan.path).split(/[?#]/)[0]))
     return { ...(await python(plan.path, "pointcloud")), fallback: true };
   if (plan.load === "raster") {
-    const action = isRemote(plan.path) ? "localize" : plan.converted ? null : "convert";
+    const action = error && error.stream ? "convert" : isRemote(plan.path) ? "localize" : plan.converted ? null : "convert";
     return action && { ...(await python(plan.path, action)), fallback: true };
   }
   if (plan.load === "vector" && !plan.geojson) {
@@ -1740,9 +1744,9 @@ async function loadLayer(layer, r) {
       ENGINES[plan.load].remove(r);
       if (plan.load === "pointcloud") { r.note = "Converting…"; scheduleUi(); }
       let fallbackError = null;
-      const retry = await fallbackPlan(plan).catch(e => { fallbackError = e; return null; });
+      const retry = await fallbackPlan(plan, error).catch(e => { fallbackError = e; return null; });
       // A point cloud's conversion explains a failure better than the reader.
-      if (!retry) throw (plan.load === "pointcloud" && fallbackError) || error;
+      if (!retry) throw ((plan.load === "pointcloud" || error.stream) && fallbackError) || error;
       r.plan = retry; r.note = retry.note || "";
       await ENGINES[retry.load].add(layer, retry, r);
     }

@@ -55,11 +55,6 @@ def _tiff(path, *, tiled, crs="EPSG:4326", count=1, dtype="uint8", size=256):
     return str(path)
 
 
-def _is_tiled(path):
-    with rasterio.open(path) as dataset:
-        return bool(dataset.profile.get("tiled"))
-
-
 # ---- rasters ---------------------------------------------------------------------
 
 def test_a_tiled_geotiff_is_read_by_the_browser_as_is(prepare, tmp_path):
@@ -68,35 +63,20 @@ def test_a_tiled_geotiff_is_read_by_the_browser_as_is(prepare, tmp_path):
     assert result == {"status": "ok", "load": "raster", "path": source}
 
 
-def test_a_striped_geotiff_becomes_a_cached_cog(prepare, tmp_path):
-    source = _tiff(tmp_path / "striped.tif", tiled=False, size=1200, count=3)
-    first = prepare.main(source)
-    assert first["status"] == "ok" and first["converted"] and first["load"] == "raster"
-    assert first["path"] != source and _is_tiled(first["path"])
-    with rasterio.open(first["path"]) as cog, rasterio.open(source) as original:
-        assert cog.count == 3 and cog.crs == original.crs
-        assert np.array_equal(cog.read(), original.read())
-    mtime = os.path.getmtime(first["path"])
-    assert prepare.main(source)["path"] == first["path"]
-    assert os.path.getmtime(first["path"]) == mtime, "the second open must reuse the cache"
-
-
-def test_a_tiled_geotiff_with_no_epsg_crs_is_warped_to_one_the_browser_reads(prepare, tmp_path):
-    source = tmp_path / "mollweide.tif"
-    with rasterio.open(source, "w", driver="GTiff", width=256, height=256, count=1, dtype="float32",
-                       crs="ESRI:54009", transform=from_bounds(3.2e6, 2.0e6, 5.3e6, 3.9e6, 256, 256),
-                       tiled=True, blockxsize=128, blockysize=128, nodata=-1) as out:
-        out.write(np.ones((1, 256, 256), "float32"))
-    result = prepare.main(str(source), action="convert")
-    assert result["converted"]
-    with rasterio.open(result["path"]) as cog:
-        assert cog.crs.to_epsg() == 4326 and 30 < cog.bounds.left < cog.bounds.right < 60
-
-
-def test_convert_reencodes_even_a_tiled_file(prepare, tmp_path):
-    source = _tiff(tmp_path / "tiled.tif", tiled=True)
-    result = prepare.main(source, action="convert")
-    assert result["converted"] and result["path"] != source and _is_tiled(result["path"])
+def test_rasters_the_browser_cannot_stream_are_served_from_the_original_file(prepare, tmp_path, monkeypatch):
+    ensured = []
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    monkeypatch.setattr(prepare.urllib.request, "urlopen",
+                        lambda request, timeout: ensured.append(json.loads(request.data)) or open(os.devnull, "rb"))
+    img = tmp_path / "scene.img"
+    with rasterio.open(img, "w", driver="HFA", width=64, height=64, count=1, dtype="uint8",
+                       crs="EPSG:3857", transform=from_bounds(0, 0, 1000, 1000, 64, 64)) as out:
+        out.write(np.ones((1, 64, 64), "uint8"))
+    striped = _tiff(tmp_path / "striped.tif", tiled=False, size=1200, count=3)
+    for source, action in [(striped, "plan"), (str(img), "plan"), (_tiff(tmp_path / "tiled.tif", tiled=True), "convert")]:
+        key = prepare.base64.urlsafe_b64encode(source.encode()).decode().rstrip("=")
+        assert prepare.main(source, action=action)["url"] == f"/api/engines/map/proxy/cog/{key}.tif"
+    assert ensured[0]["daemon"].endswith("daemon.py") and not (tmp_path / "cache").exists()
 
 
 def test_a_localized_copy_is_reused_under_a_fresh_token(prepare, monkeypatch):
@@ -111,15 +91,6 @@ def test_a_localized_copy_is_reused_under_a_fresh_token(prepare, monkeypatch):
     first = prepare._localize(url + "?se=a&sig=a")
     assert prepare._localize(url + "?se=b&sig=b")["path"] == first["path"]
     assert made == ["/vsicurl/" + url + "?se=a&sig=a"]
-
-
-def test_other_gdal_rasters_are_converted(prepare, tmp_path):
-    img = tmp_path / "scene.img"
-    with rasterio.open(img, "w", driver="HFA", width=64, height=64, count=1, dtype="uint8",
-                       crs="EPSG:3857", transform=from_bounds(0, 0, 1000, 1000, 64, 64)) as out:
-        out.write(np.ones((1, 64, 64), "uint8"))
-    result = prepare.main(str(img))
-    assert result["status"] == "ok" and result["path"].endswith(".tif") and _is_tiled(result["path"])
 
 
 def test_a_raster_with_no_crs_is_refused_with_a_reason(prepare, tmp_path):

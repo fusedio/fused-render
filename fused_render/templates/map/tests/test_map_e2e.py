@@ -152,7 +152,7 @@ def by_id(facts):
     return {f["id"]: f for f in facts}
 
 
-def test_rasters_stream_in_the_browser_and_a_striped_tiff_is_converted_once(page, data):
+def test_rasters_stream_in_the_browser_and_a_striped_tiff_is_streamed_through_the_engine(page, data):
     p = page()
     p.js("fm.execute({op: 'add_layer', source: arg + '/dem.tif', id: 'dem', style: {colormap: 'terrain'}});"
          "fm.execute({op: 'add_layer', source: arg + '/striped.tif', id: 'rgb'});", str(data))
@@ -162,7 +162,7 @@ def test_rasters_stream_in_the_browser_and_a_striped_tiff_is_converted_once(page
     west, south, east, north = facts["dem"]["bounds"]
     assert 14.9 < west < east < 15.2 and 45.1 < south < north < 45.3, "UTM bounds reprojected to degrees"
     assert facts["rgb"]["status"] == "ready" and facts["rgb"]["bands"] == 3
-    assert "Cloud-Optimized" in facts["rgb"]["note"], "the striped TIFF went through prepare.py"
+    assert "streamed from the original file" in facts["rgb"]["note"], "the striped TIFF went through the engine"
     assert facts["rgb"]["rendered"]["mode"] == "rgb"
     # A restyle is a uniform change, not a reload: the same layer, new state.
     p.js("fm.execute({op: 'update_layer', id: 'dem', style: {colormap: 'magma', rescale: [700, 1300]}});")
@@ -170,15 +170,15 @@ def test_rasters_stream_in_the_browser_and_a_striped_tiff_is_converted_once(page
     assert p.js("return fm.describeLayer('dem').rendered.colormap;") == "magma"
 
 
-def test_the_raster_panel_shows_the_applied_range_metadata_histogram_and_classes(page, data):
+def test_a_packed_tiff_streams_and_its_panel_shows_range_metadata_histogram_and_classes(page, data):
     classes = np.array([1, 5, 9], "uint8")[(np.arange(256 * 256) // 9 % 3).reshape(256, 256)]
     with rasterio.open(data / "classes.tif", "w", driver="GTiff", width=256, height=256, count=1, dtype="uint8",
                        crs="EPSG:4326", transform=from_bounds(10, 45, 11, 46, 256, 256),
-                       tiled=True, blockxsize=64, blockysize=64) as out:
+                       tiled=True, blockxsize=64, blockysize=64, nbits=4) as out:
         out.write(classes, 1)
     p = page()
     p.js("fm.execute({op: 'add_layer', source: arg + '/classes.tif', id: 'cls'});", str(data))
-    p.idle()
+    assert "streamed from the original file" in by_id(p.idle())["cls"]["note"]
     p.page.wait_for_function("() => fusedMap.describeLayer('cls').classes", timeout=30000)
     f = p.js("return fm.describeLayer('cls');")
     assert [c["value"] for c in f["classes"]] == [1, 5, 9]

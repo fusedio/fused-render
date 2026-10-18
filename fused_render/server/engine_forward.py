@@ -26,10 +26,7 @@ from fused_render.server.common import _error
 POST_TIMEOUT_S = 300.0
 GET_TIMEOUT_S = 120.0
 
-# What the daemon's responses carry that the page needs; mirrors proxy.py's
-# forwarded set, minus the range fields the daemon never emits and the length
-# Response recomputes from the buffered body.
-_PROXY_HEADERS = ("content-type", "cache-control")
+_PROXY_HEADERS = ("content-type", "cache-control", "content-range", "accept-ranges")
 
 #: The browser abandoned the request mid-proxy; there is nobody to answer.
 _GONE = object()

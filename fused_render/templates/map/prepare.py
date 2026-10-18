@@ -6,7 +6,7 @@ HTTP range requests, vectors through DuckDB-WASM, Zarr through a MapLibre
 custom layer, PMTiles through its protocol — so for the common formats Python
 is never called at all. This module is asked only about the rest:
 
-  plan       striped / non-TIFF GDAL rasters -> a local COG; NetCDF/HDF5 -> a
+  plan       NetCDF/HDF5 -> a
              Zarr store; a user's `.py` -> whatever it returned, written out as
              one of the browser formats. Returns `{load, path, ...}`: which
              browser loader to use, on which file.
@@ -16,8 +16,6 @@ is never called at all. This module is asked only about the rest:
   localize   a remote raster the browser was refused (no CORS, or an Azure
              container that needs a Planetary Computer token) -> a local COG,
              read by GDAL over /vsicurl/.
-  convert    a TIFF the browser reader failed on even though it is tiled (a
-             codec the reader lacks) -> re-encoded as a DEFLATE COG.
   pointcloud a LAS/LAZ the browser reader refused (LAS 1.4, a GeoTIFF-key or
              missing CRS) -> LAS 1.2 in longitude/latitude, thinned to a
              point budget; `crs` names the CRS of a file that has none.
@@ -31,6 +29,7 @@ and this module's own hash, so reopening a map is instant.
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 import importlib.util
@@ -42,6 +41,7 @@ import shutil
 import sys
 import tempfile
 import traceback
+import urllib.request
 import warnings
 from pathlib import Path
 from typing import Any
@@ -69,15 +69,17 @@ ENTRYPOINTS = ("main", "run", "udf", "fn")
 RESULT_VARS = ("result", "output", "layer", "gdf", "df")
 
 
-def _module_version() -> str:
+def _module_version(*names: str) -> str:
     try:
-        with open(os.path.abspath(__file__), "rb") as handle:
-            return hashlib.sha256(handle.read()).hexdigest()[:10]
+        return hashlib.sha256(b"".join(Path(HERE, name).read_bytes() for name in names)).hexdigest()[:10]
     except OSError:
         return "0"
 
 
-VERSION = _module_version()
+VERSION = _module_version("prepare.py")
+DAEMON_VERSION = _module_version("daemon.py", "vcog.py")
+ENGINE = "/api/engines/map"
+NO_CRS = "This raster has no coordinate reference system, so it cannot be placed on a map."
 
 
 class Refusal(Exception):
@@ -139,9 +141,7 @@ def _to_cog(source: str, final: Path) -> Path:
 
     with rasterio.open(source) as dataset:
         if dataset.crs is None and not dataset.gcps[0]:
-            raise Refusal(
-                "This raster has no coordinate reference system, so it cannot be "
-                "placed on a map.")
+            raise Refusal(NO_CRS)
         needs_warp = dataset.crs is None or (dataset.crs.to_authority() or ("",))[0] != "EPSG"
     tmp = final.with_name(final.name + f".{os.getpid()}.tmp")
     if needs_warp:
@@ -156,12 +156,21 @@ def _to_cog(source: str, final: Path) -> Path:
     return final
 
 
-def _raster_plan(path: str) -> dict:
-    final = _cache_path(_cache_key(path, "cog"), ".tif")
-    if not final.exists():
-        _to_cog(path, final)
-    return {"load": "raster", "path": str(final), "converted": True,
-            "note": "converted to a Cloud-Optimized GeoTIFF for streaming"}
+def _stream(path: str) -> dict:
+    import rasterio
+
+    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"), \
+            rasterio.open("/vsicurl/" + path if is_http_url(path) else path) as dataset:
+        if dataset.crs is None and not dataset.gcps[0]:
+            raise Refusal(NO_CRS)
+    engine = {"python": sys.executable, "daemon": os.path.join(HERE, "daemon.py"),
+              "cache": str(CACHE), "version": DAEMON_VERSION}
+    request = urllib.request.Request(f"{os.environ['FUSED_RENDER_ORIGIN'].rstrip('/')}{ENGINE}/ensure",
+                                     json.dumps(engine).encode(), {"Content-Type": "application/json", "X-Fused": "1"})
+    urllib.request.urlopen(request, timeout=120).close()
+    key = base64.urlsafe_b64encode(path.encode()).decode().rstrip("=")
+    return {"load": "raster", "path": path, "url": f"{ENGINE}/proxy/cog/{key}.tif",
+            "fallback": True, "note": "streamed from the original file, nothing copied"}
 
 
 def _fetchable(url: str) -> str:
@@ -617,16 +626,10 @@ def plan(target: str, entrypoint: str = "") -> dict:
         if suffix == ".shp" and not remote:
             out["companions"] = shapefile_companions(target)
         return out
-    if suffix in BROWSER_RASTER and not remote:
-        if _is_streamable_tiff(target):
-            return {"load": "raster", "path": target}
-        return _raster_plan(target)
-    if suffix in BROWSER_RASTER:
+    if suffix in BROWSER_RASTER and (remote or _is_streamable_tiff(target)):
         return {"load": "raster", "path": target}
-    if suffix in GDAL_RASTER or not suffix:
-        if remote:
-            return _localize(target)
-        return _raster_plan(target)
+    if suffix in BROWSER_RASTER + GDAL_RASTER or not suffix:
+        return _localize(target) if remote else _stream(target)
     raise Refusal(f"The map viewer does not know how to read {suffix} files.")
 
 
@@ -664,9 +667,7 @@ def main(target: str = "", action: str = "plan", entrypoint: str = "", layer: st
         elif action == "localize":
             result = _localize(target)
         elif action == "convert":
-            # A tiled TIFF the browser still could not decode (a codec its
-            # reader lacks): re-encode it rather than trusting the layout.
-            result = _localize(target) if is_remote_path(target) else _raster_plan(target)
+            result = _localize(target) if is_remote_path(target) and not is_http_url(target) else _stream(target)
         elif action == "pointcloud":
             result = _pointcloud_plan(target, crs)
         elif action == "crs":

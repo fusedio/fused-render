@@ -1,7 +1,7 @@
 """Packaging and architecture contracts for the built-in Map Viewer.
 
 The viewer draws in the browser (template.html + the vendored map.bundle.mjs)
-and keeps Python for conversions only (prepare.py). These tests pin the seams
+and keeps Python for conversions (prepare.py). These tests pin the seams
 that decision rests on, so a change that quietly brings a tile server back, or
 drops the environment the conversions run in, fails here rather than in front
 of a user.
@@ -65,9 +65,8 @@ def test_the_environment_is_declared_in_the_folder_and_nothing_tiles():
     assert {"rasterio", "xarray", "zarr", "pyogrio", "geopandas"} <= deps
     for gone in ("rio-tiler", "matplotlib", "rioxarray", "mapbox-vector-tile", "netcdf4"):
         assert gone not in deps, f"{gone} is a tile-server dependency; the browser renders now"
-    # No managed daemon: nothing in this folder serves tiles.
-    assert "fused-render" not in declared.get("tool", {}), "the map no longer runs a daemon"
-    assert not (MAP / "daemon.py").exists()
+    assert "fused-render" not in declared.get("tool", {}), "the map runs no background app"
+    assert "image/png" not in (MAP / "daemon.py").read_text(encoding="utf-8"), "the engine serves bytes; the browser renders"
 
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     bundled = " ".join(project["project"]["optional-dependencies"]["bundled"]).lower()
