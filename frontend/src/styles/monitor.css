@@ -1011,11 +1011,18 @@ th[aria-sort="descending"] .monitor-sort {
 /* ---- Network tab ---- */
 .monitor-sec-title {
   margin: 0 0 6px;
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--fg-faint);
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--fg);
+}
+
+/* Dashboard tabs: a readable column, left-aligned (Processes keeps full width). */
+.monitor-overview,
+.monitor-net {
+  width: 100%;
+  max-width: 1080px;
 }
 
 .monitor-net-sec {
@@ -1036,6 +1043,10 @@ th[aria-sort="descending"] .monitor-sort {
   margin-top: 18px;
 }
 
+.monitor-net .monitor-net-strip {
+  margin-top: 24px;
+}
+
 .monitor-net-note {
   margin: 6px 0 0;
   font-size: 12px;
@@ -1046,14 +1057,11 @@ th[aria-sort="descending"] .monitor-sort {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 10px;
+  gap: 24px;
 }
 
 .monitor-net-stat {
-  padding: 10px 12px;
-  border: 1px solid var(--monitor-hairline);
-  border-radius: 10px;
-  background: var(--monitor-glass);
+  padding: 0;
 }
 
 .monitor-net-stat-label,
@@ -1063,7 +1071,7 @@ th[aria-sort="descending"] .monitor-sort {
 }
 
 .monitor-net-stat-value {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -1191,8 +1199,9 @@ th[aria-sort="descending"] .monitor-sort {
 
 .monitor-verdict-head {
   margin: 0;
-  font-size: 15px;
+  font-size: 22px;
   font-weight: 600;
+  line-height: 1.25;
 }
 
 .monitor-verdict-head a {
@@ -1243,8 +1252,8 @@ th[aria-sort="descending"] .monitor-sort {
 .monitor-tiles {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 24px;
 }
 
 .monitor-tile {
@@ -1252,16 +1261,13 @@ th[aria-sort="descending"] .monitor-sort {
   flex-direction: column;
   gap: 2px;
   min-height: 78px;
-  padding: 10px 12px;
-  border: 1px solid var(--monitor-hairline);
-  border-radius: 10px;
-  background: var(--monitor-glass);
+  padding: 0;
   color: var(--fg);
   text-decoration: none;
 }
 
-.monitor-tile:hover {
-  border-color: var(--fg-muted);
+.monitor-tile:hover .monitor-tile-title {
+  color: var(--fg);
 }
 
 .monitor-tile:focus-visible {
@@ -1298,16 +1304,16 @@ th[aria-sort="descending"] .monitor-sort {
   background: var(--fg-faint);
 }
 
-.monitor-tile.is-warn {
-  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+.monitor-tile.is-warn .monitor-tile-value {
+  color: var(--warning);
 }
 
-.monitor-tile.is-bad {
-  border-color: color-mix(in srgb, var(--error) 60%, transparent);
+.monitor-tile.is-bad .monitor-tile-value {
+  color: var(--error);
 }
 
 .monitor-tile-value {
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;

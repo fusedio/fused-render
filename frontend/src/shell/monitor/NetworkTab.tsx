@@ -75,6 +75,8 @@ function clock(t: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+const WAIT_WARN_MS = 100;
+
 export default function NetworkTab({
   api = REAL_API,
   pollMs = 2_000,
@@ -211,9 +213,21 @@ export default function NetworkTab({
   const visibleGroups = showAllGroups ? shownGroups : shownGroups.slice(0, GROUP_TOP);
   const drawn = useMemo(() => [...rows].reverse().slice(0, DRAW_CAP), [rows]);
 
+  const p95 = summary?.browser_queue_p95_ms ?? null;
+  const waiting = (p95 != null && p95 >= WAIT_WARN_MS) || strip.queued > 0;
+  const top = shownGroups[0];
+  const verdictHead =
+    (waiting
+      ? `Requests are waiting for a connection${p95 != null ? ` · p95 ${ms(p95)} ms` : ""}`
+      : "No queueing") + (top ? ` · busiest: ${top.route} from ${top.source}` : "");
+
   return (
     <div className="monitor-tab monitor-tab-scroll monitor-net">
       {error && <p className="monitor-denied">Can't read request data: {error}</p>}
+
+      <section className={`monitor-verdict is-${waiting ? "warn" : "ok"}`} aria-label="Verdict">
+        <p className="monitor-verdict-head">{verdictHead}</p>
+      </section>
 
       <div className="monitor-net-strip" aria-label="Request summary">
         <Stat label="Requests/s" value={summary ? String(summary.rps_10s) : DASH} sub="last 10 s" />
@@ -309,7 +323,7 @@ export default function NetworkTab({
       </section>
 
       <section className="monitor-net-sec">
-        <h2 className="monitor-sec-title">Requests</h2>
+        <h2 className="monitor-sec-title">Request log</h2>
         <button
           type="button"
           className="monitor-more"

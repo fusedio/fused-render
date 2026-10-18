@@ -198,3 +198,22 @@ test("deep link expands the log; non-GET methods prefix the route", async () => 
   expect(r.root.findByProps({ "aria-label": "Filter by page" }).props.value).toBe("page-a");
   expect(text(byClass(r, "monitor-req-row")[0])).toContain("POST /api/run");
 });
+
+test("verdict line warns when requests queue and names the busiest route", async () => {
+  const { r } = await mount();
+  const v = byClass(r, "monitor-verdict")[0];
+  expect(v.props.className).toContain("is-warn");
+  expect(text(v)).toBe(
+    "Requests are waiting for a connection · p95 640 ms · busiest: /api/x from page-a",
+  );
+});
+
+test("verdict line is ok with no queueing", async () => {
+  const { r } = await mount({
+    summary: async () => ({ ...SUMMARY, browser_queue_p95_ms: 20 }),
+    requests: async () => ({ rows: [], cursor: 0 }),
+  });
+  const v = byClass(r, "monitor-verdict")[0];
+  expect(v.props.className).toContain("is-ok");
+  expect(text(v)).toBe("No queueing · busiest: /api/x from page-a");
+});
