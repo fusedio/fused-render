@@ -1290,7 +1290,7 @@ def _read_background_runs() -> set[str]:
 
     THE ONE CHANGE TO THAT WORK NOTHING ELSE ANNOUNCES. A row whose reply has
     ended with a `run_in_background` Bash (or a background Agent, or a Monitor)
-    still going carries `pending_background` (`routers/tasks.py
+    still going carries `background_jobs` (`routers/tasks.py
     _hosted_runs`), and the registry has ALREADY flipped to idle by then — so
     when the CLI writes the row that empties that list and stays idle (a task
     killed, or one that finished with nothing to wake the model for), no

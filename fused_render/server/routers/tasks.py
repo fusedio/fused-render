@@ -1660,13 +1660,19 @@ def _parked_runs() -> dict:
     return _hosted_runs()[0]
 
 
-# run_dir -> (bytes of out.jsonl already parsed, background list non-empty).
+# run_dir -> (bytes of out.jsonl already parsed, the background list as
+# `((task_id, description), ...)`, empty when nothing is held).
 # See `_holding_background`.
 _bg_memo: dict[str, tuple] = {}
 
 
-def _bg_pending_since(path: str, offset: int, pending: bool) -> tuple:
-    """`(new offset, pending)` after parsing `path` from `offset` on.
+#: The most background jobs one row names (`background_jobs.jobs`).
+_BG_JOBS_CAP = 20
+
+
+def _bg_pending_since(path: str, offset: int, jobs: tuple) -> tuple:
+    """`(new offset, jobs)` after parsing `path` from `offset` on — `jobs` the
+    CLI's background list as `((task_id, description), ...)`, () for none.
 
     INCREMENTAL, because a background Agent streams rows into `out.jsonl` for
     as long as it runs and `agent._turn_state` re-parses the whole file: only
@@ -1676,7 +1682,7 @@ def _bg_pending_since(path: str, offset: int, pending: bool) -> tuple:
     `system/background_tasks_changed` row's `tasks` list, non-empty. A file
     shorter than `offset` was replaced, and is read from the top."""
     if os.path.getsize(path) < offset:
-        offset, pending = 0, False
+        offset, jobs = 0, ()
     with open(path, "rb") as fh:
         fh.seek(offset)
         for line in fh:
@@ -1695,13 +1701,18 @@ def _bg_pending_since(path: str, offset: int, pending: bool) -> tuple:
                 continue
             arr = row.get("tasks")
             if isinstance(arr, list):
-                pending = any(isinstance(x, dict) and x.get("task_id")
-                              for x in arr)
-    return offset, pending
+                # Capped: the row's badge names a handful, and a list this
+                # long is not one a row could print anyway.
+                jobs = tuple(
+                    (str(x["task_id"])[:200],
+                     str(x.get("description") or "")[:200])
+                    for x in arr
+                    if isinstance(x, dict) and x.get("task_id"))[:_BG_JOBS_CAP]
+    return offset, jobs
 
 
 def _holding_background(agent, run_dir: str, sessions) -> tuple | None:
-    """`(out.jsonl offset parsed, True)` when this run's session host AND its
+    """`(out.jsonl offset parsed, jobs)` when this run's session host AND its
     `claude` are alive and the CLI is still holding background work — a
     `run_in_background` Bash, a background Agent, a Monitor — else None.
 
@@ -1731,21 +1742,21 @@ def _holding_background(agent, run_dir: str, sessions) -> tuple | None:
         if not pid or not any(tasks_watch.session_has_pid(sid, pid)
                               for sid in sessions):
             return None
-        offset, pending = _bg_memo.get(run_dir, (0, False))
-        offset, pending = _bg_pending_since(
-            os.path.join(run_dir, "out.jsonl"), offset, pending)
-        _bg_memo[run_dir] = (offset, pending)
+        offset, jobs = _bg_memo.get(run_dir, (0, ()))
+        offset, jobs = _bg_pending_since(
+            os.path.join(run_dir, "out.jsonl"), offset, jobs)
+        _bg_memo[run_dir] = (offset, jobs)
     except Exception:  # noqa: BLE001 — a probe we cannot run holds nothing
         return None
-    return (offset, True) if pending else None
+    return (offset, jobs) if jobs else None
 
 
 def _hosted_runs() -> tuple[dict, dict]:
     """`(parked, pending)` off ONE walk of the runs tree.
 
-    `pending` is `session id -> (run_dir, out.jsonl size)` for every session id
-    of every run whose live host is holding background work
-    (`_holding_background`) — the row's `pending_background` caption. A session
+    `pending` is `session id -> (run_dir, out.jsonl size, jobs)` for every
+    session id of every run whose live host is holding background work
+    (`_holding_background`) — the row's `background_jobs` badge. A session
     is in it if ANY of its runs in the window is holding work (an older run's
     host keeping a dev server up is still that conversation's background job);
     when several are, the newest one's run dir is the one recorded, which is
@@ -1809,7 +1820,7 @@ def _hosted_runs() -> tuple[dict, dict]:
         holding = _holding_background(agent, run_dir, run["sessions"])
         if holding is not None:
             for session_id in run["sessions"]:
-                pending.setdefault(session_id, (run_dir, holding[0]))
+                pending.setdefault(session_id, (run_dir, *holding))
         held = _held_requests(run)
         perms = project_queue.run_permissions(agent, run)
         waiting = [p for p in perms
@@ -1838,6 +1849,20 @@ def _hosted_runs() -> tuple[dict, dict]:
     for run_dir in [d for d in list(_bg_memo) if d not in scanned]:
         _bg_memo.pop(run_dir, None)
     return out, pending
+
+
+def _background_jobs(held: tuple | None) -> dict | None:
+    """The row's `background_jobs` off one `_hosted_runs` pending entry
+    (`(run_dir, offset, jobs)`), or None when nothing is held.
+
+    `run_id` is the run dir's own name — the id the agent's `task_stop` takes
+    beside a job's `id` — so the row's Stop needs no second lookup. `title` is
+    the CLI's own description of the job ("" when it sent none)."""
+    if not held or not held[2]:
+        return None
+    run_dir, _offset, jobs = held
+    return {"count": len(jobs), "run_id": os.path.basename(run_dir),
+            "jobs": [{"id": tid, "title": title} for tid, title in jobs]}
 
 
 def _held_requests(run: dict) -> set:
@@ -2235,7 +2260,7 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        can be a dev server or a `tail -f` that never ends, and a row that
        could never leave In Progress would also never let anything waiting on
        `done` (a bot's build watch) fire. The row says it separately, as
-       `pending_background` (`_row`, off `_hosted_runs`).
+       `background_jobs` (`_row`, off `_hosted_runs`).
     3. **Archived is a filing state.** The task the user put away is archived,
        and so is a task whose every message ended up filed (cancelling the last
        live message in a thread archives the task, without anybody having to say
@@ -3513,7 +3538,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
 
     `pending` is the other half of the same scan (`_hosted_runs`): sessions a
     live host is still holding background work for. It only ever sets the
-    row's `pending_background` caption — never the status. None (the
+    row's `background_jobs` caption — never the status. None (the
     single-row callers) reads as nothing pending.
 
     `busy` is `schedule.busy_sessions` over the WHOLE store, computed once by
@@ -3738,9 +3763,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     entry_origin = _leader_origin(task, pending_id) if pending_id else ''
     bot = _entry_bot(task, entry_id)
     # A live session host still holding background work for this conversation
-    # (`_hosted_runs`). NOT a status — see `_status` rule 2 — only a caption.
+    # (`_hosted_runs`). NOT a status — see `_status` rule 2 — only a badge.
     # Same key rule as `waiting`.
-    background = bool(task["session_id"]) and task["session_id"] in (pending or {})
+    held = (pending or {}).get(task["session_id"]) if task["session_id"] else None
+    background = _background_jobs(held)
     status = _status(merged, filed, task["session_id"], live, busy,
                      parked=waiting is not None, queued=bool(queued))
     # THE NEWEST MESSAGE THE USER SENT — one line of it — or None for a task
@@ -3867,10 +3893,13 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "live": live,
         # A live session host is still holding background work for this
         # conversation — a `run_in_background` Bash, a background Agent, a
-        # Monitor (`_hosted_runs`). A caption, never a status: the status reads
-        # the messages as before (`_status` rule 2). False on every row built
-        # without the scan (the single-row answers pass no `pending`).
-        "pending_background": background,
+        # Monitor (`_hosted_runs`): `{count, run_id, jobs: [{id, title}]}`,
+        # or None. A badge, never a status: the status reads the messages as
+        # before (`_status` rule 2), and the row stays Done. `run_id` +
+        # `jobs[].id` are exactly what the agent's `task_stop` action takes.
+        # None on every row built without the scan (the single-row answers
+        # pass no `pending`).
+        "background_jobs": background,
         # UNSENT TEXT SITTING IN THIS TASK'S COMPOSER — `{preview, updated_at}`
         # or None, which is what the `✎ Draft` chip and its tooltip are drawn
         # from. A join and not a second poll: the chip has to appear and vanish
@@ -4261,7 +4290,7 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
         "blocked_reason": "",
         "attention": None,
         "live": False,
-        "pending_background": False,
+        "background_jobs": None,
         # The chat half of the store keys on a session, and a draft has none.
         # Present anyway so one row shape answers one question.
         "draft": None,
@@ -4368,7 +4397,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
         "blocked_reason": "",
         "attention": None,
         "live": False,
-        "pending_background": False,
+        "background_jobs": None,
         # THIS row's chip is about itself. Every other row joins its draft off
         # the session id; this one IS the draft, so the join is the identity.
         "draft": ({"preview": line, "updated_at": updated, "kind": "chat"}
@@ -5430,7 +5459,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     else:
         parked, pending = _hosted_runs()
     by_run: dict = {}
-    for session_id, (run_dir, size) in pending.items():
+    for session_id, (run_dir, size, _jobs) in pending.items():
         by_run.setdefault(run_dir, (size, set()))[1].add(session_id)
     tasks_watch.watch_background(by_run)
     t_parked = time.monotonic() - t1

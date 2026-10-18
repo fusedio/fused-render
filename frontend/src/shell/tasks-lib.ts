@@ -36,7 +36,7 @@
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
 import { EMBED_PREFIX, IS_QUERY_EMBED, VIEW_PREFIX } from "@platform/lib/router";
-import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import type { Task, TaskBackgroundJobs, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import { labelForSource } from "@platform/lib/format";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
@@ -705,6 +705,67 @@ export function draftRing(task: Task): boolean {
   if (column === "draft") return true;
   const lane = laneOf(column);
   return (lane === "done" || lane === "archived" || lane === "blocked") && hasDraft(task);
+}
+
+// ---- a finished row whose chat still holds a live background job -----------
+//
+// Akshil, 2026-10-18. A turn that ended with a `run_in_background` Bash (a dev
+// server, a `sleep 900`), a background Agent or a Monitor still going read as
+// plain Done — the only sign was the chat's own "1 shell running" strip. No new
+// status and no new lane: the CLI's own registry word for this state is
+// `shell`, and it already means exactly "the turn is over, a job is alive", so
+// the row stays DONE and says the rest itself:
+//
+//   * the green ring gets a YELLOW centre dot (`--status-progress`, the running
+//     colour) — `schedule-ring--job-held`;
+//   * a badge, "1 job running" / "2 jobs running", naming the jobs on hover and
+//     carrying a Stop (the agent's `task_stop`, per job);
+//   * the title reads "… · job still running" (`JOB_TITLE_SUFFIX`, UI-side —
+//     the stored recap is never rewritten);
+//   * and the row sorts FIRST in the Done lane (`groupByColumn`).
+//
+// ONE PREDICATE GATES ALL FOUR: `liveJobRow`. Done lane only — an In Progress
+// row is already "going", and a blocked or parked one has its own louder story.
+
+/** The jobs the server says a live session host is holding for this chat, or
+ *  null — no field (an older server), null, or an empty list. */
+export function liveJobs(
+  task: Pick<Task, "background_jobs">,
+): TaskBackgroundJobs | null {
+  const held = task.background_jobs;
+  return held && held.count > 0 && held.jobs.length > 0 ? held : null;
+}
+
+/** THE ONE RULE: a Done-lane row whose chat still holds a live background job.
+ *  The ring's dot, the badge, the title suffix and the Done-lane sort all ask
+ *  this and nothing else. */
+export function liveJobRow(task: Task): boolean {
+  return liveJobs(task) !== null && laneOf(taskColumn(task)) === "done";
+}
+
+/** "1 job running" / "2 jobs running". */
+export function jobCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "job" : "jobs"} running`;
+}
+
+/** What the title wears while the badge is on. */
+export const JOB_TITLE_SUFFIX = " · job still running";
+
+/** The badge a row draws, or null on every row `liveJobRow` turns down.
+ *  `hint` names each job by the CLI's own description (its id when it sent
+ *  none), one per line. */
+export function jobBadge(
+  task: Task,
+): { text: string; hint: string; runId: string; jobIds: string[] } | null {
+  if (!liveJobRow(task)) return null;
+  const held = liveJobs(task)!;
+  const names = held.jobs.map((j) => j.title.trim() || j.id);
+  return {
+    text: jobCountLabel(held.count),
+    hint: `Still running in the background:\n${names.join("\n")}`,
+    runId: held.run_id,
+    jobIds: held.jobs.map((j) => j.id),
+  };
 }
 
 /**
@@ -2364,9 +2425,6 @@ export {
   PENDING_KEY_PREFIX,
   QUEUED_PARAM,
   QUEUED_WORD,
-  backgroundCaption,
-  BACKGROUND_HINT,
-  BACKGROUND_WORD,
   queueAfter,
   queueAheadHref,
   queueCaption,
@@ -3837,6 +3895,18 @@ export function groupByColumn(
     // what lets them stay the outer order (waiting still outranks a draft in
     // Blocked) while the hoist survives inside each of their halves.
     map.set(col.key, hoistDrafts(sortLane(map.get(col.key)!, col.key, now)));
+  }
+  // LIVE BACKGROUND JOB FIRST, inside Done (`liveJobRow`, Akshil 2026-10-18).
+  // A Done row with a dev server still up under it is the one card in the lane
+  // that is not actually finished, and the one a reader may want to Stop — so
+  // it leads, and the lane's own newest-first order holds within each half.
+  // A stable partition AFTER the draft hoist, so drafts still lead each half.
+  const done = map.get("done");
+  if (done && done.length > 1 && done.some(liveJobRow)) {
+    map.set("done", [
+      ...done.filter((t) => liveJobRow(t)),
+      ...done.filter((t) => !liveJobRow(t)),
+    ]);
   }
   // WAITING FIRST, inside the one lane that holds two statuses. The lane's own
   // order (last run, descending) says nothing about which of its cards somebody

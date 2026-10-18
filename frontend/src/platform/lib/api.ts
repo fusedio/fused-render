@@ -3480,6 +3480,15 @@ export interface TaskMessage {
   immediate?: boolean;
 }
 
+/** `Task.background_jobs` — the jobs a live session host is still holding
+ *  for a chat whose reply is over. `title` is the CLI's own description ("" when
+ *  it sent none). */
+export interface TaskBackgroundJobs {
+  count: number;
+  run_id: string;
+  jobs: Array<{ id: string; title: string }>;
+}
+
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
@@ -3722,10 +3731,12 @@ export interface Task {
   live: boolean;
   // A live session host is still holding BACKGROUND WORK for this chat — a
   // `run_in_background` Bash, a background Agent, a Monitor
-  // (routers/tasks.py `_hosted_runs`). A caption, never a status: the reply
-  // may be over and that work may never end (a dev server). Absent on an older
+  // (routers/tasks.py `_hosted_runs`). A badge, never a status: the reply may
+  // be over and that work may never end (a dev server), so the row stays Done
+  // (tasks-lib `liveJobRow`). `run_id` + `jobs[].id` are what the agent's
+  // `task_stop` action takes. null when nothing is held; absent on an older
   // server.
-  pending_background?: boolean;
+  background_jobs?: TaskBackgroundJobs | null;
   unread: number;
   // WHEN THIS TASK BEGAN, epoch seconds — the EARLIEST clock the server has for
   // it: the scheduled entry's `created`, else the transcript's first record

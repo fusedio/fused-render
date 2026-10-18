@@ -239,18 +239,17 @@ describe("the List's waiting row", () => {
     expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit} {...pressRow}>');
   });
 
-  it("wears background work in the same seat, and never beside the limit", () => {
+  it("wears a live background job in the same seat, and never beside the limit", () => {
     // The Tasks List and Recent chats both draw `TaskRowItem` → this row.
-    expect(ROW).toContain("const background = limit ? \"\" : backgroundCaption(task);");
-    expect(ROW).toContain('className="tasks-row-queue tasks-row-queue--bg"');
-    expect(ROW).toContain("data-hint={BACKGROUND_HINT}");
-    expect(ROW).toContain('<span className="tasks-queue-text">{background}</span>');
-    // It keeps its width — the title ellipsises, not the caption.
+    expect(ROW).toContain("const jobs = limit ? null : jobBadge(task);");
+    expect(ROW).toContain('className="tasks-row-queue tasks-row-queue--bg tasks-job-badge"');
+    expect(ROW).toContain('<span className="tasks-queue-text">{jobs.text}</span>');
+    // It keeps its width — the title ellipsises, not the badge.
     const bg = css(TASKS_CSS).slice(css(TASKS_CSS).indexOf(".tasks-row-queue--bg {"));
     expect(bg.slice(0, bg.indexOf("}"))).toContain("flex: 0 0 auto;");
     // The limit's seat is untouched.
     expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit} {...pressRow}>');
-    expect(API).toContain("pending_background?: boolean;");
+    expect(API).toContain("background_jobs?: TaskBackgroundJobs | null;");
   });
 
   it("grows FORCE START in the hover strip, and NO Run next anywhere", () => {

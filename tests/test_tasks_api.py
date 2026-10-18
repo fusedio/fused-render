@@ -4247,7 +4247,7 @@ def test_a_stale_ok_entry_does_not_outrank_a_still_parked_run(client,
 # Monitor) still running leaves an idle registry row and a finished transcript,
 # while the session host stays up for that work. The STATUS reads the messages
 # as ever (`done`) — that work may be a dev server that never ends — and the row
-# says it separately, as `pending_background` (`_hosted_runs`). Staged as the
+# says it separately, as `background_jobs` (`_hosted_runs`). Staged as the
 # host leaves it: `host.json`, the CLI's `pid`, `out.jsonl`, and the CLI's own
 # registry file.
 
@@ -4269,8 +4269,11 @@ class _HostedAgent(_FakeAgent):
 
 
 def _bg_row(tasks):
+    """The CLI's background list; a task is an id, or `(id, description)`."""
     return {"type": "system", "subtype": "background_tasks_changed",
-            "tasks": [{"task_id": t} for t in tasks]}
+            "tasks": [{"task_id": t} if isinstance(t, str)
+                      else {"task_id": t[0], "description": t[1]}
+                      for t in tasks]}
 
 
 def _append(run, row):
@@ -4342,7 +4345,10 @@ def test_background_work_is_a_caption_not_a_status(
     task = _by_key(client)["sess-a"]
     assert task["status"] == "done"
     assert task["live"] is False
-    assert task["pending_background"] is True
+    # Exactly what the row's Stop hands the agent's `task_stop`: the run dir's
+    # name and the CLI's own task id.
+    assert task["background_jobs"] == {
+        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
 
 
 def test_background_work_under_a_dead_host_does_not_count(
@@ -4353,11 +4359,11 @@ def test_background_work_under_a_dead_host_does_not_count(
     run = _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], _dead_pid())
     _install_hosted(monkeypatch, parked.dir)
     registry("sess-a")
-    assert _by_key(client)["sess-a"]["pending_background"] is False
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
 
     # …and no host.json at all is the same answer.
     (run / "host.json").unlink()
-    assert _by_key(client)["sess-a"]["pending_background"] is False
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
 
 
 def test_a_live_host_pid_is_not_enough_without_its_claude(
@@ -4370,7 +4376,7 @@ def test_a_live_host_pid_is_not_enough_without_its_claude(
                   cli_pid=_dead_pid())
     _install_hosted(monkeypatch, parked.dir)
     registry("sess-a")  # held by another pid than the run's
-    assert _by_key(client)["sess-a"]["pending_background"] is False
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
 
 
 def test_the_caption_clears_when_the_background_list_empties(
@@ -4379,16 +4385,38 @@ def test_the_caption_clears_when_the_background_list_empties(
     run = _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
     _install_hosted(monkeypatch, parked.dir)
     registry("sess-a")
-    assert _by_key(client)["sess-a"]["pending_background"] is True
+    assert _by_key(client)["sess-a"]["background_jobs"] is not None
 
     # Read incrementally: unrelated rows in between change nothing…
     _append(run, {"type": "system", "subtype": "task_progress"})
-    assert _by_key(client)["sess-a"]["pending_background"] is True
+    assert _by_key(client)["sess-a"]["background_jobs"] is not None
     # …and the newest list decides.
     _append(run, _bg_row([]))
     task = _by_key(client)["sess-a"]
-    assert task["pending_background"] is False
+    assert task["background_jobs"] is None
     assert task["status"] == "done"
+
+
+def test_background_jobs_name_every_job_and_follow_the_newest_list(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The badge counts and names what the CLI's NEWEST list holds — "2 jobs
+    running" with both descriptions — and a Stop that ends one of them (the
+    CLI re-sends the list without it) drops it to one."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a",
+                        [("b1", "npm run dev"), ("b2", "sleep 900")],
+                        os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    jobs = _by_key(client)["sess-a"]["background_jobs"]
+    assert jobs == {"count": 2, "run_id": "r-1",
+                    "jobs": [{"id": "b1", "title": "npm run dev"},
+                             {"id": "b2", "title": "sleep 900"}]}
+
+    _append(run, _bg_row([("b1", "npm run dev")]))
+    jobs = _by_key(client)["sess-a"]["background_jobs"]
+    assert jobs["count"] == 1
+    assert [j["id"] for j in jobs["jobs"]] == ["b1"]
 
 
 def test_a_parked_card_still_outranks_background_work(
@@ -4403,7 +4431,7 @@ def test_a_parked_card_still_outranks_background_work(
     task = _by_key(client)["sess-a"]
     assert task["status"] == "needs_attention"
     assert task["attention"] == {"tool": "Bash", "summary": "rm -rf build"}
-    assert task["pending_background"] is True
+    assert task["background_jobs"] is not None
 
 
 def test_the_watcher_rings_on_a_background_list_change_only(
@@ -4416,7 +4444,7 @@ def test_the_watcher_rings_on_a_background_list_change_only(
     run = _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
     _install_hosted(monkeypatch, parked.dir)
     registry("sess-a")
-    assert _by_key(client)["sess-a"]["pending_background"] is True
+    assert _by_key(client)["sess-a"]["background_jobs"] is not None
     assert str(run) in tasks_watch._bg_runs
     assert "sess-a" not in tasks_watch.tick()
 
@@ -4432,7 +4460,7 @@ def test_the_watcher_rings_on_a_background_list_change_only(
     assert "sess-a" not in tasks_watch.tick()
 
     # The rebuild it triggers sees nothing pending and stops watching.
-    assert _by_key(client)["sess-a"]["pending_background"] is False
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
     assert tasks_watch._bg_runs == {}
 
 def test_a_broken_run_says_blocked_and_why(client, projects_dir):

@@ -305,22 +305,6 @@ export function queueCaption(facts: QueueFacts): QueueCaption | null {
   };
 }
 
-/** WHAT A ROW SAYS WHILE CLAUDE IS HOLDING BACKGROUND WORK FOR IT — a
- *  `run_in_background` Bash, a background Agent, a Monitor. Not a status (the
- *  work can be a dev server that never ends, and a row that could never read
- *  Done would never let anything waiting on Done go): a caption in the queue's
- *  seat, worn by a row whose reply is in. */
-export const BACKGROUND_WORD = "background job";
-/** …said in full on hover. The row's caption does not yield its width
- *  (tasks.css `.tasks-row-queue--bg`), so the visible word is kept short and
- *  the sentence lives here. */
-export const BACKGROUND_HINT = "background job running";
-
-/** The row's background caption, or "" when nothing is being held for it. */
-export function backgroundCaption(facts: { pending_background?: boolean | undefined }): string {
-  return facts.pending_background ? BACKGROUND_WORD : "";
-}
-
 /**
  * "1 message queued" / "2 messages queued" — the card over the chat composer.
  *

@@ -2169,14 +2169,24 @@ button.tasks-caret,
   white-space: nowrap;
 }
 
-/* …EXCEPT THE BACKGROUND-JOB CAPTION, WHICH DOES NOT GIVE WAY. The queue
-   sentence yields first because its front survives a cut; this one is two
-   words that mean nothing cut, and beside an ordinary prompt-length title the
-   `0 100 auto` above measured it at 0px — a caption that almost never shows.
-   So it keeps its width and the TITLE ellipsises instead. Kept short for that
-   reason ("background job"; the full sentence is the hint). */
+/* …EXCEPT THE BACKGROUND-JOB BADGE, WHICH DOES NOT GIVE WAY. The queue
+   sentence yields first because its front survives a cut; "1 job running"
+   means nothing cut, and beside an ordinary prompt-length title the
+   `0 100 auto` above measured a caption like it at 0px — one that almost never
+   shows. So it keeps its width and the TITLE ellipsises instead (its " · job
+   still running" suffix goes first, which is the right order: the badge says
+   the same thing). The job names are the hint; the Stop is in the hover strip
+   (ScheduleTaskViews.StopJobButton). */
 .tasks-row-queue--bg {
   flex: 0 0 auto;
+}
+
+/* " · job still running" after a Done title whose chat still holds a job
+   (tasks-lib.JOB_TITLE_SUFFIX). The muted register and the title's normal
+   weight: it is a note on the title, not part of what was said. */
+.tasks-title-suffix {
+  color: var(--fg-muted);
+  font-weight: normal;
 }
 
 .tasks-card-queue {

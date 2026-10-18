@@ -2866,6 +2866,27 @@ input.schedule-when-field {
   background: currentColor;
 }
 
+/* -- The same centre, in yellow: A LIVE BACKGROUND JOB UNDER A DONE ROW ---------
+   Akshil, 2026-10-18. The turn is over (the ring is Done's green) and the chat
+   is still holding a job — a dev server, a `sleep`, a Monitor (tasks-lib
+   .liveJobRow holds the rule). Yellow is the running colour on this page
+   (`--status-progress`), so the dot reads "something in here is still going"
+   without a new lane or a new status.
+
+   Outranks the unread fill (sits after it) and is outranked by the draft's red
+   (sits before it): unsent words are the one thing on a settled row the reader
+   can act on from the row itself. */
+.schedule-ring--job-held::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--status-progress);
+}
+
 /* -- The same centre, in red: UNSENT WORDS ON A SETTLED ROW ---------------------
    Akshil, 2026-09-14. A Done or Archived row whose composer is still holding a
    sentence looks, at a glance, exactly like one that is finished — and it is the

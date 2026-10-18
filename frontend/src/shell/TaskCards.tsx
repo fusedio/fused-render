@@ -59,6 +59,7 @@ import {
   ERASE_BLOCKED_HINT,
   emptyPaneFailed,
   draftRing,
+  liveJobRow,
   emptyPaneText,
   eraseBlocked,
   filingIntent,
@@ -632,6 +633,7 @@ function TaskCard({
             status={taskColumn(task)}
             failed={ringFailed(task)}
             draftHeld={draftRing(task) && !heldInPeek}
+            jobHeld={liveJobRow(task)}
           />
           {/* The id keeps the List row's muted skin whatever the title row below
               shows. It was lifted to bold + full fg while that row was the
