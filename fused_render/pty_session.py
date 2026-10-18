@@ -387,6 +387,8 @@ class PtySession:
         if not self.alive:
             return False
         try:
+            if self._reaped():  # pid may be recycled once reaped
+                return False
             fg_pgid = os.tcgetpgrp(self.master_fd)
             shell_pgid = os.getpgid(self.proc.pid)
         except OSError:
@@ -427,6 +429,8 @@ class PtySession:
         if not self.alive:
             return None
         try:
+            if self._reaped():  # pid may be recycled once reaped
+                return None
             fg_pgid = os.tcgetpgrp(self.master_fd)
             shell_pgid = os.getpgid(self.proc.pid)
         except OSError:
@@ -542,12 +546,22 @@ class PtySession:
             # group leader) — a process this code has nothing to do with.
             return
         pid = self.proc.pid
+        if self._reaped():
+            return
         self._signal(pid, signal.SIGHUP)
         deadline = time.time() + _KILL_GRACE_S
         while time.time() < deadline and self.alive:
             time.sleep(0.05)
-        if self.alive:
+        if self.alive and not self._reaped():
             self._signal(pid, signal.SIGKILL)
+
+    def _reaped(self) -> bool:
+        """True once anything (the reader's wait(), or a poll() that saw the
+        exit) has reaped the child: `proc.returncode` is then set and the pid
+        may be recycled by an unrelated process, so no signal or pgid lookup
+        may use it. `alive` alone is not enough: it flips only after the
+        reader finishes draining, and poll() can reap before that."""
+        return self.proc.returncode is not None
 
     @staticmethod
     def _signal(pid: int, sig: int) -> None:

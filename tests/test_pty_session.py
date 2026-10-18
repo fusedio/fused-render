@@ -546,3 +546,29 @@ def test_put_to_an_unsubscribed_asyncio_queue_is_a_silent_noop(registry, tmp_pat
         warnings.simplefilter("error")
         session._put(q, b"late")
     assert q.empty()
+
+
+def test_kill_after_poll_reaped_the_child_never_signals(registry, tmp_path, monkeypatch):
+    """poll() reaps and sets proc.returncode while `alive` can still be True
+    (reader not yet at EOF). The pid may be recycled by then, so kill() and
+    the foreground probes must not touch it. Portable: no os.waitid needed."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "exit 0"]))
+    session = registry.create()
+    # Park the reader so it cannot finish first, then reap via poll().
+    session._flowing.clear()
+    session._paused[object()] = time.monotonic() + 3600
+    monkeypatch.setattr(session, "_child_exited", lambda: False)
+    assert _wait_until(lambda: session.proc.poll() is not None, timeout=3.0)
+    assert session.proc.returncode is not None
+
+    calls = []
+    monkeypatch.setattr(os, "killpg", lambda *a: calls.append(("killpg", a)))
+    monkeypatch.setattr(os, "kill", lambda *a: calls.append(("kill", a)))
+    monkeypatch.setattr(os, "getpgid", lambda *a: calls.append(("getpgid", a)) or 0)
+    session.kill()
+    assert session.shell_is_foreground() is False
+    assert session.foreground_name() is None
+    assert calls == []
+    session._paused.clear()
+    session._flowing.set()
