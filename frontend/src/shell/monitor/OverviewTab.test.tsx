@@ -170,19 +170,19 @@ test("four chart cards with figures; alerting tiles sit above them; the rest beh
   expect(text(cards[1])).toContain("6 limit");
   // charts draw from the timeline
   expect(cards.every((c) => c.findAll((n) => n.props.className === "monitor-chart").length === 1)).toBe(true);
-  // The fixture's claude and jobs tiles are warn: the borderless stat row.
+  // The fixture's claude, jobs and errors tiles are warn: the borderless stat row.
   const keys = () => byClass(r, "monitor-tile").map((t) => t.props["data-tile"]);
   expect(keys()).toEqual(["claude", "jobs", "errors"]);
   expect(byClass(r, "monitor-lists")).toHaveLength(0);
   expect(text(r.root)).not.toContain("Stuck export");
-  await act(async () => btnOf(r, "Show all checks (5)").props.onClick());
+  await act(async () => btnOf(r, "Show all checks (4)").props.onClick());
   expect(keys()).toHaveLength(7);
   const tiles = byClass(r, "monitor-tile");
   const disk = tiles.find((t) => t.props["data-tile"] === "disk")!;
   expect(disk.props.className).toContain("is-unavailable");
   expect(text(disk)).toContain("unavailable");
   await act(async () => btnOf(r, "Hide checks").props.onClick());
-  expect(keys()).toHaveLength(2);
+  expect(keys()).toHaveLength(3);
 });
 
 test("a warn/bad card is tinted and a plain click on it navigates", async () => {
