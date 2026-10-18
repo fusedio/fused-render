@@ -3266,11 +3266,19 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     deliberate `=0` is an opt-out rather than a truthy string. Their
     CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING still wins inside the CLI either
     way — it is ANDed into the same branch — so this cannot override it."""
+    # A session started right at boot should still see the login-shell PATH
+    # the server merges into os.environ in the background (login_path.py).
+    # Looked up in sys.modules, not imported: this file never imports
+    # `fused_render` (see the header). Absent = no server started the probe.
+    _lp = sys.modules.get("fused_render.login_path")
+    if _lp is not None:
+        _lp.wait(2.0)
     env = os.environ.copy()
     env.pop("FUSED_ENV", None)
-    # A Finder-launched .app gets a minimal PATH (/usr/bin:/bin), so the
-    # session's Bash tool cannot find Homebrew tools (gh, node, brew) that
-    # work fine from a terminal claude. Append the usual install dirs.
+    # A Finder-launched .app gets a minimal PATH (/usr/bin:/bin). The login
+    # shell probe fixes that for everything it can see; this is the FALLBACK
+    # for when that probe failed or has not finished: append the usual
+    # Homebrew install dirs so gh/node/brew are still found.
     parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
     extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
              os.path.expanduser("~/.local/bin")]

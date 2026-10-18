@@ -105,3 +105,20 @@ def test_start_merges_fake_shell_dirs(monkeypatch, tmp_path):
     login_path.start()  # idempotent
     assert login_path.wait(10) is True
     assert os.environ["PATH"] == "/app/bin:/usr/bin:/fnm/bin"
+
+
+def test_spawn_env_waits_for_probe_and_keeps_homebrew(monkeypatch, tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "claude_agent_login_path", os.path.join("fused_render", "claude_agent", "agent.py"))
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+    sh = _shell(tmp_path, 'sleep 0.5\nprintf %s "__FR_PATH_BEGIN__/fnm/bin__FR_PATH_END__"\n')
+    monkeypatch.delenv("FUSED_RENDER_NO_LOGIN_PATH", raising=False)
+    monkeypatch.setenv("SHELL", sh)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    login_path.start()
+    parts = agent._spawn_env("chat-1")["PATH"].split(os.pathsep)
+    assert "/fnm/bin" in parts  # waited for the probe
+    assert "/opt/homebrew/bin" in parts  # fallback still there
+    assert parts.index("/usr/bin") < parts.index("/fnm/bin")

@@ -131,7 +131,12 @@ def export_app_env() -> None:
     per-branch nesting (``FUSED_RENDER_BRANCH``) — so no consumer re-implements
     those rules. Called from the same place as ``set_server_origin_env``, i.e.
     before the server starts serving, so every child process inherits them.
+
+    Also starts the one-shot login-shell PATH probe (login_path.py), so a
+    Finder-launched app's children see fnm/nvm/volta tools too.
     """
+    from fused_render import login_path
+    login_path.start()
     from fused_render import canvases
     from fused_render import skill_plugin
     from fused_render.shell import seed as shell_seed

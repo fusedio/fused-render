@@ -58,6 +58,10 @@ os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
 # Tests describe Fused Render; a stale fused_render/_baked_flavor.py from a
 # local bot DMG build must not flip them (port 1777 assertions, startup set).
 os.environ.setdefault("FUSED_RENDER_FLAVOR", "render")
+# export_app_env() starts a probe that runs the developer's real login shell
+# (login_path.py); no test should ever spawn it. test_login_path.py clears this
+# for the one test that exercises start().
+os.environ.setdefault("FUSED_RENDER_NO_LOGIN_PATH", "1")
 
 
 # What the warm fixture's project folder declares (SPEC PY-16 — the environment
