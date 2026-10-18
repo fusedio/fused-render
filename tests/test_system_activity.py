@@ -656,3 +656,13 @@ def test_detail_survives_missing_readers(client, fake, monkeypatch):
     monkeypatch.setattr(detail, "_lsof_ports", lambda pid: (_ for _ in ()).throw(OSError("x")))
     d = client.get("/api/system/activity/detail?pid=204").json()
     assert d["cwd"] is None and d["ports"] == [] and d["venv"] is None
+
+
+def test_claude_base_prefers_readable_title_else_folder():
+    cb = labels.claude_base
+    assert cb("fix the bug", "/w/proj") == "fix the bug"
+    assert cb("[terminal 71684eee9a7545aa8e5acb2b12444bb6: zsh]", "/w/fused-render") == "fused-render"
+    assert cb("<pane-shot>", "/w/fused-render/") == "fused-render"
+    assert cb("x" * 41, "/w/proj") == "proj"
+    assert cb("deploy 71684eee9a7545aa8e5acb2b12444bb6", "/w/proj") == "deploy"
+    assert cb("<pane-shot>", "") == ""

@@ -194,8 +194,12 @@ def _claude_runs(backend) -> dict[int, Owner]:
             continue
         if not _is_run_process(backend, pid, run["run_dir"]):
             continue  # the pid file outlived its process and the pid was reused
-        title = run_title(run.get("meta") or {})
-        owner = Owner("claude", f"Claude: {title}" if title else "Claude",
+        meta = run.get("meta") or {}
+        folder = str(meta.get("project") or meta.get("cwd") or "")
+        if not folder:
+            folder = str(_claude_session_row(pid).get("cwd") or "")
+        title = claude_base(run_title(meta), folder)
+        owner = Owner("claude", f"Claude: {title}" if title else "Claude CLI",
                       {"run_id": run["run_id"]})
         out[pid] = owner
         host = backend.parent_pid(pid)
@@ -222,14 +226,32 @@ def claude_roots(backend, now: float | None = None) -> dict[int, Owner]:
     return found
 
 
-def _claude_session_name(pid: int) -> str:
+def _claude_session_row(pid: int) -> dict:
     try:
         from fused_render import tasks_watch
         sid = tasks_watch.session_for_pid(pid)
-        row = tasks_watch.registry_row(sid) if sid else None
-        return str((row or {}).get("name") or "")
+        return (tasks_watch.registry_row(sid) if sid else None) or {}
     except Exception:  # noqa: BLE001
-        return ""
+        return {}
+
+
+def _claude_session_name(pid: int) -> str:
+    row = _claude_session_row(pid)
+    return claude_base(str(row.get("name") or ""), str(row.get("cwd") or ""))
+
+
+_HEX_ID = re.compile(r"\s*\b[0-9a-f]{32}\b")
+
+
+def claude_base(title: str, folder: str = "") -> str:
+    """The readable base of a Claude process label: the session title when it is
+    short human text, else the project folder's basename, else "" (callers
+    then label the process "Claude CLI").
+    A title that starts with `<` or `[` is a machine-injected tag, not prose."""
+    t = _HEX_ID.sub("", (title or "").strip()).strip(" :")
+    if t and t[0] not in "<[" and len(t) <= 40:
+        return t
+    return _basename(folder) if folder else ""
 
 
 # ---- by command line ----------------------------------------------------------
@@ -305,7 +327,7 @@ def classify(pid: int, args: list[str] | None) -> Owner | None:
     exe = _basename(args[0])
     if exe == "claude":
         name = _claude_session_name(pid)
-        return Owner("claude", f"Claude: {name}" if name else "Claude", {})
+        return Owner("claude", f"Claude: {name}" if name else "Claude CLI", {})
     if _is_python(exe) and any(_basename(a) == "_child.py" for a in args[1:3]):
         return Owner("run", "Run: Python", {})
     kind, label = describe(args)
