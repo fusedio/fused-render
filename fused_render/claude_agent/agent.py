@@ -6900,14 +6900,14 @@ def _task_stop(run_id: str, task_id: str) -> dict:
     return {"ok": True}
 
 
-#: The most `out.jsonl` bytes one `_catch_up_registry` folds. Past it the
-#: registry is left as the last poll wrote it (stale, never wrong-forever: the
-#: next turn's poll absorbs the rows).
+#: The most `out.jsonl` bytes one `_catch_up_registry` reads. A longer
+#: backlog (hours of a background Agent streaming with nobody polling) is
+#: folded this much per call, so the registry still converges.
 _REGISTRY_CATCH_UP_MAX = 4 * 1024 * 1024
-#: Rows that end a catch-up: `_update_run_registry` also captures the slash
-#: command list off them and reports `commands_changed` to the poll that
-#: absorbs them. A catch-up that advanced the offset past one would swallow
-#: that news, so it stops in front of it and leaves the rest to the next poll.
+#: Rows a catch-up stops in front of: `_update_run_registry` also captures the
+#: slash command list off them and reports `commands_changed` to the poll that
+#: absorbs them, so they are left for a poll — unless one is the very next
+#: row, where stopping would wedge the registry behind it for good.
 _CATCH_UP_STOP = (b'"init"', b'"commands_changed"')
 
 
@@ -6932,24 +6932,40 @@ def _catch_up_registry(run_dir: str) -> None:
         _registry, applied, _current = _load_registry(run_dir)
         path = os.path.join(run_dir, "out.jsonl")
         size = os.path.getsize(path)
-        if size <= applied or size - applied > _REGISTRY_CATCH_UP_MAX:
+        if size <= applied:
             return
         rows, ends = [], []
+        last = None   # the last whole line read, whatever its kind
         with open(path, "rb") as fh:
             fh.seek(applied)
             pos = applied
             for line in fh:
                 if not line.endswith(b"\n"):
                     break   # half-written: the next read gets it whole
-                if b'"system"' in line and any(m in line for m in _CATCH_UP_STOP):
+                if pos - applied >= _REGISTRY_CATCH_UP_MAX:
+                    break   # the rest on the next call
+                system = b'"system"' in line
+                if system and pos > applied and any(m in line for m in _CATCH_UP_STOP):
                     break
                 pos += len(line)
+                last = line
+                if not system:
+                    continue   # task rows are all `system` rows; not parsed
                 try:
                     row = json.loads(line)
                 except ValueError:
                     continue
                 rows.append(row)
                 ends.append(pos)
+        # The offset moves to the last whole line READ, not only the last task
+        # row: a backlog of other rows is passed over once, not re-read on
+        # every call. That line is handed over as-is (a non-task row, ignored).
+        if last is not None and (not ends or ends[-1] < pos):
+            try:
+                rows.append(json.loads(last))
+                ends.append(pos)
+            except ValueError:
+                pass
         if rows:
             _update_run_registry(run_dir, rows, ends, {}, {})
     except Exception:  # noqa: BLE001 — a stale answer, never a failed read
@@ -9762,10 +9778,12 @@ def _session_task_registry(file: str, session_id: str,
                               _run_own_session(run_dir, meta)):
             continue
         host = _host_alive(run_dir)
-        if host:
-            # The turn may be over while the host runs background work on:
-            # absorb what the CLI wrote since the last poll, so a job that
-            # ended reads ended (`_catch_up_registry`).
+        if host and not _turn_state(run_dir)[0]:
+            # The turn is over while the host runs background work on: absorb
+            # what the CLI wrote since the last poll, so a job that ended reads
+            # ended (`_catch_up_registry`). NEVER mid-turn: the poll owns the
+            # registry then, and only it holds the tool inputs a fresh
+            # `task_started` takes its subagent type and model from.
             _catch_up_registry(run_dir)
         registry = _read_bg_tasks(run_dir)
         if registry and not (host or _alive(run_dir)):

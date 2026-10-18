@@ -2400,7 +2400,7 @@ describe("the unread mark", () => {
       CARD.indexOf('className={"schedule-tv-card-title"'),
     );
     expect(head).toContain("<IdChip");
-    expect(head).toContain(": failedOffLane\n              ? <StatusIcon status={lane} failed />");
+    expect(head).toContain(": failedOffLane && <StatusIcon status={lane} failed />}");
     // THREE, and all are the same exception: the ring is drawn when the card's
     // status is not all its lane says — a broken run filed elsewhere, a waiting
     // one drawn inside Blocked, and a finished card with a live background job
@@ -2852,11 +2852,11 @@ describe("the board card's status ring", () => {
     // `isFailedTask` is the single notion of "reads as failed" (the failed lane, or
     // the flag that repaints a Done ring red). A second inline reading of
     // `task.failed` here is how the card and the List row would drift apart.
-    expect(CARD).toContain(": failedOffLane\n              ? <StatusIcon status={lane} failed />");
+    expect(CARD).toContain(": failedOffLane && <StatusIcon status={lane} failed />}");
     // …and the third card whose ring says what its lane does not: a finished
     // turn with a live background job, drawn In Progress (tasks-lib.liveJobRow)
     // — the blue "Background" ring.
-    expect(CARD).toContain(": jobs && <StatusIcon status={status} background />}");
+    expect(CARD).toContain(": jobs\n              ? <StatusIcon status={status} background />");
     // The waiting card's own ring, by the same rule: its status and its lane are
     // two different facts (Needs attention, drawn under Blocked), which is
     // exactly the condition the ring is drawn for.

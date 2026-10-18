@@ -295,12 +295,60 @@ def test_catch_up_stops_before_an_init_row_so_the_poll_still_reports_it(
     _append(run_dir, [_sys("task_started", task_id="b1", description="sleep",
                            task_type="local_bash"), _result()])
     agent._poll("run")
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="completed")])
+    mid = os.path.getsize(run_dir / "out.jsonl")
+    _append(run_dir, [_sys("init", slash_commands=["x"]),
+                      _sys("task_started", task_id="b2", description="later")])
+    agent._catch_up_registry(str(run_dir))
+    reg, after, _cur = agent._load_registry(str(run_dir))
+    # Absorbed up to the `init`, and not past it: the poll still gets that news.
+    assert after == mid
+    assert reg["b1"]["status"] == "completed" and "b2" not in reg
+
+
+def test_history_never_catches_up_mid_turn(agent, run_dir, tmp_path, monkeypatch):
+    """Mid-turn the poll owns the registry (only it has the tool inputs a
+    fresh `task_started` takes its subagent fields from)."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="b1", description="bg",
+                           task_type="local_bash")])
+    agent._poll("run")
     _reg, before, _cur = agent._load_registry(str(run_dir))
+    monkeypatch.setattr(agent, "_host_alive", lambda _d: True)
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="completed")])
+    agent._session_task_registry(str(target), "s")   # no `result` yet: turn open
+    assert agent._load_registry(str(run_dir))[1] == before
+    _append(run_dir, [_result()])
+    reg, _host, _dir = agent._session_task_registry(str(target), "s")
+    assert reg["b1"]["status"] == "completed"
+
+
+def test_catch_up_folds_a_long_backlog_in_chunks(agent, run_dir, monkeypatch):
+    _append(run_dir, [_sys("task_started", task_id="b1", description="sleep",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    monkeypatch.setattr(agent, "_REGISTRY_CATCH_UP_MAX", 200)
+    _append(run_dir, [_user("x" * 300)] * 3
+            + [_sys("task_notification", task_id="b1", status="completed")])
+    for _ in range(10):
+        agent._catch_up_registry(str(run_dir))
+    assert agent._read_bg_tasks(str(run_dir))["b1"]["status"] == "completed"
+
+
+def test_catch_up_never_wedges_behind_an_init_row(agent, run_dir, monkeypatch):
+    """Bugbot (#1732): an `init` as the very next row used to stop every
+    catch-up in front of it, so the job's end was never absorbed."""
+    _append(run_dir, [_sys("task_started", task_id="b1", description="sleep",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
     _append(run_dir, [_sys("init", slash_commands=["x"]),
                       _sys("task_notification", task_id="b1", status="completed")])
-    agent._catch_up_registry(str(run_dir))
-    _reg, after, _cur = agent._load_registry(str(run_dir))
-    assert after == before
+    monkeypatch.setattr(agent, "_host_alive", lambda _d: True)
+    got = agent._run_tasks("run")
+    assert got["tasks"][0]["status"] == "completed"
+    assert got["tasks_pending"] is False
 
 
 def test_tasks_action_with_the_host_gone_downgrades_and_says_so(agent, run_dir, monkeypatch):

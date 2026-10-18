@@ -502,6 +502,9 @@ export const ICON_UNARCHIVE = icon(
 // bars in the body.
 //
 // A BIN, NOT AN ✕, and deliberately not a variation on the archive box above:
+/** A filled-outline square: the Cards wall's "stop the background job" door. */
+export const ICON_STOP = icon(<rect x="6" y="6" width="12" height="12" rx="1.5" />, 12);
+
 // Archive and Delete sit within a few pixels of each other on the Cards wall's
 // door strip, and the whole reason the archive pair share a shape is so a reader
 // can tell the two DIRECTIONS of one reversible verb apart at a glance. The
@@ -511,8 +514,6 @@ export const ICON_UNARCHIVE = icon(
 //
 // 12px, the row's mark size, so it sits on the "Folder missing" line it prefixes
 // rather than out-weighing the words it belongs to.
-/** A filled-outline square: the Cards wall's "stop the background job" door. */
-export const ICON_STOP = icon(<rect x="6" y="6" width="12" height="12" rx="1.5" />, 12);
 export const ICON_TRASH = icon(
   <><path d="M3 6h18" />
     <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
@@ -6183,13 +6184,14 @@ function TaskCard({
         <span className="schedule-tv-card-head">
           {waiting
             ? <StatusIcon status="needs_attention" />
-            : failedOffLane
-              ? <StatusIcon status={lane} failed />
-              /* THE THIRD CARD WHOSE RING SAYS WHAT ITS LANE DOES NOT: a
-                 finished turn with a job still running under it, drawn In
-                 Progress (tasks-lib.liveJobRow / boardLane). The List row's own
-                 ring — blue, "Background". */
-              : jobs && <StatusIcon status={status} background />}
+            /* THE THIRD CARD WHOSE RING SAYS WHAT ITS LANE DOES NOT: a finished
+               turn with a job still running under it, drawn In Progress
+               (tasks-lib.liveJobRow / boardLane). The List row's own ring —
+               blue, "Background" — and ahead of the failed flag, as on the List
+               row and the Cards wall (StatusIcon: background outranks failed). */
+            : jobs
+              ? <StatusIcon status={status} background />
+              : failedOffLane && <StatusIcon status={lane} failed />}
           <TaskAgentMark backend={task.backend} />
           <IdChip id={task.task_id} kind="task" />
           {/* The draft chip left this head with the List row's (Akshil,
