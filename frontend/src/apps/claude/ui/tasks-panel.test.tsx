@@ -199,13 +199,13 @@ describe("TasksPanel", () => {
       expect(byClass(r.root, "chat-task").length).toBe(2);
     });
 
-    test("dismissals reset when the run changes", () => {
+    test("CodeRabbit: dismissals survive a run handover (the rows do, carried)", () => {
       const failed = rec({ id: "f", kind: "shell", description: "bad", status: "failed", error: "boom" });
       const r = mount(<TasksPanel tasks={[failed]} runId="r1" open onToggle={() => {}} now={() => 100_000} />);
       act(() => dismissBtn(r.root)[0]!.props.onClick());
       expect(byClass(r.root, "chat-task").length).toBe(0);
-      act(() => r.update(<TasksPanel tasks={[failed]} runId="r2" open onToggle={() => {}} now={() => 100_000} />));
-      expect(byClass(r.root, "chat-task").length).toBe(1);
+      act(() => r.update(<TasksPanel tasks={[{ ...failed, carried: true }]} runId="r2" open onToggle={() => {}} now={() => 100_000} />));
+      expect(byClass(r.root, "chat-task").length).toBe(0);
     });
 
     test("state resets when the session changes even with runId null", () => {
@@ -312,17 +312,35 @@ describe("TasksPanel", () => {
       expect(text(byClass(r.root, "chat-tasks-more")[0]!)).toBe("Show 1 finished · 1 failed");
     });
 
-    test("a failed row from before the turn went live does not come back red on send", () => {
-      let clock = NOW;
-      const el = (live: boolean) => (
-        <TasksPanel tasks={[ended("f", 60, "failed")]} runId="r1" turnLive={live} open onToggle={() => {}} now={() => clock} />
+    test("the last run's failed row does not come back red on send (list not yet the live run's)", () => {
+      const el = (live: boolean, liveRunId: string | null) => (
+        <TasksPanel tasks={[ended("f", 60, "failed")]} runId="r1" turnLive={live} liveRunId={liveRunId} open onToggle={() => {}} now={() => NOW} />
       );
-      const r = mount(el(false));
+      const r = mount(el(false, null));
       expect(descs(r)).toEqual([]);
-      clock += 1000;
-      act(() => r.update(el(true)));
+      act(() => r.update(el(true, null))); // starting: no run id yet
+      expect(descs(r)).toEqual([]);
+      act(() => r.update(el(true, "r2")));
       expect(descs(r)).toEqual([]);
       expect(byClass(r.root, "chat-tasks-summary").map(text)).toEqual(["1 finished"]);
+    });
+
+    test("Bugbot: a reload mid-turn holds the live run's failures once the page goes live", () => {
+      const el = (live: boolean, liveRunId: string | null) => (
+        <TasksPanel tasks={[ended("f", 60, "failed")]} runId="r1" turnLive={live} liveRunId={liveRunId} open onToggle={() => {}} now={() => NOW} />
+      );
+      const r = mount(el(false, null)); // history painted while idle
+      act(() => r.update(el(true, "r1")));
+      expect(descs(r)).toEqual(["f"]);
+      expect(byClass(r.root, "chat-tasks-summary").map(text)).toEqual(["1 failed"]);
+    });
+
+    test("a dismissed failure leaves the live header too", () => {
+      const r = mount(<TasksPanel tasks={[ended("f", 60, "failed")]} runId="r1" open onToggle={() => {}} now={() => NOW} />);
+      const dismiss = r.root.findAll((n) => n.props["aria-label"] === "Dismiss" && typeof n.type === "string")[0]!;
+      act(() => dismiss.props.onClick());
+      act(() => r.update(<TasksPanel tasks={[ended("f", 60, "failed")]} runId="r1" open={false} onToggle={() => {}} now={() => NOW} />));
+      expect(r.toJSON()).toBeNull();
     });
 
     test("dismissing every row takes the closed strip down", () => {

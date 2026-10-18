@@ -67,24 +67,22 @@ export const TASK_ENDED_GRACE_MS = 5000;
  *
  * A FAILED ROW STAYS WHILE ITS TURN IS LIVE — the model may still be acting on
  * it — and then leaves on the same grace as the others, counted from whichever
- * came later: the failure, or the moment the turn ended (`edgeAt`, 0 when this
- * panel never saw the edge). A `carried` row's turn is long over, and so is
- * one that failed before the live turn began (`edgeAt` = when it went live):
- * the last run's rows are only carried at the next run's first poll, and a
- * send must not bring them back red for that one lap.
+ * came later: the failure, or the moment the turn ended (`endedAt`, 0 when
+ * this panel never saw it end). Held means the row is THE LIVE RUN'S: the list
+ * is owned by the run in flight (`owned`: `runId` is the live run) and the row
+ * is not `carried`. Ownership, not clocks — the last run's rows are only
+ * carried at the next run's first poll, so a send must not bring them back red
+ * for that lap, while a reload mid-turn lands the live run's list from history
+ * before the page goes live and must still hold its failures.
  * Not pinned past that (D1362 addendum): under a reply that says "done", a red
  * row that never leaves reads as "task broken".
  */
-function hideAfterMs(t: TaskRecord, turnLive: boolean, edgeAt: number): number | null {
+function hideAfterMs(t: TaskRecord, turnLive: boolean, owned: boolean, endedAt: number): number | null {
   if (isActive(t.status)) return null;
   const end = (Number(t.ended_at) || 0) * 1000;
   if (t.status === "failed" && !t.carried) {
-    if (turnLive) {
-      // Epoch seconds against the page clock, same machine: 1 s of slack.
-      if (!edgeAt || end >= edgeAt - 1000) return null;
-      return end ? end + TASK_ENDED_GRACE_MS : -Infinity;
-    }
-    const from = Math.max(end, edgeAt);
+    if (turnLive && owned) return null;
+    const from = Math.max(end, turnLive ? 0 : endedAt);
     return from ? from + TASK_ENDED_GRACE_MS : -Infinity;
   }
   return end ? end + TASK_ENDED_GRACE_MS : -Infinity;
@@ -108,6 +106,9 @@ export interface TasksPanelProps {
   /** The chat's turn is in flight. A failed row is held, and the header says
    *  "N failed", only while it is (see `hideAfterMs`). Default true. */
   turnLive?: boolean;
+  /** `ChatState.runId` — the run in flight. The list is the live run's only
+   *  when `runId` is it; `undefined` (not told) counts as the live run's. */
+  liveRunId?: string | null;
   /** The conversation on screen. History-only sessions all have a null runId,
    *  so the panel's per-session state (dismissed rows, Show finished, stop
    *  errors) resets on this as well. */
@@ -146,31 +147,36 @@ function KindIcon({ kind }: { kind: TaskKind }) {
   return <CircleDot {...props} />;
 }
 
-export function TasksPanel({ tasks, runId, turnLive = true, sessionId = null, open, onToggle, parentModel, fetchOutput = defaultFetch, stopTask = defaultStop, now = Date.now }: TasksPanelProps) {
+export function TasksPanel({ tasks, runId, turnLive = true, liveRunId, sessionId = null, open, onToggle, parentModel, fetchOutput = defaultFetch, stopTask = defaultStop, now = Date.now }: TasksPanelProps) {
   const [outputs, setOutputs] = useState<Record<string, OutputState>>({});
   // Answers for a run that is no longer the panel's are dropped on arrival.
   const runRef = useRef(runId);
   runRef.current = runId;
   const [showEnded, setShowEnded] = useState(false);
-  // Rows the user dismissed (client-side only), per run; they count toward
+  // Rows the user dismissed (client-side only), per conversation; they count toward
   // "Show N finished". Stop requests in flight and their refusals, by task.
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(new Set());
   const [stopping, setStopping] = useState<Record<string, { phase: "pending" } | { phase: "error"; message: string }>>({});
   // Failed rows whose error line the user opened to its full text.
   const [errOpen, setErrOpen] = useState<ReadonlySet<string>>(new Set());
-  // WHEN THE TURN LAST WENT LIVE OR ENDED, as this panel saw it (0 = never saw
-  // the edge): see `hideAfterMs`. Derived during render, React's "adjust state
-  // on a prop change" shape, so the hide is right on first paint.
-  const [turnEdge, setTurnEdge] = useState({ live: turnLive, at: 0 });
-  if (turnEdge.live !== turnLive) setTurnEdge({ live: turnLive, at: now() });
-  const edgeAt = turnEdge.live === turnLive ? turnEdge.at : now();
+  // WHEN THE TURN LAST ENDED, as this panel saw it (0 = never saw it end):
+  // where a failed row's grace starts. Derived during render, React's "adjust
+  // state on a prop change" shape, so the hide is right on first paint.
+  const [turnEdge, setTurnEdge] = useState({ live: turnLive, endedAt: 0 });
+  if (turnEdge.live !== turnLive) setTurnEdge({ live: turnLive, endedAt: turnLive ? 0 : now() });
+  const endedAt = turnEdge.live === turnLive ? turnEdge.endedAt : turnLive ? 0 : now();
+  const owned = liveRunId === undefined || (!!runId && runId === liveRunId);
   useEffect(() => {
     setOutputs({});
     setShowEnded(false);
-    setDismissed(new Set());
     setStopping({});
     setErrOpen(new Set());
   }, [runId, sessionId]);
+  // Dismissals outlive a run handover — the rows do too (`carried`) — and go
+  // with the conversation.
+  useEffect(() => {
+    setDismissed(new Set());
+  }, [sessionId]);
 
   // THE ELAPSED CLOCK TICKS ONLY WHILE SOMETHING IS LIVE AND THE ROWS SHOW: a
   // collapsed strip says no times, and an ended task's time is fixed.
@@ -187,7 +193,7 @@ export function TasksPanel({ tasks, runId, turnLive = true, sessionId = null, op
   const nowMs = now();
   let nextHide = Infinity;
   for (const t of tasks) {
-    const at = hideAfterMs(t, turnLive, edgeAt);
+    const at = hideAfterMs(t, turnLive, owned, endedAt);
     if (at != null && at >= nowMs && at - nowMs < nextHide) nextHide = at - nowMs;
   }
   const hideDelay = open && !showEnded && Number.isFinite(nextHide) ? nextHide + 1 : null;
@@ -263,7 +269,7 @@ export function TasksPanel({ tasks, runId, turnLive = true, sessionId = null, op
   // Dismissing every row takes the strip down with them.
   const kept = tasks.filter((t) => !dismissed.has(t.id)).length;
   // The header's "N failed" names exactly the failed rows being held open.
-  const held = tasks.filter((t) => t.status !== "failed" || hideAfterMs(t, turnLive, edgeAt) == null);
+  const held = tasks.filter((t) => !dismissed.has(t.id) && (t.status !== "failed" || hideAfterMs(t, turnLive, owned, endedAt) == null));
   const summary = summarizeTasks(held, { live: turnLive }) || (kept ? `${kept} finished` : "");
   if (!open && !summary) return null;
   const sorted = sortTasks(tasks);
@@ -271,7 +277,7 @@ export function TasksPanel({ tasks, runId, turnLive = true, sessionId = null, op
     ? sorted
     : sorted.filter((t) => {
         if (dismissed.has(t.id)) return false;
-        const at = hideAfterMs(t, turnLive, edgeAt);
+        const at = hideAfterMs(t, turnLive, owned, endedAt);
         return at == null || nowMs <= at;
       });
   const hiddenCount = sorted.length - rows.length;

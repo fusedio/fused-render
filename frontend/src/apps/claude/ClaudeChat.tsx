@@ -5233,6 +5233,7 @@ function ChatBody(props: ChatBodyProps) {
                       tasks={state.tasks}
                       runId={state.tasksRunId}
                       turnLive={running}
+                      liveRunId={state.runId}
                       sessionId={state.sessionId ?? null}
                       open={tasksOpen}
                       onToggle={toggleTasksPanel}
