@@ -1322,7 +1322,7 @@ th[aria-sort="descending"] .monitor-sort {
   color: var(--fg-muted);
 }
 
-/* ---- stacked timeline (Overview, and the chip popover in compact form) ---- */
+/* ---- stacked timeline (Overview) ---- */
 .monitor-tl-row {
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr);
@@ -1365,11 +1365,6 @@ th[aria-sort="descending"] .monitor-sort {
 
 .monitor-tl-mark.is-outage {
   background: var(--error);
-}
-
-.monitor-tl.is-compact .monitor-tl-row {
-  grid-template-columns: 96px minmax(0, 1fr);
-  gap: 6px;
 }
 
 @media (max-width: 900px) {

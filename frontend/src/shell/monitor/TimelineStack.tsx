@@ -1,30 +1,28 @@
-// The stacked timeline: one Sparkline row per figure (requests/s, in flight,
-// threads busy, loop lag, CPU, swap) on a shared time axis, with outage and
-// boot markers drawn across every row. Shared by the Overview tab (ten minutes,
-// full size) and the System chip's popover (`compact`: fewer rows, shorter).
+// The stacked timeline: one Sparkline row per headline figure (requests/s, in
+// flight, loop lag, CPU) on a shared time axis, with outage markers drawn
+// across every row. Restarts are not drawn: the trail cannot tell them apart
+// from other servers sharing it.
 import { Sparkline } from "./Sparkline";
 import type { TimelinePoint } from "./monitor-api";
 import { timelineSeries } from "./monitor-net-lib";
 
-const COMPACT_KEYS = new Set(["rps", "in_flight", "lag_ms", "cpu"]);
+const ROW_KEYS = new Set(["rps", "in_flight", "lag_ms", "cpu"]);
 
 export default function TimelineStack({
   points,
   events,
   windowS = 600,
-  compact = false,
 }: {
   points: TimelinePoint[];
-  events: { t: number; kind: "outage" | "boot" }[];
+  events: { t: number; kind: string }[];
   windowS?: number;
-  compact?: boolean;
 }) {
   const end = points.length ? points[points.length - 1].t : 0;
   const t0 = end - windowS;
-  const rows = timelineSeries(points).filter((r) => !compact || COMPACT_KEYS.has(r.key));
-  const marks = events.filter((e) => e.t >= t0 && e.t <= end);
+  const rows = timelineSeries(points).filter((r) => ROW_KEYS.has(r.key));
+  const marks = events.filter((e) => e.kind === "outage" && e.t >= t0 && e.t <= end);
   return (
-    <div className={`monitor-tl${compact ? " is-compact" : ""}`}>
+    <div className="monitor-tl">
       {rows.map((r) => {
         const known = r.points.filter((p) => p.v !== null);
         const last = known.length ? known[known.length - 1].v : null;
@@ -39,9 +37,9 @@ export default function TimelineStack({
               {marks.map((m, i) => (
                 <span
                   key={i}
-                  className={`monitor-tl-mark is-${m.kind}`}
+                  className="monitor-tl-mark is-outage"
                   style={{ left: `${(((m.t - t0) / windowS) * 100).toFixed(2)}%` }}
-                  title={m.kind === "outage" ? "Server outage" : "Server restarted"}
+                  title="Server outage"
                 />
               ))}
             </div>
