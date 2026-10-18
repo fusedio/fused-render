@@ -167,7 +167,7 @@ export interface Dashboard {
       t_up?: number | null;
       duration_s: number | null;
       restarted: boolean;
-      clean: boolean;
+      crashed: boolean;
       expected: boolean;
     }[];
     last_unexpected_outage_age_s: number | null;

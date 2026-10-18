@@ -148,6 +148,11 @@ test("errors tile: restarts never raise the level; unexpected outage is bad; cra
   expect(tile({}).primary).toBe("No problems");
   expect(tile({}).caption).toBe("5 restarts (24 h)");
   expect(tile({ last_unexpected_outage_age_s: 60 }).level).toBe("bad");
+  const restart = { t_down: Date.now() / 1000 - 60, duration_s: 20, restarted: true, crashed: false, expected: true };
+  expect(tile({ outages: [restart] }).level).toBe("ok");
+  expect(tile({ outages: [restart] }).primary).toBe("No problems");
+  const hang = { ...restart, restarted: false, expected: false };
+  expect(tile({ outages: [hang] }).primary).toBe("1 outage");
   const c = tile({ crashes_24h: 2 });
   expect(c.level).toBe("warn");
   expect(c.primary).toBe("2 crashes");

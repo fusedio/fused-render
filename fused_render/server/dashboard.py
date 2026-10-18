@@ -313,11 +313,13 @@ def boot_changes(rows: list[dict]) -> list[dict]:
 
 
 CRASH_MAX_AGE_S = 7 * 86400
+CRASH_MIN_BYTES = 200  # a faulthandler stub ("Thread 0x...") is not a dump
 
 
 def _scan_crashes(now: float | None = None) -> list[dict]:
-    """Real faulthandler dumps only: a 0-byte file is a process that never
-    crashed (one file is created per process at start). Last 7 days, newest first."""
+    """Real faulthandler dumps only: an empty file is a process that never
+    crashed (one is created per process at start) and anything under
+    CRASH_MIN_BYTES is a stub. Last 7 days, newest first."""
     from fused_render import crashlog
     now = time.time() if now is None else now
     d = crashlog.crash_dir()
@@ -329,7 +331,7 @@ def _scan_crashes(now: float | None = None) -> list[dict]:
                 st = os.stat(path)
             except OSError:
                 continue
-            if st.st_size <= 0 or now - st.st_mtime > CRASH_MAX_AGE_S:
+            if st.st_size < CRASH_MIN_BYTES or now - st.st_mtime > CRASH_MAX_AGE_S:
                 continue
             out.append({"name": name, "bytes": st.st_size, "t": st.st_mtime,
                         "path": os.path.abspath(path)})
@@ -352,14 +354,14 @@ def _recent_crash_name(max_age_s: float = 86400) -> str | None:
     return None
 
 
-def classify_outages(rows: list[dict], now: float | None = None) -> list[dict]:
-    """Client-observed outages only (quit rows are clean-shutdown records),
-    enriched with duration / restarted / clean. `expected` == `clean`: the
-    server shut itself down on purpose inside the outage window (dev reload,
-    update). Newest first, max 10."""
+def classify_outages(rows: list[dict], now: float | None = None,
+                     crashes: list[dict] | None = None) -> list[dict]:
+    """Client-observed outages (quit rows are ignored), enriched with duration
+    / restarted / crashed. `restarted` = the server came back as a new process
+    (reload, update, relaunch) and is expected. Unexpected = the same process
+    answered again (a hang), or a restart with a crash dump written within a
+    minute of the outage window (`crashed`). Newest first, max 10."""
     now = time.time() if now is None else now
-    quits = [r.get("received_at") for r in rows
-             if r.get("kind") == "quit" and isinstance(r.get("received_at"), (int, float))]
     out = []
     for r in rows:
         if r.get("kind") != "outage" or not r.get("t_down"):
@@ -367,9 +369,14 @@ def classify_outages(rows: list[dict], now: float | None = None) -> list[dict]:
         t_down, t_up = r["t_down"], r.get("t_up")
         before, after = r.get("boot_id_before"), r.get("boot_id_after")
         restarted = bool(before and after and before != after)
-        clean = restarted and any(t_down - 30 <= q <= (t_up or now) for q in quits)
+        crashed = False
+        if restarted:
+            if crashes is None:
+                crashes = _scan_crashes(now)
+            crashed = any(t_down - 60 <= c["t"] <= (t_up or now) + 60 for c in crashes)
         out.append({**r, "duration_s": round(t_up - t_down, 1) if t_up else None,
-                    "restarted": restarted, "clean": clean, "expected": clean})
+                    "restarted": restarted, "crashed": crashed,
+                    "expected": restarted and not crashed})
     out.sort(key=lambda o: -o["t_down"])
     return out[:10]
 
@@ -381,9 +388,9 @@ def _last_unexpected_age(outages: list[dict]) -> float | None:
 
 def _errors() -> dict:
     from fused_render.logs import log_path
-    outages = classify_outages(health.read_outages(50))
-    restarts = boot_changes(health.read_trail(86400))
     crashes = _crashes()
+    outages = classify_outages(health.read_outages(50), crashes=crashes)
+    restarts = boot_changes(health.read_trail(86400))
     now = time.time()
     return {"outages": outages,
             "last_unexpected_outage_age_s": _last_unexpected_age(outages),

@@ -566,33 +566,40 @@ def _outage_row(t_down, t_up, before="a", after="b"):
             "boot_id_before": before, "boot_id_after": after, "recovered": True}
 
 
-def test_classify_outages_drops_quit_rows_and_marks_planned_restarts():
+def test_classify_outages_restart_is_expected_same_boot_is_a_hang():
     now = time.time()
     rows = [_outage_row(now - 500, now - 480),
             {"kind": "quit", "source": "server", "received_at": now - 495},
             _outage_row(now - 100, now - 60, "c", "c")]
-    out = dashboard.classify_outages(rows, now)
+    out = dashboard.classify_outages(rows, now, crashes=[])
     assert [o["t_down"] for o in out] == [now - 100, now - 500]
-    hung, planned = out
+    hung, restarted = out
     assert hung["expected"] is False and hung["restarted"] is False and hung["duration_s"] == 40
-    assert planned["clean"] is True and planned["expected"] is True and planned["restarted"] is True
+    assert restarted["expected"] is True and restarted["restarted"] is True
+    assert restarted["crashed"] is False and "clean" not in restarted
     assert dashboard._last_unexpected_age(out) == pytest.approx(100, abs=2)
-
-
-def test_restart_without_quit_row_is_unexpected_and_restarts_alone_do_not_count():
-    now = time.time()
-    out = dashboard.classify_outages([_outage_row(now - 50, now - 20)], now)
-    assert out[0]["restarted"] and not out[0]["expected"]
+    missing = dashboard.classify_outages([_outage_row(now - 50, now - 20, "a", None)], now, crashes=[])
+    assert missing[0]["expected"] is False
     assert dashboard.classify_outages([{"kind": "quit", "received_at": now}], now) == []
     assert dashboard._last_unexpected_age([]) is None
 
 
-def test_crashes_skip_empty_and_old_dumps(monkeypatch, tmp_path):
+def test_restart_with_nearby_crash_dump_is_unexpected_crashed():
+    now = time.time()
+    row = _outage_row(now - 100, now - 60)
+    near = dashboard.classify_outages([row], now, crashes=[{"t": now - 30}])[0]
+    assert near["restarted"] and near["crashed"] and not near["expected"]
+    far = dashboard.classify_outages([row], now, crashes=[{"t": now - 400}])[0]
+    assert far["expected"] and not far["crashed"]
+
+
+def test_crashes_skip_empty_stub_and_old_dumps(monkeypatch, tmp_path):
     import os
     from fused_render import crashlog
     monkeypatch.setattr(crashlog, "crash_dir", lambda: str(tmp_path))
     (tmp_path / "empty.log").write_text("")
-    (tmp_path / "dump.log").write_text("Fatal Python error")
+    (tmp_path / "dump.log").write_text("Fatal Python error" + "x" * 500)
+    (tmp_path / "stub.log").write_text("Thread 0x")
     old = tmp_path / "old.log"
     old.write_text("x")
     t = time.time() - 8 * 86400

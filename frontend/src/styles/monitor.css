@@ -1195,6 +1195,19 @@ th[aria-sort="descending"] .monitor-sort {
   color: var(--accent);
 }
 
+.monitor-crash-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.monitor-crash-link:hover {
+  text-decoration: underline;
+}
+
+.monitor-crash-meta {
+  color: var(--fg-muted);
+}
+
 .monitor-reasons a {
   text-decoration: none;
 }

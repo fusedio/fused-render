@@ -401,7 +401,7 @@ function fmtAgo(t: number): string {
 }
 
 /** Unexpected outages, crash dumps (each a link to the dump) and the last log
- * error lines, repeats collapsed. Planned restarts are only counted. */
+ * error lines, repeats collapsed. Restarts are only counted. */
 function ErrorsList({ errors, limit = 5 }: { errors: ErrorsData; limit?: number }) {
   const unexpected = errors.outages.filter((o) => !o.expected);
   const planned = errors.outages.length - unexpected.length;
@@ -410,14 +410,17 @@ function ErrorsList({ errors, limit = 5 }: { errors: ErrorsData; limit?: number 
     <ul className="monitor-list">
       {unexpected.slice(0, 3).map((o) => (
         <li key={`o${o.t_down}`}>
-          {new Date(o.t_down * 1000).toLocaleString()} · down {fmtDuration(o.duration_s)} ·{" "}
-          {o.restarted ? "server restarted" : "server stayed up (hung)"}
+          {new Date(o.t_down * 1000).toLocaleString()} ·{" "}
+          {o.crashed
+            ? `crashed, down ${fmtDuration(o.duration_s)}`
+            : `not responding for ${fmtDuration(o.duration_s)} (server stayed up)`}
         </li>
       ))}
       {errors.crashes.slice(0, 3).map((c) => (
         <li key={c.name}>
-          <a className="monitor-recording-link" {...spaLinkProps(c.path)}>
-            {c.name} · {formatBytes(c.bytes, true)} · {fmtAgo(c.t)}
+          <a className="monitor-crash-link" {...spaLinkProps(c.path)}>
+            {c.name}
+            <span className="monitor-crash-meta"> · {formatBytes(c.bytes, true)} · {fmtAgo(c.t)}</span>
           </a>
         </li>
       ))}
@@ -427,7 +430,7 @@ function ErrorsList({ errors, limit = 5 }: { errors: ErrorsData; limit?: number 
         </li>
       ))}
       {planned > 0 && (
-        <li className="monitor-list-empty">{planned} planned restarts (dev reloads / updates) hidden</li>
+        <li className="monitor-list-empty">{planned} restarts hidden</li>
       )}
       {empty && !planned && <li className="monitor-list-empty">Nothing to report</li>}
     </ul>

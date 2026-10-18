@@ -115,7 +115,7 @@ test("the errors tile toggles an inline panel of recent errors", async () => {
   expect(byClass(r, "monitor-errors-panel")).toHaveLength(0);
 });
 
-test("errors panel: unexpected outages and crash links shown, planned restarts only counted", async () => {
+test("errors panel: hangs, crashes and crash links shown, restarts only counted", async () => {
   const now = Date.now() / 1000;
   const dash = {
     ...DASH,
@@ -125,8 +125,9 @@ test("errors panel: unexpected outages and crash links shown, planned restarts o
       crashes_24h: 1,
       crashes: [{ name: "server-1.log", bytes: 2048, t: now - 120, path: "/Users/x/Logs/crash/server-1.log" }],
       outages: [
-        { t_down: now - 600, t_up: now - 540, duration_s: 60, restarted: false, clean: false, expected: false },
-        { t_down: now - 900, t_up: now - 880, duration_s: 20, restarted: true, clean: true, expected: true },
+        { t_down: now - 600, t_up: now - 540, duration_s: 60, restarted: false, crashed: false, expected: false },
+        { t_down: now - 900, t_up: now - 880, duration_s: 20, restarted: true, crashed: false, expected: true },
+        { t_down: now - 300, t_up: now - 240, duration_s: 60, restarted: true, crashed: true, expected: false },
       ],
     },
   } as unknown as Dashboard;
@@ -134,9 +135,9 @@ test("errors panel: unexpected outages and crash links shown, planned restarts o
   const tile = r.root.find((n) => n.type === "button" && n.props["data-tile"] === "errors");
   await act(async () => tile.props.onClick());
   const panel = text(byClass(r, "monitor-errors-panel")[0]);
-  expect(panel).toContain("down 1 min · server stayed up (hung)");
-  expect(panel).not.toContain("server restarted");
-  expect(panel).toContain("1 planned restarts (dev reloads / updates) hidden");
+  expect(panel).toContain("not responding for 1 min (server stayed up)");
+  expect(panel).toContain("crashed, down 1 min");
+  expect(panel).toContain("1 restarts hidden");
   expect(panel).toContain("server-1.log · 2 KB");
   const link = byClass(r, "monitor-errors-panel")[0].find((n) => n.type === "a");
   expect(decodeURIComponent(link.props.href)).toContain("Users/x/Logs/crash/server-1.log");
