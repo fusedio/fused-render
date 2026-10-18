@@ -22,6 +22,12 @@ export interface Tick {
   label: string;
 }
 
+export const PCT_TICKS: Tick[] = [
+  { v: 0, label: "0%" },
+  { v: 50, label: "50%" },
+  { v: 100, label: "100%" },
+];
+
 const W = 600;
 const H = 100;
 

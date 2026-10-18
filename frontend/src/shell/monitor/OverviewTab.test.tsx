@@ -103,46 +103,64 @@ test("a lone reason equal to the headline renders no list", async () => {
   expect(text(byClass(r, "monitor-verdict")[0]).split("Server outage 4 min ago")).toHaveLength(2);
 });
 
-test("four headline tiles by default; the rest sit behind Show all checks", async () => {
+test("four chart cards with figures; alerting tiles sit above them; the rest behind Show all checks", async () => {
   const r = await mount();
+  const cards = byClass(r, "monitor-overview-card");
+  expect(cards.map((c) => c.props["data-card"])).toEqual(["requests", "queue", "server", "cpu"]);
+  expect(byClass(r, "monitor-overview-cards")).toHaveLength(1);
+  expect(text(byClass(r, "monitor-overview-window")[0])).toBe("Since restart · 1 min");
+  const fig = (i: number) => text(cards[i].findAll((n) => n.props.className === "monitor-card-figure")[0]);
+  expect(fig(0)).toBe("4/s");
+  expect(fig(1)).toBe("700 ms wait");
+  expect(fig(2)).toBe("4 ms lag");
+  expect(fig(3)).toBe("20%");
+  expect(text(cards[0])).toContain("6 in flight");
+  expect(text(cards[1])).toContain("limit 6 per host");
+  expect(text(cards[2])).toContain("3/40 threads busy");
+  expect(text(cards[3])).toContain("8.0 GB / 16 GB");
+  expect(text(cards[3])).toContain("swap");
+  expect(text(cards[1])).toContain("6 limit");
+  // charts draw from the timeline
+  expect(cards.every((c) => c.findAll((n) => n.props.className === "monitor-chart").length === 1)).toBe(true);
+  // The fixture's claude and jobs tiles are warn: the borderless stat row.
   const keys = () => byClass(r, "monitor-tile").map((t) => t.props["data-tile"]);
-  // The fixture's claude and jobs tiles are warn: shown after the headline four.
-  expect(keys()).toEqual(["requests", "queue", "server", "memory", "claude", "jobs"]);
-  expect(byClass(r, "monitor-tile")[0].props.className).toContain("is-bad");
+  expect(keys()).toEqual(["claude", "jobs"]);
   expect(byClass(r, "monitor-lists")).toHaveLength(0);
   expect(text(r.root)).not.toContain("Stuck export");
-  await act(async () => btnOf(r, "Show all checks (6)").props.onClick());
-  expect(keys()).toHaveLength(12);
+  await act(async () => btnOf(r, "Show all checks (5)").props.onClick());
+  expect(keys()).toHaveLength(7);
   const tiles = byClass(r, "monitor-tile");
   const disk = tiles.find((t) => t.props["data-tile"] === "disk")!;
   expect(disk.props.className).toContain("is-unavailable");
   expect(text(disk)).toContain("unavailable");
-  const cpu = tiles.find((t) => t.props["data-tile"] === "cpu")!;
-  expect(text(cpu)).toContain("usual load 1.0");
   await act(async () => btnOf(r, "Hide checks").props.onClick());
-  expect(keys()).toHaveLength(6);
+  expect(keys()).toHaveLength(2);
 });
 
-test("a warn/bad tile outside the headline four shows without expanding", async () => {
+test("a warn/bad card is tinted and a plain click on it navigates", async () => {
+  const seen: string[] = [];
+  const r = await mount((l) => seen.push(l));
+  const cards = byClass(r, "monitor-overview-card");
+  expect(cards[0].props.className).toContain("is-bad");
+  expect(cards[1].props.className).toContain("is-warn");
+  expect(cards[2].props.className).not.toContain("is-");
+  cards[0].props.onClick({ button: 0, preventDefault: () => {} });
+  expect(seen).toEqual(["/monitor?tab=network"]);
+  seen.length = 0;
+  cards[0].props.onClick({ button: 0, metaKey: true, preventDefault: () => {} });
+  expect(seen).toEqual([]);
+});
+
+test("a warn/bad tile outside the headline cards shows without expanding", async () => {
   const r = await mount(() => {}, {
-    load: async () => ({ ...DASH, cpu: { ...(DASH as any).cpu, low_power: true } }) as Dashboard,
+    load: async () => ({ ...DASH, index: { waiting: 2, abandoned: 0, scans: { running: 0, limit: 2 } } }) as Dashboard,
   });
-  expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual([
-    "requests",
-    "queue",
-    "server",
-    "memory",
-    "cpu",
-    "claude",
-    "jobs",
-  ]);
+  expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual(["claude", "index", "jobs"]);
   expect(btnOf(r, "Show all checks")).toBeTruthy();
 });
 
-test("timeline shows four rows and the outage marker; lists fill once expanded", async () => {
+test("lists fill once expanded", async () => {
   const r = await mount();
-  expect(byClass(r, "monitor-tl-row")).toHaveLength(4);
-  expect(byClass(r, "monitor-tl-mark").length).toBeGreaterThan(0);
   await act(async () => btnOf(r, "Show all checks").props.onClick());
   expect(text(r.root)).toContain("Stuck export");
   expect(text(r.root)).toContain("/x/slow.py");

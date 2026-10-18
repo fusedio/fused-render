@@ -312,3 +312,25 @@ export function timelineSeries(points: TimelinePoint[]): SeriesRow[] {
     }),
   }));
 }
+
+const FULL_WINDOW_S = 600;
+
+/** Window to plot: the full 10 minutes, or just the history we have (min 60 s) so short plots fill the width. */
+export function timelineWindowS(points: TimelinePoint[]): number {
+  if (points.length < 2) return FULL_WINDOW_S;
+  const span = points[points.length - 1].t - points[0].t;
+  return span >= FULL_WINDOW_S ? FULL_WINDOW_S : Math.max(60, span);
+}
+
+export function timelineTitle(points: TimelinePoint[]): string {
+  const w = timelineWindowS(points);
+  return w >= FULL_WINDOW_S ? "Last 10 minutes" : `Since restart · ${Math.max(1, Math.round(w / 60))} min`;
+}
+
+/** Smallest 1/2/5 x 10^n at or above `v`, never below `min`: a readable axis ceiling. */
+export function niceCeil(v: number, min: number): number {
+  const x = Math.max(v, min);
+  const mag = Math.pow(10, Math.floor(Math.log10(x)));
+  for (const m of [1, 2, 5, 10]) if (m * mag >= x) return m * mag;
+  return 10 * mag;
+}

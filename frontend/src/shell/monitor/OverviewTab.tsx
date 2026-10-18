@@ -1,9 +1,9 @@
 // /monitor, Overview tab — "why does fused-render feel slow?" at a glance.
 //
 // Top to bottom: the verdict banner (the likeliest cause first; each reason is
-// a link that switches to the tab and filters that show it); four headline
-// tiles (Requests, Browser queue, Server, Memory and swap) plus any other tile
-// that is warn/bad; the ten-minute stacked timeline with outage markers; and
+// a link that switches to the tab and filters that show it); any non-headline
+// tile that is warn/bad; four chart cards (Requests, Connections, Server, CPU,
+// the Processes tab's card form) over the since-restart window; and
 // behind "Show all checks": the remaining tiles, the errors tail, stalled jobs,
 // the slowest .py targets and the disk footer. Record 60s / Copy report sit in
 // the banner.
@@ -16,12 +16,20 @@ import { useEffect, useRef, useState } from "react";
 import { spaLinkProps } from "@platform/lib/router";
 import { formatBytes } from "@platform/lib/sysmon";
 import { getDashboard, sectionOk, type Dashboard } from "./monitor-api";
-import { monitorUrl, overviewTiles, type Tab } from "./monitor-net-lib";
-import TimelineStack, { timelineTitle, timelineWindowS } from "./TimelineStack";
+import { AreaChart, PCT_TICKS, type Tick } from "./Charts";
+import {
+  monitorUrl,
+  niceCeil,
+  overviewTiles,
+  timelineSeries,
+  timelineTitle,
+  timelineWindowS,
+  type Tab,
+} from "./monitor-net-lib";
 import { useRecord, type RecordApi } from "./useRecord";
 import { usePolled } from "./usePolled";
 
-const HEADLINE = ["requests", "queue", "server", "memory"];
+const HEADLINE = ["requests", "queue", "server", "memory", "cpu"];
 
 /** Identical consecutive labels collapse to one with a count: "Outage ×3". */
 export function collapseRuns(labels: string[]): { label: string; n: number }[] {
@@ -113,13 +121,80 @@ export default function OverviewTab({
   const headLink = v?.reasons.find((r) => r.text === v.headline && r.link)?.link;
   const allTiles = data ? overviewTiles(data) : [];
   const alerting = (l: string) => l === "warn" || l === "bad";
-  const tiles = allTiles.filter((t) => HEADLINE.includes(t.key) || alerting(t.level));
-  tiles.sort((a, b) => Number(!HEADLINE.includes(a.key)) - Number(!HEADLINE.includes(b.key)));
-  const hiddenTiles = allTiles.filter((t) => !tiles.includes(t));
+  const tiles = allTiles.filter((t) => !HEADLINE.includes(t.key) && alerting(t.level));
+  const hiddenTiles = allTiles.filter((t) => !HEADLINE.includes(t.key) && !tiles.includes(t));
+  const tile = (key: string) => allTiles.find((t) => t.key === key);
   const tl = data && sectionOk(data.timeline) ? data.timeline : null;
   const errors = data && sectionOk(data.errors) ? data.errors : null;
   const jobs = data && sectionOk(data.jobs) ? data.jobs : null;
   const calls = data && sectionOk(data.calls) ? data.calls : null;
+
+  const points = tl?.points ?? [];
+  const windowS = timelineWindowS(points);
+  const title = timelineTitle(points);
+  const series = (key: string) => timelineSeries(points).find((r) => r.key === key)?.points ?? [];
+  const peak = (pts: { v: number | null }[]) => Math.max(0, ...pts.map((p) => p.v ?? 0));
+  const halves = (max: number, unit: string): Tick[] => [
+    { v: 0, label: "0" },
+    { v: max / 2, label: `${max / 2}${unit}` },
+    { v: max, label: `${max}${unit}` },
+  ];
+  const rps = series("rps");
+  const inFlight = series("in_flight");
+  const lag = series("lag_ms");
+  const rpsMax = niceCeil(peak(rps), 1);
+  const lagMax = niceCeil(peak(lag), 10);
+  const connMax = Math.max(6, Math.ceil(peak(inFlight)));
+  const memCaption = tile("memory")?.caption.split(" · ")[0];
+  const cards = [
+    {
+      key: "requests",
+      title: "Requests",
+      tile: tile("requests"),
+      figure: tile("requests")?.primary ?? "–",
+      sub: tile("requests")?.caption ?? "",
+      points: rps,
+      max: rpsMax,
+      ticks: halves(rpsMax, ""),
+    },
+    {
+      key: "queue",
+      title: "Connections",
+      tile: tile("queue"),
+      figure: (() => {
+        const p = tile("queue")?.primary;
+        return p && p !== "no data" && !p.startsWith("–") ? `${p} wait` : (p ?? "–");
+      })(),
+      sub: "browser wait p95 · limit 6 per host",
+      points: inFlight,
+      max: connMax,
+      ticks: [
+        { v: 0, label: "0" },
+        { v: 3, label: "3" },
+        { v: 6, label: "6 limit" },
+      ] as Tick[],
+    },
+    {
+      key: "server",
+      title: "Server",
+      tile: tile("server"),
+      figure: tile("server")?.primary ?? "–",
+      sub: tile("server")?.caption ?? "",
+      points: lag,
+      max: lagMax,
+      ticks: halves(lagMax, " ms"),
+    },
+    {
+      key: "cpu",
+      title: "CPU",
+      tile: tile("cpu"),
+      figure: tile("cpu")?.primary ?? "–",
+      sub: [tile("memory")?.primary, memCaption].filter(Boolean).join(" · "),
+      points: series("cpu"),
+      max: 100,
+      ticks: PCT_TICKS,
+    },
+  ];
 
   const renderTile = (t: (typeof allTiles)[number]) => {
     const link = monitorUrl({ tab: t.tab as Tab });
@@ -188,16 +263,34 @@ export default function OverviewTab({
         </div>
       </section>
 
-      <div className="monitor-tiles">{tiles.map(renderTile)}</div>
+      {tiles.length > 0 && <div className="monitor-tiles">{tiles.map(renderTile)}</div>}
 
-      <section className="monitor-net-sec">
-        <h2 className="monitor-sec-title">{timelineTitle(tl?.points ?? [])}</h2>
-        {tl ? (
-          <TimelineStack points={tl.points} events={tl.events} windowS={timelineWindowS(tl.points)} />
-        ) : (
-          <p className="monitor-net-note">{data ? "Timeline unavailable." : "Reading…"}</p>
-        )}
-      </section>
+      <h2 className="monitor-sec-title monitor-overview-window">{timelineTitle(tl?.points ?? [])}</h2>
+      <div className="monitor-overview-cards">
+        {cards.map((c) => {
+          const t = c.tile;
+          const link = t ? monitorUrl({ tab: t.tab as Tab }) : "";
+          return (
+            <a
+              key={c.key}
+              className={`monitor-card monitor-overview-card${t && alerting(t.level) ? ` is-${t.level}` : ""}`}
+              data-card={c.key}
+              aria-label={c.title}
+              href={link}
+              onClick={go(link)}
+            >
+              <header className="monitor-card-head">
+                <h2>{c.title}</h2>
+                <span className="monitor-card-figure">{c.figure}</span>
+              </header>
+              <div className="monitor-card-sub">
+                <span>{c.sub}</span>
+              </div>
+              <AreaChart points={c.points} max={c.max} ticks={c.ticks} windowS={windowS} label={`${c.title}, ${title}`} />
+            </a>
+          );
+        })}
+      </div>
 
       <button type="button" className="monitor-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
         {showAll ? "Hide checks" : `Show all checks (${hiddenTiles.length})`}

@@ -1453,3 +1453,50 @@ th[aria-sort="descending"] .monitor-sort {
   color: var(--error);
   background: color-mix(in srgb, var(--error) 14%, transparent);
 }
+
+/* ---- Overview chart cards (the Processes card form, as links) ---- */
+.monitor-overview-window {
+  margin: 24px 0 6px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+.monitor-overview-cards {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 24px;
+}
+
+.monitor-overview-window + .monitor-overview-cards {
+  margin-top: 0;
+}
+
+@media (max-width: 899px) {
+  .monitor-overview-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.monitor-overview-card {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.monitor-overview-card:hover {
+  border-color: var(--fg-muted);
+}
+
+.monitor-overview-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.monitor-overview-card.is-warn .monitor-card-figure {
+  color: var(--warning);
+}
+
+.monitor-overview-card.is-bad .monitor-card-figure {
+  color: var(--error);
+}

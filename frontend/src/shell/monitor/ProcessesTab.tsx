@@ -54,7 +54,7 @@ import { useTween } from "./useTween";
 import { getProcessDetail, type ProcessDetail } from "./monitor-api";
 import { claudeLine } from "./monitor-net-lib";
 import ProcessDrawer from "./ProcessDrawer";
-import { AreaChart, Legend, LinesChart, type LineSeries, type Tick } from "./Charts";
+import { AreaChart, Legend, LinesChart, PCT_TICKS, type LineSeries, type Tick } from "./Charts";
 import {
   CONFIRM_MS,
   DEFAULT_SORT,
@@ -150,12 +150,6 @@ function clock(ms: number): string {
 }
 
 // ---- meters ------------------------------------------------------------------------
-
-const PCT_TICKS: Tick[] = [
-  { v: 0, label: "0%" },
-  { v: 50, label: "50%" },
-  { v: 100, label: "100%" },
-];
 
 function CpuMeter({ data }: { data: MachineSnapshot | null }) {
   const host = data?.host ?? null;
