@@ -81,6 +81,31 @@ def test_a_striped_geotiff_becomes_a_cached_cog(prepare, tmp_path):
     assert os.path.getmtime(first["path"]) == mtime, "the second open must reuse the cache"
 
 
+def test_a_converted_packed_geotiff_gets_whole_bytes_and_overviews_that_keep_its_classes(prepare, tmp_path):
+    source = tmp_path / "classes.tif"
+    classes = np.array([1, 5, 9], "uint8")[(np.arange(1100 * 1100) // 7 % 3).reshape(1, 1100, 1100)]
+    with rasterio.open(source, "w", driver="GTiff", width=1100, height=1100, count=1, dtype="uint8",
+                       crs="EPSG:4326", transform=from_bounds(10, 45, 11, 46, 1100, 1100),
+                       tiled=True, blockxsize=64, blockysize=64, nbits=4) as out:
+        out.write(classes)
+    result = prepare.main(str(source), action="convert")
+    with rasterio.open(result["path"]) as cog:
+        assert cog.overviews(1) and not cog.tags(1, ns="IMAGE_STRUCTURE").get("NBITS")
+        factor = cog.overviews(1)[-1]
+        overview = cog.read(1, out_shape=(cog.height // factor, cog.width // factor))
+    assert set(np.unique(overview)) <= {1, 5, 9}
+
+
+def test_a_conversion_that_outlasts_one_call_answers_pending_until_it_is_done(prepare, tmp_path, monkeypatch):
+    source = _tiff(tmp_path / "striped.tif", tiled=False, size=1200)
+    monkeypatch.setattr(prepare, "CONVERT_WAIT", 0)
+    first = prepare.main(source)
+    assert first == {"status": "ok", "pending": True}
+    monkeypatch.setattr(prepare, "CONVERT_WAIT", 60)
+    done = prepare.main(source)
+    assert done["converted"] and _is_tiled(done["path"])
+
+
 def test_a_tiled_geotiff_with_no_epsg_crs_is_warped_to_one_the_browser_reads(prepare, tmp_path):
     source = tmp_path / "mollweide.tif"
     with rasterio.open(source, "w", driver="GTiff", width=256, height=256, count=1, dtype="float32",

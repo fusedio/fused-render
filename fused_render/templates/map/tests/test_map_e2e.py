@@ -170,6 +170,40 @@ def test_rasters_stream_in_the_browser_and_a_striped_tiff_is_converted_once(page
     assert p.js("return fm.describeLayer('dem').rendered.colormap;") == "magma"
 
 
+def test_a_big_tiff_without_overviews_is_converted_and_its_auto_range_spans_the_data(page, data):
+    size = 1100
+    values = np.zeros((size, size), "float32")
+    values[300:800, 300:800] = np.linspace(1, 10, 500, dtype="float32")[None, :]
+    with rasterio.open(data / "sparse.tif", "w", driver="GTiff", width=size, height=size, count=1, dtype="float32",
+                       crs="EPSG:4326", nodata=-1, transform=from_bounds(10, 45, 11, 46, size, size),
+                       tiled=True, blockxsize=64, blockysize=64) as out:
+        out.write(values, 1)
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/sparse.tif', id: 'sparse'});", str(data))
+    f = by_id(p.idle())["sparse"]
+    assert f["status"] == "ready" and "Cloud-Optimized" in f["note"], f
+    assert f["raster"]["overviews"] > 0 and f["raster"]["dtype"] == "float32" and f["raster"]["units"] == "deg"
+    assert f["auto_range"][1] > 0.5 * np.percentile(values, 98), "the window comes from the whole image"
+
+
+def test_a_packed_categorical_tiff_is_converted_and_lists_its_classes(page, data):
+    classes = np.array([1, 5, 9], "uint8")[(np.arange(256 * 256) // 9 % 3).reshape(256, 256)]
+    with rasterio.open(data / "classes.tif", "w", driver="GTiff", width=256, height=256, count=1, dtype="uint8",
+                       nbits=4, crs="EPSG:4326", transform=from_bounds(10, 45, 11, 46, 256, 256),
+                       tiled=True, blockxsize=64, blockysize=64) as out:
+        out.write(classes, 1)
+    p = page()
+    p.js("fm.execute({op: 'add_layer', source: arg + '/classes.tif', id: 'cls'});", str(data))
+    f = by_id(p.idle())["cls"]
+    assert f["status"] == "ready" and "Cloud-Optimized" in f["note"], f
+    assert [c["value"] for c in f["classes"]] == [1, 5, 9]
+    p.js("fm.select('cls');")
+    p.page.locator("#btn-style").click()
+    p.page.wait_for_selector("#sp-body .swatch")
+    assert p.page.locator("#sp-body .swatch").count() == 3 and p.page.locator(".hist rect").count() == 3
+    assert "256 × 256 px" in p.page.locator("#sp-body .stat").inner_text()
+
+
 def test_vectors_of_every_format_load_and_big_ones_tile_in_the_browser(page, data, cdn):
     p = page()
     p.js("for (const f of ['buildings.parquet', 'small.shp', 'small.geojson'])"

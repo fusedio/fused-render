@@ -298,7 +298,10 @@
 
   .legend { margin-top: 10px; }
   .legend .bar { height: 10px; border-radius: 5px; }
-  .legend .ends { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-family: var(--mono); margin-top: 3px; }
+  .legend .ends, .hist .ends { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-family: var(--mono); margin-top: 3px; }
+  .hist { margin-top: 8px; }
+  .hist svg { display: block; width: 100%; height: 44px; }
+  .hist line { stroke: var(--text); stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; }
   .swatchrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .swatch { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
   .swatch i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
@@ -985,6 +988,7 @@ function httpUrl(source) {
   return new URL(`/api/fs/raw?path=${encodeURIComponent(source)}`, location.origin).href;
 }
 const RASTER_EXT = new Set([".tif", ".tiff", ".cog"]);
+const SAMPLE_TILES = 64;
 const VECTOR_FORMAT = {
   ".geojson": "geojson", ".json": "geojson", ".parquet": "geoparquet", ".geoparquet": "geoparquet",
   ".pq": "geoparquet", ".fgb": "flatgeobuf", ".csv": "csv", ".tsv": "csv", ".gpkg": "geopackage",
@@ -1028,7 +1032,9 @@ async function looksLikeZarr(source) {
 // in flight for the same file, and two layers preparing at once would leave
 // the first stuck on "Preparing…" forever.
 async function python(source, action = "plan", extra = {}) {
-  const result = await fused.runPython("./prepare.py", { target: source, action, ...extra }, { key: null });
+  let result;
+  do result = await fused.runPython("./prepare.py", { target: source, action, ...extra }, { key: null });
+  while (result && result.status === "ok" && result.pending);
   if (!result || result.status !== "ok") {
     const error = new Error((result && result.message) || "could not read this source");
     error.traceback = result && result.traceback;
@@ -1104,6 +1110,11 @@ const raster = {
                                              state: this.state(layer, r, true) });
     const rl = mgr.getLayer(r.handle);
     if (!rl || rl.error) throw rl && rl.error || new Error("raster did not load");
+    const tiff = rl.geotiff, coarsest = tiff && (tiff.overviews.at(-1) || tiff);
+    if (tiff && !rl.members && !plan.converted && !isRemote(plan.path)
+        && (![8, 16, 32, 64].includes(tiff.cachedTags.bitsPerSample[0])
+            || coarsest.tileCount.x * coarsest.tileCount.y > SAMPLE_TILES))
+      throw Object.assign(new Error("This TIFF needs converting before the browser can stream it."), { convert: true });
     if (rl.geotiff && typeof rl.geotiff === "object") void rl.geotiff.crs;
     r.auto = { mode: rl.state.mode, bands: rl.state.bands.slice(), colormap: rl.state.colormap };
     r.kind = "raster";
@@ -1728,11 +1739,12 @@ async function loadLayer(layer, r) {
       await ENGINES[plan.load].add(layer, plan, r);
     } catch (error) {
       ENGINES[plan.load].remove(r);
-      if (plan.load === "pointcloud") { r.note = "Converting…"; scheduleUi(); }
+      const converting = plan.load === "pointcloud" || error.convert;
+      if (converting) { r.note = "Converting…"; scheduleUi(); }
       let fallbackError = null;
       const retry = await fallbackPlan(plan).catch(e => { fallbackError = e; return null; });
       // A point cloud's conversion explains a failure better than the reader.
-      if (!retry) throw (plan.load === "pointcloud" && fallbackError) || error;
+      if (!retry) throw (converting && fallbackError) || error;
       r.plan = retry; r.note = retry.note || "";
       await ENGINES[retry.load].add(layer, retry, r);
     }
@@ -2067,6 +2079,9 @@ function layerFacts(layer) {
     facts.rendered = rl.state && { mode: rl.state.mode, bands: rl.state.bands, colormap: rl.state.colormap };
     const stats = rl.autoStats && rl.autoStats.perBand;
     if (stats) facts.band_ranges = Object.fromEntries([...stats].map(([b, s]) => [b, [s.min, s.max]]));
+    const band = rl.state && M.statsForBand(rl.autoStats, rl.state.bands[0] || 1);
+    facts.raster = rasterSummary(rl);
+    if (band) { facts.auto_range = autoWindow(band); facts.classes = facts.raster && rasterClasses(band, facts.raster); }
   } else if (r.engine === "vector") {
     const info = r.info || {};
     facts.features = info.featureCount ?? null;
@@ -2427,9 +2442,74 @@ function renderStyleDock() {
   body.scrollTop = scroll;
 }
 
+const LINEAR_UNITS = { 9001: "m", 9002: "ft", 9003: "ft" };
+const MAX_CLASSES = 32;
+function autoWindow(stats) {
+  const { min, max, histogram } = stats, total = histogram.reduce((a, b) => a + b, 0);
+  if (!total || max <= min) return [min, max];
+  const at = p => {
+    let acc = 0, i = 0;
+    while (i < histogram.length - 1 && acc + histogram[i] < total * p) acc += histogram[i++];
+    return min + (i + (histogram[i] ? (total * p - acc) / histogram[i] : 0)) * (max - min) / histogram.length;
+  };
+  return [at(0.02), at(0.98)];
+}
+function rasterSummary(rl) {
+  const tiff = rl.geotiff;
+  if (!tiff) return null;
+  const { image, crs, overviews } = M.summarizeGeoTIFF(tiff), [a, , , , e] = tiff.transform, geographic = tiff.gkd.modelType === 2;
+  return { width: image.width, height: image.height, bands: image.bandCount, dtype: image.dtype, crs: crs.label,
+           pixel_size: [Math.abs(a), Math.abs(e)], units: geographic ? "deg" : LINEAR_UNITS[tiff.gkd.projLinearUnits] || "",
+           center_lat: geographic ? (crs.bbox[1] + crs.bbox[3]) / 2 : null, nodata: image.nodata, overviews: overviews.length };
+}
+function rasterClasses(stats, summary) {
+  const { min, max, histogram } = stats, n = histogram.length;
+  if (summary.bands !== 1 || !/^u?int\d/.test(summary.dtype) || ![min, max].every(Number.isInteger) || max - min >= n) return null;
+  const total = histogram.reduce((a, b) => a + b, 0);
+  const classes = histogram.flatMap((count, i) => count ? [{ value: min + Math.ceil(i * (max - min) / n - 1e-9), share: count / total }] : []);
+  return classes.length <= MAX_CLASSES ? classes : null;
+}
+function pixelSize({ pixel_size: [x, y], units, center_lat }) {
+  const sig = v => Number(v.toPrecision(4)), size = x === y ? `${sig(x)}` : `${sig(x)} × ${sig(y)}`;
+  if (units !== "deg") return units ? `${size} ${units}` : size;
+  return `${size}° (≈ ${Math.round(x * 111320 * Math.cos(center_lat * Math.PI / 180))} × ${Math.round(y * 110574)} m)`;
+}
+function valueColor(rl, style, range, stops) {
+  const palette = rl.state.colormap === "palette" && rl.palette && rl.palette.data;
+  if (palette) return v => `rgb(${palette.slice(4 * Math.round(v), 4 * Math.round(v) + 3).join(",")})`;
+  const [lo, hi] = range, rgb = stops.map(hexToRgb), last = rgb.length - 1;
+  return v => {
+    let t = Math.min(1, Math.max(0, (v - lo) / Math.max(hi - lo, 1e-9)));
+    t = style.stretch === "sqrt" ? Math.sqrt(t) : style.stretch === "log" ? Math.log1p(99 * t) / Math.log(100) : t;
+    t = Math.pow(t, 1 / (style.gamma ?? 1)) * last;
+    const i = Math.min(last - 1, Math.floor(t)), a = rgb[i], b = rgb[i + 1];
+    return `rgb(${a.map((c, k) => Math.round(c + (b[k] - c) * (t - i))).join(",")})`;
+  };
+}
+function histogramChart(stats, marks, colorOf) {
+  const { min, max, histogram } = stats, n = histogram.length, span = Math.max(max - min, 1e-9);
+  const peak = Math.log1p(Math.max(...histogram)), x = v => Math.min(100, Math.max(0, 100 * (v - min) / span));
+  const bars = histogram.map((count, i) => count ? `<rect x="${100 * i / n}" width="${100 / n}" y="${40 - 40 * Math.log1p(count) / peak}"`
+    + ` height="${40 * Math.log1p(count) / peak}" fill="${colorOf(min + (i + 0.5) * span / n)}"/>` : "").join("");
+  const d = document.createElement("div");
+  d.className = "hist";
+  d.innerHTML = `<svg viewBox="0 0 100 40" preserveAspectRatio="none">${bars}${marks.map(v => `<line x1="${x(v)}" x2="${x(v)}" y2="40"/>`).join("")}</svg>`
+    + `<div class="ends"><span>${esc(fmtNum(min))}</span><span>log count</span><span>${esc(fmtNum(max))}</span></div>`;
+  return d;
+}
+function classList(classes, colorOf) {
+  const d = document.createElement("div");
+  d.className = "swatchrow";
+  d.innerHTML = classes.map(c => `<span class="swatch"><i style="background:${colorOf(c.value)}"></i>${esc(c.value)} · ${Number((100 * c.share).toPrecision(2))}%</span>`).join("");
+  return d;
+}
+
 function rasterControls(body, layer, r) {
   const rl = raster.info(r), s = layer.style, st = rl.state, n = rl.bandCount || 1;
   const mode = st.colormap === "palette" ? "palette" : st.mode;
+  const stats = M.statsForBand(rl.autoStats, st.bands[0] || 1), auto = stats && autoWindow(stats);
+  const current = s.rescale ? (Array.isArray(s.rescale[0]) ? s.rescale[0] : s.rescale) : null;
+  const range = current || auto, stops = ramp(st.colormap || "gray", 9, !!s.reversed);
   const bandName = b => (rl.bandNames && rl.bandNames.get(b)) ? `${b} · ${rl.bandNames.get(b)}` : `Band ${b}`;
   const bandOptions = Array.from({ length: n }, (_, i) => [i + 1, bandName(i + 1)]);
   section(body, "Display");
@@ -2461,19 +2541,14 @@ function rasterControls(body, layer, r) {
     body.appendChild(checkCtl("Reverse colormap", !!s.reversed, v => setStyle(layer.id, { reversed: v || null })));
   }
   if (mode !== "palette") {
-    const band = st.bands[0] || 1;
-    const stats = M.statsForBand(rl.autoStats, band);
-    const auto = stats ? [stats.min, stats.max] : null;
-    const current = s.rescale ? (Array.isArray(s.rescale[0]) ? s.rescale[0] : s.rescale) : null;
     body.appendChild(rangeCtl(mode === "rgb" ? "Contrast (all channels)" : "Value range", current, auto,
                               v => setStyle(layer.id, { rescale: v })));
     if (mode !== "rgb") {
       const legend = document.createElement("div");
       body.appendChild(legend);
-      ramp(st.colormap || "gray", 9, !!s.reversed).then(stops => {
-        r.swatchStops = stops;
-        const lo = current ? current[0] : auto && auto[0], hi = current ? current[1] : auto && auto[1];
-        legend.replaceWith(legendBar(stops, lo, hi));
+      stops.then(list => {
+        r.swatchStops = list;
+        legend.replaceWith(legendBar(list, range && range[0], range && range[1]));
       });
     }
     body.appendChild(selectCtl("Stretch", [["linear", "Linear"], ["sqrt", "Square root"], ["log", "Logarithmic"]],
@@ -2490,9 +2565,22 @@ function rasterControls(body, layer, r) {
   if (typeof nodata === "number") nd.querySelector(".ctl-lbl b").textContent = String(nodata);
   body.appendChild(nd);
   body.appendChild(opacityCtl(layer));
+  const summary = rasterSummary(rl);
+  if (stats && (mode === "single" || mode === "palette")) {
+    section(body, "Values");
+    const values = document.createElement("div");
+    body.appendChild(values);
+    stops.then(list => {
+      const colorOf = valueColor(rl, s, range, list), classes = summary && rasterClasses(stats, summary);
+      values.replaceChildren(histogramChart(stats, mode === "palette" ? [] : range, colorOf), ...(classes ? [classList(classes, colorOf)] : []));
+    });
+  }
   section(body, "Source");
   const info = document.createElement("div"); info.className = "stat";
-  const lines = [`${rl.bandCount} band(s)`, "Streamed by the browser over HTTP range requests"];
+  const lines = summary ? [`${summary.width.toLocaleString()} × ${summary.height.toLocaleString()} px · ${summary.bands} band(s) · ${summary.dtype}`,
+                           `Pixel size ${pixelSize(summary)}`, `${summary.crs} · nodata ${summary.nodata == null ? "none" : Number(summary.nodata.toPrecision(4))}`,
+                           summary.overviews ? `${summary.overviews} overview levels` : "No overviews"] : [`${rl.bandCount} band(s)`];
+  lines.push("Streamed by the browser over HTTP range requests");
   if (r.note) lines.push(r.note);
   info.textContent = lines.join("\n");
   body.appendChild(info);
