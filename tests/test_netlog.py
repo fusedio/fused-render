@@ -350,6 +350,21 @@ def test_concurrency_at_limit_seconds():
     assert c["peak"] == 8 and c["at_limit_s"] == 5.0
 
 
+def test_concurrency_interval_end_is_exclusive_on_bucket_boundary():
+    # now=100 -> t0=40; six requests end exactly at 70 (a bucket boundary).
+    fin = [_rec(start=65, end=70) for _ in range(6)]
+    c = netlog.concurrency(fin, [], 100.0)["c"]
+    assert c["peak"] == 6
+    assert c["series"][29] == 6      # [69, 70) is covered
+    assert c["series"][30] == 0      # [70, 71) is not credited
+
+
+def test_concurrency_short_stay_at_limit_is_not_rounded_away():
+    fin = [_rec(start=90.0, end=90.01) for _ in range(6)]
+    c = netlog.concurrency(fin, [], 100.0)["c"]
+    assert 0 < c["at_limit_s"] < 0.1
+
+
 def test_concurrency_sequential_is_one():
     fin = [_rec(start=10, end=11), _rec(start=11, end=12), _rec(start=20, end=21)]
     assert netlog.concurrency(fin, [], 30.0)["c"]["peak"] == 1

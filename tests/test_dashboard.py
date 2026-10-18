@@ -241,6 +241,26 @@ def test_timeline_point_reads_the_sections_it_can(monkeypatch):
     assert "t" in pt and "lag_ms" in pt and "cpu" in pt and "swap" in pt
 
 
+def test_timeline_point_in_flight_is_none_when_summary_fails(monkeypatch):
+    class BrokenLog:
+        def summary(self):
+            raise RuntimeError("boom")
+    monkeypatch.setattr(dashboard.netlog, "get", lambda: BrokenLog())
+    pt = dashboard.timeline_point()
+    _reset_loop_state()
+    assert pt["in_flight"] is None and pt["rps"] is None
+
+
+def test_timeline_point_in_flight_zero_when_summary_ok_and_idle(monkeypatch):
+    class IdleLog:
+        def summary(self):
+            return {"rps_10s": 0.0, "concurrency": []}
+    monkeypatch.setattr(dashboard.netlog, "get", lambda: IdleLog())
+    pt = dashboard.timeline_point()
+    _reset_loop_state()
+    assert pt["in_flight"] == 0
+
+
 def test_sampler_tick_feeds_the_timeline():
     from fused_render.sysmon import sampler as s
     smp = s.Sampler(backend=None, threaded=False)

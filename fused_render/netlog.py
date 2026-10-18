@@ -21,6 +21,7 @@ from __future__ import annotations
 import collections
 import functools
 import itertools
+import math
 import os
 import re
 import threading
@@ -180,11 +181,12 @@ def concurrency(finished, open_recs, now: float, window_s: float = 60.0,
         last = t0
 
         def mark(lo: float, hi: float, level: int) -> None:
-            # Level holds on [lo, hi]; credit every bucket it touches.
-            if level <= 0:
+            # Level holds on [lo, hi); credit every bucket it touches. The end
+            # is exclusive, so a span ending on a boundary skips the next bucket.
+            if level <= 0 or hi <= lo:
                 return
             i0 = min(nbuckets - 1, max(0, int((lo - t0) / step_s)))
-            i1 = min(nbuckets - 1, max(0, int((hi - t0) / step_s)))
+            i1 = min(nbuckets - 1, max(i0, math.ceil((hi - t0) / step_s) - 1))
             for i in range(i0, i1 + 1):
                 if series[i] < level:
                     series[i] = level
@@ -195,11 +197,10 @@ def concurrency(finished, open_recs, now: float, window_s: float = 60.0,
             mark(last, t, cur)
             cur += d
             peak = max(peak, cur)
-            mark(t, t, cur)
             last = t
         if cur >= SATURATION_SLOTS:
             at_limit += now - last
-        out[client] = {"peak": peak, "series": series, "at_limit_s": round(at_limit, 1)}
+        out[client] = {"peak": peak, "series": series, "at_limit_s": at_limit}
     return out
 
 

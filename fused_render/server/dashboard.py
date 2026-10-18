@@ -536,14 +536,17 @@ def timeline_point() -> dict:
         except Exception:  # noqa: BLE001
             return None
 
-    summary = safe(lambda: netlog.get().summary()) or {}
+    raw_summary = safe(lambda: netlog.get().summary())
+    summary = raw_summary or {}
     conc = summary.get("concurrency") or []
     host = safe(lambda: sysmon_sampler.get_sampler().payload("fused").get("host")) or {}
     rows = safe(lambda: health.read_trail(1800)) or []
     return {"t": time.time(), "rps": summary.get("rps_10s"),
             # Peak simultaneous requests in the last ~1 s for the busiest client
             # (interval overlap, not an instantaneous count that misses fast calls).
-            "in_flight": max((c["series"][-1] for c in conc if c.get("series")), default=0),
+            # None when the summary itself failed: unknown, not "no overlap".
+            "in_flight": (None if raw_summary is None else
+                          max((c["series"][-1] for c in conc if c.get("series")), default=0)),
             "pool": (_fresh("pool") or {}).get("borrowed"),
             "lag_ms": safe(lambda: serverstats.loop_lag().current()),
             "cpu": host.get("cpuPct"),
