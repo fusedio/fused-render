@@ -218,10 +218,33 @@ def test_start_applies_cache_synchronously_before_slow_probe(monkeypatch, tmp_pa
     monkeypatch.setenv("PATH", "/app/bin:/usr/bin")
     login_path.start()
     assert os.environ["PATH"] == "/app/bin:/cached/bin:/usr/bin"  # before wait()
-    assert login_path.wait(10) is True
+    assert login_path.wait(10) is True  # cache hit: released at once
+    assert login_path._done.wait(10)  # probe finished
     assert os.environ["PATH"] == "/app/bin:/cached/bin:/fresh/bin:/usr/bin"  # re-merged on current
     with open(_cache_file()) as f:
         assert json.load(f) == {"shell": sh, "path": ["/fresh/bin", "/usr/bin"]}
+
+
+def test_wait_returns_immediately_on_cache_hit(monkeypatch, tmp_path):
+    sh = _shell(tmp_path, '/bin/sleep 5\nprintf %s "__FR_PATH_BEGIN__/fresh__FR_PATH_END__"\n')
+    with open(_cache_file(), "w") as f:
+        json.dump({"shell": sh, "path": ["/cached/bin"]}, f)
+    monkeypatch.delenv("FUSED_RENDER_NO_LOGIN_PATH", raising=False)
+    monkeypatch.setenv("SHELL", sh)
+    monkeypatch.setenv("PATH", "/app/bin")
+    login_path.start()
+    t0 = time.monotonic()
+    assert login_path.wait(2.0) is True
+    assert time.monotonic() - t0 < 0.5
+
+
+def test_wait_blocks_without_cache_while_probe_is_slow(monkeypatch, tmp_path):
+    sh = _shell(tmp_path, '/bin/sleep 5\nprintf %s "__FR_PATH_BEGIN__/fresh__FR_PATH_END__"\n')
+    monkeypatch.delenv("FUSED_RENDER_NO_LOGIN_PATH", raising=False)
+    monkeypatch.setenv("SHELL", sh)
+    monkeypatch.setenv("PATH", "/app/bin")
+    login_path.start()
+    assert login_path.wait(0.3) is False
 
 
 def test_start_ignores_cache_for_other_shell(monkeypatch, tmp_path):

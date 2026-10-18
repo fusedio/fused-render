@@ -57,7 +57,8 @@ _COMMAND = (f"printf %s {_BEGIN}; /usr/bin/printenv PATH; printf %s {_END}")
 # combined form prints nothing rather than failing loudly.
 _FLAG_SETS = (["-ilc"], ["-lc"], ["-ic"])
 
-_done = threading.Event()
+_done = threading.Event()   # the probe finished (or was skipped)
+_ready = threading.Event()  # a PATH is applied: from the cache or the probe
 _started = False
 _lock = threading.Lock()
 
@@ -201,6 +202,7 @@ def _run(shell: str, cached: Optional[list]) -> None:
         logger.exception("login-shell PATH probe failed")
     finally:
         _done.set()
+        _ready.set()
 
 
 def start() -> None:
@@ -212,28 +214,33 @@ def start() -> None:
         _started = True
         if os.name == "nt" or os.environ.get(OPT_OUT_ENV):
             _done.set()
+            _ready.set()
             return
         try:
             shell = _user_shell()
             cached = _read_cache(shell)
             if cached:
                 _apply(cached)
+                _ready.set()
             threading.Thread(target=_run, args=(shell, cached),
                              name="login-path", daemon=True).start()
         except Exception:
             logger.exception("could not start login-shell PATH probe")
             _done.set()
+            _ready.set()
 
 
 def wait(timeout: float) -> bool:
-    """Block until the probe finished (True) or `timeout` passed (False).
+    """Block until a login-shell PATH is in os.environ (True) or `timeout` passed.
 
     True at once if start() was never called, so contexts that never start the
-    probe (tests, scripts) are not slowed down.
+    probe (tests, scripts) are not slowed down, and True at once when start()
+    applied the disk cache: a usable PATH is already there, and the background
+    probe only refreshes it.
     """
     if not _started:
         return True
-    return _done.wait(timeout)
+    return _ready.wait(timeout)
 
 
 def _reset_for_tests() -> None:
@@ -241,3 +248,4 @@ def _reset_for_tests() -> None:
     with _lock:
         _started = False
         _done.clear()
+        _ready.clear()
