@@ -246,6 +246,21 @@ class PtySession:
 
     # -- I/O ---------------------------------------------------------------
 
+    def _child_exited(self) -> bool:
+        """True once the child has exited, WITHOUT reaping it: the zombie keeps
+        its pid reserved until the reader's own `proc.wait()`, which `kill()`'s
+        `alive` check relies on."""
+        if self.proc.returncode is not None:
+            return True
+        if not hasattr(os, "waitid"):  # Windows: no WNOWAIT, poll() is all there is
+            return self.proc.poll() is not None
+        try:
+            info = os.waitid(os.P_PID, self.proc.pid,
+                             os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return True
+        return info is not None
+
     def _wait_flowing(self) -> None:
         """Block while any subscriber has the stream paused, in short waits so
         a stale pause expires and a child that exited is still noticed: once
@@ -254,7 +269,7 @@ class PtySession:
         while not self._flowing.is_set():
             # Checked before the wait: an exited child must drain at once, not
             # pay _FLOW_POLL_S for every read left in the pty buffer.
-            if self.proc.poll() is not None:
+            if self._child_exited():
                 return
             now = time.monotonic()
             with self._lock:
@@ -328,14 +343,19 @@ class PtySession:
                 excess = 0
 
     def _put(self, q, item) -> None:
-        """Deliver `item` to one subscriber from the reader thread. An asyncio
-        queue is not thread-safe, so it is fed through its loop; a loop that
-        has already closed (server shutdown racing the reader) raises
+        """Deliver `item` to one subscriber from the reader thread. The path is
+        chosen by queue type: a plain thread queue takes `put` directly. An
+        asyncio queue is not thread-safe, so it is fed through its loop; one
+        already unsubscribed (the reader snapshotted subs before the
+        unsubscribe) has no loop and is skipped silently. A loop that has
+        already closed (server shutdown racing the reader) raises
         RuntimeError, and that subscriber is dropped rather than killing the
         reader thread for every other one."""
+        if not isinstance(q, asyncio.Queue):
+            q.put(item)
+            return
         loop = self._loops.get(q)
         if loop is None:
-            q.put(item)
             return
         try:
             loop.call_soon_threadsafe(q.put_nowait, item)

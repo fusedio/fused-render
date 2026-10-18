@@ -506,8 +506,43 @@ def test_exited_child_drains_without_a_wait_per_read(monkeypatch):
     session._lock = threading.Lock()
     session._flowing = threading.Event()
     session._paused = {object(): time.monotonic()}
-    session.proc = type("P", (), {"poll": lambda self: 0})()
+    session.proc = type("P", (), {"returncode": 0, "poll": lambda self: 0})()
     t0 = time.monotonic()
     for _ in range(10):  # ten buffered reads' worth
         session._wait_flowing()
     assert time.monotonic() - t0 < 0.2
+
+
+@pytest.mark.skipif(not hasattr(os, "waitid"), reason="needs os.waitid")
+def test_child_exited_does_not_reap(registry, tmp_path, monkeypatch):
+    """_child_exited sees the exit but leaves the zombie in place: returncode
+    stays None until the reader's own proc.wait(), so kill()'s `alive` check
+    keeps the pid reserved."""
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "exit 0"]))
+    session = registry.create()
+    # Hold the reader off the pty so it cannot reap while we look.
+    session._flowing.clear()
+    session._paused[object()] = time.monotonic()
+    assert _wait_until(session._child_exited, timeout=3.0)
+    assert session.proc.returncode is None  # not reaped
+    assert session._child_exited()  # idempotent
+    session._flowing.set()
+    assert _wait_until(lambda: not session.alive, timeout=3.0)
+    assert session.proc.returncode is not None
+
+
+def test_put_to_an_unsubscribed_asyncio_queue_is_a_silent_noop(registry, tmp_path, monkeypatch):
+    """The reader snapshots subscribers, then one unsubscribes before delivery:
+    the asyncio queue has no loop entry, and must neither be fed from the
+    reader thread nor trigger a never-awaited/thread-unsafe warning."""
+    import asyncio
+    import warnings
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    session = registry.create()
+    q = asyncio.Queue()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        session._put(q, b"late")
+    assert q.empty()
