@@ -217,6 +217,9 @@ export interface Bot {
   dl_pct?: number | null;
   engine?: "auto" | "steps" | "agent";
   seq: number;
+  /** The last event seq as of you opening this bot (markBotSeen; the server never lowers it). Absent = never opened,
+   *  which unreadOf reads as nothing to catch up on. On the bot row so a relaunch on another port keeps it (D1377). */
+  seen_seq?: number | null;
   browser?: BrowserState;
   memory?: string | null;
   skills?: Skill[] | null;
@@ -429,6 +432,8 @@ export const api = {
     post<{ ok: true; url: string; tabs: Tab[] }>(`${bid(id)}/tab`, body, "tab"),
   /** data: base64 (no data: prefix); 8 MB cap server-side. */
   attach: (id: string, name: string, data: string) => post<{ ok: true; name: string }>(`${bid(id)}/attach`, { name, data }, "attach"),
+  /** The unread mark (Bot.seen_seq): you have seen bot `id` up to `seq`. Monotone server-side. */
+  seen: (id: string, seq: number) => post<Ok & { seen_seq: number }>(`${bid(id)}/seen`, { seq }, "seen"),
   react: (id: string, seq: number, emoji: string) => post<{ ok: true; reactions: Record<string, string> }>(`${bid(id)}/react`, { seq, emoji }, "react"),
   flag: (id: string, body: { pinned?: boolean; hidden?: boolean; face?: Face }) => post<Ok>(`${bid(id)}/flag`, body, "flag"),
   settings: (id: string, body: SettingsBody) => post<Ok>(`${bid(id)}/settings`, body, "settings"),
@@ -455,6 +460,10 @@ export const api = {
   /** Slow (runs each installed starter's setup tool): call after the strip is drawn. null = could not tell. */
   starterStatus: () => get<{ ok: true; ready: Record<string, boolean | null>; why: Record<string, string> }>("/api/bot-apps/starters/status", "starter_status"),
 };
+
+/** POST /api/bots/<id>/seen {seq}: the unread mark (Bot.seen_seq). Silent: no banner, no poll after it (store.ts
+ *  markSeen calls this on every new seq while you watch a running bot, and the next poll carries the result). */
+export const markBotSeen = (id: string, seq: number): Promise<Ok & { seen_seq: number }> => api.seen(id, seq);
 
 // ------------------------------------------------------------------ URL builders ----
 /** The preview <img> src: the shot route, cache-busted by shot_ts (OpenBot shotUrl). Empty when the bot has no shot. */

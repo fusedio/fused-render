@@ -44,7 +44,8 @@ export interface Clipboard {
 }
 
 /** The key the clipboard + last-seen-token pair is stored under, namespaced
- *  like every other key this app writes (see side-store.ts's SIDE_WIDTH_KEY). */
+ *  like every other key this app writes. sessionStorage, per tab by design —
+ *  one of the hand-offs D1377 leaves in the browser. */
 export const CLIPBOARD_STORAGE_KEY = "fused-render:explorer-clipboard";
 
 interface StoredClipboardState {

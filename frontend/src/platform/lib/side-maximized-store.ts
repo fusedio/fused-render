@@ -8,47 +8,33 @@
 // and a `.maximized` class makes it `position: fixed; inset: 0` (preview.css), so
 // the chat inside keeps its state and the content column underneath stays mounted.
 //
-// Persisted in `localStorage`, like its siblings, and every access is wrapped: a
-// private window or blocked storage makes the accessor itself throw, and a
-// failure costs the persistence, never the flag — the module variable is the
-// live answer. Unlike the siblings it has subscribers (and a hook), because the
-// header button, the Esc handler and the close path all write it while mounted
+// Persisted like its siblings: `explorerSide.maximized` in the server-held
+// layout document (ui-layout.ts, D1377), read synchronously off that module's
+// cache. It was the localStorage key `fused-render:explorer-side-maximized`
+// until the desktop app's port walk (a new origin, so empty storage, on most
+// relaunches) was found resetting it; ui-layout.ts imports that key once.
+// Unlike the siblings it has subscribers (and a hook), because the header
+// button, the Esc handler and the close path all write it while mounted
 // components read it.
 import { useEffect, useSyncExternalStore } from "react";
+import { getUiLayout, patchUiLayout, subscribeUiLayout } from "./ui-layout";
 
-/** Stored as "1" while maximized; the key is absent otherwise. */
-export const SIDE_MAXIMIZED_KEY = "fused-render:explorer-side-maximized";
-
-function readStored(): boolean {
-  try {
-    return localStorage.getItem(SIDE_MAXIMIZED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function writeStored(next: boolean): void {
-  try {
-    if (next) localStorage.setItem(SIDE_MAXIMIZED_KEY, "1");
-    else localStorage.removeItem(SIDE_MAXIMIZED_KEY);
-  } catch {
-    // Costs the persistence, never the flag.
-  }
-}
-
-let maximized = readStored();
 const listeners = new Set<() => void>();
 
 export function getSideMaximized(): boolean {
-  return maximized;
+  return getUiLayout().explorerSide?.maximized === true;
 }
 
 export function setSideMaximized(next: boolean): void {
-  if (maximized === next) return;
-  maximized = next;
-  writeStored(next);
+  if (getSideMaximized() === next) return;
+  patchUiLayout((d) => ({ ...d, explorerSide: { ...d.explorerSide, maximized: next } }));
   listeners.forEach((fn) => fn());
 }
+
+// A layout hydrate that landed after the first render (ui-layout.ts) may have
+// changed the answer; tell the hook. Spurious calls are free —
+// useSyncExternalStore re-renders only on a changed snapshot.
+subscribeUiLayout(() => listeners.forEach((fn) => fn()));
 
 export function subscribeSideMaximized(fn: () => void): () => void {
   listeners.add(fn);

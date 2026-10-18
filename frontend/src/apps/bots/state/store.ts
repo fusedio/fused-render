@@ -8,8 +8,9 @@
 // (routes.ts: the selection IS the path), the UI request slots (dialog / context menu) the panes open each other
 // with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
-import { api, apiHooks, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary } from "../lib/api";
-import { loadSeen, newMarkFor, saveSeen, unreadOf, unviewedOf } from "../lib/unread";
+import { api, apiHooks, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary } from "../lib/api";
+import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
+import { getPrefsShared, putBotsPref } from "@platform/lib/api";
 import { sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
@@ -37,7 +38,8 @@ export interface BotsState {
   sel: string | null;
   usage: UsageSummary | null;
   imessage: ImessageState | null;
-  /** id → last seq as of opening that bot (localStorage browser-bot.seen). */
+  /** id → last seq as of opening that bot: the server's Bot.seen_seq, max-merged with marks this page sent that the
+   *  server has not echoed yet (pollOnce, markSeen). Absent = never opened. */
   seen: Record<string, number>;
   /** id → the "N new messages" baseline. */
   base: Record<string, number>;
@@ -80,7 +82,7 @@ const urlSel = (): string | null => {
 let S: BotsState = {
   bots: [], events: {}, cursors: {}, sel: typeof location === "undefined" ? null : urlSel(),
   usage: null, imessage: null,
-  seen: typeof localStorage === "undefined" ? {} : loadSeen(), base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
+  seen: {}, base: {}, viewed: {}, newMark: null, newCount: 0, pinned: true,
   showHidden: false, slow: [], fast: false, scrollThread: 0, scrollToEnd: false, scrollSeq: null,
   banner: { show: false, text: "" }, toasts: [],
   buildsChip: { n: "", live: false, warn: false, fresh: false, title: "Tasks · Claude tasks that create fused apps", hidden: false },
@@ -125,27 +127,89 @@ export const eventsOf = (id: string | null | undefined): BotEvent[] => (id && S.
 export const errMsg = (e: unknown): string => String((e as { message?: unknown })?.message || e);
 
 // ------------------------------------------------------------------ prefs ----
-// Boolean page prefs in localStorage ("1" / "0"); a missing key or no storage reads as the default (on). A value set
-// this session is also kept in memory, so a switch still governs the page when storage throws (CodeRabbit, #1586).
-const flagMem = new Map<string, boolean>();
-const readFlag = (k: string, dflt = true): boolean => {
-  const m = flagMem.get(k);
-  if (m !== undefined) return m;
-  try { const v = localStorage.getItem(k); return v === null ? dflt : v === "1"; } catch { return dflt; }
+// The three page-wide switches (Settings > General) are server prefs (shell/prefs.py `bots_autostage`, `bots_sounds`,
+// `bots_clear_enabled`; GET /api/prefs → `bots`), D1377. They used to be localStorage, but the desktop app walks ports
+// 1777..1787 then an ephemeral one and each port is a new origin with empty storage, so a relaunch on another port
+// quietly turned the chime back on and the Clear context button back off. Reads stay synchronous: `flagMem` is the
+// in-memory copy, seeded once per document by hydrateBotsPrefs (App mount) and advanced by the setters at once, so a
+// switch governs the page the moment it flips. Until the GET lands a flag reads as its default (the server's default
+// too); the first poll can open Stage on a hand-over in that window even if autostage was turned off (accepted: the
+// GET is one local request racing the first /api/bots poll).
+type BotsPrefKey = "bots_autostage" | "bots_sounds" | "bots_clear_enabled";
+const flagMem = new Map<BotsPrefKey, boolean>();
+/** A flag flipped in this document: the hydrate GET, which may have started before the write, must not undo it, and
+ *  an old localStorage value must not be imported over it. */
+const flagLocal = new Set<BotsPrefKey>();
+const readFlag = (k: BotsPrefKey, dflt = true): boolean => flagMem.get(k) ?? dflt;
+const writeFlag = (k: BotsPrefKey, on: boolean): void => {
+  flagMem.set(k, on); flagLocal.add(k);
+  void putBotsPref(k, on).catch(() => { /* the switch still governs this document; the next write retries */ });
 };
-const writeFlag = (k: string, on: boolean): void => { flagMem.set(k, on); try { localStorage.setItem(k, on ? "1" : "0"); } catch { /* no storage */ } };
-export const AUTOSTAGE_KEY = "browser-bot.autostage", SOUNDS_KEY = "browser-bot.sounds", CLEAR_KEY = "browser-bot.clear";
+/** import-only (D1377): the old localStorage key ("1" / "0"), its prefs key, the `Prefs.bots` field and the default. */
+const FLAG_IMPORT: [string, BotsPrefKey, "autostage" | "sounds" | "clear_enabled", boolean][] = [
+  ["browser-bot.autostage", "bots_autostage", "autostage", true],
+  ["browser-bot.sounds", "bots_sounds", "sounds", true],
+  ["browser-bot.clear", "bots_clear_enabled", "clear_enabled", false],
+];
+const dropKey = (k: string): void => { try { localStorage.removeItem(k); } catch { /* no storage */ } };
+let hydrated: Promise<void> | null = null;
+/** Seed the page-wide switches from the server, once per document (the Bots route remounts; this does not re-run),
+ *  and run the one-shot D1377 import of the old localStorage keys.
+ *
+ *  The server is read FIRST and an old switch key is imported only while the server still holds that pref's default.
+ *  The port walk leaves one stale copy per origin: the user may have flipped the switch on 1778 (which is now the
+ *  server value) while 1777's old key still says otherwise, so a server value off its default was set by the user and
+ *  wins. The old key is removed once that decision is made; a pushed value's key only after its PUT succeeded, so a
+ *  failed push re-decides next load under the same gate. An unreachable server (or one without `bots`) decides
+ *  nothing and keeps the keys. A switch flipped in this document before the GET landed beats both.
+ *
+ *  The seen map needs no gate: `/seen` only ever RAISES a bot's seen_seq (bots/routes.py `_seen`, under the bot lock),
+ *  so a stale origin's lower mark is a no-op server-side, and the local max-merge never lowers either. Its key goes
+ *  once every POST settled (a bot deleted since 404s, and that is final). */
+export function hydrateBotsPrefs(): Promise<void> {
+  return hydrated || (hydrated = hydrateOnce());
+}
+async function hydrateOnce(): Promise<void> {
+  try {
+    const raw = localStorage.getItem(SEEN_KEY);
+    if (raw !== null) {
+      const imported = parseSeenMap(raw);
+      // Shown at once: the first render must not paint every bot as never opened while the POSTs travel; pollOnce's
+      // max-merge keeps these until the server echoes them (or a higher mark of its own wins).
+      commit({ seen: maxMerge(S.seen, imported) });
+      void Promise.allSettled(Object.entries(imported).map(([id, seq]) => markBotSeen(id, seq))).then(() => dropKey(SEEN_KEY));
+    }
+  } catch { /* storage blocked: nothing to import */ }
+  let server: { autostage?: unknown; sounds?: unknown; clear_enabled?: unknown } | undefined;
+  try { server = (await getPrefsShared()).bots; } catch { /* server unreachable: defaults stand; the poll's banner says why */ }
+  if (server) {
+    for (const [old, key, field, dflt] of FLAG_IMPORT) {
+      const sv = typeof server[field] === "boolean" ? (server[field] as boolean) : dflt;
+      let v: string | null = null;
+      try { v = localStorage.getItem(old); } catch { /* no storage */ }
+      if (flagLocal.has(key)) { if (v !== null) dropKey(old); continue; }  // flipped here meanwhile: that wins
+      if (v !== null && sv === dflt && (v === "1") !== dflt) {
+        flagMem.set(key, v === "1");
+        void putBotsPref(key, v === "1").then(() => dropKey(old), () => {});
+        continue;
+      }
+      flagMem.set(key, sv);
+      if (v !== null) dropKey(old);
+    }
+  }
+  touch();  // an open chat header follows clear_enabled
+}
 /** "Open the browser when a bot needs me": a bot-initiated hand-over on the selected bot opens Stage by itself. */
-export const autoStage = (): boolean => readFlag(AUTOSTAGE_KEY);
-export const setAutoStage = (on: boolean): void => writeFlag(AUTOSTAGE_KEY, on);
+export const autoStage = (): boolean => readFlag("bots_autostage");
+export const setAutoStage = (on: boolean): void => writeFlag("bots_autostage", on);
 /** The hand-over chime (lib/notify.ts chime). */
-export const soundsOn = (): boolean => readFlag(SOUNDS_KEY);
-export const setSounds = (on: boolean): void => writeFlag(SOUNDS_KEY, on);
+export const soundsOn = (): boolean => readFlag("bots_sounds");
+export const setSounds = (on: boolean): void => writeFlag("bots_sounds", on);
 /** The chat header's Clear context button (ChatPane.tsx, Bot.clear_context): a feature flag, OFF by default. Off, the
  *  button is not rendered at all; markers already in a thread still fold it (Thread.tsx). The setter republishes so
  *  an open header follows the switch at once. */
-export const clearContextOn = (): boolean => readFlag(CLEAR_KEY, false);
-export const setClearContext = (on: boolean): void => { writeFlag(CLEAR_KEY, on); touch(); };
+export const clearContextOn = (): boolean => readFlag("bots_clear_enabled", false);
+export const setClearContext = (on: boolean): void => { writeFlag("bots_clear_enabled", on); touch(); };
 
 // ------------------------------------------------------------------ hand-over ----
 // The bot asked for you in its browser (control_by flipped to "bot"): open Stage. lib/cdp.ts registers openFull here
@@ -196,11 +260,32 @@ export function showBanner(msg: string): void { commit({ banner: { show: true, t
 export function hideBanner(): void { if (S.banner.show) commit({ banner: { ...S.banner, show: false } }); }
 
 // ------------------------------------------------------------------ unread ----
+// "Seen" is the server's Bot.seen_seq (D1377; it was localStorage, which the port walk empties on relaunch). markSeen
+// moves the local mark at once (the pill and the list dot clear on the click) and POSTs it; pollOnce max-merges the
+// server's value back in, so a poll that lands before the POST cannot pull the mark back and re-light the pill — which
+// would make Thread.tsx call markSeen again, a write loop. The server never lowers it, so max is the truth.
+/** a ∪ b, keeping the larger seq per id. */
+function maxMerge(a: Record<string, number>, b: Record<string, number>): Record<string, number> {
+  const out = { ...a };
+  for (const [id, seq] of Object.entries(b)) if (!(out[id] >= seq)) out[id] = seq;
+  return out;
+}
+// One POST in flight per bot; marks made meanwhile (a running bot you are watching moves seq every poll) collapse into
+// one follow-up carrying the latest.
+const seenInFlight = new Set<string>(), seenNext = new Map<string, number>();
+function pushSeen(id: string, seq: number): void {
+  if (seenInFlight.has(id)) { seenNext.set(id, Math.max(seq, seenNext.get(id) ?? seq)); return; }
+  seenInFlight.add(id);
+  void markBotSeen(id, seq).catch(() => { /* the mark holds in this document; the bot's next seq sends again */ }).finally(() => {
+    seenInFlight.delete(id);
+    const next = seenNext.get(id); seenNext.delete(id);
+    if (next !== undefined && next > seq) pushSeen(id, next);
+  });
+}
 export function markSeen(id: string | null | undefined, seq: number): void {
-  if (!id || S.seen[id] === seq) return;
-  const seen = { ...S.seen, [id]: seq };
-  saveSeen(seen);
-  commit({ seen });
+  if (!id || S.seen[id] >= seq) return;
+  pushSeen(id, seq);
+  commit({ seen: { ...S.seen, [id]: seq } });
 }
 export const unreadCount = (b: Bot): number => unreadOf(S.seen[b.id], eventsOf(b.id), b);
 /** The "new" rule sits at the seen mark as of opening this bot and stays put until you switch bots; set only when something is past it, else cleared. */
@@ -397,8 +482,19 @@ export async function pollOnce(): Promise<void> {
         if (list.length > EVENT_CAP) list = list.slice(list.length - EVENT_CAP);
         events[b.id] = list;
       }
+      // Seen comes from the server (Bot.seen_seq, another window's opens included), max-merged with marks of ours it has
+      // not echoed yet (see markSeen). In the same commit as `bots`, so the first-load setNewMark below reads it.
+      let seen: Record<string, number> = {}, seenSame = true;
+      for (const b of r.bots) {
+        const mine = S.seen[b.id] as number | undefined, theirs = b.seen_seq ?? undefined;
+        const v = mine === undefined ? theirs : theirs === undefined ? mine : Math.max(mine, theirs);
+        if (v !== undefined) seen[b.id] = v;
+        if (v !== mine) seenSame = false;
+      }
+      // Nothing moved (and no bot left): keep the reference.
+      if (seenSame && Object.keys(seen).length === Object.keys(S.seen).length) seen = S.seen;
       commit({
-        bots: r.bots, events, cursors,
+        bots: r.bots, events, cursors, seen,
         ...(r.usage ? { usage: r.usage } : {}), ...(r.imessage ? { imessage: r.imessage } : {}),
       });
       if (toast) showToast(toast);

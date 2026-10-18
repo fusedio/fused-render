@@ -34,6 +34,7 @@ import {
   useState,
 } from "react";
 import type { DragEvent as ReactDragEvent } from "react";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import { agentLabel, agentNamed, useAgentBackends } from "@platform/lib/agent-backends";
 import { AgentMark } from "@platform/ui/AgentMark";
 import {
@@ -68,7 +69,6 @@ import type { BoardColumn, BoardLane } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
   EMPTY_LIST_MEMORY,
-  LANE_CHOICE_KEY,
   listMemoryKey,
   UNREAD_LABEL,
   basename,
@@ -5092,13 +5092,23 @@ const RUN_DROP_WORDS = {
 // toggle here, and a lane with none remembers nothing at all (the peek, in
 // TaskBoard). So a lane nobody has touched keeps following the rule as it fills
 // and empties, and so does one they touched while it was empty.
+//
+// The lane half lives in the layout document's `tasks.boardLanes`
+// (platform/lib/ui-layout.ts, D1377) — it was the localStorage key
+// `fused-render:scheduled-board-lanes` until the desktop app's port walk (a new
+// origin, so empty storage, on most relaunches) was found resetting it.
+// parseLaneChoices keeps only choices for lanes this build knows.
 function readLaneChoices(): LaneChoices {
-  try {
-    return parseLaneChoices(localStorage.getItem(LANE_CHOICE_KEY));
-  } catch {
-    // A blocked/private store costs the memory, never the board.
-    return {};
-  }
+  return parseLaneChoices(getUiLayout().tasks?.boardLanes);
+}
+
+/** The whole choice map, SET (ui-layout replays a patch onto the server's copy,
+ *  so it must not be a toggle). */
+function writeLaneChoices(next: LaneChoices): void {
+  const boardLanes = Object.fromEntries(
+    Object.entries(next).filter((e): e is [string, boolean] => typeof e[1] === "boolean")
+  );
+  patchUiLayout((d) => ({ ...d, tasks: { ...d.tasks, boardLanes } }));
 }
 
 export function TaskBoard({
@@ -5502,11 +5512,7 @@ export function TaskBoard({
     }
     setChoices((cur) => {
       const next = { ...cur, [key]: !nowCollapsed };
-      try {
-        localStorage.setItem(LANE_CHOICE_KEY, JSON.stringify(next));
-      } catch {
-        // best-effort; a full or blocked store never breaks the board
-      }
+      writeLaneChoices(next);
       return next;
     });
   };
@@ -6323,24 +6329,19 @@ function TaskCard({
 
 /** Where the grouped views remember which sections are folded — one set for
  *  all three, keyed `<view>:<group>` so Time's "Today" and Project's folders
- *  never collide. localStorage: a fold is a reading preference, like the view. */
-const GROUPS_COLLAPSED_KEY = "fused-render:tasks-groups-collapsed";
-
+ *  never collide. A fold is a reading preference, like the view, so it is the
+ *  layout document's `tasks.groupsCollapsed` (platform/lib/ui-layout.ts,
+ *  D1377) — the localStorage key `fused-render:tasks-groups-collapsed` until
+ *  the desktop app's port walk (a new origin, so empty storage, on most
+ *  relaunches) was found resetting it. The document keeps the newest 200. */
 function readCollapsedGroups(): Set<string> {
-  try {
-    const raw = JSON.parse(localStorage.getItem(GROUPS_COLLAPSED_KEY) || "[]");
-    return new Set(Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string") : []);
-  } catch {
-    return new Set();
-  }
+  const keys = getUiLayout().tasks?.groupsCollapsed;
+  return new Set(Array.isArray(keys) ? keys.filter((k): k is string => typeof k === "string") : []);
 }
 
 function writeCollapsedGroups(set: Set<string>) {
-  try {
-    localStorage.setItem(GROUPS_COLLAPSED_KEY, JSON.stringify([...set]));
-  } catch {
-    // A blocked store forgets the folds; the fold itself still happens.
-  }
+  const groupsCollapsed = [...set];
+  patchUiLayout((d) => ({ ...d, tasks: { ...d.tasks, groupsCollapsed } }));
 }
 
 const ICON_GROUP_CHEVRON = icon(<path d="m9 18 6-6-6-6" />, 12);

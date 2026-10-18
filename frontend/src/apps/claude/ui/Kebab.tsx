@@ -34,7 +34,7 @@ import {
   type Task,
 } from "@platform/lib/api";
 import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
-import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { CHAT_ACTIVITY_KEY, TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { PENDING_KEY_PREFIX } from "@platform/lib/queue";
 import { canRunInTerminal, useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { copyPendingText } from "@platform/lib/clipboard";
@@ -111,12 +111,6 @@ const inflight = new Map<string, Set<() => void>>();
  */
 export const ASK_AGAIN_MS = [900, 2500, 5000, 8000];
 
-/** ClaudeChat's `CHAT_ACTIVITY_KEY`, restated rather than imported: that module
- *  imports this one through `ui/index`, and a chat cannot be made to depend on
- *  its own menu to know the name of a localStorage key. One string, in two
- *  places, that has not changed since T:16435. */
-const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
-
 /**
  * T:12696 `showSession` + T:12705 `loadTaskId` — THE TASK NUMBER FOR THIS CHAT,
  * read on entering a session rather than on opening the menu.
@@ -191,7 +185,7 @@ export function useTaskId(sessionId: string): string {
     // announced by this document's own run controller the moment a turn starts
     // (protocol/run-controller.ts), which is the same moment the row is created;
     // the storage stamp is every OTHER document's chat saying the same thing
-    // (ClaudeChat's CHAT_ACTIVITY_KEY). Both are pokes, not payloads, so both
+    // (CHAT_ACTIVITY_KEY, which ClaudeChat stamps). Both are pokes, not payloads, so both
     // land on one handler.
     const poke = () => {
       if (!live || taskIds.has(sessionId)) return;

@@ -8,8 +8,8 @@ keeping those waits off the event loop.
 NOT gated on the `marketplace_enabled` pref (shell/prefs.py): like every other
 feature flag here, the pref gates the shell's entry points, not the API.
 
-The one mutating route, POST /install, carries the same X-Fused guard as every
-other write route (`X-Fused: 1`, else 403 — the D3 CSRF guard; duplicated here
+The two mutating routes, POST /install and POST /ack, carry the same X-Fused
+guard as every other write route (`X-Fused: 1`, else 403 — the D3 CSRF guard; duplicated here
 like appfile.py's because a router must not import the app factory).
 """
 from __future__ import annotations
@@ -110,6 +110,29 @@ def api_marketplace_install(body: dict = Body(...), x_fused: str | None = Header
 def api_marketplace_jobs():
     """Running installs/updates, plus finished ones for ~60 s."""
     return marketplace.list_jobs()
+
+
+@router.get("/api/marketplace/acks")
+def api_marketplace_acks():
+    """The slugs whose Python notice the user accepted (marketplace.py's
+    acks section: localStorage until D1377, lost on every port-walk
+    relaunch)."""
+    return {"slugs": marketplace.python_acks()}
+
+
+@router.post("/api/marketplace/ack")
+def api_marketplace_ack(body: dict = Body(default=None),
+                        x_fused: str | None = Header(default=None)):
+    """Accept `slug`'s Python notice; idempotent. X-Fused-guarded."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    slug = body.get("slug") if isinstance(body, dict) else None
+    try:
+        slugs = marketplace.ack_python(slug)
+    except ValueError as exc:
+        return _error(str(exc))
+    return {"ok": True, "slugs": slugs}
 
 
 @router.get("/api/marketplace/installed")

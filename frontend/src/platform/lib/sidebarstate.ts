@@ -1,11 +1,22 @@
 // Sidebar chrome state — resizable width + collapsed flag. Persisted so the
-// layout the user dragged into place survives reloads. Same defensive
-// localStorage pattern as viewstate.ts: best-effort, silent on failure.
-const KEY = "fused-render:sidebar";
+// layout the user dragged into place survives reloads AND relaunches: it is the
+// `sidebar` field of the server-held layout document (ui-layout.ts, D1377),
+// read synchronously off that module's cache. It was the localStorage key
+// `fused-render:sidebar` until the desktop app's port walk (a new origin, so
+// empty storage, on most relaunches) was found resetting it.
+import {
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
+  getUiLayout,
+  patchUiLayout,
+  subscribeUiLayout,
+} from "./ui-layout";
 
-export const SIDEBAR_MIN_WIDTH = 180;
-export const SIDEBAR_MAX_WIDTH = 400;
-export const SIDEBAR_DEFAULT_WIDTH = 232;
+// The document's own bounds (ui-layout.ts, mirrored by the server's validator).
+export const SIDEBAR_MIN_WIDTH = SIDEBAR_WIDTH_MIN;
+export const SIDEBAR_MAX_WIDTH = SIDEBAR_WIDTH_MAX;
+export const SIDEBAR_DEFAULT_WIDTH = SIDEBAR_WIDTH_DEFAULT;
 
 // What the sidebar occupies while COLLAPSED — the icon rail, and not zero: the
 // panel is still on screen, wearing a narrower shape. Duplicated as a literal in
@@ -20,28 +31,26 @@ export interface SidebarState {
   collapsed: boolean;
 }
 
+/** The PERSISTED state — the reader's last choice, as the layout document
+ *  holds it. Distinct from `getSidebarState()`, the live one: a resize drag and
+ *  the task peek's auto-collapse move the sidebar without writing here. */
 export function loadSidebarState(): SidebarState {
-  const fallback: SidebarState = { width: SIDEBAR_DEFAULT_WIDTH, collapsed: false };
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return fallback;
-    const parsed = JSON.parse(raw) as Partial<SidebarState>;
-    const width =
-      typeof parsed.width === "number" && Number.isFinite(parsed.width)
-        ? Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, parsed.width))
-        : SIDEBAR_DEFAULT_WIDTH;
-    return { width, collapsed: parsed.collapsed === true };
-  } catch {
-    return fallback; // private-mode / quota / malformed JSON — behave as default
-  }
+  const stored = getUiLayout().sidebar;
+  if (!stored) return { width: SIDEBAR_DEFAULT_WIDTH, collapsed: false };
+  const width = Number.isFinite(stored.width)
+    ? Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, stored.width))
+    : SIDEBAR_DEFAULT_WIDTH;
+  return { width, collapsed: stored.collapsed === true };
 }
 
 export function saveSidebarState(state: SidebarState): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(state));
-  } catch {
-    // storage unavailable — state is best-effort, so a failed write is fine
-  }
+  // Rounded and clamped HERE, not trusted to the caller: a drag ends on a
+  // fractional pixel, and the server 400s anything but an int in bounds.
+  const sidebar = {
+    width: Math.round(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, state.width))),
+    collapsed: state.collapsed,
+  };
+  patchUiLayout((d) => ({ ...d, sidebar }));
 }
 
 // --- Shared live state ------------------------------------------------------
@@ -51,12 +60,23 @@ export function saveSidebarState(state: SidebarState): void {
 // each route change — losing an in-session drag and letting two mounts hold
 // different widths mid-transition. One store, one layout.
 let current: SidebarState | null = null;
+// What `current` was seeded from, by identity — so a late layout hydrate (one
+// that missed the boot's 2 s bound, ui-layout.ts) can tell "still showing the
+// defaults it seeded" from "moved since, by a drag or the peek's auto-collapse",
+// and re-seed only the former.
+let seeded: SidebarState | null = null;
 const listeners = new Set<() => void>();
 
 export function getSidebarState(): SidebarState {
-  if (current === null) current = loadSidebarState();
+  if (current === null) current = seeded = loadSidebarState();
   return current;
 }
+
+subscribeUiLayout(() => {
+  if (current === null || current !== seeded) return;
+  current = seeded = null;
+  listeners.forEach((fn) => fn());
+});
 
 // `persist` is false for the per-pointermove width updates of a resize drag —
 // the final width is written once at drag end.

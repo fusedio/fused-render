@@ -816,6 +816,63 @@ def installed_list() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# acknowledgements
+# ---------------------------------------------------------------------------
+#
+# ``<state_dir>/acks.json`` = ``{"python": ["<slug>", ...]}``: the apps whose
+# "this app runs Python on your machine" notice the user has accepted, so the
+# install flow asks once per app, not once per install. It was the browser's
+# localStorage (``fused-render:marketplace:python-ack``) until D1377: storage
+# is per origin and the desktop app walks ports 1777..1787 then an ephemeral
+# one, so a relaunch on another port asked again for every app. The client
+# imports its old list once (one POST per slug) and removes the key.
+
+_ACKS_LOCK = threading.Lock()
+
+
+def acks_path() -> str:
+    return os.path.join(state_dir(), "acks.json")
+
+
+def python_acks() -> list[str]:
+    """The acknowledged slugs, sorted; ``[]`` when absent or unreadable.
+    Entries that are not slugs are skipped (a hand-edited file degrades)."""
+    try:
+        with open(acks_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    slugs = data.get("python") if isinstance(data, dict) else None
+    if not isinstance(slugs, list):
+        return []
+    return sorted({s for s in slugs if is_slug(s)})
+
+
+def ack_python(slug: str) -> list[str]:
+    """Record that the user accepted `slug`'s Python notice; idempotent.
+    Returns the acknowledged slugs. ValueError when `slug` is not a slug."""
+    if not is_slug(slug):
+        raise ValueError("not a marketplace slug")
+    with _ACKS_LOCK:
+        slugs = python_acks()
+        if slug in slugs:
+            return slugs
+        slugs = sorted({*slugs, slug})
+        os.makedirs(state_dir(), exist_ok=True)
+        # Unique per writer, like the catalog cache: other worktrees' servers
+        # share this state dir (it is not nested by branch).
+        tmp = f"{acks_path()}.{os.getpid()}.{threading.get_ident()}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"python": slugs}, f)
+            os.replace(tmp, acks_path())
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+        return slugs
+
+
+# ---------------------------------------------------------------------------
 # assets + detail
 # ---------------------------------------------------------------------------
 

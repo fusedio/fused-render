@@ -268,6 +268,8 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
     # After the read: events_since lifts the counter over lines another writer appended, and the page stores this
     # `seq` as its cursor. The pre-read value would make the next poll hand those lines over a second time.
     s["seq"] = b.seq
+    # `seen_seq` (the unread mark, `_seen`, D1377) needs no line here: it is a meta key, and summary() spreads meta, so
+    # it is on the row once the bot has been opened and absent before — the client's never-opened = 0 unread contract.
     return s
 
 
@@ -551,7 +553,7 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
     """pause | resume | stop | takeover | giveback | popout | dock | wake | clear (Clear context) | open (the user clicked the bot open: Super Bot's
     first task, docs §5), and the rest of the
     one-segment POSTs (goto, nav, tab, attach, react, flag, settings,
-    profile, clone, routines, skills, reveal, tool)."""
+    profile, clone, routines, skills, reveal, tool, seen)."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -628,6 +630,30 @@ def _react(bid, body):
         b.meta["reactions"] = rx
         b.save()
     return {"ok": True, "reactions": rx}
+
+
+def _seen(bid, body):
+    """The page opened this bot: `{seq}` is the event seq it had read up to. Stored as meta["seen_seq"], which
+    `summary()` spreads into the bot's status row as `seen_seq` — absent until the bot is first opened, which is the
+    client's `unreadOf(undefined, …) = 0` contract (a bot never opened has nothing to catch up on).
+
+    Server-side since D1377: this map was localStorage `browser-bot.seen`, and the desktop app walks ports 1777..1787
+    then an ephemeral one, each a new origin with empty storage, so a relaunch on another port forgot which bots had
+    been read and every "N new" badge went back to zero (or, worse, never-opened). MONOTONE: two windows racing, or a
+    stale page posting an old cursor, must never lower the mark and re-light messages already read, so the write
+    happens under the bot lock and only when it raises the value. Event seqs only grow (line counts; Clear context
+    appends a note, it does not truncate), so "never lower" is always right."""
+    seq = body.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        raise ValueError("seen needs an integer seq >= 0")
+    b = _bot(bid)
+    with b.lock:
+        cur = b.meta.get("seen_seq")
+        if not isinstance(cur, int) or isinstance(cur, bool) or seq > cur:
+            b.meta["seen_seq"] = seq
+            b.save()
+        stored = b.meta["seen_seq"]
+    return {"ok": True, "seen_seq": stored}
 
 
 def _flag(bid, body):
@@ -974,7 +1000,8 @@ def bot_app_events(bid: str, addr: str = Query(default=""), since: str = Query(d
 
 _POSTS = {"goto": _goto, "nav": _nav, "tab": _tab, "attach": _attach, "react": _react,
           "flag": _flag, "settings": _settings, "profile": _profile, "clone": _clone, "routines": _routines,
-          "skills": _skills, "reveal": _reveal, "tool": _tool, "viewport": _viewport, "failures": _failures}
+          "skills": _skills, "reveal": _reveal, "tool": _tool, "viewport": _viewport, "failures": _failures,
+          "seen": _seen}
 # The app door's POSTs read the X-Fused-Page header too (docs §13).
 _APP_POSTS = {"app_send": _app_send, "app_stop": _app_stop}
 

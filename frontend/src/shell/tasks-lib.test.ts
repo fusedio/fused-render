@@ -7706,7 +7706,7 @@ describe("which board lanes are rolled up", () => {
 
   it("is decided by laneRolledUp on the board, which stores only the toggle", () => {
     expect(LANES).toContain("laneRolledUp(col.key, lane.length, choices, peeked)");
-    // The peek is component state and is persisted NOWHERE — not localStorage,
+    // The peek is component state and is persisted NOWHERE — not the layout document,
     // not the URL — so a remount (every navigation back to this page) starts the
     // board with none.
     expect(LANES).toContain("const [peeked, setPeeked] = useState<Set<BoardLane>>(() => new Set());");
@@ -7716,7 +7716,7 @@ describe("which board lanes are rolled up", () => {
     const toggle = LANES.slice(LANES.indexOf("const toggleLane = (key: BoardLane"));
     const body = toggle.slice(0, toggle.indexOf("\n  };"));
     expect(body).toContain("if ((byLane.get(key)?.length ?? 0) === 0) {");
-    expect(body.indexOf("setPeeked(")).toBeLessThan(body.indexOf("localStorage.setItem"));
+    expect(body.indexOf("setPeeked(")).toBeLessThan(body.indexOf("writeLaneChoices("));
     // And the peek is dropped while the lane has cards, so a column that fills
     // and drains comes back rolled up rather than answering an older emptiness.
     expect(LANES).toContain("const next = new Set([...cur].filter((key) => (byLane.get(key)?.length ?? 0) === 0));");
@@ -7725,7 +7725,7 @@ describe("which board lanes are rolled up", () => {
     expect(VIEWS).not.toContain('new Set<BoardColumn>(["archived"])');
     // What is written is the RESULT of the press, for that one lane.
     expect(LANES).toContain("const next = { ...cur, [key]: !nowCollapsed };");
-    expect(LANES).toContain("localStorage.setItem(LANE_CHOICE_KEY");
+    expect(LANES).toContain("writeLaneChoices(next);");
   });
 });
 

@@ -64,3 +64,11 @@ export function useCurrentAppsChanged(cb: () => void): void {
     return () => window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, fire);
   }, []);
 }
+
+// The chat's "I just sent / a turn just finished" stamp — a localStorage SIGNAL
+// (never a fact: the value is `ts:nonce`, read only to know that SOMETHING
+// happened) that other windows hear through the `storage` event and answer
+// with a tasks refetch. One constant: it used to be three literals (ClaudeChat,
+// the chat Kebab, tasksPulse), which is how a renamed key stops reaching one
+// of them (D1377 audit).
+export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";

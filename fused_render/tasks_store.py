@@ -50,6 +50,7 @@ the moment it finally does something.
 ## `read.json` — unread, per message
 
     {"__initialized_at__": 1755300000.0,
+     "__seen_done__": {"<task-key>": 1755300000.0},
      "<session-id>": {"last_read_at": 1755300000.0,
                       "read_ids": ["MSG-003"], "read_floor": 0}}
 
@@ -88,6 +89,28 @@ each existing task's floor at its current message count exactly once, under the
 the start rather than accumulated — and per task, not one global clock, so a
 task that appears LATER still has its first message land unread.
 
+**`__seen_done__` — the sidebar's "finished since you last looked" marks.**
+A second, coarser kind of "seen", kept beside the per-message marks but never
+mixed into them: `{task key: the row's last_active when the user last saw it
+finished}`. The global sidebar's Notifications section lights a finished task
+until the user has looked at it, and that map is what remembers the look. It
+lived in the page's localStorage (`fused-render:tasks-seen`) until D1377: the
+desktop app walks ports 1777..1787 and then an ephemeral one, every port is a
+new browser origin with EMPTY storage, so a relaunch that landed on another port
+re-announced every finished task the user had already dismissed. Anything the
+user would miss across a relaunch lives behind an API, so it lives here
+(`POST /api/tasks/seen` writes it, `GET /api/tasks/pulse` carries it back).
+
+It is ONE TOP-LEVEL KEY, not a field on each task's record, for the same reason
+`__initialized_at__` is: the per-task records are the compaction floor's, and
+`_read_record` / `mark_read_many` / `initialize` / `forget_session` only ever
+look a task key up or pop it, so a dunder key no session id or `pending:<id>`
+can spell is invisible to every one of them. It is a WHOLE-MAP REPLACE
+(`set_seen_done`): the client already computes the next map (`seenAfterVisit`
+drops keys no longer listed), and last-write-wins across windows is the right
+merge for "what I have seen" — a merge here would resurrect the keys the client
+just pruned.
+
 Nothing here raises for input it cannot read: a missing store, a corrupt store,
 a record of the wrong shape, a transcript that vanished mid-walk — each degrades
 to "no number/no marks yet", never to a failed listing. Same posture as every
@@ -105,6 +128,7 @@ import contextlib
 import fcntl
 import glob
 import json
+import math
 import os
 import re
 import threading
@@ -691,6 +715,11 @@ def task_number(key: str) -> str:
 # `pending:<entry-id>`, and neither can look like this.
 INIT_KEY = "__initialized_at__"
 
+# The sidebar's "seen it finished" map (module docstring, `__seen_done__`).
+# Reserved the same way INIT_KEY is: a top-level dunder that no task key can be,
+# so nothing that reads a task's record ever trips over it.
+SEEN_KEY = "__seen_done__"
+
 
 def read_state() -> dict:
     return load_state(READ_FILE)
@@ -830,6 +859,52 @@ def mark_read_many(key: str, ids_to_mark, now: float | None = None) -> dict:
                "read_floor": floor}
         state[key] = rec
         return rec, True
+
+    return _update(READ_FILE, mutate)
+
+
+def _clean_seen(raw) -> dict[str, float]:
+    """The shape `seen_done` promises: non-empty string keys, finite non-bool
+    numbers. Anything else in the stored map is dropped rather than raised —
+    the same "unreadable reads as nothing" posture as `_read_record`, and the
+    same filter the client's own `parseTasksSeen` applied to localStorage."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, at in raw.items():
+        if (isinstance(key, str) and key and isinstance(at, (int, float))
+                and not isinstance(at, bool) and math.isfinite(at)):
+            out[key] = at
+    return out
+
+
+def seen_done() -> dict[str, float]:
+    """The sidebar's `{task key: last_active when seen finished}` map, or {}.
+
+    Server-side since D1377 — the localStorage key it replaced
+    (`fused-render:tasks-seen`) was wiped every time the desktop app's port walk
+    landed on a new origin. See the module docstring's `__seen_done__`
+    paragraph for why it is a top-level key and a whole-map replace."""
+    return _clean_seen(read_state().get(SEEN_KEY))
+
+
+def set_seen_done(seen: dict) -> dict[str, float]:
+    """Replace the whole `__seen_done__` map; return what was stored.
+
+    Whole-map, not merge: the client computes the next map (it prunes keys the
+    listing no longer carries), so merging would bring back exactly the keys it
+    meant to drop. Under the store's `_update` lock like every other read.json
+    write, so a concurrent `mark_read` on a task record is never clobbered by a
+    stale snapshot — the two writers touch different keys of one file, and the
+    lock is what keeps both. The caller validates (the route answers 400 on a
+    bad shape); `_clean_seen` here is a belt, not the gate."""
+    clean = _clean_seen(seen)
+
+    def mutate(state: dict):
+        if state.get(SEEN_KEY) == clean:
+            return dict(clean), False
+        state[SEEN_KEY] = clean
+        return dict(clean), True
 
     return _update(READ_FILE, mutate)
 

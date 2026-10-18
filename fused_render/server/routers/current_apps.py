@@ -1,6 +1,6 @@
 """Current apps — the sidebar's desk (fused_render/current_apps.py) over HTTP.
 
-* ``GET /api/current-apps`` — the table, in added order, each row with its
+* ``GET /api/current-apps`` — the table, in display order (top first), each row with its
   folder, name, kind (workspace / linked), entry page and whether the folder is
   still there.
 * ``DELETE /api/current-apps?path=`` — take an app off the desk AND archive
@@ -28,16 +28,24 @@ Two ways onto the desk: the tasks listing (`current_apps.observe`, run inside
   puts the folder on the desk by hand before hopping to its app page. Already
   there is not an error (``added: false``): the sidebar focuses the row it
   has rather than inserting a second.
+
+Both doors insert at the TOP: the table is display order (D1377), and
+
+* ``POST /api/current-apps/order {paths}`` — a drag in the sidebar rewrites
+  that order (`current_apps.set_order`). It used to live in the browser's
+  localStorage; the desktop app's port walk (1777..1787, then ephemeral) made
+  every relaunch on another port a fresh origin that had forgotten it.
 """
 import logging
 import os
 import time
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from fused_render import current_apps, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.server.common import _error, _require_fused
 from fused_render.server.routers import tasks as tasks_router
 
 logger = logging.getLogger(__name__)
@@ -112,6 +120,28 @@ def api_current_apps_add(patch: FolderPatch):
     if not os.path.isdir(folder):
         raise HTTPException(status_code=404, detail="no such folder")
     return {"ok": True, "added": current_apps.add(folder), "path": folder}
+
+
+@router.post("/api/current-apps/order")
+def api_current_apps_order(body: dict = Body(default=None),
+                           x_fused: str | None = Header(default=None)):
+    """The sidebar's drag: ``{paths: [...]}`` top first → the desk rewritten
+    in that order (`current_apps.set_order`: unnamed apps stay on top in
+    their order, unknown and repeated paths are dropped), answered with the
+    table as it now stands so the client adopts it in the same tick.
+
+    A plain dict body rather than a pydantic model so a bad shape is the
+    contract's 400, not FastAPI's 422; X-Fused-guarded like every write the
+    server added since D3 (the older verbs above predate the rule)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    paths = body.get("paths") if isinstance(body, dict) else None
+    try:
+        apps = current_apps.set_order(paths)
+    except ValueError as e:
+        return _error(str(e), 400)
+    return {"ok": True, "apps": apps}
 
 
 @router.post("/api/current-apps/open")

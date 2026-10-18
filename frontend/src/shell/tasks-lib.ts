@@ -1511,9 +1511,6 @@ export const VIEW_LABELS: Record<TaskView, string> = {
   pr: "PR",
 };
 
-/** Where the switcher's chosen tabs live (a JSON array of view names). */
-export const VIEW_TABS_KEY = "fused-render:scheduled-view-tabs";
-
 /** `time` / `project` / `pr` for a grouped list, null for every other view. */
 export function groupOfView(view: TaskView): TaskGroupBy | null {
   return (GROUP_VIEWS as string[]).includes(view) ? (view as TaskGroupBy) : null;
@@ -1523,14 +1520,18 @@ export function groupOfView(view: TaskView): TaskGroupBy | null {
  * The tabs a stored value names — untrusted input (an older build, a hand
  * edit), so every name is checked against TASK_VIEWS, duplicates fold, and an
  * empty or unreadable answer is the default set rather than no tabs at all.
+ * Takes the prefs array (`Prefs.tasks_view_tabs`) or the old localStorage
+ * string (the one-shot import, Scheduled.tsx) alike.
  */
-export function parseViewTabs(raw: string | null | undefined): TaskView[] {
+export function parseViewTabs(raw: unknown): TaskView[] {
   if (!raw) return DEFAULT_VIEW_TABS;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return DEFAULT_VIEW_TABS;
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return DEFAULT_VIEW_TABS;
+    }
   }
   if (!Array.isArray(parsed)) return DEFAULT_VIEW_TABS;
   const out: TaskView[] = [];
@@ -3949,8 +3950,9 @@ export const LANE_SPLIT_LABEL = "queued";
 //
 // So the two states are stored in two different places, on purpose:
 //
-//   * `choices` — the reader's answer for a lane WITH CARDS IN IT. localStorage,
-//     survives reloads, and is what `laneCollapsed` below reads.
+//   * `choices` — the reader's answer for a lane WITH CARDS IN IT. The layout
+//     document's `tasks.boardLanes` (platform/lib/ui-layout.ts, D1377), survives
+//     reloads and relaunches, and is what `laneCollapsed` below reads.
 //   * the peek — a lane opened while empty. Component state in TaskBoard,
 //     survives nothing: not a reload, not a remount, and not the lane filling up
 //     and draining again. `laneRolledUp` is where the two meet.
@@ -3973,23 +3975,26 @@ export const LANE_SPLIT_LABEL = "queued";
 // 2026-08-18) — an Archive with cards in it is a column like the others, and an
 // Archive with none rolls up like the others.
 
-/** The key the board's lane choices live under. Distinct from the array-shaped
- * key an earlier build wrote: that one recorded "collapsed now", defaults
- * included, which cannot be told apart from "the reader chose this". */
-export const LANE_CHOICE_KEY = "fused-render:scheduled-board-lanes";
-
 /** Lane → the reader's own answer to "collapsed?". Absent ⇒ never chosen. */
 export type LaneChoices = Partial<Record<BoardColumn, boolean>>;
 
-/** Same contract as parseListMemory: a stored string is untrusted input, and an
- * unreadable one means "no choices yet", never a thrown render. */
-export function parseLaneChoices(raw: string | null): LaneChoices {
+/** Same contract as parseListMemory: a stored value is untrusted input, and an
+ * unreadable one means "no choices yet", never a thrown render. Takes the
+ * layout document's object (`tasks.boardLanes`) or a JSON string alike — only
+ * a choice per KNOWN lane survives, which is the check the shape-only import of
+ * the old localStorage key (ui-layout.ts) leaves to this read. Stores choices,
+ * not the board: distinct from the array-shaped key an earlier build wrote,
+ * which recorded "collapsed now", defaults included, and so could not be told
+ * apart from "the reader chose this". */
+export function parseLaneChoices(raw: unknown): LaneChoices {
   if (!raw) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {};
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const row = parsed as Record<string, unknown>;
@@ -4898,10 +4903,6 @@ export function popoverPill(
 // run that broke would be the one place in the app where a hue disagreed with
 // the ring the row wears (design-principles §1).
 
-/** Where the sidebar's dismissal lives. Per COMPLETION, not per task — see
- *  TasksSeen. */
-export const TASKS_SEEN_KEY = "fused-render:tasks-seen";
-
 /**
  * Which completions the reader has already been shown, as `task key ->
  * last_active`.
@@ -4919,9 +4920,12 @@ export const TASKS_SEEN_KEY = "fused-render:tasks-seen";
  */
 export type TasksSeen = Record<string, number>;
 
-/** What came out of localStorage is a string written by SOMEONE ELSE (an older
- *  build, a hand-edited devtools row): anything unreadable degrades to "nothing
- *  dismissed" — one extra dot — rather than throwing inside a render. */
+/** import-only (D1377) — the map lives on the server now (`POST
+ *  /api/tasks/seen`, carried back on the pulse); this reads the OLD
+ *  localStorage row once for tasksPulse's one-shot import. That string was
+ *  written by SOMEONE ELSE (an older build, a hand-edited devtools row):
+ *  anything unreadable degrades to "nothing dismissed" — one extra dot —
+ *  rather than throwing. */
 export function parseTasksSeen(raw: string | null): TasksSeen {
   if (!raw) return {};
   let parsed: unknown;

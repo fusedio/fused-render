@@ -1,16 +1,32 @@
 // Unread bookkeeping (OpenBot chat.js), as pure functions over plain maps; the store owns the maps and wraps these.
-//   seen   id → last event seq as of opening that bot (localStorage `browser-bot.seen`)
+//   seen   id → last event seq as of opening that bot (the server's `Bot.seen_seq`, POST /api/bots/<id>/seen; D1377)
 //   base   id → the seq past which messages count toward the "N new messages" pill (in memory)
 //   viewed id → seqs whose bubble has scrolled into view at least once (in memory)
 import type { Bot, BotEvent } from "./api";
 
+/** import-only (D1377): the old localStorage home of the seen map. The desktop app walks ports 1777..1787 then an
+ *  ephemeral one, and each port is a new origin with empty storage, so a relaunch on another port lit every bot's
+ *  unread state afresh. "Seen" is now `seen_seq` on the bot row; store.ts hydrateBotsPrefs pushes a leftover map to
+ *  the server once and removes the key. */
 export const SEEN_KEY = "browser-bot.seen";
 
-export function loadSeen(): Record<string, number> {
-  try { return JSON.parse(localStorage.getItem(SEEN_KEY) || "{}") || {}; } catch { return {}; }
+/** The seen map off the server's bot rows (Bot.seen_seq; absent = never opened). For a reader without the Bots
+ *  store, e.g. the Home widget, which polls /api/bots itself. */
+export function seenFromBots(bots: Pick<Bot, "id" | "seen_seq">[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const b of bots) if (typeof b.seen_seq === "number") out[b.id] = b.seen_seq;
+  return out;
 }
-export function saveSeen(seen: Record<string, number>): void {
-  try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch { /* storage blocked */ }
+
+/** import-only (D1377): the old `{id: seq}` map, finite numbers only; {} when absent or unreadable. */
+export function parseSeenMap(raw: string | null): Record<string, number> {
+  try {
+    const v = JSON.parse(raw || "{}") as unknown;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    const out: Record<string, number> = {};
+    for (const [id, seq] of Object.entries(v as Record<string, unknown>)) if (id && typeof seq === "number" && Number.isFinite(seq)) out[id] = seq;
+    return out;
+  } catch { return {}; }
 }
 
 /** Events past "seen", system notes excluded; 0 for a bot never opened. A hand-off result (role done, docs §11) counts like

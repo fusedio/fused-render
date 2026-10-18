@@ -8,6 +8,8 @@ import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
+import { hydrateUiState } from "@platform/lib/hydrate-ui-state";
+import { hydrateNotificationsState } from "@shell/notifications-seen-store";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
 import { notifyBookmarksChanged, setDefaultFavicon } from "@platform/lib/hooks";
 import { displayName, isBot, seedFlavor } from "@platform/lib/flavor";
@@ -105,8 +107,25 @@ const root = createRoot(document.getElementById("root")!);
 // failure and the card below says what to do.
 const CONFIG_TIMEOUT_MS = 20_000;
 
-getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }).then(
-  (config) => {
+// Server-held UI state (D1377) — the layout document and the notifications
+// panel's seen-state — read BEFORE the first render, in parallel with the
+// config. These used to be localStorage, which is synchronous, so the first
+// frame already had the dragged sidebar width, the remembered Tasks view and
+// every folder's sort; they moved to the server because the desktop app's port
+// walk (1777..1787, then an ephemeral port) makes every relaunch a new origin
+// with empty storage. Rendering before they land would be a flash of the
+// default layout on every load. Bounded at 2 s and never rejects
+// (hydrate-ui-state.ts), so it can delay the first paint but never prevent it,
+// and a config failure still reaches its error card.
+//
+// Embeds hydrate the LAYOUT too: an explorer pane in an iframe reads the
+// companion side pane's shut / width / full-screen stores in its first render.
+// They skip the notifications state — no embed draws the panel, and every
+// preview card on Home is an embed, so that would be one wasted request each.
+const uiState = hydrateUiState(IS_EMBED ? [] : [hydrateNotificationsState]);
+
+Promise.all([getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }), uiState]).then(
+  ([config]) => {
     // Flavor first: the sidebar and the title read it synchronously in this
     // very render, and a seed a tick later is a flash of the wrong brand.
     seedFlavor(config);
