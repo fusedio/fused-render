@@ -32,6 +32,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import hashlib
+import hmac
 import importlib.util
 import io
 import json
@@ -159,8 +160,9 @@ def _to_cog(source: str, final: Path) -> Path:
 def _stream(path: str) -> dict:
     import rasterio
 
-    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"), \
-            rasterio.open("/vsicurl/" + path if is_http_url(path) else path) as dataset:
+    remote = is_http_url(path)
+    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR" if remote else "FALSE"), \
+            rasterio.open("/vsicurl/" + path if remote else path) as dataset:
         if dataset.crs is None and not dataset.gcps[0]:
             raise Refusal(NO_CRS)
     engine = {"python": sys.executable, "daemon": os.path.join(HERE, "daemon.py"),
@@ -168,8 +170,12 @@ def _stream(path: str) -> dict:
     request = urllib.request.Request(f"{os.environ['FUSED_RENDER_ORIGIN'].rstrip('/')}{ENGINE}/ensure",
                                      json.dumps(engine).encode(), {"Content-Type": "application/json", "X-Fused": "1"})
     urllib.request.urlopen(request, timeout=120).close()
+    CACHE.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(FileExistsError), open(CACHE / "stream.key", "xb") as handle:
+        handle.write(os.urandom(32))
     key = base64.urlsafe_b64encode(path.encode()).decode().rstrip("=")
-    return {"load": "raster", "path": path, "url": f"{ENGINE}/proxy/cog/{key}.tif",
+    signature = hmac.new((CACHE / "stream.key").read_bytes(), path.encode(), "sha256").hexdigest()[:32]
+    return {"load": "raster", "path": path, "url": f"{ENGINE}/proxy/cog/{key}.{signature}.tif",
             "fallback": True, "note": "streamed from the original file, nothing copied"}
 
 

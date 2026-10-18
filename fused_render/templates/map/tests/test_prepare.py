@@ -75,8 +75,8 @@ def test_rasters_the_browser_cannot_stream_are_served_from_the_original_file(pre
     striped = _tiff(tmp_path / "striped.tif", tiled=False, size=1200, count=3)
     for source, action in [(striped, "plan"), (str(img), "plan"), (_tiff(tmp_path / "tiled.tif", tiled=True), "convert")]:
         key = prepare.base64.urlsafe_b64encode(source.encode()).decode().rstrip("=")
-        assert prepare.main(source, action=action)["url"] == f"/api/engines/map/proxy/cog/{key}.tif"
-    assert ensured[0]["daemon"].endswith("daemon.py") and not (tmp_path / "cache").exists()
+        assert prepare.main(source, action=action)["url"].startswith(f"/api/engines/map/proxy/cog/{key}.")
+    assert ensured[0]["daemon"].endswith("daemon.py") and [p.name for p in (tmp_path / "cache").iterdir()] == ["stream.key"]
 
 
 def test_a_localized_copy_is_reused_under_a_fresh_token(prepare, monkeypatch):

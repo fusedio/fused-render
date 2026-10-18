@@ -14,6 +14,7 @@ from rasterio.windows import Window
 
 TILE = 512
 GRID = 2048
+MAX_CLASSES = 32
 SAMPLE_FORMATS = {"u": 1, "i": 2, "f": 3}
 TYPES = {3: "H", 12: "d", 16: "Q"}
 
@@ -43,16 +44,18 @@ def _mode(data: np.ndarray, k: int, nodata) -> np.ndarray:
     _, h, w = data.shape
     blocks = data.reshape(h // k, k, w // k, k).transpose(0, 2, 1, 3).reshape(h // k, w // k, k * k)
     values = [v for v in np.unique(blocks) if v != nodata]
-    if not values:
-        return blocks[None, ..., 0]
-    counts = np.stack([(blocks == v).sum(-1) for v in values], -1)
-    return np.where(counts.max(-1) > 0, np.asarray(values, data.dtype)[counts.argmax(-1)], blocks[..., 0])[None]
+    best, top = blocks[..., 0].copy(), np.zeros(blocks.shape[:2], np.uint8)
+    for value in values if len(values) <= MAX_CLASSES else []:
+        count = (blocks == value).sum(-1, dtype=np.uint8)
+        best[count > top] = value
+        top = np.maximum(top, count)
+    return best[None]
 
 
 def _sampleable(dataset) -> bool:
     image, bits = dataset.tags(ns="IMAGE_STRUCTURE"), _bits(dataset)
     return (dataset.driver == "GTiff" and dataset.profile.get("tiled") and not dataset.overviews(1)
-            and not dataset.name.startswith("/vsi")
+            and not dataset.name.startswith("/vsi") and dataset.count * bits <= 512
             and image.get("COMPRESSION", "NONE") in ("NONE", "LZW", "DEFLATE") and image.get("PREDICTOR", "1") in ("1", "2")
             and (dataset.count == 1 or image.get("INTERLEAVE") == "PIXEL") and not (bits % 8 and (bits > 8 or dataset.count > 1)))
 
@@ -70,23 +73,32 @@ def _corners(dataset):
     n = max(1, count * bits // 8)
     with open(dataset.name, "rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as buf:
         order = ">" if buf[:2] == b"MM" else "<"
-        heads = []
+        heads, empty = [], []
         for y in range(grid[0]):
             for x in range(grid[1]):
-                offset = block("OFFSET", x, y)
-                raw = buf[offset:offset + min(block("SIZE", x, y), 4096)]
+                offset, size = block("OFFSET", x, y), block("SIZE", x, y)
+                empty.append(size == 0)
+                raw = buf[offset:offset + min(size, 4096)]
                 head = (raw[:n] if compression == "NONE" else _lzw_head(raw + b"\0\0", n) if compression == "LZW"
                         else zlib.decompressobj().decompress(raw, n))
                 heads.append(head.ljust(n, b"\0"))
     raw = np.frombuffer(b"".join(heads), np.uint8)
     values = (raw >> (8 - bits)).astype(dtype) if bits < 8 else raw.view(dtype.newbyteorder(order)).astype(dtype)
-    return values.reshape(*grid, count)
+    values = values.reshape(*grid, count)
+    if dataset.nodata is not None:
+        values[np.reshape(empty, grid)] = dataset.nodata
+    return values
+
+
+def _open(path: str):
+    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR" if path.startswith("/vsi") else "FALSE"):
+        return rasterio.open(path)
 
 
 class VirtualCOG:
     def __init__(self, path: str):
         self.path, self.local = path, threading.local()
-        with rasterio.open(path) as dataset:
+        with _open(path) as dataset:
             epsg = dataset.crs.to_epsg() if dataset.crs else None
             self.warp = epsg is None or epsg > 65535 or not dataset.transform.is_rectilinear
             self.colormap = dataset.colormap(1) if dataset.count == 1 and dataset.dtypes[0] == "uint8" \
@@ -118,7 +130,7 @@ class VirtualCOG:
 
     def dataset(self):
         if not hasattr(self.local, "dataset"):
-            dataset = rasterio.open(self.path)
+            dataset = _open(self.path)
             self.local.dataset = WarpedVRT(dataset, crs="EPSG:4326") if self.warp else dataset
         return self.local.dataset
 
@@ -185,7 +197,7 @@ class VirtualCOG:
     def _coarse(self) -> np.ndarray:
         with self.lock:
             if self.grid is None and self.sample:
-                with rasterio.open(self.path) as dataset:
+                with _open(self.path) as dataset:
                     self.grid = _corners(dataset)
             elif self.grid is None:
                 shape = (self.count, _ceil(self.height, self.cell[0]), _ceil(self.width, self.cell[1]))
