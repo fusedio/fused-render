@@ -11,7 +11,6 @@ const {
   POLL_NETWORK_RETRIES,
   POLL_TIMEOUT_RETRIES,
   SEND_TIMEOUT_PROBES,
-  TASKS_SETTLE_MS,
   createChatController,
   runEnding,
   stopAllowed,
@@ -114,7 +113,6 @@ function makeController(
       get(file: string, sessionId: string): HistoryResponse | undefined;
       set(file: string, sessionId: string, res: HistoryResponse): void;
     };
-    sleep?: (ms: number) => Promise<void>;
   } = {},
 ) {
   const agent = fakeAgent(handlers);
@@ -131,7 +129,7 @@ function makeController(
     file: "/proj/app.py",
     params,
     run: agent.run,
-    sleep: over.sleep ?? (() => Promise.resolve()),
+    sleep: () => Promise.resolve(),
     now: () => 1_000,
     // The STAMP clock, separate from the duration clock above (review #9): a
     // bubble's `ts` is a date, and dates do not come off a fake `now`.
@@ -4730,11 +4728,6 @@ describe("the run's tasks", () => {
     events: 0,
   });
 
-  /** Holds the panel's settle grace (`TASKS_SETTLE_MS`, and the host watch's
-   *  equal wait) open, so a test reads the list a finished turn is drawing
-   *  during the grace; every other wait is instant. */
-  const GRACE = { sleep: (ms: number) => (ms >= TASKS_SETTLE_MS ? new Promise<void>(() => {}) : Promise.resolve()) };
-
   test("published from the poll, kept through a poll that omits them, cleared with the conversation", async () => {
     const seen: string[][] = [];
     const { controller } = makeController({
@@ -4748,7 +4741,7 @@ describe("the run's tasks", () => {
             : poll({ done: true, segments: [text("ok")], text: "ok" });
       },
       history: () => ({ turns: [], transcript: null }),
-    }, undefined, GRACE);
+    });
     await controller.sendMessage("go");
     // The poll after the one that omitted the list still saw it.
     expect(seen[2]).toEqual(["a"]);
@@ -4863,7 +4856,7 @@ describe("the run's tasks", () => {
           ? poll({ done: true, tasks: [T("a", "completed")], segments: [text("ok")], text: "ok" })
           : poll({ done: true, segments: [text("ok2")], text: "ok2" }),
       history: () => ({ turns: [], transcript: null }),
-    }, undefined, GRACE);
+    });
     await controller.sendMessage("one");
     expect(controller.getState().tasks.map((t) => t.id)).toEqual(["a"]);
     await controller.sendMessage("two");
@@ -4888,17 +4881,15 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasksRunId).toBe("r1");
   });
 
-  test("Akshil 2026-10-18: a restore with no turn open and nothing running shows NOTHING (Done = panel empty)", async () => {
-    for (const tasks_run of [undefined, "r1"]) {
-      const { controller } = makeController({
-        history: () => ({ turns: [], transcript: null, live_run: "", tasks_run, tasks: [T("h", "completed")] }),
-        live_run: () => ({ run_id: "" }),
-        live_host: () => ({ run_id: "" }),
-      });
-      await controller.openSession("s9");
-      expect(controller.getState().tasks).toEqual([]);
-      expect(controller.getState().tasksRunId).toBe(null);
-    }
+  test("a restore lands history's tasks", async () => {
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks: [T("h", "completed")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+    });
+    await controller.openSession("s9");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["h"]);
+    expect(controller.getState().tasksRunId).toBe(null);
   });
 
   test("review #4: the owning run ending downgrades its active tasks to unknown", async () => {
@@ -4909,7 +4900,7 @@ describe("the run's tasks", () => {
           ? poll({ tasks: [T("live"), { ...T("held"), status: "paused" }, T("done", "completed")] })
           : poll({ done: true, segments: [text("ok")], text: "ok" }),
       history: () => ({ turns: [], transcript: null }),
-    }, undefined, GRACE);
+    });
     await controller.sendMessage("go");
     const byId = Object.fromEntries(controller.getState().tasks.map((t) => [t.id, t]));
     expect(byId.live!.status).toBe("unknown");
@@ -4918,7 +4909,7 @@ describe("the run's tasks", () => {
     expect(byId.done!.status).toBe("completed");
   });
 
-  test("review #2/#3: a refresh with nothing live leaves the panel empty, owned by no run", async () => {
+  test("review #2/#3: a refresh with nothing live publishes exactly history's list, owned by no run", async () => {
     let n = 0;
     let refreshing = false;
     const { controller } = makeController({
@@ -4930,8 +4921,7 @@ describe("the run's tasks", () => {
           : { turns: [], transcript: { path: "/p", mtime: ++n, size: 1 }, live_run: "", tasks: [] },
     });
     await controller.sendMessage("go");
-    // The turn ended with nothing running: the panel has already settled empty.
-    expect(controller.getState().tasksRunId).toBe(null);
+    expect(controller.getState().tasksRunId).toBe("r1");
     refreshing = true;
     await controller.refreshHistory("s1");
     expect(controller.getState().tasks).toEqual([]);
@@ -4949,7 +4939,7 @@ describe("the run's tasks", () => {
           ? { turns: [], transcript: null }
           : { turns: [{ role: "user" as const, text: "go", uuid: "u1" }], transcript: { path: "/p", mtime: ++n, size: 1 }, live_run: "r2", tasks: [T("b")] },
       live_run: () => ({ run_id: "" }),
-    }, undefined, GRACE);
+    });
     await controller.sendMessage("go");
     refreshing = true;
     await controller.refreshHistory("s1");
@@ -4968,7 +4958,7 @@ describe("the run's tasks", () => {
           ? { turns: [], transcript: null }
           : { turns: [{ role: "user" as const, text: "go", uuid: "u1" }], transcript: { path: "/p", mtime: ++n, size: 1 }, live_run: "r1", tasks: [] },
       live_run: () => ({ run_id: "" }),
-    }, undefined, GRACE);
+    });
     await controller.sendMessage("go");
     refreshing = true;
     await controller.refreshHistory("s1");
@@ -4992,21 +4982,30 @@ describe("the run's tasks", () => {
           ? { tasks: [SH], tasks_pending: true, host_alive: true }
           : { tasks: [{ ...SH, status: "completed", ended_at: 5 }], tasks_pending: false, host_alive: true },
     });
-    const seen: string[] = [];
-    controller.subscribe(() => {
-      const t = controller.getState().tasks[0];
-      seen.push(t ? t.status : "-");
-    });
     await controller.sendMessage("go");
     await settle();
     // Asked of THIS run, and only until nothing is pending.
     expect(agent.of("tasks").map((c) => c.fields.run_id)).toEqual(["r1", "r1"]);
-    // Live through the turn's end, then its real end…
-    expect(seen).toContain("completed");
-    expect(seen).not.toContain("unknown");
-    // …and JOB ENDS → PANEL CLEARS: the task is Done, the strip is gone.
-    expect(controller.getState().tasks).toEqual([]);
-    expect(controller.getState().tasksRunId).toBe(null);
+    const sh = controller.getState().tasks[0]!;
+    expect([sh.status, sh.ended_at]).toEqual(["completed", 5]);
+    expect(controller.getState().tasksRunId).toBe("r1");
+  });
+
+  test("the host watch rides out a failed ask or two, and asks once per run+seat", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+      tasks: (_f, n) => {
+        if (n < 2) throw new Error("socket dropped");
+        return { tasks: [{ ...SH, status: "completed", ended_at: 5 }], tasks_pending: false, host_alive: true };
+      },
+    });
+    await controller.sendMessage("go");
+    await settle();
+    expect(agent.of("tasks")).toHaveLength(3);
+    expect(controller.getState().tasks[0]!.status).toBe("completed");
   });
 
   test("a host that dies under the watch downgrades the live rows, the one case that still does", async () => {
@@ -5017,17 +5016,10 @@ describe("the run's tasks", () => {
       history: () => ({ turns: [], transcript: null }),
       tasks: () => ({ tasks: [SH], tasks_pending: false, host_alive: false }),
     });
-    const seen: string[] = [];
-    controller.subscribe(() => {
-      const t = controller.getState().tasks[0];
-      seen.push(t ? t.status : "-");
-    });
     await controller.sendMessage("go");
     await settle();
     expect(agent.of("tasks")).toHaveLength(1);
-    expect(seen).toContain("unknown");
-    // …and the panel empties after the grace.
-    expect(controller.getState().tasks).toEqual([]);
+    expect(controller.getState().tasks[0]!.status).toBe("unknown");
   });
 
   test("a reload onto a live host with live rows watches it too; leaving the conversation stops the watch", async () => {
@@ -5055,7 +5047,7 @@ describe("the run's tasks", () => {
         poll: () =>
           poll({ done: true, tasks_pending: pending, tasks: [MON], segments: [text("ok")], text: "ok" }),
         history: () => ({ turns: [], transcript: null }),
-      }, undefined, GRACE);
+      });
       await controller.sendMessage("go");
       const m = controller.getState().tasks[0]!;
       expect([pending, m.status]).toEqual([pending, pending ? "running" : "unknown"]);

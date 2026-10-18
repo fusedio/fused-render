@@ -3987,7 +3987,11 @@ export function laneCountLabel(lane: BoardLane, tasks: readonly Task[]): string 
   if (lane !== "in_progress") return String(tasks.length);
   const waiting = tasks.filter((t) => isQueued(t)).length;
   if (!waiting) return String(tasks.length);
-  return runningWaitingLabel(tasks.length - waiting, waiting);
+  // A finished turn holding a live background job is drawn here (`boardLane`)
+  // but is not RUNNING — no turn is in flight — so it is counted apart.
+  const background = tasks.filter((t) => liveJobRow(t)).length;
+  const label = runningWaitingLabel(tasks.length - waiting - background, waiting);
+  return background ? `${label} · ${background} background` : label;
 }
 
 /**

@@ -109,10 +109,6 @@ export const POLL_MS = 400;
 export const HOST_TASKS_MS = 5000;
 /** Failed `tasks` asks in a row before a host watch gives up. */
 export const HOST_TASKS_TRIES = 3;
-/** How long a finished turn's ended rows stay before the tasks panel empties
- *  (`settleTasks`) — the panel's own per-row grace (TasksPanel
- *  `TASK_ENDED_GRACE_MS`), so the last row leaves with the strip. */
-export const TASKS_SETTLE_MS = 5000;
 
 /**
  * HOW MANY CONSECUTIVE TRANSIENT POLL FAILURES a live view rides out before it
@@ -594,30 +590,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (!runId || state.tasksRunId !== runId) return;
     const ended = endActiveTasks(state.tasks);
     if (ended) publishTasks(ended, runId);
-    settleTasks(runId);
-  };
-  /**
-   * DONE = TURN OVER = PANEL EMPTY (Akshil, 2026-10-18). Once the turn is over
-   * and nothing in the list is still active, the strip above the composer
-   * goes: its ended rows leave after the grace (`TASKS_SETTLE_MS`, the panel's
-   * own per-row grace), the header with them — no lingering "N finished".
-   * Owned by no run afterwards, so an opened panel's scope closes too.
-   *
-   * Skipped when anything moved meanwhile: a new turn (`loopSeq`), another
-   * conversation or run taking the list, a row active again, a newer settle or
-   * host watch, dispose.
-   */
-  let settleSeq = 0;
-  const settleTasks = (runId: string | null) => {
-    const seq = ++settleSeq;
-    const loop = loopSeq;
-    void (async () => {
-      await sleep(TASKS_SETTLE_MS);
-      if (seq !== settleSeq || disposed || loopSeq !== loop || state.tasksRunId !== runId) return;
-      if (state.tasks.some((t) => isActive(t.status))) return;
-      tasksSig = "";
-      if (state.tasks.length || state.tasksRunId !== null) emit({ tasks: [], tasksRunId: null });
-    })();
   };
   /**
    * WATCH A HOST THAT OUTLIVED ITS TURN (Akshil, 2026-10-18). Nothing else
@@ -648,7 +620,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (hostWatched === key) return;
     hostWatched = key;
     const seq = ++hostWatch;
-    settleSeq++; // work is still running: nothing settles while the host is watched
     const mine = () => seq === hostWatch && !disposed && loopSeq === loop && state.tasksRunId === runId;
     void (async () => {
       let failures = 0;
@@ -656,6 +627,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
         for (;;) {
           await sleep(HOST_TASKS_MS);
           if (!mine()) return;
+          // A hidden tab does not ask: a dev server can hold a host for days.
+          // The lap resumes when the tab is looked at again.
+          if (typeof document !== "undefined" && document.hidden) continue;
           let res: RunTasksResponse | ErrorOnly | null = null;
           try {
             res = await run("tasks", { run_id: runId });
@@ -675,11 +649,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
             endRunTasks(runId);
             return;
           }
-          if (!res.tasks_pending) {
-            // The last job ended: the task goes Done, and the panel empties.
-            settleTasks(runId);
-            return;
-          }
+          // The last job ended: its row now carries its real status and
+          // leaves after the panel's own 5 s grace (TasksPanel); the task row
+          // moves to Done on the Tasks page.
+          if (!res.tasks_pending) return;
         }
       } finally {
         if (seq === hostWatch) hostWatched = "";
@@ -689,11 +662,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /**
    * HISTORY'S TASKS, on a restore and on every refresh — one rule for both
    * (`openSession` has already cleared the last conversation's list).
-   * Nothing live (`live_run` "" or absent): the turn is over, so the panel is
-   * EMPTY (Akshil 2026-10-18; a just-ended turn's rows keep their grace) —
-   * unless the session host is still alive (`tasks_run`) and running work:
-   * then the host's run owns the list so Stop/Output can reach it, and it is
-   * watched until that work ends. A live run:
+   * Nothing live (`live_run` "" or absent): history's list IS the answer, empty
+   * included, owned by no run (its host is gone, so no Output) — unless the
+   * session host is still alive (`tasks_run`): the turn ended but a background
+   * task runs on, and the host's run owns the list so Stop/Output can reach
+   * it, watched until that work ends. A live run:
    * owned by THAT run; an empty answer about the run already drawn keeps the
    * list (the poll owns a live run's tasks), any other answer replaces it.
    */
@@ -701,33 +674,20 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // An older server sends no `tasks` at all: that says nothing, not "none".
     if (!Array.isArray(res.tasks)) return;
     const rows = res.tasks;
-    if (!res.live_run) {
-      // NO TURN OPEN. A host alive with work it still runs: the rows stay live,
+    if (!res.live_run && res.tasks_run && rows.some((t) => t && isActive(t.status))) {
+      // NO TURN OPEN, a host alive with work it still runs: the rows stay live,
       // owned by the host's run, and the host is watched for their end
       // (`watchHostTasks`) — a reload, or the standing watch's refresh after
-      // the turn, lands here.
-      if (res.tasks_run && rows.some((t) => t && isActive(t.status))) {
-        // A turn this page has under way owns the list through its poll. (A
-        // send whose loop has not started yet is caught by the watch itself:
-        // that loop is a new seat, which ends it.) Not `sending`: a restore
-        // holds that gate while it lands history.
-        if (activeRun) return;
-        publishTasks(rows, res.tasks_run);
-        watchHostTasks(res.tasks_run);
-        return;
-      }
-      // Otherwise the turn is over and nothing runs: DONE = PANEL EMPTY
-      // (`settleTasks`). The rows a turn that just ended is still drawing keep
-      // their grace; anything else (a restore) shows nothing.
-      if (state.tasksRunId && state.tasks.length && !state.tasks.some((t) => isActive(t.status))) {
-        settleTasks(state.tasksRunId);
-        return;
-      }
-      publishTasks([], null);
+      // the turn, lands here. A turn this page has under way owns the list
+      // through its poll. (Not `sending`: a restore holds that gate while it
+      // lands history.)
+      if (activeRun) return;
+      publishTasks(rows, res.tasks_run);
+      watchHostTasks(res.tasks_run);
       return;
     }
-    const owner = res.live_run;
-    if (!rows.length && state.tasksRunId === owner && state.tasks.length) return;
+    const owner = res.live_run || res.tasks_run || null;
+    if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
   };
   /** Publish a worktree hint, only when it differs from the current one (an
@@ -757,7 +717,6 @@ export function createChatController(deps: ControllerDeps): ChatController {
     tasksSig = "";
     hostWatch++; // the host watch belongs to the conversation that is leaving
     hostWatched = "";
-    settleSeq++;
     if (state.tasks.length || state.tasksRunId !== null) emit({ tasks: [], tasksRunId: null });
     // …and so does the worktree hint the model's tool calls raised.
     if (state.worktreeHint) emit({ worktreeHint: null });

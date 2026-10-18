@@ -11537,6 +11537,14 @@ describe("a live background job under a finished turn", () => {
     ).map((t) => t.key)).toEqual(["job", "done-new"]);
   });
 
+  it("is counted apart in the In Progress header when anything is queued", () => {
+    const bg = task({ key: "bg", status: "done", background_jobs: held(1) });
+    const run = task({ key: "run", status: "in_progress" });
+    const q = task({ key: "q", status: "queued", queue_position: 0 } as Partial<Task>);
+    expect(laneCountLabel("in_progress", [run, bg, q])).toBe("1 running · 1 queued · 1 background");
+    expect(laneCountLabel("in_progress", [run, bg])).toBe("2");
+  });
+
   it("answers the In Progress tick of the Status filter, not the Done one", () => {
     const t = task({ status: "done", background_jobs: held(1) });
     expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["in_progress"] })).toBe(true);

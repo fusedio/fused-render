@@ -6989,7 +6989,11 @@ def _run_tasks(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
-    host = _host_alive(run_dir)
+    # BOTH pids, the host's (`host.json`) and its `claude`'s (`run_dir/pid`):
+    # a stale `host.json` whose pid was reused by an unrelated process would
+    # otherwise read "alive" for ever and keep the page asking (review,
+    # 2026-10-18). Two unrelated pids both reused is not a case worth a poll.
+    host = _host_alive(run_dir) and _alive(run_dir)
     if host:
         _catch_up_registry(run_dir)
     registry = _read_bg_tasks(run_dir)
