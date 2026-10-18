@@ -129,6 +129,9 @@ import {
   QUEUED_WORD,
   QUEUE_CAPTION_SEP,
   usageLimitCaption,
+  BACKGROUND_LABEL,
+  jobBadge,
+  liveJobRow,
   projectMatches,
   projectOptions,
   relativeWhen,
@@ -168,6 +171,7 @@ import type {
 } from "./tasks-lib";
 import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import { useProjectQueueEnabled } from "@apps/claude/feature-flag";
+import { runAgent } from "@apps/claude/protocol/agent";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
@@ -498,6 +502,9 @@ export const ICON_UNARCHIVE = icon(
 // bars in the body.
 //
 // A BIN, NOT AN ✕, and deliberately not a variation on the archive box above:
+/** A filled-outline square: the Cards wall's "stop the background job" door. */
+export const ICON_STOP = icon(<rect x="6" y="6" width="12" height="12" rx="1.5" />, 12);
+
 // Archive and Delete sit within a few pixels of each other on the Cards wall's
 // door strip, and the whole reason the archive pair share a shape is so a reader
 // can tell the two DIRECTIONS of one reversible verb apart at a glance. The
@@ -641,6 +648,81 @@ export function QueueCaptionText({ queue }: { queue: QueueCaption }) {
   );
 }
 
+/** Stop every job a badge counts — the agent's `task_stop`, once per job, on the
+ *  run the server named. A refusal (no live session, an unknown id) is said
+ *  once, as a notification; success says nothing, because the row itself
+ *  answers: the CLI re-sends its list without the job and the badge goes. */
+export async function stopJobs(
+  badge: NonNullable<ReturnType<typeof jobBadge>>,
+): Promise<void> {
+  const answers = await Promise.all(
+    badge.jobIds.map((id) =>
+      runAgent("task_stop", { run_id: badge.runId, task_id: id }).catch(
+        (err: unknown) => ({ error: err instanceof Error ? err.message : String(err) }),
+      ),
+    ),
+  );
+  const failed = answers.filter((a) => a && "error" in a && a.error) as Array<{ error: string }>;
+  if (failed.length) {
+    const total = badge.jobIds.length;
+    notify({
+      title:
+        total === 1
+          ? "Could not stop the background job"
+          : `Could not stop ${failed.length} of ${total} background jobs`,
+      detail: failed[0]!.error,
+      tone: "error",
+    });
+  }
+}
+
+/**
+ * STOP A ROW'S LIVE BACKGROUND JOB — the hover strip's "Stop job", on the List
+ * row and the Board card alike (the card is a button, so its Stop could never
+ * sit inside it; the row's strip floats over the right end of the row and
+ * would cover an inline one — found in the live app). Same `.tasks-act` skin,
+ * same hover reveal, same keyboard reach as Force start beside it.
+ *
+ * No local "stopped" state beyond the press: the CLI re-sends its background
+ * list without the job, the watcher rings, and the listing drops the badge —
+ * the same road every other row fact travels.
+ */
+export function StopJobButton({
+  badge,
+  taskId,
+  className,
+  disabled,
+  icon,
+}: {
+  badge: NonNullable<ReturnType<typeof jobBadge>>;
+  /** The row's id, for the accessible name ("Stop background job for T001"),
+   *  the way Force start beside it names its row. */
+  taskId: string;
+  className: string;
+  disabled?: boolean;
+  /** The Cards wall's doors are glyphs; the List and Board strips print words. */
+  icon?: React.ReactNode;
+}) {
+  const [stopping, setStopping] = useState(false);
+  const jobs = badge.jobIds.length === 1 ? "background job" : "background jobs";
+  return (
+    <button
+      type="button"
+      className={`${className} tasks-job-stop`}
+      data-hint={`Stop ${jobs}: ${badge.hint.split("\n").slice(1).join(", ")}`}
+      aria-label={`Stop ${jobs} for ${shortTaskId(taskId)}`}
+      disabled={disabled || stopping}
+      onClick={(e) => {
+        e.stopPropagation();
+        setStopping(true);
+        void stopJobs(badge).finally(() => setStopping(false));
+      }}
+    >
+      {icon ?? (stopping ? "Stopping…" : "Stop job")}
+    </button>
+  );
+}
+
 export function StatusIcon({
   status,
   failed,
@@ -648,6 +730,7 @@ export function StatusIcon({
   unread,
   count,
   draftHeld,
+  background,
 }: {
   status: BoardColumn;
   failed?: boolean;
@@ -661,12 +744,20 @@ export function StatusIcon({
    *  lanes). Never asked of a container ring: a lane header holding one drafty
    *  card is not itself unfinished. */
   draftHeld?: boolean;
+  /** THE BLUE RING — a turn that is over while its chat still holds a live
+   *  background job (tasks-lib.liveJobRow, Akshil 2026-10-18): drawn In
+   *  Progress, worded "Background". Outranks `failed` (the row is drawn as
+   *  going, not as broken); the unread fill and the draft's red dot still sit
+   *  in its centre. */
+  background?: boolean;
 }) {
   // NOT over `needs_attention` (mirrors `taskStatus` in schedule-lib.ts): the
   // flag says the newest run BROKE, and a row parked on a card right now is
   // still going — collapsing it into "Blocked" here would announce and tool
   // a waiting ring as broken.
+  const red = failed && !background;
   const text = label
+    ?? (background ? BACKGROUND_LABEL : undefined)
     ?? (failed && status !== "needs_attention"
       ? "Blocked"
       : (STATUS_LABELS[status] ?? status));
@@ -688,7 +779,8 @@ export function StatusIcon({
     <span
       className={
         `schedule-ring schedule-ring--${status}` +
-        (failed ? " schedule-ring--failed" : "") +
+        (red ? " schedule-ring--failed" : "") +
+        (background ? " schedule-ring--background" : "") +
         (unread ? " schedule-ring--unread" : "") +
         (draftHeld ? " schedule-ring--draft-held" : "")
       }
@@ -3246,6 +3338,12 @@ function TaskNode({
    *  named and dated ("Usage limit · resumes 4:00 AM"). "" on every row the usage
    *  limit did not stop. */
   const limit = usageLimitCaption(task);
+  /** …and a third: this turn is over but its chat still holds a live
+   *  background job (tasks-lib.jobBadge — "1 job running", with a Stop; the row
+   *  is drawn In Progress with the blue ring). The limit wins the seat — one
+   *  caption at a time; in practice they never meet, since a limit row is
+   *  Blocked and the badge needs a `done` status. null on every other row. */
+  const jobs = limit ? null : jobBadge(task);
   /** IS THE QUEUE ON. Only the thread's per-message word needs it — every other
    *  `queued` on this row comes from the server's status, which is never written
    *  while the flag is down, while `messageState` derives its own from "pending
@@ -3723,6 +3821,29 @@ function TaskNode({
    *  go — no session and no folder, or a folder the disk has lost — which is
    *  what keeps the quick door off the rows it could not honour. */
   const page = folderMissing ? null : href;
+  /** THE ROW'S PRESS, for a caption that sits over the stretched link — the
+   *  file and schedule marks' three handlers, once. `z-index: 2` (for its
+   *  tooltip) puts a caption above `.tasks-rowlink`, and without these it is a
+   *  dead run of pixels: a plain press opens THIS row, a modified or middle one
+   *  a new tab, and a middle press never starts autoscroll. */
+  const pressRow = {
+    onClick: (e: React.MouseEvent) => {
+      if (!href) return;
+      if (opensElsewhere(e)) {
+        window.open(href, "_blank", "noopener");
+        return;
+      }
+      activate();
+    },
+    onAuxClick: (e: React.MouseEvent) => {
+      if (e.button !== 1 || !href) return;
+      e.preventDefault();
+      window.open(href, "_blank", "noopener");
+    },
+    onMouseDown: (e: React.MouseEvent) => {
+      if (e.button === 1 && href) e.preventDefault();
+    },
+  };
 
   /**
    * Does this row's press DO anything — and therefore, may the row claim to be a
@@ -3952,6 +4073,7 @@ function TaskNode({
             unread={unread > 0}
             count={unread}
             draftHeld={draftRing(task) && !heldInPeek}
+            background={liveJobRow(task)}
           />
           {/* The Board's drag onto Archive — or out of it — as a press. ONE
               button in this slot, never two: a task is either put away or it is
@@ -4226,8 +4348,23 @@ function TaskNode({
             states a row can be WAITING in and a reader should find both in one
             place; never both at once, since a row has one status. */}
         {limit && (
-          <span className="tasks-row-queue" data-hint={limit}>
+          <span className="tasks-row-queue" data-hint={limit} {...pressRow}>
             <span className="tasks-queue-text">{limit}</span>
+          </span>
+        )}
+        {/* …AND A LIVE BACKGROUND JOB, in the same seat and the same register
+            (tasks-lib.jobBadge): the reply is in, the row is drawn In Progress
+            with the blue ring, and this says what Claude is still holding for
+            it, naming the jobs on hover.
+            The words spend the row's press (`pressRow`), like the marks above;
+            the Stop is in the hover strip (`StopJobButton`). */}
+        {jobs && (
+          <span
+            className="tasks-row-queue tasks-row-queue--bg tasks-job-badge"
+            data-hint={jobs.hint}
+            {...pressRow}
+          >
+            <span className="tasks-queue-text">{jobs.text}</span>
           </span>
         )}
 
@@ -4301,6 +4438,16 @@ function TaskNode({
             CAPABILITY rather than a missing shortcut. Hover-revealed all the
             same (`.tasks-act`), so a list at rest grows no chrome — and by
             opacity rather than display, so a keyboard still reaches it. */}
+        {/* STOP THE LIVE BACKGROUND JOB (tasks-lib.jobBadge), the badge's
+            press — here and not inline, see `StopJobButton`. */}
+        {jobs && (
+          <StopJobButton
+            badge={jobs}
+            taskId={task.task_id}
+            className="tasks-act tasks-act--skip"
+            disabled={acting}
+          />
+        )}
         {canForceStart(task) && (
           <button
             type="button"
@@ -5898,6 +6045,11 @@ function TaskCard({
    *  named and dated ("Usage limit · resumes 4:00 AM"). "" on every row the usage
    *  limit did not stop. */
   const limit = usageLimitCaption(task);
+  /** …and a live background job under this finished turn (tasks-lib.jobBadge;
+   *  the card is drawn In Progress):
+   *  the List row's words on a line of their own, and its Stop in the hover
+   *  strip — the card IS a button, so the Stop cannot sit inside it. */
+  const jobs = limit ? null : jobBadge(task);
   const [busy, setBusy] = useState(false);
   // The Board's own copy of the List row's erase confirm; see the foot.
   const [erasing, setErasing] = useState(false);
@@ -6032,7 +6184,14 @@ function TaskCard({
         <span className="schedule-tv-card-head">
           {waiting
             ? <StatusIcon status="needs_attention" />
-            : failedOffLane && <StatusIcon status={lane} failed />}
+            /* THE THIRD CARD WHOSE RING SAYS WHAT ITS LANE DOES NOT: a finished
+               turn with a job still running under it, drawn In Progress
+               (tasks-lib.liveJobRow / boardLane). The List row's own ring —
+               blue, "Background" — and ahead of the failed flag, as on the List
+               row and the Cards wall (StatusIcon: background outranks failed). */
+            : jobs
+              ? <StatusIcon status={status} background />
+              : failedOffLane && <StatusIcon status={lane} failed />}
           <TaskAgentMark backend={task.backend} />
           <IdChip id={task.task_id} kind="task" />
           {/* The draft chip left this head with the List row's (Akshil,
@@ -6125,6 +6284,13 @@ function TaskCard({
         {/* The plan's pause, on its own line — the List row's rule and the List
             row's words (`usageLimitCaption`). */}
         {limit && <span className="tasks-card-queue">{limit}</span>}
+        {/* …and the live background job, in the same register (the List row's
+            badge words; the job names on hover). */}
+        {jobs && (
+          <span className="tasks-card-queue tasks-card-job" data-hint={jobs.hint}>
+            {jobs.text}
+          </span>
+        )}
         {/* The foot is the folder and the run ahead, so when neither says
             anything (spansProjects — every card in a board filtered to one
             project repeats it — and a card with no run coming) the whole line
@@ -6200,7 +6366,7 @@ function TaskCard({
           to prevent (§1 — same element, same behaviour in every view). The strip
           itself is drawn whenever either survives its guard. */}
       {((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)
-        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (
+        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (
         <span className="tasks-card-acts">
           {/* DISCARD, the List row's own act in the card's hover strip — same
               glyph, same class, same caption, same silence at rest (design.md,
@@ -6256,6 +6422,16 @@ function TaskCard({
               only press here that is about the state the card is IN — a message
               that is waiting — and it is offered on so few cards that it must
               not sit behind a door every card carries. */}
+          {/* STOP THE BACKGROUND JOB, the List badge's own press — here,
+              because the card is a button and cannot hold one. */}
+          {jobs && (
+            <StopJobButton
+              badge={jobs}
+              taskId={task.task_id}
+              className="tasks-act tasks-card-act tasks-act--skip"
+              disabled={busy}
+            />
+          )}
           {canForceStart(task) && (
             <button
               type="button"

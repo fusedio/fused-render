@@ -3,7 +3,7 @@ import { basename } from "@platform/lib/format";
 import { navigateUrl } from "@platform/lib/router";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
 import { softNavigate } from "../strip";
-import { taskHref } from "../../tasks-lib";
+import { liveJobs, taskHref } from "../../tasks-lib";
 import { useHomeTasks, type HomeTasks } from "../data";
 import { dimsOf, itemCapacity, type TasksShow, type Widget } from "../layout";
 import { BigCount, EmptyLine, ErrorLine, ListSkeleton, MoreLine, useFitCount, type WidgetItem } from "./bits";
@@ -12,9 +12,24 @@ const TASKS_HREF = "/tasks";
 
 type Lane = "queued" | "running" | "you" | "done";
 
+type Row = Pick<Task, "status" | "background_jobs">;
+
+/** A finished turn whose chat still holds a live background job (tasks-lib
+    .liveJobRow, Akshil 2026-10-18): drawn In Progress, not Done, while the API
+    status stays `done`. */
+function backgroundHeld(t: Row): boolean {
+  return t.status === "done" && liveJobs(t) !== null;
+}
+
+/** Done, and nothing still running under it. */
+function settled(t: Row): boolean {
+  return t.status === "done" && !backgroundHeld(t);
+}
+
 /** Which board column a task sits in. `blocked` (a run that stopped and needs
     a human) reads as "Needs you" next to the permission/question cards. */
-export function laneOf(t: Pick<Task, "status">): Lane {
+export function laneOf(t: Row): Lane {
+  if (backgroundHeld(t)) return "running";
   if (t.status === "done") return "done";
   if (t.status === "in_progress") return "running";
   if (t.status === "needs_attention" || t.status === "blocked") return "you";
@@ -34,14 +49,14 @@ export function lanesFor(show: TasksShow) {
 }
 
 /** List rows for a tile: open first, then done unless the tile shows open only. */
-export function listFor<T extends Pick<Task, "status">>(tasks: T[], show: TasksShow): T[] {
+export function listFor<T extends Row>(tasks: T[], show: TasksShow): T[] {
   const ordered = listOrder(tasks);
-  return show === "open" ? ordered.filter((t) => t.status !== "done") : ordered;
+  return show === "open" ? ordered.filter((t) => !settled(t)) : ordered;
 }
 
 /** Open = not done (archived and drafts never reach the widget). */
-export function openCount(tasks: Pick<Task, "status">[]): number {
-  return tasks.filter((t) => t.status !== "done").length;
+export function openCount(tasks: Row[]): number {
+  return tasks.filter((t) => !settled(t)).length;
 }
 
 /** Why the widget is empty: nothing at all, or only drafts and archived tasks. */
@@ -55,11 +70,12 @@ export function emptyMessage({ drafts, archived }: Pick<HomeTasks, "drafts" | "a
 
 /** List order: open tasks first, then done ones; each group keeps its incoming
     (newest-first) order. */
-export function listOrder<T extends Pick<Task, "status">>(tasks: T[]): T[] {
-  return [...tasks.filter((t) => t.status !== "done"), ...tasks.filter((t) => t.status === "done")];
+export function listOrder<T extends Row>(tasks: T[]): T[] {
+  return [...tasks.filter((t) => !settled(t)), ...tasks.filter((t) => settled(t))];
 }
 
-export function taskPill(t: Pick<Task, "status" | "failed">): NonNullable<WidgetItem["pill"]> {
+export function taskPill(t: Pick<Task, "status" | "failed" | "background_jobs">): NonNullable<WidgetItem["pill"]> {
+  if (backgroundHeld(t)) return { label: "Background", tone: "ok" };
   switch (t.status) {
     case "in_progress":
       return { label: "Running", tone: "ok" };

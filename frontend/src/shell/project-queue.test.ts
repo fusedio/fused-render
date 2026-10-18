@@ -236,7 +236,20 @@ describe("the List's waiting row", () => {
     expect(css(TASKS_CSS)).toContain(".tasks-row-queue {");
     expect(css(TASKS_CSS)).toContain(".tasks-card-queue {");
     // …and the seat is still drawn for the one caption a row has left.
-    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit}>');
+    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit} {...pressRow}>');
+  });
+
+  it("wears a live background job in the same seat, and never beside the limit", () => {
+    // The Tasks List and Recent chats both draw `TaskRowItem` → this row.
+    expect(ROW).toContain("const jobs = limit ? null : jobBadge(task);");
+    expect(ROW).toContain('className="tasks-row-queue tasks-row-queue--bg tasks-job-badge"');
+    expect(ROW).toContain('<span className="tasks-queue-text">{jobs.text}</span>');
+    // It keeps its width — the title ellipsises, not the badge.
+    const bg = css(TASKS_CSS).slice(css(TASKS_CSS).indexOf(".tasks-row-queue--bg {"));
+    expect(bg.slice(0, bg.indexOf("}"))).toContain("flex: 0 0 auto;");
+    // The limit's seat is untouched.
+    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit} {...pressRow}>');
+    expect(API).toContain("background_jobs?: TaskBackgroundJobs | null;");
   });
 
   it("grows FORCE START in the hover strip, and NO Run next anywhere", () => {
@@ -446,7 +459,10 @@ describe("the Status filter", () => {
     expect(VIEWS).toContain(
       "const laneOn = (key: BoardColumn) => filters.statuses.some((s) => laneOf(s) === laneOf(key));",
     );
-    expect(LIB).toContain("const lane = laneOf(taskColumn(task));");
+    // By the lane the row is DRAWN in (`boardLane` — a live background job is
+    // drawn In Progress), which is `laneOf(taskColumn(task))` for every other row.
+    expect(LIB).toContain("const lane = boardLane(task);");
+    expect(LIB).toContain('return liveJobRow(task) ? "in_progress" : laneOf(taskColumn(task));');
     expect(LIB).toContain("if (!filters.statuses.some((s) => laneOf(s) === lane)) return false;");
   });
 });

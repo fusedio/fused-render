@@ -118,7 +118,7 @@ describe("the surfaces that say them", () => {
     // everywhere, which is what stops the three drifting apart.
     expect(VIEWS).toContain("usageLimitCaption,");
     expect(VIEWS.match(/const limit = usageLimitCaption\(task\);/g)).toHaveLength(2);
-    expect(VIEWS).toContain('<span className="tasks-row-queue" data-hint={limit}>');
+    expect(VIEWS).toContain('<span className="tasks-row-queue" data-hint={limit} {...pressRow}>');
     expect(VIEWS).toContain('{limit && <span className="tasks-card-queue">{limit}</span>}');
     expect(CARDS).toContain("usageLimitCaption,");
     expect(CARDS).toContain('{limit && <span className="task-card-limit">{limit}</span>}');

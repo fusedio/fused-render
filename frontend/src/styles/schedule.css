@@ -2742,6 +2742,12 @@ input.schedule-when-field {
 }
 .schedule-ring--in_progress { color: var(--status-progress); }
 .schedule-ring--done { color: var(--status-done); }
+/* A FINISHED TURN WHOSE CHAT STILL HOLDS A LIVE BACKGROUND JOB, drawn in the In
+   Progress lane (tasks-lib.liveJobRow / boardLane, Akshil 2026-10-18). Its own
+   blue, solid like the running ring: a job is going, but no turn is, and the
+   folder is free for the next message. Doubled so it outranks the Done green
+   and the failed red at any source order (StatusIcon also drops `--failed`). */
+.schedule-ring.schedule-ring--background { color: var(--status-background); }
 .schedule-ring--archived { color: var(--status-archived); }
 
 /* Blocked is a COLUMN of its own since 2026-08-17 (it was called Failed until
