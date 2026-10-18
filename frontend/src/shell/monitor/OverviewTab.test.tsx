@@ -117,7 +117,7 @@ test("four chart cards with figures; alerting tiles sit above them; the rest beh
   expect(text(cards[0])).toContain("6 in flight");
   expect(text(cards[1])).toContain("limit 6 per host");
   expect(text(cards[2])).toContain("3/40 threads busy");
-  expect(text(cards[3])).toContain("8.0 GB / 16 GB");
+  expect(text(cards[3])).toContain("8.0 / 16.0 GB · swap 1.0 GB");
   expect(text(cards[3])).toContain("swap");
   expect(text(cards[1])).toContain("6 limit");
   // charts draw from the timeline
