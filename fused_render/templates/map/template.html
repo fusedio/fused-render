@@ -2585,7 +2585,7 @@ function rasterControls(body, layer, r) {
   const lines = summary ? [`${summary.width.toLocaleString()} × ${summary.height.toLocaleString()} px · ${summary.bands} band(s) · ${summary.dtype}`,
                            `Pixel size ${pixelSize(summary)}`, `${summary.crs} · nodata ${summary.nodata == null ? "none" : Number(summary.nodata.toPrecision(4))}`,
                            summary.overviews ? `${summary.overviews} overview levels` : "No overviews"] : [`${rl.bandCount} band(s)`];
-  lines.push("Streamed by the browser over HTTP range requests");
+  if (!r.plan.url) lines.push("Streamed by the browser over HTTP range requests");
   if (r.note) lines.push(r.note);
   info.textContent = lines.join("\n");
   body.appendChild(info);
