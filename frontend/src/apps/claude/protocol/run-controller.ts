@@ -65,7 +65,7 @@ import type {
 import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit, isPlanLimitText } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
-import { endActiveTasks } from "./tasks";
+import { endActiveTasks, isActive } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
@@ -86,6 +86,8 @@ import type {
   Quota,
   RetryInfo,
   RunIdResponse,
+  RunTasksResponse,
+  ErrorOnly,
   Segment,
   SendResponse,
   SkillRow,
@@ -102,6 +104,9 @@ import type { Receipt } from "../shots/types";
 
 /** T:16377 — the poll cadence. No backoff, ever. */
 export const POLL_MS = 400;
+/** How often a finished turn's tasks panel asks the session host that is still
+ *  running its background work (`watchHostTasks`, agent.py `_run_tasks`). */
+export const HOST_TASKS_MS = 5000;
 
 /**
  * HOW MANY CONSECUTIVE TRANSIENT POLL FAILURES a live view rides out before it
@@ -568,13 +573,66 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * THE RUN THAT OWNS THE LIST HAS ENDED (SPEC T-5 review #4): anything it
    * still had active is downgraded to `unknown`, `ended_at` null — the panel's
    * clock stops, a Monitor chip stops saying "watching" and no Output button
-   * aims at a dead host. A session host that does outlive the turn re-reports
-   * the real statuses on its next poll, which replaces this list wholesale.
+   * aims at a dead host.
+   *
+   * …UNLESS ITS SESSION HOST IS STILL RUNNING THE WORK (`hostHolding`: the done
+   * poll's `tasks_pending`, the `tasks` action's own answer). A TURN ending is
+   * not the work ending (Akshil, 2026-10-18): a `sleep 600`, a dev server, a
+   * background Agent or a Monitor runs on after the reply, and its row stays
+   * LIVE — its clock, its Stop, its Output (they address this run, which the
+   * host still answers for) — until the host says the job is over
+   * (`watchHostTasks`), when it ends with its real status and leaves after the
+   * panel's 5 s grace. Only a host that is really gone downgrades.
    */
-  const endRunTasks = (runId: string | null) => {
-    if (!runId || state.tasksRunId !== runId) return;
+  const endRunTasks = (runId: string | null, hostHolding = false) => {
+    if (!runId || state.tasksRunId !== runId || hostHolding) return;
     const ended = endActiveTasks(state.tasks);
     if (ended) publishTasks(ended, runId);
+  };
+  /**
+   * WATCH A HOST THAT OUTLIVED ITS TURN (Akshil, 2026-10-18). Nothing else
+   * polls it: the poll loop stopped at `done`, and the standing watch only
+   * refreshes history when the TRANSCRIPT grows — which a job that exits, or
+   * is stopped from the Tasks list, without waking the model never does. So
+   * while the panel holds live rows owned by `runId` and no turn is running,
+   * ask the agent's `tasks` (the registry caught up from `out.jsonl`) every
+   * `HOST_TASKS_MS`, and publish what it says.
+   *
+   * It stops by itself: a turn starting (a new poll loop owns the list), another
+   * conversation or run taking the panel, nothing left running
+   * (`tasks_pending` false), the host gone (`host_alive` false — the
+   * downgrade above, the one case it still applies), any error, or dispose.
+   * One watch at a time: a newer call retires the older one.
+   */
+  let hostWatch = 0;
+  const watchHostTasks = (runId: string) => {
+    const seq = ++hostWatch;
+    // A turn starting is a NEW poll loop (`loopSeq`). The loop that just ended
+    // (and called this) may still be unwinding, and its send's gate may not be
+    // released yet, so the seat is compared rather than `activeRun`/`sending`.
+    // A lap that lands between a new send and its loop only republishes this
+    // same run's registry.
+    const loop = loopSeq;
+    const mine = () => seq === hostWatch && !disposed && loopSeq === loop && state.tasksRunId === runId;
+    void (async () => {
+      for (;;) {
+        await sleep(HOST_TASKS_MS);
+        if (!mine()) return;
+        let res: RunTasksResponse | ErrorOnly;
+        try {
+          res = await run("tasks", { run_id: runId });
+        } catch {
+          return;
+        }
+        if (!mine() || !res || res.error || !("tasks" in res) || !Array.isArray(res.tasks)) return;
+        publishTasks(res.tasks, runId);
+        if (!res.host_alive) {
+          endRunTasks(runId);
+          return;
+        }
+        if (!res.tasks_pending) return;
+      }
+    })();
   };
   /**
    * HISTORY'S TASKS, on a restore and on every refresh — one rule for both
@@ -594,6 +652,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const owner = res.live_run || res.tasks_run || null;
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
+    // No turn open, a host alive, and work it still runs: keep the rows live
+    // and watch the host for their end (`watchHostTasks`) — a reload, or the
+    // standing watch's refresh after the turn, lands here.
+    if (!res.live_run && res.tasks_run && rows.some((t) => t && isActive(t.status))) {
+      watchHostTasks(res.tasks_run);
+    }
   };
   /** Publish a worktree hint, only when it differs from the current one (an
    *  equal hint on every poll must not bump `rev`). `via: "exit"` is the
@@ -620,6 +684,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** The conversation on screen is leaving: its tasks go with it. */
   const clearTasks = () => {
     tasksSig = "";
+    hostWatch++; // the host watch belongs to the conversation that is leaving
     if (state.tasks.length || state.tasksRunId !== null) emit({ tasks: [], tasksRunId: null });
     // …and so does the worktree hint the model's tool calls raised.
     if (state.worktreeHint) emit({ worktreeHint: null });
@@ -1907,7 +1972,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // open while `tasks_pending`, and the model is woken when the task
           // notifies). Only the backend's own "nothing still running" fact
           // retires the live records.
-          if (!poll.tasks_pending) endRunTasks(runId);
+          if (poll.tasks_pending) watchHostTasks(runId);
+          else endRunTasks(runId);
           deps.onRunEnded?.();
           // T does one final `pollArtifacts()` at the run's end (T:16347), and
           // controller-api promises "every 8th poll AND once at the run's end".
@@ -3732,7 +3798,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // the file while we were away (`annResolveSent` / `snapInvalidate`).
         // Same rule as `pollLoop`'s done branch: this payload is a done poll
         // too, and `tasks_pending` says the host is still running work.
-        if (!poll.tasks_pending) endRunTasks(runId || null);
+        if (poll.tasks_pending && runId) watchHostTasks(runId);
+        else endRunTasks(runId || null);
         deps.onRunEnded?.();
         /**
          * DID THIS REPAIR ACTUALLY PUT ROWS ON SCREEN? (Bugbot 3974939169 and

@@ -163,6 +163,14 @@ import {
   cardTitleLine,
   INTERRUPTED_REPLY,
   recapTitlesOn,
+  BACKGROUND_LABEL,
+  inFlight,
+  taskMatches,
+  boardLane,
+  jobBadge,
+  jobCountLabel,
+  liveJobRow,
+  liveJobs,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -2350,7 +2358,7 @@ describe("the unread mark", () => {
     // held thread), so the ring hollows on the row's own press rather than on the
     // next poll — the same number that used to feed the dot.
     expect(ROW).toMatch(
-      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s*\/>/,
+      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s+background=\{liveJobRow\(task\)\}\s*\/>/,
     );
     // Nothing trails the title any more: the ring leads the row, the title
     // follows, and the next thing is the live ping.
@@ -2392,12 +2400,13 @@ describe("the unread mark", () => {
       CARD.indexOf('className={"schedule-tv-card-title"'),
     );
     expect(head).toContain("<IdChip");
-    expect(head).toContain(": failedOffLane && <StatusIcon status={lane} failed />}");
-    // TWO, and both are the same exception: the ring is drawn when the card's
-    // status is not the lane it sits under — once for a broken run filed
-    // elsewhere, once for a waiting one drawn inside Blocked. One of the two
-    // arms renders, never both (they are the arms of one ternary).
-    expect((CARD.match(/<StatusIcon/g) ?? []).length).toBe(2);
+    expect(head).toContain(": failedOffLane\n              ? <StatusIcon status={lane} failed />");
+    // THREE, and all are the same exception: the ring is drawn when the card's
+    // status is not all its lane says — a broken run filed elsewhere, a waiting
+    // one drawn inside Blocked, and a finished card with a live background job
+    // drawn In Progress (tasks-lib.liveJobRow). One arm renders, never two (one
+    // ternary chain).
+    expect((CARD.match(/<StatusIcon/g) ?? []).length).toBe(3);
     // The SAME mark this page already uses one level down, so a card and an unread
     // message row make the same claim the same way.
     expect(TASKS_CSS).toMatch(
@@ -2843,7 +2852,11 @@ describe("the board card's status ring", () => {
     // `isFailedTask` is the single notion of "reads as failed" (the failed lane, or
     // the flag that repaints a Done ring red). A second inline reading of
     // `task.failed` here is how the card and the List row would drift apart.
-    expect(CARD).toContain(": failedOffLane && <StatusIcon status={lane} failed />}");
+    expect(CARD).toContain(": failedOffLane\n              ? <StatusIcon status={lane} failed />");
+    // …and the third card whose ring says what its lane does not: a finished
+    // turn with a live background job, drawn In Progress (tasks-lib.liveJobRow)
+    // — the blue "Background" ring.
+    expect(CARD).toContain(": jobs && <StatusIcon status={status} background />}");
     // The waiting card's own ring, by the same rule: its status and its lane are
     // two different facts (Needs attention, drawn under Blocked), which is
     // exactly the condition the ring is drawn for.
@@ -4284,7 +4297,7 @@ describe("the archive action", () => {
     // up whenever it is empty.
     expect(card).toContain(
       "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
-      + "        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (",
+      + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
@@ -4547,7 +4560,7 @@ describe("the delete affordance", () => {
     expect(at).toBeGreaterThan(0);
     // GATED on `gone` (Akshil, 2026-09-07): a task that still opens is archived.
     expect(head.slice(del, at)).toContain("{gone && (");
-    expect(head).toContain("{(filing || explorer || gone) && (");
+    expect(head).toContain("{(filing || explorer || gone || jobs) && (");
     // Trash, then Archive, then the folder (Akshil: "left-side of the archive button").
     expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_ARCHIVE"));
     expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
@@ -4593,7 +4606,7 @@ describe("the delete affordance", () => {
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
       "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
-      + "        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (",
+      + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
     const foot = VIEWS_SRC.slice(
@@ -11440,5 +11453,93 @@ describe("groupRows", () => {
     expect(prOfTask(row({ title: "Step #2 of the plan, colour #000" }))).toBeNull();
     // A named PR wins over an earlier bare number.
     expect(prOfTask(row({ title: "Issue #55 blocks PR #1203" }))).toBe(1203);
+  });
+});
+
+// ---- a finished turn whose chat still holds a live background job ----------
+
+describe("a live background job under a finished turn", () => {
+  const held = (n: number, run = "r-1") => ({
+    count: n,
+    run_id: run,
+    jobs: Array.from({ length: n }, (_, i) => ({
+      id: `b${i + 1}`,
+      title: i === 0 ? "npm run dev" : "",
+    })),
+  });
+
+  it("reads the server's field, and nothing on an older server or an empty list", () => {
+    expect(liveJobs(task({ background_jobs: held(1) }))).toEqual(held(1));
+    expect(liveJobs(task({}))).toBeNull();
+    expect(liveJobs(task({ background_jobs: null }))).toBeNull();
+    expect(liveJobs(task({ background_jobs: { count: 0, run_id: "r", jobs: [] } }))).toBeNull();
+  });
+
+  it("is ONE rule — a `done` status with a live job — for the ring, the lane and the badge", () => {
+    expect(liveJobRow(task({ status: "done", background_jobs: held(1) }))).toBe(true);
+    // In Progress is already "going"; a blocked or parked row has its own story.
+    for (const status of ["in_progress", FAILED, "needs_attention", "upcoming", "archived"]) {
+      const t = task({ status, background_jobs: held(1) } as Partial<Task>);
+      expect(liveJobRow(t)).toBe(false);
+      expect(jobBadge(t)).toBeNull();
+    }
+    expect(liveJobRow(task({ status: "done" }))).toBe(false);
+  });
+
+  it("counts in words and names each job on hover, by its id when it has no description", () => {
+    expect(jobCountLabel(1)).toBe("1 job running");
+    expect(jobCountLabel(2)).toBe("2 jobs running");
+    const badge = jobBadge(task({ background_jobs: held(2, "run-9") }))!;
+    expect(badge.text).toBe("2 jobs running");
+    expect(badge.hint).toBe("Still running in the background:\nnpm run dev\nb2");
+    // Exactly what Stop hands the agent's `task_stop`, once per job.
+    expect(badge.runId).toBe("run-9");
+    expect(badge.jobIds).toEqual(["b1", "b2"]);
+    expect(BACKGROUND_LABEL).toBe("Background");
+  });
+
+  it("is DRAWN In Progress — and is still a finished task to every other rule", () => {
+    const t = task({ status: "done", background_jobs: held(1) });
+    expect(boardLane(t)).toBe("in_progress");
+    expect(boardLane(task({ status: "done" }))).toBe("done");
+    // The status is untouched: Bots' build watch, the status toasts and the
+    // queue's "folder busy" all read it, and the turn IS over.
+    expect(taskColumn(t)).toBe("done");
+    expect(inFlight(taskColumn(t))).toBe(false);
+  });
+
+  it("sorts among the running rows by the In Progress rule, above the queued half, and leaves Done", () => {
+    const at = 1_700_000_000;
+    const row = (key: string, status: string, ago: number, extra: Partial<Task> = {}) =>
+      task({
+        key,
+        status,
+        last_active: at - ago,
+        messages: [msg({ ran_at: at - ago, at: at - ago })],
+        ...extra,
+      } as Partial<Task>);
+    const map = groupByColumn(
+      [
+        row("done-new", "done", 10),
+        row("job-old", "done", 300, { background_jobs: held(1) }),
+        row("running", "in_progress", 100),
+        row("job-new", "done", 50, { background_jobs: held(1) }),
+        row("waiting", "queued", 5, { queue_position: 0 }),
+      ],
+      (at + 100) * 1000,
+    );
+    expect(map.get("in_progress")!.map((t) => t.key)).toEqual(["job-new", "running", "job-old", "waiting"]);
+    expect(map.get("done")!.map((t) => t.key)).toEqual(["done-new"]);
+    // The List and Recent chats read the same order (`sortForList`).
+    expect(sortForList(
+      [row("done-new", "done", 10), row("job", "done", 300, { background_jobs: held(1) })],
+      (at + 100) * 1000,
+    ).map((t) => t.key)).toEqual(["job", "done-new"]);
+  });
+
+  it("answers the In Progress tick of the Status filter, not the Done one", () => {
+    const t = task({ status: "done", background_jobs: held(1) });
+    expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["in_progress"] })).toBe(true);
+    expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["done"] })).toBe(false);
   });
 });

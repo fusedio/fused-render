@@ -4966,6 +4966,62 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasksRunId).toBe("r1");
   });
 
+  /** Let the host watch's sleep → `tasks` → publish laps run (sleep is instant here). */
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+
+  test("Akshil 2026-10-18: a turn that ends with a live job keeps the row live, then ends it when the HOST says so", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+      tasks: (_f, n) =>
+        n === 0
+          ? { tasks: [SH], tasks_pending: true, host_alive: true }
+          : { tasks: [{ ...SH, status: "completed", ended_at: 5 }], tasks_pending: false, host_alive: true },
+    });
+    await controller.sendMessage("go");
+    await settle();
+    // Asked of THIS run, and only until nothing is pending.
+    expect(agent.of("tasks").map((c) => c.fields.run_id)).toEqual(["r1", "r1"]);
+    const sh = controller.getState().tasks[0]!;
+    expect([sh.status, sh.ended_at]).toEqual(["completed", 5]);
+    expect(controller.getState().tasksRunId).toBe("r1");
+  });
+
+  test("a host that dies under the watch downgrades the live rows, the one case that still does", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+      tasks: () => ({ tasks: [SH], tasks_pending: false, host_alive: false }),
+    });
+    await controller.sendMessage("go");
+    await settle();
+    expect(agent.of("tasks")).toHaveLength(1);
+    expect(controller.getState().tasks[0]!.status).toBe("unknown");
+  });
+
+  test("a reload onto a live host with live rows watches it too; leaving the conversation stops the watch", async () => {
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      tasks: () => ({ tasks: [T("h", "running")], tasks_pending: true, host_alive: true }),
+    });
+    await controller.openSession("s9");
+    await settle();
+    expect(agent.of("tasks").length).toBeGreaterThan(0);
+    controller.newChat();
+    const asked = agent.of("tasks").length;
+    await settle();
+    expect(agent.of("tasks").length).toBeLessThanOrEqual(asked + 1);
+    expect(controller.getState().tasks).toEqual([]);
+  });
+
   test("Bugbot: a done poll with tasks_pending keeps a running monitor running; without it, unknown", async () => {
     const MON = { ...T("m"), kind: "monitor" as const, type: "monitor_mcp", events: 2 };
     for (const pending of [true, false]) {

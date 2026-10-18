@@ -267,6 +267,55 @@ def test_history_names_the_host_run_after_the_turn_ended(
     assert hist["tasks_run"] == ("run" if host else "")
 
 
+# ------------------------------------------- after the turn (Akshil 2026-10-18)
+
+def test_tasks_action_catches_the_registry_up_while_the_host_runs_on(
+        agent, run_dir, monkeypatch):
+    """Nobody polls a run whose turn ended: `tasks` (and history) fold the
+    rows the CLI wrote since, so a job that exited leaves the panel with its
+    real status instead of reading `running` until the host dies."""
+    _append(run_dir, [_sys("task_started", task_id="b1", description="sleep",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    monkeypatch.setattr(agent, "_host_alive", lambda _d: True)
+    got = agent._run_tasks("run")
+    assert got["host_alive"] is True and got["tasks_pending"] is True
+    assert got["tasks"][0]["status"] == "running"
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="completed",
+                           summary="done")])
+    got = agent._run_tasks("run")
+    assert got["tasks"][0]["status"] == "completed"
+    assert got["tasks_pending"] is False
+    # Persisted: the next reader (a poll, history) starts past those rows.
+    assert agent._read_bg_tasks(str(run_dir))["b1"]["status"] == "completed"
+
+
+def test_catch_up_stops_before_an_init_row_so_the_poll_still_reports_it(
+        agent, run_dir, monkeypatch):
+    _append(run_dir, [_sys("task_started", task_id="b1", description="sleep",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    _reg, before, _cur = agent._load_registry(str(run_dir))
+    _append(run_dir, [_sys("init", slash_commands=["x"]),
+                      _sys("task_notification", task_id="b1", status="completed")])
+    agent._catch_up_registry(str(run_dir))
+    _reg, after, _cur = agent._load_registry(str(run_dir))
+    assert after == before
+
+
+def test_tasks_action_with_the_host_gone_downgrades_and_says_so(agent, run_dir, monkeypatch):
+    _append(run_dir, [_sys("task_started", task_id="b1", description="sleep",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    monkeypatch.setattr(agent, "_host_alive", lambda _d: False)
+    monkeypatch.setattr(agent, "_alive", lambda _d: False)
+    got = agent._run_tasks("run")
+    assert got["host_alive"] is False and got["tasks_pending"] is False
+    assert got["tasks"][0]["status"] == "unknown"
+    assert "error" in agent._run_tasks("../x")
+    assert "error" in agent._run_tasks("nope")
+
+
 # ------------------------------------------------------------- task_output
 
 def test_task_output_with_no_live_host_is_an_error(agent, run_dir):
