@@ -133,9 +133,12 @@ def _disk(d: dict):
 
 
 def _outage(d: dict):
-    age = (_ok(d.get("errors")) or {}).get("last_outage_age_s")
+    e = _ok(d.get("errors")) or {}
+    age = e.get("last_unexpected_outage_age_s")
     if age is not None and age < RECENT_OUTAGE_S:
-        return _reason("outage", f"Server outage {age / 60:.0f} min ago", "/monitor?tab=overview", "bad")
+        return _reason("outage", f"Server stopped responding {age / 60:.0f} min ago", "/monitor?tab=overview", "bad")
+    if e.get("recent_crash"):
+        return _reason("outage", f"{e['recent_crash']} crashed", "/monitor?tab=overview", "warn")
     return None
 
 

@@ -312,32 +312,84 @@ def boot_changes(rows: list[dict]) -> list[dict]:
     return out
 
 
-def _crashes() -> list[dict]:
+CRASH_MAX_AGE_S = 7 * 86400
+
+
+def _scan_crashes(now: float | None = None) -> list[dict]:
+    """Real faulthandler dumps only: a 0-byte file is a process that never
+    crashed (one file is created per process at start). Last 7 days, newest first."""
     from fused_render import crashlog
+    now = time.time() if now is None else now
     d = crashlog.crash_dir()
     out = []
     try:
         for name in os.listdir(d):
+            path = os.path.join(d, name)
             try:
-                st = os.stat(os.path.join(d, name))
+                st = os.stat(path)
             except OSError:
                 continue
-            out.append({"name": name, "bytes": st.st_size, "t": st.st_mtime})
+            if st.st_size <= 0 or now - st.st_mtime > CRASH_MAX_AGE_S:
+                continue
+            out.append({"name": name, "bytes": st.st_size, "t": st.st_mtime,
+                        "path": os.path.abspath(path)})
     except OSError:
         return []
     out.sort(key=lambda c: -c["t"])
     return out[:10]
 
 
+def _crashes() -> list[dict]:
+    return _scan_crashes()
+
+
+def _recent_crash_name(max_age_s: float = 86400) -> str | None:
+    """Cheap (listdir + stat) newest non-empty dump within `max_age_s`, for the verdict."""
+    now = time.time()
+    for c in _scan_crashes(now):
+        if now - c["t"] <= max_age_s:
+            return c["name"]
+    return None
+
+
+def classify_outages(rows: list[dict], now: float | None = None) -> list[dict]:
+    """Client-observed outages only (quit rows are clean-shutdown records),
+    enriched with duration / restarted / clean. `expected` == `clean`: the
+    server shut itself down on purpose inside the outage window (dev reload,
+    update). Newest first, max 10."""
+    now = time.time() if now is None else now
+    quits = [r.get("received_at") for r in rows
+             if r.get("kind") == "quit" and isinstance(r.get("received_at"), (int, float))]
+    out = []
+    for r in rows:
+        if r.get("kind") != "outage" or not r.get("t_down"):
+            continue
+        t_down, t_up = r["t_down"], r.get("t_up")
+        before, after = r.get("boot_id_before"), r.get("boot_id_after")
+        restarted = bool(before and after and before != after)
+        clean = restarted and any(t_down - 30 <= q <= (t_up or now) for q in quits)
+        out.append({**r, "duration_s": round(t_up - t_down, 1) if t_up else None,
+                    "restarted": restarted, "clean": clean, "expected": clean})
+    out.sort(key=lambda o: -o["t_down"])
+    return out[:10]
+
+
+def _last_unexpected_age(outages: list[dict]) -> float | None:
+    last = max((o["t_down"] for o in outages if not o["expected"]), default=0)
+    return round(time.time() - last, 1) if last else None
+
+
 def _errors() -> dict:
     from fused_render.logs import log_path
-    outages = health.read_outages(20)
-    last = max((o.get("t_down") or 0 for o in outages), default=0)
+    outages = classify_outages(health.read_outages(50))
     restarts = boot_changes(health.read_trail(86400))
+    crashes = _crashes()
+    now = time.time()
     return {"outages": outages,
-            "last_outage_age_s": round(time.time() - last, 1) if last else None,
+            "last_unexpected_outage_age_s": _last_unexpected_age(outages),
             "server_log_errors": server_log_errors(log_path()),
-            "crashes": _crashes(),
+            "crashes": crashes,
+            "crashes_24h": sum(1 for c in crashes if now - c["t"] <= 86400),
             "restarts_24h": len(restarts), "restarts": restarts[-10:]}
 
 
@@ -548,9 +600,9 @@ def _assemble(readers: dict) -> dict:
 def _errors_for_verdict() -> dict:
     """Only what the verdict's outage rule reads: no log tail, crash-dir listing
     or 24 h trail scan."""
-    outages = health.read_outages(20)
-    last = max((o.get("t_down") or 0 for o in outages), default=0)
-    return {"outages": outages, "last_outage_age_s": round(time.time() - last, 1) if last else None}
+    outages = classify_outages(health.read_outages(50))
+    return {"outages": outages, "last_unexpected_outage_age_s": _last_unexpected_age(outages),
+            "recent_crash": _recent_crash_name()}
 
 
 def _disk_for_verdict() -> dict:

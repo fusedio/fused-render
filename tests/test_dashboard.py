@@ -526,10 +526,10 @@ def test_light_verdict_readers_skip_the_expensive_work(monkeypatch, tmp_path):
     monkeypatch.setattr(dashboard, "server_log_errors", lambda *_: pytest.fail("log tail"))
     monkeypatch.setattr(dashboard, "_crashes", lambda: pytest.fail("crash listing"))
     monkeypatch.setattr(dashboard, "_disk_sizes", lambda: pytest.fail("dir walk"))
-    monkeypatch.setattr(health, "read_outages", lambda n: [{"t_down": time.time() - 5}])
+    monkeypatch.setattr(health, "read_outages", lambda n: [{"kind": "outage", "t_down": time.time() - 5}])
     monkeypatch.setattr("fused_render.logs.log_dir", lambda: str(tmp_path))
     e = dashboard._errors_for_verdict()
-    assert 0 <= e["last_outage_age_s"] < 60
+    assert 0 <= e["last_unexpected_outage_age_s"] < 60
     assert dashboard._disk_for_verdict()["free_bytes"] > 0
 
 
@@ -559,3 +559,45 @@ def test_trail_reader_spans_more_than_one_megabyte(tmp_path, monkeypatch):
     # a window older than the whole file returns every row, no error at the start
     health._trail_cache.clear()
     assert len(health.read_trail(10 * 86400)) == n
+
+
+def _outage_row(t_down, t_up, before="a", after="b"):
+    return {"kind": "outage", "t_down": t_down, "t_up": t_up,
+            "boot_id_before": before, "boot_id_after": after, "recovered": True}
+
+
+def test_classify_outages_drops_quit_rows_and_marks_planned_restarts():
+    now = time.time()
+    rows = [_outage_row(now - 500, now - 480),
+            {"kind": "quit", "source": "server", "received_at": now - 495},
+            _outage_row(now - 100, now - 60, "c", "c")]
+    out = dashboard.classify_outages(rows, now)
+    assert [o["t_down"] for o in out] == [now - 100, now - 500]
+    hung, planned = out
+    assert hung["expected"] is False and hung["restarted"] is False and hung["duration_s"] == 40
+    assert planned["clean"] is True and planned["expected"] is True and planned["restarted"] is True
+    assert dashboard._last_unexpected_age(out) == pytest.approx(100, abs=2)
+
+
+def test_restart_without_quit_row_is_unexpected_and_restarts_alone_do_not_count():
+    now = time.time()
+    out = dashboard.classify_outages([_outage_row(now - 50, now - 20)], now)
+    assert out[0]["restarted"] and not out[0]["expected"]
+    assert dashboard.classify_outages([{"kind": "quit", "received_at": now}], now) == []
+    assert dashboard._last_unexpected_age([]) is None
+
+
+def test_crashes_skip_empty_and_old_dumps(monkeypatch, tmp_path):
+    import os
+    from fused_render import crashlog
+    monkeypatch.setattr(crashlog, "crash_dir", lambda: str(tmp_path))
+    (tmp_path / "empty.log").write_text("")
+    (tmp_path / "dump.log").write_text("Fatal Python error")
+    old = tmp_path / "old.log"
+    old.write_text("x")
+    t = time.time() - 8 * 86400
+    os.utime(old, (t, t))
+    out = dashboard._crashes()
+    assert [c["name"] for c in out] == ["dump.log"]
+    assert out[0]["path"] == str(tmp_path / "dump.log")
+    assert dashboard._recent_crash_name() == "dump.log"

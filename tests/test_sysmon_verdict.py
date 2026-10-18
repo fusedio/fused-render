@@ -16,7 +16,7 @@ def healthy():
         "index": {"in_use": 0, "waiting": 0, "abandoned": 0},
         "cpu": {"thermal_limit": 100, "low_power": False},
         "disk": {"free_bytes": 100 * GB},
-        "errors": {"last_outage_age_s": None},
+        "errors": {"last_unexpected_outage_age_s": None},
     }
 
 
@@ -107,15 +107,24 @@ def test_rule8_disk_low():
 
 def test_rule9_recent_outage():
     d = healthy()
-    d["errors"]["last_outage_age_s"] = 120
+    d["errors"]["last_unexpected_outage_age_s"] = 120
     assert keys(d) == ["outage"]
-    d["errors"]["last_outage_age_s"] = 3600
+    d["errors"]["last_unexpected_outage_age_s"] = 3600
     assert keys(d) == []
+
+
+def test_rule9_recent_crash_warns():
+    d = healthy()
+    d["errors"]["recent_crash"] = "server-123.log"
+    out = V.verdict(d)
+    assert [r["key"] for r in out["reasons"]] == ["outage"]
+    assert out["reasons"][0]["text"] == "server-123.log crashed"
+    assert out["level"] == "warn"
 
 
 def test_reasons_keep_rule_order_and_level_is_worst():
     d = healthy()
-    d["errors"]["last_outage_age_s"] = 10
+    d["errors"]["last_unexpected_outage_age_s"] = 10
     d["server"]["pool"] = {"borrowed": 40, "total": 40}
     out = V.verdict(d)
     assert [r["key"] for r in out["reasons"]] == ["threads", "outage"]
