@@ -49,6 +49,10 @@ export interface SyncStatus {
   push_state: "idle" | "pending" | "pushing" | "error";
   push_seq: number;
   last_push_at: number | null;
+  /** The clone's disk revision: moves whenever the folder's fingerprint moves
+   *  (a Claude edit, a merge, an embed snapshot landing). The workspace asks
+   *  for a delta (getDelta) when it advances. Older servers omit it. */
+  disk_rev?: number;
   /** Increments when the watcher pulls remote (workbench-side) changes down. */
   pull_seq: number;
   last_pull_at: number | null;
@@ -127,6 +131,37 @@ export const applyRename = (
     "/api/canvases/snapshot",
     { name, gen, seq, rename },
   );
+
+/** One op of a canvas delta (canvas_snapshot.diff_views): the frame applies
+ *  them in order. Opaque to this page beyond `op`. */
+export interface DeltaOp {
+  op: "upsert" | "rename" | "delete" | "edges" | "canvas";
+  [key: string]: unknown;
+}
+
+export interface CanvasDelta {
+  /** The disk revision this delta brings the frame to. */
+  rev: number;
+  /** The revision the frame is assumed to hold; null for a full state. */
+  base_rev?: number | null;
+  ops?: DeltaOp[];
+  full?: boolean;
+  /** Set (instead of ops) while the clone is mid-write; ask again shortly. */
+  held?: string;
+}
+
+/** Embed v3: diff(disk, what the frame holds), for `fused-embed-delta`.
+ *  `full` asks for the whole state (the frame just hydrated). Throws with
+ *  `.status` 409 while a sync leg holds the clone. */
+export const getDelta = (name: string, full: boolean) =>
+  getJson<CanvasDelta>(
+    `/api/canvases/delta?name=${encodeURIComponent(name)}&full=${full ? 1 : 0}`,
+  );
+
+/** The frame applied (`ok`) or refused a delta: the host's picture of the
+ *  frame moves to that revision, or is dropped so the next delta is full. */
+export const ackDelta = (name: string, rev: number, ok: boolean) =>
+  postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", { name, rev, ok });
 
 export const startSync = (name: string) =>
   postJson<SyncStatus>("/api/canvases/sync/start", { name });

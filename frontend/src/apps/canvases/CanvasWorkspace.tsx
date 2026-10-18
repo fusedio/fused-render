@@ -22,8 +22,8 @@
 //            (owner call: the right pane follows the canvas)
 //   parent → { type: "fused-embed-select", udfName }  (restore ?node= on
 //            load; null from the sidebar's close button, so both sides agree)
-//   parent → { type: "fused-embed-remote-changed", push_seq }  after a push,
-//            so the workbench re-fetches now instead of on its 10s poll.
+//   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
+//            workbench's save chip ("Published"); it triggers no reload.
 // Keyed by UDF NAME, never a React Flow node id (those are regenerated every
 // load): the node's source is `<clone>/<udfName>.py` (widgets: `.json`).
 //
@@ -36,9 +36,22 @@
 // ONE writer to the server, publishing the folder exactly as it publishes a
 // Claude edit — so there is no second writer to lock out, and the left-pane
 // lock this page used to run (decideLock, the ack handshake, the scrim, the
-// grace window) is gone with it. This page never reloads the workbench
-// iframe — it tells it when a push landed (remote-changed) and the workbench
-// refreshes itself, once its own queued snapshots are all acked.
+// grace window) is gone with it.
+//
+// The other direction (canvas_snapshot.py, "the disk → embed leg"): this page
+// never reloads the workbench iframe and never asks it to re-fetch. When the
+// clone moves on disk (the status poll's `disk_rev`) it fetches
+// GET /api/canvases/delta — diff(disk, what the server believes the frame
+// holds) — and posts it as
+//   parent → { type: "fused-embed-delta", rev, base_rev, full, ops }
+//   iframe → { type: "fused-embed-delta-applied", rev } | "-rejected"
+// relaying the ack to POST /api/canvases/delta/ack. The frame patches its
+// nodes in place: camera, selection, results and the right pane's session
+// all survive. A frame that just hydrated says
+//   iframe → { type: "fused-embed-hello" }
+// and gets a full state (`full=1`). The frame's own edits never come back
+// this way: after a snapshot lands the server re-reads disk as what the
+// frame holds, so the diff is empty.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMount } from "@apps/claude";
@@ -47,9 +60,11 @@ import { EMBED_PREFIX, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@plat
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
+  ackDelta,
   applyRename,
   applySnapshot,
   fixWithClaude,
+  getDelta,
   getAccessToken,
   getCanvasesStatus,
   getSyncStatus,
@@ -70,6 +85,12 @@ const SYNC_POLL_MS = 2000;
 // keeps the snapshot queued for its next change or reload.
 const SNAPSHOT_BUSY_WINDOW_MS = 120_000;
 const SNAPSHOT_BUSY_RETRY_MS = 750;
+
+// A delta the server HELD (the clone mid-write: a row whose file is not there
+// yet) or could not cut (409 busy) is asked for again this far apart, for up
+// to this long; past that the next disk move or hello asks afresh.
+const DELTA_RETRY_MS = 1_000;
+const DELTA_RETRY_WINDOW_MS = 30_000;
 
 // A status poll that keeps failing is treated, after this many consecutive
 // misses, as a dropped watcher (`watching: false`), which is what re-arms the
@@ -321,6 +342,74 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     [name],
   );
 
+  // The delta leg: disk moved → fetch diff(disk, what the frame holds) → post
+  // it to the frame. One relay at a time, in order, through a promise chain
+  // (a full state must not overtake the delta cut before it). A held or busy
+  // answer is retried on a timer; the frame's hello asks for a full state.
+  const deltaChainRef = useRef<Promise<void>>(Promise.resolve());
+  const lastDeltaRevRef = useRef<number | null>(null);
+  const relayDelta = useCallback(
+    (full: boolean) => {
+      deltaChainRef.current = deltaChainRef.current.then(async () => {
+        const started = Date.now();
+        for (;;) {
+          try {
+            const delta = await getDelta(name, full);
+            if (delta.held !== undefined) {
+              if (Date.now() - started > DELTA_RETRY_WINDOW_MS) return;
+              await new Promise((r) => window.setTimeout(r, DELTA_RETRY_MS));
+              continue;
+            }
+            lastDeltaRevRef.current = Math.max(lastDeltaRevRef.current ?? 0, delta.rev);
+            const ops = delta.ops ?? [];
+            // Nothing to apply against a known base: the server moved its
+            // picture itself; nothing to post.
+            if (!delta.full && ops.length === 0) return;
+            const frame = frameRef.current;
+            const origin = baseOriginRef.current;
+            if (!frame?.contentWindow || !origin) {
+              // No frame to tell: drop the server's picture so the next ask
+              // (the frame's hello) is a full state.
+              void ackDelta(name, delta.rev, false).catch(() => undefined);
+              return;
+            }
+            frame.contentWindow.postMessage(
+              {
+                type: "fused-embed-delta",
+                rev: delta.rev,
+                base_rev: delta.base_rev ?? null,
+                full: Boolean(delta.full),
+                ops,
+              },
+              origin,
+            );
+            return;
+          } catch (e) {
+            const status = (e as { status?: number }).status;
+            if (status === 409 && Date.now() - started <= DELTA_RETRY_WINDOW_MS) {
+              await new Promise((r) => window.setTimeout(r, DELTA_RETRY_MS));
+              continue;
+            }
+            return;
+          }
+        }
+      });
+    },
+    [name],
+  );
+  useEffect(() => {
+    const rev = sync?.disk_rev;
+    if (typeof rev !== "number") return;
+    if (lastDeltaRevRef.current !== null && rev <= lastDeltaRevRef.current) return;
+    if (lastDeltaRevRef.current === null) {
+      // First sight of the counter: nothing to diff against yet. The frame's
+      // hello (after it hydrates) asks for the full state.
+      lastDeltaRevRef.current = rev;
+      return;
+    }
+    relayDelta(false);
+  }, [sync?.disk_rev, relayDelta]);
+
   // The node this page currently shows, readable from the message handler
   // without re-subscribing it on every selection.
   const nodeRef = useRef<NodeSel | null>(node);
@@ -369,6 +458,16 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           }),
         );
       }
+      if (type === "fused-embed-hello") {
+        // The frame (re)hydrated from the server: bring it to disk with a
+        // full state, whatever the server thought it held before.
+        relayDelta(true);
+      }
+      if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
+        const rev = event.data?.rev;
+        if (typeof rev !== "number") return;
+        void ackDelta(name, rev, type === "fused-embed-delta-applied").catch(() => undefined);
+      }
       if (type === "fused-embed-selection") {
         const name = event.data?.udfName;
         if (typeof name === "string" && name) {
@@ -392,7 +491,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, relaySnapshot]);
+  }, [seedToken, sendSelect, relaySnapshot, relayDelta, name]);
 
   // Mirror the node onto this page's URL so a reload lands on it, and drop the
   // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
@@ -433,9 +532,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     }
   }, [node, nodeTab]);
 
-  // After every push, tell the workbench to look upstream NOW — its own poll
-  // is 10s, and the user just saved in the Code tab (or Claude just edited)
-  // and is looking at the canvas for the result.
+  // After every push, tell the workbench's save chip it is published. This
+  // is informational only — the frame never reloads or re-fetches on it (the
+  // delta leg below is how disk changes reach it).
   const lastPushSeqRef = useRef<number | null>(null);
   useEffect(() => {
     const seq = sync?.push_seq ?? null;
@@ -446,11 +545,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) return;
-    frame.contentWindow.postMessage(
-      { type: "fused-embed-remote-changed", push_seq: seq },
-      origin,
-    );
+    frame.contentWindow.postMessage({ type: "fused-embed-pushed", push_seq: seq }, origin);
   }, [sync?.push_seq]);
+
 
   // Sync status poll for the status strip; re-arms the watcher if it drops.
   // The button's enabled/disabled state reads straight off sync.fix_active —

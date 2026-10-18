@@ -7,7 +7,9 @@ code — over the postMessage bridge, the workspace page relays it to
 `POST /api/canvases/snapshot`, and this module folds it into the clone. The
 watcher then publishes the folder exactly as it publishes a Claude edit.
 
-Three entry points, all pure except for the final writes:
+Three entry points for the embed → disk leg, all pure except for the final
+writes (the disk → embed leg, `compact_state_from_disk` / `diff_views`, is at
+the bottom of the module):
 
   `compact_state(body)`   — the studio JSON the workbench sends → the compact
                             shape `canvas.toml` holds (one row per node keyed
@@ -577,3 +579,186 @@ def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> di
         out["base_nodes"] = (set(base) - {frm}) | {to}
     out["edges"] = [[to if a == frm else a, to if b == frm else b] for a, b in prev.get("edges", [])]
     return out
+
+
+# -- the disk → embed leg: deltas -------------------------------------------
+#
+# The mirror image of the snapshot leg above. The host keeps `embed_view`, the
+# compact state it believes the embed is showing (canvases._SyncManager). When
+# the clone moves on disk — Claude wrote a file, the watcher merged a cloud
+# edit down — the page asks for diff(disk, embed_view) and posts it to the
+# frame as `fused-embed-delta`; the frame patches its atoms in place (no
+# re-hydrate) and acks, and the host sets embed_view := disk. After the host
+# applied the embed's own snapshot it re-reads disk into embed_view, so the
+# embed's own edits diff to nothing and are never echoed back.
+#
+# `embed_view` is ONLY ever a disk reading (`compact_state_from_disk`), never
+# a `compact_state(snapshot)`: the snapshot's rows carry EMBED_ROW_KEYS only
+# and no code, so a view built from one would diff non-empty against disk
+# forever. The one field the snapshot overrides is `ids` — the server ids the
+# embed truly holds — so a node that gained an id on the last push is still
+# told about it (an `ids` op).
+
+# Source files, by suffix, whose text the embed holds as the UDF's code
+# verbatim. A text note's `.md` is README-shaped (`Udf.makeZipReadme`), NOT
+# the note's text, so it is sent as `body` instead and the frame decides.
+CODE_SUFFIXES = (".py", ".json", ".html")
+
+
+def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None) -> dict:
+    """The clone as the embed should hold it::
+
+        {nodes: {name: row}, order: [name], edges: [[a, b]],
+         canvas: {viewport, viewportBounds, comments}, files: {name: basename},
+         ids: {name: server id} (from the remote manifest, when known),
+         bodies: {name: text} (every node's source file, all four kinds),
+         missing: [name]} (rows whose source file is not on disk)
+
+    Same shape as `compact_state` where the keys overlap, so it serves as
+    `prev` for `apply_snapshot` too. Raises FileNotFoundError when there is
+    no canvas.toml and whatever rtoml raises on a malformed one.
+    """
+    doc = _load_toml(os.path.join(clone_dir, "canvas.toml"))
+    canvas = doc.get("canvas") or {}
+    if not isinstance(canvas, dict):
+        raise ValueError("canvas.toml: [canvas] is not a table")
+    rows = canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []
+    nodes: dict[str, dict] = {}
+    order: list[str] = []
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("udfName"), str) and row["udfName"]:
+            nodes[row["udfName"]] = dict(row)
+            order.append(row["udfName"])
+    edges: list[list[str]] = []
+    for e in canvas.get("edges") or []:
+        if (isinstance(e, list) and len(e) == 2
+                and isinstance(e[0], str) and isinstance(e[1], str)):
+            edges.append([e[0], e[1]])
+    scalars = {k: canvas[k] for k in CANVAS_KEYS if k in canvas}
+    files: dict[str, str] = {}
+    bodies: dict[str, str] = {}
+    missing: list[str] = []
+    for name, row in nodes.items():
+        file = _find_source(clone_dir, name)
+        if file is None:
+            # A folder is a row with no source file of its own.
+            if row.get("type") == "udf-folder":
+                continue
+            missing.append(name)
+            continue
+        files[name] = file
+        data = _read_bytes(os.path.join(clone_dir, file))
+        bodies[name] = data.decode("utf-8", "replace") if data is not None else ""
+    ids = {n: remote_ids[n] for n in nodes if remote_ids and isinstance(remote_ids.get(n), str)}
+    return {"nodes": nodes, "order": order, "edges": edges, "canvas": scalars,
+            "files": files, "ids": ids, "bodies": bodies, "missing": missing}
+
+
+def studio_patch_from_row(row: dict) -> dict:
+    """The studio-node fragment a compact row stands for — the inverse of
+    `compact_node`, shaped like the application server's
+    `_compact_node_to_studio` but PARTIAL: only the keys the row carries, so
+    the frame merges it over the node it has (id, measured size, selection
+    and every runtime field untouched). Keys the embed cannot show are left
+    out rather than guessed at."""
+    data: dict[str, Any] = {}
+    if "title" in row:
+        data["nodeTitle"] = row["title"]
+    if "description" in row:
+        data["nodeDescription"] = row["description"]
+    for key in NODE_DATA_KEYS + NODE_CATALOG_KEYS:
+        if key in row:
+            data[key] = row[key]
+    if "isLocked" in row:
+        data["isLocked"] = row["isLocked"]
+    if "visible" in row:
+        data["config"] = {"visible": row["visible"]}
+    patch: dict[str, Any] = {"data": data}
+    if "x" in row or "y" in row:
+        patch["position"] = {"x": row.get("x"), "y": row.get("y")}
+    for key in ("zIndex", "width", "height"):
+        if key in row:
+            patch[key] = row[key]
+    if row.get("type"):
+        patch["type"] = row["type"]
+    return patch
+
+
+def _upsert_op(disk: dict, name: str, *, row: bool, body: bool, sid: bool) -> dict:
+    op: dict[str, Any] = {"op": "upsert", "name": name}
+    file = disk["files"].get(name)
+    if file:
+        op["file"] = file
+    if row:
+        op["row"] = disk["nodes"][name]
+        op["node"] = studio_patch_from_row(disk["nodes"][name])
+    if body and name in disk["bodies"]:
+        if file and file.endswith(CODE_SUFFIXES):
+            op["code"] = disk["bodies"][name]
+        else:
+            op["body"] = disk["bodies"][name]
+    if sid and name in disk["ids"]:
+        op["id"] = disk["ids"][name]
+    return op
+
+
+def diff_views(disk: dict, view: dict | None) -> list[dict]:
+    """The ops that take `view` (what the embed holds; None = nothing known,
+    a full state) to `disk`. Node-level, by UDF name:
+
+        upsert {name, file, row?, node?, code?|body?, id?}  — new or changed;
+                                           an absent field means "unchanged",
+                                           never "cleared"
+        rename {from, to, file}           — a name vanished whose server id
+                                           reappears under a name the view
+                                           lacks (then diffed as `to`)
+        delete {name}
+        edges  {set: [[a, b]]}            — the whole set, when it differs
+        canvas {comments?, viewportBounds?} — the scalars that differ; the
+                                           frame never moves its own camera
+    A full state carries every node as an upsert plus `edges` and `canvas`;
+    the frame drops what is not listed.
+    """
+    ops: list[dict] = []
+    if view is None:
+        for name in disk["order"]:
+            ops.append(_upsert_op(disk, name, row=True, body=True, sid=True))
+        ops.append({"op": "edges", "set": [list(e) for e in disk["edges"]]})
+        if disk["canvas"]:
+            ops.append({"op": "canvas", **{k: v for k, v in disk["canvas"].items()
+                                           if k != "viewport"}})
+        return ops
+    vnodes, dnodes = view["nodes"], disk["nodes"]
+    vids, dids = view.get("ids", {}), disk["ids"]
+    vbodies = view.get("bodies", {})
+    renamed_to: dict[str, str] = {}
+    id_to_disk = {sid: n for n, sid in dids.items()}
+    for name in vnodes:
+        if name in dnodes:
+            continue
+        sid = vids.get(name)
+        to = id_to_disk.get(sid) if sid else None
+        if to and to not in vnodes:
+            renamed_to[to] = name
+            ops.append({"op": "rename", "from": name, "to": to,
+                        "file": disk["files"].get(to)})
+        else:
+            ops.append({"op": "delete", "name": name})
+    for name in disk["order"]:
+        was = renamed_to.get(name, name)
+        if was not in vnodes:
+            ops.append(_upsert_op(disk, name, row=True, body=True, sid=True))
+            continue
+        row = dnodes[name] != vnodes[was]
+        body = disk["bodies"].get(name) != vbodies.get(was)
+        sid = name in dids and dids[name] != vids.get(was)
+        if row or body or sid:
+            ops.append(_upsert_op(disk, name, row=row, body=body, sid=sid))
+    if sorted(map(tuple, disk["edges"])) != sorted(map(tuple, view.get("edges", []))):
+        ops.append({"op": "edges", "set": [list(e) for e in disk["edges"]]})
+    vcanvas = view.get("canvas", {})
+    scalars = {k: v for k, v in disk["canvas"].items()
+               if k != "viewport" and vcanvas.get(k) != v}
+    if scalars:
+        ops.append({"op": "canvas", **scalars})
+    return ops

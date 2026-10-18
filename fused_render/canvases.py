@@ -1288,7 +1288,22 @@ class _SyncManager:
         # a new generation means the embed re-hydrated from the server, so
         # its base is whatever the clone held at that push, not our memory.
         self._embed_gen = 0
-        self._embed_prev: dict | None = None
+        # EMBED_VIEW: the compact state the embed is believed to hold — the
+        # `prev` of the snapshot leg and the base of the delta leg
+        # (canvas_snapshot.py, "the disk → embed leg"). Only ever a DISK
+        # reading. None = nothing known: the next delta is a full state and
+        # the next snapshot falls back to its own `base_nodes`.
+        self._embed_view: dict | None = None
+        # The disk revision the view mirrors; a delta ack for an older rev is
+        # stale (a snapshot write re-read disk since) and is ignored.
+        self._view_rev = 0
+        # DISK_REV: bumped whenever the clone's fingerprint moves — a scan
+        # tick, a snapshot write, a merge. The page polls it (status) and asks
+        # for a delta when it advances.
+        self.disk_rev = 0
+        self._rev_fp: dict | None = None
+        # Disk readings handed to the page, by rev, until the frame acks.
+        self._delta_views: dict[int, dict] = {}
         self._embed_applied: dict[tuple[int, int], dict] = {}
         # Highest seq applied in this generation. A snapshot is the embed's
         # FULL state, so one that arrives after a later seq (a 409 retry that
@@ -2166,6 +2181,7 @@ class _SyncManager:
             # AGENT_LIVE_CACHE_S seconds, so it does not add a scan per tick.
             self.agent_run_id()
             current = self._take_fingerprint()
+            self._note_disk(current)
             if current != self._fingerprint:
                 self._fingerprint = current
                 self._dirty_since = time.time()
@@ -2250,7 +2266,10 @@ class _SyncManager:
         the ack with _embed_record."""
         if gen != self._embed_gen:
             self._embed_gen = gen
-            self._embed_prev = None
+            # A new generation: the embed re-hydrated from the SERVER, so what
+            # it holds is no longer any disk reading. Its hello brings a full
+            # delta that re-seeds the view.
+            self._embed_view = None
             self._embed_applied = {}
             self._embed_max_seq = -1
         done = self._embed_applied.get((gen, seq))
@@ -2273,6 +2292,89 @@ class _SyncManager:
                 del self._embed_applied[key]
         return ack
 
+    # -- the disk → embed leg (deltas) ---------------------------------------
+
+    def _note_disk(self, fingerprint: dict | None = None) -> None:
+        """Advance `disk_rev` when the clone's fingerprint moved since the last
+        look. Separate from `_fingerprint` (the push debounce's baseline, which
+        pulls and merges re-take so their own writes do not push): the delta
+        leg wants to see EVERY move, its own included."""
+        fp = fingerprint if fingerprint is not None else self._take_fingerprint()
+        if fp != self._rev_fp:
+            self._rev_fp = fp
+            self.disk_rev += 1
+
+    def _remote_ids(self) -> dict[str, str]:
+        """slug → server id from the last remote manifest (the shim emits
+        ids; an older shim or the external CLI gives none)."""
+        udfs = (self._remote or {}).get("udfs")
+        if not isinstance(udfs, dict):
+            return {}
+        return {slug: info["id"] for slug, info in udfs.items()
+                if isinstance(info, dict) and isinstance(info.get("id"), str) and info["id"]}
+
+    def _refresh_view_after_write(self, ids: dict | None) -> None:
+        """After a snapshot or rename landed on disk: the embed holds disk.
+        Under _op_lock (the callers are)."""
+        self._note_disk()
+        try:
+            view = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
+        except Exception as exc:  # noqa: BLE001 — a view we cannot read is no view
+            logger.warning("canvas %s: could not re-read the clone after a write: %s",
+                           self.name, exc)
+            self._embed_view = None
+            return
+        if ids is not None:
+            view["ids"] = dict(ids)
+        self._embed_view = view
+        self._view_rev = self.disk_rev
+
+    def cut_delta(self, full: bool) -> dict:
+        """diff(disk, embed_view) for the page to post to the frame. Under
+        _op_lock, so a snapshot write never lands between the toml read and
+        the file reads. Returns `{rev, base_rev, ops, full}`; `{rev, held}`
+        when the clone is mid-write (a row whose source file is not there
+        yet, an unparsable toml) — the page asks again shortly. Empty ops
+        against a known view mean the embed already holds disk: the view
+        moves here and nothing is posted."""
+        try:
+            disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
+        except FileNotFoundError:
+            return {"rev": self.disk_rev, "held": "the clone has no canvas.toml yet"}
+        except Exception as exc:  # noqa: BLE001 — rtoml's own error types
+            return {"rev": self.disk_rev, "held": f"canvas.toml unreadable: {exc}"}
+        if disk["missing"]:
+            return {"rev": self.disk_rev,
+                    "held": "source file missing for " + ", ".join(disk["missing"][:3])}
+        self._note_disk()
+        rev = self.disk_rev
+        view = None if full else self._embed_view
+        ops = canvas_snapshot.diff_views(disk, view)
+        if view is not None and not ops:
+            self._embed_view = disk
+            self._view_rev = rev
+            return {"rev": rev, "base_rev": rev, "ops": [], "full": False}
+        self._delta_views[rev] = disk
+        for old in sorted(self._delta_views)[:-8]:
+            del self._delta_views[old]
+        return {"rev": rev, "base_rev": None if view is None else self._view_rev,
+                "ops": ops, "full": view is None}
+
+    def ack_delta(self, rev: int, ok: bool) -> dict:
+        """The frame applied (or refused) the delta cut at `rev`."""
+        view = self._delta_views.pop(rev, None)
+        if not ok:
+            # The frame holds something we cannot describe: start over with a
+            # full state on its next hello or the next disk move.
+            self._embed_view = None
+            return {"ok": True, "rev": rev, "reset": True}
+        if view is None or rev < self._view_rev:
+            # Superseded: a snapshot write re-read disk since this was cut.
+            return {"ok": True, "rev": rev, "stale": True}
+        self._embed_view = view
+        self._view_rev = rev
+        return {"ok": True, "rev": rev}
+
     def apply_snapshot(self, gen: int, seq: int, body: dict) -> dict:
         """Fold one embed snapshot into the clone (canvas_snapshot.apply_snapshot)
         under _op_lock, so it never interleaves with a push or a pull writing
@@ -2292,13 +2394,11 @@ class _SyncManager:
                 trash[0] = self._new_trash_dir()
             self._backup_to(trash[0], rel, data)
 
-        result = canvas_snapshot.apply_snapshot(self.dir, new, self._embed_prev, backup=backup)
-        self._embed_prev = new
-        # `push_seq` is the counter BEFORE the push that will carry this write:
-        # the embed applies a re-hydrate only for a remote-changed whose
-        # push_seq is greater than the largest it was acked with, so a
-        # refetch can never show it the server state from before its own edit
-        # (the delete-then-it-reappears race).
+        result = canvas_snapshot.apply_snapshot(self.dir, new, self._embed_view, backup=backup)
+        # The embed now holds what it just sent, and disk holds it too: the
+        # view is re-read from disk (never built from the snapshot — see
+        # canvas_snapshot's delta section), with the snapshot's own ids.
+        self._refresh_view_after_write(new["ids"])
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "upserted": result["upserted"], "deleted": result["deleted"],
                "created": result["created"], "push_seq": self.push_seq}
@@ -2314,7 +2414,8 @@ class _SyncManager:
         if stale is not None:
             return stale
         result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
-        self._embed_prev = canvas_snapshot.rename_prev(self._embed_prev, frm, to, file_to)
+        renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
+        self._refresh_view_after_write(renamed["ids"] if renamed else None)
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "renamed": result["renamed"], "moved": result["moved"],
                "push_seq": self.push_seq}
@@ -2328,6 +2429,7 @@ class _SyncManager:
             "push_state": self.push_state,
             "push_seq": self.push_seq,
             "last_push_at": self.last_push_at,
+            "disk_rev": self.disk_rev,
             "pull_seq": self.pull_seq,
             "last_pull_at": self.last_pull_at,
             "merge_seq": self.merge_seq,
@@ -2489,6 +2591,45 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
                  "error": f"{type(exc).__name__}: {exc}"}, status_code=400)
     finally:
         manager._op_lock.release()
+
+
+@router.get("/api/canvases/delta")
+def api_canvases_delta(name: str = "", full: str = ""):
+    """The delta that takes the embed from what it holds to what disk holds
+    (embed v3, canvas_snapshot.py's delta section). The workspace page asks
+    when the status poll shows `disk_rev` advanced, and with `full=1` when
+    the frame says hello after hydrating; it posts the answer to the frame as
+    `fused-embed-delta` and relays the ack to /api/canvases/delta/ack."""
+    if not _NAME_RE.fullmatch(name or ""):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return JSONResponse(
+            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
+        return _busy("a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        return JSONResponse(manager.cut_delta(full == "1"))
+    finally:
+        manager._op_lock.release()
+
+
+@router.post("/api/canvases/delta/ack")
+def api_canvases_delta_ack(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name, rev, ok = body.get("name"), body.get("rev"), body.get("ok", True)
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    if not isinstance(rev, int):
+        return _error("'rev' must be an integer")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return JSONResponse({"ok": False, "code": "no_watcher"}, status_code=409)
+    with manager._op_lock:
+        return JSONResponse(manager.ack_delta(rev, bool(ok)))
 
 
 @router.post("/api/canvases/sync/push")
@@ -2692,7 +2833,7 @@ def api_canvases_sync_status(name: str = ""):
     manager = _sync_manager(name, create=False)
     if manager is None:
         return {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
-                "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
+                "last_push_at": None, "disk_rev": 0, "pull_seq": 0, "last_pull_at": None,
                 "error": None, "error_detail": [], "dir": _canvas_dir(name),
                 "fix_active": False,
                 # No watcher means nothing this page can be waiting on, so the
