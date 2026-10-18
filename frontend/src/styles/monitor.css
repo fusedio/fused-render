@@ -180,6 +180,9 @@
 .monitor-chart {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
+  /* The row must be pinned to the fixed height: an auto row takes the svg's
+     viewBox aspect height (width / 6), so a wide card overflowed the box. */
+  grid-template-rows: minmax(0, 1fr);
   gap: 6px;
   height: 120px;
   /* Room for the top label's half-height above the plot. */
@@ -209,6 +212,7 @@
 .monitor-plot {
   position: relative;
   min-width: 0;
+  min-height: 0;
   border-bottom: 1px solid var(--border);
 }
 
