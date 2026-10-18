@@ -104,6 +104,8 @@ BUDGETS_S: dict[str, float] = {
     "task_output": 15.0,
     "task_stop": 15.0,
     "commands": 30.0,
+    # A finished turn's tasks panel: a registry read (plus a bounded catch-up).
+    "tasks": 30.0,
 }
 
 

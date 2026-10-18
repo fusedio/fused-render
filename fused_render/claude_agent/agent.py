@@ -6908,6 +6908,114 @@ def _task_stop(run_id: str, task_id: str) -> dict:
     return {"ok": True}
 
 
+#: The most `out.jsonl` bytes one `_catch_up_registry` reads. A longer
+#: backlog (hours of a background Agent streaming with nobody polling) is
+#: folded this much per call, so the registry still converges.
+_REGISTRY_CATCH_UP_MAX = 4 * 1024 * 1024
+#: Rows a catch-up stops in front of: `_update_run_registry` also captures the
+#: slash command list off them and reports `commands_changed` to the poll that
+#: absorbs them, so they are left for a poll — unless one is the very next
+#: row, where stopping would wedge the registry behind it for good.
+_CATCH_UP_STOP = (b'"init"', b'"commands_changed"')
+
+
+def _catch_up_registry(run_dir: str) -> None:
+    """Fold the task rows the CLI wrote after the last poll into
+    `bg_tasks.json` — for a run whose TURN HAS ENDED while its session host
+    still holds background work (Akshil, 2026-10-18).
+
+    Nobody polls such a run: the page's poll loop stopped at `done`, and only
+    a poll ever advanced the registry. But the CLI keeps writing the work's
+    own rows into `out.jsonl` — `task_notification` when a shell exits or is
+    stopped, `background_tasks_changed` with the shorter list — so without
+    this the chat's tasks panel (history's `tasks`, the `tasks` action) went
+    on saying "running" about a job that had ended, until the host itself
+    died and every row read `unknown`.
+
+    Only WHOLE lines, from the registry's own offset, through the same
+    `_update_run_registry` a poll uses (same lock, same rules). Stops in front
+    of an `init`/`commands_changed` row (`_CATCH_UP_STOP`). Best-effort: any
+    failure leaves the registry as it was."""
+    try:
+        _registry, applied, _current = _load_registry(run_dir)
+        path = os.path.join(run_dir, "out.jsonl")
+        size = os.path.getsize(path)
+        if size <= applied:
+            return
+        rows, ends = [], []
+        last = None   # the last whole line read, whatever its kind
+        with open(path, "rb") as fh:
+            fh.seek(applied)
+            pos = applied
+            for line in fh:
+                if not line.endswith(b"\n"):
+                    break   # half-written: the next read gets it whole
+                if pos - applied >= _REGISTRY_CATCH_UP_MAX:
+                    break   # the rest on the next call
+                system = b'"system"' in line
+                if system and pos > applied and any(m in line for m in _CATCH_UP_STOP):
+                    break
+                pos += len(line)
+                last = line
+                if not system:
+                    continue   # task rows are all `system` rows; not parsed
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                rows.append(row)
+                ends.append(pos)
+        # The offset moves to the last whole line READ, not only the last task
+        # row: a backlog of other rows is passed over once, not re-read on
+        # every call. That line is handed over as-is (a non-task row, ignored).
+        if last is not None and (not ends or ends[-1] < pos):
+            try:
+                rows.append(json.loads(last))
+                ends.append(pos)
+            except ValueError:
+                pass
+        if rows:
+            _update_run_registry(run_dir, rows, ends, {}, {})
+    except Exception:  # noqa: BLE001 — a stale answer, never a failed read
+        return
+
+
+def _run_tasks(run_id: str) -> dict:
+    """THE TASKS PANEL OF A RUN WHOSE TURN IS OVER (Akshil, 2026-10-18):
+    `{"tasks", "tasks_pending", "host_alive"}`.
+
+    The page asks this while its panel holds live rows for a run that ended
+    its turn with background work still running on the session host (the
+    done poll's `tasks_pending`, or history's `tasks_run`). While the host is
+    alive the registry is caught up from `out.jsonl` first
+    (`_catch_up_registry`), so a job that exits or is stopped leaves the panel
+    with its real status (and the panel's 5 s grace). Once the host is gone,
+    still-active records read `unknown` — `_session_task_registry`'s rule —
+    and `host_alive` is False, which is the page's cue to stop asking."""
+    if _bad_id(run_id):
+        return {"error": "unknown run_id"}
+    run_dir = os.path.join(RUNS, run_id)
+    if not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    # BOTH pids, the host's (`host.json`) and its `claude`'s (`run_dir/pid`):
+    # a stale `host.json` whose pid was reused by an unrelated process would
+    # otherwise read "alive" for ever and keep the page asking (review,
+    # 2026-10-18). Two unrelated pids both reused is not a case worth a poll.
+    host = _host_alive(run_dir) and _alive(run_dir)
+    if host:
+        _catch_up_registry(run_dir)
+    registry = _read_bg_tasks(run_dir)
+    if registry and not (host or _alive(run_dir)):
+        for rec in registry.values():
+            if _task_active(rec):
+                rec["status"] = "unknown"
+                rec["ended_at"] = None
+    return {"tasks": _task_list(registry),
+            "tasks_pending": bool(host) and any(
+                _task_active(r) for r in registry.values()),
+            "host_alive": bool(host)}
+
+
 def _starts_new_turn(row: dict) -> bool:
     """Whether `row` is the CLI's own echo (`--replay-user-messages`) of a
     message `_write_inbox_entry` put on the wire — the one row shape that
@@ -9681,13 +9789,21 @@ def _session_task_registry(file: str, session_id: str,
         if session_id not in (meta.get("resumed_from", ""),
                               _run_own_session(run_dir, meta)):
             continue
+        host = _host_alive(run_dir)
+        if host and not _turn_state(run_dir)[0]:
+            # The turn is over while the host runs background work on: absorb
+            # what the CLI wrote since the last poll, so a job that ended reads
+            # ended (`_catch_up_registry`). NEVER mid-turn: the poll owns the
+            # registry then, and only it holds the tool inputs a fresh
+            # `task_started` takes its subagent type and model from.
+            _catch_up_registry(run_dir)
         registry = _read_bg_tasks(run_dir)
-        if registry and not (_host_alive(run_dir) or _alive(run_dir)):
+        if registry and not (host or _alive(run_dir)):
             for rec in registry.values():
                 if _task_active(rec):
                     rec["status"] = "unknown"
                     rec["ended_at"] = None
-        return registry, (name if _host_alive(run_dir) else ""), run_dir
+        return registry, (name if host else ""), run_dir
     return {}, "", ""
 
 
@@ -10406,4 +10522,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "task_stop":
         # Stop a running task: `stop_task` control request.
         return _task_stop(run_id, task_id)
+    if action == "tasks":
+        # A finished turn's tasks panel while its host runs on (`_run_tasks`).
+        return _run_tasks(run_id)
     return {"error": f"unknown action: {action}"}

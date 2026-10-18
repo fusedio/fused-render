@@ -70,7 +70,9 @@ from fused_render.server.routers.git_upstream import router as git_upstream_rout
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
+from fused_render.server import serverstats
 from fused_render.server.routers.system import router as system_router
+from fused_render.server.routers.system_net import router as system_net_router
 from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
@@ -764,6 +766,21 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _shutdown_server_json():
         remove_server_json()
 
+    # Event-loop lag gauge (serverstats.py) for the Monitor's Overview: a task
+    # on the serving loop, cancelled at shutdown. Skipped in `lean` like the
+    # other background gauges: a lean server has no Monitor to read it.
+    @on_startup_full
+    async def _startup_loop_lag():
+        from fused_render.server import dashboard
+        lag = serverstats.loop_lag()
+        if dashboard.record_loop_state not in lag.on_tick:
+            lag.on_tick.append(dashboard.record_loop_state)
+        lag.start()
+
+    @on_shutdown
+    async def _shutdown_loop_lag():
+        await serverstats.loop_lag().stop()
+
     # Resource trail (health.py, SPEC §50): one RSS/swap/load line per INTERVAL_S
     # into resources.jsonl, so a diagnostics bundle shows what memory looked
     # like in the hours before an outage. Its own daemon thread; a failure to
@@ -945,6 +962,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Live CPU/memory of fused-render's own processes (routers/system.py,
     # fused_render/sysmon): the status bar's System chip and the /monitor page.
     app.include_router(system_router)
+    app.include_router(system_net_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
