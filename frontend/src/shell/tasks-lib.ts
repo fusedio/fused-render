@@ -36,7 +36,7 @@
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
 import { EMBED_PREFIX, IS_QUERY_EMBED, VIEW_PREFIX } from "@platform/lib/router";
-import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import type { Task, TaskBackgroundJobs, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import { labelForSource } from "@platform/lib/format";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
@@ -705,6 +705,77 @@ export function draftRing(task: Task): boolean {
   if (column === "draft") return true;
   const lane = laneOf(column);
   return (lane === "done" || lane === "archived" || lane === "blocked") && hasDraft(task);
+}
+
+// ---- a finished turn whose chat still holds a live background job ---------
+//
+// Akshil, 2026-10-18. A turn that ended with a `run_in_background` Bash (a dev
+// server, a `sleep 900`), a background Agent or a Monitor still going is STILL
+// IN PROGRESS to the reader, not Done. So the row:
+//
+//   * wears a BLUE ring (`--status-background`, `schedule-ring--background`)
+//     whose word is "background" (`BACKGROUND_LABEL`);
+//   * sits in the IN PROGRESS lane/group (`boardLane`), among the running rows,
+//     ordered by that lane's own rule (`LANE_SORTS.in_progress`);
+//   * keeps the "1 job running" badge (job names on hover) and Stop job.
+//
+// THE API STATUS STAYS `done`, and so does `taskColumn`. Only PLACEMENT and
+// TONE move: Bots' build watch waits on `done`, the project queue reads the
+// folder as free (the turn is over — `inFlight` stays false), the status toasts
+// read `taskColumn` (no second "finished" when the job ends), and the drag /
+// archive / erase rules keep reading a finished task. ONE PREDICATE gates the
+// look and the placement: `liveJobRow`.
+
+/** The jobs the server says a live session host is holding for this chat, or
+ *  null — no field (an older server), null, or an empty list. */
+export function liveJobs(
+  task: Pick<Task, "background_jobs">,
+): TaskBackgroundJobs | null {
+  const held = task.background_jobs;
+  return held && held.count > 0 && held.jobs.length > 0 ? held : null;
+}
+
+/** THE ONE RULE: a row the server calls Done whose chat still holds a live
+ *  background job. The blue ring, the In Progress placement (`boardLane`), the
+ *  badge and Stop job all ask this and nothing else. */
+export function liveJobRow(task: Task): boolean {
+  return liveJobs(task) !== null && laneOf(taskColumn(task)) === "done";
+}
+
+/** "1 job running" / "2 jobs running". */
+export function jobCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "job" : "jobs"} running`;
+}
+
+/** The ring's word for such a row — its tooltip and accessible name. */
+export const BACKGROUND_LABEL = "Background";
+
+/**
+ * THE LANE A ROW IS DRAWN IN — the Board's column, the List's group, Recent
+ * chats' order, and the Status filter's lane. `laneOf(taskColumn(task))`,
+ * except a `liveJobRow`, which is drawn In Progress. A DRAWING fact only:
+ * every rule about what the task IS (its status, `inFlight`, the drag matrix,
+ * the toasts) keeps asking `taskColumn`.
+ */
+export function boardLane(task: Task): BoardLane {
+  return liveJobRow(task) ? "in_progress" : laneOf(taskColumn(task));
+}
+
+/** The badge a row draws, or null on every row `liveJobRow` turns down.
+ *  `hint` names each job by the CLI's own description (its id when it sent
+ *  none), one per line. */
+export function jobBadge(
+  task: Task,
+): { text: string; hint: string; runId: string; jobIds: string[] } | null {
+  if (!liveJobRow(task)) return null;
+  const held = liveJobs(task)!;
+  const names = held.jobs.map((j) => j.title.trim() || j.id);
+  return {
+    text: jobCountLabel(held.count),
+    hint: `Still running in the background:\n${names.join("\n")}`,
+    runId: held.run_id,
+    jobIds: held.jobs.map((j) => j.id),
+  };
 }
 
 /**
@@ -3156,15 +3227,63 @@ export function hasActiveFilters(f: TaskFilters): boolean {
 // unsent words, and that chip is now the same pressable tag the List and the
 // Board draw (TaskCards → DraftChip). So the wall has a control, the facet has
 // something to keep, and the one view left dropping it is the calendar.
+//
+// THE GROUPED LISTS HIDE ARCHIVE BY DEFAULT (Akshil, 2026-10-17: "in group by
+// time, project and pr can we not show archived tasks, unless selected in
+// status"). Time, Project and PR are the List cut into sections, and every
+// section is a question about live work — what ran this hour, what each folder
+// is up to, where each pull request stands. A task somebody has filed away
+// answers none of them, and with no status ticked (the common case) the
+// archive outnumbered the rest in every section. So on those three views an
+// EMPTY status list means "every lane but Archive" — the same shape as a
+// person ticking all the other lanes — and ticking Archive (alone or with
+// others) shows exactly what it names, as it does everywhere else. The plain
+// List and the Board keep Archive in the unfiltered page: the Board has a lane
+// for it, and the List is the one place "everything" is meant to mean that.
+// Effective query only, as above — the stored filters do not change, so the
+// badge still reads as no filter and the popover shows nothing ticked.
+/** Every Board lane except Archive — what an unfiltered grouped list asks for. */
+const LANES_BUT_ARCHIVE: BoardColumn[] = BOARD_LANES.map((l) => l.key).filter(
+  (k) => k !== "archived",
+);
+
 export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
   const draft = view === "calendar" && f.draft;
   const archived = view === "calendar" && f.statuses.includes("archived");
-  if (!draft && !archived) return f;
+  const unfilteredGroup = groupOfView(view) !== null && f.statuses.length === 0;
+  if (!draft && !archived && !unfilteredGroup) return f;
   return {
     ...f,
     ...(draft ? { draft: false } : {}),
     ...(archived ? { statuses: f.statuses.filter((s) => s !== "archived") } : {}),
+    ...(unfilteredGroup ? { statuses: LANES_BUT_ARCHIVE } : {}),
   };
+}
+
+/**
+ * The sentence a view shows when it has NOTHING to draw. The page's call, not a
+ * view's: only the page knows whether the set is empty because the machine has
+ * no tasks, this app (`scoped`) has none, or the filters matched none — and,
+ * since 2026-10-17, whether a grouped view is hiding an all-archived scope with
+ * nothing ticked (filtersForView). That last one must not read "Nothing matches
+ * these filters": the badge is off and the reader set no filter, so it names
+ * the lane that is hidden and where to lift it instead.
+ */
+export function emptyTasksLabel(
+  view: TaskView,
+  filters: TaskFilters,
+  inScope: number,
+  scoped: boolean,
+): string {
+  if (inScope === 0) {
+    return scoped
+      ? "No tasks for this app yet."
+      : "No tasks yet. Everything Claude runs for you shows up here.";
+  }
+  if (groupOfView(view) && !hasActiveFilters(filters)) {
+    return "Only archived tasks here. Tick Archive under Status to see them.";
+  }
+  return "Nothing matches these filters.";
 }
 
 /**
@@ -3248,7 +3367,9 @@ export function taskMatches(task: Task, filters: TaskFilters): boolean {
   // sides, so a `needs_attention` in `statuses` — nothing writes one today, the
   // type still admits it — means the same lane the menu would have ticked.
   if (filters.statuses.length) {
-    const lane = laneOf(taskColumn(task));
+    // `boardLane`: a row drawn In Progress (a live background job) answers the
+    // In Progress tick, so the filter keeps what the lane shows.
+    const lane = boardLane(task);
     if (!filters.statuses.some((s) => laneOf(s) === lane)) return false;
   }
   if (filters.projects.length && !filters.projects.includes(task.project)) return false;
@@ -3764,7 +3885,9 @@ export function groupByColumn(
   );
   // By LANE, not by status: `needs_attention` is drawn in Blocked (laneOf), so
   // the bucket a card lands in is the column the reader will look for it under.
-  for (const task of tasks) map.get(laneOf(taskColumn(task)))?.push(task);
+  // …and a Done row still holding a live background job is drawn In Progress
+  // (`boardLane`, Akshil 2026-10-18), sorted there by that lane's own rule.
+  for (const task of tasks) map.get(boardLane(task))?.push(task);
   for (const col of BOARD_LANES) {
     // …then DRAFTS FIRST inside the lane (`hoistDrafts`) — and it is a BUG FIX,
     // not a preference (Akshil, 2026-09-12: a Done card with a chat draft showed
@@ -3864,7 +3987,11 @@ export function laneCountLabel(lane: BoardLane, tasks: readonly Task[]): string 
   if (lane !== "in_progress") return String(tasks.length);
   const waiting = tasks.filter((t) => isQueued(t)).length;
   if (!waiting) return String(tasks.length);
-  return runningWaitingLabel(tasks.length - waiting, waiting);
+  // A finished turn holding a live background job is drawn here (`boardLane`)
+  // but is not RUNNING — no turn is in flight — so it is counted apart.
+  const background = tasks.filter((t) => liveJobRow(t)).length;
+  const label = runningWaitingLabel(tasks.length - waiting - background, waiting);
+  return background ? `${label} · ${background} background` : label;
 }
 
 /**

@@ -286,3 +286,76 @@ def test_create_ignores_an_invalid_initial_size(client, scratch_registry, monkey
     resp = client.post("/api/terminal", json=body, headers=_HEADERS)
     assert resp.status_code == 200
     assert _wait_for(scratch_registry, resp.json()["id"], b"0 0")
+
+
+def test_disconnect_leaves_no_subscriber_behind(client, scratch_registry):
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    session = scratch_registry.get(sid)
+
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        ws.receive_bytes()
+        assert len(session._subscribers) == 1
+        assert len(session._loops) == 1
+
+    deadline = time.time() + 5
+    while (session._subscribers or session._loops) and time.time() < deadline:
+        time.sleep(0.02)
+    assert session._subscribers == []
+    assert session._loops == {}
+
+
+def test_bulk_output_arrives_intact_in_merged_frames(client, scratch_registry, tmp_path, monkeypatch):
+    total = 4_000_000
+    # The sleep lets the socket attach before the flood starts, so nothing
+    # lands in the scrollback replay and every byte is counted from the stream.
+    cmd = f"sleep 0.5; head -c {total} /dev/zero | tr '\\0' 'Z'"
+    monkeypatch.setattr(
+        pty_session, "resolve_profile",
+        lambda cwd=None: TerminalProfile(
+            shell="/bin/sh", argv=["/bin/sh", "-c", cmd], env=dict(os.environ),
+            cwd=str(tmp_path)))
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+
+    got = 0
+    frames = 0
+    last_kind = None
+    exit_frame = None
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        while True:
+            msg = ws.receive()
+            if msg.get("bytes") is not None:
+                assert set(msg["bytes"]) <= {ord("Z")}
+                got += len(msg["bytes"])
+                frames += 1
+                last_kind = "bytes"
+            elif msg.get("text") is not None:
+                exit_frame = json.loads(msg["text"])
+                last_kind = "text"
+                break
+    assert got == total
+    assert exit_frame == {"exit": 0}
+    assert last_kind == "text"
+    # 4 KB reads unmerged would be ~976 frames.
+    assert frames < total / 16384
+
+
+def test_pause_and_resume_control_frames_reach_the_session(client, scratch_registry):
+    sid = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    session = scratch_registry.get(sid)
+
+    def _wait(pred):
+        deadline = time.time() + 5
+        while not pred() and time.time() < deadline:
+            time.sleep(0.02)
+        return pred()
+
+    with client.websocket_connect(f"/api/terminal/{sid}/stream") as ws:
+        ws.receive_bytes()
+        ws.send_text(json.dumps({"pause": True}))
+        assert _wait(lambda: len(session._paused) == 1)
+        ws.send_text(json.dumps({"resume": True}))
+        assert _wait(lambda: len(session._paused) == 0)
+        ws.send_text(json.dumps({"pause": True}))
+        assert _wait(lambda: len(session._paused) == 1)
+    # Disconnecting while paused must not leave the shell frozen.
+    assert _wait(lambda: session._paused == {} and session._flowing.is_set())

@@ -238,3 +238,62 @@ test("the press posts to /api/tasks/queue/force, and names this row's task", asy
     (globalThis as { fetch: unknown }).fetch = realFetch;
   }
 });
+
+const JOBS = {
+  count: 1,
+  run_id: "run-7",
+  jobs: [{ id: "bash_1", title: "npm run dev" }],
+};
+
+test("a press on the background-job badge opens THIS row", () => {
+  // The badge sits over the stretched link (`z-index: 2`, for its hint), so
+  // without the row's press it was a dead run of pixels — the fault the file
+  // and schedule marks were fixed for. Same for the usage limit's caption.
+  const opened: string[] = [];
+  const r = row(queued({ status: "done", queue_position: 0,
+                         background_jobs: JOBS } as Partial<Task>), opened);
+  const [badge] = byClass(r, "tasks-job-badge");
+  expect(badge).toBeDefined();
+  click(byClass(r, "tasks-queue-text")[0]);
+  expect(opened).toEqual(["sess-1"]);
+});
+
+test("Stop job posts task_stop with the row's run and job, and does NOT open the row", async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async (url: string, init: RequestInit) => {
+    calls.push({ url, body: JSON.parse(String(init.body)) as Record<string, unknown> });
+    return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
+  };
+  try {
+    const opened: string[] = [];
+    const r = row(queued({ status: "done", queue_position: 0,
+                           background_jobs: JOBS } as Partial<Task>), opened);
+    const stops = byClass(r, "tasks-job-stop");
+    expect(stops).toHaveLength(1);
+    click(stops[0]!);
+    await act(async () => {});
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("/api/claude/agent");
+    expect(calls[0]!.body).toEqual({ action: "task_stop", run_id: "run-7", task_id: "bash_1" });
+    expect(opened).toEqual([]);
+  } finally {
+    (globalThis as { fetch: unknown }).fetch = realFetch;
+  }
+});
+
+test("a Done row with no live job draws no badge and no Stop", () => {
+  const r = row(queued({ status: "done", queue_position: 0 } as Partial<Task>), []);
+  expect(byClass(r, "tasks-job-badge")).toHaveLength(0);
+  expect(byClass(r, "tasks-job-stop")).toHaveLength(0);
+});
+
+test("a press on the usage-limit caption opens THIS row too", () => {
+  const opened: string[] = [];
+  const r = row(queued({ status: "blocked", queue_position: 0,
+                         blocked_reason: "usage_limit" } as Partial<Task>), opened);
+  const seats = byClass(r, "tasks-row-queue");
+  expect(seats).toHaveLength(1);
+  click(byClass(r, "tasks-queue-text")[0]);
+  expect(opened).toEqual(["sess-1"]);
+});

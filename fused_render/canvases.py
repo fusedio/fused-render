@@ -83,6 +83,7 @@ import zipfile
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
+from fused_render import canvas_snapshot
 from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
 
 logger = logging.getLogger(__name__)
@@ -138,12 +139,14 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 # watcher's own legs are what hold this lock, and they finish in seconds
 # outside a stuck network call.
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
+# How long /api/canvases/snapshot waits on _op_lock before answering 409.
+SNAPSHOT_LOCK_WAIT_S = 1.0
 
 # Fused environment the canvases feature targets. One knob drives BOTH the
 # workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
 # variable it reads) so the canvas the iframe shows is the same one the local
-# clone syncs against. Prod is the default; set FUSED_RENDER_WORKBENCH_ENV=
-# unstable to point canvases back at the unstable environment.
+# clone syncs against. Unstable is the default for now (fusedcli.workbench_env
+# says why); set FUSED_RENDER_WORKBENCH_ENV=prod to target production.
 # FUSED_RENDER_WORKBENCH_URL still overrides the iframe URL alone.
 # Resolved in fusedcli.workbench_env because the `fused` wrapper handed to
 # Claude sessions bakes in the same default (D334) — one knob, one reader.
@@ -1250,10 +1253,11 @@ class _SyncManager:
         self.last_pull_at: float | None = None
         # True for the duration of a force-pull, three-way merge, or its
         # validation-failure rollback — set/cleared around the two _run() call
-        # sites, both already under _op_lock. Read by the workspace lock
-        # (canvas-lock-lib.ts "pulling" hold): the clone's files are moving on
-        # disk right now, which is exactly the condition the push side of the
-        # lock exists for too.
+        # sites, both already under _op_lock. Surfaced in status() as
+        # `pulling`. It used to drive the workspace
+        # lock's "pulling" hold; under embed v3 there is no lock (the embed no
+        # longer writes the server, see canvas_snapshot.py), and the flag is
+        # informational — a snapshot arriving meanwhile waits on _op_lock.
         self._pulling = False
         self.merge_seq = 0
         # Sync-point state for the three-way merge: per-file md5s of the
@@ -1276,6 +1280,23 @@ class _SyncManager:
         # the plain-attribute rule the class docstring states still holds.
         self._agent_run_id = ""
         self._agent_checked_at = 0.0
+        # Embed v3 snapshots (canvas_snapshot.py): the last compact state this
+        # manager applied from the embedded workbench, per hydration
+        # generation, and the (gen, seq) pairs already applied so a replayed
+        # snapshot (the embed re-posts its unacked queue after a reload) is
+        # acked again without a second write. Both reset when `gen` moves:
+        # a new generation means the embed re-hydrated from the server, so
+        # its base is whatever the clone held at that push, not our memory.
+        self._embed_gen = 0
+        self._embed_prev: dict | None = None
+        self._embed_applied: dict[tuple[int, int], dict] = {}
+        # Highest seq applied in this generation. A snapshot is the embed's
+        # FULL state, so one that arrives after a later seq (a 409 retry that
+        # lost the race, a replayed queue) is superseded: it is acked as
+        # applied and never touches disk — applied, it would read the newer
+        # snapshot's nodes as deletions and trash their files.
+        self._embed_max_seq = -1
+        self.snapshot_seq = 0
         self._load_base()
         self._fingerprint = self._take_fingerprint()
         # A fresh manager (server restart, self-heal after a dropped
@@ -1786,9 +1807,10 @@ class _SyncManager:
     @contextlib.contextmanager
     def _pull_writes(self):
         """Scopes the window in which a downstream leg is actually WRITING the
-        clone's files — the workspace lock (canvas-lock-lib.ts) holds the
-        embedded workbench read-only for exactly this, and for the same reason a
-        push does.
+        clone's files — reported by status() as `pulling`. The workspace lock
+        that used to hold the embedded workbench read-only for it is gone
+        (embed v3, canvas_snapshot.py); an embed snapshot arriving during the
+        window queues behind _op_lock and applies onto the pulled files.
 
         Yields a `begin()` marker rather than arming on entry, because
         probe-and-decide does not stop at the leg boundary. `_poll_remote` gets
@@ -2220,6 +2242,84 @@ class _SyncManager:
                     with self._op_lock:
                         self._pull_if_remote_changed()
 
+    def _embed_enter(self, gen: int, seq: int) -> dict | None:
+        """Bookkeeping shared by apply_snapshot / apply_rename, under _op_lock.
+        Returns the ack to answer with when nothing is to be written: the one
+        already given for this (gen, seq), or a no-op ack for a seq older than
+        one already applied in this generation. None means: apply, then record
+        the ack with _embed_record."""
+        if gen != self._embed_gen:
+            self._embed_gen = gen
+            self._embed_prev = None
+            self._embed_applied = {}
+            self._embed_max_seq = -1
+        done = self._embed_applied.get((gen, seq))
+        if done is not None:
+            return done
+        if seq < self._embed_max_seq:
+            ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                   "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
+            self._embed_applied[(gen, seq)] = ack
+            return ack
+        return None
+
+    def _embed_record(self, gen: int, seq: int, ack: dict) -> dict:
+        self._embed_max_seq = max(self._embed_max_seq, seq)
+        self.snapshot_seq += 1
+        self._embed_applied[(gen, seq)] = ack
+        # Bound the dedupe memory: the embed's queue is never deep.
+        if len(self._embed_applied) > 64:
+            for key in sorted(self._embed_applied)[:-32]:
+                del self._embed_applied[key]
+        return ack
+
+    def apply_snapshot(self, gen: int, seq: int, body: dict) -> dict:
+        """Fold one embed snapshot into the clone (canvas_snapshot.apply_snapshot)
+        under _op_lock, so it never interleaves with a push or a pull writing
+        the same files. Returns the ack the page relays to the frame.
+
+        The watcher's fingerprint is deliberately NOT re-taken here: a write
+        that changed canvas.toml is a local edit like any other, and the next
+        scan arming the debounce is exactly how it reaches the server."""
+        stale = self._embed_enter(gen, seq)
+        if stale is not None:
+            return stale
+        new = canvas_snapshot.compact_state(body)
+        trash: list[str | None] = [None]
+
+        def backup(rel: str, data: bytes) -> None:
+            if trash[0] is None:
+                trash[0] = self._new_trash_dir()
+            self._backup_to(trash[0], rel, data)
+
+        result = canvas_snapshot.apply_snapshot(self.dir, new, self._embed_prev, backup=backup)
+        self._embed_prev = new
+        # `push_seq` is the counter BEFORE the push that will carry this write:
+        # the embed applies a re-hydrate only for a remote-changed whose
+        # push_seq is greater than the largest it was acked with, so a
+        # refetch can never show it the server state from before its own edit
+        # (the delete-then-it-reappears race).
+        ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
+               "upserted": result["upserted"], "deleted": result["deleted"],
+               "created": result["created"], "push_seq": self.push_seq}
+        return self._embed_record(gen, seq, ack)
+
+    def apply_rename(self, gen: int, seq: int, frm: str, to: str,
+                     file_from: str | None, file_to: str | None) -> dict:
+        """The workbench's rename hint (canvas_snapshot.apply_rename), under
+        _op_lock like a snapshot, acked the same way. The previous snapshot is
+        renamed too, so the snapshot that follows is diffed against the new
+        name rather than read as delete + add."""
+        stale = self._embed_enter(gen, seq)
+        if stale is not None:
+            return stale
+        result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
+        self._embed_prev = canvas_snapshot.rename_prev(self._embed_prev, frm, to, file_to)
+        ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
+               "renamed": result["renamed"], "moved": result["moved"],
+               "push_seq": self.push_seq}
+        return self._embed_record(gen, seq, ack)
+
     def status(self) -> dict:
         return {
             "name": self.name,
@@ -2313,6 +2413,82 @@ def api_canvases_sync_stop(body: dict = Body(...), x_fused: str | None = Header(
     if manager is not None:
         manager.stop()
     return {"ok": True, "stopped": manager is not None}
+
+
+@router.post("/api/canvases/snapshot")
+def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Apply one embedded-workbench snapshot to the clone (embed v3).
+
+    The workspace page relays the frame's `fused-embed-snapshot {gen, seq,
+    body}` here and posts the answer back as `-applied` / `-rejected`. The
+    embed never writes the server itself under v3 — this is how its canvas
+    edits reach disk, and the watcher's push is how they reach the server
+    (canvas_snapshot.py's docstring has the model).
+
+    Refuses with 409 `busy` (same shape as sync/push) when another sync leg
+    holds the lock for longer than MANUAL_PUSH_LOCK_WAIT_S; the embed keeps
+    the snapshot queued and re-posts on its next change or reload. A
+    malformed snapshot or a clone with no readable canvas.toml is a 400
+    `rejected` with the reason — the embed drops that one and the user sees
+    the reason on the chip.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    gen, seq, snapshot = body.get("gen"), body.get("seq"), body.get("body")
+    rename = body.get("rename")
+    if not isinstance(gen, int) or not isinstance(seq, int):
+        return _error("'gen' and 'seq' must be integers")
+    if isinstance(rename, dict):
+        frm, to = rename.get("from"), rename.get("to")
+        if not isinstance(frm, str) or not isinstance(to, str) or not frm or not to:
+            return _error("'rename' needs 'from' and 'to'")
+        for key in ("file_from", "file_to"):
+            val = rename.get(key)
+            if val is not None and (not isinstance(val, str) or "/" in val):
+                return _error(f"'rename.{key}' must be a basename")
+    elif not isinstance(snapshot, dict):
+        return _error("'body' must be an object (or 'rename' a hint)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return JSONResponse(
+            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    # A short wait, not sync/push's 5 s: the page retries a 409 on its own
+    # (SNAPSHOT_BUSY_WINDOW_MS), and holding the request open for the length of
+    # a pull would only delay the ack past the chip's "reconnecting" line.
+    if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
+        return _busy(
+            "a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        with manager.pause_lock:
+            if manager.pause_count > 0:
+                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+        try:
+            if isinstance(rename, dict):
+                return JSONResponse(manager.apply_rename(
+                    gen, seq, rename["from"], rename["to"],
+                    rename.get("file_from"), rename.get("file_to")))
+            return JSONResponse(manager.apply_snapshot(gen, seq, snapshot))
+        except FileNotFoundError:
+            return JSONResponse(
+                {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
+                 "error": "the clone has no canvas.toml yet"}, status_code=400)
+        except OSError as exc:
+            # A file write failed (disk full, a vanished folder): a 409 keeps
+            # the snapshot queued on the embed, where a 400 would drop it.
+            logger.warning("canvas %s: snapshot %s/%s write failed: %s", name, gen, seq, exc)
+            return _busy(f"could not write the snapshot: {exc}")
+        except Exception as exc:  # noqa: BLE001 — the reason goes to the chip
+            logger.warning("canvas %s: snapshot %s/%s rejected: %s", name, gen, seq, exc)
+            return JSONResponse(
+                {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
+                 "error": f"{type(exc).__name__}: {exc}"}, status_code=400)
+    finally:
+        manager._op_lock.release()
 
 
 @router.post("/api/canvases/sync/push")

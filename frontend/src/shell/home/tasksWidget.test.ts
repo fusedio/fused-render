@@ -49,6 +49,15 @@ test("taskPill", () => {
   expect(taskPill(t({ failed: true }))).toEqual({ label: "Failed", tone: "err" });
 });
 
+test("a done task still holding a live background job is open, In progress, and says Background", () => {
+  const bg = t({ key: "bg", background_jobs: { count: 1, run_id: "r", jobs: [{ id: "b1", title: "" }] } });
+  expect(laneOf(bg)).toBe("running");
+  expect(taskPill(bg)).toEqual({ label: "Background", tone: "ok" });
+  expect(openCount([bg, t({ key: "d" })])).toBe(1);
+  expect(listOrder([t({ key: "d" }), bg]).map((x: { key: string }) => x.key)).toEqual(["bg", "d"]);
+  expect(listFor([t({ key: "d" }), bg], "open").map((x: { key: string }) => x.key)).toEqual(["bg"]);
+});
+
 test("splitHomeTasks counts what it filtered out", () => {
   const r = splitHomeTasks([
     t({ key: "a" }),

@@ -29,7 +29,10 @@ this code.
 """
 from __future__ import annotations
 
+import asyncio
+import collections
 import os
+import re
 import signal
 import struct
 import subprocess
@@ -47,7 +50,16 @@ _HELPER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_pty_exec_he
 
 #: Enough to repaint a screen on reattach without keeping unbounded history.
 SCROLLBACK_CAP = 256 * 1024
-_READ_CHUNK = 4096
+_READ_CHUNK = 65536
+#: Longest a client's `pause` holds the reader off the pty. The pause is a
+#: courtesy from a browser that is behind on rendering; a tab that wedged (or
+#: a socket that died without a clean close) would otherwise leave the shell
+#: blocked on a full pty buffer forever, so a pause older than this expires on
+#: its own and the flood resumes.
+_PAUSE_MAX_S = 5.0
+#: How often a paused reader wakes to expire stale pauses and check whether the
+#: child has exited.
+_FLOW_POLL_S = 0.5
 #: SIGHUP, then SIGKILL after this long if the shell (or something it spawned,
 #: e.g. vim) is still holding the terminal.
 _KILL_GRACE_S = 2.0
@@ -63,6 +75,15 @@ DEFAULT_ROWS, DEFAULT_COLS = 24, 80
 _TEXT_HISTORY = 5000
 MAX_TEXT_LINES = 2000
 DEFAULT_TEXT_LINES = 200
+
+
+#: Private-mode device status reports (`ESC[?<Ps>n`, e.g. Copilot's `?996n`).
+#: pyte routes every `n` through `Screen.report_device_status(*args, **kwargs)`
+#: and forwards the `?` as `private=True`, which that method does not accept:
+#: a TypeError out of `feed()`. The reports only ask the terminal a question
+#: (the live xterm.js answers them); they paint nothing, so dropping them
+#: before the replay loses no visible text.
+_PRIVATE_DSR = re.compile(rb"\x1b\[\?[0-9;]*n")
 
 
 def render_screen_text(data: bytes, rows: int, cols: int, lines: int) -> str:
@@ -84,7 +105,7 @@ def render_screen_text(data: bytes, rows: int, cols: int, lines: int) -> str:
     rows = max(1, rows)
     cols = max(1, cols)
     screen = pyte.HistoryScreen(cols, rows, history=_TEXT_HISTORY)
-    pyte.ByteStream(screen).feed(data)
+    pyte.ByteStream(screen).feed(_PRIVATE_DSR.sub(b"", data))
 
     def row_text(line) -> str:
         return "".join(line[x].data for x in range(cols)).rstrip()
@@ -166,8 +187,24 @@ class PtySession:
         self.rows, self.cols = size if size is not None else (DEFAULT_ROWS, DEFAULT_COLS)
 
         self._lock = threading.RLock()
-        self._subscribers: list[SimpleQueue] = []
-        self._scrollback = bytearray()
+        #: SimpleQueue (thread consumers: `subscribe()`, tests) or asyncio.Queue
+        #: (the WS route, via `attach(loop=...)`); `_loops` holds the owning
+        #: loop for the latter, and is how `_put` tells them apart.
+        self._subscribers: list = []
+        self._loops: dict = {}
+        #: Subscribers that asked the stream to pause -> when (monotonic).
+        #: `_flowing` is set exactly while this is empty; the reader waits on
+        #: it before each pty read, so a paused client makes the kernel pty
+        #: buffer fill and the producing program block, which is what lets
+        #: Ctrl-C and keystrokes get through a flood.
+        self._paused: dict = {}
+        self._flowing = threading.Event()
+        self._flowing.set()
+        #: The ring: whole read chunks plus their running byte total. A flat
+        #: bytearray trimmed with `del buf[:overflow]` memmoves the entire
+        #: 256 KiB on EVERY read once full; a deque trims from the left in O(1).
+        self._scrollback: collections.deque = collections.deque()
+        self._scrollback_len = 0
 
         master_fd, slave_fd = os.openpty()
         self.master_fd = master_fd
@@ -209,8 +246,56 @@ class PtySession:
 
     # -- I/O ---------------------------------------------------------------
 
+    def _child_exited(self) -> bool:
+        """True once the child has exited, WITHOUT reaping it: the zombie keeps
+        its pid reserved until the reader's own `proc.wait()`, which `kill()`'s
+        `alive` check relies on."""
+        if self.proc.returncode is not None:
+            return True
+        if not hasattr(os, "waitid"):  # Windows: no WNOWAIT, poll() is all there is
+            return self.proc.poll() is not None
+        try:
+            info = os.waitid(os.P_PID, self.proc.pid,
+                             os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except ChildProcessError:
+            return True
+        return info is not None
+
+    def _wait_flowing(self) -> None:
+        """Block while any subscriber has the stream paused, in short waits so
+        a stale pause expires and a child that exited is still noticed: once
+        the process is gone the reader must keep reading to reach EOF/EIO and
+        reap it, whatever any client asked for."""
+        while not self._flowing.is_set():
+            # Checked before the wait: an exited child must drain at once, not
+            # pay _FLOW_POLL_S for every read left in the pty buffer.
+            if self._child_exited():
+                return
+            now = time.monotonic()
+            with self._lock:
+                for q in [q for q, t in self._paused.items() if now - t >= _PAUSE_MAX_S]:
+                    del self._paused[q]
+                if not self._paused:
+                    self._flowing.set()
+            self._flowing.wait(_FLOW_POLL_S)
+
+    def pause(self, q) -> None:
+        """Stop reading the pty on behalf of subscriber `q` until `resume(q)`,
+        `unsubscribe(q)` or `_PAUSE_MAX_S`, whichever comes first."""
+        with self._lock:
+            if q in self._subscribers:
+                self._paused[q] = time.monotonic()
+                self._flowing.clear()
+
+    def resume(self, q) -> None:
+        with self._lock:
+            self._paused.pop(q, None)
+            if not self._paused:
+                self._flowing.set()
+
     def _read_loop(self) -> None:
         while True:
+            self._wait_flowing()
             try:
                 data = os.read(self.master_fd, _READ_CHUNK)
             except OSError:
@@ -222,13 +307,10 @@ class PtySession:
             with self._lock:
                 self.last_activity = time.time()
                 self.shell_state.feed(data)
-                self._scrollback.extend(data)
-                overflow = len(self._scrollback) - SCROLLBACK_CAP
-                if overflow > 0:
-                    del self._scrollback[:overflow]
+                self._append_scrollback(data)
                 subs = list(self._subscribers)
             for q in subs:
-                q.put(("data", data))
+                self._put(q, ("data", data))
 
         code = self.proc.wait()
         with self._lock:
@@ -236,11 +318,49 @@ class PtySession:
             self.exit_code = code
             subs = list(self._subscribers)
         for q in subs:
-            q.put(("exit", code))
+            self._put(q, ("exit", code))
         try:
             os.close(self.master_fd)
         except OSError:
             pass
+
+    def _append_scrollback(self, data: bytes) -> None:
+        """Append to the ring and drop the oldest bytes past SCROLLBACK_CAP.
+        Whole chunks are popped; only the one straddling the cap is sliced
+        (at most one read's worth of copying). Caller holds `_lock`."""
+        self._scrollback.append(data)
+        self._scrollback_len += len(data)
+        excess = self._scrollback_len - SCROLLBACK_CAP
+        while excess > 0:
+            head = self._scrollback[0]
+            if len(head) <= excess:
+                self._scrollback.popleft()
+                self._scrollback_len -= len(head)
+                excess -= len(head)
+            else:
+                self._scrollback[0] = head[excess:]
+                self._scrollback_len -= excess
+                excess = 0
+
+    def _put(self, q, item) -> None:
+        """Deliver `item` to one subscriber from the reader thread. The path is
+        chosen by queue type: a plain thread queue takes `put` directly. An
+        asyncio queue is not thread-safe, so it is fed through its loop; one
+        already unsubscribed (the reader snapshotted subs before the
+        unsubscribe) has no loop and is skipped silently. A loop that has
+        already closed (server shutdown racing the reader) raises
+        RuntimeError, and that subscriber is dropped rather than killing the
+        reader thread for every other one."""
+        if not isinstance(q, asyncio.Queue):
+            q.put(item)
+            return
+        loop = self._loops.get(q)
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(q.put_nowait, item)
+        except RuntimeError:
+            self.unsubscribe(q)
 
     def write(self, data: bytes) -> None:
         if not self.alive:
@@ -267,6 +387,8 @@ class PtySession:
         if not self.alive:
             return False
         try:
+            if self._reaped():  # pid may be recycled once reaped
+                return False
             fg_pgid = os.tcgetpgrp(self.master_fd)
             shell_pgid = os.getpgid(self.proc.pid)
         except OSError:
@@ -307,6 +429,8 @@ class PtySession:
         if not self.alive:
             return None
         try:
+            if self._reaped():  # pid may be recycled once reaped
+                return None
             fg_pgid = os.tcgetpgrp(self.master_fd)
             shell_pgid = os.getpgid(self.proc.pid)
         except OSError:
@@ -317,7 +441,7 @@ class PtySession:
 
     def text(self, lines: int = DEFAULT_TEXT_LINES) -> str:
         with self._lock:
-            data = bytes(self._scrollback)
+            data = b"".join(self._scrollback)
             rows, cols = self.rows, self.cols
         return render_screen_text(data, rows, cols, lines)
 
@@ -345,9 +469,10 @@ class PtySession:
 
     def scrollback(self) -> bytes:
         with self._lock:
-            return bytes(self._scrollback)
+            return b"".join(self._scrollback)
 
-    def attach(self) -> tuple[bytes, bool, Optional[int], SimpleQueue]:
+    def attach(self, loop: Optional[asyncio.AbstractEventLoop] = None
+               ) -> tuple[bytes, bool, Optional[int], "SimpleQueue | asyncio.Queue"]:
         """Snapshot scrollback, the alive/exit_code pair, and register a new
         subscriber queue — all under one lock acquisition.
 
@@ -359,10 +484,18 @@ class PtySession:
         client entirely. Worse, if the child exits in that window, the
         `("exit", code)` broadcast could predate the subscription entirely,
         so the client would never learn the shell died. One lock hold closes
-        both gaps."""
-        q: SimpleQueue = SimpleQueue()
+        both gaps.
+
+        With `loop`, the subscriber is an `asyncio.Queue` the reader thread
+        feeds via `loop.call_soon_threadsafe`, so the WS route can `await
+        q.get()` on the event loop instead of parking a thread-pool worker on
+        a blocking `SimpleQueue.get` for the terminal's whole life. Without
+        it, a `SimpleQueue`, as before."""
+        q = asyncio.Queue() if loop is not None else SimpleQueue()
         with self._lock:
-            snapshot = bytes(self._scrollback)
+            if loop is not None:
+                self._loops[q] = loop
+            snapshot = b"".join(self._scrollback)
             alive = self.alive
             exit_code = self.exit_code
             self._subscribers.append(q)
@@ -374,10 +507,14 @@ class PtySession:
             self._subscribers.append(q)
         return q
 
-    def unsubscribe(self, q: SimpleQueue) -> None:
+    def unsubscribe(self, q) -> None:
         with self._lock:
             if q in self._subscribers:
                 self._subscribers.remove(q)
+            self._loops.pop(q, None)
+            self._paused.pop(q, None)
+            if not self._paused:
+                self._flowing.set()
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -409,12 +546,22 @@ class PtySession:
             # group leader) — a process this code has nothing to do with.
             return
         pid = self.proc.pid
+        if self._reaped():
+            return
         self._signal(pid, signal.SIGHUP)
         deadline = time.time() + _KILL_GRACE_S
         while time.time() < deadline and self.alive:
             time.sleep(0.05)
-        if self.alive:
+        if self.alive and not self._reaped():
             self._signal(pid, signal.SIGKILL)
+
+    def _reaped(self) -> bool:
+        """True once anything (the reader's wait(), or a poll() that saw the
+        exit) has reaped the child: `proc.returncode` is then set and the pid
+        may be recycled by an unrelated process, so no signal or pgid lookup
+        may use it. `alive` alone is not enough: it flips only after the
+        reader finishes draining, and poll() can reap before that."""
+        return self.proc.returncode is not None
 
     @staticmethod
     def _signal(pid: int, sig: int) -> None:

@@ -2434,6 +2434,16 @@
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
+  /* NOT the body's `word-break: break-word`. A cell inherits it from the
+     assistant body, and under auto table layout that makes every cell's
+     min-content width ONE CHARACTER — so when the row is over-constrained the
+     browser pays for the long column by squeezing a short one down to "Ar /
+     ea", "Pi / pe / lin / e" (the first-column collapse of 2026-10-18). With
+     normal breaking a cell can get no narrower than its longest word, the
+     columns share the width by their content, and a table that is still too
+     wide scrolls in `.md-tablewrap`, which is what the wrapper is for. */
+  word-break: normal;
+  overflow-wrap: normal;
 }
 .chat-root .assistant th,
 .chat-root .perm .plan-body th {

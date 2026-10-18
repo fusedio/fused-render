@@ -20,6 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
 import { TerminalSession, type TerminalStatus } from "@platform/lib/terminalSession";
@@ -33,6 +34,7 @@ import {
 } from "@platform/ui/terminalTheme";
 import { rememberTerminalSize } from "@platform/ui/terminalSizeHint";
 import { fitWhenVisible, isLaidOut } from "@platform/ui/terminalFit";
+import { createFlowControl } from "@platform/lib/terminalFlowControl";
 import { isMac, isMod } from "@platform/lib/platform";
 import {
   initialOscState,
@@ -157,6 +159,23 @@ export default function TerminalView({
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(el);
+      // GPU renderer. xterm 6 dropped the canvas renderer, so without this the
+      // pane paints through the DOM renderer, which falls behind on big
+      // bursts (one element per cell run, restyled on every frame). WebGL is
+      // an addon that must load AFTER `open()`. Any failure leaves the DOM
+      // renderer in place: the constructor/`loadAddon` throw when WebGL2 is
+      // unavailable (headless, a blocklisted GPU, happy-dom in tests), and a
+      // lost context later disposes the addon, which hands painting back to
+      // the DOM renderer. The repaint watchdog below stays: it only calls
+      // `term.refresh()`, which works with either renderer.
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+        teardown.push(() => webgl.dispose());
+      } catch (err) {
+        console.warn("terminal: WebGL renderer unavailable, using the DOM renderer", err);
+      }
       if (autoFocus) term.focus();
       term.attachCustomKeyEventHandler((e) => {
         if (isAskSelectionChord(e, isMac) && term.hasSelection() && onAskSelectionRef.current) {
@@ -274,10 +293,16 @@ export default function TerminalView({
       // comment on `teardown` above), and that handler dereferences
       // `session`. Constructing it first means there is no window where a
       // synchronous callback can observe a not-yet-initialized `session`.
+      // Flow control (terminalFlowControl.ts): `session` is assigned just below;
+      // the sink only dereferences it from callbacks that fire later.
+      const flow = createFlowControl({
+        pause: () => session.pause(),
+        resume: () => session.resume(),
+      });
       const session = new TerminalSession({
         id,
         onData: (chunk) => {
-          term.write(chunk);
+          term.write(chunk, flow.chunk(chunk.length));
           scheduleRepaintWatchdog();
         },
         onExit: (code) => onExit?.(code),
@@ -301,6 +326,9 @@ export default function TerminalView({
             // opens, for the same reason: it no-ops too, so there is no
             // second eager-resize path to worry about here.
             term.reset();
+            // Same moment, same reason for flow control: the replay is about
+            // to arrive on a fresh socket whose server-side pause is gone.
+            flow.reset();
             // Re-measure first (an earlier fit against a not-yet-laid-out box
             // left the 80x24 default), but only against a real box.
             fitWhenVisible(el, fit, term);

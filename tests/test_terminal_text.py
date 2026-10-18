@@ -36,6 +36,14 @@ def test_carriage_return_progress_renders_the_final_state():
     assert out == "progress 100%\n$"
 
 
+def test_private_dsr_does_not_crash_the_renderer():
+    # Copilot sends `ESC[?996n`; pyte's report_device_status() has no `private`
+    # kwarg and raised TypeError, so /text errored for such a terminal for good.
+    out = pty_session.render_screen_text(
+        b"hello\x1b[?996n world", rows=24, cols=80, lines=50)
+    assert out == "hello world"
+
+
 def test_cursor_moves_and_erase_are_applied():
     # Write XXXX, move left 2, overwrite with "ab" -> "XXab"; then erase line.
     out = pty_session.render_screen_text(
