@@ -135,8 +135,6 @@ def export_app_env() -> None:
     Also starts the one-shot login-shell PATH probe (login_path.py), so a
     Finder-launched app's children see fnm/nvm/volta tools too.
     """
-    from fused_render import login_path
-    login_path.start()
     from fused_render import canvases
     from fused_render import skill_plugin
     from fused_render.shell import seed as shell_seed
@@ -180,6 +178,11 @@ def export_app_env() -> None:
     from fused_render import fusedcli
     fusedcli.export_fused_cli_env()
     _export_bundled_uv_path()
+    # MUST stay last: every PATH writer above is a synchronous read-modify-write
+    # of os.environ["PATH"], and the probe's background thread does the same.
+    # Started earlier, it could overwrite a prepend made after it began.
+    from fused_render import login_path
+    login_path.start()
 
 
 def _server_json_path() -> str:
