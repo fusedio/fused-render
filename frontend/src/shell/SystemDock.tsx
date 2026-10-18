@@ -9,15 +9,13 @@
 //
 // Hover previews, click pins (`lib/statusChip.ts`), like every other chip.
 // The popover holds the verdict (headline, and while open the reasons as links
-// into the Monitor), the stacked ten-minute timeline (CPU stays one row; before
-// the dashboard has loaded, and in a bare view, the 60 s CPU sparkline), the
-// Claude CLI line, key numbers against their usual, the top five processes by
-// CPU, "Record 60s" and "Open Monitor" — the process monitor page at /monitor
+// into the Monitor), the Claude CLI line, one row of three stats (requests,
+// browser wait, server lag), the top five processes by CPU (before the dashboard loads, the 60 s CPU sparkline stands in for the stats), "Record 60s" and "Open Monitor" — the process monitor page at /monitor
 // (shell/monitor/MonitorPage.tsx).
 //
 // THE CHIP MAKES NO EXTRA REQUESTS: the verdict dot and the Claude line ride on
 // `/api/system/activity`. Only the OPEN popover also polls
-// `/api/system/dashboard` (2 s), for the reasons, timeline and key numbers.
+// `/api/system/dashboard` (2 s), for the reasons and the three stats.
 //
 // SPLIT INTO A PURE VIEW (`SystemCardView`) AND A STATEFUL WRAPPER, the same
 // split ModelsDock uses, so the test renders the view with a fixed payload.
@@ -29,7 +27,6 @@ import { useEffect, useRef, useState } from "react";
 import type { SystemActivity, SystemProc } from "@platform/lib/sysmon";
 import { formatBytes, formatCpu, useSystemActivity } from "@shell/system-lib";
 import { Sparkline } from "@shell/monitor/Sparkline";
-import TimelineStack from "@shell/monitor/TimelineStack";
 import { getDashboard, sectionOk, type Dashboard } from "@shell/monitor/monitor-api";
 import { claudeLine, overviewTiles } from "@shell/monitor/monitor-net-lib";
 import { useRecord } from "@shell/monitor/useRecord";
@@ -68,8 +65,20 @@ export function topProcs(procs: SystemProc[], n = TOP_N): SystemProc[] {
     .slice(0, n);
 }
 
-/** Tiles the popover shows as "key numbers", each with its usual. */
-const KEY_TILES = ["requests", "queue", "server", "memory", "cpu"];
+const msText = (n: number | null | undefined) => (n == null ? "–" : `${Math.round(n)} ms`);
+
+/** The popover's three stats: requests/s, browser wait (p95), server lag, each
+ *  tinted by its Overview tile's level. */
+export function quickStats(dash: Dashboard): { label: string; value: string; level: string }[] {
+  const level = (key: string) => overviewTiles(dash).find((t) => t.key === key)?.level ?? "unavailable";
+  const net = sectionOk(dash.net) ? dash.net.summary : null;
+  const lag = sectionOk(dash.server) ? dash.server.loop_lag?.current_ms : null;
+  return [
+    { label: "Requests", value: net ? `${net.rps_10s}/s` : "–", level: level("requests") },
+    { label: "Browser wait", value: msText(net?.browser_queue_p95_ms), level: level("queue") },
+    { label: "Server lag", value: msText(lag), level: level("server") },
+  ];
+}
 
 export interface RecordView {
   recording: boolean;
@@ -105,14 +114,12 @@ export function SystemCardView({
   if (!data || !data.supported) return null;
   const label = chipLabel(data);
   const top = topProcs(data.procs);
-  const cpuNow = data.totals.cpuPct;
   const verdict = dash?.verdict ?? data.verdict;
   // Only warn/bad paint the dot or speak: "ok" and "unknown" (the server could
   // not compute a verdict) are neutral.
   const alert = verdict && (verdict.level === "warn" || verdict.level === "bad") ? verdict : null;
   const dot: "warn" | "bad" | "none" = alert ? (alert.level as "warn" | "bad") : "none";
-  const timeline = dash && sectionOk(dash.timeline) ? dash.timeline : null;
-  const keyTiles = dash ? overviewTiles(dash).filter((t) => KEY_TILES.includes(t.key)) : [];
+  const stats = dash ? quickStats(dash) : [];
   return (
     <div className="dl-host sys-chip" {...hostProps}>
       <StatusChip
@@ -157,21 +164,11 @@ export function SystemCardView({
           {data.claude && data.claude.total > 0 && (
             <div className="sys-claude">{claudeLine(data.claude)}</div>
           )}
-          {timeline && timeline.points.length > 1 ? (
-            <div className="dl-section">
-              <div className="dl-section-head">
-                Last 10 minutes{" "}
-                <span className="dl-section-count">CPU {formatCpu(cpuNow)}</span>
-              </div>
-              <div className="sys-tl-wrap">
-                <TimelineStack points={timeline.points} events={timeline.events} compact />
-              </div>
-            </div>
-          ) : (
+          {stats.length === 0 && (
             <div className="dl-section">
               <div className="dl-section-head">
                 fused-render CPU · last minute{" "}
-                <span className="dl-section-count">{formatCpu(cpuNow)}</span>
+                <span className="dl-section-count">{formatCpu(data.totals.cpuPct)}</span>
               </div>
               <div className="sys-spark-wrap">
                 <Sparkline
@@ -181,18 +178,24 @@ export function SystemCardView({
               </div>
             </div>
           )}
-          {keyTiles.length > 0 && (
-            <dl className="sys-keys" aria-label="Key numbers">
-              {keyTiles.map((t) => (
-                <div className={`sys-key is-${t.level}`} key={t.key}>
-                  <dt>{t.title}</dt>
-                  <dd>
-                    {t.value}
-                    {t.baseline && <span className="sys-key-base"> · {t.baseline}</span>}
-                  </dd>
-                </div>
+          {stats.length > 0 && (
+            <a
+              className="sys-stats"
+              href={MONITOR_PATH}
+              aria-label="Key numbers"
+              onClick={(e) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                e.preventDefault();
+                onOpenMonitor();
+              }}
+            >
+              {stats.map((t) => (
+                <span className={`sys-stat is-${t.level}`} key={t.label} data-stat={t.label}>
+                  <span className="sys-stat-label">{t.label}</span>
+                  <span className="sys-stat-value">{t.value}</span>
+                </span>
               ))}
-            </dl>
+            </a>
           )}
           <div className="dl-section">
             <div className="dl-section-head">

@@ -103,7 +103,8 @@ export function claudeLine(c: {
   other: number;
   mem_bytes: number;
 }): string {
-  return `Claude CLIs: ${c.total} (fused-render ${c.fused} · other ${c.other}) · ${formatBytes(c.mem_bytes, true)}`;
+  const split = c.other > 0 ? ` (fused-render ${c.fused} · other ${c.other})` : "";
+  return `Claude CLIs: ${c.total}${split} · ${formatBytes(c.mem_bytes, true)}`;
 }
 
 export type TileLevel = Level | "unavailable";

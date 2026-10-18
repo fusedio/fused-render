@@ -200,7 +200,7 @@ test("a warn/bad verdict paints the chip dot; ok keeps the slot but hides it", (
   expect(texts(view({ level: "bad", headline: "x" }))).toContain("CPU 60% · 1.4 GB");
 });
 
-test("the popover shows the headline, reason links, Claude line, timeline rows and key numbers", () => {
+test("the popover shows the headline, reason links, Claude line and the three stats", () => {
   const opened: string[] = [];
   let started = 0;
   const r = create(
@@ -217,8 +217,14 @@ test("the popover shows the headline, reason links, Claude line, timeline rows a
   const tree = r.toJSON() as ReactTestRendererJSON;
   expect(texts(byClass(tree, "sys-verdict")[0])).toContain("All 6 browser connections held");
   expect(texts(byClass(tree, "sys-claude")[0])).toBe("Claude CLIs: 3 (fused-render 2 · other 1) · 1.5 GB");
-  expect(byClass(tree, "monitor-tl-row").length).toBe(4); // compact: rps, in flight, lag, CPU
-  expect(texts(byClass(tree, "sys-keys")[0])).toContain("usual load 0.8");
+  expect(byClass(tree, "monitor-tl-row").length).toBe(0);
+  expect(byClass(tree, "sys-keys").length).toBe(0);
+  const stats = byClass(tree, "sys-stats")[0];
+  expect(texts(stats)).toContain("Requests");
+  expect(texts(stats)).toContain("2/s");
+  expect(texts(stats)).toContain("Browser wait");
+  expect(texts(stats)).toContain("Server lag");
+  expect(texts(stats)).toContain("1 ms");
   const reason = r.root.findByProps({ className: "sys-reason" });
   reason.props.onClick({ button: 0, preventDefault() {} });
   expect(opened).toEqual(["/monitor?tab=network&source=a"]);
