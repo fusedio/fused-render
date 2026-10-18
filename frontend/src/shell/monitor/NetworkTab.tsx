@@ -15,7 +15,6 @@
 // `?source=&route=` seed the filters once, at mount; the URL is never written
 // from here.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { formatBytes } from "@platform/lib/sysmon";
 import {
   getNetGroups,
   getNetRequests,
@@ -52,6 +51,9 @@ const OPEN_ONLY: NetFilters = {
   openOnly: true,
   own: false,
 };
+const SELF_PREFIX = "/api/system/";
+const GROUP_TOP = 5;
+const SLOTS_NOTE = "The browser opens at most 6 connections per host; extra requests wait in its queue.";
 const DASH = "—";
 const ms = (n: number | null | undefined) => (n == null ? DASH : `${Math.round(n)}`);
 const STATUS_CLASSES = ["", "2xx", "3xx", "4xx", "5xx", "open"];
@@ -95,6 +97,9 @@ export default function NetworkTab({
   const [openRows, setOpenRows] = useState<NetRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
+  // The request log is collapsed unless a deep link names a page or route.
+  const [logOpen, setLogOpen] = useState(Boolean(initialSource || initialRoute));
+  const [showAllGroups, setShowAllGroups] = useState(false);
   const [filters, setFilters] = useState<NetFilters>({
     source: initialSource,
     route: initialRoute,
@@ -120,10 +125,12 @@ export default function NetworkTab({
   filtersRef.current = filters;
   // A filter change throws the list away and starts again from cursor 0.
   const filterKey = JSON.stringify(filters);
+  const logOpenRef = useRef(logOpen);
+  logOpenRef.current = logOpen;
   useEffect(() => {
     cursor.current = 0;
     setRows([]);
-  }, [filterKey]);
+  }, [filterKey, logOpen]);
 
   // The live timer: re-render a few times a second while anything is open.
   const [clockS, setClockS] = useState(now());
@@ -143,7 +150,7 @@ export default function NetworkTab({
       setSockets(k.sockets);
       setError(null);
       setOpenRows((await api.requests(0, OPEN_ONLY)).rows);
-      if (!pausedRef.current) {
+      if (logOpenRef.current && !pausedRef.current) {
         const since = cursor.current;
         const req = await api.requests(since, f);
         // A filter change while this was in flight: the answer is stale.
@@ -155,7 +162,7 @@ export default function NetworkTab({
       }
     },
     pollMs,
-    filterKey,
+    `${filterKey}|${logOpen}`,
     (e) => setError(e.message),
   );
 
@@ -195,13 +202,14 @@ export default function NetworkTab({
     [openRows, client],
   );
   const strip = slotStrip(openForClient);
-  const queueBy = useMemo(() => {
-    const m = new Map<string, number | null>();
-    for (const g of groups) m.set(`${g.source}\n${g.route}`, g.queue_p95_ms);
-    return m;
-  }, [groups]);
+  // The monitor's own requests (the same /api/system/ rule the server marks
+  // `self` with) stay out of the table unless the toggle is on.
+  const shownGroups = useMemo(
+    () => (filters.own ? groups : groups.filter((g) => !g.route.startsWith(SELF_PREFIX))),
+    [groups, filters.own],
+  );
+  const visibleGroups = showAllGroups ? shownGroups : shownGroups.slice(0, GROUP_TOP);
   const drawn = useMemo(() => [...rows].reverse().slice(0, DRAW_CAP), [rows]);
-  const wsTotal = sockets.reduce((n, s) => n + s.open, 0);
 
   return (
     <div className="monitor-tab monitor-tab-scroll monitor-net">
@@ -210,25 +218,19 @@ export default function NetworkTab({
       <div className="monitor-net-strip" aria-label="Request summary">
         <Stat label="Requests/s" value={summary ? String(summary.rps_10s) : DASH} sub="last 10 s" />
         <Stat
-          label="In flight"
-          value={summary ? String(summary.in_flight_total) : DASH}
-          sub={
-            summary?.in_flight.length
-              ? summary.in_flight.map((c) => `${c.client} ${c.in_flight}`).join(" · ")
-              : "no clients"
-          }
-        />
-        <Stat
-          label="Browser queue p95"
+          label="Browser wait p95"
           value={summary?.browser_queue_p95_ms == null ? DASH : `${ms(summary.browser_queue_p95_ms)} ms`}
           sub="time waiting for a connection"
         />
-        <Stat label="Errors/min" value={summary ? String(summary.errors_60s) : DASH} sub="5xx and failures" />
-        <Stat label="Open WebSockets" value={String(wsTotal)} sub={`${sockets.length} kinds`} />
+        {summary && summary.errors_60s > 0 && (
+          <Stat label="Errors/min" value={String(summary.errors_60s)} sub="5xx and failures" />
+        )}
       </div>
 
       <section className="monitor-net-sec">
-        <h2 className="monitor-sec-title">Connection slots{client ? ` · ${client}` : ""}</h2>
+        <h2 className="monitor-sec-title" title={SLOTS_NOTE}>
+          Connection slots{client ? ` · ${client}` : ""}
+        </h2>
         <div className="monitor-slots" role="list">
           {strip.boxes.map((b, i) => (
             <div
@@ -246,11 +248,11 @@ export default function NetworkTab({
           ))}
           {strip.queued > 0 && <span className="monitor-slots-queued">+{strip.queued} queued</span>}
         </div>
-        <p className="monitor-net-note">
-          {clientStats?.top
-            ? `Most held by ${clientStats.top.source} · ${clientStats.top.route} (${clientStats.top.count}).`
-            : "The browser opens at most 6 connections per host; extra requests wait in its queue."}
-        </p>
+        {clientStats?.top && (
+          <p className="monitor-net-note">
+            {`Most held by ${clientStats.top.source} · ${clientStats.top.route} (${clientStats.top.count}).`}
+          </p>
+        )}
       </section>
 
       <section className="monitor-net-sec">
@@ -262,152 +264,166 @@ export default function NetworkTab({
                 <th>Page</th>
                 <th>Route</th>
                 <th className="monitor-c-num">Calls/min</th>
-                <th className="monitor-c-num">p50 ms</th>
-                <th className="monitor-c-num">p95 ms</th>
-                <th className="monitor-c-num">Queue p95</th>
-                <th className="monitor-c-num">Errors</th>
-                <th className="monitor-c-num">Max in flight</th>
+                <th className="monitor-c-num">Server p95</th>
+                <th className="monitor-c-num">Browser wait</th>
               </tr>
             </thead>
             <tbody>
-              {groups.map((g) => {
+              {visibleGroups.map((g) => {
                 const on = filters.source === g.source && filters.route === g.route;
                 return (
                   <tr
                     key={`${g.source}\n${g.route}`}
                     className={`monitor-row monitor-group-row${on ? " is-selected" : ""}`}
                     data-group={`${g.source} ${g.route}`}
-                    onClick={() =>
-                      setFilter(on ? { source: "", route: "" } : { source: g.source, route: g.route })
-                    }
+                    onClick={() => {
+                      setFilter(on ? { source: "", route: "" } : { source: g.source, route: g.route });
+                      if (!on) setLogOpen(true);
+                    }}
                   >
                     <td>{g.source}</td>
-                    <td className="monitor-net-route">{g.route}</td>
+                    <td className="monitor-net-route">
+                      {g.route}
+                      {g.errors > 0 && <span className="monitor-net-err">{g.errors} err</span>}
+                    </td>
                     <td className="monitor-c-num">{g.per_min}</td>
-                    <td className="monitor-c-num">{ms(g.p50_ms)}</td>
                     <td className="monitor-c-num">{ms(g.p95_ms)}</td>
                     <td className="monitor-c-num">{ms(g.queue_p95_ms)}</td>
-                    <td className="monitor-c-num">{g.errors}</td>
-                    <td className="monitor-c-num">{g.max_in_flight}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-          {!groups.length && <div className="monitor-empty">No requests in the last minute.</div>}
+          {!shownGroups.length && <div className="monitor-empty">No requests in the last minute.</div>}
         </div>
+        {shownGroups.length > GROUP_TOP && (
+          <button
+            type="button"
+            className="monitor-more"
+            aria-expanded={showAllGroups}
+            onClick={() => setShowAllGroups((v) => !v)}
+          >
+            {showAllGroups ? "Show fewer" : `Show all (${shownGroups.length})`}
+          </button>
+        )}
       </section>
 
       <section className="monitor-net-sec">
         <h2 className="monitor-sec-title">Requests</h2>
-        <div className="monitor-toolbar monitor-net-filters">
-          <input
-            className="field-control monitor-net-input"
-            placeholder="Page"
-            aria-label="Filter by page"
-            value={draft.source}
-            onChange={(e) => typeFilter({ source: e.target.value })}
-          />
-          <input
-            className="field-control monitor-net-input"
-            placeholder="Route"
-            aria-label="Filter by route"
-            value={draft.route}
-            onChange={(e) => typeFilter({ route: e.target.value })}
-          />
-          <select
-            className="field-control monitor-net-select"
-            aria-label="Filter by status"
-            value={filters.status}
-            onChange={(e) => setFilter({ status: e.target.value })}
-          >
-            {STATUS_CLASSES.map((s) => (
-              <option key={s} value={s}>
-                {s || "any status"}
-              </option>
-            ))}
-          </select>
-          <input
-            className="field-control monitor-net-input monitor-net-min"
-            placeholder="min ms"
-            aria-label="Minimum server ms"
-            inputMode="numeric"
-            value={draft.minMs}
-            onChange={(e) => typeFilter({ minMs: e.target.value })}
-          />
-          <button
-            type="button"
-            className={`monitor-toggle${filters.openOnly ? " is-on" : ""}`}
-            aria-pressed={filters.openOnly}
-            onClick={() => setFilter({ openOnly: !filters.openOnly })}
-          >
-            open only
-          </button>
-          <button
-            type="button"
-            className={`monitor-toggle${filters.own ? " is-on" : ""}`}
-            aria-pressed={filters.own}
-            onClick={() => setFilter({ own: !filters.own })}
-          >
-            show monitor's own requests
-          </button>
-          <span className="monitor-spacer" />
-          <span className="monitor-count">
-            {rows.length} requests{rows.length >= ROW_LIMIT ? ` (newest ${ROW_LIMIT})` : ""}
-          </span>
-          <button
-            type="button"
-            className={`monitor-toggle${paused ? " is-on" : ""}`}
-            aria-pressed={paused}
-            onClick={() => setPaused(!paused)}
-          >
-            {paused ? "Resume" : "Pause"}
-          </button>
-        </div>
-        <div className="monitor-table-wrap monitor-net-table-wrap monitor-net-list">
-          <table className="monitor-table monitor-net-table">
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Method</th>
-                <th>Route</th>
-                <th>Page</th>
-                <th className="monitor-c-num">Status</th>
-                <th className="monitor-c-num">Server ms</th>
-                <th className="monitor-c-num">Queue p95</th>
-                <th className="monitor-c-num">Size</th>
-              </tr>
-            </thead>
-            <tbody>
-              {drawn.map((r) => {
-                const open = r.status == null && r.outcome == null;
-                const held = heldMs(r, clockS);
-                const bad = (r.status ?? 0) >= 500 || r.outcome === "error";
-                return (
-                  <tr
-                    key={r.id}
-                    className={`monitor-row monitor-req-row${open ? " is-open" : ""}${bad ? " is-bad" : ""}`}
-                    data-req={r.id}
-                  >
-                    <td>{clock(r.t)}</td>
-                    <td>{r.method}</td>
-                    <td className="monitor-net-route" title={r.path}>
-                      {r.route}
-                    </td>
-                    <td>{r.source}</td>
-                    <td className="monitor-c-num">{open ? "open" : (r.status ?? r.outcome ?? DASH)}</td>
-                    <td className="monitor-c-num">
-                      {open ? `${(((held ?? 0) / 1000)).toFixed(1)} s` : ms(r.server_ms ?? held)}
-                    </td>
-                    <td className="monitor-c-num">{ms(queueBy.get(`${r.source}\n${r.route}`))}</td>
-                    <td className="monitor-c-num">{r.bytes == null ? DASH : formatBytes(r.bytes)}</td>
+        <button
+          type="button"
+          className="monitor-more"
+          aria-expanded={logOpen}
+          onClick={() => setLogOpen((v) => !v)}
+        >
+          {logOpen ? "Hide request log" : "Show request log"}
+        </button>
+        {logOpen && (
+          <>
+            <div className="monitor-toolbar monitor-net-filters">
+              <input
+                className="field-control monitor-net-input"
+                placeholder="Page"
+                aria-label="Filter by page"
+                value={draft.source}
+                onChange={(e) => typeFilter({ source: e.target.value })}
+              />
+              <input
+                className="field-control monitor-net-input"
+                placeholder="Route"
+                aria-label="Filter by route"
+                value={draft.route}
+                onChange={(e) => typeFilter({ route: e.target.value })}
+              />
+              <select
+                className="field-control monitor-net-select"
+                aria-label="Filter by status"
+                value={filters.status}
+                onChange={(e) => setFilter({ status: e.target.value })}
+              >
+                {STATUS_CLASSES.map((s) => (
+                  <option key={s} value={s}>
+                    {s || "any status"}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="field-control monitor-net-input monitor-net-min"
+                placeholder="min ms"
+                aria-label="Minimum server ms"
+                inputMode="numeric"
+                value={draft.minMs}
+                onChange={(e) => typeFilter({ minMs: e.target.value })}
+              />
+              <button
+                type="button"
+                className={`monitor-toggle${filters.openOnly ? " is-on" : ""}`}
+                aria-pressed={filters.openOnly}
+                onClick={() => setFilter({ openOnly: !filters.openOnly })}
+              >
+                open only
+              </button>
+              <button
+                type="button"
+                className={`monitor-toggle${filters.own ? " is-on" : ""}`}
+                aria-pressed={filters.own}
+                onClick={() => setFilter({ own: !filters.own })}
+              >
+                show monitor's own requests
+              </button>
+              <span className="monitor-spacer" />
+              <span className="monitor-count">
+                {rows.length} requests{rows.length >= ROW_LIMIT ? ` (newest ${ROW_LIMIT})` : ""}
+              </span>
+              <button
+                type="button"
+                className={`monitor-toggle${paused ? " is-on" : ""}`}
+                aria-pressed={paused}
+                onClick={() => setPaused(!paused)}
+              >
+                {paused ? "Resume" : "Pause"}
+              </button>
+            </div>
+            <div className="monitor-table-wrap monitor-net-table-wrap monitor-net-list">
+              <table className="monitor-table monitor-net-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Route</th>
+                    <th>Page</th>
+                    <th className="monitor-c-num">Status</th>
+                    <th className="monitor-c-num">ms</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          {!drawn.length && <div className="monitor-empty">No matching requests yet.</div>}
-        </div>
+                </thead>
+                <tbody>
+                  {drawn.map((r) => {
+                    const open = r.status == null && r.outcome == null;
+                    const held = heldMs(r, clockS);
+                    const bad = (r.status ?? 0) >= 500 || r.outcome === "error";
+                    return (
+                      <tr
+                        key={r.id}
+                        className={`monitor-row monitor-req-row${open ? " is-open" : ""}${bad ? " is-bad" : ""}`}
+                        data-req={r.id}
+                      >
+                        <td>{clock(r.t)}</td>
+                        <td className="monitor-net-route" title={r.path}>
+                          {r.method === "GET" ? r.route : `${r.method} ${r.route}`}
+                        </td>
+                        <td>{r.source}</td>
+                        <td className="monitor-c-num">{open ? "open" : (r.status ?? r.outcome ?? DASH)}</td>
+                        <td className="monitor-c-num">
+                          {open ? `${(((held ?? 0) / 1000)).toFixed(1)} s` : ms(r.server_ms ?? held)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {!drawn.length && <div className="monitor-empty">No matching requests yet.</div>}
+            </div>
+          </>
+        )}
       </section>
 
       <section className="monitor-net-sec">

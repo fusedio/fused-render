@@ -1395,3 +1395,12 @@ th[aria-sort="descending"] .monitor-sort {
     flex-basis: 240px;
   }
 }
+
+.monitor-net-err {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}

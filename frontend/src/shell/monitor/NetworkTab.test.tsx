@@ -66,7 +66,10 @@ test("summary strip, six slots with the overflow queued, and the groups busiest 
   const strip = text(byClass(r, "monitor-net-strip")[0]);
   expect(strip).toContain("4.5");
   expect(strip).toContain("640 ms");
-  expect(strip).toContain("Open WebSockets2");
+  expect(strip).toContain("Browser wait p95");
+  expect(strip).not.toContain("In flight");
+  expect(strip).not.toContain("Open WebSockets");
+  expect(strip).toContain("Errors/min2");
   expect(byClass(r, "monitor-slot")).toHaveLength(6);
   expect(byClass(r, "is-held")).toHaveLength(6);
   expect(text(byClass(r, "monitor-slots-queued")[0])).toBe("+2 queued");
@@ -75,7 +78,7 @@ test("summary strip, six slots with the overflow queued, and the groups busiest 
 });
 
 test("open requests show a live timer from their start time", async () => {
-  const { r } = await mount();
+  const { r } = await mount({}, { initialRoute: "/api/x" });
   const open = byClass(r, "monitor-req-row").find((n) => n.props["data-req"] === 21)!;
   expect(text(open)).toContain("open");
   expect(text(open)).toContain("9.0 s"); // now 1030 - t 1021
@@ -105,7 +108,7 @@ test("?source=&route= seed the filters, and Pause stops fetching the list", asyn
 test("text filters debounce 300 ms before the poll sees them; toggles are immediate; unmount clears the timer", async () => {
   jest.useFakeTimers();
   try {
-    const { r, calls } = await mount();
+    const { r, calls } = await mount({}, { initialRoute: "/api/x" });
     const input = r.root.findByProps({ "aria-label": "Filter by page" });
     const fire = async () => {
       await act(async () => {
@@ -145,4 +148,53 @@ test("text filters debounce 300 ms before the poll sees them; toggles are immedi
   } finally {
     jest.useRealTimers();
   }
+});
+
+const many = (n: number): NetGroup[] =>
+  Array.from({ length: n }, (_, i) => ({
+    ...GROUPS[0], source: `page-${i}`, route: `/api/r${i}`, per_min: 100 - i, errors: i === 0 ? 3 : 0,
+  }));
+const btn = (r: ReactTestRenderer, label: string) =>
+  r.root.findAll((n) => n.type === "button" && text(n) === label)[0];
+
+test("errors tile is hidden at 0 errors", async () => {
+  const { r } = await mount({ summary: async () => ({ ...SUMMARY, errors_60s: 0 }) });
+  expect(text(byClass(r, "monitor-net-strip")[0])).not.toContain("Errors/min");
+});
+
+test("groups show the top 5 with a Show all toggle, an err badge, and no monitor-own rows", async () => {
+  const groups = [...many(7), { ...GROUPS[0], source: "monitor", route: "/api/system/net/groups", per_min: 1000 }];
+  const { r } = await mount({ groups: async () => ({ groups }) });
+  expect(byClass(r, "monitor-group-row")).toHaveLength(5);
+  expect(text(byClass(r, "monitor-net-err")[0])).toBe("3 err");
+  expect(text(byClass(r, "monitor-net-table")[0])).not.toContain("Max in flight");
+  await act(async () => btn(r, "Show all (7)").props.onClick());
+  expect(byClass(r, "monitor-group-row")).toHaveLength(7);
+  await act(async () => btn(r, "Show fewer").props.onClick());
+  expect(byClass(r, "monitor-group-row")).toHaveLength(5);
+});
+
+test("request log is collapsed by default and does not poll the filtered list", async () => {
+  const { r, calls } = await mount();
+  expect(btn(r, "Show request log")).toBeDefined();
+  expect(r.root.findAllByProps({ "aria-label": "Filter by page" })).toHaveLength(0);
+  expect(byClass(r, "monitor-req-row")).toHaveLength(0);
+  expect(calls.every((c) => c.f.openOnly)).toBe(true);
+  await act(async () => btn(r, "Show request log").props.onClick());
+  await act(async () => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  });
+  expect(btn(r, "Hide request log")).toBeDefined();
+  expect(calls.some((c) => !c.f.openOnly)).toBe(true);
+  expect(byClass(r, "monitor-req-row").length).toBeGreaterThan(0);
+});
+
+test("deep link expands the log; non-GET methods prefix the route", async () => {
+  const { r } = await mount(
+    { requests: async (_s, f) => (f.openOnly && !f.source ? { rows: [], cursor: 0 } : { rows: [row(5, { method: "POST", route: "/api/run" })], cursor: 5 }) },
+    { initialSource: "page-a" },
+  );
+  expect(btn(r, "Hide request log")).toBeDefined();
+  expect(r.root.findByProps({ "aria-label": "Filter by page" }).props.value).toBe("page-a");
+  expect(text(byClass(r, "monitor-req-row")[0])).toContain("POST /api/run");
 });
