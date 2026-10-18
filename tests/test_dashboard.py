@@ -526,7 +526,7 @@ def test_light_verdict_readers_skip_the_expensive_work(monkeypatch, tmp_path):
     monkeypatch.setattr(dashboard, "server_log_errors", lambda *_: pytest.fail("log tail"))
     monkeypatch.setattr(dashboard, "_crashes", lambda: pytest.fail("crash listing"))
     monkeypatch.setattr(dashboard, "_disk_sizes", lambda: pytest.fail("dir walk"))
-    monkeypatch.setattr(health, "read_outages", lambda n: [{"kind": "outage", "t_down": time.time() - 5}])
+    monkeypatch.setattr(health, "read_outages", lambda n: [_outage_row(time.time() - 5, time.time() - 2, "a", "a")])
     monkeypatch.setattr("fused_render.logs.log_dir", lambda: str(tmp_path))
     e = dashboard._errors_for_verdict()
     assert 0 <= e["last_unexpected_outage_age_s"] < 60
@@ -578,8 +578,13 @@ def test_classify_outages_restart_is_expected_same_boot_is_a_hang():
     assert restarted["expected"] is True and restarted["restarted"] is True
     assert restarted["crashed"] is False and "clean" not in restarted
     assert dashboard._last_unexpected_age(out) == pytest.approx(100, abs=2)
-    missing = dashboard.classify_outages([_outage_row(now - 50, now - 20, "a", None)], now, crashes=[])
-    assert missing[0]["expected"] is False
+    # unrecovered (no t_up) or unknown-boot-after rows prove nothing: dropped
+    assert dashboard.classify_outages([_outage_row(now - 50, now - 20, "a", None)], now, crashes=[]) == []
+    assert dashboard.classify_outages([_outage_row(now - 50, None, "a", None)], now, crashes=[]) == []
+    assert dashboard.classify_outages([_outage_row(now - 50, None, "a", "a")], now, crashes=[]) == []
+    # older than 7 days: dropped
+    assert dashboard.classify_outages([_outage_row(now - 8 * 86400, now - 8 * 86400 + 10)], now, crashes=[]) == []
+    assert len(dashboard.classify_outages([_outage_row(now - 6 * 86400, now - 6 * 86400 + 10)], now, crashes=[])) == 1
     assert dashboard.classify_outages([{"kind": "quit", "received_at": now}], now) == []
     assert dashboard._last_unexpected_age([]) is None
 

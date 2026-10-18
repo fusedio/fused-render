@@ -137,6 +137,8 @@ test("errors panel: hangs, crashes and crash links shown, restarts only counted"
   const panel = text(byClass(r, "monitor-errors-panel")[0]);
   expect(panel).toContain("not responding for 1 min (server stayed up)");
   expect(panel).toContain("crashed, down 1 min");
+  expect(panel).not.toContain("still down");
+  expect(byClass(r, "monitor-errors-panel")[0].findAll((n) => n.type === "li" && typeof n.props.title === "string" && n.props.title.includes("not responding")).length).toBe(1);
   expect(panel).toContain("1 restarts hidden");
   expect(panel).toContain("server-1.log · 2 KB");
   const link = byClass(r, "monitor-errors-panel")[0].find((n) => n.type === "a");

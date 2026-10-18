@@ -1195,13 +1195,22 @@ th[aria-sort="descending"] .monitor-sort {
   color: var(--accent);
 }
 
-.monitor-crash-link {
+.monitor-list a.monitor-crash-link:link,
+.monitor-list a.monitor-crash-link:visited,
+.monitor-list a.monitor-crash-link:active {
   color: inherit;
   text-decoration: none;
 }
 
-.monitor-crash-link:hover {
+.monitor-list a.monitor-crash-link:hover {
   text-decoration: underline;
+}
+
+.monitor-list-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .monitor-crash-meta {

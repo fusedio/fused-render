@@ -388,8 +388,7 @@ export default function OverviewTab({
 
 type ErrorsData = Extract<Dashboard["errors"], { outages: unknown }>;
 
-function fmtDuration(sec: number | null): string {
-  if (sec == null) return "still down";
+function fmtDuration(sec: number): string {
   if (sec < 60) return `${Math.round(sec)} s`;
   if (sec < 3600) return `${Math.round(sec / 60)} min`;
   return `${(sec / 3600).toFixed(1)} h`;
@@ -398,6 +397,12 @@ function fmtDuration(sec: number | null): string {
 function fmtAgo(t: number): string {
   const sec = Math.max(0, Date.now() / 1000 - t);
   return sec < 60 ? "just now" : `${fmtDuration(sec)} ago`;
+}
+
+function outageText(o: ErrorsData["outages"][number]): string {
+  const when = new Date(o.t_down * 1000).toLocaleString();
+  const d = fmtDuration(o.duration_s);
+  return o.crashed ? `${when} · crashed, down ${d}` : `${when} · not responding for ${d} (server stayed up)`;
 }
 
 /** Unexpected outages, crash dumps (each a link to the dump) and the last log
@@ -409,16 +414,13 @@ function ErrorsList({ errors, limit = 5 }: { errors: ErrorsData; limit?: number 
   return (
     <ul className="monitor-list">
       {unexpected.slice(0, 3).map((o) => (
-        <li key={`o${o.t_down}`}>
-          {new Date(o.t_down * 1000).toLocaleString()} ·{" "}
-          {o.crashed
-            ? `crashed, down ${fmtDuration(o.duration_s)}`
-            : `not responding for ${fmtDuration(o.duration_s)} (server stayed up)`}
+        <li key={`o${o.t_down}`} title={outageText(o)}>
+          <span className="monitor-list-text">{outageText(o)}</span>
         </li>
       ))}
       {errors.crashes.slice(0, 3).map((c) => (
-        <li key={c.name}>
-          <a className="monitor-crash-link" {...spaLinkProps(c.path)}>
+        <li key={c.name} title={`${c.name} · ${formatBytes(c.bytes, true)} · ${fmtAgo(c.t)}`}>
+          <a className="monitor-crash-link monitor-list-text" {...spaLinkProps(c.path)}>
             {c.name}
             <span className="monitor-crash-meta"> · {formatBytes(c.bytes, true)} · {fmtAgo(c.t)}</span>
           </a>
@@ -426,7 +428,7 @@ function ErrorsList({ errors, limit = 5 }: { errors: ErrorsData; limit?: number 
       ))}
       {collapseRuns(errors.server_log_errors.slice(-limit)).map((l, i) => (
         <li key={`l${i}`} className="monitor-list-mono" title={l.label}>
-          {l.n > 1 ? `${l.label} ×${l.n}` : l.label}
+          <span className="monitor-list-text">{l.n > 1 ? `${l.label} ×${l.n}` : l.label}</span>
         </li>
       ))}
       {planned > 0 && (

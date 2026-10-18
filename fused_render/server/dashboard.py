@@ -360,7 +360,10 @@ def classify_outages(rows: list[dict], now: float | None = None,
     / restarted / crashed. `restarted` = the server came back as a new process
     (reload, update, relaunch) and is expected. Unexpected = the same process
     answered again (a hang), or a restart with a crash dump written within a
-    minute of the outage window (`crashed`). Newest first, max 10."""
+    minute of the outage window (`crashed`). Rows with no `t_up` or no
+    `boot_id_after` (the page closed before the server came back) prove
+    nothing and are dropped, as are outages older than 7 days. Newest first,
+    max 10."""
     now = time.time() if now is None else now
     out = []
     for r in rows:
@@ -368,13 +371,15 @@ def classify_outages(rows: list[dict], now: float | None = None,
             continue
         t_down, t_up = r["t_down"], r.get("t_up")
         before, after = r.get("boot_id_before"), r.get("boot_id_after")
+        if not t_up or not after or now - t_down > 7 * 86400:
+            continue
         restarted = bool(before and after and before != after)
         crashed = False
         if restarted:
             if crashes is None:
                 crashes = _scan_crashes(now)
-            crashed = any(t_down - 60 <= c["t"] <= (t_up or now) + 60 for c in crashes)
-        out.append({**r, "duration_s": round(t_up - t_down, 1) if t_up else None,
+            crashed = any(t_down - 60 <= c["t"] <= t_up + 60 for c in crashes)
+        out.append({**r, "duration_s": round(t_up - t_down, 1),
                     "restarted": restarted, "crashed": crashed,
                     "expected": restarted and not crashed})
     out.sort(key=lambda o: -o["t_down"])

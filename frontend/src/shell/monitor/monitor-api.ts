@@ -165,7 +165,7 @@ export interface Dashboard {
     outages: {
       t_down: number;
       t_up?: number | null;
-      duration_s: number | null;
+      duration_s: number;
       restarted: boolean;
       crashed: boolean;
       expected: boolean;
