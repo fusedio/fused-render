@@ -6,12 +6,10 @@ import { netRequestsUrl } from "@shell/monitor/monitor-api";
 import {
   appendRows,
   claudeLine,
-  mainClient,
   monitorUrl,
   overviewTiles,
   paramsFromLink,
   parseMonitorParams,
-  slotStrip,
   timelineSeries,
 } from "@shell/monitor/monitor-net-lib";
 
@@ -58,30 +56,6 @@ test("monitorUrl round-trips through parseMonitorParams", () => {
     pid: null,
   });
   expect(monitorUrl({ tab: "overview" })).toBe("/monitor");
-});
-
-test("slotStrip fills six boxes oldest first and counts the queued overflow", () => {
-  const open = [row(3), row(1), row(2)];
-  const s = slotStrip(open, 6);
-  expect(s.boxes).toHaveLength(6);
-  expect(s.boxes.map((b) => b && b.id)).toEqual([1, 2, 3, null, null, null]);
-  expect(s.queued).toBe(0);
-  const many = Array.from({ length: 9 }, (_, i) => row(i + 1));
-  const m = slotStrip(many, 6);
-  expect(m.boxes.every((b) => b !== null)).toBe(true);
-  expect(m.queued).toBe(3);
-});
-
-test("mainClient is the client with the most in flight", () => {
-  expect(mainClient(null)).toBeNull();
-  expect(
-    mainClient({
-      in_flight: [
-        { client: "a", in_flight: 2, saturated_s: 0, top: null },
-        { client: "b", in_flight: 5, saturated_s: 0, top: null },
-      ],
-    } as never),
-  ).toBe("b");
 });
 
 test("appendRows merges by id, keeps seq order and trims the oldest past the cap", () => {

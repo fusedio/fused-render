@@ -69,38 +69,50 @@ async function mount(onNavigate: (l: string) => void = () => {}, extra: Record<s
   return renderer!;
 }
 
-test("the banner names the cause as a link; other reasons are bullets that navigate in place", async () => {
+test("no banner box; a non-ok verdict lists its reasons as plain links that navigate in place", async () => {
   const seen: string[] = [];
   const r = await mount((l) => seen.push(l));
-  const banner = byClass(r, "monitor-verdict")[0];
-  expect(banner.props.className).toContain("is-bad");
-  expect(text(banner)).toContain("All 6 browser connections held");
-  // The reason repeating the headline is not a second bullet: the headline is its link.
-  const head = byClass(r, "monitor-verdict-head")[0].findAll((n) => n.type === "a");
-  expect(head).toHaveLength(1);
-  const links = byClass(r, "monitor-verdict-reasons")[0].findAll((n) => n.type === "a");
-  expect(links).toHaveLength(1);
+  expect(byClass(r, "monitor-verdict")).toHaveLength(0);
+  expect(text(r.root)).not.toContain("Nothing looks wrong");
+  const list = byClass(r, "monitor-reasons")[0];
+  const links = list.findAll((n) => n.type === "a");
+  expect(links).toHaveLength(2);
+  expect(byClass(r, "monitor-reason-dot")).toHaveLength(2);
+  expect(list.findAll((n) => n.type === "li").map((n) => n.props.className)).toEqual(["is-bad", "is-warn"]);
   let prevented = false;
-  head[0].props.onClick({ button: 0, preventDefault: () => (prevented = true) });
+  links[0].props.onClick({ button: 0, preventDefault: () => (prevented = true) });
   expect(prevented).toBe(true);
   expect(seen).toEqual(["/monitor?tab=network&source=page-a&route=%2Fapi%2Fx"]);
   seen.length = 0;
-  links[0].props.onClick({ button: 0, metaKey: true, preventDefault: () => {} });
+  links[1].props.onClick({ button: 0, metaKey: true, preventDefault: () => {} });
   expect(seen).toEqual([]);
 });
 
-test("a lone reason equal to the headline renders no list", async () => {
+test("an ok verdict renders nothing, and Record/Copy sit on the window heading's row", async () => {
+  const dash = { ...DASH, verdict: { level: "ok", headline: "Nothing looks wrong", reasons: [] } } as unknown as Dashboard;
+  const r = await mount(() => {}, { load: async () => dash });
+  expect(byClass(r, "monitor-reasons")).toHaveLength(0);
+  expect(text(r.root)).not.toContain("Nothing looks wrong");
+  const row = byClass(r, "monitor-overview-window")[0];
+  expect(text(row)).toContain("Last 1 min");
+  expect(text(row)).toContain("Record 60s");
+  expect(text(row)).toContain("Copy report");
+});
+
+test("the errors tile toggles an inline panel of recent errors", async () => {
   const dash = {
     ...DASH,
-    verdict: {
-      level: "bad",
-      headline: "Server outage 4 min ago",
-      reasons: [{ key: "outage", level: "bad", text: "Server outage 4 min ago", link: "/monitor?tab=server" }],
-    },
+    errors: { ...DASH.errors, restarts_24h: 2, server_log_errors: ["2026 ERROR [x] bad thing", "2026 ERROR [x] bad thing"] },
   } as unknown as Dashboard;
   const r = await mount(() => {}, { load: async () => dash });
-  expect(byClass(r, "monitor-verdict-reasons")).toHaveLength(0);
-  expect(text(byClass(r, "monitor-verdict")[0]).split("Server outage 4 min ago")).toHaveLength(2);
+  const tile = () => r.root.find((n) => n.type === "button" && n.props["data-tile"] === "errors");
+  expect(tile().props["aria-expanded"]).toBe(false);
+  expect(byClass(r, "monitor-errors-panel")).toHaveLength(0);
+  await act(async () => tile().props.onClick());
+  expect(tile().props["aria-expanded"]).toBe(true);
+  expect(text(byClass(r, "monitor-errors-panel")[0])).toContain("2026 ERROR [x] bad thing ×2");
+  await act(async () => tile().props.onClick());
+  expect(byClass(r, "monitor-errors-panel")).toHaveLength(0);
 });
 
 test("four chart cards with figures; alerting tiles sit above them; the rest behind Show all checks", async () => {
@@ -108,7 +120,7 @@ test("four chart cards with figures; alerting tiles sit above them; the rest beh
   const cards = byClass(r, "monitor-overview-card");
   expect(cards.map((c) => c.props["data-card"])).toEqual(["requests", "queue", "server", "cpu"]);
   expect(byClass(r, "monitor-overview-cards")).toHaveLength(1);
-  expect(text(byClass(r, "monitor-overview-window")[0])).toBe("Last 1 min");
+  expect(text(byClass(r, "monitor-overview-window")[0])).toStartWith("Last 1 min");
   const fig = (i: number) => text(cards[i].findAll((n) => n.props.className === "monitor-card-figure")[0]);
   expect(fig(0)).toBe("4/s");
   expect(fig(1)).toBe("700 ms wait");
@@ -229,5 +241,5 @@ test("figures fall back to the latest timeline value when the live sample is mis
   const cards = byClass(r, "monitor-overview-card");
   const fig = (i: number) => text(cards[i].findAll((n) => n.props.className === "monitor-card-figure")[0]);
   expect(fig(3)).toBe("19%");
-  expect(text(byClass(r, "monitor-overview-window")[0])).toBe("Last 10 minutes");
+  expect(text(byClass(r, "monitor-overview-window")[0].find((n) => n.type === "h2"))).toBe("Last 10 minutes");
 });

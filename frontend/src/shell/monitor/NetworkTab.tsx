@@ -2,9 +2,9 @@
 //
 // The browser allows six HTTP/1.1 connections per host, shared by every window,
 // so one page that holds them queues everyone else in the BROWSER, where the
-// server cannot see it. Top to bottom: a summary strip; the six connection
-// slots of the busiest client (hover a box: who holds it; "+N queued" past
-// six); the source x route table, busiest first (click a row to filter the
+// server cannot see it. Top to bottom: a summary strip; a Connections chart
+// (the busiest client's simultaneous requests over the last minute, computed
+// server-side from request intervals, plus any request held > 2 s right now); the source x route table, busiest first (click a row to filter the
 // list to it); the live request list, DevTools-style; and the open WebSockets.
 //
 // DATA: `/api/system/net/*` polled every 2 s while the tab is mounted and the
@@ -27,7 +27,8 @@ import {
   type NetSocket,
   type NetSummary,
 } from "./monitor-api";
-import { appendRows, mainClient, ROW_LIMIT, slotStrip } from "./monitor-net-lib";
+import { AreaChart, type ChartPoint, type Tick } from "./Charts";
+import { appendRows, ROW_LIMIT } from "./monitor-net-lib";
 import { usePolled } from "./usePolled";
 
 export interface NetworkApi {
@@ -53,6 +54,14 @@ const OPEN_ONLY: NetFilters = {
 };
 const SELF_PREFIX = "/api/system/";
 const GROUP_TOP = 5;
+const SLOTS = 6;
+const LONG_HELD_MS = 2000;
+const WINDOW_S = 60;
+const CONN_TICKS: Tick[] = [
+  { v: 0, label: "0" },
+  { v: 3, label: "3" },
+  { v: 6, label: "6 limit" },
+];
 const SLOTS_NOTE = "The browser opens at most 6 connections per host; extra requests wait in its queue.";
 const DASH = "—";
 const ms = (n: number | null | undefined) => (n == null ? DASH : `${Math.round(n)}`);
@@ -94,8 +103,8 @@ export default function NetworkTab({
   const [groups, setGroups] = useState<NetGroup[]>([]);
   const [sockets, setSockets] = useState<NetSocket[]>([]);
   const [rows, setRows] = useState<NetRow[]>([]);
-  // Every open request, whatever the list's filters say: the slots strip is
-  // about the connection pool, not about what the list is narrowed to.
+  // Every open request, whatever the list's filters say: the held-requests
+  // line is about the connection pool, not about what the list is narrowed to.
   const [openRows, setOpenRows] = useState<NetRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
@@ -197,13 +206,22 @@ export default function NetworkTab({
     setFilters((cur) => ({ ...cur, ...patch }));
   }, []);
 
-  const client = mainClient(summary);
-  const clientStats = summary?.in_flight.find((c) => c.client === client) ?? null;
-  const openForClient = useMemo(
-    () => openRows.filter((r) => !r.self && r.client === client),
-    [openRows, client],
+  const client = summary?.main_client ?? null;
+  const conc = summary?.concurrency?.find((c) => c.client === client) ?? null;
+  const heldNow = useMemo(
+    () =>
+      openRows
+        .filter((r) => !r.self && r.client === client)
+        .map((r) => ({ r, ms: heldMs(r, clockS) ?? 0 }))
+        .filter((h) => h.ms > LONG_HELD_MS)
+        .sort((a, b) => b.ms - a.ms),
+    [openRows, client, clockS],
   );
-  const strip = slotStrip(openForClient);
+  const connPoints: ChartPoint[] = useMemo(() => {
+    const series = conc?.series ?? [];
+    const end = now();
+    return series.map((v, i) => ({ t: end - (series.length - 1 - i), v }));
+  }, [conc, now]);
   // The monitor's own requests (the same /api/system/ rule the server marks
   // `self` with) stay out of the table unless the toggle is on.
   const shownGroups = useMemo(
@@ -214,24 +232,15 @@ export default function NetworkTab({
   const drawn = useMemo(() => [...rows].reverse().slice(0, DRAW_CAP), [rows]);
 
   const p95 = summary?.browser_queue_p95_ms ?? null;
-  const waiting = (p95 != null && p95 >= WAIT_WARN_MS) || strip.queued > 0;
-  const top = shownGroups[0];
-  const verdictHead =
-    (waiting
-      ? `Requests are waiting for a connection${p95 != null ? ` · p95 ${ms(p95)} ms` : ""}`
-      : "No queueing") + (top ? ` · busiest: ${top.route} from ${top.source}` : "");
 
   return (
     <div className="monitor-tab monitor-tab-scroll monitor-net">
       {error && <p className="monitor-denied">Can't read request data: {error}</p>}
 
-      <section className={`monitor-verdict is-${waiting ? "warn" : "ok"}`} aria-label="Verdict">
-        <p className="monitor-verdict-head">{verdictHead}</p>
-      </section>
-
       <div className="monitor-net-strip" aria-label="Request summary">
         <Stat label="Requests/s" value={summary ? String(summary.rps_10s) : DASH} sub="last 10 s" />
         <Stat
+          warn={p95 != null && p95 >= WAIT_WARN_MS}
           label="Browser wait p95"
           value={summary?.browser_queue_p95_ms == null ? DASH : `${ms(summary.browser_queue_p95_ms)} ms`}
           sub="time waiting for a connection"
@@ -242,30 +251,35 @@ export default function NetworkTab({
       </div>
 
       <section className="monitor-net-sec">
-        <h2 className="monitor-sec-title" title={SLOTS_NOTE}>
-          Connection slots{client ? ` · ${client}` : ""}
-        </h2>
-        <div className="monitor-slots" role="list">
-          {strip.boxes.map((b, i) => (
-            <div
-              key={i}
-              role="listitem"
-              className={`monitor-slot${b ? " is-held" : ""}${b && heldMs(b, clockS)! > 2000 ? " is-long" : ""}`}
-              title={
-                b
-                  ? `${b.method} ${b.route}\n${b.source}\nheld ${((heldMs(b, clockS) ?? 0) / 1000).toFixed(1)} s`
-                  : "free"
-              }
-            >
-              {b ? b.source : ""}
-            </div>
-          ))}
-          {strip.queued > 0 && <span className="monitor-slots-queued">+{strip.queued} queued</span>}
+        <div
+          className={`monitor-card monitor-net-conn${conc && conc.at_limit_s > 0 ? " is-warn" : ""}`}
+          data-card="connections"
+        >
+          <header className="monitor-card-head">
+            <h2 title={SLOTS_NOTE}>Connections</h2>
+            <span className="monitor-card-figure">{conc ? `peak ${conc.peak} of ${SLOTS}` : DASH}</span>
+          </header>
+          <div className="monitor-card-sub">
+            <span>
+              {`last 60 s · ${
+                conc && conc.at_limit_s > 0 ? `at the limit ${conc.at_limit_s} s` : "never at the limit"
+              }`}
+            </span>
+          </div>
+          <AreaChart
+            points={connPoints}
+            max={Math.max(SLOTS, conc?.peak ?? 0)}
+            ticks={CONN_TICKS}
+            windowS={WINDOW_S}
+            label="Connections, last 60 s"
+          />
         </div>
-        {clientStats?.top && (
-          <p className="monitor-net-note">
-            {`Most held by ${clientStats.top.source} · ${clientStats.top.route} (${clientStats.top.count}).`}
-          </p>
+        {heldNow.length > 0 && (
+          <ul className="monitor-net-held">
+            {heldNow.map(({ r, ms: held }) => (
+              <li key={r.id}>{`${r.method} ${r.route} · from ${r.source} · ${Math.round(held / 1000)} s`}</li>
+            ))}
+          </ul>
         )}
       </section>
 
@@ -324,12 +338,7 @@ export default function NetworkTab({
 
       <section className="monitor-net-sec">
         <h2 className="monitor-sec-title">Request log</h2>
-        <button
-          type="button"
-          className="monitor-more"
-          aria-expanded={logOpen}
-          onClick={() => setLogOpen((v) => !v)}
-        >
+        <button type="button" className="monitor-more" aria-expanded={logOpen} onClick={() => setLogOpen((v) => !v)}>
           {logOpen ? "Hide request log" : "Show request log"}
         </button>
         {logOpen && (
@@ -387,7 +396,8 @@ export default function NetworkTab({
               </button>
               <span className="monitor-spacer" />
               <span className="monitor-count">
-                {rows.length} requests{rows.length >= ROW_LIMIT ? ` (newest ${ROW_LIMIT})` : ""}
+                {rows.length} requests
+                {rows.length >= ROW_LIMIT ? ` (newest ${ROW_LIMIT})` : ""}
               </span>
               <button
                 type="button"
@@ -427,7 +437,7 @@ export default function NetworkTab({
                         <td>{r.source}</td>
                         <td className="monitor-c-num">{open ? "open" : (r.status ?? r.outcome ?? DASH)}</td>
                         <td className="monitor-c-num">
-                          {open ? `${(((held ?? 0) / 1000)).toFixed(1)} s` : ms(r.server_ms ?? held)}
+                          {open ? `${((held ?? 0) / 1000).toFixed(1)} s` : ms(r.server_ms ?? held)}
                         </td>
                       </tr>
                     );
@@ -470,9 +480,9 @@ export default function NetworkTab({
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
+function Stat({ label, value, sub, warn }: { label: string; value: string; sub: string; warn?: boolean }) {
   return (
-    <div className="monitor-net-stat">
+    <div className={`monitor-net-stat${warn ? " is-warn" : ""}`}>
       <div className="monitor-net-stat-label">{label}</div>
       <div className="monitor-net-stat-value">{value}</div>
       <div className="monitor-net-stat-sub">{sub}</div>

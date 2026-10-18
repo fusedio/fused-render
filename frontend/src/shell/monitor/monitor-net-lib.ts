@@ -11,7 +11,6 @@ import {
   type Dashboard,
   type Level,
   type NetRow,
-  type NetSummary,
   type TimelinePoint,
 } from "./monitor-api";
 import type { SparkPoint } from "./Sparkline";
@@ -61,26 +60,6 @@ export function monitorUrl(p: {
   if (p.pid != null) q.set("pid", String(p.pid));
   const s = q.toString();
   return s ? `/monitor?${s}` : "/monitor";
-}
-
-/** The browser's per-host HTTP/1.1 connection limit. */
-export const SLOTS = 6;
-
-/** `open` requests laid into `slots` boxes, oldest first (the one that has
- *  held its connection longest is box 1); the rest are what the browser is
- *  queueing. */
-export function slotStrip(open: NetRow[], slots = SLOTS): { boxes: (NetRow | null)[]; queued: number } {
-  const sorted = [...open].sort((a, b) => a.seq - b.seq);
-  const boxes: (NetRow | null)[] = [];
-  for (let i = 0; i < slots; i++) boxes.push(sorted[i] ?? null);
-  return { boxes, queued: Math.max(0, sorted.length - slots) };
-}
-
-/** The client the strip draws: whichever has the most requests in flight. */
-export function mainClient(summary: Pick<NetSummary, "in_flight"> | null | undefined): string | null {
-  const c = summary?.in_flight?.[0];
-  if (!c) return null;
-  return summary!.in_flight.reduce((a, b) => (b.in_flight > a.in_flight ? b : a)).client;
 }
 
 export const ROW_LIMIT = 2000;

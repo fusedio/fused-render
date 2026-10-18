@@ -61,6 +61,9 @@ export interface NetSummary {
   errors_60s: number;
   long_held: NetRow[];
   browser_queue_p95_ms: number | null;
+  /** Simultaneous-request stats per client over the last 60 s, busiest first. */
+  concurrency: { client: string; peak: number; series: number[]; at_limit_s: number }[];
+  main_client: string | null;
 }
 export interface NetGroup {
   source: string;

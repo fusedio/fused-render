@@ -18,6 +18,8 @@ const OPEN = (id: number) => row(id, { status: null, outcome: null, server_ms: n
 const SUMMARY: NetSummary = {
   rps_10s: 4.5, rps_60s: 3, in_flight: [{ client: "c1", in_flight: 8, saturated_s: 3, top: { source: "page-a", route: "/api/x", count: 8 } }],
   in_flight_total: 8, oldest_in_flight_s: 3, errors_60s: 2, long_held: [], browser_queue_p95_ms: 640,
+  concurrency: [{ client: "c1", peak: 7, series: [...Array(58).fill(1), 7, 2], at_limit_s: 3.5 }],
+  main_client: "c1",
 };
 const GROUPS: NetGroup[] = [
   { source: "page-a", route: "/api/x", count: 90, per_min: 90, p50_ms: 10, p95_ms: 40, errors: 1, max_in_flight: 8, queue_p95_ms: 600, queue_max_ms: 900 },
@@ -61,7 +63,7 @@ async function mount(
   return { r: renderer!, calls };
 }
 
-test("summary strip, six slots with the overflow queued, and the groups busiest first", async () => {
+test("summary strip, and the groups busiest first", async () => {
   const { r } = await mount();
   const strip = text(byClass(r, "monitor-net-strip")[0]);
   expect(strip).toContain("4.5");
@@ -70,9 +72,6 @@ test("summary strip, six slots with the overflow queued, and the groups busiest 
   expect(strip).not.toContain("In flight");
   expect(strip).not.toContain("Open WebSockets");
   expect(strip).toContain("Errors/min2");
-  expect(byClass(r, "monitor-slot")).toHaveLength(6);
-  expect(byClass(r, "is-held")).toHaveLength(6);
-  expect(text(byClass(r, "monitor-slots-queued")[0])).toBe("+2 queued");
   const groups = byClass(r, "monitor-group-row").map((g) => g.props["data-group"]);
   expect(groups).toEqual(["page-a /api/x", "page-b /api/y"]);
 });
@@ -199,21 +198,40 @@ test("deep link expands the log; non-GET methods prefix the route", async () => 
   expect(text(byClass(r, "monitor-req-row")[0])).toContain("POST /api/run");
 });
 
-test("verdict line warns when requests queue and names the busiest route", async () => {
+test("no verdict banner; slow browser wait tints the stat", async () => {
   const { r } = await mount();
-  const v = byClass(r, "monitor-verdict")[0];
-  expect(v.props.className).toContain("is-warn");
-  expect(text(v)).toBe(
-    "Requests are waiting for a connection · p95 640 ms · busiest: /api/x from page-a",
-  );
-});
-
-test("verdict line is ok with no queueing", async () => {
-  const { r } = await mount({
+  expect(byClass(r, "monitor-verdict")).toHaveLength(0);
+  expect(byClass(r, "monitor-net-stat").filter((n) => n.props.className.includes("is-warn"))).toHaveLength(1);
+  const { r: r2 } = await mount({
     summary: async () => ({ ...SUMMARY, browser_queue_p95_ms: 20 }),
     requests: async () => ({ rows: [], cursor: 0 }),
   });
-  const v = byClass(r, "monitor-verdict")[0];
-  expect(v.props.className).toContain("is-ok");
-  expect(text(v)).toBe("No queueing · busiest: /api/x from page-a");
+  expect(byClass(r2, "monitor-net-stat").filter((n) => n.props.className.includes("is-warn"))).toHaveLength(0);
+});
+
+test("Connections card shows peak, time at the limit and a chart; held requests list below", async () => {
+  const { r } = await mount();
+  const card = byClass(r, "monitor-net-conn")[0];
+  expect(card.props.className).toContain("is-warn");
+  expect(text(card)).toContain("Connections");
+  expect(text(card)).toContain("peak 7 of 6");
+  expect(text(card)).toContain("last 60 s · at the limit 3.5 s");
+  expect(text(card)).toContain("6 limit");
+  expect(card.findAll((n) => n.props.className === "monitor-chart")).toHaveLength(1);
+  // OPEN rows were opened at t=1001..1008 and now() is 1030: all held > 2 s.
+  const held = byClass(r, "monitor-net-held")[0];
+  expect(held.findAll((n) => n.type === "li")).toHaveLength(8);
+  expect(text(held)).toContain("GET /api/x · from page-a · 29 s");
+});
+
+test("Connections card is calm when never at the limit and nothing is held", async () => {
+  const { r } = await mount({
+    summary: async () => ({ ...SUMMARY, concurrency: [{ client: "c1", peak: 2, series: Array(60).fill(1), at_limit_s: 0 }] }),
+    requests: async () => ({ rows: [], cursor: 0 }),
+  });
+  const card = byClass(r, "monitor-net-conn")[0];
+  expect(card.props.className).not.toContain("is-warn");
+  expect(text(card)).toContain("peak 2 of 6");
+  expect(text(card)).toContain("never at the limit");
+  expect(byClass(r, "monitor-net-held")).toHaveLength(0);
 });
