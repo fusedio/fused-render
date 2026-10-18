@@ -46,13 +46,23 @@ export interface SyncStatus {
   name: string;
   dir: string;
   watching: boolean;
-  push_state: "idle" | "pending" | "pushing" | "error";
+  /** "held": the clone has unpushed edits but the server moved since the
+   *  last sync (see `server_stale`); nothing is pushed until the user pulls. */
+  push_state: "idle" | "pending" | "pushing" | "error" | "held";
   push_seq: number;
   last_push_at: number | null;
   /** The clone's disk revision: moves whenever the folder's fingerprint moves
    *  (a Claude edit, a merge, an embed snapshot landing). The workspace asks
    *  for a delta (getDelta) when it advances. Older servers omit it. */
   disk_rev?: number;
+  /** The canvas changed on the server since the last sync point and has not
+   *  been pulled: what a hosted workbench tab shows as "Server changes". The
+   *  watcher stops pushing while this is set; `pullCanvas` clears it. */
+  server_stale?: {
+    since: number;
+    udfs: { slug: string; kind: "added" | "changed" | "removed" }[];
+    layout: boolean;
+  } | null;
   /** Increments when the watcher pulls remote (workbench-side) changes down. */
   pull_seq: number;
   last_pull_at: number | null;
@@ -162,6 +172,15 @@ export const getDelta = (name: string, full: boolean) =>
  *  frame moves to that revision, or is dropped so the next delta is full. */
 export const ackDelta = (name: string, rev: number, ok: boolean) =>
   postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", { name, rev, ok });
+
+/** Pull the server's canvas into the clone now (the "Server changes · Pull"
+ *  chip). Clean clone: force pull; dirty: three-way merge, canvas.toml per
+ *  node, local edits kept. Returns the full status with `ok`. */
+export const pullCanvas = (name: string) =>
+  postJson<SyncStatus & { ok: boolean; error?: string | null }>(
+    "/api/canvases/sync/pull",
+    { name },
+  );
 
 export const startSync = (name: string) =>
   postJson<SyncStatus>("/api/canvases/sync/start", { name });

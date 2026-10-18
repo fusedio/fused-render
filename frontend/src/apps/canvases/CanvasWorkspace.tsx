@@ -71,6 +71,7 @@ import {
   getCanvasesStatus,
   getSyncStatus,
   getWhoami,
+  pullCanvas,
   startSync,
   type SyncStatus,
 } from "./api";
@@ -226,6 +227,25 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [fixRunId, setFixRunId] = useState<string | null>(null);
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
+  // "Server changes · Pull": the hosted workbench's chip, for this tab. The
+  // watcher holds its push while `sync.server_stale` is set; this button is
+  // the user's pull. The result reaches the embed as a delta like any other
+  // disk change.
+  const [pullBusy, setPullBusy] = useState(false);
+  const [pullError, setPullError] = useState<string | null>(null);
+  const onPull = useCallback(async () => {
+    setPullBusy(true);
+    setPullError(null);
+    try {
+      const s = await pullCanvas(name);
+      setSync(s);
+      if (!s.ok) setPullError(s.error ?? "pull failed");
+    } catch (e) {
+      setPullError((e as Error).message);
+    } finally {
+      setPullBusy(false);
+    }
+  }, [name]);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
 
@@ -667,6 +687,38 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       {error && <ErrorBanner>{error}</ErrorBanner>}
+      {sync?.server_stale && (
+        <div
+          style={{
+            padding: "8px 12px",
+            borderBottom: "1px solid rgba(200,140,30,0.4)",
+            background: "rgba(200,140,30,0.10)",
+            fontSize: 13,
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <strong>Server changes</strong>
+          <span style={{ opacity: 0.85 }}>
+            {sync.server_stale.udfs.length > 0
+              ? sync.server_stale.udfs.map((u) => `${u.slug} (${u.kind})`).join(", ")
+              : "the canvas layout"}
+            {" "}changed on the server. Your edits here are saved locally and will be
+            published after you pull.
+          </span>
+          <button
+            className="btn btn-primary"
+            disabled={pullBusy || sync.pulling || sync.push_state === "pushing"}
+            onClick={() => void onPull()}
+            title="Bring the server's changes into this canvas; your local edits are kept"
+          >
+            {pullBusy ? "Pulling…" : "Pull"}
+          </button>
+          {pullError && <span style={{ color: "rgb(200,60,60)" }}>{pullError}</span>}
+        </div>
+      )}
       {sync?.push_state === "error" && sync.error && (
         <div
           style={{

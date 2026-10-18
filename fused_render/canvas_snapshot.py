@@ -770,3 +770,145 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
     if scalars:
         ops.append({"op": "canvas", **scalars})
     return ops
+
+
+# -- canvas.toml, merged per node -----------------------------------------
+#
+# The watcher's remote merge is per FILE (canvases._merge_remote). canvas.toml
+# is the one file every writer touches — a drag in the embed, a node added in
+# a hosted tab, Claude renaming a UDF all rewrite it — so a per-file "local
+# changed since the sync point → local wins" there drops a teammate's new
+# node row whenever the clone has any unpushed layout edit. This is the
+# three-way merge of that one file at the granularity it is actually edited:
+# the node row (keyed by udfName), the edge set, the canvas scalars.
+
+def rows_of_doc(doc: dict) -> dict:
+    """`{nodes: {name: row}, order: [name], edges: [[a, b]], canvas: {...}}`
+    from a parsed canvas.toml. Rows without a udfName are dropped."""
+    canvas = doc.get("canvas") if isinstance(doc.get("canvas"), dict) else {}
+    nodes: dict[str, dict] = {}
+    order: list[str] = []
+    for row in canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []:
+        if isinstance(row, dict) and isinstance(row.get("udfName"), str) and row["udfName"]:
+            nodes[row["udfName"]] = dict(row)
+            order.append(row["udfName"])
+    edges = [[e[0], e[1]] for e in canvas.get("edges") or []
+             if isinstance(e, list) and len(e) == 2
+             and isinstance(e[0], str) and isinstance(e[1], str)]
+    scalars = {k: v for k, v in canvas.items() if k not in ("nodes", "edges")}
+    return {"nodes": nodes, "order": order, "edges": edges, "canvas": scalars}
+
+
+def _merge_row(base: dict | None, local: dict, remote: dict) -> dict:
+    """Field-wise three-way merge of one row, local winning a same-field tie."""
+    if local == remote:
+        return dict(local)
+    if base is not None:
+        if local == base:
+            return dict(remote)
+        if remote == base:
+            return dict(local)
+    base = base or {}
+    out: dict = {}
+    for key in list(local) + [k for k in remote if k not in local]:
+        lv, rv, bv = local.get(key, _ABSENT), remote.get(key, _ABSENT), base.get(key, _ABSENT)
+        if lv == rv:
+            val = lv
+        elif lv == bv:
+            val = rv          # only the remote changed this field
+        else:
+            val = lv          # only local changed it, or both did: local wins
+        if val is not _ABSENT:
+            out[key] = val
+    return out
+
+
+_ABSENT = object()
+
+# Scalars that are a view's own, never taken from the other side.
+_LOCAL_ONLY_SCALARS = ("viewport", "viewportBounds")
+
+
+def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[dict, dict]:
+    """Three-way merge of two canvas.toml documents at node granularity.
+
+    `base` is `rows_of_doc` of the toml at the last sync point (None when the
+    sync point predates this code: then only nodes the remote has and local
+    lacks come in, and local wins everything else — the old per-file rule's
+    outcome for the file, but still per node). Returns `(merged_doc, info)`
+    where merged_doc is `local_doc` with its [canvas] nodes/edges/scalars
+    replaced, and info = {added, removed, taken, kept} by node name.
+
+    Per node: one side changed → that side; both → field-wise, local wins a
+    same-field tie; deleted on one side and untouched on the other → deleted;
+    deleted on one side and changed on the other → the change wins (local
+    deletes beat remote changes, as the file rule did: the push propagates
+    the delete). Edges: union minus what either side deleted since base,
+    minus edges touching a dropped node. Scalars: viewport/viewportBounds
+    local; others local unless only the remote moved them.
+    """
+    L, R = rows_of_doc(local_doc), rows_of_doc(remote_doc)
+    B = base or {"nodes": {}, "edges": [], "canvas": {}}
+    bn, ln, rn = B["nodes"], L["nodes"], R["nodes"]
+    merged: dict[str, dict] = {}
+    info = {"added": [], "removed": [], "taken": [], "kept": []}
+    for name in L["order"]:
+        if name in rn:
+            row = _merge_row(bn.get(name), ln[name], rn[name])
+            merged[name] = row
+            if row == rn[name] and row != ln[name]:
+                info["taken"].append(name)
+            elif row == ln[name]:
+                info["kept"].append(name)
+            else:
+                info["taken"].append(name)
+        elif name in bn and bn[name] == ln[name]:
+            info["removed"].append(name)      # remote deleted an untouched node
+        else:
+            merged[name] = dict(ln[name])     # local added or changed it
+            info["kept"].append(name)
+    for name in R["order"]:
+        if name in merged or name in ln:
+            continue
+        if name in bn:
+            continue                          # local deleted it: stays deleted
+        merged[name] = dict(rn[name])         # new on the remote
+        info["added"].append(name)
+
+    def edge_set(rows):
+        return {(a, b) for a, b in rows}
+    be, le, re_ = edge_set(B["edges"]), edge_set(L["edges"]), edge_set(R["edges"])
+    edges = ((le | re_) - (be - le) - (be - re_))
+    ordered = [e for e in L["edges"] if tuple(e) in edges]
+    seen = {tuple(e) for e in ordered}
+    for e in R["edges"]:
+        if tuple(e) in edges and tuple(e) not in seen:
+            ordered.append(e)
+            seen.add(tuple(e))
+    ordered = [e for e in ordered if e[0] in merged and e[1] in merged]
+
+    scalars = dict(L["canvas"])
+    for key, rv in R["canvas"].items():
+        if key in _LOCAL_ONLY_SCALARS:
+            continue
+        lv, bv = L["canvas"].get(key, _ABSENT), B["canvas"].get(key, _ABSENT)
+        if lv == bv and rv != lv:
+            scalars[key] = rv
+    for key in list(scalars):
+        if key not in R["canvas"] and key not in _LOCAL_ONLY_SCALARS \
+                and scalars[key] == B["canvas"].get(key, _ABSENT):
+            del scalars[key]                  # remote removed an untouched scalar
+
+    # Keep the local document's key order (rtoml writes keys in dict order):
+    # an unchanged merge must dump to the same bytes it read.
+    out = dict(local_doc)
+    canvas = dict(local_doc.get("canvas") or {})
+    for key in list(canvas):
+        if key not in ("nodes", "edges") and key not in scalars:
+            del canvas[key]
+    for key, val in scalars.items():
+        canvas[key] = val
+    canvas["nodes"] = [merged[n] for n in merged]
+    canvas["edges"] = ordered
+    out["canvas"] = canvas
+    return out, info
