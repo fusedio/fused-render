@@ -686,6 +686,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
       watchHostTasks(res.tasks_run);
       return;
     }
+    // …AND WHILE A HOST WATCH HOLDS LIVE ROWS, a history answer that says
+    // nothing live does not replace them (Bugbot 4307278676): history's walk
+    // can name another run dir, or race the host's own liveness, and nulling
+    // the owner here would kill the watch — the job's real end, the dead-host
+    // downgrade and the 5 s grace would never come. The watch ends by itself.
+    if (!res.live_run && state.tasksRunId && hostWatched.startsWith(state.tasksRunId + "\u0000")) return;
     const owner = res.live_run || res.tasks_run || null;
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
@@ -2004,8 +2010,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // open while `tasks_pending`, and the model is woken when the task
           // notifies). Only the backend's own "nothing still running" fact
           // retires the live records.
-          if (poll.tasks_pending) watchHostTasks(runId, seat);
-          else endRunTasks(runId);
+          // OWNERSHIP-GUARDED like the param above (Bugbot 4307278686): a
+          // superseded loop's late `done` must not retire the newer loop's
+          // host watch and leave none.
+          if (poll.tasks_pending) {
+            if (loopSeq === seat) watchHostTasks(runId, seat);
+          } else endRunTasks(runId);
           deps.onRunEnded?.();
           // T does one final `pollArtifacts()` at the run's end (T:16347), and
           // controller-api promises "every 8th poll AND once at the run's end".

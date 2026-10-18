@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 // The run loop against a FAKE agent.py. Every test here is one of the rules the
 // template earned the hard way: whole-turn replay, D687 slicing after a
 // follow-up, ownership by the newest loop, card placement, the two poll
@@ -5006,6 +5007,38 @@ describe("the run's tasks", () => {
     await settle();
     expect(agent.of("tasks")).toHaveLength(3);
     expect(controller.getState().tasks[0]!.status).toBe("completed");
+  });
+
+  test("Bugbot 4307278676: a history refresh saying nothing live leaves the watched rows (and the watch) alone", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    let n = 0;
+    let refreshing = false;
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () =>
+        !refreshing
+          ? { turns: [], transcript: null }
+          : { turns: [], transcript: { path: "/p", mtime: ++n, size: 1 }, live_run: "", tasks: [] },
+      tasks: () => ({ tasks: [SH], tasks_pending: true, host_alive: true }),
+    });
+    await controller.sendMessage("go");
+    await settle();
+    refreshing = true;
+    await controller.refreshHistory("s1");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["sh"]);
+    expect(controller.getState().tasksRunId).toBe("r1");
+    // …and the watch is still asking the host.
+    const asked = agent.of("tasks").length;
+    await settle();
+    expect(agent.of("tasks").length).toBeGreaterThan(asked);
+    controller.newChat();
+  });
+
+  test("Bugbot 4307278686: only the OWNING loop's done starts (or retires) a host watch", () => {
+    const src = readFileSync(new URL("./run-controller.ts", import.meta.url), "utf8");
+    expect(src).toContain("if (loopSeq === seat) watchHostTasks(runId, seat);");
+    expect(src).not.toMatch(/if \(poll\.tasks_pending\) watchHostTasks\(runId, seat\);/);
   });
 
   test("a host that dies under the watch downgrades the live rows, the one case that still does", async () => {
