@@ -40,12 +40,59 @@ import { StreamLanguage } from "@codemirror/language";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { oneDark } from "@codemirror/theme-one-dark";
+// CE-*: the code editor's full feature set (SPEC §51). More first-class Lezer
+// grammars, the lint/search APIs it drives from its own status bar, the
+// Compartment its live toggles (language, wrap, indent, theme) reconfigure
+// through, and legacy modes for the rest. C/C++/Java/Rust/Go deliberately ride
+// the legacy modes rather than their Lezer packages: those grammars are ~300 KB
+// minified together, and this one bundle is also loaded by the markdown and
+// notebook views, which never use them.
+import { Compartment } from "@codemirror/state";
+import { indentWithTab } from "@codemirror/commands";
+import { indentUnit } from "@codemirror/language";
+import { completeAnyWord } from "@codemirror/autocomplete";
+import { gotoLine } from "@codemirror/search";
+import { linter, lintGutter, openLintPanel, forEachDiagnostic } from "@codemirror/lint";
+import { jsonParseLinter } from "@codemirror/lang-json";
+import { xml } from "@codemirror/lang-xml";
+import { sql } from "@codemirror/lang-sql";
+import { sass } from "@codemirror/lang-sass";
+import { less } from "@codemirror/lang-less";
+import { indentationMarkers } from "@replit/codemirror-indentation-markers";
+import { properties } from "@codemirror/legacy-modes/mode/properties";
+import { powerShell } from "@codemirror/legacy-modes/mode/powershell";
+import { dockerFile } from "@codemirror/legacy-modes/mode/dockerfile";
+import { diff } from "@codemirror/legacy-modes/mode/diff";
+import { lua } from "@codemirror/legacy-modes/mode/lua";
+import { ruby } from "@codemirror/legacy-modes/mode/ruby";
+import { r } from "@codemirror/legacy-modes/mode/r";
+import { swift } from "@codemirror/legacy-modes/mode/swift";
+import { c, cpp, java, kotlin, csharp, scala, dart, objectiveC } from "@codemirror/legacy-modes/mode/clike";
+import { rust } from "@codemirror/legacy-modes/mode/rust";
+import { go } from "@codemirror/legacy-modes/mode/go";
+import { groovy } from "@codemirror/legacy-modes/mode/groovy";
+import { stex } from "@codemirror/legacy-modes/mode/stex";
+import { perl } from "@codemirror/legacy-modes/mode/perl";
+import { nginx } from "@codemirror/legacy-modes/mode/nginx";
+import { cmake } from "@codemirror/legacy-modes/mode/cmake";
+import { protobuf } from "@codemirror/legacy-modes/mode/protobuf";
+import { julia } from "@codemirror/legacy-modes/mode/julia";
+import { haskell } from "@codemirror/legacy-modes/mode/haskell";
 
 // Legacy (CodeMirror-5-style) grammars wrapped as CM6 languages. Kept as ready
 // EditorState extensions so the template treats them like the first-class
 // language functions above.
 const shellLang = StreamLanguage.define(shell);
 const tomlLang = StreamLanguage.define(toml);
+
+// CE-*: raw legacy mode specs, NOT pre-wrapped — the code template wraps the
+// one a file needs with StreamLanguage.define on demand, so a bundle load does
+// not build a language object for every grammar nobody opened.
+const legacyModes = {
+  shell, toml, properties, powerShell, dockerFile, diff, lua, ruby, r, swift,
+  c, cpp, java, kotlin, csharp, scala, dart, objectiveC, rust, go, groovy,
+  stex, perl, nginx, cmake, protobuf, julia, haskell,
+};
 
 export {
   EditorView,
@@ -85,4 +132,21 @@ export {
   shellLang,
   tomlLang,
   oneDark,
+  // CE-*: code editor.
+  Compartment,
+  indentWithTab,
+  indentUnit,
+  completeAnyWord,
+  gotoLine,
+  linter,
+  lintGutter,
+  openLintPanel,
+  forEachDiagnostic,
+  jsonParseLinter,
+  xml,
+  sql,
+  sass,
+  less,
+  indentationMarkers,
+  legacyModes,
 };
