@@ -3,19 +3,13 @@ import { readFileSync } from "node:fs";
 import type { CurrentAppEntry } from "@platform/lib/api";
 import {
   APP_PAGE_TABS,
-  assignSequences,
-  bySequence,
   moveSlug,
-  reorderTo,
   appPageTabFromSearch,
   appPageUrl,
   appPathFromPath,
   currentApps,
   isUnderDir,
-  orderedSlugs,
   parseSavedOrder,
-  type AppOrder,
-  type CurrentApp,
 } from "./current-apps-lib";
 
 function entry(path: string, kind: CurrentAppEntry["kind"] = "workspace"): CurrentAppEntry {
@@ -32,10 +26,6 @@ function entry(path: string, kind: CurrentAppEntry["kind"] = "workspace"): Curre
 const A = "/Users/me/Fused/local/a";
 const B = "/Users/me/Fused/showcase/b";
 const L = "/Users/me/elsewhere/linked";
-
-function apps(...paths: string[]): CurrentApp[] {
-  return currentApps(paths.map((p) => entry(p)), []);
-}
 
 describe("currentApps", () => {
   it("keeps the store's order and marks running by containment", () => {
@@ -66,51 +56,23 @@ describe("currentApps", () => {
 });
 
 describe("the displayed order", () => {
-  it("seeds from added order, newest on top", () => {
-    const order: AppOrder = new Map();
-    const found = apps(A, B);
-    assignSequences(order, found);
-    expect(bySequence(found, order).map((a) => a.path)).toEqual([B, A]);
-  });
-
-  it("puts an app that is NOT listed at the top and keeps a reorder", () => {
-    const order: AppOrder = new Map();
-    assignSequences(order, apps(A, B));
-    reorderTo(order, [A, B]);
-    const found = apps(A, B, L);
-    assignSequences(order, found);
-    expect(bySequence(found, order).map((a) => a.path)).toEqual([L, A, B]);
-  });
-
-  it("forgets an app that leaves, so it comes back on top", () => {
-    const order: AppOrder = new Map();
-    assignSequences(order, apps(A, B));
-    reorderTo(order, [A, B]);
-    assignSequences(order, apps(B));
-    expect(order.has(A)).toBe(false);
-    const found = apps(B, A);
-    assignSequences(order, found);
-    expect(bySequence(found, order).map((a) => a.path)).toEqual([A, B]);
-  });
-
-  it("holds the order through a list that has not loaded yet", () => {
-    const order: AppOrder = new Map();
-    assignSequences(order, apps(A, B));
-    assignSequences(order, []);
-    expect(order.size).toBe(2);
+  it("is the server's array, drawn as it arrives (D1384)", () => {
+    // No client numbering: whatever order GET /api/current-apps answers in is
+    // the order on screen, newest-on-top included (the server inserts at 0).
+    const out = currentApps([entry(L, "linked"), entry(B), entry(A)], []);
+    expect(out.map((a) => a.path)).toEqual([L, B, A]);
   });
 });
 
-describe("the saved order", () => {
-  it("round-trips the display order through the store shape", () => {
-    const order: AppOrder = new Map();
-    reorderTo(order, [B, A]);
-    const saved = JSON.stringify(orderedSlugs(order));
-    expect(parseSavedOrder(saved)).toEqual([B, A]);
+describe("the import-only saved-order parser", () => {
+  it("reads a pre-D1384 row back as a path list", () => {
+    expect(parseSavedOrder(JSON.stringify([B, A]))).toEqual([B, A]);
+    expect(parseSavedOrder(null)).toEqual([]);
   });
 
   it("degrades a corrupt row to no order", () => {
     expect(parseSavedOrder("nope")).toEqual([]);
+    expect(parseSavedOrder(JSON.stringify({ a: 1 }))).toEqual([]);
     expect(parseSavedOrder(JSON.stringify([1, A, A, ""]))).toEqual([A]);
   });
 });
@@ -126,38 +88,51 @@ describe("moveSlug", () => {
   });
 });
 
-describe("CurrentAppsSection's half of the saved order", () => {
+describe("CurrentAppsSection's half of the order", () => {
   const SECTION = readFileSync(
     new URL("./CurrentAppsSection.tsx", import.meta.url),
     "utf8",
   );
 
-  it("touches localStorage only inside a try", () => {
-    expect(SECTION).toContain("localStorage.getItem(ORDER_KEY)");
-    expect(SECTION).toContain("localStorage.setItem(ORDER_KEY");
-    for (const call of ["localStorage.getItem", "localStorage.setItem"]) {
-      const before = SECTION.slice(0, SECTION.indexOf(call));
-      expect((before.match(/try \{/g) ?? []).length).toBeGreaterThan(
-        (before.match(/\} catch/g) ?? []).length,
-      );
+  it("keeps no order of its own — nothing sorts, nothing numbers", () => {
+    for (const gone of ["assignSequences", "bySequence", "reorderTo", "orderedSlugs", "appOrder"]) {
+      expect(SECTION).not.toContain(gone);
     }
+    expect(SECTION).not.toContain("localStorage.setItem(LEGACY_ORDER_KEY");
   });
 
-  it("hydrates the order at import, not in an effect", () => {
-    const hydrate = SECTION.indexOf("adoptSavedOrder(readSavedOrder())");
-    expect(hydrate).toBeGreaterThan(-1);
-    expect(hydrate).toBeLessThan(SECTION.indexOf("export default function"));
-  });
-
-  it("writes only a CHANGED order, and ONLY from the drop handler", () => {
-    expect(SECTION).toContain(
-      "if (localStorage.getItem(ORDER_KEY) === next) return;",
-    );
-    const calls = SECTION.split("saveOrder(").length - 1;
-    expect(calls).toBe(2); // the declaration, and the one call
+  it("POSTs the whole list ONLY from the drop handler", () => {
+    const calls = SECTION.split("setCurrentAppsOrder(").length - 1;
+    expect(calls).toBe(2); // the one-shot import, and the drop
     const drop = SECTION.indexOf("onDrop: (e) => {");
     const dropEnd = SECTION.indexOf("onDragEnd:", drop);
-    expect(SECTION.slice(drop, dropEnd)).toContain("saveOrder(next)");
+    const handler = SECTION.slice(drop, dropEnd);
+    expect(handler).toContain("moveSlug(paths, from, path, isBelow(e))");
+    expect(handler).toContain("setCurrentAppsOrder(next)");
+    // The answer is adopted and the other windows are nudged to refetch.
+    expect(handler).toContain("adopt(r.apps ?? [])");
+    expect(handler).toContain("announceDeskChanged(");
+  });
+
+  it("imports the old order once at module load, then removes the key", () => {
+    const imp = SECTION.indexOf("parseSavedOrder(localStorage.getItem(LEGACY_ORDER_KEY))");
+    expect(imp).toBeGreaterThan(-1);
+    expect(imp).toBeLessThan(SECTION.indexOf("export default function"));
+    expect(SECTION).toContain('LEGACY_ORDER_KEY = "fused-render:current-apps-order:v2"');
+    expect(SECTION).toContain("localStorage.removeItem(LEGACY_ORDER_KEY)");
+  });
+
+  it("imports the old order ONLY over a desk nobody has arranged (D1384)", () => {
+    // A stale origin left behind by the port walk must not overwrite an order
+    // the user dragged since: the server's rows are read first, and the old
+    // list goes up only while they are still in added order, newest first.
+    const imp = SECTION.slice(
+      SECTION.indexOf("parseSavedOrder(localStorage.getItem(LEGACY_ORDER_KEY))"),
+      SECTION.indexOf("/** The desk's table, fetched on mount"),
+    );
+    expect(imp.indexOf("getCurrentApps()")).toBeLessThan(imp.indexOf("setCurrentAppsOrder(legacy)"));
+    expect(imp).toContain("if (!neverArranged(current.apps ?? [])) {\n          dropLegacyOrder();\n          return;");
+    expect(SECTION).toContain("return y.at - x.at || x.i - y.i;");
   });
 
   it("reads the desk from its own endpoint, not from the pulse", () => {
@@ -232,7 +207,7 @@ describe("app page codec", () => {
 // "in_progress"` alone, while tasksPulse already counts a needs_attention row
 // (a run parked on a card) as running too — the Tasks rail could say work was
 // in flight while the same project's Current Apps row sat idle. Source-text
-// checked, like the saved-order describe above, since the reading lives
+// checked, like the order describe above, since the reading lives
 // inline in the component rather than in a pure export.
 describe("CurrentAppsSection's running projects", () => {
   const SECTION = readFileSync(

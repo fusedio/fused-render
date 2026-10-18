@@ -3,7 +3,7 @@
 //
 // Get on an app that runs Python opens the sheet first ("Before you install":
 // what it will do on this machine), once per app: confirming records the slug
-// (localStorage, best-effort), and a later Get of the same app — a reinstall
+// (server-side, best-effort; D1384), and a later Get of the same app — a reinstall
 // after an uninstall — goes straight through.
 //
 // Update and Retry ask only when the installed copy has LOCAL EDITS
@@ -30,28 +30,55 @@ import {
   type InstallJob,
 } from "@platform/lib/marketplace";
 import { formatSize } from "@platform/lib/format";
+import { ackMarketplacePython, getMarketplaceAcks } from "@platform/lib/api";
 import { trustItemsFor } from "./trust";
 
+// The acknowledged slugs live on the server (GET /api/marketplace/acks, POST
+// /api/marketplace/ack; `<marketplace state dir>/acks.json`), D1384. They used
+// to be localStorage, but the desktop app walks ports 1777..1787 then an
+// ephemeral one and each port is a new origin with empty storage, so a relaunch
+// on another port asked again about an app already accepted. Reads stay
+// synchronous off `acks`, filled by one GET started at module load: the sheet
+// only opens on a click, long after that local request has landed. Until it
+// lands the set is empty, and the worst case is the sheet asking once more.
+const acks = new Set<string>();
+
+/** import-only (D1384): the old localStorage key, a JSON array of slugs. */
 const ACK_KEY = "fused-render:marketplace:python-ack";
 
-function readAcks(): Set<string> {
+function hydrateAcks() {
+  if (typeof window === "undefined") return;
+  // One-shot import: each leftover slug is posted through the normal write
+  // path, counts at once (no re-ask while the POSTs travel), and the key goes
+  // once every POST settled — a slug the server refuses would refuse forever.
   try {
     const raw = localStorage.getItem(ACK_KEY);
-    const arr = raw ? (JSON.parse(raw) as unknown) : [];
-    return new Set(Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : []);
+    if (raw !== null) {
+      const arr = JSON.parse(raw) as unknown;
+      const slugs = Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string" && !!x) : [];
+      for (const s of slugs) acks.add(s);
+      void Promise.allSettled(slugs.map((s) => ackMarketplacePython(s))).then(() => {
+        try { localStorage.removeItem(ACK_KEY); } catch { /* no storage */ }
+      });
+    }
   } catch {
-    return new Set();
+    /* storage blocked or unreadable: nothing to import */
   }
+  getMarketplaceAcks()
+    .then((r) => { for (const s of r.slugs || []) acks.add(s); })
+    .catch(() => { /* server unreachable: the sheet may ask again */ });
+}
+hydrateAcks();
+
+function readAcks(): Set<string> {
+  return acks;
 }
 
 function writeAck(slug: string) {
-  try {
-    const acks = readAcks();
-    acks.add(slug);
-    localStorage.setItem(ACK_KEY, JSON.stringify([...acks]));
-  } catch {
-    /* best-effort: worst case the sheet asks again next time */
-  }
+  acks.add(slug);
+  ackMarketplacePython(slug).catch(() => {
+    /* best-effort: it holds for this document; worst case the sheet asks again after a relaunch */
+  });
 }
 
 // -- The sheet request store ---------------------------------------------------

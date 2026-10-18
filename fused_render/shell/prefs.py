@@ -70,6 +70,7 @@ X-Fused guard and the small env-var effective-engine mirror are duplicated
 locally like shell/bookmarks.py's guard is.
 """
 import os
+import re
 import threading
 
 from fastapi import APIRouter, Body, Header
@@ -391,6 +392,53 @@ def task_recap_titles_enabled() -> bool:
     and the fold are main's, byte for byte.
     """
     return read_prefs().get("task_recap_titles_enabled") is True
+
+
+# ---- moved off localStorage (D1384) -----------------------------------------
+#
+# The four below were browser localStorage keys until D1384. localStorage is
+# per ORIGIN, and the desktop app walks ports 1777..1787 then an ephemeral one
+# (shell/onboarding.py) — so a relaunch on another port is a new origin with
+# empty storage and every one of these silently fell back to its default. The
+# client imports its old key once (push here, then remove it) and reads them
+# off `/api/prefs` from then on.
+
+#: Tasks-page view tab ids: short lower-case identifiers (the client's
+#: `TasksView` names). Unknown-but-well-formed ids are kept — the client drops
+#: what it does not know, so a newer client's tab survives an older server.
+_TASKS_VIEW_TAB_RE = re.compile(r"^[a-z_]{1,24}$")
+MAX_TASKS_VIEW_TABS = 8
+
+
+def bots_autostage() -> bool:
+    """"Open the browser when a bot needs me": a bot-initiated hand-over on
+    the selected bot opens the Bots page's Stage by itself (default ON — only
+    a stored ``false`` turns it off). Was localStorage
+    ``browser-bot.autostage``."""
+    return read_prefs().get("bots_autostage") is not False
+
+
+def bots_sounds() -> bool:
+    """Whether a hand-over plays the Bots page's chime (default ON — only a
+    stored ``false`` turns it off). Was localStorage ``browser-bot.sounds``."""
+    return read_prefs().get("bots_sounds") is not False
+
+
+def bots_clear_enabled() -> bool:
+    """Whether the bot chat header shows its Clear context button (a feature
+    flag, default OFF — only a stored ``true`` turns it on). Was localStorage
+    ``browser-bot.clear``."""
+    return read_prefs().get("bots_clear_enabled") is True
+
+
+def tasks_view_tabs() -> list[str]:
+    """The Tasks page's chosen view tabs, in order. ``[]`` — unset, empty or
+    unreadable — means "the client's defaults"; never raises."""
+    value = read_prefs().get("tasks_view_tabs")
+    if not isinstance(value, list):
+        return []
+    tabs = [t for t in value if isinstance(t, str) and _TASKS_VIEW_TAB_RE.fullmatch(t)]
+    return list(dict.fromkeys(tabs))[:MAX_TASKS_VIEW_TABS]
 
 
 def lan_enabled() -> bool:
@@ -837,6 +885,11 @@ def _prefs_response() -> dict:
         # Whether finished turns are recapped by haiku and the Tasks rows
         # titled by it (opt-in beta, `task_recap_titles_enabled`).
         "task_recap": {"enabled": task_recap_titles_enabled()},
+        # The Bots page's three switches and the Tasks page's view tabs —
+        # localStorage until D1384 (see the readers' section comment).
+        "bots": {"autostage": bots_autostage(), "sounds": bots_sounds(),
+                 "clear_enabled": bots_clear_enabled()},
+        "tasks_view_tabs": tasks_view_tabs(),
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -1137,6 +1190,26 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["task_recap_titles_enabled"] = value
             changed = True
+        for key in ("bots_autostage", "bots_sounds", "bots_clear_enabled"):
+            if key in body:
+                value = body.get(key)
+                if not isinstance(value, bool):
+                    return JSONResponse({"error": f"'{key}' must be a boolean"},
+                                        status_code=400)
+                prefs[key] = value
+                changed = True
+        if "tasks_view_tabs" in body:
+            value = body.get("tasks_view_tabs")
+            if (not isinstance(value, list) or len(value) > MAX_TASKS_VIEW_TABS
+                    or not all(isinstance(t, str) and _TASKS_VIEW_TAB_RE.fullmatch(t)
+                               for t in value)):
+                return JSONResponse(
+                    {"error": "'tasks_view_tabs' must be a list of at most "
+                              f"{MAX_TASKS_VIEW_TABS} tab ids ([a-z_], 1-24 chars)"},
+                    status_code=400)
+            # Order kept, repeats dropped; [] stores "use the defaults".
+            prefs["tasks_view_tabs"] = list(dict.fromkeys(value))
+            changed = True
         if "lan_enabled" in body:
             value = body.get("lan_enabled")
             if not isinstance(value, bool):
@@ -1322,6 +1395,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
+                          "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
+                          "'tasks_view_tabs', "
                           "'lan_enabled', "
                           "'claude_enabled', 'copilot_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "

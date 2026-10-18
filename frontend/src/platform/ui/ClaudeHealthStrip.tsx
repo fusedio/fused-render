@@ -23,21 +23,14 @@
 // facts live in the wizard's Claude step as a checklist. `IssueRow` is the
 // part that step still uses; the strip component stays for the day a surface
 // that truly needs the CLI wants a preflight again.
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import type {
   ClaudeDoctor,
   ClaudeInstallStatus,
   ClaudeLoginStatus,
 } from "@platform/lib/api";
-import { useClaudeSetup } from "@platform/lib/claude-setup";
-import {
-  claudeIssues,
-  dismiss as rememberDismissal,
-  isDismissed,
-  issueHelpUrl,
-  type ClaudeIssue,
-} from "@platform/lib/claude-health";
+import { issueHelpUrl, type ClaudeIssue } from "@platform/lib/claude-health";
 import { CommandLine } from "./CommandLine";
 import { copyToClipboard } from "@platform/lib/clipboard";
 
@@ -253,84 +246,8 @@ export function IssueRow({
   );
 }
 
-export function ClaudeHealthStrip() {
-  // Re-render after a dismissal. The dismissal ITSELF lives in lib/claude-health,
-  // keyed on which problems were dismissed; a local `closed` flag used to shadow
-  // it and was wrong in one direction that matters — dismissing "not signed in"
-  // suppressed a LATER, different problem for the rest of the page's life, when
-  // the signature check exists precisely so a new problem still gets through.
-  const [, redraw] = useState(0);
-  // The machine — snapshot, actions, polls, focus re-check — is lib/claude-setup,
-  // shared with the first-run wizard's Claude step. `watching` tells it a claim
-  // is on screen worth re-checking when the window comes back.
-  const [watching, setWatching] = useState(false);
-  const {
-    health, loaded, busy, install, login, doctor, actionError, acting,
-    linkedNote, load, act, cancelLogin,
-  } = useClaudeSetup(watching);
-
-  const issues = claudeIssues(health);
-  const showing = loaded && issues.length > 0 && !isDismissed(issues);
-  useEffect(() => setWatching(showing), [showing]);
-
-  if (!showing) return null;
-
-  const check = () => load(true);
-
-  const close = () => {
-    rememberDismissal(issues);
-    redraw((n) => n + 1);
-  };
-
-  return (
-    <section className="claude-health" role="status" aria-label="Claude Code setup">
-      <div className="claude-health-head">
-        <h2 className="claude-health-title">
-          {/* Says what is still needed, not that something is broken: nothing IS
-              broken — the app is running and the explorer works. Same posture as
-              the TroubleCard's warning tint (SPEC §42: "Nothing red"). */}
-          Finish setting up Claude Code
-        </h2>
-        <div className="claude-health-head-actions">
-          <button
-            type="button"
-            className="version-panel-link"
-            onClick={check}
-            disabled={busy}
-          >
-            {busy ? "Checking…" : "Check again"}
-          </button>
-          <button
-            type="button"
-            className="claude-health-close"
-            onClick={close}
-            aria-label="Dismiss"
-            title="Dismiss"
-          >
-            ✕
-          </button>
-        </div>
-      </div>
-      <ul className="claude-health-issues">
-        {issues.map((issue) => (
-          <IssueRow
-            key={issue.id}
-            issue={issue}
-            install={install}
-            login={login}
-            // The report belongs to the row that can act on it, and only the
-            // broken-install row can.
-            doctor={issue.id === "broken" ? doctor : null}
-            onAct={act}
-            onCancelLogin={cancelLogin}
-            busy={acting}
-            actionError={issue.action ? actionError : null}
-            doneNote={issue.id === "not-on-path" ? linkedNote : null}
-          />
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-export default ClaudeHealthStrip;
+// The strip component itself (`ClaudeHealthStrip`) is gone: nothing mounted it
+// since the onboarding Tools step took over the preflight (progress.ts), and
+// its dismissal lived in localStorage — a fact the port walk reset on every
+// launch (D1384). `IssueRow` is what the two surfaces that still render these
+// problems (Preferences, the onboarding Tools step) use.

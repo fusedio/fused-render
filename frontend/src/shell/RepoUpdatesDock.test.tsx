@@ -53,10 +53,11 @@ import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 
 // bun's test runtime has no `localStorage` at all (a bare read throws
-// `ReferenceError`, not "unavailable") — `notifications-seen-store.ts`'s own
-// suite stands one up the same way; R4's seen/unseen split silently never
-// persists anything without it, which would make every `renderSeenView` in
-// this file a no-op rather than a loud failure.
+// `ReferenceError`, not "unavailable"). Nothing this card renders keeps state
+// there any more — the seen split and the dismissals are server-backed
+// (`notifications-seen-store.ts`, D1384) — but the store's one-shot import
+// reads the old keys if anything calls its hydration, so a tiny real store
+// stays standing rather than a bare global that throws.
 const seenStorageBacking = new Map<string, string>();
 (globalThis as { localStorage?: unknown }).localStorage = {
   getItem: (k: string) => (seenStorageBacking.has(k) ? seenStorageBacking.get(k)! : null),
@@ -106,22 +107,17 @@ const {
 import type { StoredNotification } from "@platform/lib/notifications";
 const { _resetSeenStoreForTest } = await import("@shell/notifications-seen-store");
 
-// R4's seen/unseen split is itself persisted state (notifications-seen-store.ts,
-// backed by localStorage) — shared across every test in this one `bun test`
-// process exactly like `_resetNotificationsForTest` resets the message store
-// each test already relies on. Without this, a key one test's `renderSeenView`
-// marks seen (doneJob()'s default id, asking()'s default key, ...) would still
-// read as seen in a LATER test that assumes a fresh, nothing-looked-at-yet
-// "first look" — order-dependent flakiness of exactly the kind
-// `testDomShim.ts`'s own header warns about for shared globals.
-//
-// `_resetSeenStoreForTest()` alone is not enough: it re-reads from
-// `seenStorageBacking`, the fake localStorage above, which is itself a
-// module-level `Map` that outlives any one test. Age/size pruning (R4) only
-// drops an entry once it is 30 days old or the store holds 500+ keys, so
-// without clearing this Map too, every row key any earlier test ever stamped
-// stays "seen" forever — clearing it here is what makes each test start from
-// a genuinely empty store, not an accumulating one.
+// R4's seen/unseen split is itself module-level state
+// (notifications-seen-store.ts's server-backed cache) — shared across every
+// test in this one `bun test` process exactly like `_resetNotificationsForTest`
+// resets the message store each test already relies on. Without this, a key
+// one test's `renderSeenView` marks seen (doneJob()'s default id, asking()'s
+// default key, ...) would still read as seen in a LATER test that assumes a
+// fresh, nothing-looked-at-yet "first look" — order-dependent flakiness of
+// exactly the kind `testDomShim.ts`'s own header warns about for shared
+// globals. `_resetSeenStoreForTest()` empties the cache, drops pending
+// coalesced stamps and severs stale subscribers; the store's writes POST to a
+// fetch that fails here and are swallowed, so nothing outlives a test.
 beforeEach(() => {
   seenStorageBacking.clear();
   _resetSeenStoreForTest();
@@ -1092,7 +1088,7 @@ test("clicking a repo row's body opens its folder in the explorer with the Git s
 });
 
 // D949: a row click dismisses through the SAME persisted path the ✕ already
-// uses (dismiss-store / `repoDismissSignature`), so it survives a re-render
+// uses (notifications-seen-store / `repoDismissSignature`), so it survives a re-render
 // with the resulting `dismissed` map exactly the way a ✕-dismissed row does
 // (see "a re-check that moved NOTHING leaves a dismissed row dismissed"
 // above) — this is the dock-level harness that actually wires `onDismiss`

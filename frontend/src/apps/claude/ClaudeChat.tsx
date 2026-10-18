@@ -34,6 +34,7 @@ import { createPortal } from "react-dom";
 
 import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
+import { CHAT_ACTIVITY_KEY } from "@platform/lib/tasksChanged";
 import {
   chatDraftKey,
   newTaskDraftId,
@@ -219,11 +220,11 @@ export type ChatParamsSource = "url" | ParamsStore;
  *  wonders whether anything happened. */
 export const ASK_DETECTION_TIMEOUT_MS = 1500;
 
-/** T:16435 — the cross-document poke. `storage` fires only on a CHANGED value
- *  and never in the writing document, which is exactly the shape needed; the
- *  clock plus a nonce means two panes stamping in the same millisecond cannot
- *  swallow each other's poke. */
-export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
+// T:16435 — the cross-document poke, CHAT_ACTIVITY_KEY (one home:
+// @platform/lib/tasksChanged, D1384). `storage` fires only on a CHANGED value
+// and never in the writing document, which is exactly the shape needed; the
+// clock plus a nonce (stampChatActivity) means two panes stamping in the same
+// millisecond cannot swallow each other's poke.
 
 /** How often the HOST's app-state frame is looked up again (`annotateTarget`).
  *  The mark moves with the host's own mode switcher and goes when it shows a

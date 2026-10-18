@@ -300,15 +300,17 @@ def recent_rows(limit: int = MAX_RESULTS) -> list[dict]:
 
 
 def desk_rows() -> list[dict]:
-    """The sidebar's desk (``current_apps``), NEWEST-ADDED FIRST — the order
-    the sidebar seeds before any drag (a drag reorder lives in the browser's
-    localStorage and is not visible here). In the launcher's empty-query
-    list they trail the recently opened apps (`search`). Folders that are
-    gone are skipped."""
+    """The sidebar's desk (``current_apps``) in the SIDEBAR'S OWN ORDER: the
+    stored array is display order, top first — a new app lands at index 0 and
+    a drag rewrites the whole list (D1384; it used to be added order with the
+    drag held in the browser's localStorage, which this process could not
+    see, so this list reversed the file to approximate "newest first"). In
+    the launcher's empty-query list they trail the recently opened apps
+    (`search`). Folders that are gone are skipped."""
     from fused_render import app_listing, current_apps
 
     rows = []
-    for a in reversed(current_apps.list_apps()):
+    for a in current_apps.list_apps():
         if not a.get("exists"):
             continue
         entry = a.get("entry")
