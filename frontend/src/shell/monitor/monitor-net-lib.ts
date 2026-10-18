@@ -113,6 +113,9 @@ export interface Tile {
   title: string;
   level: TileLevel;
   value: string;
+  /** The big figure and the small line under it (value stays the one-line form). */
+  primary: string;
+  caption: string;
   baseline?: string;
   tab: Tab;
 }
@@ -140,16 +143,20 @@ export function overviewTiles(d: Dashboard): Tile[] {
     title: string,
     tab: Tab,
     section: unknown,
-    fn: () => { level: Level; value: string; baseline?: string },
+    fn: () => { level: Level; value: string; baseline?: string; primary?: string; caption?: string },
   ) => {
+    const off = { key, title, tab, level: "unavailable" as const, value: UNAVAILABLE, primary: UNAVAILABLE, caption: "" };
     if (!sectionOk(section as object)) {
-      tiles.push({ key, title, tab, level: "unavailable", value: UNAVAILABLE });
+      tiles.push(off);
       return;
     }
     try {
-      tiles.push({ key, title, tab, ...fn() });
+      const r = fn();
+      const [first, ...rest] = r.value.split(" · ");
+      const caption = r.caption ?? [...rest, ...(r.baseline ? [r.baseline] : [])].join(" · ");
+      tiles.push({ key, title, tab, ...r, primary: r.primary ?? first, caption });
     } catch {
-      tiles.push({ key, title, tab, level: "unavailable", value: UNAVAILABLE });
+      tiles.push(off);
     }
   };
 
@@ -163,11 +170,18 @@ export function overviewTiles(d: Dashboard): Tile[] {
     return {
       level: sat ? "bad" : "ok",
       value: `${s.rps_10s}/s · ${worst} in flight`,
+      primary: `${s.rps_10s}/s`,
+      caption: `${worst} in flight`,
     };
   });
   add("queue", "Browser queue", "network", d.net, () => {
     const q = net!.summary.browser_queue_p95_ms;
-    return { level: q != null && q > QUEUE_P95_MS ? "warn" : "ok", value: q == null ? "no data" : `${ms(q)} p95` };
+    return {
+      level: q != null && q > QUEUE_P95_MS ? "warn" : "ok",
+      value: q == null ? "no data" : `${ms(q)} p95`,
+      primary: q == null ? "no data" : ms(q),
+      caption: q == null ? "" : "p95 wait for a connection",
+    };
   });
   add("server", "Server", "overview", d.server, () => {
     const s = d.server as Exclude<Dashboard["server"], SectionError>;
@@ -178,6 +192,8 @@ export function overviewTiles(d: Dashboard): Tile[] {
     return {
       level: busy || lagging ? "bad" : "ok",
       value: `${pool ? `${pool.borrowed}/${pool.total} threads` : "threads ?"} · lag ${ms(lag)}`,
+      primary: `${ms(lag)} lag`,
+      caption: pool ? `${pool.borrowed}/${pool.total} threads busy` : "threads ?",
     };
   });
   add("memory", "Memory and swap", "processes", d.memory, () => {
@@ -189,7 +205,8 @@ export function overviewTiles(d: Dashboard): Tile[] {
     return {
       level,
       value: `${formatBytes(m.used, true)} / ${formatBytes(m.total, true)} · swap ${formatBytes(m.swap_used, true)}`,
-      baseline: base != null ? `usual swap ${formatBytes(base, true)}` : undefined,
+      primary: `${formatBytes(m.used, true).replace(/ ([KMGT]?B)$/, (x, u) => (formatBytes(m.total, true).endsWith(u) ? "" : x))} / ${formatBytes(m.total, true)}`,
+      baseline: base != null ? `usual ${formatBytes(base, true)}` : undefined,
     };
   });
   add("cpu", "CPU and thermal", "processes", d.cpu, () => {
@@ -253,7 +270,12 @@ export function overviewTiles(d: Dashboard): Tile[] {
   add("errors", "Errors and outages", "overview", d.errors, () => {
     const e = d.errors as Exclude<Dashboard["errors"], SectionError>;
     const recent = e.last_outage_age_s != null && e.last_outage_age_s < RECENT_OUTAGE_S;
+    const logs = `${e.server_log_errors.length} log errors`;
+    const restarts = `${e.restarts_24h} restarts`;
+    const [primary, other] = e.server_log_errors.length > 0 ? [logs, restarts] : [restarts, logs];
     return {
+      primary,
+      caption: `${other} (24 h)`,
       level: recent ? "bad" : e.restarts_24h > 0 || e.crashes.length > 0 ? "warn" : "ok",
       value: `${e.server_log_errors.length} log errors · ${e.restarts_24h} restarts (24 h)`,
     };

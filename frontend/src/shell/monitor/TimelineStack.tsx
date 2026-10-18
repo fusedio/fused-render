@@ -6,12 +6,26 @@ import { Sparkline } from "./Sparkline";
 import type { TimelinePoint } from "./monitor-api";
 import { timelineSeries } from "./monitor-net-lib";
 
+const FULL_WINDOW_S = 600;
+
+/** Window to plot: the full 10 minutes, or just the history we have (min 60 s) so short plots fill the width. */
+export function timelineWindowS(points: TimelinePoint[]): number {
+  if (points.length < 2) return FULL_WINDOW_S;
+  const span = points[points.length - 1].t - points[0].t;
+  return span >= FULL_WINDOW_S ? FULL_WINDOW_S : Math.max(60, span);
+}
+
+export function timelineTitle(points: TimelinePoint[]): string {
+  const w = timelineWindowS(points);
+  return w >= FULL_WINDOW_S ? "Last 10 minutes" : `Since restart · ${Math.max(1, Math.round(w / 60))} min`;
+}
+
 const ROW_KEYS = new Set(["rps", "in_flight", "lag_ms", "cpu"]);
 
 export default function TimelineStack({
   points,
   events,
-  windowS = 600,
+  windowS = FULL_WINDOW_S,
 }: {
   points: TimelinePoint[];
   events: { t: number; kind: string }[];

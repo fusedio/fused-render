@@ -17,7 +17,7 @@ import { spaLinkProps } from "@platform/lib/router";
 import { formatBytes } from "@platform/lib/sysmon";
 import { getDashboard, sectionOk, type Dashboard } from "./monitor-api";
 import { monitorUrl, overviewTiles, type Tab } from "./monitor-net-lib";
-import TimelineStack from "./TimelineStack";
+import TimelineStack, { timelineTitle, timelineWindowS } from "./TimelineStack";
 import { useRecord, type RecordApi } from "./useRecord";
 import { usePolled } from "./usePolled";
 
@@ -129,8 +129,8 @@ export default function OverviewTab({
           <span className="monitor-tile-dot" aria-hidden="true" />
           {t.title}
         </span>
-        <span className="monitor-tile-value">{t.value}</span>
-        <span className="monitor-tile-base">{t.baseline ?? " "}</span>
+        <span className="monitor-tile-value">{t.primary}</span>
+        <span className="monitor-tile-base">{t.caption || " "}</span>
       </a>
     );
   };
@@ -191,9 +191,9 @@ export default function OverviewTab({
       <div className="monitor-tiles">{tiles.map(renderTile)}</div>
 
       <section className="monitor-net-sec">
-        <h2 className="monitor-sec-title">Last 10 minutes</h2>
+        <h2 className="monitor-sec-title">{timelineTitle(tl?.points ?? [])}</h2>
         {tl ? (
-          <TimelineStack points={tl.points} events={tl.events} />
+          <TimelineStack points={tl.points} events={tl.events} windowS={timelineWindowS(tl.points)} />
         ) : (
           <p className="monitor-net-note">{data ? "Timeline unavailable." : "Reading…"}</p>
         )}

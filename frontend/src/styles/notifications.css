@@ -2275,6 +2275,20 @@ a.sys-link {
   font-weight: 600;
 }
 
+.sys-verdict-head a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.sys-verdict-head a:hover {
+  text-decoration: underline;
+}
+
+.sys-verdict-head a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .sys-reasons {
   margin: 4px 0 0;
   padding-left: 16px;
