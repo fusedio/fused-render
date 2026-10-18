@@ -300,8 +300,15 @@
   .legend .bar { height: 10px; border-radius: 5px; }
   .legend .ends, .hist .ends { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); font-family: var(--mono); margin-top: 3px; }
   .hist { margin-top: 8px; }
-  .hist svg { display: block; width: 100%; height: 44px; }
+  .hist svg { display: block; width: 100%; height: 72px; }
   .hist line { stroke: var(--text); stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; }
+  .classes { margin-top: 6px; font: 11px var(--mono); }
+  .cls { display: grid; grid-template-columns: 14px 3.5em minmax(0,1fr) 4.5em; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+  .cls.head { color: var(--muted); font-size: 10px; }
+  .cls i { width: 14px; height: 14px; border-radius: 3px; }
+  .cls .bar { height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+  .cls .bar b { display: block; height: 100%; background: var(--faint); }
+  .cls span:last-child { text-align: right; }
   .swatchrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .swatch { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
   .swatch i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
@@ -2488,10 +2495,12 @@ function histogramChart(stats, marks, colorOf) {
     + `<div class="ends"><span>${esc(fmtNum(min))}</span><span>log count</span><span>${esc(fmtNum(max))}</span></div>`;
   return d;
 }
-function classList(classes, colorOf) {
-  const d = document.createElement("div");
-  d.className = "swatchrow";
-  d.innerHTML = classes.map(c => `<span class="swatch"><i style="background:${colorOf(c.value)}"></i>${esc(c.value)} · ${Number((100 * c.share).toPrecision(2))}%</span>`).join("");
+function classTable(classes, colorOf) {
+  const d = document.createElement("div"), top = Math.max(...classes.map(c => c.share));
+  d.className = "classes";
+  d.innerHTML = `<div class="cls head"><span></span><span>Value</span><span></span><span>Share</span></div>` + classes.map(c =>
+    `<div class="cls"><i style="background:${colorOf(c.value)}"></i><span>${esc(c.value)}</span><span class="bar"><b style="width:${100 * c.share / top}%"></b></span>`
+    + `<span>${c.share < 0.001 ? "<0.1" : Number((100 * c.share).toPrecision(2))}%</span></div>`).join("");
   return d;
 }
 
@@ -2558,12 +2567,13 @@ function rasterControls(body, layer, r) {
   body.appendChild(opacityCtl(layer));
   const summary = rasterSummary(rl);
   if (stats && (mode === "single" || mode === "palette")) {
-    section(body, "Values");
+    const classes = summary && rasterClasses(stats, summary);
+    section(body, classes ? "Classes" : "Histogram");
     const values = document.createElement("div");
     body.appendChild(values);
     stops.then(list => {
-      const colorOf = valueColor(rl, s, range, list), classes = summary && rasterClasses(stats, summary);
-      values.replaceChildren(histogramChart(stats, mode === "palette" ? [] : range, colorOf), ...(classes ? [classList(classes, colorOf)] : []));
+      const colorOf = valueColor(rl, s, range, list);
+      values.replaceChildren(classes ? classTable(classes, colorOf) : histogramChart(stats, mode === "palette" ? [] : range, colorOf));
     });
   }
   section(body, "Source");

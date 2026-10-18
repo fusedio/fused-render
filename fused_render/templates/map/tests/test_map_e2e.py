@@ -185,8 +185,8 @@ def test_the_raster_panel_shows_the_applied_range_metadata_histogram_and_classes
     assert f["raster"]["dtype"] == "uint8" and f["raster"]["units"] == "deg" and f["auto_range"] != f["band_ranges"]["1"]
     p.js("fm.select('cls');")
     p.page.locator("#btn-style").click()
-    p.page.wait_for_selector("#sp-body .swatch")
-    assert p.page.locator("#sp-body .swatch").count() == 3 and p.page.locator(".hist rect").count() == 3
+    p.page.wait_for_selector(".classes .cls:not(.head)")
+    assert p.page.locator(".classes .cls:not(.head)").count() == 3
     assert "256 × 256 px" in p.page.locator("#sp-body .stat").inner_text()
 
 
