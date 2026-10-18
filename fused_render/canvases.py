@@ -1615,9 +1615,26 @@ class _SyncManager:
 
     @staticmethod
     def _remote_moved(prev: dict, cur: dict) -> bool:
-        return prev.get("last_updated") != cur.get("last_updated") or prev.get(
-            "udfs"
-        ) != cur.get("udfs")
+        """Did the server's canvas change between two manifests? The
+        collection stamp (layout/dashboard saves) and each UDF's hash and
+        stamp — NOT its `id`. The id is identity, not an edit: it is absent
+        from a baseline saved by a build before the shim emitted ids and
+        from a UDF the push has only just created, and read as a move it
+        would hold every push behind a "server changed" chip that lists
+        nothing (_note_server_stale compares hashes and finds no change)."""
+        if prev.get("last_updated") != cur.get("last_updated"):
+            return True
+
+        def edits(udfs) -> dict:
+            if not isinstance(udfs, dict):
+                return {}
+            return {
+                slug: ((info.get("hash"), info.get("last_updated"))
+                       if isinstance(info, dict) else info)
+                for slug, info in udfs.items()
+            }
+
+        return edits(prev.get("udfs")) != edits(cur.get("udfs"))
 
     def _download_zip(self, collection_id: str) -> zipfile.ZipFile | None:
         cli = fused_cli()
