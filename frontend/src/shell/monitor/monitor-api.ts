@@ -162,10 +162,18 @@ export interface Dashboard {
     index_db?: number;
   }>;
   errors: Section<{
-    outages: { t_down?: number; t_up?: number }[];
-    last_outage_age_s: number | null;
+    outages: {
+      t_down: number;
+      t_up?: number | null;
+      duration_s: number | null;
+      restarted: boolean;
+      clean: boolean;
+      expected: boolean;
+    }[];
+    last_unexpected_outage_age_s: number | null;
     server_log_errors: string[];
-    crashes: { name: string; t: number }[];
+    crashes: { name: string; bytes: number; t: number; path: string }[];
+    crashes_24h: number;
     restarts_24h: number;
   }>;
   baseline: Section<{ load: number | null; swap_used: number | null; rss: number | null }>;

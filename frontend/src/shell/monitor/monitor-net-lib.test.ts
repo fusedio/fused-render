@@ -111,7 +111,7 @@ function dash(over: Partial<Dashboard> = {}): Dashboard {
     jobs: { running: 0, stalled: 0, queued: 0, stalled_list: [] },
     installs: { in_flight: [], failures: [] },
     disk: { free_bytes: 100 * GB },
-    errors: { outages: [], last_outage_age_s: null, server_log_errors: [], crashes: [], restarts_24h: 0 },
+    errors: { outages: [], last_unexpected_outage_age_s: null, server_log_errors: [], crashes: [], crashes_24h: 0, restarts_24h: 0 },
     baseline: { load: 1.0, swap_used: 1 * GB, rss: GB },
     timeline: { points: [], events: [] },
     ...over,
@@ -137,8 +137,21 @@ test("tile colours follow the verdict thresholds", () => {
   expect(level(dash({ net: { summary: { ...n.summary, in_flight: [{ client: "c", in_flight: 6, saturated_s: 3, top: null }] }, groups: [] } as never }), "requests")).toBe("bad");
   expect(level(dash({ disk: { free_bytes: 2 * GB } }), "disk")).toBe("warn");
   expect(level(dash({ claude: { total: 9, fused: 9, other: 0, mem_bytes: GB, cpu_pct: 0, top: [] } }), "claude")).toBe("warn");
-  expect(level(dash({ errors: { outages: [], last_outage_age_s: 60, server_log_errors: [], crashes: [], restarts_24h: 0 } }), "errors")).toBe("bad");
+  expect(level(dash({ errors: { outages: [], last_unexpected_outage_age_s: 60, server_log_errors: [], crashes: [], crashes_24h: 0, restarts_24h: 0 } }), "errors")).toBe("bad");
   expect(level(dash({ memory: { used: 1, total: 2, swap_used: 0, swap_growth_10m_bytes: 0, pressure: "critical", biggest: null } }), "memory")).toBe("bad");
+});
+
+test("errors tile: restarts never raise the level; unexpected outage is bad; crash warns", () => {
+  const base = { outages: [], last_unexpected_outage_age_s: null, server_log_errors: [], crashes: [], crashes_24h: 0, restarts_24h: 5 };
+  const tile = (e: object) => overviewTiles(dash({ errors: { ...base, ...e } as never })).find((t) => t.key === "errors")!;
+  expect(tile({}).level).toBe("ok");
+  expect(tile({}).primary).toBe("No problems");
+  expect(tile({}).caption).toBe("5 restarts (24 h)");
+  expect(tile({ last_unexpected_outage_age_s: 60 }).level).toBe("bad");
+  const c = tile({ crashes_24h: 2 });
+  expect(c.level).toBe("warn");
+  expect(c.primary).toBe("2 crashes");
+  expect(tile({ server_log_errors: ["x"] }).primary).toBe("1 log error");
 });
 
 test("a failed section is unavailable in its own tile and nowhere else", () => {

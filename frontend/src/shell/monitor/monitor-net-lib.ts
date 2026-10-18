@@ -248,15 +248,20 @@ export function overviewTiles(d: Dashboard): Tile[] {
   });
   add("errors", "Errors and outages", "overview", d.errors, () => {
     const e = d.errors as Exclude<Dashboard["errors"], SectionError>;
-    const recent = e.last_outage_age_s != null && e.last_outage_age_s < RECENT_OUTAGE_S;
-    const logs = `${e.server_log_errors.length} log errors`;
-    const restarts = `${e.restarts_24h} restarts`;
-    const [primary, other] = e.server_log_errors.length > 0 ? [logs, restarts] : [restarts, logs];
+    const recent = e.last_unexpected_outage_age_s != null && e.last_unexpected_outage_age_s < RECENT_OUTAGE_S;
+    const nowS = Date.now() / 1000;
+    const outages24 = e.outages.filter((o) => !o.expected && nowS - o.t_down < 86400).length;
+    const logs = e.server_log_errors.length;
+    const counts = [
+      e.crashes_24h > 0 ? `${e.crashes_24h} ${e.crashes_24h === 1 ? "crash" : "crashes"}` : null,
+      outages24 > 0 ? `${outages24} ${outages24 === 1 ? "outage" : "outages"}` : null,
+      logs > 0 ? `${logs} log ${logs === 1 ? "error" : "errors"}` : null,
+    ].filter((x): x is string => x !== null);
     return {
-      primary,
-      caption: `${other} (24 h)`,
-      level: recent ? "bad" : e.restarts_24h > 0 || e.crashes.length > 0 ? "warn" : "ok",
-      value: `${e.server_log_errors.length} log errors · ${e.restarts_24h} restarts (24 h)`,
+      primary: counts[0] ?? "No problems",
+      caption: `${e.restarts_24h} restarts (24 h)`,
+      level: recent ? "bad" : counts.length > 0 ? "warn" : "ok",
+      value: `${counts.length ? counts.join(" · ") : "No problems"} · ${e.restarts_24h} restarts (24 h)`,
     };
   });
   return tiles;

@@ -27,7 +27,7 @@ const DASH = {
   jobs: { running: 1, stalled: 1, queued: 0, stalled_list: [{ id: "j1", title: "Stuck export" }] },
   installs: { in_flight: [], failures: [] },
   disk: { error: "OSError: boom" },
-  errors: { outages: [], last_outage_age_s: null, server_log_errors: ["2026 ERROR [x] bad thing"], crashes: [], restarts_24h: 0 },
+  errors: { outages: [], last_unexpected_outage_age_s: null, server_log_errors: ["2026 ERROR [x] bad thing"], crashes: [], crashes_24h: 0, restarts_24h: 0 },
   baseline: { load: 1.0, swap_used: GB, rss: GB },
   timeline: {
     points: [1, 2, 3].map((i) => ({ t: 990 + i, rps: i, in_flight: i, pool: 1, lag_ms: 1, cpu: 10, swap: GB })),
@@ -115,6 +115,42 @@ test("the errors tile toggles an inline panel of recent errors", async () => {
   expect(byClass(r, "monitor-errors-panel")).toHaveLength(0);
 });
 
+test("errors panel: unexpected outages and crash links shown, planned restarts only counted", async () => {
+  const now = Date.now() / 1000;
+  const dash = {
+    ...DASH,
+    errors: {
+      ...DASH.errors,
+      server_log_errors: [],
+      crashes_24h: 1,
+      crashes: [{ name: "server-1.log", bytes: 2048, t: now - 120, path: "/Users/x/Logs/crash/server-1.log" }],
+      outages: [
+        { t_down: now - 600, t_up: now - 540, duration_s: 60, restarted: false, clean: false, expected: false },
+        { t_down: now - 900, t_up: now - 880, duration_s: 20, restarted: true, clean: true, expected: true },
+      ],
+    },
+  } as unknown as Dashboard;
+  const r = await mount(() => {}, { load: async () => dash });
+  const tile = r.root.find((n) => n.type === "button" && n.props["data-tile"] === "errors");
+  await act(async () => tile.props.onClick());
+  const panel = text(byClass(r, "monitor-errors-panel")[0]);
+  expect(panel).toContain("down 1 min · server stayed up (hung)");
+  expect(panel).not.toContain("server restarted");
+  expect(panel).toContain("1 planned restarts (dev reloads / updates) hidden");
+  expect(panel).toContain("server-1.log · 2 KB");
+  const link = byClass(r, "monitor-errors-panel")[0].find((n) => n.type === "a");
+  expect(decodeURIComponent(link.props.href)).toContain("Users/x/Logs/crash/server-1.log");
+});
+
+test("errors panel is empty-stated when nothing is wrong", async () => {
+  const dash = { ...DASH, errors: { ...DASH.errors, server_log_errors: [] } } as unknown as Dashboard;
+  const r = await mount(() => {}, { load: async () => dash });
+  await act(async () => btnOf(r, "Show all checks").props.onClick());
+  const tile = r.root.find((n) => n.type === "button" && n.props["data-tile"] === "errors");
+  await act(async () => tile.props.onClick());
+  expect(text(byClass(r, "monitor-errors-panel")[0])).toContain("Nothing to report");
+});
+
 test("four chart cards with figures; alerting tiles sit above them; the rest behind Show all checks", async () => {
   const r = await mount();
   const cards = byClass(r, "monitor-overview-card");
@@ -136,7 +172,7 @@ test("four chart cards with figures; alerting tiles sit above them; the rest beh
   expect(cards.every((c) => c.findAll((n) => n.props.className === "monitor-chart").length === 1)).toBe(true);
   // The fixture's claude and jobs tiles are warn: the borderless stat row.
   const keys = () => byClass(r, "monitor-tile").map((t) => t.props["data-tile"]);
-  expect(keys()).toEqual(["claude", "jobs"]);
+  expect(keys()).toEqual(["claude", "jobs", "errors"]);
   expect(byClass(r, "monitor-lists")).toHaveLength(0);
   expect(text(r.root)).not.toContain("Stuck export");
   await act(async () => btnOf(r, "Show all checks (5)").props.onClick());
@@ -167,7 +203,7 @@ test("a warn/bad tile outside the headline cards shows without expanding", async
   const r = await mount(() => {}, {
     load: async () => ({ ...DASH, index: { waiting: 2, abandoned: 0, scans: { running: 0, limit: 2 } } }) as Dashboard,
   });
-  expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual(["claude", "index", "jobs"]);
+  expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual(["claude", "index", "jobs", "errors"]);
   expect(btnOf(r, "Show all checks")).toBeTruthy();
 });
 

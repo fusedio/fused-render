@@ -388,28 +388,48 @@ export default function OverviewTab({
 
 type ErrorsData = Extract<Dashboard["errors"], { outages: unknown }>;
 
-/** Outages, crash dumps and the last log error lines, repeats collapsed. */
+function fmtDuration(sec: number | null): string {
+  if (sec == null) return "still down";
+  if (sec < 60) return `${Math.round(sec)} s`;
+  if (sec < 3600) return `${Math.round(sec / 60)} min`;
+  return `${(sec / 3600).toFixed(1)} h`;
+}
+
+function fmtAgo(t: number): string {
+  const sec = Math.max(0, Date.now() / 1000 - t);
+  return sec < 60 ? "just now" : `${fmtDuration(sec)} ago`;
+}
+
+/** Unexpected outages, crash dumps (each a link to the dump) and the last log
+ * error lines, repeats collapsed. Planned restarts are only counted. */
 function ErrorsList({ errors, limit = 5 }: { errors: ErrorsData; limit?: number }) {
+  const unexpected = errors.outages.filter((o) => !o.expected);
+  const planned = errors.outages.length - unexpected.length;
+  const empty = !unexpected.length && !errors.crashes.length && !errors.server_log_errors.length;
   return (
     <ul className="monitor-list">
-      {collapseRuns(
-        errors.outages
-          .slice(-3)
-          .map((o) => `Outage ${o.t_down ? new Date(o.t_down * 1000).toLocaleString() : ""}`.trim()),
-      ).map((o, i) => (
-        <li key={`o${i}`}>{o.n > 1 ? `${o.label} ×${o.n}` : o.label}</li>
+      {unexpected.slice(0, 3).map((o) => (
+        <li key={`o${o.t_down}`}>
+          {new Date(o.t_down * 1000).toLocaleString()} · down {fmtDuration(o.duration_s)} ·{" "}
+          {o.restarted ? "server restarted" : "server stayed up (hung)"}
+        </li>
       ))}
       {errors.crashes.slice(0, 3).map((c) => (
-        <li key={c.name}>Crash dump {c.name}</li>
+        <li key={c.name}>
+          <a className="monitor-recording-link" {...spaLinkProps(c.path)}>
+            {c.name} · {formatBytes(c.bytes, true)} · {fmtAgo(c.t)}
+          </a>
+        </li>
       ))}
       {collapseRuns(errors.server_log_errors.slice(-limit)).map((l, i) => (
         <li key={`l${i}`} className="monitor-list-mono" title={l.label}>
           {l.n > 1 ? `${l.label} ×${l.n}` : l.label}
         </li>
       ))}
-      {!errors.outages.length && !errors.crashes.length && !errors.server_log_errors.length && (
-        <li className="monitor-list-empty">Nothing recent.</li>
+      {planned > 0 && (
+        <li className="monitor-list-empty">{planned} planned restarts (dev reloads / updates) hidden</li>
       )}
+      {empty && !planned && <li className="monitor-list-empty">Nothing to report</li>}
     </ul>
   );
 }
