@@ -239,7 +239,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     try {
       const s = await pullCanvas(name);
       setSync(s);
-      if (!s.ok) setPullError(s.error ?? "pull failed");
+      if (!s.ok) setPullError(s.pull_error ?? s.error ?? "pull failed");
     } catch (e) {
       setPullError((e as Error).message);
     } finally {
@@ -382,7 +382,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
               await new Promise((r) => window.setTimeout(r, DELTA_RETRY_MS));
               continue;
             }
-            lastDeltaRevRef.current = Math.max(lastDeltaRevRef.current ?? 0, delta.rev);
+            // Assigned, not max'd: the counter is per watcher and starts
+            // over with a new one (see the effect below).
+            lastDeltaRevRef.current = delta.rev;
             const ops = delta.ops ?? [];
             // Nothing to apply against a known base: the server moved its
             // picture itself; nothing to post.
@@ -419,18 +421,34 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     },
     [name],
   );
+  const watcherEpochRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     const rev = sync?.disk_rev;
     if (typeof rev !== "number") return;
-    if (lastDeltaRevRef.current !== null && rev <= lastDeltaRevRef.current) return;
+    const epoch = sync?.watcher_epoch ?? null;
     if (lastDeltaRevRef.current === null) {
       // First sight of the counter: nothing to diff against yet. The frame's
       // hello (after it hydrates) asks for the full state.
       lastDeltaRevRef.current = rev;
+      watcherEpochRef.current = epoch;
+      return;
+    }
+    if (epoch !== watcherEpochRef.current || rev < lastDeltaRevRef.current) {
+      // A DIFFERENT watcher (a stop/start, a server restart; none at all
+      // reads null and 0). It counts from 0 again — possibly landing on the
+      // very number the old one left — and knows nothing of the frame, while
+      // its disk may have moved meanwhile: ask now (it answers with a full
+      // state) instead of waiting for its counter to pass the old mark. At 0
+      // there is no watcher to ask (or one that has not looked yet); the
+      // next counter move is asked here.
+      watcherEpochRef.current = epoch;
+      lastDeltaRevRef.current = rev;
+      if (rev === 0) return;
+    } else if (rev === lastDeltaRevRef.current) {
       return;
     }
     relayDelta(false);
-  }, [sync?.disk_rev, relayDelta]);
+  }, [sync?.disk_rev, sync?.watcher_epoch, relayDelta]);
 
   // The node this page currently shows, readable from the message handler
   // without re-subscribing it on every selection.
@@ -488,7 +506,16 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;
         if (typeof rev !== "number") return;
-        void ackDelta(name, rev, type === "fused-embed-delta-applied").catch(() => undefined);
+        // Through the SNAPSHOT chain, not fire-and-forget: the frame posts a
+        // snapshot before it applies a delta, and the server adopts the
+        // acked reading as "what the frame holds". An ack that overtook that
+        // snapshot (the snapshot route answers busy and sleeps while a push
+        // holds the lock; the ack route waits for it) would make the server
+        // read a node the delta added as one the snapshot deleted.
+        const ok = type === "fused-embed-delta-applied";
+        relayChainRef.current = relayChainRef.current.then(() =>
+          ackDelta(name, rev, ok).then(() => undefined, () => undefined),
+        );
       }
       if (type === "fused-embed-selection") {
         const name = event.data?.udfName;
@@ -705,14 +732,15 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             {sync.server_stale.udfs.length > 0
               ? sync.server_stale.udfs.map((u) => `${u.slug} (${u.kind})`).join(", ")
               : "the canvas layout"}
-            {" "}changed on the server. Your edits here are saved locally and will be
-            published after you pull.
+            {" "}changed on the server. Nothing here is published until you pull. Pull
+            merges them with your local edits where it can; anything it has to
+            overwrite is kept in the canvas trash.
           </span>
           <button
             className="btn btn-primary"
             disabled={pullBusy || sync.pulling || sync.push_state === "pushing"}
             onClick={() => void onPull()}
-            title="Bring the server's changes into this canvas; your local edits are kept"
+            title="Bring the server's changes into this canvas; anything it overwrites is kept in the canvas trash"
           >
             {pullBusy ? "Pulling…" : "Pull"}
           </button>

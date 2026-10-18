@@ -74,7 +74,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 # -- the studio → compact key table ---------------------------------------
 #
@@ -565,6 +565,32 @@ def apply_snapshot(
             "created": created, "written": written, "at": time.time()}
 
 
+def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
+              bodies: dict, embed_rows: dict | None) -> dict:
+    """The view the embed holds after one of its own writes landed: `disk`
+    (a `compact_state_from_disk` reading taken AFTER the write) restricted
+    to `names`, the nodes the embed is known to hold. `edges` are the embed's
+    own set, kept as given (disk may carry more: edges touching nodes it
+    does not know; the embed's may name a raw id `compact_state` could not
+    resolve, which disk carries too), `ids` the server ids it holds, `bodies` the texts it holds — a node with
+    no entry is a body the host cannot vouch for, which the next delta then
+    re-sends (`diff_views` reads a missing view body as "differs"). Canvas
+    scalars are disk's: a snapshot always carries the embed's and the write
+    took them. See "the disk → embed leg" above for why this is not simply
+    `disk`."""
+    known = [n for n in disk["order"] if n in names]
+    return {
+        "nodes": {n: disk["nodes"][n] for n in known},
+        "order": known,
+        "edges": [list(e) for e in edges],
+        "canvas": dict(disk["canvas"]),
+        "files": {n: disk["files"][n] for n in known if n in disk["files"]},
+        "ids": {n: ids[n] for n in known if n in ids},
+        "bodies": {n: bodies[n] for n in known if n in bodies},
+        "embed_rows": {k: dict(v) for k, v in (embed_rows or {}).items()},
+    }
+
+
 def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> dict | None:
     """The previous snapshot with one node renamed, so the snapshot that
     follows a rename hint is diffed against the name it will carry."""
@@ -596,16 +622,26 @@ def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> di
 # the clone moves on disk — Claude wrote a file, the watcher merged a cloud
 # edit down — the page asks for diff(disk, embed_view) and posts it to the
 # frame as `fused-embed-delta`; the frame patches its atoms in place (no
-# re-hydrate) and acks, and the host sets embed_view := disk. After the host
-# applied the embed's own snapshot it re-reads disk into embed_view, so the
-# embed's own edits diff to nothing and are never echoed back.
+# re-hydrate) and acks, and only then does the host set embed_view := that
+# disk reading. After the host applied the embed's own snapshot it re-reads
+# disk into embed_view RESTRICTED to the snapshot's nodes (`held_view`, next
+# paragraph), so the embed's own edits diff to nothing and are never echoed
+# back while a disk-only node still is.
 #
-# `embed_view` is ONLY ever a disk reading (`compact_state_from_disk`), never
-# a `compact_state(snapshot)`: the snapshot's rows carry EMBED_ROW_KEYS only
-# and no code, so a view built from one would diff non-empty against disk
-# forever. The one field the snapshot overrides is `ids` — the server ids the
-# embed truly holds — so a node that gained an id on the last push is still
-# told about it (an `ids` op).
+# `embed_view` means WHAT THE FRAME HOLDS, nothing wider. Its rows are always
+# disk rows (`compact_state_from_disk`), never `compact_state(snapshot)` rows:
+# the snapshot's rows carry EMBED_ROW_KEYS only and no code, so a view built
+# from one would diff non-empty against disk forever. But after the embed's own
+# snapshot landed the view is NOT the whole disk reading either: it is disk
+# RESTRICTED to the nodes the snapshot carried (`held_view`). A snapshot is the
+# embed's full state, so those are exactly the nodes it knows; a node Claude
+# added on disk meanwhile stays OUT of the view, so the next delta carries it
+# to the frame — folded into the view, it would diff to nothing, never reach
+# the frame, and be read as a deletion by the embed's next snapshot. The same
+# goes for a note Claude edited: the view keeps the text the embed SENT, so the
+# disk text diffs against it and is delivered instead of overwritten. `ids` are
+# the snapshot's own (the server ids the embed truly holds), so a node that
+# gained an id on the last push is still told about it (an `ids` op).
 
 # Source files, by suffix, whose text the embed holds as the UDF's code
 # verbatim. A text note's `.md` is README-shaped (`Udf.makeZipReadme`), NOT

@@ -55,6 +55,11 @@ export interface SyncStatus {
    *  (a Claude edit, a merge, an embed snapshot landing). The workspace asks
    *  for a delta (getDelta) when it advances. Older servers omit it. */
   disk_rev?: number;
+  /** Identifies the watcher behind disk_rev; a new one counts from 0 again.
+   *  null when no watcher runs. Older servers omit it. */
+  watcher_epoch?: string | null;
+  /** Set on a pull answer that failed (`ok: false`); `error` is the push's. */
+  pull_error?: string | null;
   /** The canvas changed on the server since the last sync point and has not
    *  been pulled: what a hosted workbench tab shows as "Server changes". The
    *  watcher stops pushing while this is set; `pullCanvas` clears it. */
