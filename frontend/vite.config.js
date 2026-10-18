@@ -32,6 +32,15 @@ export default defineConfig({
   },
   base: "/static/shell-dist/",
   build: {
+    // Do NOT lower this below es2021. Vite's default (es2020 + safari14)
+    // makes esbuild 0.25 lower logical assignment (`||=`), and it mangles
+    // xterm.js's `let r;(…)(r||={})` in InputHandler.requestMode (the DECRQM
+    // `ESC[?Ps$p` handler) into `(…)(void 0||(n={}))` — the `let` is dropped,
+    // strict mode throws `ReferenceError: Can't find variable: n` on the first
+    // mode query, and the parser stops for good: the terminal drawer freezes
+    // under Copilot, neovim, tmux. es2021 keeps `||=` native.
+    // viteBuildTarget.test.ts pins this.
+    target: "es2021",
     outDir: "../fused_render/static/shell-dist",
     emptyOutDir: true,
     rollupOptions: {
