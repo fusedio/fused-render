@@ -2,7 +2,7 @@
 //
 // A strip between the transcript and the composer (`.chat-tasks`), there
 // whenever the run on screen has tasks, COLLAPSED by default to one line
-// ("1 agent · 2 shells running · 1 failed"). Opened, one row per task: kind
+// ("1 agent · 2 shells · 1 failed" while the turn is live, else "N finished"). Opened, one row per task: kind
 // icon, description (its tooltip names the subagent type and worktree), status
 // pill, elapsed (live while running), and for a shell or a monitor an "Output"
 // button that asks the live CLI for it (`task_output`).
@@ -57,16 +57,37 @@ export function useTasksOpen(scope: string): [boolean, () => void] {
   return [open, toggle];
 }
 
-/** An ended, non-failed row stays this long (ms) before it leaves the open
- *  list; "Show N finished" brings it back. */
+/** An ended row stays this long (ms) before it leaves the open list; "Show N
+ *  finished" brings it back. */
 export const TASK_ENDED_GRACE_MS = 5000;
 
-/** When (ms epoch) an ended, non-failed row leaves the list; `null` for a row
- *  that never auto-hides (live, paused, failed). No `ended_at` = long ended. */
-function hideAfterMs(t: TaskRecord): number | null {
-  if (isActive(t.status) || t.status === "failed") return null;
-  const end = Number(t.ended_at) || 0;
-  return end ? end * 1000 + TASK_ENDED_GRACE_MS : -Infinity;
+/**
+ * When (ms epoch) an ended row leaves the list; `null` for a row that does not
+ * auto-hide yet. No `ended_at` = long ended.
+ *
+ * A FAILED ROW STAYS WHILE ITS TURN IS LIVE — the model may still be acting on
+ * it — and then leaves on the same grace as the others, counted from whichever
+ * came later: the failure, or the moment the turn ended (`edgeAt`, 0 when this
+ * panel never saw the edge). A `carried` row's turn is long over, and so is
+ * one that failed before the live turn began (`edgeAt` = when it went live):
+ * the last run's rows are only carried at the next run's first poll, and a
+ * send must not bring them back red for that one lap.
+ * Not pinned past that (D1362 addendum): under a reply that says "done", a red
+ * row that never leaves reads as "task broken".
+ */
+function hideAfterMs(t: TaskRecord, turnLive: boolean, edgeAt: number): number | null {
+  if (isActive(t.status)) return null;
+  const end = (Number(t.ended_at) || 0) * 1000;
+  if (t.status === "failed" && !t.carried) {
+    if (turnLive) {
+      // Epoch seconds against the page clock, same machine: 1 s of slack.
+      if (!edgeAt || end >= edgeAt - 1000) return null;
+      return end ? end + TASK_ENDED_GRACE_MS : -Infinity;
+    }
+    const from = Math.max(end, edgeAt);
+    return from ? from + TASK_ENDED_GRACE_MS : -Infinity;
+  }
+  return end ? end + TASK_ENDED_GRACE_MS : -Infinity;
 }
 
 export type FetchTaskOutput = (runId: string, taskId: string) => Promise<TaskOutputResponse | ErrorOnly>;
@@ -82,8 +103,11 @@ export interface TasksPanelProps {
   /** `ChatState.tasks` — any order; the panel sorts (live first). */
   tasks: readonly TaskRecord[];
   /** `ChatState.tasksRunId` — the run `task_output` is asked of. `null` hides
-   *  the Output buttons: nothing live to ask. */
+   *  the Output buttons: nothing live to ask (and so does a `carried` row). */
   runId: string | null;
+  /** The chat's turn is in flight. A failed row is held, and the header says
+   *  "N failed", only while it is (see `hideAfterMs`). Default true. */
+  turnLive?: boolean;
   /** The conversation on screen. History-only sessions all have a null runId,
    *  so the panel's per-session state (dismissed rows, Show finished, stop
    *  errors) resets on this as well. */
@@ -122,7 +146,7 @@ function KindIcon({ kind }: { kind: TaskKind }) {
   return <CircleDot {...props} />;
 }
 
-export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, parentModel, fetchOutput = defaultFetch, stopTask = defaultStop, now = Date.now }: TasksPanelProps) {
+export function TasksPanel({ tasks, runId, turnLive = true, sessionId = null, open, onToggle, parentModel, fetchOutput = defaultFetch, stopTask = defaultStop, now = Date.now }: TasksPanelProps) {
   const [outputs, setOutputs] = useState<Record<string, OutputState>>({});
   // Answers for a run that is no longer the panel's are dropped on arrival.
   const runRef = useRef(runId);
@@ -134,6 +158,12 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
   const [stopping, setStopping] = useState<Record<string, { phase: "pending" } | { phase: "error"; message: string }>>({});
   // Failed rows whose error line the user opened to its full text.
   const [errOpen, setErrOpen] = useState<ReadonlySet<string>>(new Set());
+  // WHEN THE TURN LAST WENT LIVE OR ENDED, as this panel saw it (0 = never saw
+  // the edge): see `hideAfterMs`. Derived during render, React's "adjust state
+  // on a prop change" shape, so the hide is right on first paint.
+  const [turnEdge, setTurnEdge] = useState({ live: turnLive, at: 0 });
+  if (turnEdge.live !== turnLive) setTurnEdge({ live: turnLive, at: now() });
+  const edgeAt = turnEdge.live === turnLive ? turnEdge.at : now();
   useEffect(() => {
     setOutputs({});
     setShowEnded(false);
@@ -157,7 +187,7 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
   const nowMs = now();
   let nextHide = Infinity;
   for (const t of tasks) {
-    const at = hideAfterMs(t);
+    const at = hideAfterMs(t, turnLive, edgeAt);
     if (at != null && at >= nowMs && at - nowMs < nextHide) nextHide = at - nowMs;
   }
   const hideDelay = open && !showEnded && Number.isFinite(nextHide) ? nextHide + 1 : null;
@@ -227,21 +257,30 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
     });
   const dismiss = (taskId: string) => setDismissed((s) => new Set(s).add(taskId));
 
-  const summary = summarizeTasks(tasks);
+  // NOTHING ACTIVE, BUT ROWS ON THE LIST (an ended turn, or the earlier runs a
+  // "continue" carried over): the strip stays as a quiet "N finished", so the
+  // rows are one click away rather than gone with the red word (D1362 addendum).
+  // Dismissing every row takes the strip down with them.
+  const kept = tasks.filter((t) => !dismissed.has(t.id)).length;
+  // The header's "N failed" names exactly the failed rows being held open.
+  const held = tasks.filter((t) => t.status !== "failed" || hideAfterMs(t, turnLive, edgeAt) == null);
+  const summary = summarizeTasks(held, { live: turnLive }) || (kept ? `${kept} finished` : "");
   if (!open && !summary) return null;
   const sorted = sortTasks(tasks);
   const rows = showEnded
     ? sorted
     : sorted.filter((t) => {
         if (dismissed.has(t.id)) return false;
-        const at = hideAfterMs(t);
+        const at = hideAfterMs(t, turnLive, edgeAt);
         return at == null || nowMs <= at;
       });
   const hiddenCount = sorted.length - rows.length;
+  // A failure folded away is one click from sight: muted, on the toggle.
+  const hiddenFailed = showEnded ? 0 : sorted.filter((t) => t.status === "failed" && !rows.includes(t)).length;
   const finishedToggle =
     hiddenCount > 0 || showEnded ? (
       <button type="button" className="chat-tasks-more" onClick={() => setShowEnded((v) => !v)}>
-        {showEnded ? "Hide finished" : `Show ${hiddenCount} finished`}
+        {showEnded ? "Hide finished" : `Show ${hiddenCount} finished` + (hiddenFailed ? ` · ${hiddenFailed} failed` : "")}
       </button>
     ) : null;
 
@@ -274,7 +313,7 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
                     {modelLabel ? <span className="chat-task-model">{modelLabel}</span> : null}
                     <span className={"chat-task-status is-" + t.status}>{statusLabel(t.status)}</span>
                     {elapsed ? <span className="chat-task-time">{elapsed}</span> : null}
-                    {hasOutput(t) && runId ? (
+                    {hasOutput(t) && runId && !t.carried ? (
                       <button
                         type="button"
                         className="chat-task-out-btn"
@@ -285,7 +324,7 @@ export function TasksPanel({ tasks, runId, sessionId = null, open, onToggle, par
                         {out?.phase === "loading" ? "Loading…" : out ? "Hide output" : "Output"}
                       </button>
                     ) : null}
-                    {isLive(t.status) && runId ? (
+                    {isLive(t.status) && runId && !t.carried ? (
                       <button
                         type="button"
                         className="chat-task-icon-btn"

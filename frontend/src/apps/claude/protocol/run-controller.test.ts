@@ -4847,21 +4847,79 @@ describe("the run's tasks", () => {
     expect(controller.getState().worktreeHint).toEqual(hint);
   });
 
-  test("a different run's empty list clears the last run's", async () => {
+  test("D1362: the next run in the same session keeps the last run's rows, carried, under its own", async () => {
+    let run = 0;
+    const { controller } = makeController({
+      start: () => ({ run_id: "r" + ++run }),
+      poll: (f, n) =>
+        f.run_id === "r1"
+          ? poll({ done: true, tasks: [T("a", "completed"), T("b")], segments: [text("ok")], text: "ok" })
+          : n === 0
+            ? poll({})
+            : poll({ done: true, tasks: [T("c")], segments: [text("ok2")], text: "ok2" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("one");
+    expect(controller.getState().tasks.map((t) => [t.id, t.status, !!t.carried])).toEqual([
+      ["a", "completed", false],
+      ["b", "unknown", false], // review #4: r1 ended, its live row downgraded
+    ]);
+    await controller.sendMessage("continue");
+    // r2's own row first; r1's rows stay, carried (no Output, no Stop).
+    expect(controller.getState().tasks.map((t) => [t.id, t.status, !!t.carried])).toEqual([
+      ["c", "unknown", false],
+      ["a", "completed", true],
+      ["b", "unknown", true],
+    ]);
+    expect(controller.getState().tasksRunId).toBe("r2");
+    // Leaving the conversation is what empties it.
+    controller.newChat();
+    expect(controller.getState().tasks).toEqual([]);
+  });
+
+  test("D1362: a carried row the new run names again is the new run's (not carried)", async () => {
     let run = 0;
     const { controller } = makeController({
       start: () => ({ run_id: "r" + ++run }),
       poll: (f) =>
         f.run_id === "r1"
-          ? poll({ done: true, tasks: [T("a", "completed")], segments: [text("ok")], text: "ok" })
-          : poll({ done: true, segments: [text("ok2")], text: "ok2" }),
+          ? poll({ done: true, tasks_pending: true, tasks: [T("m")], segments: [text("ok")], text: "ok" })
+          : poll({ done: true, tasks_pending: true, tasks: [T("m")], segments: [text("ok2")], text: "ok2" }),
       history: () => ({ turns: [], transcript: null }),
     });
     await controller.sendMessage("one");
-    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["a"]);
     await controller.sendMessage("two");
+    expect(controller.getState().tasks.map((t) => [t.id, t.status, !!t.carried])).toEqual([["m", "running", false]]);
+  });
+
+  test("D1362: the same run's partial list drops a row rather than carrying (no live-row downgrade)", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ tasks: [T("a"), T("b")] })
+          : n === 1
+            ? poll({ tasks: [T("a")] })
+            : poll({ done: true, tasks_pending: true, segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().tasks.map((t) => [t.id, t.status, !!t.carried])).toEqual([["a", "running", false]]);
+  });
+
+  test("D1362: opening another session drops the carried rows", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks: [T("a", "completed")], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks: [] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+    });
+    await controller.sendMessage("go");
+    expect(controller.getState().tasks.length).toBe(1);
+    await controller.openSession("s2");
     expect(controller.getState().tasks).toEqual([]);
-    expect(controller.getState().tasksRunId).toBe("r2");
+    expect(controller.getState().tasksRunId).toBe(null);
   });
 
   test("a restore with no open turn but a live host owns the list by `tasks_run`", async () => {
@@ -4909,7 +4967,7 @@ describe("the run's tasks", () => {
     expect(byId.done!.status).toBe("completed");
   });
 
-  test("review #2/#3: a refresh with nothing live publishes exactly history's list, owned by no run", async () => {
+  test("review #2/#3: a refresh with nothing live publishes history's list, owned by no run; the run's rows stay, carried", async () => {
     let n = 0;
     let refreshing = false;
     const { controller } = makeController({
@@ -4924,7 +4982,7 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasksRunId).toBe("r1");
     refreshing = true;
     await controller.refreshHistory("s1");
-    expect(controller.getState().tasks).toEqual([]);
+    expect(controller.getState().tasks.map((t) => [t.id, !!t.carried])).toEqual([["a", true]]);
     expect(controller.getState().tasksRunId).toBe(null);
   });
 
@@ -4943,7 +5001,7 @@ describe("the run's tasks", () => {
     await controller.sendMessage("go");
     refreshing = true;
     await controller.refreshHistory("s1");
-    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["b"]);
+    expect(controller.getState().tasks.map((t) => [t.id, !!t.carried])).toEqual([["b", false], ["a", true]]);
     expect(controller.getState().tasksRunId).toBe("r2");
   });
 

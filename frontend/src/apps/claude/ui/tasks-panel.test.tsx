@@ -66,16 +66,24 @@ describe("TasksPanel", () => {
     expect(r.toJSON()).toBeNull();
   });
 
-  test("closed with only completed tasks renders nothing", () => {
-    const tasks = [rec({ id: "d", kind: "shell", status: "completed" })];
+  test("closed with only finished tasks keeps a quiet N finished strip", () => {
+    const tasks = [rec({ id: "d", kind: "shell", status: "completed" }), rec({ id: "e", kind: "shell", status: "unknown" })];
     const r = mount(<TasksPanel tasks={tasks} runId="r1" open={false} onToggle={() => {}} />);
-    expect(r.toJSON()).toBeNull();
+    expect(text(byClass(r.root, "chat-tasks-summary")[0]!)).toBe("2 finished");
   });
 
   test("collapsed summary counts live work and appends failures", () => {
     const tasks = [rec({ id: "a", kind: "agent" }), rec({ id: "f", kind: "agent", status: "failed" })];
     const r = mount(<TasksPanel tasks={tasks} runId="r1" open={false} onToggle={() => {}} />);
     expect(text(byClass(r.root, "chat-tasks-summary")[0]!)).toBe("1 agent · 1 failed");
+  });
+
+  test("after the turn the collapsed summary says no failure words", () => {
+    const tasks = [rec({ id: "a", kind: "agent" }), rec({ id: "f", kind: "agent", status: "failed" })];
+    const r = mount(<TasksPanel tasks={tasks} runId="r1" turnLive={false} open={false} onToggle={() => {}} />);
+    expect(text(byClass(r.root, "chat-tasks-summary")[0]!)).toBe("1 agent");
+    act(() => r.update(<TasksPanel tasks={[tasks[1]!]} runId="r1" turnLive={false} open={false} onToggle={() => {}} />));
+    expect(text(byClass(r.root, "chat-tasks-summary")[0]!)).toBe("1 finished");
   });
 
   test("collapsed: one line with the summary, no rows", () => {
@@ -186,7 +194,7 @@ describe("TasksPanel", () => {
       const row = () => byClass(r.root, "chat-task").find((n) => text(byClass(n, "chat-task-desc")[0]!) === "bad")!;
       act(() => dismissBtn(row())[0]!.props.onClick());
       expect(byClass(r.root, "chat-task").map((n) => text(byClass(n, "chat-task-desc")[0]!))).toEqual(["live"]);
-      expect(text(byClass(r.root, "chat-tasks-more")[0]!)).toBe("Show 1 finished");
+      expect(text(byClass(r.root, "chat-tasks-more")[0]!)).toBe("Show 1 finished · 1 failed");
       act(() => byClass(r.root, "chat-tasks-more")[0]!.props.onClick());
       expect(byClass(r.root, "chat-task").length).toBe(2);
     });
@@ -269,9 +277,71 @@ describe("TasksPanel", () => {
       expect(descs(r)).toEqual([]);
     });
 
-    test("a failed row 60 s old is still shown", () => {
+    test("a failed row 60 s old is still shown while the turn is live", () => {
       const r = mk([ended("f", 60, "failed")]);
       expect(descs(r)).toEqual(["f"]);
+    });
+
+    test("once the turn has ended a failed row hides like the others; the toggle names it, muted", () => {
+      const r = mount(<TasksPanel tasks={[ended("f", 60, "failed"), ended("a", 30)]} runId="r1" turnLive={false} open onToggle={() => {}} now={() => NOW} />);
+      expect(descs(r)).toEqual([]);
+      expect(text(byClass(r.root, "chat-tasks-more")[0]!)).toBe("Show 2 finished · 1 failed");
+      act(() => byClass(r.root, "chat-tasks-more")[0]!.props.onClick());
+      expect(descs(r)).toEqual(["f", "a"]);
+      // Still red while visible.
+      const f = byClass(r.root, "chat-task").find((n) => text(byClass(n, "chat-task-desc")[0]!) === "f")!;
+      expect(f.props.className).toContain("is-failed");
+      expect(text(byClass(f, "chat-task-status")[0]!)).toBe("failed");
+    });
+
+    test("a failed row's grace starts when the turn ends, not when it failed", () => {
+      let clock = NOW;
+      const el = (live: boolean) => (
+        <TasksPanel tasks={[ended("f", 60, "failed")]} runId="r1" turnLive={live} open onToggle={() => {}} now={() => clock} />
+      );
+      const r = mount(el(true));
+      expect(descs(r)).toEqual(["f"]);
+      act(() => r.update(el(false)));
+      expect(descs(r)).toEqual(["f"]);
+      clock += 4000;
+      act(() => r.update(el(false)));
+      expect(descs(r)).toEqual(["f"]);
+      clock += 2000;
+      act(() => r.update(el(false)));
+      expect(descs(r)).toEqual([]);
+      expect(text(byClass(r.root, "chat-tasks-more")[0]!)).toBe("Show 1 finished · 1 failed");
+    });
+
+    test("a failed row from before the turn went live does not come back red on send", () => {
+      let clock = NOW;
+      const el = (live: boolean) => (
+        <TasksPanel tasks={[ended("f", 60, "failed")]} runId="r1" turnLive={live} open onToggle={() => {}} now={() => clock} />
+      );
+      const r = mount(el(false));
+      expect(descs(r)).toEqual([]);
+      clock += 1000;
+      act(() => r.update(el(true)));
+      expect(descs(r)).toEqual([]);
+      expect(byClass(r.root, "chat-tasks-summary").map(text)).toEqual(["1 finished"]);
+    });
+
+    test("dismissing every row takes the closed strip down", () => {
+      const tasks = [ended("a", 60)];
+      const r = mount(<TasksPanel tasks={tasks} runId="r1" turnLive={false} open onToggle={() => {}} now={() => NOW} />);
+      act(() => byClass(r.root, "chat-tasks-more")[0]!.props.onClick());
+      const dismiss = r.root.findAll((n) => n.props["aria-label"] === "Dismiss" && typeof n.type === "string")[0]!;
+      act(() => dismiss.props.onClick());
+      act(() => r.update(<TasksPanel tasks={tasks} runId="r1" turnLive={false} open={false} onToggle={() => {}} now={() => NOW} />));
+      expect(r.toJSON()).toBeNull();
+    });
+
+    test("a carried (earlier run's) failed row hides even mid-turn and has no Output", () => {
+      const old = { ...ended("f", 60, "failed"), carried: true };
+      const r = mount(<TasksPanel tasks={[old]} runId="r2" open onToggle={() => {}} now={() => NOW} />);
+      expect(descs(r)).toEqual([]);
+      act(() => byClass(r.root, "chat-tasks-more")[0]!.props.onClick());
+      expect(descs(r)).toEqual(["f"]);
+      expect(byClass(r.root, "chat-task-out-btn").length).toBe(0);
     });
 
     test("every row hidden says Nothing running. with the toggle", () => {

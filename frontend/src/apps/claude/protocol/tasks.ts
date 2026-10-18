@@ -83,15 +83,20 @@ export function statusLabel(status: TaskStatus | string): string {
 /**
  * The collapsed panel's one line: "1 agent · 2 shells". Per-kind counts of the active
  * (live or paused) tasks, in SUMMARY_KINDS order; finished tasks are not counted. No
- * status words except a trailing " · N failed" when any task failed. "" when neither.
+ * status words except a trailing " · N failed" — only WHILE THE TURN IS LIVE
+ * (`live`, default true), and only for this run's rows (not `carried` ones): the
+ * model may still be acting on a failure mid-turn, but once the turn has ended a
+ * red word under a reply that says "done" reads as "task broken" (D1362). "" when
+ * there is nothing to say.
  */
-export function summarizeTasks(tasks: readonly TaskRecord[]): string {
+export function summarizeTasks(tasks: readonly TaskRecord[], opts: { live?: boolean } = {}): string {
+  const live = opts.live ?? true;
   const counted = tasks.filter((t) => isActive(t.status));
   const parts = SUMMARY_KINDS.map((k) => {
     const n = counted.filter((t) => asKind(t.kind) === k).length;
     return n ? plural(n, KIND_NOUN[k]) : "";
   }).filter(Boolean);
-  const failed = tasks.filter((t) => t.status === "failed").length;
+  const failed = live ? tasks.filter((t) => t.status === "failed" && !t.carried).length : 0;
   if (failed) parts.push(`${failed} failed`);
   return parts.join(" · ");
 }

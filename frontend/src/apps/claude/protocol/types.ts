@@ -1100,6 +1100,10 @@ export interface TaskRecord {
   summary: string;
   /** Notifications seen — a monitor's line count. */
   events: number;
+  /** CLIENT-ONLY (never on the wire): an earlier run's row that the controller
+   *  kept when a newer run in the same session took the list over
+   *  (`publishTasks`). Ended, and owned by no live host — no Output, no Stop. */
+  carried?: boolean;
 }
 /** `task_output {run_id, task_id}` (SPEC T-3). */
 export interface TaskOutputRequest {

@@ -45,6 +45,13 @@ function tool(over: Partial<ToolSegment>): ToolSegment {
 }
 
 describe("summarizeTasks", () => {
+  test("failure words only while the turn is live, and never for carried rows", () => {
+    const f = rec({ id: "f", kind: "shell", status: "failed" });
+    expect(summarizeTasks([rec({ kind: "agent" }), f], { live: false })).toBe("1 agent");
+    expect(summarizeTasks([f], { live: false })).toBe("");
+    expect(summarizeTasks([f, { ...f, id: "old", carried: true }], { live: true })).toBe("1 failed");
+  });
+
   test("counts live and paused tasks per kind, not history", () => {
     const line = summarizeTasks([
       rec({ id: "a", kind: "agent" }),

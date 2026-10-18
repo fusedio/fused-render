@@ -552,13 +552,30 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * THE RUN'S BACKGROUND TASKS (SPEC T-5, `ChatState.tasks`). Sticky for the
    * run: a poll whose list is empty or absent keeps the last non-empty one of
    * the SAME run, because the panel blinking out for one lap is worse than a
-   * list one poll stale. A different run's empty list clears it — the old
-   * run's tasks are not this run's. Identity is the content, like the inbox:
-   * the list rides every poll and an unchanged one emits nothing.
+   * list one poll stale. Identity is the content, like the inbox: the list
+   * rides every poll and an unchanged one emits nothing.
+   *
+   * THE LIST SURVIVES THE NEXT RUN IN THE SAME SESSION (D1362 addendum): a
+   * "continue" starts a new run whose registry may not name the last run's
+   * shells, and dropping them made the panel forget what just happened. So when
+   * a DIFFERENT owner takes the list over (a new run, or history's run-less
+   * answer after the turn), any row on screen the incoming list does not name
+   * by id stays,
+   * downgraded like `endRunTasks` (it has no host to watch) and marked
+   * `carried` (no Output, no Stop — the history-owned rule, per row), below the
+   * incoming rows, and stays through that owner's later answers. The SAME
+   * owner's partial answer still just drops a row it no longer names — carrying
+   * it would downgrade a live row the next poll names again. Only leaving the
+   * conversation (`clearTasks`) empties it.
    */
   let tasksSig = "";
   const publishTasks = (rows: TaskRecord[] | null | undefined, runId: string | null) => {
-    const list = Array.isArray(rows) ? rows.filter((t) => !!t && typeof t.id === "string") : [];
+    const incoming = Array.isArray(rows) ? rows.filter((t) => !!t && typeof t.id === "string") : [];
+    const named = new Set(incoming.map((t) => t.id));
+    const handover = runId !== state.tasksRunId;
+    const left = state.tasks.filter((t) => !named.has(t.id) && (t.carried || handover));
+    const kept = (endActiveTasks(left) ?? left).map((t) => (t.carried ? t : { ...t, carried: true }));
+    const list = kept.length ? [...incoming, ...kept] : incoming;
     const sig = (runId ?? "") + "\u0002" + JSON.stringify(list);
     if (sig === tasksSig) return;
     tasksSig = sig;
@@ -569,7 +586,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * still had active is downgraded to `unknown`, `ended_at` null — the panel's
    * clock stops, a Monitor chip stops saying "watching" and no Output button
    * aims at a dead host. A session host that does outlive the turn re-reports
-   * the real statuses on its next poll, which replaces this list wholesale.
+   * the real statuses on its next poll, which replaces these rows by id.
    */
   const endRunTasks = (runId: string | null) => {
     if (!runId || state.tasksRunId !== runId) return;
@@ -579,8 +596,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /**
    * HISTORY'S TASKS, on a restore and on every refresh — one rule for both
    * (`openSession` has already cleared the last conversation's list).
-   * Nothing live (`live_run` "" or absent): history's list IS the answer, empty
-   * included, owned by no run (its host is gone, so no Output) — unless the
+   * Nothing live (`live_run` "" or absent): history's list IS the answer for the
+   * session's last run, empty included (an earlier run's rows on screen stay,
+   * `carried` — see `publishTasks`), owned by no run (its host is gone, so no Output) — unless the
    * session host is still alive (`tasks_run`): the turn ended but a background
    * task runs on, and the host's run owns the list so Stop/Output can reach
    * it. A live run:

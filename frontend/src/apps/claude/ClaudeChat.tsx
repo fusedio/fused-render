@@ -152,7 +152,7 @@ import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
 import { FilePreviewProvider } from "./ui/filePreview";
 import { DockRow } from "./ui/DockRow";
-import { summarizeTasks, taskIndex } from "./protocol/tasks";
+import { taskIndex } from "./protocol/tasks";
 import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
@@ -5228,10 +5228,11 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <DockRow
                 tasks={
-                  agentCaps.bg_tasks && (summarizeTasks(state.tasks) || tasksOpen) ? (
+                  agentCaps.bg_tasks && (state.tasks.length || tasksOpen) ? (
                     <TasksPanel
                       tasks={state.tasks}
                       runId={state.tasksRunId}
+                      turnLive={running}
                       sessionId={state.sessionId ?? null}
                       open={tasksOpen}
                       onToggle={toggleTasksPanel}
