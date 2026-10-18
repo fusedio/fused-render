@@ -988,7 +988,6 @@ function httpUrl(source) {
   return new URL(`/api/fs/raw?path=${encodeURIComponent(source)}`, location.origin).href;
 }
 const RASTER_EXT = new Set([".tif", ".tiff", ".cog"]);
-const SAMPLE_TILES = 64;
 const VECTOR_FORMAT = {
   ".geojson": "geojson", ".json": "geojson", ".parquet": "geoparquet", ".geoparquet": "geoparquet",
   ".pq": "geoparquet", ".fgb": "flatgeobuf", ".csv": "csv", ".tsv": "csv", ".gpkg": "geopackage",
@@ -1032,9 +1031,7 @@ async function looksLikeZarr(source) {
 // in flight for the same file, and two layers preparing at once would leave
 // the first stuck on "Preparing…" forever.
 async function python(source, action = "plan", extra = {}) {
-  let result;
-  do result = await fused.runPython("./prepare.py", { target: source, action, ...extra }, { key: null });
-  while (result && result.status === "ok" && result.pending);
+  const result = await fused.runPython("./prepare.py", { target: source, action, ...extra }, { key: null });
   if (!result || result.status !== "ok") {
     const error = new Error((result && result.message) || "could not read this source");
     error.traceback = result && result.traceback;
@@ -1110,11 +1107,6 @@ const raster = {
                                              state: this.state(layer, r, true) });
     const rl = mgr.getLayer(r.handle);
     if (!rl || rl.error) throw rl && rl.error || new Error("raster did not load");
-    const tiff = rl.geotiff, coarsest = tiff && (tiff.overviews.at(-1) || tiff);
-    if (tiff && !rl.members && !plan.converted && !isRemote(plan.path)
-        && (![8, 16, 32, 64].includes(tiff.cachedTags.bitsPerSample[0])
-            || coarsest.tileCount.x * coarsest.tileCount.y > SAMPLE_TILES))
-      throw Object.assign(new Error("This TIFF needs converting before the browser can stream it."), { convert: true });
     if (rl.geotiff && typeof rl.geotiff === "object") void rl.geotiff.crs;
     r.auto = { mode: rl.state.mode, bands: rl.state.bands.slice(), colormap: rl.state.colormap };
     r.kind = "raster";
@@ -1739,12 +1731,11 @@ async function loadLayer(layer, r) {
       await ENGINES[plan.load].add(layer, plan, r);
     } catch (error) {
       ENGINES[plan.load].remove(r);
-      const converting = plan.load === "pointcloud" || error.convert;
-      if (converting) { r.note = "Converting…"; scheduleUi(); }
+      if (plan.load === "pointcloud") { r.note = "Converting…"; scheduleUi(); }
       let fallbackError = null;
       const retry = await fallbackPlan(plan).catch(e => { fallbackError = e; return null; });
       // A point cloud's conversion explains a failure better than the reader.
-      if (!retry) throw (converting && fallbackError) || error;
+      if (!retry) throw (plan.load === "pointcloud" && fallbackError) || error;
       r.plan = retry; r.note = retry.note || "";
       await ENGINES[retry.load].add(layer, retry, r);
     }

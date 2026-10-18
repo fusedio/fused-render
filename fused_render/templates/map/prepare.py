@@ -17,10 +17,7 @@ is never called at all. This module is asked only about the rest:
              container that needs a Planetary Computer token) -> a local COG,
              read by GDAL over /vsicurl/.
   convert    a TIFF the browser reader failed on even though it is tiled (a
-             codec the reader lacks, packed bits, or no overviews on a big
-             image) -> re-encoded as a DEFLATE COG. The conversion runs in a
-             process of its own; a call answers `pending` while it outlasts
-             CONVERT_WAIT.
+             codec the reader lacks) -> re-encoded as a DEFLATE COG.
   pointcloud a LAS/LAZ the browser reader refused (LAS 1.4, a GeoTIFF-key or
              missing CRS) -> LAS 1.2 in longitude/latitude, thinned to a
              point budget; `crs` names the CRS of a file that has none.
@@ -42,10 +39,8 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
-import time
 import traceback
 import warnings
 from pathlib import Path
@@ -59,9 +54,6 @@ if HERE not in sys.path:
 
 from geo_paths import base_home, is_http_url, is_remote_path, multidim_suffix  # noqa: E402
 
-sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
-from procutil import file_lock  # noqa: E402
-
 CACHE = Path(os.environ.get("FUSED_RENDER_MAP_CACHE") or base_home() / "cache" / "map-v3")
 
 # What the browser reads natively, by extension. Everything else needs `plan`.
@@ -72,8 +64,6 @@ GDAL_RASTER = (".vrt", ".jp2", ".j2k", ".img", ".ntf", ".nitf", ".dem", ".dt0",
                ".dt1", ".dt2", ".hgt", ".grd", ".asc", ".png", ".jpg", ".jpeg")
 MULTIDIM_FILES = (".nc", ".nc4", ".h5", ".hdf5", ".he5", ".hdf", ".cdf")
 SHAPEFILE_SIDECARS = (".shx", ".dbf", ".prj", ".cpg")
-
-CONVERT_WAIT = 40.0
 
 ENTRYPOINTS = ("main", "run", "udf", "fn")
 RESULT_VARS = ("result", "output", "layer", "gdf", "df")
@@ -144,72 +134,32 @@ def _is_streamable_tiff(path: str) -> bool:
 
 
 def _to_cog(source: str, final: Path) -> Path:
-    import numpy as np
     import rasterio
     from rasterio.shutil import copy as rio_copy
-    from rasterio.vrt import WarpedVRT
 
-    tmp = final.with_name(final.name + f".{os.getpid()}.tmp")
     with rasterio.open(source) as dataset:
         if dataset.crs is None and not dataset.gcps[0]:
             raise Refusal(
                 "This raster has no coordinate reference system, so it cannot be "
                 "placed on a map.")
-        warp = dataset.crs is None or (dataset.crs.to_authority() or ("",))[0] != "EPSG"
-        categorical = dataset.count == 1 and dataset.dtypes[0].startswith(("int", "uint"))
-        with WarpedVRT(dataset, crs="EPSG:4326") if warp else contextlib.nullcontext(dataset) as src:
-            rio_copy(src, str(tmp), driver="COG", compress="DEFLATE", blocksize=512, BIGTIFF="IF_SAFER",
-                     NBITS=np.dtype(dataset.dtypes[0]).itemsize * 8, NUM_THREADS="ALL_CPUS",
-                     RESAMPLING="NEAREST" if categorical else "AVERAGE")
+        needs_warp = dataset.crs is None or (dataset.crs.to_authority() or ("",))[0] != "EPSG"
+    tmp = final.with_name(final.name + f".{os.getpid()}.tmp")
+    if needs_warp:
+        from rasterio.vrt import WarpedVRT
+        with rasterio.open(source) as dataset, WarpedVRT(dataset, crs="EPSG:4326") as vrt:
+            rio_copy(vrt, str(tmp), driver="COG", compress="DEFLATE",
+                     blocksize=512, BIGTIFF="IF_SAFER")
+    else:
+        rio_copy(source, str(tmp), driver="COG", compress="DEFLATE",
+                 blocksize=512, BIGTIFF="IF_SAFER", RESAMPLING="AVERAGE")
     _publish(tmp, final)
     return final
 
 
-def _cog_worker(source: str, final: str) -> None:
-    try:
-        with file_lock(final + ".lock", timeout=float("inf")), \
-                file_lock(str(Path(final).parent / "convert.lock"), timeout=float("inf")):
-            if not Path(final).exists():
-                _to_cog(source, Path(final))
-    except Exception as error:
-        message = str(error) if isinstance(error, Refusal) else f"{type(error).__name__}: {error}"
-        Path(final + ".failed").write_text(message)
-
-
-def _worker_running(final: Path) -> bool:
-    try:
-        with file_lock(f"{final}.lock", timeout=0):
-            return False
-    except TimeoutError:
-        return True
-
-
-def _converted(source: str, final: Path) -> bool:
-    failed = Path(f"{final}.failed")
-    worker = None
-    if not final.exists() and not failed.exists() and not _worker_running(final):
-        worker = subprocess.Popen(
-            [sys.executable, "-c", "import sys, prepare; prepare._cog_worker(*sys.argv[1:])", source, str(final)],
-            cwd=HERE, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True)
-    deadline = time.monotonic() + CONVERT_WAIT
-    while not final.exists():
-        if worker.poll() is not None if worker else not _worker_running(final):
-            break
-        if time.monotonic() > deadline:
-            return False
-        time.sleep(0.1)
-    if not final.exists():
-        message = failed.read_text() if failed.exists() else "The conversion stopped unexpectedly."
-        failed.unlink(missing_ok=True)
-        raise Refusal(message)
-    return True
-
-
 def _raster_plan(path: str) -> dict:
     final = _cache_path(_cache_key(path, "cog"), ".tif")
-    if not _converted(path, final):
-        return {"pending": True}
+    if not final.exists():
+        _to_cog(path, final)
     return {"load": "raster", "path": str(final), "converted": True,
             "note": "converted to a Cloud-Optimized GeoTIFF for streaming"}
 
