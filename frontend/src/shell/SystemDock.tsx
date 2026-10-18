@@ -251,6 +251,11 @@ export function useOpenDashboard(
   pollMs = 2_000,
 ): Dashboard | null {
   const [dash, setDash] = useState<Dashboard | null>(null);
+  // Incremented on each open: a read belongs to the opening that started it.
+  const opening = useRef(0);
+  const wasOpen = useRef(false);
+  if (open && !wasOpen.current) opening.current += 1;
+  wasOpen.current = open;
   const openRef = useRef(open);
   openRef.current = open;
   useEffect(() => {
@@ -259,8 +264,9 @@ export function useOpenDashboard(
   usePolled(
     async () => {
       if (!open) return;
+      const mine = opening.current;
       const d = await load();
-      if (openRef.current) setDash(d);
+      if (openRef.current && opening.current === mine) setDash(d);
     },
     open ? pollMs : 3_600_000,
     open,

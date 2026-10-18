@@ -303,3 +303,26 @@ test("the dashboard is dropped when the popover closes and not shown stale on re
   expect(seen!.verdict.headline).toBe("read 2");
   act(() => r.unmount());
 });
+
+test("useOpenDashboard drops a read from an earlier opening after a close and reopen", async () => {
+  const resolvers: ((d: Dashboard) => void)[] = [];
+  const load = () => new Promise<Dashboard>((res) => resolvers.push(res));
+  const mk = (h: string) => ({ verdict: { level: "ok", headline: h, reasons: [] } }) as unknown as Dashboard;
+  let seen: Dashboard | null = null;
+  function Probe({ open }: { open: boolean }) {
+    seen = useOpenDashboard(open, load, 1e9);
+    return null;
+  }
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<Probe open />);
+  });
+  await act(async () => r.update(<Probe open={false} />));
+  await act(async () => r.update(<Probe open />));
+  expect(resolvers).toHaveLength(2);
+  await act(async () => resolvers[1](mk("new")));
+  expect(seen!.verdict.headline).toBe("new");
+  await act(async () => resolvers[0](mk("old")));
+  expect(seen!.verdict.headline).toBe("new");
+  act(() => r.unmount());
+});

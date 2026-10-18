@@ -22,10 +22,13 @@ export function useRecord(api: RecordApi = REAL, pollMs = 1_000, enabled = true)
       live.current = false;
     };
   }, []);
+  // Bumped by start(): a status read begun earlier must not overwrite it.
+  const gen = useRef(0);
   const read = useCallback(async () => {
+    const mine = gen.current;
     try {
       const s = await api.status();
-      if (live.current) setStatus(s);
+      if (live.current && gen.current === mine) setStatus(s);
     } catch (e) {
       if (live.current) setError((e as Error).message);
     }
@@ -41,6 +44,7 @@ export function useRecord(api: RecordApi = REAL, pollMs = 1_000, enabled = true)
   }, [recording, enabled, read, pollMs]);
   const start = useCallback(async () => {
     setError(null);
+    gen.current += 1;
     try {
       const s = await api.start();
       if (live.current) setStatus(s);

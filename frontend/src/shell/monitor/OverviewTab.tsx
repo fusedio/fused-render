@@ -143,8 +143,8 @@ export default function OverviewTab({
     for (let i = pts.length - 1; i >= 0; i--) if (pts[i].v != null) return pts[i].v;
     return null;
   };
-  const withFallback = (primary: string | undefined, v: number | null, fmt: (n: number) => string): string => {
-    if (primary && primary !== "-%" && !primary.startsWith("–") && primary !== "no data") return primary;
+  const withFallback = (t: { primary: string; available: boolean } | undefined, v: number | null, fmt: (n: number) => string): string => {
+    if (t?.available) return t.primary;
     return v == null ? "–" : fmt(v);
   };
   const rps = series("rps");
@@ -159,7 +159,7 @@ export default function OverviewTab({
       key: "requests",
       title: "Requests",
       tile: tile("requests"),
-      figure: withFallback(tile("requests")?.primary, latest(rps), (n) => `${Math.round(n * 10) / 10}/s`),
+      figure: withFallback(tile("requests"), latest(rps), (n) => `${Math.round(n * 10) / 10}/s`),
       sub: tile("requests")?.caption ?? "",
       points: rps,
       max: rpsMax,
@@ -170,8 +170,8 @@ export default function OverviewTab({
       title: "Connections",
       tile: tile("queue"),
       figure: (() => {
-        const p = tile("queue")?.primary;
-        return p && p !== "no data" && !p.startsWith("–") ? `${p} wait` : (p ?? "–");
+        const t = tile("queue");
+        return t?.available ? `${t.primary} wait` : (t?.primary ?? "–");
       })(),
       sub: "browser wait p95 · limit 6 per host",
       points: inFlight,
@@ -186,7 +186,7 @@ export default function OverviewTab({
       key: "server",
       title: "Server",
       tile: tile("server"),
-      figure: withFallback(tile("server")?.primary, latest(lag), (n) => `${Math.round(n)} ms lag`),
+      figure: withFallback(tile("server"), latest(lag), (n) => `${Math.round(n)} ms lag`),
       sub: tile("server")?.caption ?? "",
       points: lag,
       max: lagMax,
@@ -196,7 +196,7 @@ export default function OverviewTab({
       key: "cpu",
       title: "CPU",
       tile: tile("cpu"),
-      figure: withFallback(tile("cpu")?.primary, latest(series("cpu")), (n) => `${Math.round(n)}%`),
+      figure: withFallback(tile("cpu"), latest(series("cpu")), (n) => `${Math.round(n)}%`),
       sub: [tile("memory")?.primary, memCaption].filter(Boolean).join(" · "),
       points: series("cpu"),
       max: 100,

@@ -27,3 +27,27 @@ test("no status read while disabled; one read when it turns on", async () => {
   expect(reads).toBe(1);
   act(() => r.unmount());
 });
+
+test("an initial status read that lands after start() does not overwrite the started state", async () => {
+  let resolveStatus!: (v: { recording: boolean; seconds_left: number; recordings: never[] }) => void;
+  const api: RecordApi = {
+    start: async () => ({ recording: true, seconds_left: 60, recordings: [] }),
+    status: () => new Promise((res) => (resolveStatus = res)),
+  };
+  let out!: ReturnType<typeof useRecord>;
+  function Probe() {
+    out = useRecord(api, 1e9, true);
+    return null;
+  }
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<Probe />);
+  });
+  await act(async () => {
+    await out.start();
+  });
+  expect(out.recording).toBe(true);
+  await act(async () => resolveStatus({ recording: false, seconds_left: 0, recordings: [] }));
+  expect(out.recording).toBe(true);
+  act(() => r.unmount());
+});

@@ -55,6 +55,12 @@ const OPEN_ONLY: NetFilters = {
 const SELF_PREFIX = "/api/system/";
 const GROUP_TOP = 5;
 const SLOTS = 6;
+
+/** "never" only for exactly zero: a sub-100 ms stay at the limit still counts. */
+function atLimitText(s: number | undefined): string {
+  if (!s || s <= 0) return "never at the limit";
+  return s < 0.1 ? "at the limit briefly" : `at the limit ${Math.round(s * 10) / 10} s`;
+}
 const LONG_HELD_MS = 2000;
 const WINDOW_S = 60;
 const CONN_TICKS: Tick[] = [
@@ -202,6 +208,10 @@ export default function NetworkTab({
         minMs: patch.minMs ?? draftRef.current.minMs,
       };
       setDraft(draftRef.current);
+      // The cancelled debounce may have held typed text for another field:
+      // commit the whole draft so the list matches what the inputs show.
+      setFilters((cur) => ({ ...cur, ...draftRef.current, ...patch }));
+      return;
     }
     setFilters((cur) => ({ ...cur, ...patch }));
   }, []);
@@ -262,7 +272,7 @@ export default function NetworkTab({
           <div className="monitor-card-sub">
             <span>
               {`last 60 s · ${
-                conc && conc.at_limit_s > 0 ? `at the limit ${conc.at_limit_s} s` : "never at the limit"
+                atLimitText(conc?.at_limit_s)
               }`}
             </span>
           </div>

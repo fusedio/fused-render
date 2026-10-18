@@ -282,3 +282,13 @@ test("figures fall back to the latest timeline value when the live sample is mis
   expect(fig(3)).toBe("19%");
   expect(text(byClass(r, "monitor-overview-window")[0].find((n) => n.type === "h2"))).toBe("Last 10 minutes");
 });
+
+test("a null loop-lag reading falls back to the latest timeline value", async () => {
+  const dash = {
+    ...DASH,
+    server: { ...(DASH.server as object), loop_lag: { current_ms: null, max_60s_ms: null } },
+  } as unknown as Dashboard;
+  const r = await mount(() => {}, { load: async () => dash });
+  const card = byClass(r, "monitor-overview-card").find((c) => c.props["data-card"] === "server")!;
+  expect(text(card.findAll((n) => n.props.className === "monitor-card-figure")[0])).toBe("1 ms lag");
+});

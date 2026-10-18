@@ -235,3 +235,33 @@ test("Connections card is calm when never at the limit and nothing is held", asy
   expect(text(card)).toContain("never at the limit");
   expect(byClass(r, "monitor-net-held")).toHaveLength(0);
 });
+
+test("a group click while a min-ms edit is pending commits the whole draft", async () => {
+  jest.useFakeTimers();
+  try {
+    const { r, calls } = await mount();
+    await act(async () => r.root.find((n) => n.type === "button" && text(n) === "Show request log").props.onClick());
+    const minInput = r.root.findByProps({ "aria-label": "Minimum server ms" });
+    await act(async () => minInput.props.onChange({ target: { value: "500" } }));
+    await act(async () => byClass(r, "monitor-group-row")[0].props.onClick());
+    await act(async () => {
+      jest.advanceTimersByTime(0);
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+    });
+    const last = calls[calls.length - 1];
+    expect(last.f.source).toBe("page-a");
+    expect(String(last.f.minMs)).toBe("500");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a sub-100 ms stay at the limit is not reported as never", async () => {
+  const { r } = await mount({
+    summary: async () => ({ ...SUMMARY, concurrency: [{ client: "c1", peak: 6, series: Array(60).fill(1), at_limit_s: 0.01 }] }),
+  });
+  const card = byClass(r, "monitor-net-conn")[0];
+  expect(card.props.className).toContain("is-warn");
+  expect(text(card)).toContain("at the limit briefly");
+  expect(text(card)).not.toContain("never at the limit");
+});

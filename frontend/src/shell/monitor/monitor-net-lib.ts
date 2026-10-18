@@ -94,6 +94,9 @@ export interface Tile {
   value: string;
   /** The big figure and the small line under it (value stays the one-line form). */
   primary: string;
+  /** False when the figure has no reading (section failed or the value is null);
+   *  consumers fall back on this, never on the placeholder text in `primary`. */
+  available: boolean;
   caption: string;
   baseline?: string;
   tab: Tab;
@@ -122,9 +125,12 @@ export function overviewTiles(d: Dashboard): Tile[] {
     title: string,
     tab: Tab,
     section: unknown,
-    fn: () => { level: Level; value: string; baseline?: string; primary?: string; caption?: string },
+    fn: () => { level: Level; value: string; baseline?: string; primary?: string; caption?: string; available?: boolean },
   ) => {
-    const off = { key, title, tab, level: "unavailable" as const, value: UNAVAILABLE, primary: UNAVAILABLE, caption: "" };
+    const off = {
+      key, title, tab, level: "unavailable" as const, value: UNAVAILABLE, primary: UNAVAILABLE,
+      available: false, caption: "",
+    };
     if (!sectionOk(section as object)) {
       tiles.push(off);
       return;
@@ -133,7 +139,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
       const r = fn();
       const [first, ...rest] = r.value.split(" · ");
       const caption = r.caption ?? [...rest, ...(r.baseline ? [r.baseline] : [])].join(" · ");
-      tiles.push({ key, title, tab, ...r, primary: r.primary ?? first, caption });
+      tiles.push({ key, title, tab, ...r, primary: r.primary ?? first, available: r.available ?? true, caption });
     } catch {
       tiles.push(off);
     }
@@ -150,6 +156,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
       level: sat ? "bad" : "ok",
       value: `${s.rps_10s}/s · ${worst} in flight`,
       primary: `${s.rps_10s}/s`,
+      available: s.rps_10s != null,
       caption: `${worst} in flight`,
     };
   });
@@ -159,6 +166,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
       level: q != null && q > QUEUE_P95_MS ? "warn" : "ok",
       value: q == null ? "no data" : `${ms(q)} p95`,
       primary: q == null ? "no data" : ms(q),
+      available: q != null,
       caption: q == null ? "" : "p95 wait for a connection",
     };
   });
@@ -172,6 +180,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
       level: busy || lagging ? "bad" : "ok",
       value: `${pool ? `${pool.borrowed}/${pool.total} threads` : "threads ?"} · lag ${ms(lag)}`,
       primary: `${ms(lag)} lag`,
+      available: lag != null,
       caption: pool ? `${pool.borrowed}/${pool.total} threads busy` : "threads ?",
     };
   });
@@ -195,6 +204,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
     const load = c.load?.[0];
     return {
       level: throttled || c.low_power ? "warn" : "ok",
+      available: c.cpu_pct != null,
       value: `${c.cpu_pct == null ? "-" : Math.round(c.cpu_pct)}%${load != null ? ` · load ${load.toFixed(1)}` : ""}${throttled ? ` · throttled ${c.thermal_limit}%` : ""}`,
       baseline: base != null ? `usual load ${base.toFixed(1)}` : undefined,
     };
