@@ -95,6 +95,12 @@ const SNAPSHOT_BUSY_RETRY_MS = 750;
 const DELTA_RETRY_MS = 1_000;
 const DELTA_RETRY_WINDOW_MS = 30_000;
 
+// A just-added node's file reaches disk with the next autosave snapshot
+// (debounce + relay, normally ~1–2 s). The node pane waits for it this often,
+// for at most this long.
+const NODE_FILE_PROBE_MS = 400;
+const NODE_FILE_WAIT_MS = 20_000;
+
 // A status poll that keeps failing is treated, after this many consecutive
 // misses, as a dropped watcher (`watching: false`), which is what re-arms the
 // self-heal on the next successful poll.
@@ -233,6 +239,41 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // disk change.
   const [pullBusy, setPullBusy] = useState(false);
   const [pullError, setPullError] = useState<string | null>(null);
+
+  // The node pane frames the node's FILE, and a node the user just added in
+  // the embed is selected the instant it exists there — a second or two
+  // before the autosave snapshot creates its file on disk. Framing it then
+  // shows the explorer's "Failed to stat" until the user re-selects. So the
+  // pane mounts only once the file is there: probed on selection and on every
+  // disk move (`disk_rev`), retried briefly in between. After a generous wait
+  // the frame is shown anyway, so a file that is genuinely missing still
+  // reports the real error instead of a spinner forever.
+  const [nodeFileReady, setNodeFileReady] = useState<string | null>(null);
+  const nodePath = node && dir ? nodeFile(dir, node) : null;
+  useEffect(() => {
+    if (!nodePath || nodeFileReady === nodePath) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const started = Date.now();
+    const probe = async () => {
+      try {
+        await statPath(nodePath);
+        if (!cancelled) setNodeFileReady(nodePath);
+      } catch {
+        if (cancelled) return;
+        if (Date.now() - started > NODE_FILE_WAIT_MS) {
+          setNodeFileReady(nodePath); // give up waiting: let the frame say so
+          return;
+        }
+        timer = window.setTimeout(() => void probe(), NODE_FILE_PROBE_MS);
+      }
+    };
+    void probe();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [nodePath, nodeFileReady, sync?.disk_rev]);
   const onPull = useCallback(async () => {
     setPullBusy(true);
     setPullError(null);
@@ -881,19 +922,23 @@ export default function CanvasWorkspace({ name }: { name: string }) {
                   </Tabs>
                 </div>
               </div>
-              <iframe
-                // Keyed on the mode so a tab switch is a fresh document: the
-                // chat's own `session_id` lives on the frame URL, and the
-                // explorer's content-mode swap is for its own switcher.
-                key={nodeTab}
-                className="preview-side-frame"
-                src={nodeEmbedSrc(
-                  nodeFile(dir, node),
-                  nodeTab,
-                  nodeSession && nodeSession.file === node.file ? nodeSession.sessionId : null,
-                )}
-                title={`${node.udfName} — ${nodeTab === "code" ? "Code" : "Claude"}`}
-              />
+              {nodeFileReady === nodeFile(dir, node) ? (
+                <iframe
+                  // Keyed on the mode so a tab switch is a fresh document: the
+                  // chat's own `session_id` lives on the frame URL, and the
+                  // explorer's content-mode swap is for its own switcher.
+                  key={nodeTab}
+                  className="preview-side-frame"
+                  src={nodeEmbedSrc(
+                    nodeFile(dir, node),
+                    nodeTab,
+                    nodeSession && nodeSession.file === node.file ? nodeSession.sessionId : null,
+                  )}
+                  title={`${node.udfName} — ${nodeTab === "code" ? "Code" : "Claude"}`}
+                />
+              ) : (
+                <p style={{ padding: 16, opacity: 0.7 }}>Saving {node.file}…</p>
+              )}
             </div>
           ) : chatHere && dir && !node ? (
             // key forces a REMOUNT when a fix run starts: the run id is read at
