@@ -7,7 +7,9 @@ code — over the postMessage bridge, the workspace page relays it to
 `POST /api/canvases/snapshot`, and this module folds it into the clone. The
 watcher then publishes the folder exactly as it publishes a Claude edit.
 
-Three entry points, all pure except for the final writes:
+Three entry points for the embed → disk leg, all pure except for the final
+writes (the disk → embed leg, `compact_state_from_disk` / `diff_views`, is at
+the bottom of the module):
 
   `compact_state(body)`   — the studio JSON the workbench sends → the compact
                             shape `canvas.toml` holds (one row per node keyed
@@ -72,7 +74,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 # -- the studio → compact key table ---------------------------------------
 #
@@ -229,7 +231,11 @@ def compact_state(body: dict) -> dict:
             continue
         src = name_by_id.get(str(edge.get("source")), edge.get("source"))
         dst = name_by_id.get(str(edge.get("target")), edge.get("target"))
-        if isinstance(src, str) and src and isinstance(dst, str) and dst:
+        # Both ends must be nodes IN THIS SNAPSHOT. The studio keeps an edge
+        # whose node was just deleted until its next reconcile, and an id that
+        # resolves to no node would otherwise be written to canvas.toml as the
+        # name — a dangling `udf-node-…` target the push's validation rejects.
+        if src in nodes and dst in nodes:
             edges.append([src, dst])
     canvas = {k: studio[k] for k in CANVAS_KEYS if k in studio}
 
@@ -472,8 +478,14 @@ def apply_snapshot(
                 except OSError:
                     pass
 
-    # Upserts: rows that differ on the keys the embed owns.
-    prev_nodes = prev["nodes"] if prev else {}
+    # Upserts: rows that differ on the keys the embed owns. A key the embed's
+    # row LACKS is deleted from disk only when the embed's own PREVIOUS row
+    # carried it (`embed_rows`, recorded on the view by the host after each
+    # snapshot) — never because the DISK row has it: `compact_node` emits
+    # several keys conditionally (an empty description, a catalog key that is
+    # None), so measured against the disk row every snapshot after a delta
+    # would strip them and rewrite the toml for nothing.
+    prev_nodes = (prev.get("embed_rows") or {}) if prev else {}
     for name, row in new["nodes"].items():
         disk = by_name.get(name)
         if disk is None:
@@ -501,8 +513,13 @@ def apply_snapshot(
     known = set(new["nodes"])
     gone = set(deleted)
     disk_edges = canvas.get("edges") if isinstance(canvas.get("edges"), list) else []
+    # … and only edges whose both ends are rows on disk: a dangling edge (a
+    # node id written as a name by an older build, a row removed by hand)
+    # would otherwise be preserved forever as "touching a node the embed does
+    # not know" and fail every push.
     kept = [e for e in disk_edges
             if isinstance(e, list) and len(e) == 2
+            and e[0] in by_name and e[1] in by_name
             and e[0] not in gone and e[1] not in gone
             and (e[0] not in known or e[1] not in known)]
     merged = [list(e) for e in new["edges"]]
@@ -557,14 +574,42 @@ def apply_snapshot(
             "created": created, "written": written, "at": time.time()}
 
 
+def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
+              bodies: dict, embed_rows: dict | None) -> dict:
+    """The view the embed holds after one of its own writes landed: `disk`
+    (a `compact_state_from_disk` reading taken AFTER the write) restricted
+    to `names`, the nodes the embed is known to hold. `edges` are the embed's
+    own set, kept as given (disk may carry more: edges touching nodes it
+    does not know; the embed's may name a raw id `compact_state` could not
+    resolve, which disk carries too), `ids` the server ids it holds, `bodies` the texts it holds — a node with
+    no entry is a body the host cannot vouch for, which the next delta then
+    re-sends (`diff_views` reads a missing view body as "differs"). Canvas
+    scalars are disk's: a snapshot always carries the embed's and the write
+    took them. See "the disk → embed leg" above for why this is not simply
+    `disk`."""
+    known = [n for n in disk["order"] if n in names]
+    return {
+        "nodes": {n: disk["nodes"][n] for n in known},
+        "order": known,
+        "edges": [list(e) for e in edges],
+        "canvas": dict(disk["canvas"]),
+        "files": {n: disk["files"][n] for n in known if n in disk["files"]},
+        "ids": {n: ids[n] for n in known if n in ids},
+        "bodies": {n: bodies[n] for n in known if n in bodies},
+        "embed_rows": {k: dict(v) for k, v in (embed_rows or {}).items()},
+    }
+
+
 def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> dict | None:
     """The previous snapshot with one node renamed, so the snapshot that
     follows a rename hint is diffed against the name it will carry."""
     if prev is None:
         return None
     out = dict(prev)
-    for key in ("nodes", "files", "ids", "bodies"):
-        table = dict(prev.get(key, {}))
+    for key in ("nodes", "files", "ids", "bodies", "embed_rows"):
+        if key not in prev:
+            continue
+        table = dict(prev.get(key) or {})
         if frm in table:
             table[to] = table.pop(frm)
             if key == "nodes" and isinstance(table[to], dict):
@@ -577,3 +622,338 @@ def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> di
         out["base_nodes"] = (set(base) - {frm}) | {to}
     out["edges"] = [[to if a == frm else a, to if b == frm else b] for a, b in prev.get("edges", [])]
     return out
+
+
+# -- the disk → embed leg: deltas -------------------------------------------
+#
+# The mirror image of the snapshot leg above. The host keeps `embed_view`, the
+# compact state it believes the embed is showing (canvases._SyncManager). When
+# the clone moves on disk — Claude wrote a file, the watcher merged a cloud
+# edit down — the page asks for diff(disk, embed_view) and posts it to the
+# frame as `fused-embed-delta`; the frame patches its atoms in place (no
+# re-hydrate) and acks, and only then does the host set embed_view := that
+# disk reading. After the host applied the embed's own snapshot it re-reads
+# disk into embed_view RESTRICTED to the snapshot's nodes (`held_view`, next
+# paragraph), so the embed's own edits diff to nothing and are never echoed
+# back while a disk-only node still is.
+#
+# `embed_view` means WHAT THE FRAME HOLDS, nothing wider. Its rows are always
+# disk rows (`compact_state_from_disk`), never `compact_state(snapshot)` rows:
+# the snapshot's rows carry EMBED_ROW_KEYS only and no code, so a view built
+# from one would diff non-empty against disk forever. But after the embed's own
+# snapshot landed the view is NOT the whole disk reading either: it is disk
+# RESTRICTED to the nodes the snapshot carried (`held_view`). A snapshot is the
+# embed's full state, so those are exactly the nodes it knows; a node Claude
+# added on disk meanwhile stays OUT of the view, so the next delta carries it
+# to the frame — folded into the view, it would diff to nothing, never reach
+# the frame, and be read as a deletion by the embed's next snapshot. The same
+# goes for a note Claude edited: the view keeps the text the embed SENT, so the
+# disk text diffs against it and is delivered instead of overwritten. `ids` are
+# the snapshot's own (the server ids the embed truly holds), so a node that
+# gained an id on the last push is still told about it (an `ids` op).
+
+# Source files, by suffix, whose text the embed holds as the UDF's code
+# verbatim. A text note's `.md` is README-shaped (`Udf.makeZipReadme`), NOT
+# the note's text, so it is sent as `body` instead and the frame decides.
+CODE_SUFFIXES = (".py", ".json", ".html")
+
+
+def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None) -> dict:
+    """The clone as the embed should hold it::
+
+        {nodes: {name: row}, order: [name], edges: [[a, b]],
+         canvas: {viewport, viewportBounds, comments}, files: {name: basename},
+         ids: {name: server id} (from the remote manifest, when known),
+         bodies: {name: text} (every node's source file, all four kinds),
+         missing: [name]} (rows whose source file is not on disk)
+
+    Same shape as `compact_state` where the keys overlap, so it serves as
+    `prev` for `apply_snapshot` too. Raises FileNotFoundError when there is
+    no canvas.toml and whatever rtoml raises on a malformed one.
+    """
+    doc = _load_toml(os.path.join(clone_dir, "canvas.toml"))
+    canvas = doc.get("canvas") or {}
+    if not isinstance(canvas, dict):
+        raise ValueError("canvas.toml: [canvas] is not a table")
+    rows = canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []
+    nodes: dict[str, dict] = {}
+    order: list[str] = []
+    for row in rows:
+        if isinstance(row, dict) and isinstance(row.get("udfName"), str) and row["udfName"]:
+            nodes[row["udfName"]] = dict(row)
+            order.append(row["udfName"])
+    edges: list[list[str]] = []
+    for e in canvas.get("edges") or []:
+        if (isinstance(e, list) and len(e) == 2
+                and isinstance(e[0], str) and isinstance(e[1], str)):
+            edges.append([e[0], e[1]])
+    scalars = {k: canvas[k] for k in CANVAS_KEYS if k in canvas}
+    files: dict[str, str] = {}
+    bodies: dict[str, str] = {}
+    missing: list[str] = []
+    for name, row in nodes.items():
+        file = _find_source(clone_dir, name)
+        if file is None:
+            # A folder is a row with no source file of its own.
+            if row.get("type") == "udf-folder":
+                continue
+            missing.append(name)
+            continue
+        files[name] = file
+        data = _read_bytes(os.path.join(clone_dir, file))
+        bodies[name] = data.decode("utf-8", "replace") if data is not None else ""
+    ids = {n: remote_ids[n] for n in nodes if remote_ids and isinstance(remote_ids.get(n), str)}
+    return {"nodes": nodes, "order": order, "edges": edges, "canvas": scalars,
+            "files": files, "ids": ids, "bodies": bodies, "missing": missing}
+
+
+def studio_patch_from_row(row: dict) -> dict:
+    """The studio-node fragment a compact row stands for — the inverse of
+    `compact_node`, shaped like the application server's
+    `_compact_node_to_studio` but PARTIAL: only the keys the row carries, so
+    the frame merges it over the node it has (id, measured size, selection
+    and every runtime field untouched). Keys the embed cannot show are left
+    out rather than guessed at."""
+    data: dict[str, Any] = {}
+    if "title" in row:
+        data["nodeTitle"] = row["title"]
+    if "description" in row:
+        data["nodeDescription"] = row["description"]
+    for key in NODE_DATA_KEYS + NODE_CATALOG_KEYS:
+        if key in row:
+            data[key] = row[key]
+    if "isLocked" in row:
+        data["isLocked"] = row["isLocked"]
+    if "visible" in row:
+        data["config"] = {"visible": row["visible"]}
+    patch: dict[str, Any] = {"data": data}
+    if "x" in row or "y" in row:
+        patch["position"] = {"x": row.get("x"), "y": row.get("y")}
+    for key in ("zIndex", "width", "height"):
+        if key in row:
+            patch[key] = row[key]
+    if row.get("type"):
+        patch["type"] = row["type"]
+    return patch
+
+
+def _upsert_op(disk: dict, name: str, *, row: bool, body: bool, sid: bool) -> dict:
+    op: dict[str, Any] = {"op": "upsert", "name": name}
+    file = disk["files"].get(name)
+    if file:
+        op["file"] = file
+    if row:
+        op["row"] = disk["nodes"][name]
+        op["node"] = studio_patch_from_row(disk["nodes"][name])
+    if body and name in disk["bodies"]:
+        if file and file.endswith(CODE_SUFFIXES):
+            op["code"] = disk["bodies"][name]
+        else:
+            op["body"] = disk["bodies"][name]
+    if sid and name in disk["ids"]:
+        op["id"] = disk["ids"][name]
+    return op
+
+
+def diff_views(disk: dict, view: dict | None) -> list[dict]:
+    """The ops that take `view` (what the embed holds; None = nothing known,
+    a full state) to `disk`. Node-level, by UDF name:
+
+        upsert {name, file, row?, node?, code?|body?, id?}  — new or changed;
+                                           an absent field means "unchanged",
+                                           never "cleared"
+        rename {from, to, file}           — a name vanished whose server id
+                                           reappears under a name the view
+                                           lacks (then diffed as `to`)
+        delete {name}
+        edges  {set: [[a, b]]}            — the whole set, when it differs
+        canvas {comments?, viewportBounds?} — the scalars that differ; the
+                                           frame never moves its own camera
+    A full state carries every node as an upsert plus `edges` and `canvas`;
+    the frame drops what is not listed.
+    """
+    ops: list[dict] = []
+    if view is None:
+        for name in disk["order"]:
+            ops.append(_upsert_op(disk, name, row=True, body=True, sid=True))
+        ops.append({"op": "edges", "set": [list(e) for e in disk["edges"]]})
+        if disk["canvas"]:
+            ops.append({"op": "canvas", **{k: v for k, v in disk["canvas"].items()
+                                           if k != "viewport"}})
+        return ops
+    vnodes, dnodes = view["nodes"], disk["nodes"]
+    vids, dids = view.get("ids", {}), disk["ids"]
+    vbodies = view.get("bodies", {})
+    renamed_to: dict[str, str] = {}
+    id_to_disk = {sid: n for n, sid in dids.items()}
+    for name in vnodes:
+        if name in dnodes:
+            continue
+        sid = vids.get(name)
+        to = id_to_disk.get(sid) if sid else None
+        if to and to not in vnodes:
+            renamed_to[to] = name
+            ops.append({"op": "rename", "from": name, "to": to,
+                        "file": disk["files"].get(to)})
+        else:
+            ops.append({"op": "delete", "name": name})
+    for name in disk["order"]:
+        was = renamed_to.get(name, name)
+        if was not in vnodes:
+            ops.append(_upsert_op(disk, name, row=True, body=True, sid=True))
+            continue
+        row = dnodes[name] != vnodes[was]
+        body = disk["bodies"].get(name) != vbodies.get(was)
+        sid = name in dids and dids[name] != vids.get(was)
+        if row or body or sid:
+            ops.append(_upsert_op(disk, name, row=row, body=body, sid=sid))
+    if sorted(map(tuple, disk["edges"])) != sorted(map(tuple, view.get("edges", []))):
+        ops.append({"op": "edges", "set": [list(e) for e in disk["edges"]]})
+    vcanvas = view.get("canvas", {})
+    scalars = {k: v for k, v in disk["canvas"].items()
+               if k != "viewport" and vcanvas.get(k) != v}
+    if scalars:
+        ops.append({"op": "canvas", **scalars})
+    return ops
+
+
+# -- canvas.toml, merged per node -----------------------------------------
+#
+# The watcher's remote merge is per FILE (canvases._merge_remote). canvas.toml
+# is the one file every writer touches — a drag in the embed, a node added in
+# a hosted tab, Claude renaming a UDF all rewrite it — so a per-file "local
+# changed since the sync point → local wins" there drops a teammate's new
+# node row whenever the clone has any unpushed layout edit. This is the
+# three-way merge of that one file at the granularity it is actually edited:
+# the node row (keyed by udfName), the edge set, the canvas scalars.
+
+def rows_of_doc(doc: dict) -> dict:
+    """`{nodes: {name: row}, order: [name], edges: [[a, b]], canvas: {...}}`
+    from a parsed canvas.toml. Rows without a udfName are dropped."""
+    canvas = doc.get("canvas") if isinstance(doc.get("canvas"), dict) else {}
+    nodes: dict[str, dict] = {}
+    order: list[str] = []
+    for row in canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []:
+        if isinstance(row, dict) and isinstance(row.get("udfName"), str) and row["udfName"]:
+            nodes[row["udfName"]] = dict(row)
+            order.append(row["udfName"])
+    edges = [[e[0], e[1]] for e in canvas.get("edges") or []
+             if isinstance(e, list) and len(e) == 2
+             and isinstance(e[0], str) and isinstance(e[1], str)]
+    scalars = {k: v for k, v in canvas.items() if k not in ("nodes", "edges")}
+    return {"nodes": nodes, "order": order, "edges": edges, "canvas": scalars}
+
+
+def _merge_row(base: dict | None, local: dict, remote: dict) -> dict:
+    """Field-wise three-way merge of one row, local winning a same-field tie."""
+    if local == remote:
+        return dict(local)
+    if base is not None:
+        if local == base:
+            return dict(remote)
+        if remote == base:
+            return dict(local)
+    base = base or {}
+    out: dict = {}
+    for key in list(local) + [k for k in remote if k not in local]:
+        lv, rv, bv = local.get(key, _ABSENT), remote.get(key, _ABSENT), base.get(key, _ABSENT)
+        if lv == rv:
+            val = lv
+        elif lv == bv:
+            val = rv          # only the remote changed this field
+        else:
+            val = lv          # only local changed it, or both did: local wins
+        if val is not _ABSENT:
+            out[key] = val
+    return out
+
+
+_ABSENT = object()
+
+# Scalars that are a view's own, never taken from the other side.
+_LOCAL_ONLY_SCALARS = ("viewport", "viewportBounds")
+
+
+def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[dict, dict]:
+    """Three-way merge of two canvas.toml documents at node granularity.
+
+    `base` is `rows_of_doc` of the toml at the last sync point (None when the
+    sync point predates this code: then only nodes the remote has and local
+    lacks come in, and local wins everything else — the old per-file rule's
+    outcome for the file, but still per node). Returns `(merged_doc, info)`
+    where merged_doc is `local_doc` with its [canvas] nodes/edges/scalars
+    replaced, and info = {added, removed, taken, kept} by node name.
+
+    Per node: one side changed → that side; both → field-wise, local wins a
+    same-field tie; deleted on one side and untouched on the other → deleted;
+    deleted on one side and changed on the other → the change wins (local
+    deletes beat remote changes, as the file rule did: the push propagates
+    the delete). Edges: union minus what either side deleted since base,
+    minus edges touching a dropped node. Scalars: viewport/viewportBounds
+    local; others local unless only the remote moved them.
+    """
+    L, R = rows_of_doc(local_doc), rows_of_doc(remote_doc)
+    B = base or {"nodes": {}, "edges": [], "canvas": {}}
+    bn, ln, rn = B["nodes"], L["nodes"], R["nodes"]
+    merged: dict[str, dict] = {}
+    info = {"added": [], "removed": [], "taken": [], "kept": []}
+    for name in L["order"]:
+        if name in rn:
+            row = _merge_row(bn.get(name), ln[name], rn[name])
+            merged[name] = row
+            if row == rn[name] and row != ln[name]:
+                info["taken"].append(name)
+            elif row == ln[name]:
+                info["kept"].append(name)
+            else:
+                info["taken"].append(name)
+        elif name in bn and bn[name] == ln[name]:
+            info["removed"].append(name)      # remote deleted an untouched node
+        else:
+            merged[name] = dict(ln[name])     # local added or changed it
+            info["kept"].append(name)
+    for name in R["order"]:
+        if name in merged or name in ln:
+            continue
+        if name in bn:
+            continue                          # local deleted it: stays deleted
+        merged[name] = dict(rn[name])         # new on the remote
+        info["added"].append(name)
+
+    def edge_set(rows):
+        return {(a, b) for a, b in rows}
+    be, le, re_ = edge_set(B["edges"]), edge_set(L["edges"]), edge_set(R["edges"])
+    edges = ((le | re_) - (be - le) - (be - re_))
+    ordered = [e for e in L["edges"] if tuple(e) in edges]
+    seen = {tuple(e) for e in ordered}
+    for e in R["edges"]:
+        if tuple(e) in edges and tuple(e) not in seen:
+            ordered.append(e)
+            seen.add(tuple(e))
+    ordered = [e for e in ordered if e[0] in merged and e[1] in merged]
+
+    scalars = dict(L["canvas"])
+    for key, rv in R["canvas"].items():
+        if key in _LOCAL_ONLY_SCALARS:
+            continue
+        lv, bv = L["canvas"].get(key, _ABSENT), B["canvas"].get(key, _ABSENT)
+        if lv == bv and rv != lv:
+            scalars[key] = rv
+    for key in list(scalars):
+        if key not in R["canvas"] and key not in _LOCAL_ONLY_SCALARS \
+                and scalars[key] == B["canvas"].get(key, _ABSENT):
+            del scalars[key]                  # remote removed an untouched scalar
+
+    # Keep the local document's key order (rtoml writes keys in dict order):
+    # an unchanged merge must dump to the same bytes it read.
+    out = dict(local_doc)
+    canvas = dict(local_doc.get("canvas") or {})
+    for key in list(canvas):
+        if key not in ("nodes", "edges") and key not in scalars:
+            del canvas[key]
+    for key, val in scalars.items():
+        canvas[key] = val
+    canvas["nodes"] = [merged[n] for n in merged]
+    canvas["edges"] = ordered
+    out["canvas"] = canvas
+    return out, info

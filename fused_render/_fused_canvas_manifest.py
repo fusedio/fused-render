@@ -38,6 +38,9 @@ def main() -> None:
         udfs[slug] = {
             "hash": udf.get("udf_body_hash"),
             "last_updated": udf.get("last_updated"),
+            # The UDF's server id: the embed learns it through an `ids`
+            # delta once the push that created the UDF lands.
+            "id": udf.get("id"),
         }
     json.dump(
         {
