@@ -231,7 +231,11 @@ def compact_state(body: dict) -> dict:
             continue
         src = name_by_id.get(str(edge.get("source")), edge.get("source"))
         dst = name_by_id.get(str(edge.get("target")), edge.get("target"))
-        if isinstance(src, str) and src and isinstance(dst, str) and dst:
+        # Both ends must be nodes IN THIS SNAPSHOT. The studio keeps an edge
+        # whose node was just deleted until its next reconcile, and an id that
+        # resolves to no node would otherwise be written to canvas.toml as the
+        # name — a dangling `udf-node-…` target the push's validation rejects.
+        if src in nodes and dst in nodes:
             edges.append([src, dst])
     canvas = {k: studio[k] for k in CANVAS_KEYS if k in studio}
 
@@ -509,8 +513,13 @@ def apply_snapshot(
     known = set(new["nodes"])
     gone = set(deleted)
     disk_edges = canvas.get("edges") if isinstance(canvas.get("edges"), list) else []
+    # … and only edges whose both ends are rows on disk: a dangling edge (a
+    # node id written as a name by an older build, a row removed by hand)
+    # would otherwise be preserved forever as "touching a node the embed does
+    # not know" and fail every push.
     kept = [e for e in disk_edges
             if isinstance(e, list) and len(e) == 2
+            and e[0] in by_name and e[1] in by_name
             and e[0] not in gone and e[1] not in gone
             and (e[0] not in known or e[1] not in known)]
     merged = [list(e) for e in new["edges"]]
