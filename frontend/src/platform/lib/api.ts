@@ -3291,12 +3291,18 @@ export type SessionEffort = "" | "low" | "medium" | "high" | "xhigh" | "max";
 export function createApp(
   name: string,
   prompt: string,
-  model: DefaultModel = "",
+  // The chosen agent's model id — Claude's `DefaultModel`, or another
+  // agent's own catalog id ("auto", "gpt-5.4"); the server checks it against
+  // that agent's row.
+  model: string = "",
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "" for the
+  // catalog's default (docs/COPILOT_BACKEND.md D17).
+  backend: string = "",
 ): Promise<NewAppResult> {
-  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort, images });
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort, images, backend });
 }
 
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------

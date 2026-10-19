@@ -366,18 +366,6 @@
   font-size: 11.5px;
   color: var(--fg-muted);
 }
-/* The closed composer's line (Claude switched off, D17), in the hint's ink. */
-.home-composer-off {
-  margin: 8px 0 0;
-  font-size: 12px;
-  text-align: center;
-  color: var(--fg-muted);
-}
-.home-composer-off a {
-  color: inherit;
-  text-decoration: underline;
-}
-
 .home-composer-send {
   display: inline-flex;
   align-items: center;
