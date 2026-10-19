@@ -3,9 +3,16 @@
 // messages; while open it also polls GET /api/canvases/sync/log every 2 s
 // whenever no socket log event has arrived lately (socket down, or a server
 // that does not send them).
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getSyncLog } from "./api";
+import type { PullControl } from "./SyncStrip";
 import { LEG_LABEL, LEG_ORDER, LEG_SHORT, formatClock, type SyncLogEvent } from "./sync-state";
+
+// The Hard pull's second step, inline (no window.confirm: the native shell's
+// web views do not promise one). Pressing "Hard pull" swaps the button for
+// this question and its two answers; anything else leaves the drawer as is.
+const HARD_PULL_QUESTION =
+  "Replace this canvas folder with the server's copy? Unpublished local edits are kept only in the canvas trash.";
 
 function LegendItem({ color, text }: { color: string; text: string }) {
   return (
@@ -29,6 +36,7 @@ export function SyncDrawer({
   events,
   wsLogAtRef,
   onEvents,
+  hardPull,
   onClose,
 }: {
   name: string;
@@ -40,11 +48,19 @@ export function SyncDrawer({
   /** Date.now() of the last `log` message on the events socket (0 = none). */
   wsLogAtRef: React.MutableRefObject<number>;
   onEvents: (events: SyncLogEvent[]) => void;
+  /** The "Hard pull" door: discard the clone and take the server's copy. */
+  hardPull: PullControl;
   onClose: () => void;
 }) {
   const nextRef = useRef(0);
   const onEventsRef = useRef(onEvents);
   onEventsRef.current = onEvents;
+  const [confirmHard, setConfirmHard] = useState(false);
+  // The question drops once the pull is under way (or the canvas changes).
+  useEffect(() => {
+    if (hardPull.busy) setConfirmHard(false);
+  }, [hardPull.busy]);
+  useEffect(() => setConfirmHard(false), [name]);
 
   useEffect(() => {
     // A new canvas or a new watcher is a new ring: read it from the start.
@@ -110,9 +126,58 @@ export function SyncDrawer({
         }}
       >
         <strong>Sync log</strong>
-        <button className="btn" style={{ padding: "0 8px", fontSize: 12 }} onClick={onClose}>
-          Close
-        </button>
+        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          {confirmHard ? (
+            <>
+              <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{HARD_PULL_QUESTION}</span>
+              <button
+                className="btn btn-primary"
+                style={{ padding: "0 8px", fontSize: 12, flex: "none" }}
+                disabled={hardPull.disabled}
+                onClick={() => hardPull.onPull()}
+              >
+                Discard and pull
+              </button>
+              <button
+                className="btn"
+                style={{ padding: "0 8px", fontSize: 12, flex: "none" }}
+                onClick={() => setConfirmHard(false)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <>
+              {hardPull.error && (
+                <span
+                  style={{
+                    color: "rgb(200,60,60)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    minWidth: 0,
+                    maxWidth: 420,
+                  }}
+                  title={hardPull.error}
+                >
+                  {hardPull.error}
+                </span>
+              )}
+              <button
+                className="btn"
+                style={{ padding: "0 8px", fontSize: 12, flex: "none" }}
+                disabled={hardPull.disabled}
+                onClick={() => setConfirmHard(true)}
+                title="Replace this canvas folder with a fresh copy from the server, no merge (the old files go to the canvas trash)"
+              >
+                {hardPull.busy ? "Pulling…" : "Hard pull"}
+              </button>
+              <button className="btn" style={{ padding: "0 8px", fontSize: 12, flex: "none" }} onClick={onClose}>
+                Close
+              </button>
+            </>
+          )}
+        </span>
       </div>
       {/* What the strip's dots mean: their order, left to right, and their
           colours. */}

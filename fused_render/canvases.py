@@ -2715,9 +2715,12 @@ class _SyncManager:
             self.log_event("server_to_disk", "probe stale", ok=False,
                            detail=_stale_reason(self.server_stale))
 
-    def pull(self, *, lock_wait: float | None = None) -> dict:
+    def pull(self, *, lock_wait: float | None = None, hard: bool = False) -> dict:
         """Bring the remote into the clone, on request (the page's Pull, or a
-        session answering the manual push's refusal). The caller holds
+        session answering the manual push's refusal). `hard` is the sync
+        drawer's "Hard pull": no merge on any leg — the clone is replaced
+        wholesale by the server's files (trash snapshot first), local edits
+        and local-only files included. The caller holds
         `_flight_lock` and NOT `_op_lock` (and has read the pause count under
         the flight lock): the manifest probe and the merge's zip download run
         unlocked, and only the writes take _op_lock — an embed snapshot does
@@ -2754,9 +2757,9 @@ class _SyncManager:
         started = time.time()
         self._pull_started_at = started
         self._pull_in_flight = True
-        self.log_event("server_to_disk", "pull start")
+        self.log_event("server_to_disk", "hard pull start" if hard else "pull start")
         try:
-            result = self._pull(cli, wait)
+            result = self._pull(cli, wait, hard=hard)
         finally:
             self._pull_in_flight = False
             self._pull_started_at = None
@@ -2781,7 +2784,7 @@ class _SyncManager:
         self._bump()
         return result
 
-    def _pull(self, cli, wait: float) -> dict:
+    def _pull(self, cli, wait: float, hard: bool = False) -> dict:
         busy = {"ok": False, "code": "busy",
                 "error": "a sync operation is in flight for this canvas; try again in a moment"}
         # A wholesale CLI pull rewrites the folder outside anything a Claude
@@ -2797,7 +2800,7 @@ class _SyncManager:
             probe = self._probe_remote()
             if probe is None:
                 return {"ok": False, "error": "could not read the canvas from the server"}
-            if dirty and self._base_files is not None:
+            if dirty and self._base_files is not None and not hard:
                 bundle = self._fetch_bundle(probe)
                 if bundle is None:
                     return {"ok": False,
@@ -2846,7 +2849,7 @@ class _SyncManager:
             if not self._op_lock.acquire(timeout=wait):
                 return busy
             try:
-                if dirty:
+                if dirty or hard:
                     self._snapshot_clone()
                 error = self._apply_legacy_pull(cli, base)
                 # No manifest here, so no rotation to clear it: clear by hand, and
@@ -3921,6 +3924,9 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
     name = body.get("name")
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
+    # `hard`: the sync drawer's Hard pull — discard the clone's local files
+    # and take the server's copy wholesale (trash snapshot first, no merge).
+    hard = body.get("hard") is True
     manager = _sync_manager(name, create=False)
     if manager is None:
         return JSONResponse(
@@ -3935,7 +3941,7 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
         with manager.pause_lock:
             if manager.pause_count > 0:
                 return _busy(f"syncing for {name!r} is paused; try again in a moment")
-        result = manager.pull()
+        result = manager.pull(hard=hard)
     finally:
         manager._flight_lock.release()
     if result.get("code") == "busy":

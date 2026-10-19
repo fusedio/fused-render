@@ -436,13 +436,13 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [nodePath, nodeFileReady, sync?.disk_rev]);
-  const onPull = useCallback(async () => {
+  const onPull = useCallback(async (hard = false) => {
     setPullBusy(true);
     setPullError(null);
     try {
       // The answer is the old sync/status shape: read only its verdict. The
       // new state follows on the events socket (or the next poll).
-      const s = await pullCanvas(name);
+      const s = await pullCanvas(name, hard);
       if (!s.ok) setPullError(s.pull_error ?? s.error ?? "pull failed");
       void getSyncState(name).then(applyState, () => undefined);
     } catch (e) {
@@ -1252,6 +1252,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           live={live}
           open={drawerOpen}
           onToggle={() => setDrawerOpen((o) => !o)}
+          workbenchUrl={
+            baseUrl && handle
+              ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+              : null
+          }
           pull={{
             busy: pullBusy,
             error: pullError,
@@ -1267,6 +1272,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           events={logEvents}
           wsLogAtRef={wsLogAtRef}
           onEvents={onLogEvents}
+          hardPull={{
+            busy: pullBusy,
+            error: pullError,
+            disabled: !!owned || !sync || pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
+            onPull: () => void onPull(true),
+          }}
           onClose={() => setDrawerOpen(false)}
         />
       )}
