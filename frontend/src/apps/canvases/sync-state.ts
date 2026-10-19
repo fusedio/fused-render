@@ -26,6 +26,14 @@ export const LEG_LABEL: Record<LegName | "watcher", string> = {
   watcher: "Watcher",
 };
 
+/** Short names for the strip's four dots, in the drawer's legend line. */
+export const LEG_SHORT: Record<LegName, string> = {
+  embed_to_disk: "canvas→disk",
+  disk_to_embed: "disk→canvas",
+  disk_to_server: "publish",
+  server_to_disk: "server",
+};
+
 /** Local-loop budgets (ms): past these the leg is amber. */
 export const EMBED_TO_DISK_BUDGET_MS = 100;
 export const DISK_TO_EMBED_BUDGET_MS = 300;
@@ -124,8 +132,8 @@ export interface RelayEntry {
   seq: number;
   /** Date.now() when the frame's message arrived. */
   at: number;
-  /** The clone answered 409 (a push/pull holds it, or the watcher is being
-   *  re-armed); the relay is retrying. */
+  /** The clone answered 409 (a force pull or a pause holds it, or the
+   *  watcher is being re-armed); the relay is retrying. */
   busy: boolean;
 }
 
@@ -192,7 +200,7 @@ export function embedLegFromQueue(
     return {
       state: "blocked",
       oldest_age_ms: age,
-      reason: `${what} waiting ${formatAge(age)} — the clone is busy (push or pull)`,
+      reason: `${what} waiting ${formatAge(age)} — the clone is busy (force pull or pause)`,
     };
   }
   return {

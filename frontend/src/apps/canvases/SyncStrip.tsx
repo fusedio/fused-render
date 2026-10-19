@@ -192,6 +192,8 @@ export function SyncStrip({
         </span>
       )}
       {!owned && server && (
+        // The four legs, local first, as bare dots (each names itself in its
+        // tooltip; the drawer's legend line spells out the order).
         <span style={{ display: "flex", alignItems: "center", gap: 6, flex: "none" }}>
           {verdicts.map((v) => (
             <span

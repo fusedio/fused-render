@@ -194,29 +194,74 @@ def _studio_node(name, x=10, y=20):
             "data": {"udfName": name, "nodeTitle": name}}
 
 
-def test_snapshot_new_udf_without_node_gets_file_and_row(tmp_path):
+def test_snapshot_new_udf_without_node_gets_file_but_no_row(tmp_path):
+    """The embed HAS the node (placed where the user dropped it); a row
+    synthesized here would move it. File only, slug reported rowless."""
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
-    new = _snapshot_new(
-        [_studio_node("a")],
-        [{"slug": "a", "file": "a.py", "id": "sid-a"},
-         {"slug": "udf_4", "file": "udf_4.py",
-          "udf_body": '{"code": "@fused.udf\\ndef udf(): pass\\n"}'}],
-        base_nodes=["a"],
-    )
+    udfs = [{"slug": "a", "file": "a.py", "id": "sid-a"},
+            {"slug": "udf_4", "file": "udf_4.py",
+             "udf_body": '{"code": "@fused.udf\\ndef udf(): pass\\n"}'}]
+    new = _snapshot_new([_studio_node("a")], udfs, base_nodes=["a"])
     assert new["new_files"] == [{"file": "udf_4.py",
                                  "body": "@fused.udf\ndef udf(): pass\n"}]
+    toml = os.path.join(d, "canvas.toml")
+    before = open(toml).read()
     result = cs.apply_snapshot(d, new, None)
     assert result["created"] == ["udf_4.py"]
-    assert result["synthesized"] == ["udf_4"]
+    assert result["rowless_files"] == ["udf_4"]
+    assert result["synthesized"] == []
     assert result["changed"] is True
     assert open(os.path.join(d, "udf_4.py")).read() == "@fused.udf\ndef udf(): pass\n"
-    rows = _rows(d)
-    assert [r["udfName"] for r in rows] == ["a", "udf_4"]
-    # Same row the disk reading would have synthesized for the orphan.
-    expected = cs.synthesize_row([dict(A_ROW, x=10, y=20)], "udf_4", "udf_4.py")
-    assert rows[1] == expected
-    disk = cs.compact_state_from_disk(d)
-    assert disk["synthesized"] == [] and disk["missing"] == []
+    assert open(toml).read() == before            # no row written
+    # The embed's next snapshot brings the node where the user put it.
+    nxt = _snapshot_new([_studio_node("a"), _studio_node("udf_4", x=900, y=700)], udfs)
+    r2 = cs.apply_snapshot(d, nxt, None)
+    assert r2["rowless_files"] == [] and r2["upserted"] == ["udf_4"]
+    row = _rows(d)[1]
+    assert (row["udfName"], row["x"], row["y"]) == ("udf_4", 900, 700)
+
+
+def test_snapshot_rowless_file_deleted_in_grace_is_trashed(tmp_path):
+    """The user deletes the new UDF before its node ever reached disk: the
+    next snapshot lists neither, so the in-grace file goes (else it would be
+    synthesized back once the grace window ends)."""
+    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
+    udfs_a = [{"slug": "a", "file": "a.py", "id": "sid-a"}]
+    new_udf = {"slug": "udf_4", "file": "udf_4.py", "udf_body": '{"code": "c"}'}
+    r1 = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs_a + [new_udf], ["a"]),
+                           None)
+    assert r1["rowless_files"] == ["udf_4"]
+    # Still listed (nodes lagging): kept.
+    r2 = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs_a + [new_udf]), None,
+                           rowless_prev=r1["rowless_files"])
+    assert r2["deleted"] == [] and os.path.exists(os.path.join(d, "udf_4.py"))
+    # Gone from the embed: trashed, toml untouched.
+    trashed = []
+    toml = open(os.path.join(d, "canvas.toml")).read()
+    r3 = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs_a), None,
+                           backup=lambda rel, data: trashed.append(rel),
+                           rowless_prev=["udf_4"])
+    assert r3["deleted"] == ["udf_4"] and r3["changed"] is True
+    assert trashed == ["udf_4.py"]
+    assert not os.path.exists(os.path.join(d, "udf_4.py"))
+    assert open(os.path.join(d, "canvas.toml")).read() == toml
+    assert cs.compact_state_from_disk(d)["synthesized"] == []
+
+
+def test_compact_exclude_orphans_hides_in_grace_file_then_synthesizes(tmp_path):
+    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "c", "z.py": "z"})
+    held = cs.compact_state_from_disk(d, None, exclude_orphans=["udf_4"])
+    assert "udf_4" not in held["nodes"] and "udf_4" not in held["order"]
+    assert "udf_4" not in held["files"] and "udf_4" not in held["bodies"]
+    assert held["synthesized"] == ["z"]           # other orphans unaffected
+    assert held["missing"] == []
+    assert not [o for o in cs.diff_views(held, None) if o.get("name") == "udf_4"]
+    assert [s for s, _ in cs.orphan_sources(d, ["a"], exclude=["udf_4"])] == ["z"]
+    # Grace over, still no row: a true orphan, synthesized as before.
+    lifted = cs.compact_state_from_disk(d)
+    assert lifted["synthesized"] == ["udf_4", "z"]
+    assert lifted["files"]["udf_4"] == "udf_4.py"
+    assert lifted["nodes"]["udf_4"] == cs.synthesize_row([dict(A_ROW)], "udf_4", "udf_4.py")
 
 
 def test_snapshot_new_udf_with_node_is_not_synthesized(tmp_path):
@@ -251,9 +296,9 @@ def test_snapshot_new_file_with_existing_disk_row_is_not_resynthesized(tmp_path)
     assert rows[1] == {"udfName": "udf_4", "x": 5, "y": 6}
 
 
-def test_snapshot_existing_behaviours_kept_alongside_synthesis(tmp_path):
-    """base_nodes deletion and embed_rows key deletion still apply in the
-    snapshot that also synthesizes."""
+def test_snapshot_existing_behaviours_kept_alongside_rowless_file(tmp_path):
+    """Deletion and embed_rows key deletion still apply in the snapshot
+    that also creates a row-less file."""
     d = _clone(tmp_path,
                [dict(A_ROW, description="old"), {"udfName": "b", "x": 0, "y": 0}],
                {"a.py": "A", "b.py": "B"}, edges=[["a", "b"]])
@@ -269,11 +314,11 @@ def test_snapshot_existing_behaviours_kept_alongside_synthesis(tmp_path):
     assert result["deleted"] == ["b"]
     assert trashed == ["b.py"]
     assert not os.path.exists(os.path.join(d, "b.py"))
-    assert result["synthesized"] == ["n"]
+    assert result["rowless_files"] == ["n"] and result["synthesized"] == []
+    assert open(os.path.join(d, "n.md")).read() == "note"
     rows = {r["udfName"]: r for r in _rows(d)}
-    assert set(rows) == {"a", "n"}
+    assert set(rows) == {"a"}
     assert "description" not in rows["a"]      # embed_rows key deletion
-    assert rows["n"]["textBoxColor"] == "#FFF9C4"
     doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
     assert doc["canvas"]["edges"] == []
 
@@ -323,14 +368,19 @@ def test_snapshot_stale_nodes_keep_a_delivered_synthesized_node(tmp_path):
     udfs = [{"slug": "a", "file": "a.py", "id": "sid-a"},
             {"slug": "udf_4", "file": "udf_4.py", "udf_body": '{"code": "c"}'}]
     first = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs, ["a"]), None)
-    assert first["synthesized"] == ["udf_4"]
-    view = cs.compact_state_from_disk(d)          # the delta was acked
+    assert first["rowless_files"] == ["udf_4"]
+    # Grace over, still row-less: the cut synthesizes, the host persists,
+    # the delta is acked.
+    view = cs.compact_state_from_disk(d)
+    assert view["synthesized"] == ["udf_4"]
+    assert cs.persist_synthesized(d, view["synthesized"]) == ["udf_4"]
     assert "udf_4" in view["nodes"]
     trashed = []
     again = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs), view,
                               backup=lambda rel, data: trashed.append(rel))
     assert again["deleted"] == [] and trashed == []
-    assert again["synthesized"] == []             # its row is already there
+    assert again["deferred_deletes"] == ["udf_4"]
+    assert again["rowless_files"] == []           # its row is already there
     assert [r["udfName"] for r in _rows(d)] == ["a", "udf_4"]
     assert os.path.exists(os.path.join(d, "udf_4.py"))
 

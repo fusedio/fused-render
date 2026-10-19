@@ -24,8 +24,6 @@
 //            load; null from the sidebar's close button, so both sides agree)
 //   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
 //            workbench's save chip ("Published"); it triggers no reload.
-//            (`fused-embed-remote-changed` is still sent beside it for a
-//            workbench build from before the delta leg — see the effect.)
 // Keyed by UDF NAME, never a React Flow node id (those are regenerated every
 // load): the node's source is `<clone>/<udfName>.py` (widgets: `.json`).
 //
@@ -44,11 +42,8 @@
 // embed_to_disk leg merged in, the worst leg precomputed) goes to the frame
 // on every change, ≤ 10/s, for the embed's save chip:
 //   parent → { type: "fused-embed-sync-state", state }
-// The clone watcher is then the
-// ONE writer to the server, publishing the folder exactly as it publishes a
-// Claude edit — so there is no second writer to lock out, and the left-pane
-// lock this page used to run (decideLock, the ack handshake, the scrim, the
-// grace window) is gone with it.
+// The clone watcher is then the ONE writer to the server, publishing the
+// folder exactly as it publishes a Claude edit.
 //
 // The other direction (canvas_snapshot.py, "the disk → embed leg"): this page
 // never reloads the workbench iframe and never asks it to re-fetch. When the
@@ -139,14 +134,10 @@ const OWNED_RETRY_MS = 5000;
 // this often.
 const HEAL_MIN_INTERVAL_MS = 5000;
 
-// A snapshot that met a busy clone (409) is retried this many times, this far
-// apart — long enough to outlast a push, short enough that "Saving…" on the
-// workbench's chip stays honest.
-// A 409 (`busy`: a push or pull holds the clone's lock; `no_watcher`: the
-// watcher is being re-armed) is retried for up to this long. A snapshot the
-// embed sees REJECTED is dropped on its side, so a busy spell must never end
-// in a rejection; past the window the relay gives up silently and the embed
-// keeps the snapshot queued for its next change or reload.
+// A snapshot that met a busy clone (409 `busy`: a force pull or a pause holds
+// the clone; `no_watcher`: the watcher is being re-armed) is retried this far
+// apart, for up to this long. Past the window, with nothing newer queued, it
+// is rejected to the embed (see `abandon` in relaySnapshot): not on disk.
 const SNAPSHOT_BUSY_WINDOW_MS = 120_000;
 const SNAPSHOT_BUSY_RETRY_MS = 750;
 
@@ -396,8 +387,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
-  // watcher holds its push while `sync.server_stale` is set; this button is
-  // the user's pull. The result reaches the embed as a delta like any other
+  // watcher holds its push while the server_to_disk leg is stale; this button
+  // is the user's pull. The result reaches the embed as a delta like any other
   // disk change.
   const [pullBusy, setPullBusy] = useState(false);
   const [pullError, setPullError] = useState<string | null>(null);
@@ -586,8 +577,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
 
   // Owned by another process, or sync/start failed: ask again every
   // OWNED_RETRY_MS so the page recovers on its own when that process quits
-  // (its lock goes stale) or the server answers again — the self-heal the
-  // old status poll gave a failed boot.
+  // (its lock goes stale) or the server answers again.
   const retryStart = !!owned || startError !== null;
   useEffect(() => {
     if (!retryStart) return;
@@ -662,8 +652,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // here (SNAPSHOT_BUSY_WINDOW_MS), because the embed only re-posts on its
   // next change or reload and would otherwise sit on "Saving…" for a
   // snapshot nothing was wrong with; a retry is abandoned the moment a newer
-  // relay is queued behind it, since that one carries the full state anyway.
-  // Anything else is a rejection the embed drops, reason attached.
+  // relay is queued behind it, since that one carries the full state anyway,
+  // and rejected when the window runs out with nothing newer. Anything else
+  // is a rejection the embed drops, reason attached.
   // Relays run strictly IN ORDER through one promise chain: the frame posts
   // seq 1, 2, 3 as it autosaves, and a 409 retry on seq 1 must not let seq 2
   // reach the clone first — the server would then read seq 1's older full
@@ -921,8 +912,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         // Through the SNAPSHOT chain, not fire-and-forget: the frame posts a
         // snapshot before it applies a delta, and the server adopts the
         // acked reading as "what the frame holds". An ack that overtook that
-        // snapshot (the snapshot route answers busy and sleeps while a push
-        // holds the lock; the ack route waits for it) would make the server
+        // snapshot (the snapshot route answers busy while a force pull or a
+        // pause holds the clone; the ack route waits for it) would make the server
         // read a node the delta added as one the snapshot deleted.
         const ok = type === "fused-embed-delta-applied";
         const said = event.data?.reason;
@@ -1010,7 +1001,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
 
   // After every push, tell the workbench's save chip it is published. This
   // is informational only — the frame never reloads or re-fetches on it (the
-  // delta leg below is how disk changes reach it).
+  // delta leg above is how disk changes reach it).
   const lastPushSeqRef = useRef<number | null>(null);
   useEffect(() => {
     const seq = sync?.legs.disk_to_server.push_seq ?? null;
@@ -1022,17 +1013,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-pushed", push_seq: seq }, origin);
-    // COMPAT: a workbench build from before the delta leg (application
-    // #8298) has no other way to learn about a push — without this it would
-    // sit on stale state for good. A build with the delta leg does not relay
-    // `remote-changed` at all, so sending both is harmless. Drop this once
-    // #8298 is live on every environment this app points at.
-    frame.contentWindow.postMessage(
-      { type: "fused-embed-remote-changed", push_seq: seq },
-      origin,
-    );
   }, [sync?.legs.disk_to_server.push_seq]);
-
 
   // Self-heal: a state saying no watcher runs here (a server restart, a
   // stop) re-arms it through sync/start — which answers `owned` instead if
@@ -1048,9 +1029,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   }, [sync, heal]);
 
   // The sync state, live: WS /api/canvases/sync/events pushes a `state` on
-  // every change — a disk_rev bump reaches the delta effect above at once,
-  // where the old 2 s status poll lagged it — and `log` events for the
-  // drawer. While the socket is down the page polls sync/state every
+  // every change — a disk_rev bump reaches the delta effect above at once —
+  // and `log` events for the drawer. While the socket is down the page polls sync/state every
   // SYNC_POLL_MS and reconnects with backoff. Nothing runs while another
   // process owns the clone (or before sync/start has answered).
   const syncLive = !!dir && !owned;
@@ -1228,10 +1208,10 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         setNode(null);
       }
       setFixRunId(run_id);
-      // Don't wait for the next poll (up to SYNC_POLL_MS away) to reflect
-      // that a fix is now running — the gap let a double-click through to a
-      // second POST (a 409, now that the server itself locks, but still a
-      // confusing one to show right after a successful click).
+      // Don't wait for the next sync state to reflect that a fix is now
+      // running: the gap would let a double-click through to a second POST
+      // (the server answers it 409, a confusing thing to show right after a
+      // successful click).
       setFixActive(true);
     } catch (e) {
       setFixError((e as Error).message);

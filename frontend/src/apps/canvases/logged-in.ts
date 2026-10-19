@@ -4,8 +4,8 @@
 //
 // A SEPARATE MODULE FROM index.ts, for the reason available.ts spells out for
 // Claude Config: the barrel re-exports Canvases/CanvasWorkspace, so a sidebar
-// that probed through it would pull the whole canvases app — workspace, lock
-// lib, embed host — into the shell's main bundle for one boolean. Import this
+// that probed through it would pull the whole canvases app — workspace,
+// embed host — into the shell's main bundle for one boolean. Import this
 // file directly and the app itself stays lazy behind its route.
 //
 // ONE POLL, TWO READERS (shell/tasksPulse's shape, same reason): the sidebar

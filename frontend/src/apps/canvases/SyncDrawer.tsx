@@ -5,7 +5,19 @@
 // that does not send them).
 import { useEffect, useRef } from "react";
 import { getSyncLog } from "./api";
-import { LEG_LABEL, formatClock, type SyncLogEvent } from "./sync-state";
+import { LEG_LABEL, LEG_ORDER, LEG_SHORT, formatClock, type SyncLogEvent } from "./sync-state";
+
+function LegendItem({ color, text }: { color: string; text: string }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}>
+      <span
+        aria-hidden
+        style={{ width: 6, height: 6, borderRadius: "50%", background: color, display: "inline-block" }}
+      />
+      {text}
+    </span>
+  );
+}
 
 const LOG_POLL_MS = 2000;
 // A socket log event this recent means the socket is feeding the drawer.
@@ -92,6 +104,25 @@ export function SyncDrawer({
         <button className="btn" style={{ padding: "0 8px", fontSize: 12 }} onClick={onClose}>
           Close
         </button>
+      </div>
+      {/* What the strip's dots mean: their order, left to right, and their
+          colours. */}
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: "2px 10px",
+          padding: "4px 12px",
+          borderBottom: "1px solid var(--border)",
+          color: "var(--fg-muted)",
+        }}
+      >
+        <span>{LEG_ORDER.map((l) => LEG_SHORT[l]).join(" · ")}</span>
+        <span aria-hidden>|</span>
+        <LegendItem color="rgb(46,160,90)" text="green within budget" />
+        <LegendItem color="rgb(200,140,30)" text="amber waiting/held, reason shown" />
+        <LegendItem color="rgb(220,60,60)" text="red error" />
       </div>
       {events.length === 0 ? (
         <p style={{ padding: "8px 12px", margin: 0, color: "var(--fg-muted)" }}>No sync events yet.</p>

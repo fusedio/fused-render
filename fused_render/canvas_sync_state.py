@@ -52,8 +52,6 @@ logger = logging.getLogger("fused_render.canvases")
 
 LOG_RING_MAX = 200
 
-LEGS = ("embed_to_disk", "disk_to_embed", "disk_to_server", "server_to_disk", "watcher")
-
 
 class SyncLog:
     """Bounded, thread-safe event ring for one canvas."""
@@ -136,12 +134,9 @@ def notify(name: str) -> None:
             pass  # that loop closed; its handler's finally unsubscribes
 
 
-def listener_count(name: str) -> int:
-    with _LISTENERS_LOCK:
-        return len(_LISTENERS.get(name, ()))
-
 
 # -- WebSocket origin guard ---------------------------------------------------
+
 
 def ws_origin_ok(ws) -> bool:
     """server/common.py's `ws_origin_ok`, duplicated (canvases may not import
@@ -166,6 +161,7 @@ def ws_origin_ok(ws) -> bool:
 # process; a replacement manager in this process inherits the fd.
 _HELD: dict[str, tuple[int, float]] = {}
 _HELD_LOCK = threading.Lock()
+
 
 def server_port() -> int:
     """The port this server is bound to, as server/app.py publishes it in

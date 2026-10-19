@@ -15,14 +15,13 @@ Why it cannot just run:
     (`.sync/trash` only ever protects local files, and the watcher's next probe
     sees remote == local, so the merge no-ops).
   * a push that bypasses the watcher also moves the remote behind its back.
-    With a clean clone the next poll cannot tell that from a workbench edit and
-    takes the wholesale force-pull branch: the agent's own push comes straight
-    back down, every unignored local file the push did not publish is deleted,
-    and the UI shows a phantom "pulled from workbench".
+    The next poll cannot tell that from a workbench edit: it flags the canvas
+    server-changed, which holds every push until someone pulls the agent's
+    own push back down.
 
 So a push whose target is a clone is turned into a POST to
 ``/api/canvases/sync/push``, which performs the very same push inside the server
-process, under the watcher's own lock, with the guard intact.
+process, under the watcher's `_flight_lock`, with the guard intact.
 
 Design rules, all of them load-bearing:
 
