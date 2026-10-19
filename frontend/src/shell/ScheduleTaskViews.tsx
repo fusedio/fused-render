@@ -51,6 +51,7 @@ import {
 import { notify } from "@platform/lib/notifications";
 import { useNow } from "@platform/lib/clock";
 import { EraseTaskModal } from "./EraseTaskModal";
+import { ICON_PLUS } from "./ScheduleCalendar";
 import { canRunDraft, runDraftNow, runRowDraftNow } from "./draft-run";
 import {
   deleteChatDraft,
@@ -85,6 +86,9 @@ import {
   firstLine,
   groupByColumn,
   groupRows,
+  GROUPS_SEEDED_KEY,
+  parseSeededViews,
+  seedCollapsedGroups,
   groupSize,
   flattenGroups,
   heldMessages,
@@ -1121,9 +1125,13 @@ function FilterMenu({
   name,
   icon: glyph,
   onClear,
+  hint,
   children,
 }: {
   label: string;
+  /** The trigger's instant tooltip (`data-hint`, the page's own layer), or
+   *  nothing. The Project menu spells its chosen folders out here. */
+  hint?: string;
   /** WHICH FILTER THIS IS, as a `data-filter` on the trigger's wrapper —
    *  "status", "project", or "all" for the merged one.
    *
@@ -1237,6 +1245,7 @@ function FilterMenu({
           ref={btn}
           className={"schedule-tv-filter-btn" + (splittable ? " is-split" : "")}
           aria-expanded={open}
+          data-hint={hint}
           onClick={() => setOpen((v) => !v)}
         >
           {/* THE TRIGGER'S WIDTH IS NOT THE MENU'S PROBLEM ANY MORE (Akshil,
@@ -1321,10 +1330,10 @@ function ProjectFacet({
 }: {
   projects: string[];
   home: string;
-  /** The folder the filter is pinned to, or "" for All projects. */
-  chosen: string;
-  /** A row was pressed — a path, or "" for All projects. Closing the menu is
-   *  the caller's half, exactly as it was when these rows were inline. */
+  /** The folders the filter holds — empty for All projects. */
+  chosen: readonly string[];
+  /** A row was pressed — a path to toggle, or "" for All projects. Closing the
+   *  menu is the caller's half, exactly as it was when these rows were inline. */
   onPick: (path: string) => void;
   /**
    * SHOULD THE BOX TAKE THE CARET ON OPEN?
@@ -1349,9 +1358,10 @@ function ProjectFacet({
   // is noise at the top of the answers.
   const allRow = !query.trim();
 
-  // WALKING THE RADIOS. Up/Left and Down/Right step, Home/End jump, and the
-  // step WRAPS — a radiogroup is a ring, and the alternative is an arrow press
-  // at the end of the list that does nothing.
+  // WALKING THE ROWS. Up/Left and Down/Right step, Home/End jump, and the
+  // step WRAPS — the group is a ring, and the alternative is an arrow press
+  // at the end of the list that does nothing. (Checkboxes since 2026-10-19 —
+  // the facet is multi-select — but the walk is the radiogroup's, kept.)
   //
   // FOCUS ONLY, not selection. A radiogroup's arrows conventionally pick as they
   // move, and that is wrong here: every pick re-filters the page behind the
@@ -1367,7 +1377,7 @@ function ProjectFacet({
     if (!keys.includes(e.key)) return;
     const group = e.currentTarget.parentElement;
     if (!group) return;
-    const rows = Array.from(group.querySelectorAll<HTMLElement>('[role="radio"]'));
+    const rows = Array.from(group.querySelectorAll<HTMLElement>('[role="checkbox"]'));
     const at = rows.indexOf(e.currentTarget);
     if (at < 0) return;
     e.preventDefault();
@@ -1389,7 +1399,7 @@ function ProjectFacet({
     if (e.key === "ArrowDown") {
       e.preventDefault();
       const group = e.currentTarget.closest(".schedule-tv-pop")
-        ?.querySelector<HTMLElement>('[role="radio"]');
+        ?.querySelector<HTMLElement>('[role="checkbox"]');
       group?.focus();
       return;
     }
@@ -1443,7 +1453,7 @@ function ProjectFacet({
           tabindex for the same reason — a group is ONE tab stop, and 28 folders
           that each took their own would make Tab out of this popover a 28-press
           errand. */}
-      <div className="schedule-tv-pop-radiogroup" role="radiogroup" aria-label="Project">
+      <div className="schedule-tv-pop-radiogroup" role="group" aria-label="Project">
         {/* ALL PROJECTS IS A ROW, not the absence of one. An empty filter is a
             real state of this control, and a menu with no row lit reads as a
             press that did not take — so the state gets a place in the list, at
@@ -1454,10 +1464,10 @@ function ProjectFacet({
         {allRow && (
           <button
             type="button"
-            className={"schedule-tv-pop-item" + (chosen ? "" : " is-on")}
-            role="radio"
-            aria-checked={!chosen}
-            tabIndex={chosen ? -1 : 0}
+            className={"schedule-tv-pop-item" + (chosen.length ? "" : " is-on")}
+            role="checkbox"
+            aria-checked={chosen.length === 0}
+            tabIndex={chosen.length ? -1 : 0}
             onKeyDown={onRadioKey}
             onClick={() => onPick("")}
           >
@@ -1466,19 +1476,21 @@ function ProjectFacet({
           </button>
         )}
         {shown.map((path) => {
-          const on = chosen === path;
+          const on = chosen.includes(path);
           return (
             <button
               type="button"
               key={path}
               className={"schedule-tv-pop-item" + (on ? " is-on" : "")}
-              role="radio"
+              role="checkbox"
               aria-checked={on}
               // ROVING TABINDEX, and the ring has to have a way in even when the
-              // chosen row is filtered out from under it: the first row takes
-              // the tab stop whenever nothing on screen is the chosen one.
-              tabIndex={on || (!shown.some((p) => p === chosen) && !allRow
-                               && path === shown[0]) ? 0 : -1}
+              // chosen rows are filtered out from under it: the first row takes
+              // the tab stop whenever nothing on screen is chosen.
+              // ONE tab stop for the group: the first chosen row on screen,
+              // else the first row when nothing on screen is chosen.
+              tabIndex={(on && shown.find((p) => chosen.includes(p)) === path)
+                || (!shown.some((p) => chosen.includes(p)) && !allRow && path === shown[0]) ? 0 : -1}
               onKeyDown={onRadioKey}
               title={tildePath(path, home)}
               onClick={() => onPick(path)}
@@ -1573,10 +1585,14 @@ export function TaskFilterControls({
   // of my six projects" is not a question anybody asked of this page. Pressing
   // the row that is already on clears it, so the All row is reachable without
   // aiming at it.
+  // A FOLDER TOGGLES IN AND OUT OF THE SET (Akshil, 2026-10-19: multi-select),
+  // the way a lane does in Status.
   const pickProject = (path: string) =>
     onChange({
       ...filters,
-      projects: filters.projects[0] === path ? [] : [path],
+      projects: filters.projects.includes(path)
+        ? filters.projects.filter((p) => p !== path)
+        : [...filters.projects, path],
     });
 
   // THE ROWS, ONCE. Both shapes of this control — two triggers or one — draw
@@ -1611,7 +1627,7 @@ export function TaskFilterControls({
       projects={projects}
       home={home}
       takeFocus={takeFocus}
-      chosen={filters.projects[0] ?? ""}
+      chosen={filters.projects}
       onPick={(path) => {
         if (path) pickProject(path);
         else onChange({ ...filters, projects: [] });
@@ -1691,6 +1707,10 @@ export function TaskFilterControls({
           name="Project"
           slot="project"
           count={filters.projects.length}
+          /* THE FOLDERS' NAMES, on hover, whenever any are chosen (Akshil,
+             2026-10-19): the trigger names one folder and only counts several,
+             so the hint is where the several are spelled out. One per line. */
+          hint={filters.projects.length ? filters.projects.map((p) => basename(p)).join("\n") : undefined}
           /* A FOLDER, because a project on this page IS a folder — it is
              auto-detected from where each task's work happens, and the same
              glyph now marks a folder-scoped task at the end of its title and
@@ -2137,7 +2157,11 @@ export function TaskList({
   floored = false,
   emptyLabel = "Nothing to show here.",
   groupBy = null,
+  onNewTaskIn,
 }: {
+  /** The Project view's + on a folder's heading (Akshil, 2026-10-19): open
+   *  the New task card with this folder as its target. */
+  onNewTaskIn?: (folder: string) => void;
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
   tasks: Task[];
   /** Cut the list into sections — by day, folder or pull request (the Time /
@@ -2292,9 +2316,11 @@ export function TaskList({
   // reader with no on-screen answer to "which folder is this" and nothing to
   // press to get back. So a pinned project keeps its chip, wearing the state.
   const pinnedKey = pinnedProjects.join("\u0000");
+  // …AND NEVER UNDER A FOLDER'S OWN HEADING (Akshil, 2026-10-19): the Project
+  // view's sections already say which folder every row is in.
   const showProject = useMemo(
-    () => spansProjects(tasks) || pinnedKey !== "",
-    [tasks, pinnedKey],
+    () => groupBy !== "project" && (spansProjects(tasks) || pinnedKey !== ""),
+    [tasks, pinnedKey, groupBy],
   );
 
   // The list's rows: the BOARD's order, flattened (tasks-lib.sortForList, whose
@@ -2323,6 +2349,25 @@ export function TaskList({
   const rows = useMemo(() => (groups ? flattenGroups(groups) : sorted), [groups, sorted]);
   // Which sections are folded (the grouped views only; see groupFrames).
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(readCollapsedGroups);
+  // THE FIRST VISIT TO A GROUPED VIEW STARTS FOLDED (Akshil, 2026-10-19), bar
+  // the sections about now — tasks-lib.openOnFirstVisit. Seeded once per view,
+  // the moment it first has sections to fold (an empty list seeds nothing, so
+  // a view opened before the tasks arrive is seeded when they do), and then
+  // the folds are the reader's own, remembered like any other. Layout effect,
+  // not effect: the seeded state must be what the first paint draws, or every
+  // section flashes open for a frame before folding.
+  useLayoutEffect(() => {
+    if (!groupBy || !groups || groups.length === 0) return;
+    if (readSeededViews().has(groupBy)) return;
+    setCollapsedGroups((cur) => {
+      const next = seedCollapsedGroups(cur, groups, groupBy, now);
+      writeCollapsedGroups(next);
+      return next;
+    });
+    writeSeededView(groupBy);
+    // `now` deliberately left out: the seed is a one-off, not a re-fold on
+    // every tick of the clock.
+  }, [groupBy, groups]);
   /**
    * THE ROWS' REACT KEYS, and the reason they are not `task.key` any more.
    *
@@ -2881,7 +2926,7 @@ export function TaskList({
           every row at once is `read`, on a read action, which is rare and
           wanted. */}
       {groups && groupBy ? (
-        groupFrames(groups, rowAt, groupBy, collapsedGroups, (next) => {
+        groupFrames(groups, rowAt, groupBy, collapsedGroups, onNewTaskIn, (next) => {
           setCollapsedGroups(next);
           writeCollapsedGroups(next);
         })
@@ -6518,12 +6563,14 @@ function TaskCard({
 
 /** Where the grouped views remember which sections are folded — one set for
  *  all three, keyed `<view>:<group>` so Time's "Today" and Project's folders
- *  never collide. localStorage: a fold is a reading preference, like the view. */
+ *  never collide. sessionStorage, since 2026-10-19 (Akshil: "it should be
+ *  like in-page memory"): this tab, this sitting, like the list memory and
+ *  the per-tab facets — a closed tab forgets its folds. */
 const GROUPS_COLLAPSED_KEY = "fused-render:tasks-groups-collapsed";
 
 function readCollapsedGroups(): Set<string> {
   try {
-    const raw = JSON.parse(localStorage.getItem(GROUPS_COLLAPSED_KEY) || "[]");
+    const raw = JSON.parse(sessionStorage.getItem(GROUPS_COLLAPSED_KEY) || "[]");
     return new Set(Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string") : []);
   } catch {
     return new Set();
@@ -6532,9 +6579,34 @@ function readCollapsedGroups(): Set<string> {
 
 function writeCollapsedGroups(set: Set<string>) {
   try {
-    localStorage.setItem(GROUPS_COLLAPSED_KEY, JSON.stringify([...set]));
+    sessionStorage.setItem(GROUPS_COLLAPSED_KEY, JSON.stringify([...set]));
   } catch {
     // A blocked store forgets the folds; the fold itself still happens.
+  }
+}
+
+// THE SEED MARKS, IN MEMORY FIRST (CodeRabbit, #1756): the store is only
+// persistence. `groups` recomputes on every listing publish and every tick of
+// `useNow`, and with a blocked store (quota, a locked-down webview) a mark that
+// lived in sessionStorage alone was never written, so every recompute seeded
+// again — a section the reader had just opened folded within the minute.
+const seededViews = new Set<TaskGroupBy>();
+
+function readSeededViews(): Set<TaskGroupBy> {
+  try {
+    for (const v of parseSeededViews(sessionStorage.getItem(GROUPS_SEEDED_KEY))) seededViews.add(v);
+  } catch {
+    // Unreadable store: the in-memory marks are the whole answer.
+  }
+  return seededViews;
+}
+
+function writeSeededView(by: TaskGroupBy) {
+  seededViews.add(by);
+  try {
+    sessionStorage.setItem(GROUPS_SEEDED_KEY, JSON.stringify([...seededViews]));
+  } catch {
+    // A blocked store seeds again next page load; this load remembers.
   }
 }
 
@@ -6555,6 +6627,7 @@ function groupFrames(
   rowAt: (task: Task, ix: number) => React.ReactNode,
   by: TaskGroupBy,
   collapsed: ReadonlySet<string>,
+  onNewTaskIn: ((folder: string) => void) | undefined,
   setCollapsed: (next: Set<string>) => void,
 ) {
   const keyOf = (g: TaskGroup) => `${by}:${g.key}`;
@@ -6592,6 +6665,7 @@ function groupFrames(
         aria-labelledby={headId}
         data-collapsed={open ? "0" : "1"}
         data-depth={depth}
+        data-by={by}
       >
         <h3 className="tasks-group-head">
           {/* Toggle and link travel together at the start; the all-toggle
@@ -6602,6 +6676,10 @@ function groupFrames(
               id={headId}
               className="tasks-group-toggle"
               aria-expanded={open}
+              // The folder's path under ~, the instant the pointer lands —
+              // `data-hint`, the row chip's own tooltip (IdentityChip), not a
+              // native `title` a second late (Akshil, 2026-10-19).
+              data-hint={g.hint}
               onClick={() => {
                 const next = new Set(collapsed);
                 if (open) next.add(k);
@@ -6610,9 +6688,23 @@ function groupFrames(
               }}
             >
               {ICON_GROUP_CHEVRON}
-              {g.label}
-              <span className="tasks-group-count">{groupSize(g)}</span>
+              <span className="tasks-group-name">{g.label}</span>
+              <span className="tasks-group-count">({groupSize(g)})</span>
             </button>
+            {/* NEW TASK IN THIS FOLDER (Akshil, 2026-10-19): shows while the
+                pointer is anywhere on the section — heading or rows — and
+                opens the card with the folder already filled in. */}
+            {g.folder && onNewTaskIn && (
+              <button
+                type="button"
+                className="tasks-group-add"
+                data-hint={`New task in ${g.label}`}
+                aria-label={`New task in ${g.label}`}
+                onClick={() => onNewTaskIn(g.folder!)}
+              >
+                {ICON_PLUS}
+              </button>
+            )}
             {/* The heading's own door: the PR on GitHub. Beside the toggle, not
                 inside it — a press on the word folds, a press on the mark opens. */}
             {g.href && (

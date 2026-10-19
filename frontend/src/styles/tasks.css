@@ -2955,6 +2955,43 @@ button.tasks-draft-pill.is-on:focus-visible {
   font-weight: 500;
   opacity: 0.8;
 }
+/* The Project view's heading is the folder's NAME in the page's own ink
+   (Akshil, 2026-10-19: "the dir name in white"); the count stays muted. */
+.tasks-group[data-by="project"] .tasks-group-name {
+  color: var(--fg);
+}
+/* + New task in this folder: a slot the heading always holds (opacity, never
+   display, so nothing shifts), lit while the pointer is anywhere on the
+   section — its rows included — or the key reaches it. */
+.tasks-group-add,
+.prefs-section .tasks-group-add {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  /* Hidden until the pointer is on the section — its heading or its rows —
+     everywhere (Akshil, 2026-10-19: "only appear when we hover"). */
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.tasks-group:hover > .tasks-group-head .tasks-group-add,
+.tasks-group-add:focus-visible {
+  opacity: 1;
+}
+.tasks-group-add:hover,
+.tasks-group-add:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.tasks-group-add > svg {
+  width: 12px;
+  height: 12px;
+}
 /* A heading's link mark (the PR view): quiet beside the word, lit on hover. */
 .tasks-group-link {
   display: inline-flex;
