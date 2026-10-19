@@ -6038,14 +6038,16 @@ function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
  *  the task has no clock of any kind. */
 export function activityAt(task: Task, now: number = Date.now()): number {
   const w = taskWhen(task, now);
+  const nowSec = Math.floor(now / 1000);
   // CLAMPED TO NOW (CodeRabbit, #1756): the server hands a pending entry its
-  // due time as `last_active`, and a due time is not an interaction yet.
-  const active = Math.min(task.last_active || 0, Math.floor(now / 1000));
+  // due time as `last_active` — and the row's own stamp can be that same
+  // value — and a due time is not an interaction yet.
+  const active = Math.min(task.last_active || 0, nowSec);
   if (w.kind === "next") return active;
   // THE NEWER OF THE TWO (CodeRabbit, #1756): the row's stamp can be its last
   // RUN while `last_active` records a message since, and the section must
   // sort and open by the later one.
-  return Math.max(w.at || 0, active);
+  return Math.min(Math.max(w.at || 0, active), nowSec);
 }
 
 /** Sections with activity inside the last day (Akshil, 2026-10-19): what the
