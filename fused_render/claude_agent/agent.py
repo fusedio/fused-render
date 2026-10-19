@@ -2087,7 +2087,7 @@ def _abandoned_requests(run_dir: str, rows: list) -> set:
         return set()
     hit = _ABANDON_CACHE.get(run_dir)
     if hit is not None and hit[0] == key:
-        return hit[1]
+        return _abandon_settled(hit[1], set(ids.values()))
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
@@ -2129,22 +2129,23 @@ def _abandoned_requests(run_dir: str, rows: list) -> set:
                     and str(block.get("id") or "") in ids:
                 asked[str(block["id"])] = (scope, mid)
     gone = {ids[tid] for tid in walked if tid not in answered}
-    out = _abandon_settled(gone)
     if len(_ABANDON_CACHE) >= _ABANDON_CACHE_CAP:
         _ABANDON_CACHE.clear()
-    _ABANDON_CACHE[run_dir] = (key, out)
-    return out
+    # The cache holds what the FILE says; the clock is applied on every call.
+    _ABANDON_CACHE[run_dir] = (key, gone)
+    return _abandon_settled(gone, set(ids.values()))
 
 
-def _abandon_settled(gone: set) -> set:
+def _abandon_settled(gone: set, asked: set) -> set:
     """The subset of `gone` that has read as abandoned for `_ABANDON_GRACE`
     seconds — the second reading a permanent verdict needs. First sightings
     are remembered; a request that stops reading as abandoned (its result
-    landed after all) is forgotten."""
+    landed after all) is forgotten. `asked` is the request ids THIS reading
+    covers: sightings belonging to other runs are not this call's to drop."""
     now = time.monotonic()
-    for req_id in list(_ABANDON_SEEN):
+    for req_id in asked:
         if req_id not in gone:
-            del _ABANDON_SEEN[req_id]
+            _ABANDON_SEEN.pop(req_id, None)
     out = set()
     for req_id in gone:
         first = _ABANDON_SEEN.setdefault(req_id, now)

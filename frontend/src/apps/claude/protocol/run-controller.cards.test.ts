@@ -250,6 +250,26 @@ describe("the card watch after a reply ends with a background task running", () 
     expect(controller.getState().working?.phase).toBe("awaiting");
   });
 
+  test("a history restore onto a live host with work running watches too", async () => {
+    const { controller, agent, tick } = makeController({
+      history: () => ({
+        turns: [],
+        transcript: null,
+        live_run: "",
+        tasks_run: "r1",
+        tasks: [task("t1")],
+      }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      tasks: () => ({ tasks: [task("t1")], host_alive: false, tasks_pending: false }),
+      cards: () => cards({ permissions: [permRow()] }),
+    });
+    await controller.openSession("s9");
+    await tick();
+    expect(agent.of("cards")).toHaveLength(1);
+    expect(controller.getState().permissions[0]?.placement).toBe("open");
+  });
+
   test("done without tasks_pending starts no watch", async () => {
     const { controller, agent, tick, gates } = makeController({
       poll: (_f, n) => (n === 0 ? poll() : poll({ done: true, text: "ok", segments: [text("ok")] })),

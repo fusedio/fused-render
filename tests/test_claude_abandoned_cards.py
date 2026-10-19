@@ -274,3 +274,22 @@ def test_cards_refuses_an_unknown_run(agent):
     out = agent._cards("nope")
     assert out["error"] == "unknown run_id"
     assert out["alive"] is False
+
+
+def test_the_grace_clock_runs_on_a_stable_transcript_and_across_runs(agent, monkeypatch):
+    """Bugbot 4312038960/70: the memo holds what the FILE says, never the
+    clock, and another run's reading does not wipe this run's sighting."""
+    monkeypatch.setattr(agent, "_ABANDON_GRACE", 5.0)
+    clock = [100.0]
+    monkeypatch.setattr(agent.time, "monotonic", lambda: clock[0])
+    run_a = _run(agent, "20261018-000000-aaaaaa")
+    run_b = _run(agent, "20261018-000000-bbbbbb")
+    _ask(run_a, "r1", "tu-a")
+    _ask(run_b, "r2", "tu-b")
+    _rows(run_a, [_use("tu-a", "m1", parent="t"), _text("m2", parent="t")])
+    _rows(run_b, [_use("tu-b", "m1", parent="t")])  # still pending
+    assert agent._permissions(run_a)[0]["decision"] == ""
+    assert agent._permissions(run_b)[0]["decision"] == ""  # must not wipe r1
+    clock[0] += 6.0
+    # the file did not change, so the memo is hit: the clock still counts
+    assert agent._permissions(run_a)[0]["reason"] == "abandoned"

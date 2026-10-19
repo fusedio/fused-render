@@ -705,6 +705,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (activeRun) return;
       publishTasks(rows, res.tasks_run);
       watchHostTasks(res.tasks_run);
+      // …and that work can still ASK something nobody would see (`cardWatch`;
+      // Bugbot 4312038980): this road has no poll loop to start it.
+      void cardWatch(res.tasks_run, logGen, state.transcriptGen);
       return;
     }
     // …AND WHILE A HOST WATCH HOLDS LIVE ROWS, a history answer that says
