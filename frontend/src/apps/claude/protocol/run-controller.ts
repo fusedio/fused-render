@@ -986,16 +986,31 @@ export function createChatController(deps: ControllerDeps): ChatController {
     !!text.trim() || segs.some((sg) => sg.kind === "text" && !!(sg.text || "").trim());
   const isPlanLimit = (t: { text: string; quota?: Quota } | null | undefined) =>
     !!t && (limitHit(t.quota) || isPlanLimitText(t.text));
-  const retireErrors = () => {
+  /** `limitOnly`: the reply has not SAID anything yet (its first bubble just
+   *  opened, or it ran only tools) — that resolves nothing about an ordinary
+   *  failure, but it is proof enough against the PLAN LIMIT: the API served
+   *  the retry's request, so the window is open. Akshil, 2026-10-18: the
+   *  limit reset, the retry was already running a Bash call, and the red card
+   *  still sat above it the whole turn. Mirrors agent.py `_drop_resolved_errors`. */
+  const retireErrors = (opts: { limitOnly?: boolean } = {}) => {
     let lastUser = -1;
     state.turns.forEach((t, i) => {
       if (t.role === "user") lastUser = i;
     });
-    const gone = state.turns.filter((t, i): t is ErrorTurn => t.role === "error" && i < lastUser);
+    const goes = (t: Turn, i: number): boolean =>
+      t.role === "error" && i < lastUser && (!opts.limitOnly || (t.kind === "limit" && isPlanLimit(t)));
+    const gone = state.turns.filter((t, i): t is ErrorTurn => goes(t, i));
     if (!gone.length) return;
-    const turns = state.turns.filter((t, i) => !(t.role === "error" && i < lastUser));
+    const turns = state.turns.filter((t, i) => !goes(t, i));
     const card = state.trouble;
-    const cardStays = !!card && turns.some((t) => t.role === "error");
+    // The card is the NEWEST error row's (`ui/Transcript.lastErrorKey`). A
+    // retired plan-limit card goes with its row even when an older failure of
+    // another kind is still on the log above it; any other card stays with
+    // the (newer) row it reports.
+    const cardStays =
+      !!card &&
+      turns.some((t) => t.role === "error") &&
+      !(opts.limitOnly && card.kind === "limit" && isPlanLimit({ text: card.message, quota: card.quota }));
     emit({ turns, ...(cardStays ? {} : { trouble: null }) });
     const hadLimit =
       gone.some((t) => t.kind === "limit" && isPlanLimit(t)) ||
@@ -1853,6 +1868,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
               streaming: true,
               followup: slot,
             });
+            // THE PLAN LIMIT IS OVER THE MOMENT THE RETRY'S REPLY OPENS — a
+            // tool call is already the API answering — not at the end of a
+            // turn that may run for minutes with the red card still above it.
+            if (loopSeq === seat) retireErrors({ limitOnly: true });
           }
           // A REPLY THE PAYLOAD HAS CLOSED OFF WITH A SEAM IS FINISHED, and
           // saying so here rather than only at `poll.done` is what keeps the
@@ -1981,7 +2000,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // rows reported is over. `keepText` and not "no note": a reply that
           // finished before a stop landed is still a reply, and an empty end
           // is not one.
-          else if (loopSeq === seat && end.keepText && live.length && hasWords(fullText, segs)) retireErrors();
+          else if (loopSeq === seat && end.keepText && live.length)
+            retireErrors({ limitOnly: !hasWords(fullText, segs) });
           // Same guard: a superseded loop's own "Stopped." must not land in the
           // log while the newer loop's turn is the one actually streaming.
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
@@ -3981,6 +4001,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // road a comeback takes when it finished while this frame was away:
         // the red rows are over, and a limit's comeback is spent.
         if (hasWords(probeText, probeSegs)) retireErrors();
+        else if (probeSegs.length) retireErrors({ limitOnly: true });
         // A REPAIR IS NEWS THAT HAS TO BE SCROLLED TO (T:17851, P4-10). T calls
         // `scrollBottom()` here unconditionally, and the reason it must be
         // unconditional is that a repair has no `running` → `idle` edge for the

@@ -294,6 +294,24 @@ def test_a_bare_429_without_a_window_is_a_break_not_a_clock(agent, transcript):
     assert "quota" not in turns[-1]
 
 
+def test_a_limit_followed_by_a_tool_only_reply_is_not_restored(agent, transcript):
+    """The retry ran a tool and is still at it (or died before saying a
+    word): the API served that call, so the plan window is open and the
+    card's "wait, then try again" is over — even with the reset still ahead
+    (Akshil, 2026-10-18)."""
+    tool_row = {"type": "assistant",
+                "message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "Bash",
+                     "input": {"command": "ls"}}]}}
+    turns = transcript([
+        _user("go"),
+        _limit_row(resets_at=int(time.time()) + 3600),
+        _user("try again"),
+        tool_row,
+    ])
+    assert [t["role"] for t in turns] == ["user", "user", "assistant"]
+
+
 def test_a_tool_only_turn_between_two_failures_resolves_nothing(agent, transcript):
     """A retry that called a tool and then died again never answered: the
     assistant turn it leaves has segments but no words, and the first

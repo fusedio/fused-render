@@ -5264,10 +5264,13 @@ def _drop_resolved_errors(turns: list, now: float = None) -> list:
       * A REPLY FOLLOWS IT — an `assistant` turn WITH WORDS later in the log.
         A tool-only turn (a retry that called a tool and then failed again)
         answered nothing, and does not retire anything (CodeRabbit #1699).
-      * IT IS THE PLAN'S LIMIT (`_is_limit_turn`) AND EITHER a newer limit row
-        follows (that one is the card now) OR its reset (`quota.resets_at`,
-        the CLI's own `quotaLimits` on the failed row) is behind `now`:
-        nothing to wait for any more.
+      * IT IS THE PLAN'S LIMIT (`_is_limit_turn`) AND EITHER ANY `assistant`
+        turn follows — words or a bare tool call: the API served the retry,
+        so the window is open (Akshil, 2026-10-18: the reset came, the retry
+        was already running a Bash call, and the card still sat above it) —
+        OR a newer limit row follows (that one is the card now) OR its reset
+        (`quota.resets_at`, the CLI's own `quotaLimits` on the failed row) is
+        behind `now`: nothing to wait for any more.
 
     A row with only a later USER turn, or only a later failure of another
     kind, stays: the retry is in flight, died writing nothing, or died
@@ -5283,13 +5286,17 @@ def _drop_resolved_errors(turns: list, now: float = None) -> list:
                            and str(t.get("text") or "").strip()
                            for t in later)
             if not resolved and _is_limit_turn(turn):
+                any_reply = any(t.get("role") == "assistant"
+                                and (str(t.get("text") or "").strip()
+                                     or t.get("segments"))
+                                for t in later)
                 newer_limit = any(t.get("role") == "error" and _is_limit_turn(t)
                                   for t in later)
                 quota = turn.get("quota") or {}
                 resets = quota.get("resets_at") or 0
                 reset_passed = (isinstance(resets, (int, float))
                                 and 0 < resets <= now)
-                resolved = newer_limit or reset_passed
+                resolved = any_reply or newer_limit or reset_passed
             if resolved:
                 continue
         out.append(turn)
