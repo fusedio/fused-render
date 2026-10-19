@@ -29,15 +29,17 @@
      drawn, and it applies to `overflow: hidden` too — a hidden scroll container
      is still a scroll container — so the lock costs the column nothing. */
   scrollbar-gutter: stable;
-  /* A SIZE CONTAINER, for one rule: the sticky tail's ceiling (R2-4) is "most
-     of the scrollport", and there is no other way to say that in CSS. `vh` is
-     the wrong unit here — this box is 380px tall in a cards-wall tile and a
-     third of a screen in Peek, and a viewport fraction is a promise about
-     neither — while a percentage would resolve against `.chat-log`, whose
-     height is its content. Safe on this element specifically because its own
-     height comes from the flex line (`flex: 1` is basis 0) and never from what
-     it contains, which is exactly what `contain: size` asserts. */
-  container-type: size;
+  /* NOT A SIZE CONTAINER (Akshil 2026-10-19, "the scroll inside claude chat is
+     completely broken"). This box used to carry `container-type: size` so the
+     pinned card's ceiling below could be written as `100cqh`, and in WebKit —
+     the desktop app — a scroll container that is also a size container LOSES
+     ITS SCROLL OFFSET when its content is rewritten: the streaming reply
+     replaces its own markup every frame, and a reader parked in the middle of
+     the conversation was thrown to the very top of it mid-reply, with no
+     script writing `scrollTop` at all. Chromium is unaffected, which is why
+     the bug never showed in a browser. The ceiling is now measured instead:
+     `Transcript` writes the port's height to `--c-port-h` from the same
+     ResizeObserver that keeps a pinned log pinned. */
 }
 .chat-root .chat-logwrap::-webkit-scrollbar {
   width: 8px;
@@ -828,8 +830,12 @@
      scroller there is (`.chat-logwrap.is-locked` below).
      `overscroll-behavior: contain` so reaching the end of the card does not
      hand the wheel on to the transcript behind it — the reader would lose the
-     card they were reading. */
-  max-height: 100cqh;
+     card they were reading.
+     `--c-port-h` is the scrollport's own height, measured (see the note at
+     `.chat-logwrap` above for why it is not `100cqh`). `vh` is the wrong unit
+     here — this box is 380px tall in a cards-wall tile and a third of a screen
+     in Peek — so the fallback is only for a port that has never been measured. */
+  max-height: var(--c-port-h, 100vh);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
