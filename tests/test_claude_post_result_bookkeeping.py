@@ -86,7 +86,9 @@ def test_poll_reports_done_with_task_summary_after_result(tmp_path, monkeypatch)
     assert os.path.exists(run_dir / "out.jsonl")
 
 
-def test_turn_state_closes_on_a_stopped_jobs_notification(tmp_path):
+@pytest.mark.parametrize("notification_status", ["stopped", "killed"])
+def test_turn_state_closes_on_a_stopped_jobs_notification(
+        tmp_path, notification_status):
     """Stop job on an idle run: the CLI writes the note and never wakes the
     model (seen live 2026-10-18). The turn is over, and the host may reap."""
     run_dir = tmp_path / "run"
@@ -96,7 +98,7 @@ def test_turn_state_closes_on_a_stopped_jobs_notification(tmp_path):
         {"type": "system", "subtype": "task_updated", "task_id": "t1",
          "patch": {"status": "killed"}},
         {"type": "system", "subtype": "task_notification", "task_id": "t1",
-         "status": "stopped", "summary": "Sleep for 10 minutes"},
+         "status": notification_status, "summary": "Sleep for 10 minutes"},
         {"type": "system", "subtype": "background_tasks_changed", "tasks": []},
         {"type": "control_response", "response": {"subtype": "success"}},
         {"type": "system", "subtype": "commands_changed", "commands": []}))
