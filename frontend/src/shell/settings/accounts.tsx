@@ -14,6 +14,7 @@ import {
   getWhoami,
   logout,
   startLogin,
+  clonesChanged,
   switchWorkbenchEnv,
   type CanvasesStatus,
   type WorkbenchEnv,
@@ -240,14 +241,34 @@ export function WorkbenchEnvControl() {
     };
   }, []);
 
-  const apply = async (env: WorkbenchEnv) => {
+  // The count the user agreed to (or that let the dialog be skipped) rides
+  // along; the server refuses when it moved — a clone made in another tab
+  // since this row loaded — and the row re-reads and asks again rather than
+  // letting a stale zero delete unseen work.
+  const apply = async (env: WorkbenchEnv, expected: number) => {
     setBusy(true);
     setError(null);
     try {
-      const s = await switchWorkbenchEnv(env);
+      const s = await switchWorkbenchEnv(env, expected);
       setStatus(s);
       publishLoggedIn(s);
     } catch (e) {
+      const moved = clonesChanged(e);
+      if (moved) {
+        try {
+          const fresh = await getCanvasesStatus();
+          setStatus(fresh);
+          if (fresh.cloned_count === 0) {
+            await apply(env, 0);
+            return;
+          }
+          setPending(env);
+          return;
+        } catch (e2) {
+          setError((e2 as Error).message);
+          return;
+        }
+      }
       setError((e as Error).message);
     } finally {
       setBusy(false);
@@ -257,7 +278,7 @@ export function WorkbenchEnvControl() {
   const onPick = (env: WorkbenchEnv) => {
     if (!status || env === status.workbench_env) return;
     // Nothing cloned: nothing is lost, so no dialog.
-    if (status.cloned_count === 0) void apply(env);
+    if (status.cloned_count === 0) void apply(env, 0);
     else setPending(env);
   };
 
@@ -313,7 +334,7 @@ export function WorkbenchEnvControl() {
               onClick={() => {
                 const env = pending;
                 setPending(null);
-                if (env) void apply(env);
+                if (env) void apply(env, n);
               }}
             >
               Delete clones and switch

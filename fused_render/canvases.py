@@ -456,17 +456,27 @@ def api_canvases_status():
     }
 
 
-def _cloned_names() -> set[str]:
+def _cloned_names(*, strict: bool = False) -> set[str]:
     """The clone dirs under canvases_root(): a dir holding a canvas.toml,
-    the same rule /api/canvases/list uses to mark a card cloned."""
+    the same rule /api/canvases/list uses to mark a card cloned.
+
+    A root that does not exist yet is simply empty. Any other listing
+    failure (permissions, an unmounted volume) is empty for the cheap status
+    read and RAISED for `strict` callers: the environment switch must not
+    read "could not list" as "nothing to delete" and write the preference
+    over clones it never saw."""
     root = canvases_root()
     try:
-        return {
-            d for d in os.listdir(root)
-            if os.path.isfile(os.path.join(root, d, "canvas.toml"))
-        }
-    except OSError:
+        entries = os.listdir(root)
+    except FileNotFoundError:
         return set()
+    except NotADirectoryError:
+        return set()
+    except OSError:
+        if strict:
+            raise
+        return set()
+    return {d for d in entries if os.path.isfile(os.path.join(root, d, "canvas.toml"))}
 
 
 @router.post("/api/canvases/env")
@@ -501,7 +511,23 @@ def api_canvases_env(body: dict = Body(...), x_fused: str | None = Header(defaul
         )
     if env == workbench_env():
         return api_canvases_status()
-    names = _cloned_names()
+    try:
+        names = _cloned_names(strict=True)
+    except OSError as exc:
+        return _error(f"could not list the cloned canvases ({exc}); "
+                      "the environment was not switched", 500)
+    # The count the page showed when the user agreed (or skipped the dialog
+    # because it was zero). A clone made since — another tab, a chat's
+    # `fused workbench canvas pull` — makes that consent stale: 409 so the
+    # page re-reads the count and asks again rather than deleting unseen work.
+    expected = body.get("expected_cloned")
+    if expected is not None and (not isinstance(expected, int) or isinstance(expected, bool)):
+        return _error("'expected_cloned' must be an integer")
+    if expected is not None and expected != len(names):
+        return JSONResponse(
+            {"error": f"the number of cloned canvases changed ({expected} → {len(names)}); "
+                      "confirm again",
+             "code": "clones_changed", "cloned_count": len(names)}, status_code=409)
     for name in sorted(names):
         for holder in _other_watchers(name):
             return _error(
@@ -533,7 +559,11 @@ def api_canvases_env(body: dict = Body(...), x_fused: str | None = Header(defaul
 
 def _switch_env(env: str):
     """The wipe-then-write under the latch: see api_canvases_env."""
-    names = _cloned_names()
+    try:
+        names = _cloned_names(strict=True)
+    except OSError as exc:
+        return _error(f"could not list the cloned canvases ({exc}); "
+                      "the environment was not switched", 500)
     # Same shape as logout: stop every manager (a push CLI in flight is
     # terminated so its fold never runs on a half-deleted clone), then the
     # locks, then the folders.
@@ -551,20 +581,46 @@ def _switch_env(env: str):
     for manager in managers:
         manager.stop()
     # stop() joins the watcher thread for STOP_JOIN_S at most; a thread still
-    # alive could write into the folder after the wipe. A manual pull runs on
-    # a REQUEST thread under the manager's flight lock, so hold that too.
-    # Either still busy: refuse rather than delete under it. The watchers are
-    # stopped by now, and the workspace's poll re-arms them (sync/start) once
-    # the latch clears — same recovery as a dropped watcher.
-    held = []
+    # alive could write into the folder after the wipe. Two request-thread
+    # writers remain: a manual pull under the manager's flight lock, and a
+    # snapshot or rename apply under its op lock (the same order pull takes
+    # them in). A request already past `_sync_manager` when `_syncs` was
+    # cleared still holds a manager, so both locks are taken here and held
+    # through the wipe. Anything still busy: refuse rather than delete under
+    # it. The watchers are stopped by now, and the workspace's poll re-arms
+    # them (sync/start) once the latch clears — same recovery as a dropped
+    # watcher.
+    held_flight: list[_SyncManager] = []
+    held_op: list[_SyncManager] = []
+    claimed = False
     try:
         for manager in managers:
             if manager.thread.is_alive():
                 return _busy(f"canvas {manager.name!r} is still syncing; try again in a moment")
             if not manager._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
                 return _busy(f"a sync operation is in flight for {manager.name!r}; try again in a moment")
-            held.append(manager)
-        canvas_sync_state.release_all()
+            held_flight.append(manager)
+            if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+                return _busy(f"a write is in flight for {manager.name!r}; try again in a moment")
+            held_op.append(manager)
+        # stop() released this process's writer locks; another fused-render
+        # on the same canvases dir could claim one before the folder goes.
+        # Re-claim every clone's lock (the cross-process one, flock on
+        # POSIX) and hold it through the deletion: a live foreign holder
+        # refuses the switch, as the pre-check did, with no window between.
+        claimed = True
+        for name in sorted(names):
+            try:
+                outcome, record = canvas_sync_state.claim_lock(_lock_path(name))
+            except OSError as exc:
+                return _error(f"could not take the sync lock for {name!r} ({exc}); "
+                              "the environment was not switched", 500)
+            if outcome == "refused":
+                return _error(
+                    f"canvas {name} is open in another fused-render (pid {record.get('pid')}, "
+                    f"port {record.get('port')}) — quit it first",
+                    409,
+                )
         root = canvases_root()
         failed = []
         for name in sorted(names):
@@ -572,17 +628,43 @@ def _switch_env(env: str):
                 shutil.rmtree(os.path.join(root, name))
             except OSError as exc:
                 failed.append(f"{name}: {exc}")
-        _rmtree_quiet(os.path.join(root, ".sync"))
-        # The preference is written only once NO clone is left — a wipe that
-        # failed, or a folder that reappeared, would otherwise sit under the
-        # new environment and push to the wrong Fused.
-        left = _cloned_names()
-        if failed or left:
-            detail = "; ".join(failed) or ", ".join(sorted(left))
-            return _error(f"could not delete the cloned canvases ({detail}); "
+        if failed:
+            # `.sync/` is left alone on purpose: the clones that survived
+            # keep their merge bases and trash, so a later pull still has a
+            # recovery copy and does not wholesale-replace unpushed edits.
+            return _error(f"could not delete the cloned canvases ({'; '.join(failed)}); "
+                          "the environment was not switched", 500)
+        # Every clone is gone, so a foreign claim now finds nothing to sync.
+        # Release first: the lock files live in .sync/ (and on Windows an
+        # open lock file would refuse the rmtree).
+        canvas_sync_state.release_all()
+        claimed = False
+        try:
+            shutil.rmtree(os.path.join(root, ".sync"))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            # A merge base or remote manifest left behind would be read by a
+            # later clone of the same name from the other environment.
+            return _error(f"could not delete the sync state ({exc}); "
+                          "the environment was not switched — retry", 500)
+        # The preference is written only once NO clone is left — a folder
+        # that reappeared would otherwise sit under the new environment and
+        # push to the wrong Fused.
+        try:
+            left = _cloned_names(strict=True)
+        except OSError as exc:
+            return _error(f"could not list the cloned canvases ({exc}); "
+                          "the environment was not switched", 500)
+        if left:
+            return _error(f"cloned canvases reappeared ({', '.join(sorted(left))}); "
                           "the environment was not switched", 500)
     finally:
-        for manager in held:
+        if claimed:
+            canvas_sync_state.release_all()
+        for manager in held_op:
+            manager._op_lock.release()
+        for manager in held_flight:
             manager._flight_lock.release()
     prefs.write_pref("workbench_env", env)
     # The `fused` wrapper bakes FUSED_ENV in as a default at server start;
