@@ -5,7 +5,7 @@ description: Use when a fused-render view looks or behaves wrong in one desktop 
 
 # Cross-browser views (desktop)
 
-A view is opened in whatever the user's **default desktop browser** is — Chrome/Edge, Firefox, Safari — and inside **WKWebView** (the macOS pinned popover, SPEC §25). **WebKit rules apply even when the author's browser is Chrome.** Test in one engine = shipped for one engine.
+A view is opened in whatever the user's **default desktop browser** is — Chrome/Edge, Firefox, Safari — and inside **WKWebView** (the macOS pinned popover, SPEC §25). **WebKit rules apply even when the author's browser is Chrome.** Written against Chrome alone = shipped for one engine.
 
 Scope is **computers only**: phones and tablets are out. Nothing here is about touch, viewport zoom, mobile toolbars or iOS/Android.
 
@@ -66,15 +66,20 @@ Why: Safari buttons/inputs don't inherit font or colour; Firefox dims placeholde
 
 `color-scheme` on `:root` (already in the starter) makes native controls, scrollbars and form chrome follow dark mode in every engine. `appearance: none` throws that away for that control — restyle it fully from tokens or leave it native. Never half.
 
-## Verify before "done"
+## Verify before "done" (code read, best effort)
 
-Same `/explorer/embed/<path>` URL (Render App: `/render?path=<abs entry html>`, the file not the folder) in at least two engines, under the running server's origin (`$FUSED_RENDER_ORIGIN`, else `server.json` — see `fused-render-authoring` › Testing; never hardcode a port). On macOS both are one command away:
+No browser is launched for this. Re-read the view's `<style>` and script against the trap table above and fix what you find. Look for:
 
-```
-open -a Safari  "$FUSED_RENDER_ORIGIN/explorer/embed/…"
-open -a Firefox "$FUSED_RENDER_ORIGIN/explorer/embed/…"
-```
+- a flex child holding text or `overflow` without `min-width: 0`
+- `::-webkit-scrollbar` on an element without the `scrollbar-width` / `scrollbar-color` pair on that same element, or colours that differ between the two
+- `<select>` with `appearance: none` but no drawn arrow / `padding-right`
+- `backdrop-filter` without its `-webkit-` twin, or with no solid-ish `background` behind text
+- `user-select` or line clamp missing the prefixed form
+- controls outside the paste-in reset (button/input/select/textarea not inheriting `font` and `color`)
+- `position: fixed` under a transformed ancestor; `sticky` under an `overflow: hidden` that is not the scroller
+- a Newly-available feature outside `@supports`, or anything Chrome-only
+- JS: `Date.parse` with a space separator, `scrollIntoViewIfNeeded`, bare `requestIdleCallback`, `showOpenFilePicker`, syntax past ES2022
 
-Look for: clipped text in flex rows, unstyled `<select>` arrow, scrollbar styling that vanished, blur panel with unreadable text, controls inheriting a different font. Layout differs by more than a pixel or two → an engine-specific rule is missing, not "Safari being Safari".
+Not on the list and not in the table → check the MDN compat table, never assume from Chrome.
 
 Rest of page authoring → `fused-render-authoring`. Colour/token rules → `fused-render-theming`.
