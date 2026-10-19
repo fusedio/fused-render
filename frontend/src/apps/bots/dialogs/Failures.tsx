@@ -53,10 +53,13 @@ export function FailuresDialog({ id, name, onClose }: { id: string; name?: strin
                 <i className="rounded-full bg-foreground/[0.06] px-1.5 py-px font-mono text-[10px] not-italic">{r.model}</i>
                 <span>{r.origin}</span>
                 {r.task ? <span className="min-w-0 truncate" title={r.task}>“{r.task}”</span> : null}
-                <button type="button" className="ml-auto -mr-1.5 -my-1 flex size-6 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
+                {/* shadcn Button, not a raw <button>: no preflight, so a bare button in this portaled dialog wears the UA's
+                    grey buttonface tile (owner, 2026-10-19). The [data-slot] base layer clears that; ghost/icon-xs is the
+                    same clear-icon skin as the routine card's pencil and trash. */}
+                <Button variant="ghost" size="icon-xs" className="ml-auto -mr-1.5 -my-1 text-muted-foreground hover:text-foreground"
                   title="Clear this failure" aria-label="Clear this failure" data-ts={r.ts} onClick={() => clear(r)}>
                   <XIcon className="size-3.5" />
-                </button>
+                </Button>
               </div>
               {r.error
                 ? <pre className="mt-2 mb-0 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-foreground/[0.04] p-3 font-mono text-xs leading-relaxed text-destructive">{r.error}</pre>

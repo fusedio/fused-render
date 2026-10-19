@@ -1089,20 +1089,38 @@ export function createChatController(deps: ControllerDeps): ChatController {
     !!text.trim() || segs.some((sg) => sg.kind === "text" && !!(sg.text || "").trim());
   const isPlanLimit = (t: { text: string; quota?: Quota } | null | undefined) =>
     !!t && (limitHit(t.quota) || isPlanLimitText(t.text));
-  const retireErrors = () => {
+  /** `limitOnly`: the reply has not SAID anything yet (its first bubble just
+   *  opened, or it ran only tools) — that resolves nothing about an ordinary
+   *  failure, but it is proof enough against the PLAN LIMIT: the API served
+   *  the retry's request, so the window is open. Akshil, 2026-10-18: the
+   *  limit reset, the retry was already running a Bash call, and the red card
+   *  still sat above it the whole turn. Mirrors agent.py `_drop_resolved_errors`. */
+  const retireErrors = (opts: { limitOnly?: boolean } = {}) => {
     let lastUser = -1;
     state.turns.forEach((t, i) => {
       if (t.role === "user") lastUser = i;
     });
-    const gone = state.turns.filter((t, i): t is ErrorTurn => t.role === "error" && i < lastUser);
+    const goes = (t: Turn, i: number): boolean =>
+      t.role === "error" && i < lastUser && (!opts.limitOnly || isPlanLimit(t));
+    const gone = state.turns.filter((t, i): t is ErrorTurn => goes(t, i));
     if (!gone.length) return;
-    const turns = state.turns.filter((t, i) => !(t.role === "error" && i < lastUser));
+    const turns = state.turns.filter((t, i) => !goes(t, i));
     const card = state.trouble;
-    const cardStays = !!card && turns.some((t) => t.role === "error");
+    // The card is the NEWEST error row's (`ui/Transcript.lastErrorKey`). A
+    // retired plan-limit card goes with its row even when an older failure of
+    // another kind is still on the log above it; any other card stays with
+    // the (newer) row it reports.
+    const cardStays =
+      !!card &&
+      turns.some((t) => t.role === "error") &&
+      !(opts.limitOnly && isPlanLimit({ text: card.message, quota: card.quota }));
     emit({ turns, ...(cardStays ? {} : { trouble: null }) });
+    // `isPlanLimit` alone, not `kind === "limit"`: a bare "API Error: 429"
+    // with `quota.status === "rejected"` is the plan's limit too (agent.py
+    // `_is_limit_turn`) but classifies as `generic` by its text (Bugbot #1738).
     const hadLimit =
-      gone.some((t) => t.kind === "limit" && isPlanLimit(t)) ||
-      (!cardStays && card?.kind === "limit" && isPlanLimit({ text: card.message, quota: card.quota }));
+      gone.some((t) => isPlanLimit(t)) ||
+      (!cardStays && !!card && isPlanLimit({ text: card.message, quota: card.quota }));
     if (!hadLimit) return;
     // AND EVERY COMEBACK BOOKED ON THIS SESSION. The scheduled "Your usage
     // limit has reset. Continue…" is for a chat that is still stuck; fired
@@ -1114,31 +1132,30 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // card actually went: an ordinary reply end must not fetch the schedule.
     const sid = state.sessionId;
     if (sid) {
-      retiredAt.set(sid, (retiredAt.get(sid) ?? 0) + 1);
-      void cancelComebacks(sid, Date.now());
+      const generation = (retiredAt.get(sid) ?? 0) + 1;
+      retiredAt.set(sid, generation);
+      void cancelComebacks(sid, generation);
     }
   };
 
   /** Cancel every pending comeback the server held for `sid` AT THE RETIRE,
-   *  fire-and-forget. `before` is the retire's wall clock: a comeback booked
-   *  after it (a retry that hit the limit again while the list was in
-   *  flight) is for a chat that is stuck again, and stays (CodeRabbit
-   *  #1699). An entry with no readable `created` is treated as older. */
-  const cancelComebacks = async (sid: string, before: number) => {
+   *  fire-and-forget. A comeback booked AFTER it (a retry that hit the limit
+   *  again while the list was in flight) is for a chat that is stuck again,
+   *  and stays (CodeRabbit #1699). "After" is read off THIS frame's own
+   *  bookings — the retire generation each POST started under — not off the
+   *  server-written `created` against the browser's clock, which skew can put
+   *  on either side of the retire (CodeRabbit #1738). Every booking in flight
+   *  is awaited first, so the one the list already holds has an id to keep. */
+  const cancelComebacks = async (sid: string, generation: number) => {
     const list = deps.listSchedule ?? getSchedule;
     const cancel = deps.cancelSchedule ?? cancelScheduledMessage;
     try {
       const { entries } = await list();
-      const bookedAfter = (created: string | undefined) => {
-        const at = created ? Date.parse(created) : NaN;
-        return Number.isFinite(at) && at > before;
-      };
+      const booked = await Promise.all([...bookings]);
+      const keep = new Set(booked.filter((b) => b.sid === sid && b.mark >= generation).map((b) => b.id));
       const mine = entries.filter(
         (e) =>
-          e.session_id === sid &&
-          e.message === CONTINUE_PROMPT &&
-          e.state === "pending" &&
-          !bookedAfter(e.created),
+          e.session_id === sid && e.message === CONTINUE_PROMPT && e.state === "pending" && !keep.has(e.id),
       );
       await Promise.all(mine.map((e) => cancel(e.id)));
       if (mine.length) announceTasksChanged();
@@ -1174,6 +1191,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** session id → how many times its limit has been retired: a comeback whose
    *  POST settles after a reply already landed is cancelled on the spot. */
   const retiredAt = new Map<string, number>();
+  /** Every comeback POST this frame has made, with the retire generation it
+   *  started under (`retiredAt` at the time) — `cancelComebacks` keeps the
+   *  ones booked at or after its own generation. A failed POST yields no id. */
+  const bookings = new Set<Promise<{ sid: string; mark: number; id: string | null }>>();
   const scheduleComeback = (runId: string, error: string, quota: Quota): boolean => {
     if (scheduledRuns.has(runId)) return true;
     const sessionId = state.sessionId;
@@ -1183,7 +1204,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     reportTrouble(trouble);
     const post = deps.schedule ?? scheduleMessage;
     const retiredMark = retiredAt.get(sessionId) ?? 0;
-    void post({
+    const posted = post({
       target: FILE,
       message: CONTINUE_PROMPT,
       due: continueDue(quota),
@@ -1192,7 +1213,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // The session's own agent (D2): a create naming none is pinned to the
       // current Preferences default.
       ...(curBackend() ? { backend: curBackend() } : {}),
-    })
+    });
+    void posted
       .then((res: unknown) => {
         // A reply landed while this POST was in flight: the row it just made
         // is already stale. Cancel it now rather than note it.
@@ -1223,6 +1245,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
           "\u25f7",
         );
       });
+    const booking = posted.then(
+      (res: unknown) => {
+        const id = (res as { entry?: { id?: unknown } } | null)?.entry?.id;
+        return { sid: sessionId, mark: retiredMark, id: typeof id === "string" && id ? id : null };
+      },
+      () => ({ sid: sessionId, mark: retiredMark, id: null }),
+    );
+    bookings.add(booking);
     return true;
   };
 
@@ -1956,6 +1986,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
               streaming: true,
               followup: slot,
             });
+            // THE PLAN LIMIT IS OVER THE MOMENT THE RETRY'S REPLY OPENS — a
+            // tool call is already the API answering — not at the end of a
+            // turn that may run for minutes with the red card still above it.
+            if (loopSeq === seat) retireErrors({ limitOnly: true });
           }
           // A REPLY THE PAYLOAD HAS CLOSED OFF WITH A SEAM IS FINISHED, and
           // saying so here rather than only at `poll.done` is what keeps the
@@ -2089,7 +2123,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // rows reported is over. `keepText` and not "no note": a reply that
           // finished before a stop landed is still a reply, and an empty end
           // is not one.
-          else if (loopSeq === seat && end.keepText && live.length && hasWords(fullText, segs)) retireErrors();
+          else if (loopSeq === seat && end.keepText && live.length)
+            retireErrors({ limitOnly: !hasWords(fullText, segs) });
           // Same guard: a superseded loop's own "Stopped." must not land in the
           // log while the newer loop's turn is the one actually streaming.
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
@@ -4090,6 +4125,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // road a comeback takes when it finished while this frame was away:
         // the red rows are over, and a limit's comeback is spent.
         if (hasWords(probeText, probeSegs)) retireErrors();
+        else if (probeSegs.length) retireErrors({ limitOnly: true });
         // A REPAIR IS NEWS THAT HAS TO BE SCROLLED TO (T:17851, P4-10). T calls
         // `scrollBottom()` here unconditionally, and the reason it must be
         // unconditional is that a repair has no `running` → `idle` edge for the
