@@ -2071,13 +2071,21 @@ class _SyncManager:
             return cli_error(applied.stderr or applied.stdout, "fused canvas pull failed")
         self.pull_seq += 1
         self.last_pull_at = time.time()
+        # The disk as the pull left it, before the recheck: a write landing
+        # AFTER the recheck read the folder would otherwise be baselined as
+        # synced by the fingerprint below (see `_settle_after_force_pull`).
+        pulled = self._take_fingerprint()
         # Did a local edit land WHILE --force was running? That window cannot
         # be closed with fingerprints — the pull's own writes and a concurrent
         # local edit both just look like "the file changed" — so ask the CLI,
         # exactly as the legacy leg does after its own force pull. Without
         # this the shim leg re-baselined unconditionally, so a file an active
         # session wrote mid-pull was overwritten AND adopted as the sync
-        # point: the edit was lost with nothing left to notice it.
+        # point: the edit was lost with nothing left to notice it. (A write
+        # the CLI then OVERWROTE mid-run is gone before any check can see it,
+        # and the trash snapshot predates it. Under _op_lock the only writer
+        # that can land there is a Claude session, which is why pull()
+        # refuses a wholesale pull while one is live.)
         #
         # Re-seed the Claude helper files ONLY AFTER this recheck, not before:
         # they are .fusedignore'd on push, so the remote bundle never contains
@@ -2102,7 +2110,7 @@ class _SyncManager:
         # The CLI's --force removed the seeded Claude helper files (they're
         # not in the bundle) — put them back now that the recheck has run.
         _seed_clone_claude_files(self.dir, self.name)
-        self._fingerprint = self._take_fingerprint()
+        still_diff = self._settle_after_force_pull(pulled, still_diff)
         # The remote genuinely IS at `probe` — we just pulled it — so rotate
         # either way; not rotating would make the next poll see the same move
         # again and re-run this destructive branch.
@@ -2129,6 +2137,22 @@ class _SyncManager:
         self._set_sync_point()
         self._save_base()
         return None
+
+    def _settle_after_force_pull(self, pulled: dict, still_diff: bool) -> bool:
+        """Re-baseline after a CLI force pull and its recheck. `pulled` is the
+        fingerprint taken the moment `--force` landed; anything that moved
+        between then and now (seeded helper files excluded — the fingerprint
+        never sees them) was written by someone else while the recheck ran and
+        is a local edit, exactly like a recheck diff. Returns whether the
+        clone diverged from what was pulled."""
+        now = self._take_fingerprint()
+        self._fingerprint = now
+        if now != pulled and not still_diff:
+            self.log_event("server_to_disk", "pull raced a local write", ok=False,
+                           detail="a file changed while the pull was being checked; "
+                                  "keeping it as a local edit")
+            return True
+        return still_diff
 
     def _push_copy_dir(self) -> str:
         return os.path.join(canvases_root(), ".sync", "push", self.name)
@@ -2515,6 +2539,7 @@ class _SyncManager:
             return cli_error(applied.stderr or applied.stdout, "fused canvas pull failed")
         self.pull_seq += 1
         self.last_pull_at = time.time()
+        pulled = self._take_fingerprint()  # see `_force_pull`
         # Did local diverge from remote again during the force pull? If so,
         # local wins — queue a push instead of baselining as clean. Re-seed
         # the Claude helper files only AFTER this recheck (see `_force_pull`,
@@ -2533,7 +2558,7 @@ class _SyncManager:
             "already up to date" not in (recheck.stdout or "")
         )
         _seed_clone_claude_files(self.dir, self.name)
-        self._fingerprint = self._take_fingerprint()
+        still_diff = self._settle_after_force_pull(pulled, still_diff)
         self._dirty_since = time.time() if still_diff else None
         if still_diff and self.push_state != "error":
             self.push_state = "pending"
@@ -2743,9 +2768,12 @@ class _SyncManager:
             self._last_pull_error = None
             self.log_event("server_to_disk", "pull end", ms=ms,
                            detail=f"pull_seq {self.pull_seq}")
-        elif result.get("code") == "busy":
-            self.log_event("server_to_disk", "pull busy", ok=False, ms=ms,
-                           detail=result.get("error") or "")
+        elif result.get("code") in ("busy", "agent_live"):
+            # Deferred, not failed: nothing was written, and the leg stays
+            # "stale" rather than turning into a red pull error.
+            self.log_event("server_to_disk",
+                           "pull busy" if result["code"] == "busy" else "pull deferred",
+                           ok=False, ms=ms, detail=result.get("error") or "")
         else:
             self._last_pull_error = result.get("error")
             self.log_event("server_to_disk", "pull error", ok=False, ms=ms,
@@ -2756,6 +2784,13 @@ class _SyncManager:
     def _pull(self, cli, wait: float) -> dict:
         busy = {"ok": False, "code": "busy",
                 "error": "a sync operation is in flight for this canvas; try again in a moment"}
+        # A wholesale CLI pull rewrites the folder outside anything a Claude
+        # session's lock-free writes can coordinate with: a file it writes
+        # while `--force` runs can be overwritten before any check sees it.
+        # So a wholesale pull waits for the session (the per-file merge,
+        # which reads each file under _op_lock right before deciding, does not).
+        agent_live = {"ok": False, "code": "agent_live",
+                      "error": "a Claude session is editing this folder; pull when it finishes"}
         dirty = self._dirty_since is not None or self._take_fingerprint() != self._fingerprint
         error: str | None = None
         if _shim_manifest_command(cli) is not None:
@@ -2796,6 +2831,8 @@ class _SyncManager:
                 # the server wins and the trash keeps what it overwrote.
                 # `_force_pull` rotates the baseline (clearing `server_stale`)
                 # only on the path where the pull landed.
+                if self.agent_run_id(fresh=True):
+                    return agent_live
                 if not self._op_lock.acquire(timeout=wait):
                     return busy
                 try:
@@ -2804,6 +2841,8 @@ class _SyncManager:
                     self._op_lock.release()
         else:
             base = ["workbench", "canvas", "pull", self.name, "-o", self.dir]
+            if self.agent_run_id(fresh=True):
+                return agent_live
             if not self._op_lock.acquire(timeout=wait):
                 return busy
             try:
@@ -3230,6 +3269,12 @@ class _SyncManager:
         if stale is not None:
             return stale
         result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
+        # A file still in its row grace keeps the grace under its new name
+        # (same start): otherwise the renamed file is an orphan at once and
+        # the next cut invents the very row the grace exists to wait for.
+        with self._rowless_lock:
+            if frm in self._rowless and to not in self._rowless:
+                self._rowless[to] = self._rowless.pop(frm)
         renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
         if renamed is None:
             # Nothing known before the rename, nothing known after: the next
@@ -3900,8 +3945,11 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
     if not result.get("ok"):
         # Its own field: `error` is the PUSH's last_error, and the page keeps
         # this answer as its sync state, so a pull failure written there
-        # would wear the push-failed banner until the next poll.
+        # would wear the push-failed banner until the next poll. An
+        # `agent_live` deferral arrives here too: the page shows its text.
         status["pull_error"] = result.get("error")
+        if result.get("code"):
+            status["code"] = result["code"]
     return status
 
 

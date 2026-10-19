@@ -22,10 +22,14 @@ import fused_render.canvases as canvases_mod
 from fused_render import canvas_snapshot
 from test_canvases import (  # noqa: F401 — fixtures are used by name
     GUARD,
+    _BASE_FILES,
+    _FakeAgent,
     _cloned_shim_harness,
     _manager,
+    _pull_when_stale,
     _reset_module_state,
     _stop_sync,
+    _sync_view,
     _wait_for,
     _wait_sync,
     fake_agent,
@@ -890,3 +894,177 @@ def test_a_row_written_to_disk_directly_settles_the_rowless_file(
     assert m._rowless == {}
     res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
+
+
+# -- third review round -------------------------------------------------------------
+
+def test_a_rename_during_the_grace_keeps_the_grace(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """Rename a rowless file before its row arrives: the grace follows the new
+    name (same start), so no row is invented for it until the grace ends."""
+    _quiet_watcher(monkeypatch)
+    monkeypatch.setattr(canvases_mod, "ROWLESS_GRACE_S", 30.0)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    m = _start(harness)
+    _snapshot(harness, 1, ROWLESS_BODY)
+    started = m._rowless["fresh"]
+    res = harness.client.post("/api/canvases/snapshot", json={
+        "name": "alpha", "gen": 1, "seq": 2,
+        "rename": {"from": "fresh", "to": "fresh2",
+                   "file_from": "fresh.py", "file_to": "fresh2.py"}}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert m._rowless == {"fresh2": started}
+    assert (harness.root / "alpha" / "fresh2.py").exists()
+    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    assert "fresh2" not in json.dumps(cut["ops"]), cut["ops"]
+    assert 'udfName = "fresh2"' not in _toml(harness)
+    # The grace ends (its start is the original file's): now it is synthesized.
+    monkeypatch.setattr(canvases_mod, "ROWLESS_GRACE_S", 0.0)
+    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    assert "fresh2" in json.dumps(cut["ops"]), cut["ops"]
+    assert 'udfName = "fresh2"' in _toml(harness)
+
+
+def test_a_write_after_the_pull_recheck_is_not_baselined_as_synced(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """Window A of the clean force pull: a file written after the `--dry-run`
+    recheck read the folder (so the recheck says up to date) but before the
+    re-baseline used to become part of the sync point — an edit the push would
+    never ship. The pull now compares the disk against the moment `--force`
+    landed and keeps such a write as a local edit."""
+    _quiet_watcher(monkeypatch)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    m = _start(harness)
+    m._remote = {"id": "c1", "last_updated": "t1", "udfs": {}}
+    pulled = {**_BASE_FILES, "remote_udf.py": "print('x')\n"}
+    harness.set_scenario({"pull_files": pulled})
+    shims.set_manifest("t2")
+    m.server_stale = {"since": time.time(), "udfs": [], "layout": True}
+
+    real_run = subprocess.run
+
+    def run(args, *a, **kw):
+        out = real_run(args, *a, **kw)
+        if "--dry-run" in args and "pull" in args:
+            # Lands after the recheck read the folder.
+            (harness.root / "alpha" / "a.py").write_text("written-after-recheck\n")
+        return out
+
+    monkeypatch.setattr(canvases_mod.subprocess, "run", run)
+    res = harness.client.post("/api/canvases/sync/pull", json={"name": "alpha"}, headers=GUARD)
+    monkeypatch.setattr(canvases_mod.subprocess, "run", real_run)
+    assert res.status_code == 200 and res.json()["ok"] is True, res.text
+    assert (harness.root / "alpha" / "a.py").read_text() == "written-after-recheck\n"
+    assert m._dirty_since is not None and m.push_state == "pending", m.push_state
+    # Not part of the sync point: the next merge must read a.py as a local edit.
+    assert (m._base_files or {}).get("a.py") != canvases_mod.hashlib.md5(
+        b"written-after-recheck\n").hexdigest()
+    assert "pull raced a local write" in _actions(harness)
+
+
+def test_a_wholesale_pull_waits_for_a_live_claude_session(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """The CLI `--force` can overwrite a file the session writes mid-pull before
+    any check sees it, so a clean (wholesale) pull is deferred while a session
+    is live: ok False, code agent_live, the text in `pull_error`, nothing
+    written, the canvas still server-changed (not a red pull error)."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    _start(harness)
+    assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
+    harness.set_scenario({"pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"}})
+    shims.set_manifest("t2")
+    fake_agent.live = "run-abc"
+
+    body = _pull_when_stale(harness)
+    assert body["ok"] is False and body["code"] == "agent_live", body
+    assert body["pull_error"] == ("a Claude session is editing this folder; "
+                                  "pull when it finishes"), body
+    forces = [c for c in harness.calls()
+              if c[:3] == ["workbench", "canvas", "pull"] and "--force" in c]
+    assert len(forces) == 1, forces  # the clone's only
+    assert not (harness.root / "alpha" / "remote_udf.py").exists()
+    s2d = _state(harness)["legs"]["server_to_disk"]
+    assert s2d["state"] == "stale", s2d
+    assert "pull deferred" in _actions(harness)
+
+    fake_agent.live = ""
+    res = harness.client.post("/api/canvases/sync/pull", json={"name": "alpha"}, headers=GUARD)
+    assert res.json()["ok"] is True, res.text
+    assert (harness.root / "alpha" / "remote_udf.py").exists()
+
+
+def test_the_manual_push_refuses_over_a_server_change(harness, tmp_path, monkeypatch):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    m = _start(harness)
+    m.server_stale = {"since": time.time(),
+                      "udfs": [{"slug": "a", "kind": "changed"}], "layout": False}
+    res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409, res.text
+    body = res.json()
+    assert body["code"] == "server_changed", body
+    assert body["server_stale"]["udfs"] == [{"slug": "a", "kind": "changed"}]
+    assert "a (changed)" in body["error"] and "pull first" in body["error"], body
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+
+
+def test_a_rebaseline_during_a_scan_does_not_mark_the_clone_pending(
+        harness, tmp_path, monkeypatch, fake_agent):
+    """A Pull (request thread) re-baselines `_fingerprint` while the watcher is
+    mid-walk: that walk's reading predates the new baseline and must be
+    discarded (`_fp_gen`), not compared — or the pull's own writes read as a
+    local edit and the clone goes "pending"."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    real = canvases_mod._SyncManager._take_fingerprint
+    armed, fired = threading.Event(), threading.Event()
+
+    def take(self):
+        if armed.is_set() and threading.current_thread() is self.thread:
+            armed.clear()
+            # The reading from before the pull (a file it deleted is still
+            # there), and the pull's re-baseline landing mid-walk.
+            stale = {**real(self), "ghost.py": (1.0, 1)}
+            self._fingerprint = real(self)
+            fired.set()
+            return stale
+        return real(self)
+
+    monkeypatch.setattr(canvases_mod._SyncManager, "_take_fingerprint", take)
+    m = _start(harness)
+    time.sleep(0.2)
+    assert m._dirty_since is None and m.push_state == "idle"
+    armed.set()
+    assert fired.wait(3), "the scan never ran"
+    time.sleep(0.3)  # several more ticks on the real disk
+    assert m._dirty_since is None, "a stale mid-walk reading marked the clone dirty"
+    assert m.push_state == "idle"
+
+
+def test_the_watcher_tick_keeps_the_live_run_cache_sync_state_reads(
+        harness, tmp_path, monkeypatch):
+    """Only the watcher scans RUNS for a live session (`agent_run_id()` every
+    tick, clean clone or not); sync/state reads the cached answer — the pending
+    push's reason — and never pays for a scan itself."""
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    agent = _FakeAgent(live="run-xyz")
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: agent)
+    monkeypatch.setattr(canvases_mod, "AGENT_LIVE_CACHE_S", 0.3)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    m = _start(harness)
+    # Clean clone, nothing to debounce: the watcher still refreshes the cache.
+    assert _wait_for(lambda: len(agent.calls) >= 2, timeout=3), agent.calls
+    m.push_state = "pending"
+    m._dirty_since = time.time()
+    before = len(agent.calls)
+    for _ in range(5):
+        leg = _state(harness)["legs"]["disk_to_server"]
+        assert leg["reason"] == "waiting for the Claude session in this folder to finish", leg
+    assert len(agent.calls) - before <= 1, (
+        "sync/state paid for the RUNS scan instead of reading the watcher's cache",
+        agent.calls)
