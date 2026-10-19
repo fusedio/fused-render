@@ -84,6 +84,7 @@ import type {
   PermissionRow,
   Phase,
   PollResponse,
+  CardsResponse,
   Quota,
   RetryInfo,
   RunIdResponse,
@@ -109,6 +110,18 @@ export const POLL_MS = 400;
 export const HOST_TASKS_MS = 5000;
 /** Failed `tasks` asks in a row before a host watch gives up. */
 export const HOST_TASKS_TRIES = 3;
+
+/**
+ * THE CARD WATCH'S CADENCE. The reply can end while a backgrounded subagent or
+ * shell keeps the host alive (`tasks_pending`), and that task can still raise a
+ * permission card minutes later — with no poll loop left to see it. The watch
+ * (`cardWatch` in the controller) asks the server's `cards` action this often
+ * until the host has nothing left running. Not `POLL_MS`: nothing streams here,
+ * a card is a human-speed event.
+ */
+export const CARD_WATCH_MS = 3000;
+/** Consecutive failed `cards` calls the watch rides out before it gives up. */
+export const CARD_WATCH_FAILURES = 5;
 
 /**
  * HOW MANY CONSECUTIVE TRANSIENT POLL FAILURES a live view rides out before it
@@ -351,6 +364,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * inside `pollLoop`, whose seat is never `0`.
    */
   const runningMarks = new Map<number, Promise<void>>();
+  /**
+   * RUNS WITH A CARD WATCH IN FLIGHT (see `cardWatch`) — one watch per run, so
+   * a second `done` for the same run while one is watching starts nothing.
+   */
+  const cardWatches = new Set<string>();
+  /** The working line on screen is the card watch's "Waiting for your
+   *  approval" (see `paintCardWait`), not a turn's. */
+  let cardLineUp = false;
   /**
    * THE WINDOW THAT IS ALREADY ON SCREEN, so a follow-up never re-types the
    * reply before it (owner feedback R4-3).
@@ -1409,6 +1430,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const rows = permissionRows();
     emit({ permissions: rows });
     rememberCards(rows);
+    paintCardWait();
   };
   /** THE CACHE FOLLOWS THE CARDS. A Peek opened on a tile that has been
    *  polling for a minute must open on the card the tile shows NOW, not the one
@@ -1512,6 +1534,122 @@ export function createChatController(deps: ControllerDeps): ChatController {
       /* storage refused; nothing to forget */
     }
   };
+
+  /**
+   * THE STATUS LINE WHILE A CARD WATCH HOLDS AN OPEN CARD: "Waiting for your
+   * approval", because after the reply ended that card is the only thing the
+   * run is blocked on. External (no Stop): there is no turn here to stop — the
+   * reply already ended, `activeRun` is null and `stopRun` would do nothing.
+   * Cleared again the moment no watched card is open (a click parks it through
+   * `resolveLocally` → `publishPermissions`, which calls this). A live poll
+   * loop owns the line outright, so this stands aside while `activeRun` is set.
+   */
+  function paintCardWait(): void {
+    if (disposed || activeRun) {
+      cardLineUp = false;
+      return;
+    }
+    let open = false;
+    if (cardWatches.size) {
+      for (const row of permCards.values()) {
+        if (row.runId && cardWatches.has(row.runId) && !row.decision) {
+          open = true;
+          break;
+        }
+      }
+    }
+    if (open) {
+      // Already ours and still on screen: nothing to do. Ours but replaced by
+      // some other writer meanwhile: paint it again rather than go quiet for
+      // the rest of the watch (review, 2026-10-18).
+      if (cardLineUp && state.working?.cardWait) return;
+      if (!cardLineUp) workingStartedAt = now();
+      cardLineUp = true;
+      emit({
+        working: {
+          phase: "awaiting",
+          activity: null,
+          retry: null,
+          tokens: 0,
+          startedAt: workingStartedAt,
+          external: true,
+          cardWait: true,
+        },
+      });
+      return;
+    }
+    if (!cardLineUp) return;
+    cardLineUp = false;
+    if (state.working?.cardWait) emit({ working: null });
+  }
+
+  /**
+   * THE CARD WATCH: the reply ended (`done`) but `tasks_pending` says the host
+   * still runs a backgrounded task, and that task can raise a permission card
+   * long after any poll loop has gone. Nothing else would see it — the standing
+   * watch needs an open turn, and `shownRuns` keeps it off this run anyway — so
+   * the card never reached the chat and the task sat blocked.
+   *
+   * Fire-and-forget; one per run (`cardWatches`). Every `CARD_WATCH_MS` it asks
+   * `cards` and lands the answer through `syncPermissions`, so an open card
+   * renders in the tail pin and the reader answers it with the usual
+   * `decidePermission` (the card carries `runId`). It stops when the controller
+   * is disposed, the reader leaves (`logGen`) or the conversation is replaced
+   * (`transcriptGen`), a new loop adopts a turn (`activeRun` — the woken
+   * turn's own loop takes over), or the host has nothing left (`!alive` /
+   * `!tasks_pending`, which also retires the run's task records the `done`
+   * branch kept). A failed call is "not yet", up to `CARD_WATCH_FAILURES` in a
+   * row.
+   */
+  async function cardWatch(runId: string, gen: number, tGen: number): Promise<void> {
+    if (!runId || cardWatches.has(runId)) return;
+    const mine = () => !disposed && logGen === gen && state.transcriptGen === tGen && !activeRun;
+    // `sending` too, on every tick but the admission: a follow-up in flight is
+    // about to start a loop of its own, and that loop's `done` restarts the
+    // watch if work is still pending. Not at admission, because the reload
+    // road (`resumeAttach`) starts the watch while it still holds the gate.
+    const ours = () => mine() && !sending;
+    if (!mine()) return;
+    cardWatches.add(runId);
+    let failures = 0;
+    try {
+      for (;;) {
+        await sleep(CARD_WATCH_MS);
+        if (!ours()) return;
+        let res: CardsResponse | { error: string };
+        try {
+          res = (await run("cards", { run_id: runId }, { ...(life ? { signal: life.signal } : {}) })) as
+            | CardsResponse
+            | { error: string };
+        } catch {
+          if (++failures >= CARD_WATCH_FAILURES) return;
+          continue;
+        }
+        if (!ours()) return;
+        const error = (res as { error?: string } | null)?.error;
+        if (!res || error) {
+          // The run dir is gone: nothing is left to ask about.
+          if (isUnknownRun(error)) {
+            endRunTasks(runId);
+            return;
+          }
+          if (++failures >= CARD_WATCH_FAILURES) return;
+          continue;
+        }
+        failures = 0;
+        const cards = res as CardsResponse;
+        syncPermissions(cards.permissions, runId, cards.mode || undefined);
+        paintCardWait();
+        if (!cards.alive || !cards.tasks_pending) {
+          endRunTasks(runId);
+          return;
+        }
+      }
+    } finally {
+      cardWatches.delete(runId);
+      paintCardWait();
+    }
+  }
 
   const setStats = (
     tokens: number,
@@ -1733,6 +1871,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     let tick = 0;
     /** Consecutive transient poll failures (see `POLL_NETWORK_RETRIES`). */
     let transient = 0;
+    /** The reply ended with a background task still running — start the card
+     *  watch once this loop has fully let go (end of `finally`). */
+    let watchCards = false;
 
     try {
       for (;;) {
@@ -2049,6 +2190,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // host watch and leave none.
           if (poll.tasks_pending) {
             if (loopSeq === seat) watchHostTasks(runId, seat);
+            // …and that task can still ASK something, with no loop left to
+            // see it (`cardWatch`). Same guard.
+            if (loopSeq === seat) watchCards = true;
           } else endRunTasks(runId);
           deps.onRunEnded?.();
           // T does one final `pollArtifacts()` at the run's end (T:16347), and
@@ -2196,6 +2340,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // Turn boundary either way — the tasks surfaces should hear about it even
       // when a newer loop owns the chrome (the ACTIVITY is real regardless).
       noteChatActivity();
+      // Started HERE rather than in the `done` branch so `activeRun` is already
+      // let go — the watch reads a set `activeRun` as "a new loop took over".
+      if (watchCards && loopSeq === seat) void cardWatch(runId, gen, tGen);
     }
   }
 
@@ -3875,8 +4022,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // the file while we were away (`annResolveSent` / `snapInvalidate`).
         // Same rule as `pollLoop`'s done branch: this payload is a done poll
         // too, and `tasks_pending` says the host is still running work.
-        if (poll.tasks_pending && runId) watchHostTasks(runId);
-        else endRunTasks(runId || null);
+        if (poll.tasks_pending && runId) {
+          watchHostTasks(runId);
+          // …and that work can still raise a card nobody would see (`cardWatch`)
+          // — a reload while a backgrounded subagent runs lands exactly here.
+          void cardWatch(runId, gen, tGen);
+        } else endRunTasks(runId || null);
         deps.onRunEnded?.();
         /**
          * DID THIS REPAIR ACTUALLY PUT ROWS ON SCREEN? (Bugbot 3974939169 and
@@ -4285,6 +4436,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  token count this one cannot honestly offer. */
   function setExternalWorking(on: boolean): void {
     if (disposed) return;
+    // The card watch's "Waiting for your approval" is the truer line: the run
+    // is blocked on the reader, not running somewhere else (`paintCardWait`).
+    if (cardLineUp) return;
     if (on) {
       if (activeRun || sending) return;
       if (state.working && state.working.external) return;

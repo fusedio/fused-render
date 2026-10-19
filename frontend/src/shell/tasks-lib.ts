@@ -2395,6 +2395,53 @@ export function needsAttention(task: Pick<Task, "status">): boolean {
   return taskColumn(task) === "needs_attention";
 }
 
+/**
+ * WHAT A WAITING ROW IS WAITING ON, in words (Akshil, 2026-10-18: "Task shows
+ * me blocked but not what it is blocked on") — "Waiting on your approval ·
+ * Bash: List live Claude registry rows" for a permission card, "Waiting on your
+ * answer · Which branch?" for a question card.
+ *
+ * The usage limit's caption, for the other kind of stop: the ring and the lane
+ * already say SOMEBODY has to look, and this names what they will find. Read off
+ * `blocked_reason` and `attention`, the two fields the server writes together
+ * (tasks.py `_attention_of`), and only on a row whose STATUS is waiting —
+ * needsAttention's rule: the extras are what the row says, never what decides
+ * it, so a ring that is not drawing "!" never gets this sentence either.
+ *
+ * "" on every other row, and on an older server that sends no `attention`:
+ * nothing is drawn rather than a sentence with its object missing. "failed" and
+ * "usage_limit" are not asked here — a row has one reason, so it never wears
+ * this caption and the limit's at once.
+ */
+const ATTENTION_SUMMARY_MAX = 80;
+/** Whitespace collapsed, trimmed, and cut with an ellipsis past `max`. */
+function oneLine(text: string, max = Infinity): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? flat.slice(0, max - 1).trimEnd() + "…" : flat;
+}
+
+export function attentionCaption(
+  task: Pick<Task, "status" | "blocked_reason" | "attention">,
+): string {
+  if (!needsAttention(task) || !task.attention) return "";
+  // ONE LINE, and a short one: this goes into a row caption, a hint and an
+  // aria-label, and a Bash command can be a pasted script. The server's own
+  // cap is 80 for a question; a tool line gets the same treatment here.
+  const tool = oneLine(task.attention.tool || "");
+  const summary = oneLine(task.attention.summary || "", ATTENTION_SUMMARY_MAX);
+  if (task.blocked_reason === "permission") {
+    // "Bash: rm -rf build", either half alone when the other is empty.
+    const what = tool && summary ? `${tool}: ${summary}` : tool || summary;
+    return "Waiting on your approval" + (what ? ` · ${what}` : "");
+  }
+  if (task.blocked_reason === "question") {
+    // The question itself is the summary; the tool is always AskUserQuestion,
+    // which names the machinery rather than the ask, so it is never printed.
+    return "Waiting on your answer" + (summary ? ` · ${summary}` : "");
+  }
+  return "";
+}
+
 // ---- the project queue -------------------------------------------------------
 // One task in progress per FOLDER (prefs `queue.enabled`). A task whose work is
 // due into a folder somebody else's run is holding waits, and its row reads
