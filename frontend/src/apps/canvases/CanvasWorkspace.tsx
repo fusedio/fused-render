@@ -237,9 +237,13 @@ function nodeSessionKey(canvas: string, file: string): string {
  *  shell's wrapped `replaceState`, which announces again — so listening on
  *  the frame window and reading its location converges on what landed,
  *  including the `pagehide` flush as the frame navigates away. */
-function recordNodeSession(win: Window, key: string): void {
+function recordNodeSession(win: Window, key: string, pathname: string): void {
   let search: string;
   try {
+    // Only while the frame is still on the node's own document: the embed
+    // shell routes client-side, and a chat that had navigated the frame
+    // elsewhere would file that page's session under this node.
+    if (win.location.pathname !== pathname) return;
     search = win.location.search;
   } catch {
     return;
@@ -427,7 +431,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       }
       if (!win) return;
       const key = nodeSessionKey(name, frame.dataset.file);
-      const record = () => recordNodeSession(win!, key);
+      const pathname = new URL(frame.src, window.location.origin).pathname;
+      const record = () => recordNodeSession(win!, key, pathname);
       record();
       win.addEventListener("fused:urlchange", record);
       win.addEventListener("popstate", record);
