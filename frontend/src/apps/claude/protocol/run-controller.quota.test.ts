@@ -235,10 +235,10 @@ describe("after the limit", () => {
       { id: "sent", session_id: "s1", message: CONTINUE_PROMPT, state: "sent" },
       { id: "other", session_id: "s2", message: CONTINUE_PROMPT, state: "pending" },
       { id: "mine", session_id: "s1", message: "ship it at 5", state: "pending" },
-      // Booked AFTER this retire (a retry that hit the limit again while the
-      // list was in flight): for a chat that is stuck again, so it stays.
+      // `created` is the server's clock and says nothing here: an entry the
+      // browser's clock would call "newer" is still cancelled (CodeRabbit #1738).
       {
-        id: "newer",
+        id: "skewed",
         session_id: "s1",
         message: CONTINUE_PROMPT,
         state: "pending",
@@ -269,7 +269,50 @@ describe("after the limit", () => {
     const state = c.getState();
     expect(state.trouble).toBeNull();
     expect(state.turns.map((t) => t.role)).toEqual(["user", "note", "user", "assistant"]);
-    expect(cancelled.sort()).toEqual(["e1", "old", "older"]);
+    expect(cancelled.sort()).toEqual(["e1", "old", "older", "skewed"]);
+  });
+
+  test("a comeback booked AFTER the retire, while the list was in flight, stays", async () => {
+    // Turn 2's reply retires the limit and asks the server for its list; before
+    // the list answers, turn 3 hits the limit again and books a fresh comeback.
+    // That one is for a chat that is stuck again: it is the one entry on the
+    // list that must survive — read off this frame's own booking, not off
+    // `created` against the browser's clock (CodeRabbit #1738).
+    let turn = 0;
+    let posts = 0;
+    const cancelled: string[] = [];
+    let resolveList: (v: { entries: Entry[] }) => void = () => {};
+    const c = make(
+      {
+        start: () => ({ run_id: "r" + ++turn }),
+        poll: () =>
+          turn === 2
+            ? poll({ done: true, text: "None found." })
+            : poll({ done: true, error: LIMIT_TEXT, quota: rejected() }),
+      },
+      () => Promise.resolve({ entry: { id: ++posts === 1 ? "e1" : "newer" } }),
+      (id) => {
+        cancelled.push(id);
+        return Promise.resolve({});
+      },
+      () => new Promise((r) => (resolveList = r)),
+    );
+    await c.sendMessage("go");
+    await flush();
+    await c.sendMessage("go");
+    await flush();
+    await c.sendMessage("go");
+    await flush();
+    expect(posts).toBe(2);
+    resolveList({
+      entries: [
+        { id: "e1", session_id: "s1", message: CONTINUE_PROMPT, state: "pending", created: new Date(0).toISOString() },
+        { id: "newer", session_id: "s1", message: CONTINUE_PROMPT, state: "pending", created: new Date(0).toISOString() },
+      ],
+    });
+    await flush();
+    await flush();
+    expect(cancelled).toEqual(["e1"]);
   });
 
   test("a comeback whose POST settles after the reply is cancelled on arrival", async () => {
