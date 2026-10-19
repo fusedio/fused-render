@@ -90,9 +90,9 @@ def test_merge_local_released_remote_moved_inside_converts_remote_coords():
     merged, _info = cs.merge_toml(base, local, remote)
     rows = by_name(merged)
     assert rows["F"]["childUdfOrder"] == []
-    # x: only local changed it; y: both did, local wins. Both are local's
-    # absolute values, which match local's membership: kept as they are.
-    assert (rows["b"]["x"], rows["b"]["y"]) == (1040.0, 1060.0)
+    # Local only released b where it was on screen: it did not MOVE it. The
+    # remote moved it down inside F: that move wins, converted out of F.
+    assert (rows["b"]["x"], rows["b"]["y"]) == (1040.0, 1300.0)
 
 
 def test_merge_local_nest_with_its_own_relative_coords_is_kept():
@@ -104,9 +104,10 @@ def test_merge_local_nest_with_its_own_relative_coords_is_kept():
     merged, _info = cs.merge_toml(base, local, remote)
     rows = by_name(merged)
     assert rows["F"]["childUdfOrder"] == ["b"]
-    # x came from local (both changed: local wins) — already relative to F.
-    assert rows["b"]["x"] == 1000.0
-    # y: local changed it (2000 → 1000), remote did not: local's, relative.
+    # Local nested b without moving it on screen; the remote moved it right
+    # by 500: that move wins, converted into F.
+    assert rows["b"]["x"] == 1500.0
+    # y: nobody moved it on screen; local's relative value matches F.
     assert rows["b"]["y"] == 1000.0
 
 
@@ -222,7 +223,6 @@ def test_merge_a_folder_and_a_node_sharing_a_name_merge_independently():
     remote = doc([folder("X", ["a"]), udf("a", 10.0, 10.0), udf("X", 600.0, 500.0),
                   udf("new", 0.0, 0.0)])
     merged, info = cs.merge_toml(base, local, remote)
-    assert info["collisions"] == []
     rows = merged["canvas"]["nodes"]
     kinds = [(cs.is_folder(r), cs.row_name(r)) for r in rows]
     assert kinds == [(True, "X"), (False, "a"), (False, "X"), (False, "new")]
@@ -235,13 +235,21 @@ def test_merge_a_folder_and_a_node_sharing_a_name_merge_independently():
     assert "a folder and a node share the name 'X'" in cs.folder_problems(local)
 
 
-def test_merge_refuses_two_rows_of_one_kind_sharing_a_name():
-    base = cs.rows_of_doc(doc([udf("a", 0.0, 0.0)]))
-    local = doc([udf("a", 1.0, 0.0)])
-    remote = doc([udf("a", 0.0, 0.0), udf("a", 9.0, 9.0), udf("new", 0.0, 0.0)])
+def test_merge_rows_of_one_kind_sharing_a_name_merge_by_occurrence():
+    base = cs.rows_of_doc(doc([folder("Folder_2", ["a"]), udf("a", 1.0, 1.0),
+                               udf("b", 500.0, 500.0)]))
+    local = doc([folder("Folder_2", ["a"]), udf("a", 5.0, 1.0), udf("b", 500.0, 500.0)])
+    # The workbench made a second Folder_2 (numbered by count) holding b.
+    remote = doc([folder("Folder_2", ["a"]), folder("Folder_2", ["b"], x=400.0, y=400.0),
+                  udf("a", 1.0, 1.0), udf("b", 1.0, 1.0)])
     merged, info = cs.merge_toml(base, local, remote)
-    assert merged is local and info["collisions"] == ["a"]
-    assert "two rows of one kind share the name 'a'" in cs.folder_problems(remote)
+    rows = merged["canvas"]["nodes"]
+    shape = [(cs.row_name(r), r.get("childUdfOrder"), r["x"], r["y"]) for r in rows]
+    assert shape == [("Folder_2", ["a"], 1000.0, 1000.0), ("a", None, 5.0, 1.0),
+                     ("b", None, 1.0, 1.0), ("Folder_2", ["b"], 400.0, 400.0)]
+    # The same pull again, from the merged state as the new sync point: a no-op.
+    again, _info = cs.merge_toml(cs.rows_of_doc(remote), merged, remote)
+    assert cs.rows_of_doc(again) == cs.rows_of_doc(merged)
 
 
 # -- 1b. folder renames ------------------------------------------------------
@@ -356,8 +364,10 @@ def test_merge_local_ungroup_keeps_a_remote_folder_that_only_overlaps():
     rows = by_name(merged)
     # Half of F is not a rename: G is a folder the remote made, kept.
     assert info["renamed"] == [] and rows["G"]["childUdfOrder"] == ["a", "b", "z"]
-    # a and b keep local's on-screen place, now inside G.
-    assert (rows["a"]["x"], rows["a"]["y"]) == (100.0 - 2000.0, 100.0 - 2000.0)
+    # Local's ungroup left a and b where they were on screen (no move); the
+    # remote moved them into G: they sit in G at the remote's positions.
+    assert (rows["a"]["x"], rows["a"]["y"]) == (0.0, 0.0)
+    assert (rows["b"]["x"], rows["b"]["y"]) == (0.0, 100.0)
 
 
 def test_merge_local_delete_beats_a_remote_folder_rename():
@@ -673,30 +683,32 @@ def test_merge_remote_takes_a_stale_name_verbatim(tmp_path, monkeypatch):
     assert _events(manager, "folder fixes") == []
 
 
-def test_merge_remote_refusal_keeps_the_sync_point_and_holds(tmp_path, monkeypatch):
+def test_merge_remote_takes_a_server_canvas_with_two_same_named_folders(tmp_path, monkeypatch):
     import hashlib
-    base = rtoml.dumps(doc([udf("a", 10.0, 10.0), udf("z", 50.0, 50.0)])).encode()
-    local = rtoml.dumps(doc([udf("a", 20.0, 10.0), udf("z", 50.0, 50.0)])).encode()
-    # The server's canvas.toml carries two rows named z (same kind).
-    remote = rtoml.dumps(doc([udf("a", 10.0, 10.0), udf("z", 900.0, 50.0),
-                              udf("z", 1.0, 1.0), udf("b", 0.0, 0.0)])).encode()
-    manager = _manager(tmp_path, monkeypatch, base, {"a.py": b"A", "z.py": b"Z"})
+    base = rtoml.dumps(doc([folder("Folder_2", ["a"]), udf("a", 1.0, 1.0),
+                            udf("b", 500.0, 500.0)])).encode()
+    local = rtoml.dumps(doc([folder("Folder_2", ["a"]), udf("a", 5.0, 1.0),
+                             udf("b", 500.0, 500.0)])).encode()
+    remote = rtoml.dumps(doc([folder("Folder_2", ["a"]), folder("Folder_2", ["b"], x=400.0, y=400.0),
+                              udf("a", 1.0, 1.0), udf("b", 1.0, 1.0)])).encode()
+    manager = _manager(tmp_path, monkeypatch, base, {"a.py": b"A", "b.py": b"B"})
     with open(os.path.join(manager.dir, "canvas.toml"), "wb") as fh:
         fh.write(local)
-    base_toml = manager._base_toml
-    probe = {"udfs": {"b": {"id": "1"}}}
-    for _ in range(2):
-        assert manager._merge_remote(probe, {"canvas.toml": remote, "a.py": b"A",
-                                             "z.py": b"Z", "b.py": b"B"}) is True
-    assert manager.toml_refusal == ["z"]
+    probe = {"udfs": {}, "v": 1}
+    bundle = {"canvas.toml": remote, "a.py": b"A", "b.py": b"B"}
+    assert manager._merge_remote(probe, bundle) is True
+    assert manager._remote == probe and manager.merge_rollback_seq == 0
+    assert manager._base_files["canvas.toml"] == hashlib.md5(remote).hexdigest()
+    rows = _disk_rows(manager.dir)
+    assert [(cs.row_name(r), r.get("childUdfOrder")) for r in rows] == [
+        ("Folder_2", ["a"]), ("a", None), ("b", None), ("Folder_2", ["b"])]
+    assert rows[1]["x"] == 5.0                               # local's edit kept
     with open(os.path.join(manager.dir, "canvas.toml"), "rb") as fh:
-        assert fh.read() == local
-    # Neither the sync point nor the remote baseline moved.
-    assert manager._base_files["canvas.toml"] == hashlib.md5(base).hexdigest()
-    assert manager._base_toml == base_toml
-    assert manager._remote != probe
-    (event,) = _events(manager, "toml merge refused")       # once, not per pull
-    assert "'z'" in event["detail"], event
+        first = fh.read()
+    # A second pull of the same server state changes nothing.
+    assert manager._merge_remote(probe, bundle) is True
+    with open(os.path.join(manager.dir, "canvas.toml"), "rb") as fh:
+        assert fh.read() == first
 
 
 def test_merge_remote_merges_a_folder_and_node_sharing_a_name(tmp_path, monkeypatch):
@@ -712,7 +724,7 @@ def test_merge_remote_merges_a_folder_and_node_sharing_a_name(tmp_path, monkeypa
     probe = {"udfs": {"b": {"id": "1"}}}
     assert manager._merge_remote(probe, {"canvas.toml": remote, "a.py": b"A",
                                          "z.py": b"Z", "b.py": b"B"}) is True
-    assert manager.toml_refusal is None and manager._remote == probe
+    assert manager._remote == probe
     rows = [(cs.is_folder(r), cs.row_name(r), r.get("x")) for r in _disk_rows(manager.dir)]
     assert rows == [(True, "a", 1000.0), (False, "a", 10.0), (False, "z", 900.0),
                     (False, "b", 400.0)]
