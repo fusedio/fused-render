@@ -93,8 +93,20 @@ export const logout = () => postJson<{ ok: boolean }>("/api/canvases/logout", {}
 /** Switch the Fused environment. DELETES every cloned canvas first (the one
  *  writer of the `workbench_env` preference); 409 while another process holds
  *  a clone, 423 while the env var pins the environment. */
-export const switchWorkbenchEnv = (env: WorkbenchEnv) =>
-  postJson<CanvasesStatus>("/api/canvases/env", { env });
+export const switchWorkbenchEnv = (env: WorkbenchEnv, expectedCloned: number) =>
+  postJson<CanvasesStatus>("/api/canvases/env", { env, expected_cloned: expectedCloned });
+
+/** The body of a switch 409 that means "the clone count moved since the
+ *  page read it" — the page re-reads and asks again. */
+export interface ClonesChanged {
+  code: "clones_changed";
+  cloned_count: number;
+}
+export function clonesChanged(e: unknown): ClonesChanged | null {
+  const body = (e as { status?: number; body?: unknown }).body as Partial<ClonesChanged> | null;
+  if ((e as { status?: number }).status !== 409 || body?.code !== "clones_changed") return null;
+  return typeof body.cloned_count === "number" ? (body as ClonesChanged) : null;
+}
 
 export const cloneCanvas = (name: string) =>
   postJson<{ ok: boolean; dir: string }>("/api/canvases/clone", { name });
