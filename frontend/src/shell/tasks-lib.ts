@@ -6038,8 +6038,12 @@ function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
  *  the task has no clock of any kind. */
 export function activityAt(task: Task, now: number = Date.now()): number {
   const w = taskWhen(task, now);
-  if (w.kind === "next") return task.last_active || 0;
-  return w.at || 0;
+  const active = task.last_active || 0;
+  if (w.kind === "next") return active;
+  // THE NEWER OF THE TWO (CodeRabbit, #1756): the row's stamp can be its last
+  // RUN while `last_active` records a message since, and the section must
+  // sort and open by the later one.
+  return Math.max(w.at || 0, active);
 }
 
 /** Sections with activity inside the last day (Akshil, 2026-10-19): what the

@@ -11521,6 +11521,17 @@ describe("groupRows", () => {
     expect(g.map((x) => x.label)).toEqual(["b", "z"]);
     expect(activityAt(g[1]!.rows[0]!, NOW)).toBe(sec("2026-09-01T09:00:00"));
   });
+  it("activityAt takes the newer of the row's stamp and last_active (CodeRabbit, #1756)", () => {
+    // A run behind it, then a message since: the message is the activity.
+    const t = task({
+      key: "r",
+      status: "done",
+      messages: [msg({ message_id: "MSG-r", state: "sent", ran_at: sec("2026-10-10T09:00:00"), at: sec("2026-10-10T09:00:00") })],
+      last_active: sec("2026-10-16T09:00:00"),
+    }, 0);
+    expect(taskWhen(t, NOW).at).toBe(sec("2026-10-10T09:00:00"));
+    expect(activityAt(t, NOW)).toBe(sec("2026-10-16T09:00:00"));
+  });
   it("by PR: repositories and pull requests newest activity first, the number breaking a tie", () => {
     const pr = (key: string, n: number, repo: string, iso: string) =>
       row({ key, title: `PR #${n}`, repo, last_active: sec(iso) });
