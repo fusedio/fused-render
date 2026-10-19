@@ -4120,9 +4120,15 @@ _NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
 #: so none may reopen it. Before this set, a run that had spawned a monitor
 #: never read as done: the trailing `task_summary` held the quiet-verb window
 #: open for as long as the host lived.
+#:
+#: `commands_changed` joined the set 2026-10-19: the CLI re-announces its
+#: slash-command list whenever a plugin or skill dir changes on disk, hours
+#: after the turn ended and with no reply behind it (the T417 run grew two of
+#: them overnight). Read as a wake, that row alone reopened the turn — the
+#: same "In progress on open" symptom as a stopped job's note.
 _BOOKKEEPING_SYSTEM_ROWS = frozenset({
     "task_summary", "post_turn_summary", "task_progress", "task_updated",
-    "background_tasks_changed"})
+    "background_tasks_changed", "commands_changed"})
 # THE CLI'S OWN PREAMBLE TO A TURN, not the turn itself. Claude Code 2.1.29x
 # writes `system/init` and `system/status` (and the SessionStart hook pair on
 # a fresh process) the moment it picks an input off stdin — BEFORE the
@@ -4138,13 +4144,32 @@ _TURN_PREAMBLE_SYSTEM_ROWS = frozenset({
     "init", "status", "hook_started", "hook_response"})
 
 
+#: A `task_notification` whose job was STOPPED (the page's Stop job, or a
+#: kill) does not always wake the model: on an idle run the CLI writes the
+#: note, `background_tasks_changed []`, and nothing more (seen live
+#: 2026-10-18, two runs). Read as a wake, that note held the turn open for as
+#: long as the process lived — the Tasks row flashed "In progress" on every
+#: open, and the session host, whose idle reap keys off `_turn_state`, never
+#: died (Akshil, 2026-10-19: "opened it, said in progress 5 s, then done").
+#: A completed/failed job's note IS followed by the wake (its synthetic
+#: `<task-notification>` user row, `init`, the reply), and those rows reopen
+#: the turn on their own — so a stopped note is bookkeeping, nothing else.
+_STOPPED_TASK_STATUSES = frozenset({"stopped", "killed"})
+
+
 def _not_a_turn_row(row: dict) -> bool:
     """Whether `row` is one of the shapes that never opens or reopens a turn
-    (`_NOT_A_TURN_ROW` and `_BOOKKEEPING_SYSTEM_ROWS`)."""
+    (`_NOT_A_TURN_ROW`, `_BOOKKEEPING_SYSTEM_ROWS`, and a stopped job's
+    `task_notification` — `_STOPPED_TASK_STATUSES`)."""
     t = row.get("type")
     if t in _NOT_A_TURN_ROW:
         return True
-    return t == "system" and row.get("subtype") in _BOOKKEEPING_SYSTEM_ROWS
+    if t != "system":
+        return False
+    sub = row.get("subtype")
+    if sub == "task_notification":
+        return str(row.get("status") or "") in _STOPPED_TASK_STATUSES
+    return sub in _BOOKKEEPING_SYSTEM_ROWS
 
 
 def _turn_preamble_row(row: dict) -> bool:
