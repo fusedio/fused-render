@@ -24,6 +24,9 @@
 # Any failure to set the logging up falls back to the transparent exec.
 
 cmd=$1
+# What is EXECUTED. Same as $cmd except on the Bash-tool path, where a hook is
+# put in front (below); $cmd itself is what gets logged, byte for byte.
+run=$cmd
 
 # The CLI's command strings are written for bash/zsh. $SHELL can be anything
 # (fish breaks MCP servers, hooks and the permission server), so it is only
@@ -46,7 +49,7 @@ if [ -z "$sh_bin" ] || [ ! -x "$sh_bin" ]; then
 fi
 
 transparent() {
-  exec "$sh_bin" -c "$cmd"
+  exec "$sh_bin" -c "$run"
 }
 
 # Bash-tool shape: sources the shell snapshot and ends by persisting the cwd to
@@ -75,6 +78,28 @@ case $snap in
     [ -x "$want" ] && sh_bin=$want
     ;;
 esac
+
+# The `fused` this app ships must answer `fused`, not whatever the user's
+# login shell has. The server put its wrapper dir ($FUSED_RENDER_FUSED_CLI_DIR,
+# fusedcli.export_fused_cli_env) at the FRONT of the PATH this session
+# inherited — and the Bash-tool command string starts by sourcing the shell
+# snapshot, whose last line is `export PATH=<the user's login-shell PATH>`:
+# the inherited PATH is replaced wholesale before the command runs, so the dir
+# was gone (or, when the login shell inherited it, re-ordered behind the
+# user's own ~/.local/bin and the like), and a global `fused` of any age —
+# or none — answered instead. A `source` function, defined ahead of the
+# string, re-prepends the dir after every source: the snapshot's, and a
+# later `source venv/bin/activate` whose bin may hold another fused. Static
+# text, the dir read by name at run time (a home dir with spaces costs
+# nothing). bash/zsh only: `builtin` and `local` are theirs, and the shape
+# above always lands on one of them.
+if [ -n "${FUSED_RENDER_FUSED_CLI_DIR:-}" ]; then
+  case ${sh_bin##*/} in
+    bash|zsh)
+      run='source() { builtin source "$@"; local __fr_rc=$?; case $PATH in "$FUSED_RENDER_FUSED_CLI_DIR":*) ;; *) PATH=$FUSED_RENDER_FUSED_CLI_DIR:$PATH ;; esac; export PATH; return $__fr_rc; }; '"$cmd"
+      ;;
+  esac
+fi
 
 dir=$FUSED_CLAUDE_CMD_LOG
 [ -n "$dir" ] || transparent
@@ -124,9 +149,9 @@ try:
 except OSError:
     pass
 os.execvp(sys.argv[1], sys.argv[1:])
-' "$sh_bin" -c "$cmd" <&3 >"$fo" 2>"$fe" &
+' "$sh_bin" -c "$run" <&3 >"$fo" 2>"$fe" &
 else
-  "$sh_bin" -c "$cmd" <&3 >"$fo" 2>"$fe" &
+  "$sh_bin" -c "$run" <&3 >"$fo" 2>"$fe" &
 fi
 cpid=$!
 # A signal aimed at this wrapper must reach the command (now its own process

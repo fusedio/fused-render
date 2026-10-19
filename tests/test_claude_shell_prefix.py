@@ -237,3 +237,44 @@ def test_wrapper_survives_a_poisoned_python_environment(tmp_path):
             extra_env={"PYTHONHOME": str(empty), "PYTHONPATH": str(empty)})
     assert r.returncode == 0, r.stderr
     assert b"hi" in r.stdout
+
+
+@pytest.mark.parametrize("shell", [s for s in ("/bin/bash", "/bin/zsh") if os.path.exists(s)])
+def test_shipped_fused_wins_over_the_snapshot_path(tmp_path, shell):
+    """The snapshot's `export PATH=` drops the server's wrapper dir; the
+    wrapper's `source` hook puts it back in front, so a bare `fused` is the
+    one this app ships even when the login PATH has another."""
+    cli_dir = tmp_path / "fused bin"  # a space: the hook must not bake the path
+    cli_dir.mkdir()
+    ours = cli_dir / "fused"
+    ours.write_text("#!/bin/sh\necho ours\n")
+    ours.chmod(0o755)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "fused").write_text("#!/bin/sh\necho theirs\n")
+    (other / "fused").chmod(0o755)
+    # Named for the shell: the wrapper runs the snapshot under the shell its
+    # name says, not $SHELL.
+    snapshot = os.path.join(_SNAPDIR, "shell-snapshots",
+                            "snapshot-" + os.path.basename(shell) + "-1700-path.sh")
+    with open(snapshot, "w") as fh:
+        fh.write("export PATH=" + str(other) + ":/usr/bin:/bin\n")
+    logdir = tmp_path / "log"
+    logdir.mkdir()
+    cwdfile = tmp_path / "x-cwd"  # the shape ends in `-cwd`
+    cmd = ("source " + shlex.quote(snapshot) + " 2>/dev/null || true && eval "
+           + shlex.quote("fused; command -v fused") + " < /dev/null && pwd -P >| "
+           + str(cwdfile))
+    res = run(cmd, logdir, extra_env={
+        "SHELL": shell, "FUSED_RENDER_FUSED_CLI_DIR": str(cli_dir),
+        "PATH": "/usr/bin:/bin"})
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.decode().splitlines() == ["ours", str(ours)]
+    # The log holds what Claude handed over, not the hook.
+    (ident,) = entries(logdir)
+    assert read(logdir, ident, "cmd").decode() == cmd
+    # Not a Bash-tool shape, no hook: `fused` is whatever PATH says.
+    res = run("command -v fused", logdir, extra_env={
+        "SHELL": shell, "FUSED_RENDER_FUSED_CLI_DIR": str(cli_dir),
+        "PATH": str(other) + ":/usr/bin:/bin"})
+    assert res.stdout.decode().strip() == str(other / "fused")
