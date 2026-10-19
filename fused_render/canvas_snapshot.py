@@ -196,20 +196,38 @@ def _with_name(row: dict, name: str) -> dict:
     return out
 
 
-def folder_of(rows: Iterable[Any]) -> dict[str, str]:
-    """`{child name: folder name}` from the folders' `childUdfOrder` — the
-    first folder in document order that lists a name wins."""
-    out: dict[str, str] = {}
+def folder_of(rows: Iterable[Any]) -> dict[str, dict]:
+    """`{child name: the folder ROW that holds it}` from the folders'
+    `childUdfOrder` — the first folder in document order that lists a name
+    wins, as the server hydrates. A row, never a name: two folders may share
+    a name, and each holds its own children."""
+    out: dict[str, dict] = {}
     for row in rows:
-        if not is_folder(row):
+        if not is_folder(row) or not row_name(row):
             continue
-        fname = row_name(row)
         order = row.get("childUdfOrder")
-        if not fname or not isinstance(order, list):
+        if not isinstance(order, list):
             continue
         for child in order:
             if isinstance(child, str) and child and child not in out:
-                out[child] = fname
+                out[child] = row
+    return out
+
+
+def _held(rows: Iterable[Any], homes: dict[str, dict]) -> list[tuple[dict, dict]]:
+    """`[(child row, the folder row holding it)]`: a name in a folder's list
+    means the FIRST non-folder row of that name, the only one nested."""
+    out: list[tuple[dict, dict]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or is_folder(row):
+            continue
+        name = row_name(row)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        if name in homes:
+            out.append((row, homes[name]))
     return out
 
 
@@ -717,10 +735,7 @@ def _absolute_xy(rows: list, row: dict) -> tuple[float, float]:
     x, y = _num(row.get("x"), 0), _num(row.get("y"), 0)
     if is_folder(row):
         return x, y
-    home = folder_of(rows).get(row_name(row) or "")
-    if home is None:
-        return x, y
-    frow = next((r for r in rows if is_folder(r) and row_name(r) == home), None)
+    frow = next((f for child, f in _held(rows, folder_of(rows)) if child is row), None)
     if frow is None:
         return x, y
     return _num(frow.get("x"), 0) + x, _num(frow.get("y"), 0) + y
@@ -746,8 +761,7 @@ def synthesize_row(rows: list[dict], slug: str, file: str) -> dict:
     home = homes.get(slug)
     last = next((r for r in reversed(rows) if isinstance(r, dict)), None)
     if home is not None:
-        held = [r for r in rows if isinstance(r, dict) and not is_folder(r)
-                and homes.get(row_name(r) or "") == home]
+        held = [child for child, f in _held(rows, homes) if f is home]
         if held:
             low = max(held, key=lambda r: _num(r.get("y"), 0)
                       + _num(r.get("height"), _SYNTH_HEIGHT))
@@ -1490,9 +1504,15 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
 # the existing one to second place. Same-named folders are matched to base's
 # by their children (`_align_folders`): base's children all present first,
 # then the larger share of them, one-to-one, best first; occurrence only
-# breaks ties (and decides among empty folders). A folder no base folder
-# matches is new on its side; a local-new and a remote-new folder of one
-# name are the same folder when they share a child (or one is empty).
+# breaks ties (and decides among empty folders). Two non-empty folders with
+# no child in common are NOT the same folder (the old one was deleted and
+# the name reused); an empty one matches. A folder no base folder matches
+# is new on its side; a local-new and a remote-new folder of one name are
+# the same folder when they share a child or are both empty (or one is
+# empty only because the other's children are all held elsewhere on its
+# side: what an earlier merge leaves), and then hold the union of both
+# sides' children. A folder the remote deleted but local changed stays,
+# releasing the children the deletion released.
 # A `childUdfOrder` entry or an edge endpoint naming X means the first row
 # of that name in the document, as on the server.
 #
@@ -1521,10 +1541,10 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
 #                frame. When both or neither did (or there is no base), the
 #                field-wise merge's x/y stand, attributed per axis to the
 #                side they came from (local first). Membership comes first:
-#                a side that re-nested the node into a folder the merge did
-#                not keep it in lost that move with it, so the node takes
-#                the other side's x/y (that side's nesting won) — a node is
-#                never drawn outside the folder that lists it. If that side nested the node in
+#                when the merged folder is exactly one side's, and the other
+#                side re-nested the node elsewhere or also moved it, the
+#                winning side's x/y are taken (its frame, converted) — a
+#                node is never drawn outside the folder that lists it. If that side nested the node in
 #                the folder the merge puts it in (a paired rename counts as
 #                the same folder), the x/y are kept: relative to that
 #                folder, they ride with it wherever its own merge put it.
@@ -1611,17 +1631,17 @@ def _keyed(src: Any) -> tuple[list, dict]:
     return order, rows
 
 
-def _child_match_order(left: list, right: list, *, need_overlap: bool) -> list:
+def _child_match_order(left: list, right: list, allow: Callable[..., bool]) -> list:
     """One-to-one `(left key, right key)` pairs of same-named folders, best
     first: `left`'s children all in `right` first, then the larger share of
-    `left`'s children in `right`, then the nearer occurrence. With
-    `need_overlap`, a pair must share a child (or one be empty)."""
+    `left`'s children in `right`, then the nearer occurrence. Only pairs
+    `allow(lk, lset, rk, rset)` admits are considered."""
     scored = []
     for li, (lk, lset) in enumerate(left):
         for ri, (rk, rset) in enumerate(right):
-            common = lset & rset
-            if need_overlap and not common and lset and rset:
+            if not allow(lk, lset, rk, rset):
                 continue
+            common = lset & rset
             subset = lset <= rset if lset else not rset
             share = len(common) / len(lset) if lset else (1.0 if not rset else 0.0)
             scored.append(((not subset, -share, abs(li - ri), li, ri), lk, rk))
@@ -1644,6 +1664,15 @@ def _by_name(order: list, rows: dict) -> dict[str, list]:
     return out
 
 
+def _nested(order: list, rows: dict) -> set[str]:
+    """Names some folder on this side lists."""
+    out: set[str] = set()
+    for key in order:
+        if key[0]:
+            out |= _name_set(rows[key])
+    return out
+
+
 def _align_folders(base: tuple, local: tuple, remote: tuple) -> tuple[tuple, tuple]:
     """`local` and `remote` (`_keyed` results) with every folder re-keyed so
     the same folder has the same key on all three sides (see the section
@@ -1651,17 +1680,40 @@ def _align_folders(base: tuple, local: tuple, remote: tuple) -> tuple[tuple, tup
     remote-new folder that are the same folder → a shared new key; any other
     folder → a key of its own side."""
     b_names = _by_name(*base)
+
+    # Against base: a shared child, or an empty folder on either side (one
+    # emptied or first filled is still that folder). Two non-empty folders
+    # with no child in common are different folders: the old one deleted,
+    # a new one made under the reused name.
+    def same_as_base(_sk, sset, _bk, bset) -> bool:
+        return bool(sset & bset) or not sset or not bset
+
     maps: list[dict] = [{}, {}]
     left: list[dict[str, list]] = []
     for i, side in enumerate((local, remote)):
         names = _by_name(*side)
         for name, folders in names.items():
-            for sk, bk in _child_match_order(folders, b_names.get(name, []),
-                                             need_overlap=False):
+            for sk, bk in _child_match_order(folders, b_names.get(name, []), same_as_base):
                 maps[i][sk] = bk
         left.append({n: [f for f in fs if f[0] not in maps[i]] for n, fs in names.items()})
+
+    # Local-new against remote-new: a shared child, or both empty — or one
+    # empty only because every child of the other is held by another folder
+    # on its own side (what a merge that kept those children elsewhere
+    # leaves behind; the next merge must find the same folder).
+    l_nested, r_nested = _nested(*local), _nested(*remote)
+
+    def fuse(_lk, lset, _rk, rset) -> bool:
+        if lset & rset or (not lset and not rset):
+            return True
+        if not lset:
+            return rset <= l_nested
+        if not rset:
+            return lset <= r_nested
+        return False
+
     for name, l_folders in left[0].items():
-        pairs = _child_match_order(l_folders, left[1].get(name, []), need_overlap=True)
+        pairs = _child_match_order(l_folders, left[1].get(name, []), fuse)
         for n, (lk, rk) in enumerate(pairs):
             maps[0][lk] = maps[1][rk] = (True, name, ("new", n))
     out = []
@@ -1879,16 +1931,17 @@ def _reframe_children(merged: dict, B: _Side, L: _Side, R: _Side,
             # never drawn outside the folder that lists it.
             l_same = _same_frame(B, L, key, renames)
             r_same = _same_frame(B, R, key, renames)
+            l_moved, r_moved = _moved(B, L, key, renames), _moved(B, R, key, renames)
+            both = l_moved and r_moved
             winner = None
-            if target == l_home and r_home != target and not r_same:
+            if target == l_home and r_home != target and (not r_same or both):
                 winner = (L, l_home)
-            elif target == r_home and l_home != target and not l_same:
+            elif target == r_home and l_home != target and (not l_same or both):
                 winner = (R, r_home)
             if winner is not None:
                 for axis in ("x", "y"):
                     put(*winner, axis)
                 continue
-            l_moved, r_moved = _moved(B, L, key, renames), _moved(B, R, key, renames)
             if l_moved != r_moved:
                 side, home = (L, l_home) if l_moved else (R, r_home)
                 for axis in ("x", "y"):
@@ -1950,10 +2003,22 @@ def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[di
                                     _renamed_folder(ln[k], k[1], to[1]), rn[to])
         elif k in rn:
             merged[k] = _merge_row(bn.get(k), ln[k], rn[k])
+            if k[0] and k not in bn and base is not None:
+                # One folder both sides made: its children are the union.
+                lo, ro = _names(ln[k].get(_ORDER_KEY)), _names(rn[k].get(_ORDER_KEY))
+                if lo is not None and ro is not None:
+                    merged[k][_ORDER_KEY] = _merge_order([], lo, ro)
         elif k in bn and bn[k] == ln[k]:
             info["removed"].append(k[1])      # remote deleted an untouched node
         else:
             merged[k] = dict(ln[k])           # local added or changed it
+            if k[0] and k in bn:
+                # The remote deleted this folder, local changed it: it stays,
+                # but the children the remote released by deleting it are
+                # released (local's own additions stay in).
+                bo, lo = _names(bn[k].get(_ORDER_KEY)), _names(ln[k].get(_ORDER_KEY))
+                if bo is not None and lo is not None:
+                    merged[k][_ORDER_KEY] = _merge_order(bo, lo, [])
     for k in R.order:
         if k in merged or k in ln or k in dropped:
             continue

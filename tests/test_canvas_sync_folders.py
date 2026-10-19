@@ -120,8 +120,9 @@ def test_merge_remote_absolute_coords_converted_into_local_folder():
     merged, _info = cs.merge_toml(base, local, remote)
     rows = by_name(merged)
     assert rows["F"]["childUdfOrder"] == ["b"]
-    # The remote's absolute position, expressed relative to F.
-    assert (rows["b"]["x"], rows["b"]["y"]) == (1600.0, 1400.0)
+    # Nesting b without converting its x/y moved it on screen too: both sides
+    # moved it, and F (local's folder) won, so local's x/y, relative to F.
+    assert (rows["b"]["x"], rows["b"]["y"]) == (2000.0, 2000.0)
 
 
 def test_merge_child_rides_with_a_folder_the_other_side_moved():
@@ -158,7 +159,9 @@ def test_merge_folder_deleted_on_local_child_coords_from_remote_go_absolute():
     merged, _info = cs.merge_toml(base, local, remote)
     rows = by_name(merged)
     assert "F" not in rows            # local delete beats an untouched remote row
-    assert (rows["a"]["x"], rows["a"]["y"]) == (1100.0, 1200.0)
+    # Deleting F without converting a moved a on local's screen; the remote
+    # moved it too. Local's membership (none) won: local's x/y.
+    assert (rows["a"]["x"], rows["a"]["y"]) == (40.0, 60.0)
 
 
 def test_merge_keeps_unknown_names_and_never_lists_a_child_twice():
@@ -326,8 +329,10 @@ def test_merge_two_child_folder_needs_a_subset_to_pair():
     merged, info = cs.merge_toml(base, local, remote)
     rows = by_name(merged)
     assert info["renamed"] == []
-    assert rows["F"]["childUdfOrder"] == ["a", "b"]       # local's F, untouched
-    assert rows["G"]["childUdfOrder"] == []               # F keeps a: local nests it
+    # The remote deleted F (local moved it, so F stays) and released b and
+    # moved a to G: single-side membership changes, the remote's.
+    assert rows["F"]["childUdfOrder"] == [] and rows["F"]["x"] == 300.0
+    assert rows["G"]["childUdfOrder"] == ["a"]
 
 
 def test_merge_pairs_each_remote_rename_with_its_best_base_folder():
@@ -344,10 +349,11 @@ def test_merge_pairs_each_remote_rename_with_its_best_base_folder():
     merged, info = cs.merge_toml(base, local, remote)
     rows = by_name(merged)
     assert info["renamed"] == [["F2", "G2"]]
-    assert rows["G2"]["x"] == 550.0 and rows["G2"]["childUdfOrder"] == ["c", "d"]
-    # F1 (two children) cannot pair below a subset: local's F1 keeps a and b.
-    assert rows["F1"]["childUdfOrder"] == ["a", "b"]
-    assert rows["G1"]["childUdfOrder"] == []
+    assert rows["G2"]["x"] == 550.0 and rows["G2"]["childUdfOrder"] == ["a", "c", "d"]
+    # F1 (two children) cannot pair below a subset: it is the remote's delete
+    # of a folder local moved, so it stays, releasing what the remote moved.
+    assert rows["F1"]["childUdfOrder"] == [] and rows["F1"]["x"] == 50.0
+    assert rows["G1"]["childUdfOrder"] == ["b"]
     assert cs.folder_problems(merged) == []
 
 
@@ -770,7 +776,7 @@ def test_synthesize_a_slug_a_folder_lists_inside_it_below_its_lowest_child():
     row = cs.synthesize_row(rows, "new", "new.py")
     # Relative to F, under a (the lowest of F's rows), never after z.
     assert (row["x"], row["y"]) == (40.0, 600.0 + 500 + 40)
-    assert cs.folder_of(rows + [row])["new"] == "F"
+    assert cs.folder_of(rows + [row])["new"] is rows[0]
 
 
 def test_synthesize_a_slug_an_empty_folder_lists_at_its_corner():
@@ -875,7 +881,7 @@ def _inside(rows, child, home):
     assert 0 <= c["x"] <= f["width"] and 0 <= c["y"] <= f["height"], (c, f)
 
 
-def test_merge_remote_merging_two_folders_loses_to_a_locally_kept_folder():
+def test_merge_remote_merging_two_folders_moves_children_out_of_a_moved_folder():
     base = cs.rows_of_doc(doc([folder("F1", ["a", "b"], x=0.0, y=0.0),
                                folder("F2", ["c", "d"], x=500.0, y=0.0),
                                udf("a", 0.0, 0.0), udf("b", 0.0, 100.0),
@@ -887,17 +893,19 @@ def test_merge_remote_merging_two_folders_loses_to_a_locally_kept_folder():
                   udf("b", 0.0, 100.0), udf("c", 0.0, 200.0), udf("d", 0.0, 300.0)])
     merged, _info = cs.merge_toml(base, local, remote)
     rows = by_name(merged)
-    assert rows["F2"]["childUdfOrder"] == ["c", "d"]
-    # Local's nesting won, so local's relative positions, inside F2's box.
-    assert (rows["c"]["x"], rows["c"]["y"]) == (0.0, 0.0)
-    assert (rows["d"]["x"], rows["d"]["y"]) == (0.0, 100.0)
-    _inside(rows, "c", "F2")
-    _inside(rows, "d", "F2")
+    # Only the remote changed c's and d's membership (F2 → G): the remote's,
+    # at its positions, inside G. F2 stays (local moved it), empty.
+    assert rows["F2"]["childUdfOrder"] == [] and rows["F2"]["x"] == 700.0
+    assert rows["G"]["childUdfOrder"] == ["a", "b", "c", "d"]
+    assert (rows["c"]["x"], rows["c"]["y"]) == (0.0, 200.0)
+    assert (rows["d"]["x"], rows["d"]["y"]) == (0.0, 300.0)
+    _inside(rows, "c", "G")
+    _inside(rows, "d", "G")
     again, _info = cs.merge_toml(base, merged, remote)
     assert cs.rows_of_doc(again) == cs.rows_of_doc(merged)
 
 
-def test_merge_remote_moving_a_node_to_a_renamed_folder_loses_to_local_nesting():
+def test_merge_remote_moving_a_node_to_a_renamed_folder_wins_a_single_side_change():
     base = cs.rows_of_doc(doc([folder("F1", ["a", "b"], x=0.0, y=0.0),
                                folder("F2", ["c", "d"], x=500.0, y=0.0),
                                udf("a", 0.0, 0.0), udf("b", 0.0, 100.0),
@@ -910,9 +918,9 @@ def test_merge_remote_moving_a_node_to_a_renamed_folder_loses_to_local_nesting()
                   udf("c", 0.0, 0.0), udf("d", 0.0, 100.0)])
     merged, _info = cs.merge_toml(base, local, remote)
     rows = by_name(merged)
-    assert rows["F1"]["childUdfOrder"] == ["a", "b"]
-    assert (rows["a"]["x"], rows["a"]["y"]) == (0.0, 0.0)
-    _inside(rows, "a", "F1")
+    assert rows["G2"]["childUdfOrder"] == ["a", "c", "d"]
+    assert (rows["a"]["x"], rows["a"]["y"]) == (0.0, 200.0)
+    _inside(rows, "a", "G2")
     again, _info = cs.merge_toml(base, merged, remote)
     assert cs.rows_of_doc(again) == cs.rows_of_doc(merged)
 
@@ -928,3 +936,100 @@ def test_merge_both_sides_renest_local_wins_with_its_own_position():
     rows = by_name(merged)
     assert (rows["c"]["x"], rows["c"]["y"]) == (10.0, 10.0)
     _inside(rows, "c", "F")
+
+
+# -- round 7: no zero-overlap pairing, both-moved winner, fuse rule --------------------
+
+def test_merge_a_reused_folder_name_with_new_children_is_a_new_folder():
+    base = cs.rows_of_doc(doc([folder("Folder_2", ["a"], x=100.0, y=100.0), udf("a", 10.0, 10.0),
+                               udf("c", 800.0, 0.0), udf("d", 800.0, 200.0)]))
+    local = doc([folder("Folder_2", ["a"], x=500.0, y=500.0), udf("a", 10.0, 10.0),
+                 udf("c", 800.0, 0.0), udf("d", 800.0, 200.0)])
+    # The teammate deleted Folder_2 (releasing a in place) and regrouped c,d
+    # into a new folder the workbench named Folder_2 again.
+    remote = doc([folder("Folder_2", ["c", "d"], x=780.0, y=-20.0), udf("a", 110.0, 110.0),
+                  udf("c", 20.0, 20.0), udf("d", 20.0, 220.0)])
+    merged, _info = cs.merge_toml(base, local, remote)
+    shape = [(cs.row_name(r), r.get("childUdfOrder"), r["x"], r["y"])
+             for r in merged["canvas"]["nodes"]]
+    assert shape == [("Folder_2", [], 500.0, 500.0), ("a", None, 110.0, 110.0),
+                     ("c", None, 20.0, 20.0), ("d", None, 20.0, 220.0),
+                     ("Folder_2", ["c", "d"], 780.0, -20.0)]
+    again, _info = cs.merge_toml(base, merged, remote)
+    assert cs.rows_of_doc(again)["rows"] == cs.rows_of_doc(merged)["rows"]
+
+
+def _both_moved(local_a):
+    base = cs.rows_of_doc(doc([folder("F", ["a"], x=100.0, y=100.0),
+                               folder("G", [], x=3000.0, y=3000.0), udf("a", 10.0, 10.0)]))
+    local = doc([folder("F", ["a"], x=100.0, y=100.0), folder("G", [], x=3000.0, y=3000.0),
+                 udf("a", *local_a)])
+    remote = doc([folder("F", [], x=100.0, y=100.0), folder("G", ["a"], x=3000.0, y=3000.0),
+                  udf("a", 500.0, 500.0)])
+    merged, _info = cs.merge_toml(base, local, remote)
+    return by_name(merged)
+
+
+def test_merge_both_moved_the_winning_folders_side_keeps_its_position():
+    rows = _both_moved((50.0, 70.0))
+    assert rows["G"]["childUdfOrder"] == ["a"]
+    assert (rows["a"]["x"], rows["a"]["y"]) == (500.0, 500.0)
+
+
+def test_merge_both_moved_single_axis_local_move_still_loses():
+    rows = _both_moved((50.0, 10.0))
+    assert (rows["a"]["x"], rows["a"]["y"]) == (500.0, 500.0)
+
+
+def test_merge_two_new_empty_same_named_folders_fuse():
+    base = cs.rows_of_doc(doc([udf("a", 0.0, 0.0)]))
+    local = doc([udf("a", 0.0, 0.0), folder("Folder_2", [], x=100.0, y=100.0, folderColor="#l")])
+    remote = doc([udf("a", 0.0, 0.0), folder("Folder_2", [], x=900.0, y=900.0, folderColor="#r")])
+    merged, _info = cs.merge_toml(base, local, remote)
+    folders = [r for r in merged["canvas"]["nodes"] if cs.is_folder(r)]
+    assert [(r["x"], r["folderColor"]) for r in folders] == [(100.0, "#l")]
+
+
+def test_merge_an_empty_new_folder_does_not_swallow_the_teammates_group():
+    base = cs.rows_of_doc(doc([udf("c", 500.0, 0.0), udf("d", 500.0, 200.0)]))
+    local = doc([udf("c", 500.0, 0.0), udf("d", 500.0, 200.0),
+                 folder("Folder_2", [], x=100.0, y=100.0, folderColor="#l")])
+    remote = doc([udf("c", 20.0, 20.0), udf("d", 20.0, 220.0),
+                  folder("Folder_2", ["c", "d"], x=480.0, y=-20.0, folderColor="#r")])
+    merged, _info = cs.merge_toml(base, local, remote)
+    folders = [(r["childUdfOrder"], r["folderColor"])
+               for r in merged["canvas"]["nodes"] if cs.is_folder(r)]
+    assert folders == [([], "#l"), (["c", "d"], "#r")]
+    rows = by_name(merged)
+    assert (rows["c"]["x"], rows["c"]["y"]) == (20.0, 20.0)
+
+
+def test_merge_two_new_same_named_folders_sharing_a_child_union_their_children():
+    base = cs.rows_of_doc(doc([udf("a", 0.0, 0.0), udf("b", 0.0, 200.0), udf("c", 0.0, 400.0)]))
+    local = doc([folder("G", ["a", "b"], x=100.0, y=100.0), udf("a", 10.0, 10.0),
+                 udf("b", 10.0, 200.0), udf("c", 0.0, 400.0)])
+    remote = doc([folder("G", ["b", "c"], x=900.0, y=900.0), udf("a", 0.0, 0.0),
+                  udf("b", 10.0, 10.0), udf("c", 10.0, 200.0)])
+    merged, _info = cs.merge_toml(base, local, remote)
+    rows = by_name(merged)
+    assert [n for n, r in rows.items() if cs.is_folder(r)] == ["G"]
+    assert rows["G"]["childUdfOrder"] == ["a", "b", "c"]
+    again, _info = cs.merge_toml(base, merged, remote)
+    assert cs.rows_of_doc(again)["rows"] == cs.rows_of_doc(merged)["rows"]
+
+
+
+def test_synthesis_and_placement_resolve_a_child_through_its_own_same_named_folder():
+    first = folder("Folder_2", ["a"], x=0.0, y=0.0)
+    second = folder("Folder_2", ["b", "c", "new"], x=5000.0, y=3000.0)
+    rows = [first, second, udf("a", 10.0, 900.0), udf("b", 40.0, 60.0), udf("c", 40.0, 700.0)]
+    row = cs.synthesize_row(rows, "new", "new.py")
+    # Relative to the SECOND Folder_2, below its lowest child c — never a
+    # (the first Folder_2's child, lower in its own folder).
+    assert (row["x"], row["y"]) == (40.0, 700.0 + 500 + 40)
+    assert cs.folder_of(rows + [row])["new"] is second
+    assert cs._absolute_xy(rows, rows[3]) == (5040.0, 3060.0)
+    assert cs._absolute_xy(rows, rows[2]) == (10.0, 900.0)
+    # And an orphan after a child of the second folder is placed through it.
+    after = cs.synthesize_row(rows[:4] + [udf("c", 40.0, 700.0)], "zz", "zz.py")
+    assert (after["x"], after["y"]) == (5040.0, 3000.0 + 700.0 + 500 + 40)
