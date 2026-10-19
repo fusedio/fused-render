@@ -1577,7 +1577,7 @@ export const VIEW_LABELS: Record<TaskView, string> = {
   board: "Board",
   cards: "Cards",
   calendar: "Calendar",
-  time: "Time",
+  time: "Recent",
   project: "Project",
   pr: "PR",
 };
@@ -6078,9 +6078,14 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
   if (by === "project") {
     // THE FOLDER'S NAME, as the row chip prints it (Akshil, 2026-10-19: "not
     // the full path"); the path under ~ is the heading's tooltip.
+    // THE HOME FOLDER IS THE USER'S NAME, not "~" (Akshil, 2026-10-19): a task
+    // filed under $HOME arrives as "~" or as the full path, and "~" is a
+    // spelling, not a name.
+    const homeName = basename(home) || "~";
+    const nameOf = (p: string) => (p === "~" || (home && p === home) ? homeName : basename(p));
     for (const task of rows) {
       const p = (task.project || "").trim();
-      put(p || "\u0000none", p ? basename(p) : "No folder", task);
+      put(p || "\u0000none", p ? nameOf(p) : "No folder", task);
       if (p) {
         const g = groups.get(p)!;
         g.folder = p;

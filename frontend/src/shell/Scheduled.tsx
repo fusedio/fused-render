@@ -216,7 +216,7 @@ const VIEW_ICONS: Record<TaskView, React.ReactNode> = {
 };
 /** What the `+` menu says a grouped view does, under its name. */
 const VIEW_HINTS: Partial<Record<TaskView, string>> = {
-  time: "List grouped by day",
+  time: "List grouped by when it last moved",
   project: "List grouped by folder",
   pr: "List grouped by pull request",
 };
