@@ -2663,6 +2663,15 @@ class _SyncManager:
 
     # -- server-stale and the explicit pull -----------------------------------
 
+    def check_remote_now(self) -> None:
+        """Ask the loop to probe the server on its next tick (≤ SCAN_INTERVAL_S)
+        instead of waiting out PULL_POLL_S — the page calls this when its
+        window or tab comes into focus, so a canvas edited elsewhere shows
+        its Pull button as the user looks, the way the hosted workbench tab
+        checks on focus. Detect-only, like the timed poll: nothing is pulled.
+        A plain attribute write; the loop reads it under its own locks."""
+        self._last_pull_poll = 0.0
+
     def _toml_rows(self) -> dict | None:
         """The compact rows of the clone's canvas.toml, or None."""
         try:
@@ -3957,6 +3966,26 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
         if result.get("code"):
             status["code"] = result["code"]
     return status
+
+
+@router.post("/api/canvases/sync/check")
+def api_canvases_sync_check(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Probe the server for canvas changes NOW rather than on the next timed
+    poll — the canvas page's window/tab just came into focus. Detect-only:
+    the result is the ordinary `server_to_disk` leg on sync/state and the
+    events socket (stale → the Pull button). Answers ok even with no watcher
+    (nothing to hurry; sync/start is the page's own concern)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return {"ok": True, "watching": False}
+    manager.check_remote_now()
+    return {"ok": True, "watching": True}
 
 
 @router.post("/api/canvases/fix")

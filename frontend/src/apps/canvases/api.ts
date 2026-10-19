@@ -162,6 +162,12 @@ export const pullCanvas = (name: string, hard = false) =>
     hard ? { name, hard: true } : { name },
   );
 
+/** Ask the watcher to probe the server for changes now (the window or tab
+ *  just came into focus) instead of on its next timed poll. Detect-only;
+ *  a stale verdict arrives as the usual sync state (the Pull button). */
+export const checkRemote = (name: string) =>
+  postJson<{ ok: boolean; watching: boolean }>("/api/canvases/sync/check", { name });
+
 /** Thrown by `startSync` when another fused-render process holds this
  *  clone's `.sync/<name>.lock` (409 `owned`). Keeps HttpError's `status` and
  *  `body` for callers that only read those. */
