@@ -1723,7 +1723,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // Prefill only — the field shows exactly what will be saved, and
           // deleting the filename back to the folder is the user's to make. A
           // deep link's own target still wins: it named a path on purpose.
-          initialTarget={scope?.entry ?? scope?.project ?? folderSeed}
+          // A SECTION'S + NAMES ITS FOLDER ON PURPOSE, so it outranks the
+          // scope's own prefill (Bugbot, #1756): on an app-scoped tab the
+          // Project view's folder is the app's anyway, and the card must open
+          // on the folder the reader pressed, not the app's entry page.
+          initialTarget={folderSeed ?? scope?.entry ?? scope?.project ?? null}
           // The stored record, handed back whole — a task draft's own form, or
           // a chat record turned into one by `chatHopSeed`. Null on every
           // opening that had nothing stored behind it.
