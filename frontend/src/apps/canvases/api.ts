@@ -16,8 +16,16 @@ export interface CanvasesStatus {
   creds_stamp: number | null;
   login_in_flight: boolean;
   workbench_base_url: string;
+  /** Which Fused environment canvases, the `fused` wrapper and share uploads
+   *  target (fusedcli.workbench_env): `unstable` or `prod`, or whatever
+   *  FUSED_RENDER_WORKBENCH_ENV pins. */
+  workbench_env: string;
   canvases_dir: string;
+  /** Clones on this machine — what a switch of environment deletes. */
+  cloned_count: number;
 }
+
+export type WorkbenchEnv = "unstable" | "prod";
 
 export interface CanvasEntry {
   name: string;
@@ -82,6 +90,11 @@ export const createCanvas = (name: string) =>
   postJson<{ ok: boolean; name: string }>("/api/canvases/create", { name });
 
 export const logout = () => postJson<{ ok: boolean }>("/api/canvases/logout", {});
+/** Switch the Fused environment. DELETES every cloned canvas first (the one
+ *  writer of the `workbench_env` preference); 409 while another process holds
+ *  a clone, 423 while the env var pins the environment. */
+export const switchWorkbenchEnv = (env: WorkbenchEnv) =>
+  postJson<CanvasesStatus>("/api/canvases/env", { env });
 
 export const cloneCanvas = (name: string) =>
   postJson<{ ok: boolean; dir: string }>("/api/canvases/clone", { name });

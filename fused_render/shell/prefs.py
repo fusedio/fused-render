@@ -746,6 +746,18 @@ def _lan_status() -> dict:
         return {"running": False, "url": None, "error": str(e)}
 
 
+def _workbench_state() -> dict:
+    # Imported here, not at module top: fusedcli is the heavier module and
+    # calls.py imports prefs on a hot path.
+    from fused_render import fusedcli
+
+    return {
+        "env": fusedcli.workbench_env(),
+        "locked": fusedcli.workbench_env_locked(),
+        "choices": list(fusedcli.WORKBENCH_ENV_CHOICES),
+    }
+
+
 def _prefs_response() -> dict:
     return {
         "engine": engine_state(),
@@ -773,6 +785,13 @@ def _prefs_response() -> dict:
         # Whether the Share sheet offers the GitHub install-link card (opt-in,
         # default off). Not an API guard; see `github_link_enabled`.
         "github_link": {"enabled": github_link_enabled()},
+        # Which Fused environment the canvases, the `fused` wrapper and the
+        # share uploads target (fusedcli.workbench_env). READ-ONLY HERE: the
+        # one writer is `POST /api/canvases/env`, which wipes the cloned
+        # canvases first — a clone pulled from one environment and pushed to
+        # the other would create or clobber a canvas of the same name there.
+        # `locked` means FUSED_RENDER_WORKBENCH_ENV pins it for the process.
+        "workbench": _workbench_state(),
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (default ON, opt-out). `available` says whether THIS
         # process can honour it — the packaged macOS app installs the hook; a
@@ -978,6 +997,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     # — would otherwise each write the record they read, and the slower one
     # erases the faster one's change. The lock covers the pair, not just the
     # write `storage.write_json` already makes atomic.
+    if "workbench_env" in body:
+        # The one preference this door refuses: switching environments has to
+        # delete the cloned canvases first, and only canvases.py can do that.
+        return JSONResponse(
+            {"error": "'workbench_env' is set through POST /api/canvases/env"},
+            status_code=400,
+        )
     with _PREFS_LOCK:
         prefs = read_prefs()
         changed = False
