@@ -1263,6 +1263,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       {drawerOpen && (sync || owned) && (
         <SyncDrawer
           name={name}
+          epoch={sync?.watcher_epoch ?? null}
           events={logEvents}
           wsLogAtRef={wsLogAtRef}
           onEvents={onLogEvents}

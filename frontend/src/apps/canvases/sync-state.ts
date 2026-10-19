@@ -62,7 +62,8 @@ export interface DiskToServerLeg extends SyncLeg {
 export interface ServerToDiskLeg {
   state: "idle" | "stale" | "pulling" | "error";
   since_ms: number | null;
-  changed: { slug: string; kind: string }[];
+  /** `slug` is null for the layout entry (`kind: "layout"`). */
+  changed: { slug: string | null; kind: string }[];
   reason: string | null;
 }
 
@@ -274,10 +275,16 @@ function legVerdict(name: LegName, state: SyncState): LegVerdict {
   }
 }
 
-/** "Server changes: a (changed), b (added)" — or the layout when no UDF. */
+/** "Server changes: a (changed), b (added), the canvas layout" — the
+ *  server's layout entry has no slug (`{slug: null, kind: "layout"}`), and an
+ *  empty list (a pre-layout-entry server) is the layout alone. Mirrors the
+ *  backend's `_stale_reason` wording. */
 export function serverChangesText(leg: ServerToDiskLeg): string {
   if (leg.changed.length === 0) return "Server changes: the canvas layout";
-  return "Server changes: " + leg.changed.map((u) => `${u.slug} (${u.kind})`).join(", ");
+  const parts = leg.changed.map((u) =>
+    u.kind === "layout" || u.slug === null ? "the canvas layout" : `${u.slug} (${u.kind})`,
+  );
+  return "Server changes: " + parts.join(", ");
 }
 
 const LEVEL_RANK: Record<SyncLevel, number> = { ok: 0, warn: 1, error: 2 };

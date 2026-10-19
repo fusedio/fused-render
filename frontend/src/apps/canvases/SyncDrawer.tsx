@@ -25,12 +25,16 @@ const WS_LOG_FRESH_MS = 5000;
 
 export function SyncDrawer({
   name,
+  epoch,
   events,
   wsLogAtRef,
   onEvents,
   onClose,
 }: {
   name: string;
+  /** sync/state's `watcher_epoch`: a new watcher's ring counts from 0
+   *  again, so the cursor restarts with it (the workspace drops the buffer). */
+  epoch: string | null;
   /** Newest first. */
   events: readonly SyncLogEvent[];
   /** Date.now() of the last `log` message on the events socket (0 = none). */
@@ -43,6 +47,11 @@ export function SyncDrawer({
   onEventsRef.current = onEvents;
 
   useEffect(() => {
+    // A new canvas or a new watcher is a new ring: read it from the start.
+    // `SyncLog.since` only rewinds an `after` BEYOND the new ring's last seq;
+    // one the new ring has already caught up to would silently skip
+    // everything before it.
+    nextRef.current = 0;
     let cancelled = false;
     let inFlight = false;
     const fetchLog = async (force: boolean) => {
@@ -74,7 +83,7 @@ export function SyncDrawer({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [name, wsLogAtRef]);
+  }, [name, epoch, wsLogAtRef]);
 
   const cell: React.CSSProperties = { padding: "3px 8px", verticalAlign: "top" };
   return (
