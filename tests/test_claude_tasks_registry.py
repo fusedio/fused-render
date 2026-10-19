@@ -267,15 +267,15 @@ def test_history_names_the_host_run_after_the_turn_ended(
     assert hist["tasks_run"] == ("run" if host else "")
 
 
-def _newer_run(agent, run_dir, meta, rows=(), host=False):
-    """A second run dir for the same session, sorted after `run`."""
-    d = run_dir.parent / "run2"
+def _newer_run(agent, run_dir, meta, rows=(), host=False, name="run2"):
+    """A newer run dir for the same session, sorted after `run`."""
+    d = run_dir.parent / name
     (d / "perm").mkdir(parents=True)
     (d / "meta.json").write_text(json.dumps(meta))
     (d / "out.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     if host:
         (d / "host.json").write_text(json.dumps({"pid": os.getpid()}))
-    agent._poll("run2")
+    agent._poll(name)
     return d
 
 
@@ -350,6 +350,29 @@ def test_a_newest_run_whose_claude_died_yields_to_a_live_older_host(
     monkeypatch.setattr(agent, "_alive", lambda d: d != str(newer))
     reg, host_run, _last = agent._session_task_registry(str(target), "s")
     assert list(reg) == ["old"] and host_run == "run"
+
+
+def test_a_live_job_beats_a_nearer_host_whose_turn_holds_none(
+        agent, run_dir, tmp_path):
+    """Three runs: the oldest holds the job, a nearer host has a turn open
+    with no tasks, the newest has nothing. The job answers (CodeRabbit)."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    meta = {"file": str(target), "session_id": "s"}
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+    _append(run_dir, [_sys("task_started", task_id="b1", description="dev server",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    _newer_run(agent, run_dir, meta, [_user("hi")], host=True)
+    _newer_run(agent, run_dir, meta, [_user("hi"), _result()], name="run3")
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert list(reg) == ["b1"] and host_run == "run"
+    # With no job left anywhere, the woken turn is still the answer.
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="killed")])
+    (run_dir / "host.json").unlink()
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert reg == {} and host_run == "run2"
 
 
 def test_an_older_host_with_nothing_running_does_not_answer(

@@ -9957,7 +9957,7 @@ def _session_task_registry(file: str, session_id: str,
     # Past the newest run the walk is one stat per dir, so the cost is small.
     if limit is not None:
         names = names[:limit * 2]
-    newest = None
+    newest = woken = None
     for i, name in enumerate(names):
         run_dir = os.path.join(RUNS, name)
         # Past the newest run (or past the window it is looked for in) only a
@@ -9996,8 +9996,12 @@ def _session_task_registry(file: str, session_id: str,
         registry = _read_bg_tasks(run_dir)
         active = any(_task_active(rec) for rec in registry.values())
         if older:
-            if active or turn_open:
+            if active:
                 return registry, name, newest[2] if newest else run_dir
+            # A woken turn with no live job is kept only as the answer of
+            # last resort: an even older host may still hold one (CodeRabbit).
+            if turn_open and woken is None:
+                woken = (registry, name, newest[2] if newest else run_dir)
             continue
         if registry and not cli:
             for rec in registry.values():
@@ -10008,7 +10012,7 @@ def _session_task_registry(file: str, session_id: str,
         if turn_open or (active and cli):
             return registry, (name if host else ""), run_dir
         newest = (registry, (name if host else ""), run_dir)
-    return newest or ({}, "", "")
+    return woken or newest or ({}, "", "")
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
