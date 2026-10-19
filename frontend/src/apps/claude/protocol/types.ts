@@ -29,7 +29,8 @@ export type Action =
   | "send"
   | "commands"
   | "task_output"
-  | "task_stop";
+  | "task_stop"
+  | "tasks";
 
 /** A permission mode as the CLI spells it (PERMISSION_MODES, agent.py). */
 export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
@@ -239,6 +240,7 @@ export interface AgentRequests {
   commands: CommandsRequest;
   task_output: TaskOutputRequest;
   task_stop: TaskOutputRequest;
+  tasks: RunTasksRequest;
 }
 
 // ---- segments (agent.py:3253 _segments_from_rows; T:15591-15635) -----------
@@ -1029,6 +1031,7 @@ export interface AgentResponses {
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
   task_stop: TaskStopResponse | ErrorOnly;
+  tasks: RunTasksResponse | ErrorOnly;
 }
 
 /** One slash command the CLI (or the disk scan) knows (SPEC C-2). */
@@ -1105,6 +1108,20 @@ export interface TaskRecord {
 export interface TaskOutputRequest {
   run_id: string;
   task_id: string;
+}
+/** `tasks {run_id}` (agent.py `_run_tasks`): the panel of a run whose TURN
+ *  is over while its session host runs background work on. */
+export interface RunTasksRequest {
+  run_id: string;
+}
+export interface RunTasksResponse {
+  /** The run's registry, caught up from `out.jsonl` while the host lives;
+   *  still-active records read `unknown` once it is gone. */
+  tasks: TaskRecord[];
+  /** The host is alive AND a record is still active. */
+  tasks_pending: boolean;
+  host_alive: boolean;
+  error?: undefined;
 }
 /** `task_stop {run_id, task_id}`: `{ok: true}` once the CLI accepted it. */
 export interface TaskStopResponse {

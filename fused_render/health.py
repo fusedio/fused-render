@@ -344,3 +344,85 @@ def stop_resource_trail() -> None:
     with _TRAIL_LOCK:
         if _TRAIL is not None:
             _TRAIL.stop()
+
+
+# ---- reading the trail back (the Monitor's Overview) ------------------------------
+
+_TRAIL_TTL_S = 30.0
+_TRAIL_CHUNK_BYTES = 256 * 1024
+_TRAIL_MAX_BYTES = 8 * 1024 * 1024
+_trail_cache: dict[float, tuple[float, list[dict]]] = {}
+
+
+def _row_time(line: bytes):
+    try:
+        row = json.loads(line)
+    except ValueError:
+        return None
+    t = row.get("t") if isinstance(row, dict) else None
+    return t if isinstance(t, (int, float)) else None
+
+
+def _read_tail_until(f, cutoff: float) -> bytes:
+    """The file's tail, read backwards in chunks until its first complete line
+    is older than `cutoff`, the start of the file, or `_TRAIL_MAX_BYTES`. A line
+    cut by the chunk boundary is dropped."""
+    size = f.seek(0, os.SEEK_END)
+    pos, data = size, b""
+    while pos > 0 and len(data) < _TRAIL_MAX_BYTES:
+        step = min(_TRAIL_CHUNK_BYTES, pos)
+        pos -= step
+        f.seek(pos)
+        data = f.read(step) + data
+        nl = data.find(b"\n")
+        if pos > 0 and nl >= 0:
+            first = next((t for t in map(_row_time, data[nl + 1:].split(b"\n")[:5])
+                          if t is not None), None)
+            if first is not None and first < cutoff:
+                break
+    return data if pos == 0 else data[data.find(b"\n") + 1:]
+
+
+def read_trail(window_s: float) -> list[dict]:
+    """`resources.jsonl` rows from the last `window_s` seconds, oldest first.
+    Reads backwards from the end only as far as the window needs (capped at
+    8 MB) and caches the answer for 30 s, so a page that polls every 2 s costs
+    one small read per half minute."""
+    now = time.time()
+    hit = _trail_cache.get(window_s)
+    if hit is not None and now - hit[0] < _TRAIL_TTL_S:
+        return hit[1]
+    rows: list[dict] = []
+    try:
+        with open(resources_path(), "rb") as f:
+            data = _read_tail_until(f, now - window_s)
+        for line in data.split(b"\n"):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and isinstance(row.get("t"), (int, float)) \
+                    and row["t"] >= now - window_s:
+                rows.append(row)
+    except OSError:
+        pass
+    _trail_cache[window_s] = (now, rows)
+    return rows
+
+
+def read_outages(limit: int = 20) -> list[dict]:
+    """The last `limit` rows of `outages.jsonl`, oldest first."""
+    try:
+        with open(outages_path(), "rb") as f:
+            tail = collections.deque(f, maxlen=limit)
+    except OSError:
+        return []
+    out = []
+    for line in tail:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
+    return out

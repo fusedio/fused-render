@@ -16,48 +16,50 @@ the browser itself and blocks on a localhost callback — so the login endpoint
 here spawns the child and the client simply polls status until the
 credentials file appears.
 
-Sync model (per-file three-way, local wins ties): one watcher thread per
+Sync model — the host is one more workbench tab. One watcher thread per
 synced canvas fingerprints the clone folder (path/mtime/size walk) once a
 second; any change arms a debounce, and after DEBOUNCE_S of quiet the whole
 folder is pushed with `fused canvas push --canvas <name>` — which REPLACES
-the remote UDF set. To keep that replace from clobbering concurrent
-workbench edits, the watcher also keeps a BASE snapshot from the last sync
-point (per-file md5s in <canvases_root>/.sync/<name>.json — outside the
-clone so `pull --force` can't delete it) plus the last-seen REMOTE manifest
-(collection.last_updated + per-UDF server body hashes, fetched by the
+the remote UDF set. Every PULL_POLL_S the remote manifest is probed
+(collection.last_updated + per-UDF server body hashes, via the
 _fused_canvas_manifest.py shim; hashes are only ever compared
-server-vs-server, never against local files). Every PULL_POLL_S — clean OR
-dirty — the manifest is probed; if the remote moved: clean clone → CLI
-`pull --force` (as before); dirty clone → MERGE: download the zip
-(_fused_canvas_zip.py shim) and apply per file against the base — local
-untouched → remote wins (including remote deletes), local changed → local
-wins, local deleted → stays deleted (the push propagates it). The same
-probe+merge runs right before every push, so a push never blindly replaces
-a remote that moved since the last sync. Known blind window: an edit
-landing on the remote between push-complete and the post-push re-probe is
-absorbed into the new baseline (server hashes aren't computable locally) —
-deliberate, converges on the next workbench save. With an external
-FUSED_RENDER_FUSED_BIN there is no interpreter for the shims; sync degrades
-to the previous behavior (zip `pull --dry-run` poll only while clean,
-local-wins wholesale push). Pushes are serialized per canvas by
-construction (one thread) and the fingerprint is re-taken right after clone
-so the pull's own writes never echo into a push. `push_seq`/`pull_seq`/
-`merge_seq` increment on each successful push/clean-pull/merge, surfaced in
-status for observability/tests — the workspace page doesn't act on them.
+server-vs-server). If the remote moved since the last sync point the watcher
+does what a hosted workbench tab does when it notices the server changed: it
+STOPS WRITING THE SERVER (`server_stale` is set, the auto-push is held, the
+manual push refuses with the list of what changed) and the canvas page shows
+"Server changes · Pull". Nothing is pulled or merged on its own. Local edits
+— embed snapshots, Claude's files — keep landing on disk meanwhile.
 
-Three stability guards on top of the merge (D339): (1) ECHO GUARD — a probed
-remote whose per-UDF hashes exactly match a sync point this watcher already
-superseded (kept in a small history ring, ECHO_WINDOW_S) is a stale writer
-(e.g. a browser tab autosaving pre-push state over a fresh push); it is never
-pulled down — a push is queued to re-assert local. (2) TRASH — every file a
-merge or clean force-pull overwrites or deletes is first copied to
-.sync/trash/<name>/<timestamp>/, pruned to the newest _TRASH_MAX snapshots,
-so no sync decision is ever unrecoverable. (3) VALIDATION GATE — after a
-merge applies remote files, `fused canvas validate` runs on the clone; a
-per-file merge can mix canvas.toml from one side with source files from the
-other and break cross-file invariants, and a failing result rolls the merge
-back file-by-file (clone stays dirty, push re-asserts local) instead of
-wedging the push in a permanent validation error.
+PULL (`_SyncManager.pull`, the page's button / POST sync/pull) brings the
+remote in: clean clone → CLI `pull --force` (clone snapshot to trash first);
+dirty clone → MERGE: download the zip (_fused_canvas_zip.py shim) and apply
+against the sync point BASE (per-file md5s + the compact rows of canvas.toml,
+in <canvases_root>/.sync/<name>.json — outside the clone so `pull --force`
+can't delete it). Source files merge per file: local untouched → remote wins
+(including remote deletes), local changed → local wins, local deleted →
+stays deleted. canvas.toml — the one file every writer touches — merges PER
+NODE (canvas_snapshot.merge_toml): a row only one side changed takes that
+side, both → field-wise with local winning a tie, a node new on the remote
+arrives with its file. The held push then ships the merged folder. The same
+probe+merge guard runs right before every push as a last line of defence.
+With an external FUSED_RENDER_FUSED_BIN there is no interpreter for the
+shims; sync degrades to a `pull --dry-run` probe (stale detection only) and a
+wholesale `pull --force` on Pull. Pushes are serialized per canvas by
+construction (one thread) and the fingerprint is re-taken right after a pull
+so its own writes never echo into a push. `push_seq`/`pull_seq`/`merge_seq`
+increment on each successful push/pull/merge, surfaced in status.
+
+Two guards on top of the merge: (1) TRASH — every file a merge or force-pull
+overwrites or deletes is first copied to .sync/trash/<name>/<timestamp>/,
+pruned to the newest _TRASH_MAX snapshots, so no sync decision is ever
+unrecoverable. (2) VALIDATION GATE — after a merge applies remote files,
+`fused canvas validate` runs on the clone; a merge can still mix sides in a
+way that breaks a cross-file invariant, and a failing result rolls the merge
+back file-by-file (clone stays dirty, Pull can be retried) instead of
+wedging the push in a permanent validation error. (The former ECHO GUARD —
+a history of superseded remote manifests used to refuse pulling a stale
+tab's re-save of pre-push state — is gone: it defended a push that raced a
+stale tab, and the push is now held whenever the remote moved.)
 
 No import of anything under fused_render.server (server includes this router —
 keep it acyclic); the X-Fused guard is duplicated locally, same as other
@@ -83,6 +85,7 @@ import zipfile
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
+from fused_render import canvas_snapshot
 from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
 
 logger = logging.getLogger(__name__)
@@ -108,14 +111,6 @@ SCAN_INTERVAL_S = 1.0
 # Remote-change poll cadence (a `pull --dry-run` CLI call, so much slower
 # than the local fingerprint walk). Only runs while the local clone is clean.
 PULL_POLL_S = 10.0
-# A remote state that exactly matches a sync point we already superseded is a
-# STALE WRITER (e.g. a browser tab autosaving pre-push state over a fresh
-# push), not a new edit — for this long after the sync point was superseded,
-# such an echo is re-pushed over instead of pulled down. Past the window a
-# matching state is treated as a deliberate revert and wins normally.
-ECHO_WINDOW_S = 300.0
-# Superseded sync points kept for echo detection.
-_HISTORY_MAX = 5
 # Snapshots kept per canvas in .sync/trash before pulls/merges overwrite or
 # delete local files. Oldest pruned beyond this.
 _TRASH_MAX = 20
@@ -138,12 +133,14 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 # watcher's own legs are what hold this lock, and they finish in seconds
 # outside a stuck network call.
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
+# How long /api/canvases/snapshot waits on _op_lock before answering 409.
+SNAPSHOT_LOCK_WAIT_S = 1.0
 
 # Fused environment the canvases feature targets. One knob drives BOTH the
 # workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
 # variable it reads) so the canvas the iframe shows is the same one the local
-# clone syncs against. Prod is the default; set FUSED_RENDER_WORKBENCH_ENV=
-# unstable to point canvases back at the unstable environment.
+# clone syncs against. Unstable is the default for now (fusedcli.workbench_env
+# says why); set FUSED_RENDER_WORKBENCH_ENV=prod to target production.
 # FUSED_RENDER_WORKBENCH_URL still overrides the iframe URL alone.
 # Resolved in fusedcli.workbench_env because the `fused` wrapper handed to
 # Claude sessions bakes in the same default (D334) — one knob, one reader.
@@ -708,10 +705,13 @@ A watcher in the fused-render app syncs this folder continuously:
   REPLACES the remote UDF set (deletes propagate). Before pushing it probes
   the remote and merges concurrent workbench edits in, per file. It is
   HELD while you are working — see "Publishing your work" below.
-- **Auto-pull**: every ~10s it checks the remote; workbench edits are
-  pulled down (clean clone) or merged per file (dirty clone — a file only
-  you changed keeps your version; only they changed gets theirs; both →
-  yours wins).
+- **Server changes**: every ~10s it checks the remote. If someone edited
+  the canvas in the hosted workbench meanwhile, the sync STOPS pushing (like
+  a workbench tab that notices the server changed) and the canvas view shows
+  "Server changes · Pull". A push you request is refused with the list of
+  what changed until the user pulls. The pull merges: a file only you changed
+  keeps your version, only they changed gets theirs, and canvas.toml merges
+  per node so their new nodes arrive next to your moves.
 
 ## Publishing your work
 
@@ -742,8 +742,8 @@ Push when a change set is COHERENT (e.g. a rename: the `.py` file *and* its
   unrecoverably.
 - `fused workbench canvas pull --force` overwrites the WHOLE folder with
   remote: any unpushed local edits are lost, and it deletes this CLAUDE.md /
-  .fusedignore (the watcher re-seeds them on its own pulls). You rarely need
-  it — the auto-pull already brings remote edits down.
+  .fusedignore (the watcher re-seeds them on its own pulls). Do not use it to
+  answer "server changes": the Pull in the canvas view merges instead.
 - After a manual pull, the watcher may see the changed files as fresh
   local edits and push them back — expected, mention it if surprising.
 
@@ -768,10 +768,9 @@ protection described above.
 ## Files can change between change sets — trust the filesystem, not your memory
 
 The user may be editing this same canvas in the hosted workbench while you
-work. Their edits do NOT land here while you are mid-change-set: the sync
-holds its downstream pull for as long as your session is running. They land
-at the next pull — which is also step 1 of your push — so this folder is
-stable *within* a change set and can differ *between* them. Consequences:
+work. Their edits do NOT land here on their own: the sync only notices them
+("Server changes") and waits for the user to pull. So this folder is stable
+while you work and can change when they pull. Consequences:
 
 - Re-read a file (Read tool) before editing it if you have pushed since you
   last looked, or if you are not sure. Your memory can be stale across a
@@ -1250,10 +1249,11 @@ class _SyncManager:
         self.last_pull_at: float | None = None
         # True for the duration of a force-pull, three-way merge, or its
         # validation-failure rollback — set/cleared around the two _run() call
-        # sites, both already under _op_lock. Read by the workspace lock
-        # (canvas-lock-lib.ts "pulling" hold): the clone's files are moving on
-        # disk right now, which is exactly the condition the push side of the
-        # lock exists for too.
+        # sites, both already under _op_lock. Surfaced in status() as
+        # `pulling`. It used to drive the workspace
+        # lock's "pulling" hold; under embed v3 there is no lock (the embed no
+        # longer writes the server, see canvas_snapshot.py), and the flag is
+        # informational — a snapshot arriving meanwhile waits on _op_lock.
         self._pulling = False
         self.merge_seq = 0
         # Sync-point state for the three-way merge: per-file md5s of the
@@ -1265,10 +1265,12 @@ class _SyncManager:
         self._base_path = os.path.join(canvases_root(), ".sync", f"{name}.json")
         self._base_files: dict[str, str] | None = None
         self._remote: dict | None = None
-        # Superseded remote manifests ({"udfs": ..., "at": rotation time}),
-        # newest last — the echo-guard's memory (see ECHO_WINDOW_S).
-        self._history: list[dict] = []
-        self.echo_seq = 0
+        # The compact rows of canvas.toml at the sync point (merge_toml's base).
+        self._base_toml: dict | None = None
+        # SERVER_STALE: the remote moved since the sync point and nothing has
+        # been pulled yet — {since, udfs: [{slug, kind}], layout}. While set
+        # the auto-push is held and the manual push refuses; cleared by pull().
+        self.server_stale: dict | None = None
         self.merge_rollback_seq = 0
         # Cached answer to "is a Claude session live in this clone?" — see
         # AGENT_LIVE_CACHE_S. Written by whichever of the watcher thread and a
@@ -1276,6 +1278,54 @@ class _SyncManager:
         # the plain-attribute rule the class docstring states still holds.
         self._agent_run_id = ""
         self._agent_checked_at = 0.0
+        # Embed v3 snapshots (canvas_snapshot.py): the last compact state this
+        # manager applied from the embedded workbench, per hydration
+        # generation, and the (gen, seq) pairs already applied so a replayed
+        # snapshot (the embed re-posts its unacked queue after a reload) is
+        # acked again without a second write. Both reset when `gen` moves:
+        # a new generation means the embed re-hydrated from the server, so
+        # its base is whatever the clone held at that push, not our memory.
+        self._embed_gen = 0
+        # EMBED_VIEW: the compact state the embed is believed to hold — the
+        # `prev` of the snapshot leg and the base of the delta leg
+        # (canvas_snapshot.py, "the disk → embed leg"). Its rows are always
+        # DISK rows: the whole disk reading after an acked delta, disk
+        # restricted to the nodes the embed sent after its own snapshot
+        # (canvas_snapshot.held_view — never wider than what the frame holds,
+        # or a node Claude added on disk would be "known", skipped by the next
+        # delta and deleted by the next snapshot). None = nothing known: the
+        # next delta is a full state and the next snapshot falls back to its
+        # own `base_nodes`.
+        self._embed_view: dict | None = None
+        # The disk revision the view mirrors; a delta ack for an older rev is
+        # stale (a snapshot write re-read disk since) and is ignored.
+        self._view_rev = 0
+        # DISK_REV: bumped whenever the clone's fingerprint moves — a scan
+        # tick, a snapshot write, a merge — or the remote manifest's ids do
+        # (a push gave a new node its server id; the ids live outside the
+        # clone, so no file moves). The page polls it (status) and asks for a
+        # delta when it advances.
+        self.disk_rev = 0
+        self._rev_key: tuple | None = None
+        # WATCHER_EPOCH: identifies THIS manager to the page. A replacement
+        # manager (stop/start, server restart) counts disk_rev from 0 again
+        # and knows nothing of the frame; the page cannot read that off a
+        # counter that may land on the very number the old one left (a quiet
+        # canvas sits at 1), so it resets its high-water mark when this moves.
+        self.watcher_epoch = f"{int(time.time() * 1000)}-{id(self) & 0xFFFF:04x}"
+        # _note_disk runs on the watcher thread (its scan) and on request
+        # threads (under _op_lock): the compare-and-bump needs its own lock.
+        self._rev_lock = threading.Lock()
+        # Disk readings handed to the page, by rev, until the frame acks.
+        self._delta_views: dict[int, dict] = {}
+        self._embed_applied: dict[tuple[int, int], dict] = {}
+        # Highest seq applied in this generation. A snapshot is the embed's
+        # FULL state, so one that arrives after a later seq (a 409 retry that
+        # lost the race, a replayed queue) is superseded: it is acked as
+        # applied and never touches disk — applied, it would read the newer
+        # snapshot's nodes as deletions and trash their files.
+        self._embed_max_seq = -1
+        self.snapshot_seq = 0
         self._load_base()
         self._fingerprint = self._take_fingerprint()
         # A fresh manager (server restart, self-heal after a dropped
@@ -1321,7 +1371,7 @@ class _SyncManager:
                 # merge base too. The remote manifest is dropped (not
                 # probed here — request thread, no CLI call): the watcher
                 # re-adopts a fresh probe as baseline on its next poll.
-                self._base_files = self._take_file_hashes()
+                self._set_sync_point()
                 self._rotate_remote(None)
                 self._save_base()
                 # A stale "pending"/"error" from before the pause would
@@ -1418,19 +1468,16 @@ class _SyncManager:
             self._base_files = files
         if isinstance(remote, dict) and isinstance(remote.get("udfs"), dict):
             self._remote = remote
-        history = data.get("history")
-        if isinstance(history, list):
-            self._history = [
-                h for h in history
-                if isinstance(h, dict) and isinstance(h.get("udfs"), dict)
-            ][-_HISTORY_MAX:]
+        base_toml = data.get("base_toml")
+        if isinstance(base_toml, dict) and isinstance(base_toml.get("nodes"), dict):
+            self._base_toml = base_toml
 
     def _save_base(self) -> None:
         payload = json.dumps(
             {
                 "files": self._base_files,
                 "remote": self._remote,
-                "history": self._history,
+                "base_toml": self._base_toml,
             }
         )
         tmp = self._base_path + ".tmp"
@@ -1457,41 +1504,16 @@ class _SyncManager:
         }
 
     def _rotate_remote(self, new_remote: dict | None) -> None:
-        """Replace the manifest baseline, remembering the superseded one for
-        echo detection. Every _remote assignment after construction goes
-        through here so the history can't silently miss a sync point."""
-        old = self._remote
-        if old is not None and isinstance(old.get("udfs"), dict):
-            old_hashes = self._udf_hashes(old.get("udfs"))
-            new_hashes = (
-                None if new_remote is None else self._udf_hashes(new_remote.get("udfs"))
-            )
-            if old_hashes != new_hashes:
-                self._history.append({"udfs": old_hashes, "at": time.time()})
-                del self._history[:-_HISTORY_MAX]
+        """Replace the manifest baseline (the sync point's view of the
+        remote). Every _remote assignment after construction goes through
+        here, except the poll leg's first-look adopt (_poll_remote), which
+        must not clear a stale flag; a rotation means the remote is no longer
+        stale."""
         self._remote = new_remote
-
-    def _is_stale_echo(self, probe: dict) -> bool:
-        """True when the probed remote state is byte-identical (per-UDF
-        BODY HASHES — never timestamps, see _udf_hashes) to a sync point
-        this watcher already superseded within ECHO_WINDOW_S — the
-        signature of a stale writer (a browser tab autosaving pre-push
-        state over a fresh push). Layout-only echoes can't be told apart
-        from real layout edits (collection.last_updated is a fresh stamp
-        either way) — only the destructive UDF-level revert is caught,
-        which is the data-loss case."""
-        cur = self._remote
-        if cur is None:
-            return False
-        probe_hashes = self._udf_hashes(probe.get("udfs"))
-        if probe_hashes == self._udf_hashes(cur.get("udfs")):
-            return False
-        now = time.time()
-        return any(
-            now - entry.get("at", 0.0) <= ECHO_WINDOW_S
-            and self._udf_hashes(entry.get("udfs")) == probe_hashes
-            for entry in self._history
-        )
+        self.server_stale = None
+        # New ids reach the frame through the delta leg, which only wakes on
+        # a disk_rev move: count a manifest rotation as one.
+        self._note_disk()
 
     def _new_trash_dir(self) -> str | None:
         """A fresh timestamped folder under .sync/trash/<name>/ for the files
@@ -1593,9 +1615,26 @@ class _SyncManager:
 
     @staticmethod
     def _remote_moved(prev: dict, cur: dict) -> bool:
-        return prev.get("last_updated") != cur.get("last_updated") or prev.get(
-            "udfs"
-        ) != cur.get("udfs")
+        """Did the server's canvas change between two manifests? The
+        collection stamp (layout/dashboard saves) and each UDF's hash and
+        stamp — NOT its `id`. The id is identity, not an edit: it is absent
+        from a baseline saved by a build before the shim emitted ids and
+        from a UDF the push has only just created, and read as a move it
+        would hold every push behind a "server changed" chip that lists
+        nothing (_note_server_stale compares hashes and finds no change)."""
+        if prev.get("last_updated") != cur.get("last_updated"):
+            return True
+
+        def edits(udfs) -> dict:
+            if not isinstance(udfs, dict):
+                return {}
+            return {
+                slug: ((info.get("hash"), info.get("last_updated"))
+                       if isinstance(info, dict) else info)
+                for slug, info in udfs.items()
+            }
+
+        return edits(prev.get("udfs")) != edits(cur.get("udfs"))
 
     def _download_zip(self, collection_id: str) -> zipfile.ZipFile | None:
         cli = fused_cli()
@@ -1627,8 +1666,10 @@ class _SyncManager:
         publishes it); local deleted a file that's still in the bundle → it
         stays deleted (the push propagates the delete). Files in base but
         gone from the bundle are remote deletes: removed locally only if
-        untouched. Without a base (unknown provenance) nothing is applied —
-        local wins wholesale, exactly the pre-merge behavior.
+        untouched. EXCEPT canvas.toml, which both sides changing merges per
+        node (canvas_snapshot.merge_toml against `_base_toml`). Without a
+        base (unknown provenance) nothing is applied — local wins wholesale,
+        exactly the pre-merge behavior.
 
         Every file the merge overwrites or deletes is first copied into a
         .sync/trash snapshot. After applying, the clone is validated
@@ -1690,6 +1731,30 @@ class _SyncManager:
             )
             if local_hash == remote_hash:
                 new_base[rel] = remote_hash  # converged — refresh the base
+                continue
+            if (rel == "canvas.toml" and local_bytes is not None
+                    and local_hash != base.get(rel) and remote_hash != base.get(rel)):
+                # Both sides moved the one file every writer touches: merge it
+                # per NODE (canvas_snapshot.merge_toml), not per file — a
+                # per-file "local wins" here is what drops a teammate's new
+                # node row whenever the clone has any unpushed layout edit.
+                merged = self._merge_toml_bytes(local_bytes, data)
+                if merged is None:
+                    continue  # unparsable on a side: local wins, as for any file
+                if merged != local_bytes:
+                    begin()
+                    if trash is None:
+                        trash = self._new_trash_dir()
+                    self._backup_to(trash, rel, local_bytes)
+                    try:
+                        with open(dest, "wb") as fh:
+                            fh.write(merged)
+                    except OSError:
+                        continue
+                    rollback.append((rel, local_bytes, base.get(rel, _MISSING)))
+                # The base for the NEXT three-way is the remote's rows: what
+                # differs from them on disk is this clone's unpushed edits.
+                new_base[rel] = remote_hash
                 continue
             if local_hash is None:
                 if rel in base:
@@ -1759,36 +1824,40 @@ class _SyncManager:
                     new_base[rel] = prev_base  # type: ignore[assignment]
             self.merge_rollback_seq += 1
             rollback = []
+            rolled_back = True
+        else:
+            rolled_back = False
         self._base_files = new_base
-        self._rotate_remote(probe)
+        if not rolled_back:
+            remote_toml = bundle.get("canvas.toml")
+            if remote_toml is not None:
+                try:
+                    import rtoml
+                    self._base_toml = canvas_snapshot.rows_of_doc(
+                        rtoml.loads(remote_toml.decode("utf-8", "replace")))
+                except Exception:  # noqa: BLE001 — keep the previous base
+                    pass
+            # The remote is reconciled: it is the new sync point, and the
+            # canvas is no longer server-stale.
+            self._rotate_remote(probe)
+        # Rolled back: the remote baseline stays at the sync point, so the
+        # next probe re-detects the move and the chip stays up — the held
+        # push must NOT ship local over a remote change the merge could not
+        # take. (It used to advance to avoid re-attempting every poll; with an
+        # explicit Pull there is no loop to avoid.)
         self._save_base()
         if rollback:
             self.merge_seq += 1
             self.last_pull_at = time.time()
         return True
 
-    def _baseline_pending(self) -> bool:
-        """Whether the next downstream poll would do nothing but ADOPT a
-        baseline — the one part of the leg that still runs while a Claude session
-        is live (see the watcher's hold).
-
-        `_remote is None` is the whole condition on the shim path: `_poll_remote`
-        takes its first-look branch and returns before it can touch a file. The
-        shim check is not decoration — under an external CLI the legacy leg never
-        sets `_remote` at all, so a bare "`_remote` is None" would read as
-        "harmless first look" forever and leave that leg's force-pull ungated.
-        """
-        if self._remote is not None:
-            return False
-        cli = fused_cli()
-        return cli is not None and _shim_manifest_command(cli) is not None
-
     @contextlib.contextmanager
     def _pull_writes(self):
         """Scopes the window in which a downstream leg is actually WRITING the
-        clone's files — the workspace lock (canvas-lock-lib.ts) holds the
-        embedded workbench read-only for exactly this, and for the same reason a
-        push does.
+        clone's files — reported by status() as `pulling`. The workspace lock
+        that used to hold the embedded workbench read-only for it is gone
+        (embed v3, canvas_snapshot.py); an embed snapshot arriving during the
+        window queues behind _op_lock and applies onto the pulled files.
 
         Yields a `begin()` marker rather than arming on entry, because
         probe-and-decide does not stop at the leg boundary. `_poll_remote` gets
@@ -1813,14 +1882,19 @@ class _SyncManager:
             self._pulling = False
 
     def _poll_remote(self, probe: dict) -> None:
-        """Shim-backed poll leg: runs clean or dirty (unlike the legacy
-        dry-run poll). Clean → CLI force pull; dirty → merge."""
+        """Shim-backed poll leg: adopt a baseline on the first look; after
+        that only DETECT a remote move (`server_stale`). Read-only."""
         if self._remote is None:
             # First look (fresh manager, or right after clone/push dropped
             # it): adopt as baseline. A remote edit made before this first
             # look is indistinguishable from the sync point — same blind
             # spot the pre-merge sync had; converges on the next remote save.
             self._remote = probe
+            # The manifest's ids reach the frame through the delta leg, which
+            # wakes on disk_rev alone (see _note_disk): a push whose probe
+            # failed dropped the manifest, and this re-adoption is where the
+            # new server ids come back.
+            self._note_disk()
             # No merge base yet (first open after upgrade — no .sync file)
             # and the watcher believes the clone is clean: local == remote
             # is the steady state, so the disk IS the sync point. Without
@@ -1828,47 +1902,27 @@ class _SyncManager:
             # local-wins wholesale. A dirty clone is left alone — hashing
             # it would bless unpushed edits as "already synced".
             if self._base_files is None and self._dirty_since is None and self.push_state == "idle":
-                self._base_files = self._take_file_hashes()
+                self._set_sync_point()
             self._save_base()
             return
         if not self._remote_moved(self._remote, probe):
+            self.server_stale = None
             return
-        if self._is_stale_echo(probe):
-            # A stale writer resurrected a superseded revision — never pull
-            # it down (that's how a fresh local file gets deleted); re-assert
-            # local by queueing a push instead. _remote is NOT advanced: the
-            # push's own success re-probe re-baselines past the echo.
-            self.echo_seq += 1
-            if self._dirty_since is None:
-                self._dirty_since = time.time()
-            if self.push_state == "idle":
-                self.push_state = "pending"
-            return
-        if self._dirty_since is not None:
-            with self._pull_writes() as begin_writes:
-                self._merge_remote(probe, begin_writes=begin_writes)
-            return
-        if self.push_state != "idle":
-            return
-        # Clean clone: re-check that a local edit didn't land while the
-        # probe ran (local wins — it'll merge on the next poll), then let
-        # the CLI replace the folder wholesale.
-        if self._take_fingerprint() != self._fingerprint:
-            return
-        cli = fused_cli()
-        if cli is None:
-            return
-        # Past every decision now, and about to overwrite the clone: this is
-        # where the lock's `pulling` window starts, not at the top of the leg.
-        # Armed at once here, unlike the merge's — `_force_pull`'s first act is
-        # the clone snapshot, i.e. a write.
-        with self._pull_writes() as begin_writes:
-            begin_writes()
-            self._force_pull(probe, cli)
+        # The remote moved: do what a hosted tab does — stop writing the
+        # server and say so. Nothing is pulled or merged here; pull() is the
+        # user's (or the session's) explicit act.
+        self._note_server_stale(probe)
 
-    def _force_pull(self, probe: dict, cli) -> None:
-        """The clean-clone branch of `_poll_remote`, after it has committed to
-        writing: CLI force pull, post-pull divergence recheck, re-baseline.
+    def _force_pull(self, probe: dict, cli) -> str | None:
+        """pull()'s shim-backed wholesale branch (clean clone, or dirty with no
+        merge base), after it has committed to writing: CLI force pull,
+        post-pull divergence recheck, re-baseline.
+
+        Returns None when the pull LANDED, else the user-facing reason it did
+        not. pull() must not report success on a pull that never ran: the
+        remote baseline only rotates here, so a failed `--force` leaves
+        `server_stale` set (the push stays held, correctly) and the Pull
+        button has to say why instead of answering ok with the banner still up.
 
         Split out only so `_pull_writes` can wrap exactly the writing part —
         every line here either writes the clone or records what the write did.
@@ -1884,10 +1938,12 @@ class _SyncManager:
                 encoding="utf-8", errors="replace",
                 env=_cli_env(cli),
             )
-        except (subprocess.TimeoutExpired, OSError):
-            return
+        except subprocess.TimeoutExpired:
+            return "pulling the canvas from the server timed out; try again"
+        except OSError as exc:
+            return f"could not run the fused CLI to pull the canvas: {exc}"
         if applied.returncode != 0:
-            return
+            return cli_error(applied.stderr or applied.stdout, "fused canvas pull failed")
         self.pull_seq += 1
         self.last_pull_at = time.time()
         # Did a local edit land WHILE --force was running? That window cannot
@@ -1938,10 +1994,11 @@ class _SyncManager:
             if self.push_state != "error":
                 self.push_state = "pending"
             self._save_base()
-            return
+            return None
         self._dirty_since = None
-        self._base_files = self._take_file_hashes()
+        self._set_sync_point()
         self._save_base()
+        return None
 
     def _push(self) -> None:
         self.push_state = "pushing"
@@ -1959,9 +2016,6 @@ class _SyncManager:
             if (
                 probe is not None
                 and self._remote_moved(self._remote, probe)
-                # A stale-writer echo must NOT be merged in — the push about
-                # to run replaces it with local, which is the cure.
-                and not self._is_stale_echo(probe)
             ):
                 if not self._merge_remote(probe):
                     # The remote moved and could not be reconciled (zip
@@ -1990,6 +2044,7 @@ class _SyncManager:
         self._fingerprint = self._take_fingerprint()
         self._dirty_since = None
         base_snapshot = self._take_file_hashes()
+        base_toml_snapshot = self._toml_rows()
         try:
             proc = subprocess.run(
                 [*cli.command, "workbench", "canvas", "push", self.dir, "--canvas", self.name],
@@ -2034,30 +2089,18 @@ class _SyncManager:
         # absorbed — the documented blind window). Probe failure → None →
         # the next poll adopts a fresh baseline.
         self._base_files = base_snapshot
+        self._base_toml = base_toml_snapshot
         self._rotate_remote(self._probe_remote())
         self._save_base()
 
     def _pull_if_remote_changed(self) -> None:
-        """Legacy downstream leg — external-CLI fallback only (no manifest
-        shim). The shim-backed path is _poll_remote/_merge_remote.
-
-        Only ever called with a CLEAN local clone (no unpushed edits), where
-        local == remote is the steady state — so any diff a `pull --dry-run`
-        reports means the REMOTE moved (edits made in the hosted workbench),
-        and a `pull --force` brings them down. A local edit landing between
-        the dry-run and the force pull is re-checked right before applying;
-        when in doubt the local side wins (it will push, which replaces the
-        remote set wholesale — last writer wins, local preferred).
-
-        A local edit can still land WHILE `--force` itself is running — that
-        window can't be closed with fingerprints (the pull's own writes and a
-        concurrent local edit both just look like "the file changed"), so we
-        ask the CLI instead: a `--dry-run` right after applying compares local
-        against remote directly. Still up to date → clean, as before. Still a
-        diff → something moved local away from what we just pulled; mark
-        dirty (not clean) so the normal debounced push resolves it, local
-        wins. A concurrent edit to a file the pull itself overwrote is lost
-        either way — this only recovers the untouched-file case.
+        """Legacy downstream probe — external-CLI fallback only (no manifest
+        shim), CLEAN clones only (the caller gates it). A `pull --dry-run`
+        that reports a diff then means the REMOTE moved (local == remote is
+        the steady state at a sync point); that marks the canvas
+        server-stale, nothing more. pull() applies it on request
+        (`_apply_legacy_pull`), whose post-pull `--dry-run` recheck catches a
+        local edit that landed while `--force` ran (local wins, goes dirty).
         """
         cli = fused_cli()
         if cli is None:
@@ -2077,18 +2120,21 @@ class _SyncManager:
         # canvas_pull.py's up-to-date sentinel; anything else is a diff.
         if "already up to date" in (probe.stdout or ""):
             return
-        # Re-check: did a local edit land while the dry-run ran? Local wins.
-        if self._take_fingerprint() != self._fingerprint:
-            return
-        # Committed to writing now — everything above was probe-and-decide, and
-        # marking `pulling` for that made the lock engage on polls that turned
-        # out to be no-ops.
-        with self._pull_writes() as begin_writes:
-            begin_writes()
-            self._apply_legacy_pull(cli, base)
+        # The remote moved (no shim, so no per-UDF detail): say so; pull()
+        # brings it down when asked.
+        self._note_server_stale(None)
 
-    def _apply_legacy_pull(self, cli, base: list) -> None:
-        """The writing half of `_pull_if_remote_changed` — see `_pull_writes`."""
+    def _apply_legacy_pull(self, cli, base: list) -> str | None:
+        """pull()'s external-CLI branch (no manifest shim): the wholesale
+        `pull --force` that `_pull_if_remote_changed` only detects the need
+        for — see `_pull_writes`.
+
+        Returns None when the pull LANDED, else the user-facing reason it did
+        not, exactly as `_force_pull`. This leg matters more: with no shim
+        `_probe_remote()` answers None, so `_push()`'s pre-push merge guard
+        never gets a manifest to compare. `server_stale` is the ONLY thing standing
+        between a dirty clone and a wholesale push over the remote changes, so
+        pull() may clear it only when this returns None."""
         try:
             applied = subprocess.run(
                 [*cli.command, *base, "--force"],
@@ -2096,10 +2142,12 @@ class _SyncManager:
                 encoding="utf-8", errors="replace",
                 env=_cli_env(cli),
             )
-        except (subprocess.TimeoutExpired, OSError):
-            return
+        except subprocess.TimeoutExpired:
+            return "pulling the canvas from the server timed out; try again"
+        except OSError as exc:
+            return f"could not run the fused CLI to pull the canvas: {exc}"
         if applied.returncode != 0:
-            return
+            return cli_error(applied.stderr or applied.stdout, "fused canvas pull failed")
         self.pull_seq += 1
         self.last_pull_at = time.time()
         # Did local diverge from remote again during the force pull? If so,
@@ -2124,6 +2172,7 @@ class _SyncManager:
         self._dirty_since = time.time() if still_diff else None
         if still_diff and self.push_state != "error":
             self.push_state = "pending"
+        return None
 
     def _run(self) -> None:
         while not self.stop_event.wait(SCAN_INTERVAL_S):
@@ -2144,6 +2193,7 @@ class _SyncManager:
             # AGENT_LIVE_CACHE_S seconds, so it does not add a scan per tick.
             self.agent_run_id()
             current = self._take_fingerprint()
+            self._note_disk(current)
             if current != self._fingerprint:
                 self._fingerprint = current
                 self._dirty_since = time.time()
@@ -2164,48 +2214,23 @@ class _SyncManager:
                 # the moment no run is live a still-dirty clone pushes on the
                 # next tick. A session that never pushes therefore degrades to
                 # exactly today's behaviour — never to a lost change set.
-                if not self.agent_run_id():
+                # And HELD while the remote moved under us (`server_stale`):
+                # a hosted tab does not save over a server it has not looked
+                # at, and neither does this one. Pull() clears it.
+                if not self.agent_run_id() and self.server_stale is None:
                     with self._op_lock:
                         self._push()
                     continue
             if time.time() - self._last_pull_poll >= PULL_POLL_S:
-                # HOLD the whole downstream leg while a Claude session is live in
-                # this clone — the same signal and the same backstop shape as the
-                # auto-push hold above.
-                #
-                # This supersedes the earlier rule (D354's note here) that the
-                # remote-poll leg must keep running through a session so workbench
-                # edits keep arriving. It must not: the clone's files moving under
-                # a session mid-change-set is the thing the seeded CLAUDE.md and
-                # the workbench lock both exist to avoid, and every pull was also
-                # a `pulling` window the lock engaged on, so a chat of any length
-                # flickered the embedded workbench read-only every PULL_POLL_S.
-                # The accepted cost, stated rather than hidden: a workbench edit
-                # made during a session no longer arrives mid-chat. It arrives at
-                # the next pull — which is also step 1 of the push — where D338's
-                # per-file three-way merge folds it in, local winning ties. So a
-                # same-file collision surfaces at PUSH time instead of at edit
-                # time; nothing is lost, the timing changes.
-                #
-                # Backstop, exactly like the push hold: `_last_pull_poll` is NOT
-                # stamped when we skip, so the leg runs on the very next tick
-                # after the session ends rather than up to PULL_POLL_S later. And
-                # `_remote` is NOT rotated while held — forgetting a remote move
-                # that happened during the hold would mean never applying it.
-                #
-                # EXEMPT: the first look, which only ADOPTS a baseline
-                # (`_poll_remote`'s `self._remote is None` branch) and writes
-                # nothing to the clone. Gating that too would leave `_base_files`
-                # None for the whole session, and every later merge would then
-                # degrade to local-wins wholesale.
-                if self.agent_run_id() and not self._baseline_pending():
-                    continue
+                # The downstream leg only DETECTS now (server_stale); it writes
+                # nothing, so it runs through a live Claude session too — the
+                # old hold existed because this leg pulled files from under a
+                # session mid-change-set. pull() is explicit and under the lock.
                 self._last_pull_poll = time.time()
                 cli = fused_cli()
                 if cli is not None and _shim_manifest_command(cli) is not None:
-                    # Manifest probe: runs clean OR dirty (the merge makes a
-                    # dirty-time remote change safe to fold in). Probing is
-                    # read-only, so it stays outside _op_lock.
+                    # Manifest probe: runs clean OR dirty, and is read-only, so
+                    # it stays outside _op_lock.
                     probe = self._probe_remote()
                     if probe is not None:
                         with self._op_lock:
@@ -2216,23 +2241,395 @@ class _SyncManager:
                             # read-only flicker for a pull that never happened.
                             self._poll_remote(probe)
                 elif self._dirty_since is None and self.push_state == "idle":
-                    # External CLI (no shims): legacy dry-run poll, clean only.
+                    # External CLI (no shims): legacy dry-run probe, detect
+                    # only, and CLEAN clones only — a `pull --dry-run` cannot
+                    # tell a local edit from a remote move, so on a dirty
+                    # clone it would read every unpushed edit as "server
+                    # changed" and hold the push forever.
                     with self._op_lock:
                         self._pull_if_remote_changed()
+
+    # -- server-stale and the explicit pull -----------------------------------
+
+    def _toml_rows(self) -> dict | None:
+        """The compact rows of the clone's canvas.toml, or None."""
+        try:
+            return canvas_snapshot.rows_of_doc(
+                canvas_snapshot._load_toml(os.path.join(self.dir, "canvas.toml")))
+        except Exception:  # noqa: BLE001 — no toml, or unparsable: no base rows
+            return None
+
+    def _set_sync_point(self) -> None:
+        """Disk IS the sync point: file hashes and canvas.toml rows alike."""
+        self._base_files = self._take_file_hashes()
+        self._base_toml = self._toml_rows()
+
+    def _merge_toml_bytes(self, local: bytes, remote: bytes) -> bytes | None:
+        """canvas.toml merged per node against the sync point's rows, as the
+        bytes to write; `local` itself when the merge changes nothing (the
+        caller compares identity, so no rewrite); None when a side does not
+        parse (local wins, as for any file)."""
+        try:
+            import rtoml
+            local_doc = rtoml.loads(local.decode("utf-8", "replace"))
+            remote_doc = rtoml.loads(remote.decode("utf-8", "replace"))
+            merged, _info = canvas_snapshot.merge_toml(self._base_toml, local_doc, remote_doc)
+            if canvas_snapshot.rows_of_doc(merged) == canvas_snapshot.rows_of_doc(local_doc):
+                return local
+            return canvas_snapshot._dump_toml(merged).encode("utf-8")
+        except Exception:  # noqa: BLE001 — rtoml's own error types
+            return None
+
+    def _note_server_stale(self, probe: dict | None) -> None:
+        """The remote moved since the sync point: record what, keep `since`
+        from the first sighting. `probe` None is the legacy leg (no detail)."""
+        udfs: list[dict] = []
+        layout = True
+        if probe is not None and self._remote is not None:
+            before = self._udf_hashes(self._remote.get("udfs"))
+            after = self._udf_hashes(probe.get("udfs"))
+            for slug in sorted(set(before) | set(after)):
+                if slug not in before:
+                    udfs.append({"slug": slug, "kind": "added"})
+                elif slug not in after:
+                    udfs.append({"slug": slug, "kind": "removed"})
+                elif before[slug] != after[slug]:
+                    udfs.append({"slug": slug, "kind": "changed"})
+            layout = probe.get("last_updated") != self._remote.get("last_updated")
+        since = (self.server_stale or {}).get("since") or time.time()
+        self.server_stale = {"since": since, "udfs": udfs, "layout": layout}
+
+    def pull(self) -> dict:
+        """Bring the remote into the clone, on request (the page's Pull, or a
+        session answering the manual push's refusal). Under _op_lock.
+
+        Clean clone → CLI `pull --force` (trash snapshot first). Dirty clone →
+        the three-way merge (per file; canvas.toml per node); the merged
+        folder stays dirty so the held push ships it. No shims (external CLI)
+        → wholesale `pull --force` either way, trash snapshot first when
+        dirty. Clears `server_stale` on success.
+
+        Only the merge KEEPS local edits. The two wholesale legs — external
+        CLI, and a dirty shim clone with no sync point to merge against —
+        replace them with the server's files; the trash snapshot is then the
+        only copy. That is deliberate rather than a refusal: on those legs
+        nothing else ever clears `server_stale` (the legacy detector and the
+        sync point are both clean-only, and push 409s while it is set), so a
+        refused pull would leave the clone with no exit at all. The banner and
+        the push route's 409 say so instead of promising the edits are kept.
+
+        `ok: True` means the pull LANDED. A CLI that times out, cannot start
+        or exits non-zero answers `ok: False` with its reason and leaves
+        `server_stale` set, so the push stays held over a remote it never
+        brought down.
+        """
+        cli = fused_cli()
+        if cli is None:
+            return {"ok": False, "error": "the fused CLI is not available"}
+        dirty = self._dirty_since is not None or self._take_fingerprint() != self._fingerprint
+        error: str | None = None
+        if _shim_manifest_command(cli) is not None:
+            probe = self._probe_remote()
+            if probe is None:
+                return {"ok": False, "error": "could not read the canvas from the server"}
+            if dirty and self._base_files is not None:
+                rollbacks_before = self.merge_rollback_seq
+                with self._pull_writes() as begin_writes:
+                    if not self._merge_remote(probe, begin_writes=begin_writes):
+                        return {"ok": False,
+                                "error": "could not download the canvas from the server; try again"}
+                if self.merge_rollback_seq != rollbacks_before:
+                    return {"ok": False,
+                            "error": "merging the server's changes would break the canvas "
+                                     "(fused canvas validate failed); nothing was changed. "
+                                     "Publish or revert your local edits, then pull again"}
+                self.pull_seq += 1
+                self.last_pull_at = time.time()
+                _seed_clone_claude_files(self.dir, self.name)
+                # The merged folder carries this clone's unpushed edits: it
+                # stays dirty and the (no longer held) push ships it.
+                self._fingerprint = self._take_fingerprint()
+                self._dirty_since = time.time()
+                if self.push_state != "error":
+                    self.push_state = "pending"
+            else:
+                # Clean — or dirty with no sync point to merge against, where
+                # the server wins and the trash keeps what it overwrote.
+                # `_force_pull` rotates the baseline (clearing `server_stale`)
+                # only on the path where the pull landed.
+                with self._pull_writes() as begin_writes:
+                    begin_writes()
+                    error = self._force_pull(probe, cli)
+        else:
+            base = ["workbench", "canvas", "pull", self.name, "-o", self.dir]
+            if dirty:
+                self._snapshot_clone()
+            with self._pull_writes() as begin_writes:
+                begin_writes()
+                error = self._apply_legacy_pull(cli, base)
+            # No manifest here, so no rotation to clear it: clear by hand, and
+            # ONLY once the pull landed — this flag is the legacy leg's sole
+            # guard against the watcher pushing local over the remote.
+            if error is None:
+                self.server_stale = None
+        # Even a failed `--force` may have half-written the clone before it
+        # timed out, so the embed's disk leg still has to look.
+        self._note_disk()
+        if error is not None:
+            return {"ok": False, "error": error}
+        return {"ok": True}
+
+    def _embed_enter(self, gen: int, seq: int) -> dict | None:
+        """Bookkeeping shared by apply_snapshot / apply_rename, under _op_lock.
+        Returns the ack to answer with when nothing is to be written: the one
+        already given for this (gen, seq), or a no-op ack for a seq older than
+        one already applied in this generation. None means: apply, then record
+        the ack with _embed_record."""
+        if gen != self._embed_gen:
+            self._embed_gen = gen
+            # A new generation: the embed re-hydrated from the SERVER, so what
+            # it holds is no longer any disk reading. Its hello brings a full
+            # delta that re-seeds the view.
+            self._embed_view = None
+            self._embed_applied = {}
+            self._embed_max_seq = -1
+        done = self._embed_applied.get((gen, seq))
+        if done is not None:
+            return done
+        if seq < self._embed_max_seq:
+            ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                   "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
+            self._embed_applied[(gen, seq)] = ack
+            return ack
+        return None
+
+    def _embed_record(self, gen: int, seq: int, ack: dict) -> dict:
+        self._embed_max_seq = max(self._embed_max_seq, seq)
+        self.snapshot_seq += 1
+        self._embed_applied[(gen, seq)] = ack
+        # Bound the dedupe memory: the embed's queue is never deep.
+        if len(self._embed_applied) > 64:
+            for key in sorted(self._embed_applied)[:-32]:
+                del self._embed_applied[key]
+        return ack
+
+    # -- the disk → embed leg (deltas) ---------------------------------------
+
+    def _note_disk(self, fingerprint: dict | None = None) -> None:
+        """Advance `disk_rev` when the clone's fingerprint or the remote ids
+        moved since the last look. Separate from `_fingerprint` (the push
+        debounce's baseline, which pulls and merges re-take so their own
+        writes do not push): the delta leg wants to see EVERY move, its own
+        included."""
+        fp = fingerprint if fingerprint is not None else self._take_fingerprint()
+        key = (fp, self._remote_ids())
+        with self._rev_lock:
+            if key != self._rev_key:
+                self._rev_key = key
+                self.disk_rev += 1
+
+    def _remote_ids(self) -> dict[str, str]:
+        """slug → server id from the last remote manifest (the shim emits
+        ids; an older shim or the external CLI gives none)."""
+        udfs = (self._remote or {}).get("udfs")
+        if not isinstance(udfs, dict):
+            return {}
+        return {slug: info["id"] for slug, info in udfs.items()
+                if isinstance(info, dict) and isinstance(info.get("id"), str) and info["id"]}
+
+    def _refresh_view_after_write(self, names, *, edges: list, ids: dict,
+                                  bodies: dict, embed_rows: dict | None) -> None:
+        """After a snapshot or rename landed on disk: the embed holds disk
+        restricted to `names`, the nodes it is known to hold, with its own
+        `edges`, `ids` and `bodies` (canvas_snapshot.held_view). `embed_rows`
+        are the rows the embed itself sent (what its next snapshot's key
+        deletions are measured against). Under _op_lock (the callers are).
+        `_view_rev` is set to the current rev in every case (the rev itself
+        only moves when the write changed a file), so a delta cut BEFORE a
+        write that changed something and acked after it is read as stale:
+        the frame applied that delta and then wrote on top of it, and this
+        view already describes the result."""
+        self._note_disk()
+        self._view_rev = self.disk_rev
+        try:
+            disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
+        except Exception as exc:  # noqa: BLE001 — a view we cannot read is no view
+            logger.warning("canvas %s: could not re-read the clone after a write: %s",
+                           self.name, exc)
+            self._embed_view = None
+            return
+        self._embed_view = canvas_snapshot.held_view(
+            disk, names, edges=edges, ids=ids, bodies=bodies, embed_rows=embed_rows)
+
+    def cut_delta(self, full: bool) -> dict:
+        """diff(disk, embed_view) for the page to post to the frame. Under
+        _op_lock, so a snapshot write never lands between the toml read and
+        the file reads. Returns `{rev, base_rev, ops, full}`; `{rev, held}`
+        when the clone is mid-write (a row whose source file is not there
+        yet, an unparsable toml) — the page asks again shortly. Empty ops
+        against a known view mean the embed already holds disk: the view
+        moves here and nothing is posted.
+
+        The rev is taken BEFORE the disk read. Claude writes without
+        _op_lock, so a write can land between the two; noted first, such a
+        write is either in `disk` already or bumps the rev on the next scan
+        and a follow-up delta repairs the view. Noted after, the delta would
+        carry the pre-write content under the post-write rev and the scan
+        would see nothing left to report."""
+        self._note_disk()
+        rev = self.disk_rev
+        try:
+            disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
+        except FileNotFoundError:
+            return {"rev": rev, "held": "the clone has no canvas.toml yet"}
+        except Exception as exc:  # noqa: BLE001 — rtoml's own error types
+            return {"rev": rev, "held": f"canvas.toml unreadable: {exc}"}
+        if disk["missing"]:
+            return {"rev": rev,
+                    "held": "source file missing for " + ", ".join(disk["missing"][:3])}
+        view = None if full else self._embed_view
+        ops = canvas_snapshot.diff_views(disk, view)
+        if view is not None and not ops:
+            self._embed_view = self._adopt(disk)
+            self._view_rev = rev
+            return {"rev": rev, "base_rev": rev, "ops": [], "full": False}
+        self._delta_views[rev] = disk
+        for old in sorted(self._delta_views)[:-8]:
+            del self._delta_views[old]
+        return {"rev": rev, "base_rev": None if view is None else self._view_rev,
+                "ops": ops, "full": view is None}
+
+    def ack_delta(self, rev: int, ok: bool) -> dict:
+        """The frame applied (or refused) the delta cut at `rev`."""
+        view = self._delta_views.pop(rev, None)
+        if not ok:
+            # The frame holds something we cannot describe: start over with a
+            # full state on its next hello or the next disk move.
+            self._embed_view = None
+            return {"ok": True, "rev": rev, "reset": True}
+        if view is None or rev < self._view_rev:
+            # Superseded: a snapshot write re-read disk since this was cut.
+            # The frame still APPLIED this delta, so the bodies it carried
+            # are bodies the frame holds: fill the ones the current view
+            # could not vouch for (a snapshot after a gen change starts with
+            # note texts only), or every cut under an autosave stream would
+            # re-send all code while each snapshot keeps staling the acks.
+            cur = self._embed_view
+            if view is not None and cur is not None:
+                bodies = dict(cur.get("bodies", {}))
+                for name, text in view.get("bodies", {}).items():
+                    if name in cur["nodes"] and name not in bodies:
+                        bodies[name] = text
+                cur["bodies"] = bodies
+            return {"ok": True, "rev": rev, "stale": True}
+        self._embed_view = self._adopt(view)
+        self._view_rev = rev
+        return {"ok": True, "rev": rev}
+
+    def _adopt(self, disk: dict) -> dict:
+        """A disk reading becoming the view keeps what the reading cannot
+        carry: the current view's `embed_rows` (a delta changes what the frame
+        SHOWS, not what it last SENT, and that baseline is what apply_snapshot
+        measures a dropped embed-owned key against) and its `ids` for nodes
+        the manifest gives none (the external CLI never does, a shim manifest
+        may lag): the frame holds those ids regardless, and apply_snapshot's
+        missed-rename detection reads an un-hinted rename with no id as a
+        delete."""
+        cur = self._embed_view or {}
+        out = dict(disk)
+        if cur.get("embed_rows"):
+            out["embed_rows"] = cur["embed_rows"]
+        held_ids = cur.get("ids") or {}
+        if held_ids:
+            ids = dict(disk.get("ids", {}))
+            for name in disk["nodes"]:
+                if name not in ids and name in held_ids:
+                    ids[name] = held_ids[name]
+            out["ids"] = ids
+        return out
+
+    def apply_snapshot(self, gen: int, seq: int, body: dict) -> dict:
+        """Fold one embed snapshot into the clone (canvas_snapshot.apply_snapshot)
+        under _op_lock, so it never interleaves with a push or a pull writing
+        the same files. Returns the ack the page relays to the frame.
+
+        The watcher's fingerprint is deliberately NOT re-taken here: a write
+        that changed canvas.toml is a local edit like any other, and the next
+        scan arming the debounce is exactly how it reaches the server."""
+        stale = self._embed_enter(gen, seq)
+        if stale is not None:
+            return stale
+        new = canvas_snapshot.compact_state(body)
+        trash: list[str | None] = [None]
+
+        def backup(rel: str, data: bytes) -> None:
+            if trash[0] is None:
+                trash[0] = self._new_trash_dir()
+            self._backup_to(trash[0], rel, data)
+
+        prev = self._embed_view
+        result = canvas_snapshot.apply_snapshot(self.dir, new, prev, backup=backup)
+        # The embed now holds what it just sent: disk rows for ITS nodes only
+        # (a disk-only node is Claude's and still owed to it as a delta), its
+        # edge set and ids, the note texts it sent over the texts it held
+        # before. Code bodies it held come from the previous view; with none
+        # (a fresh generation, a reset) they are left unknown and the next
+        # delta re-sends them once, cheaper than a full state that would also
+        # re-seat every node the embed is mid-way through dragging.
+        bodies = dict(prev.get("bodies", {})) if prev else {}
+        bodies.update(new["bodies"])
+        self._refresh_view_after_write(new["nodes"], edges=new["edges"], ids=new["ids"],
+                                       bodies=bodies, embed_rows=new["nodes"])
+        ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
+               "upserted": result["upserted"], "deleted": result["deleted"],
+               "created": result["created"], "push_seq": self.push_seq}
+        return self._embed_record(gen, seq, ack)
+
+    def apply_rename(self, gen: int, seq: int, frm: str, to: str,
+                     file_from: str | None, file_to: str | None) -> dict:
+        """The workbench's rename hint (canvas_snapshot.apply_rename), under
+        _op_lock like a snapshot, acked the same way. The previous snapshot is
+        renamed too, so the snapshot that follows is diffed against the new
+        name rather than read as delete + add."""
+        stale = self._embed_enter(gen, seq)
+        if stale is not None:
+            return stale
+        result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
+        renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
+        if renamed is None:
+            # Nothing known before the rename, nothing known after: the next
+            # delta is a full state. `_view_rev` follows the rev as in the
+            # refresh.
+            self._note_disk()
+            self._view_rev = self.disk_rev
+        else:
+            self._refresh_view_after_write(
+                renamed["nodes"], edges=renamed.get("edges", []), ids=renamed.get("ids", {}),
+                bodies=renamed.get("bodies", {}), embed_rows=renamed.get("embed_rows"))
+        ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
+               "renamed": result["renamed"], "moved": result["moved"],
+               "push_seq": self.push_seq}
+        return self._embed_record(gen, seq, ack)
 
     def status(self) -> dict:
         return {
             "name": self.name,
             "dir": self.dir,
             "watching": not self.stop_event.is_set(),
-            "push_state": self.push_state,
+            # "held": dirty, but the remote moved and nothing is pushed until
+            # the user pulls (the canvas page's chip). Internally still
+            # "pending" so the backstop resumes the moment pull() clears it.
+            "push_state": ("held" if self.server_stale is not None and self.push_state == "pending"
+                           else self.push_state),
             "push_seq": self.push_seq,
             "last_push_at": self.last_push_at,
+            "disk_rev": self.disk_rev,
+            "watcher_epoch": self.watcher_epoch,
+            "server_stale": self.server_stale,
             "pull_seq": self.pull_seq,
             "last_pull_at": self.last_pull_at,
             "merge_seq": self.merge_seq,
             "merge_rollback_seq": self.merge_rollback_seq,
-            "echo_seq": self.echo_seq,
             "error": self.last_error,
             "error_detail": list(self.error_detail),
             "fix_active": self.active_fix_run_id is not None,
@@ -2315,6 +2712,121 @@ def api_canvases_sync_stop(body: dict = Body(...), x_fused: str | None = Header(
     return {"ok": True, "stopped": manager is not None}
 
 
+@router.post("/api/canvases/snapshot")
+def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Apply one embedded-workbench snapshot to the clone (embed v3).
+
+    The workspace page relays the frame's `fused-embed-snapshot {gen, seq,
+    body}` here and posts the answer back as `-applied` / `-rejected`. The
+    embed never writes the server itself under v3 — this is how its canvas
+    edits reach disk, and the watcher's push is how they reach the server
+    (canvas_snapshot.py's docstring has the model).
+
+    Refuses with 409 `busy` (same shape as sync/push) when another sync leg
+    holds the lock for longer than MANUAL_PUSH_LOCK_WAIT_S; the embed keeps
+    the snapshot queued and re-posts on its next change or reload. A
+    malformed snapshot or a clone with no readable canvas.toml is a 400
+    `rejected` with the reason — the embed drops that one and the user sees
+    the reason on the chip.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    gen, seq, snapshot = body.get("gen"), body.get("seq"), body.get("body")
+    rename = body.get("rename")
+    if not isinstance(gen, int) or not isinstance(seq, int):
+        return _error("'gen' and 'seq' must be integers")
+    if isinstance(rename, dict):
+        frm, to = rename.get("from"), rename.get("to")
+        if not isinstance(frm, str) or not isinstance(to, str) or not frm or not to:
+            return _error("'rename' needs 'from' and 'to'")
+        for key in ("file_from", "file_to"):
+            val = rename.get(key)
+            if val is not None and (not isinstance(val, str) or "/" in val):
+                return _error(f"'rename.{key}' must be a basename")
+    elif not isinstance(snapshot, dict):
+        return _error("'body' must be an object (or 'rename' a hint)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return JSONResponse(
+            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    # A short wait, not sync/push's 5 s: the page retries a 409 on its own
+    # (SNAPSHOT_BUSY_WINDOW_MS), and holding the request open for the length of
+    # a pull would only delay the ack past the chip's "reconnecting" line.
+    if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
+        return _busy(
+            "a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        with manager.pause_lock:
+            if manager.pause_count > 0:
+                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+        try:
+            if isinstance(rename, dict):
+                return JSONResponse(manager.apply_rename(
+                    gen, seq, rename["from"], rename["to"],
+                    rename.get("file_from"), rename.get("file_to")))
+            return JSONResponse(manager.apply_snapshot(gen, seq, snapshot))
+        except FileNotFoundError:
+            return JSONResponse(
+                {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
+                 "error": "the clone has no canvas.toml yet"}, status_code=400)
+        except OSError as exc:
+            # A file write failed (disk full, a vanished folder): a 409 keeps
+            # the snapshot queued on the embed, where a 400 would drop it.
+            logger.warning("canvas %s: snapshot %s/%s write failed: %s", name, gen, seq, exc)
+            return _busy(f"could not write the snapshot: {exc}")
+        except Exception as exc:  # noqa: BLE001 — the reason goes to the chip
+            logger.warning("canvas %s: snapshot %s/%s rejected: %s", name, gen, seq, exc)
+            return JSONResponse(
+                {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
+                 "error": f"{type(exc).__name__}: {exc}"}, status_code=400)
+    finally:
+        manager._op_lock.release()
+
+
+@router.get("/api/canvases/delta")
+def api_canvases_delta(name: str = "", full: str = ""):
+    """The delta that takes the embed from what it holds to what disk holds
+    (embed v3, canvas_snapshot.py's delta section). The workspace page asks
+    when the status poll shows `disk_rev` advanced, and with `full=1` when
+    the frame says hello after hydrating; it posts the answer to the frame as
+    `fused-embed-delta` and relays the ack to /api/canvases/delta/ack."""
+    if not _NAME_RE.fullmatch(name or ""):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return JSONResponse(
+            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
+        return _busy("a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        return JSONResponse(manager.cut_delta(full == "1"))
+    finally:
+        manager._op_lock.release()
+
+
+@router.post("/api/canvases/delta/ack")
+def api_canvases_delta_ack(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name, rev, ok = body.get("name"), body.get("rev"), body.get("ok", True)
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    if not isinstance(rev, int):
+        return _error("'rev' must be an integer")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return JSONResponse({"ok": False, "code": "no_watcher"}, status_code=409)
+    with manager._op_lock:
+        return JSONResponse(manager.ack_delta(rev, bool(ok)))
+
+
 @router.post("/api/canvases/sync/push")
 def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Push this canvas NOW, through the watcher's own _push().
@@ -2387,6 +2899,33 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
     # push_state == "error") never lights up for a race there is nothing to fix.
     if manager.push_state == "pushing":
         return _busy("a push is already running for this canvas")
+    if manager.server_stale is not None:
+        # What a hosted tab's save does while the server moved: refuse until
+        # the user pulls. Carries the list so a session can say what changed.
+        changed = ", ".join(
+            f"{u['slug']} ({u['kind']})" for u in manager.server_stale.get("udfs", [])
+        ) or "the canvas layout"
+        # Promise "kept" only where pull() merges: a manifest shim AND a sync
+        # point. The external-CLI leg and a dirty clone with no sync point pull
+        # wholesale (see pull()), and a session told its edits survive would
+        # pull and lose them — so name the trash copy instead.
+        cli = fused_cli()
+        trash = os.path.join(canvases_root(), ".sync", "trash", name)
+        if cli is None or _shim_manifest_command(cli) is None:
+            kept = ("this fused CLI cannot merge, so the pull REPLACES your local "
+                    f"edits with the server's files; a copy is kept under {trash}")
+        elif manager._base_files is None:
+            kept = ("there is no sync point to merge against, so the pull REPLACES "
+                    f"your local edits with the server's files; a copy is kept under {trash}")
+        else:
+            kept = "your edits are merged with them and kept"
+        return JSONResponse(
+            {"error": "the canvas changed on the server since the last sync "
+                      f"({changed}); pull first — the Pull button in the canvas view "
+                      f"brings those changes into this folder ({kept}), "
+                      "then push again",
+             "code": "server_changed", "server_stale": manager.server_stale},
+            status_code=409)
     if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
         return _busy(
             "a sync operation is in flight for this canvas; try again in a moment")
@@ -2433,6 +2972,48 @@ def _fix_prompt(name: str, detail: list[str], error: str | None) -> str:
         "any remaining errors straight back to you. Do not change the canvas "
         "name, and do not use --no-validate (it is refused here anyway)."
     )
+
+
+@router.post("/api/canvases/sync/pull")
+def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Pull the server's canvas into the clone NOW — the canvas page's
+    "Server changes · Pull" (the hosted workbench's pull, for this tab).
+    Clean clone: force pull. Dirty: the three-way merge, canvas.toml per
+    node, local edits kept; the held push then ships the merged folder —
+    except with no shim or no sync point, where the pull is wholesale and the
+    trash holds the overwritten edits (see _SyncManager.pull). Returns the
+    full status with `ok`, false (plus `error`) when the pull did not land."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return JSONResponse(
+            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    if manager.push_state == "pushing":
+        return _busy("a push is running for this canvas; try again in a moment")
+    if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+        return _busy(
+            "a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        with manager.pause_lock:
+            if manager.pause_count > 0:
+                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+        result = manager.pull()
+    finally:
+        manager._op_lock.release()
+    status = manager.status()
+    status["ok"] = bool(result.get("ok"))
+    if not result.get("ok"):
+        # Its own field: `error` is the PUSH's last_error, and the page keeps
+        # this answer as its sync state, so a pull failure written there
+        # would wear the push-failed banner until the next poll.
+        status["pull_error"] = result.get("error")
+    return status
 
 
 @router.post("/api/canvases/fix")
@@ -2516,7 +3097,9 @@ def api_canvases_sync_status(name: str = ""):
     manager = _sync_manager(name, create=False)
     if manager is None:
         return {"name": name, "watching": False, "push_state": "idle", "push_seq": 0,
-                "last_push_at": None, "pull_seq": 0, "last_pull_at": None,
+                "last_push_at": None, "disk_rev": 0, "watcher_epoch": None,
+                "server_stale": None,
+                "pull_seq": 0, "last_pull_at": None,
                 "error": None, "error_detail": [], "dir": _canvas_dir(name),
                 "fix_active": False,
                 # No watcher means nothing this page can be waiting on, so the

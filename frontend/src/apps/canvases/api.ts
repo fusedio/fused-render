@@ -46,9 +46,28 @@ export interface SyncStatus {
   name: string;
   dir: string;
   watching: boolean;
-  push_state: "idle" | "pending" | "pushing" | "error";
+  /** "held": the clone has unpushed edits but the server moved since the
+   *  last sync (see `server_stale`); nothing is pushed until the user pulls. */
+  push_state: "idle" | "pending" | "pushing" | "error" | "held";
   push_seq: number;
   last_push_at: number | null;
+  /** The clone's disk revision: moves whenever the folder's fingerprint moves
+   *  (a Claude edit, a merge, an embed snapshot landing). The workspace asks
+   *  for a delta (getDelta) when it advances. Older servers omit it. */
+  disk_rev?: number;
+  /** Identifies the watcher behind disk_rev; a new one counts from 0 again.
+   *  null when no watcher runs. Older servers omit it. */
+  watcher_epoch?: string | null;
+  /** Set on a pull answer that failed (`ok: false`); `error` is the push's. */
+  pull_error?: string | null;
+  /** The canvas changed on the server since the last sync point and has not
+   *  been pulled: what a hosted workbench tab shows as "Server changes". The
+   *  watcher stops pushing while this is set; `pullCanvas` clears it. */
+  server_stale?: {
+    since: number;
+    udfs: { slug: string; kind: "added" | "changed" | "removed" }[];
+    layout: boolean;
+  } | null;
   /** Increments when the watcher pulls remote (workbench-side) changes down. */
   pull_seq: number;
   last_pull_at: number | null;
@@ -101,6 +120,72 @@ export const logout = () => postJson<{ ok: boolean }>("/api/canvases/logout", {}
 
 export const cloneCanvas = (name: string) =>
   postJson<{ ok: boolean; dir: string }>("/api/canvases/clone", { name });
+
+/** Embed v3: one workbench snapshot → the clone's canvas.toml
+ *  (canvas_snapshot.py). Throws with `.status` 409 while a sync leg holds
+ *  the clone, 400 when the snapshot is rejected. */
+export const applySnapshot = (
+  name: string,
+  gen: number,
+  seq: number,
+  body: Record<string, unknown>,
+) =>
+  postJson<{ ok: boolean; gen: number; seq: number; changed: boolean; push_seq: number }>(
+    "/api/canvases/snapshot",
+    { name, gen, seq, body },
+  );
+
+/** Embed v3: the workbench's rename hint, same endpoint, same ack shape. */
+export const applyRename = (
+  name: string,
+  gen: number,
+  seq: number,
+  rename: { from: string; to: string; file_from?: string | null; file_to?: string | null },
+) =>
+  postJson<{ ok: boolean; gen: number; seq: number; changed: boolean; push_seq: number }>(
+    "/api/canvases/snapshot",
+    { name, gen, seq, rename },
+  );
+
+/** One op of a canvas delta (canvas_snapshot.diff_views): the frame applies
+ *  them in order. Opaque to this page beyond `op`. */
+export interface DeltaOp {
+  op: "upsert" | "rename" | "delete" | "edges" | "canvas";
+  [key: string]: unknown;
+}
+
+export interface CanvasDelta {
+  /** The disk revision this delta brings the frame to. */
+  rev: number;
+  /** The revision the frame is assumed to hold; null for a full state. */
+  base_rev?: number | null;
+  ops?: DeltaOp[];
+  full?: boolean;
+  /** Set (instead of ops) while the clone is mid-write; ask again shortly. */
+  held?: string;
+}
+
+/** Embed v3: diff(disk, what the frame holds), for `fused-embed-delta`.
+ *  `full` asks for the whole state (the frame just hydrated). Throws with
+ *  `.status` 409 while a sync leg holds the clone. */
+export const getDelta = (name: string, full: boolean) =>
+  getJson<CanvasDelta>(
+    `/api/canvases/delta?name=${encodeURIComponent(name)}&full=${full ? 1 : 0}`,
+  );
+
+/** The frame applied (`ok`) or refused a delta: the host's picture of the
+ *  frame moves to that revision, or is dropped so the next delta is full. */
+export const ackDelta = (name: string, rev: number, ok: boolean) =>
+  postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", { name, rev, ok });
+
+/** Pull the server's canvas into the clone now (the "Server changes · Pull"
+ *  chip). Clean clone: force pull; dirty: three-way merge, canvas.toml per
+ *  node, local edits kept. Returns the full status with `ok`. */
+export const pullCanvas = (name: string) =>
+  postJson<SyncStatus & { ok: boolean; error?: string | null }>(
+    "/api/canvases/sync/pull",
+    { name },
+  );
 
 export const startSync = (name: string) =>
   postJson<SyncStatus>("/api/canvases/sync/start", { name });

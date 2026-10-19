@@ -4242,6 +4242,266 @@ def test_a_stale_ok_entry_does_not_outrank_a_still_parked_run(client,
     assert _by_key(client)["sess-a"]["status"] == "needs_attention"
 
 
+# ------------------------------------- a reply that ended with work still going
+# A turn that ends with a `run_in_background` Bash (or a background Agent, or a
+# Monitor) still running leaves an idle registry row and a finished transcript,
+# while the session host stays up for that work. The STATUS reads the messages
+# as ever (`done`) — that work may be a dev server that never ends — and the row
+# says it separately, as `background_jobs` (`_hosted_runs`). Staged as the
+# host leaves it: `host.json`, the CLI's `pid`, `out.jsonl`, and the CLI's own
+# registry file.
+
+
+def _dead_pid():
+    import subprocess
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
+
+
+class _HostedAgent(_FakeAgent):
+    """`_FakeAgent` plus the real agent's `_host_alive`, so a staged
+    `host.json` is read exactly as the host's own callers read it."""
+
+    def _host_alive(self, run_dir):
+        from fused_render.claude_agent import agent_module
+        return agent_module()._host_alive(run_dir)
+
+
+def _bg_row(tasks):
+    """The CLI's background list; a task is an id, or `(id, description)`."""
+    return {"type": "system", "subtype": "background_tasks_changed",
+            "tasks": [{"task_id": t} if isinstance(t, str)
+                      else {"task_id": t[0], "description": t[1]}
+                      for t in tasks]}
+
+
+def _append(run, row):
+    with open(run / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row) + "\n")
+
+
+def _stage_hosted(runs_dir, name, session_id, tasks, host_pid,
+                  cli_pid=None):
+    """A run whose reply has ENDED (a trailing `result`), with the CLI's
+    background list as `tasks`, a `host.json` naming `host_pid`, and the CLI's
+    own pid in `run_dir/pid`."""
+    d = _stage_run(runs_dir, name, session_id)
+    rows = [{"type": "system", "subtype": "init", "session_id": session_id},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "started it in the background"}]}},
+            _bg_row(tasks),
+            {"type": "result", "subtype": "success"}]
+    (d / "out.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    if host_pid is not None:
+        (d / "host.json").write_text(json.dumps({"pid": host_pid}))
+    (d / "pid").write_text(str(os.getpid() if cli_pid is None else cli_pid))
+    return d
+
+
+@pytest.fixture()
+def registry(tmp_path, monkeypatch):
+    """Claude Code's live registry, read by the real watcher: `hold(sid, pid)`
+    writes the CLI's `sessions/<pid>.json` (status idle — the reply is over)
+    and ticks it in."""
+    sessions = tmp_path / "claude-sessions"
+    sessions.mkdir()
+    monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(sessions))
+    tasks_watch.reset()
+
+    def hold(sid, pid=None):
+        pid = os.getpid() if pid is None else pid
+        (sessions / f"{pid}.json").write_text(json.dumps(
+            {"pid": pid, "sessionId": sid, "cwd": "/p", "status": "idle"}))
+        tasks_watch.tick()
+
+    yield hold
+    tasks_watch.reset()
+
+
+def _replied(projects_dir):
+    """A hand-typed chat whose reply is in and long over."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("sleep 30 in the background", T9, uuid="u1"),
+        _assistant("Started it.", T9),
+    ])
+
+
+def _install_hosted(monkeypatch, runs_dir, per_run=None, alive=()):
+    agent = _HostedAgent(runs_dir, per_run or {}, alive)
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: agent)
+    return agent
+
+
+def test_background_work_is_a_caption_not_a_status(
+        client, projects_dir, parked, monkeypatch, registry):
+    """Status stays `done` — a `run_in_background` dev server never ends, and
+    a row that could never leave In Progress would never fire anything waiting
+    on `done` — and the row says the work is there."""
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "done"
+    assert task["live"] is False
+    # Exactly what the row's Stop hands the agent's `task_stop`: the run dir's
+    # name and the CLI's own task id.
+    assert task["background_jobs"] == {
+        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
+
+
+def test_background_work_under_a_dead_host_does_not_count(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The host's `background_tasks_changed` row outlives the host, and a
+    stale row must not caption the task for ever."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], _dead_pid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+
+    # …and no host.json at all is the same answer.
+    (run / "host.json").unlink()
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+
+
+def test_a_live_host_pid_is_not_enough_without_its_claude(
+        client, projects_dir, parked, monkeypatch, registry):
+    """PID REUSE: `host.json` survives a reboot or a SIGKILL and an unrelated
+    process can own its pid. The run's own `claude` has to be in the live
+    registry under this session too."""
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid(),
+                  cli_pid=_dead_pid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")  # held by another pid than the run's
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+
+
+def test_the_caption_clears_when_the_background_list_empties(
+        client, projects_dir, parked, monkeypatch, registry):
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    assert _by_key(client)["sess-a"]["background_jobs"] is not None
+
+    # Read incrementally: unrelated rows in between change nothing…
+    _append(run, {"type": "system", "subtype": "task_progress"})
+    assert _by_key(client)["sess-a"]["background_jobs"] is not None
+    # …and the newest list decides.
+    _append(run, _bg_row([]))
+    task = _by_key(client)["sess-a"]
+    assert task["background_jobs"] is None
+    assert task["status"] == "done"
+
+
+def test_background_jobs_name_every_job_and_follow_the_newest_list(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The badge counts and names what the CLI's NEWEST list holds — "2 jobs
+    running" with both descriptions — and a Stop that ends one of them (the
+    CLI re-sends the list without it) drops it to one."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a",
+                        [("b1", "npm run dev"), ("b2", "sleep 900")],
+                        os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    jobs = _by_key(client)["sess-a"]["background_jobs"]
+    assert jobs == {"count": 2, "run_id": "r-1",
+                    "jobs": [{"id": "b1", "title": "npm run dev"},
+                             {"id": "b2", "title": "sleep 900"}]}
+
+    _append(run, _bg_row([("b1", "npm run dev")]))
+    jobs = _by_key(client)["sess-a"]["background_jobs"]
+    assert jobs["count"] == 1
+    assert [j["id"] for j in jobs["jobs"]] == ["b1"]
+
+
+def test_a_cold_read_of_a_long_run_parses_only_its_tail(
+        client, projects_dir, parked, monkeypatch, registry):
+    """A background Agent streams rows into `out.jsonl` for hours, and a cold
+    memo (first sight, a server restart) used to parse the whole file on the
+    request thread. Only the tail is read now, from the first whole row — the
+    CLI re-sends its full list on every change, so the newest one is there."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["old_job"], os.getpid())
+    for i in range(200):
+        _append(run, {"type": "system", "subtype": "task_progress",
+                      "description": f"line {i} " + "x" * 80})
+    _append(run, _bg_row([("b1", "npm run dev")]))
+    monkeypatch.setattr(tasks_mod, "_BG_COLD_TAIL", 4096)
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    jobs = _by_key(client)["sess-a"]["background_jobs"]
+    assert jobs["jobs"] == [{"id": "b1", "title": "npm run dev"}]
+    offset, held = tasks_mod._bg_memo[str(run)]
+    assert offset == (run / "out.jsonl").stat().st_size
+    assert held == (("b1", "npm run dev"),)
+
+
+def test_a_cold_read_stops_at_its_tail(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The bound's accepted cost, pinned so it is a decision: a list older than
+    the tail is not seen on a cold read (a full parse would have found
+    `old_job`). Only reachable when one job streams more than the tail since
+    the CLI last changed its list."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["old_job"], os.getpid())
+    for i in range(200):
+        _append(run, {"type": "system", "subtype": "task_progress",
+                      "description": f"line {i} " + "x" * 80})
+    monkeypatch.setattr(tasks_mod, "_BG_COLD_TAIL", 4096)
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+
+
+def test_a_parked_card_still_outranks_background_work(
+        client, projects_dir, parked, monkeypatch, registry):
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir,
+                    {"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                              "input": {"command": "rm -rf build"}}]},
+                    alive={"r-1"})
+    registry("sess-a")
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "needs_attention"
+    assert task["attention"] == {"tool": "Bash", "summary": "rm -rf build"}
+    assert task["background_jobs"] is not None
+
+
+def test_the_watcher_rings_on_a_background_list_change_only(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The CLI can empty its background list and stay idle — no registry
+    rewrite, no transcript growth — so the watcher reads the new bytes of the
+    runs the listing found holding work. A background Agent streams rows into
+    the same file every second, and those must not ring."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    assert _by_key(client)["sess-a"]["background_jobs"] is not None
+    assert str(run) in tasks_watch._bg_runs
+    assert "sess-a" not in tasks_watch.tick()
+
+    _append(run, {"type": "system", "subtype": "task_progress",
+                  "description": "x" * 200})
+    assert "sess-a" not in tasks_watch.tick()
+
+    _append(run, _bg_row([]))
+    gen = tasks_watch.generation()
+    assert "sess-a" in tasks_watch.tick()
+    assert tasks_watch.generation() > gen
+    # Rung once, not every tick.
+    assert "sess-a" not in tasks_watch.tick()
+
+    # The rebuild it triggers sees nothing pending and stops watching.
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+    assert tasks_watch._bg_runs == {}
+
 def test_a_broken_run_says_blocked_and_why(client, projects_dir):
     """The other half of the Blocked lane. The word alone cannot tell a reader
     which button to reach for — Retry for a run that broke, Open for one that is

@@ -136,6 +136,8 @@ EXPECTED_STARTUP = [
     "_startup_tasks_warm",
     "_startup_ai_hub_metadata_refresh",
     "_startup_ai_hub_catalog_refresh",
+    # Event-loop lag gauge + pool/lane snapshots for the Monitor dashboard.
+    "_startup_loop_lag",
     "_startup_resource_trail",
     "_startup_gc_project_venvs",
     # TEMPORARY upgrade shim (legacy_mounts_cleanup.py); a startup hook so lean
@@ -162,6 +164,7 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_background_apps_resurrection",
     "_startup_shutdown_ai",
     "_shutdown_server_json",
+    "_shutdown_loop_lag",
     "_shutdown_resource_trail",
     "_shutdown_captures",
     "_shutdown_ai_workers",

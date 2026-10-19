@@ -5,6 +5,7 @@ import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ShellErrorBoundary } from "@platform/ui/ShellErrorBoundary";
 import { installShellErrorReporter, reportShellError } from "@platform/lib/shell-errors";
 import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
+import { installNetTiming, shellPageIdentity } from "@platform/lib/netTiming";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
@@ -19,6 +20,10 @@ import "./shell.css";
 // own evaluation — or in a lazy chunk, or in a render — is otherwise a blank
 // window that the server log never hears about (lib/shell-errors.ts).
 installShellErrorReporter();
+
+// Browser-side request queue time for the Monitor's Network tab. Collects and
+// beacons only while a dashboard is open (lib/netTiming.ts).
+installNetTiming(() => shellPageIdentity(window.location));
 
 // The preview iframe's injected runtime writes view params via
 // parent.history.replaceState (same history object), which fires no event.

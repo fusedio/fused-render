@@ -46,13 +46,13 @@ def test_executor_child_spawn_disables_fork(tmp_path, monkeypatch):
 
     captured = {}
 
-    real_run = subprocess.run
+    real_popen = subprocess.Popen
 
-    def fake_run(argv, **kw):
+    def fake_popen(argv, **kw):
         captured.update(kw)
-        return real_run(argv, **kw)
+        return real_popen(argv, **kw)
 
-    monkeypatch.setattr(executor.subprocess, "run", fake_run)
+    monkeypatch.setattr(executor.subprocess, "Popen", fake_popen)
     executor.run_python(str(script), {})
     assert captured.get("close_fds") is False, (
         "executor must pass close_fds=False so the child is spawned via "
@@ -232,3 +232,29 @@ def test_ai_reap_kills_a_live_process_only(monkeypatch):
     dead.returncode = 0
     asyncio.run(_server_ai._ai_reap(dead))
     assert killed == {}
+
+
+def test_executor_registers_live_child_pid(tmp_path):
+    """The Monitor names a `_child.py` process from `executor.active_runs()`:
+    the pid is registered while the child runs and gone once it exits."""
+    script = tmp_path / "slow.py"
+    script.write_text(
+        "import os\n"
+        "def main():\n"
+        "    return {'pid': os.getpid()}\n"
+    )
+    assert executor.active_runs() == {}
+    seen = {}
+    real_popen = subprocess.Popen
+
+    class Spy(real_popen):
+        def communicate(self, *a, **kw):
+            seen.update(executor.active_runs())
+            return super().communicate(*a, **kw)
+
+    import unittest.mock as m
+    with m.patch.object(executor.subprocess, "Popen", Spy):
+        out = executor.run_python(str(script), {})
+    assert out.get("ok", True) is not False
+    assert list(seen.values()) == [(str(tmp_path), str(script))]
+    assert executor.active_runs() == {}

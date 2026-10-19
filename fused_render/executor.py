@@ -30,6 +30,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import traceback
 
@@ -330,6 +331,49 @@ def run_python(path: str, params: dict, timeout: float = DEFAULT_TIMEOUT) -> dic
     return result
 
 
+# ---- live runs --------------------------------------------------------------
+# pid -> (app folder, target .py) for every `_child.py` subprocess running right
+# now, so the Monitor can name a run "Run: <app> › <file.py>" instead of the bare
+# `_child.py` the process table shows (sysmon/labels.py `_runs`). Entries are
+# removed the moment the child exits, in `_spawn_child`'s `finally`.
+_ACTIVE_RUNS: dict[int, tuple[str, str]] = {}
+_ACTIVE_RUNS_LOCK = threading.Lock()
+
+
+def active_runs() -> dict[int, tuple[str, str]]:
+    with _ACTIVE_RUNS_LOCK:
+        return dict(_ACTIVE_RUNS)
+
+
+def _spawn_child(argv: list[str], path: str, request: str, *, timeout: float,
+                 **popen_kw) -> subprocess.CompletedProcess:
+    """`subprocess.run(argv, input=request, capture_output=True,
+    timeout=timeout, **popen_kw)`, spelled out with Popen only so the child's pid
+    is known while it runs (to register it in `_ACTIVE_RUNS`). Same semantics as
+    `run`: on a timeout the child is killed and reaped before the error
+    propagates. Popen kwargs (notably `close_fds=False`, see the call site) pass
+    through untouched."""
+    with subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, **popen_kw) as proc:
+        folder = os.path.dirname(os.path.abspath(path))
+        with _ACTIVE_RUNS_LOCK:
+            _ACTIVE_RUNS[proc.pid] = (folder, path)
+        try:
+            try:
+                out, err = proc.communicate(request, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
+            except BaseException:
+                proc.kill()
+                raise
+            return subprocess.CompletedProcess(argv, proc.poll(), out, err)
+        finally:
+            with _ACTIVE_RUNS_LOCK:
+                _ACTIVE_RUNS.pop(proc.pid, None)
+
+
 def _run_python(path: str, params: dict, timeout: float) -> dict:
     if not os.path.isfile(path):
         return _error("FileNotFoundError", f"no such Python file: {path}")
@@ -341,10 +385,10 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
 
     request = json.dumps({"path": path, "params": params or {}})
     try:
-        proc = subprocess.run(
+        proc = _spawn_child(
             [sys.executable, CHILD],
-            input=request,
-            capture_output=True,
+            path,
+            request,
             text=True,
             encoding="utf-8",
             errors="replace",

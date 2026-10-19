@@ -89,6 +89,9 @@ class Sampler:
         self._last_poll = float("-inf")
         self._all_last_poll = float("-inf")
         self._sample_lock = threading.Lock()
+        # Called after every sample the loop takes (1 Hz while watched): the
+        # dashboard's timeline ring is fed from here. Must not block.
+        self.tick_hooks: list = []
         self._reset()
 
     @property
@@ -106,6 +109,7 @@ class Sampler:
         self._history: collections.deque = collections.deque(maxlen=HISTORY_S * 2)
         self._args: dict[tuple[int, int], list[str] | None] = {}
         self._totals: dict = {"cpuPct": None, "memBytes": None}
+        self._claude: dict | None = None
         self._reset_all()
 
     def _reset_all(self) -> None:
@@ -172,6 +176,11 @@ class Sampler:
                 self._running = False
                 return False
         self._safe_sample()
+        for hook in list(self.tick_hooks):
+            try:
+                hook()
+            except Exception:  # noqa: BLE001 — a hook never stops the sampler
+                logger.debug("sysmon: tick hook failed", exc_info=True)
         return True
 
     def _loop(self) -> None:
@@ -316,11 +325,20 @@ class Sampler:
                   "memBytes": sum(r["memBytes"] or 0 for r in rows)}
 
         whole = self._sample_all(t, now, samples, rows, record) if self._all_active else None
+        if whole is not None:
+            claude = whole[4]
+        else:
+            clis = [{"pid": r["pid"], "ppid": r["ppid"], "label": r["label"], "cpu": r["cpuPct"],
+                     "mem": r["memBytes"], "fused": True}
+                    for r in rows if r["kind"] == "claude" and self._is_claude_exe(r["pid"], samples)]
+            claude = labels.claude_summary(clis, [
+                {"pid": r["pid"], "ppid": r["ppid"], "label": r["label"], "cpu": r["cpuPct"],
+                 "mem": r["memBytes"]} for r in rows])
 
         with self._lock:
             readings = samples
             if whole is not None and self._all_active:
-                (readings, self._all_rows, self._all_stamps, self._rings) = whole
+                (readings, self._all_rows, self._all_stamps, self._rings, _c) = whole
             if record:
                 # An inline extra sample stays out of the 6-slot window, so the
                 # window keeps spanning ~5 s of one-second steps.
@@ -329,6 +347,7 @@ class Sampler:
             self._refs = refs
             self._host = host
             self._totals = totals
+            self._claude = claude
             if len(self._args) > 512:
                 live = {(p, s.start) for p, s in samples.items()}
                 self._args = {k: v for k, v in self._args.items() if k in live}
@@ -337,6 +356,11 @@ class Sampler:
                                       "memUsed": host["memUsed"],
                                       "appCpuPct": totals["cpuPct"],
                                       "appMemBytes": totals["memBytes"]})
+
+    def _is_claude_exe(self, pid: int, samples: dict) -> bool:
+        s = samples.get(pid)
+        args = self._cmd(pid, s.start if s else 0)
+        return bool(args) and labels._basename(args[0]) == "claude"
 
     def _all_cmd(self, pid: int, start: float) -> list[str] | None:
         key = (pid, start)
@@ -356,6 +380,7 @@ class Sampler:
         rows: list[dict] = []
         stamps: dict[int, float] = {}
         rings: dict[int, tuple[float, collections.deque]] = {}
+        my_uid = os.getuid() if hasattr(os, "getuid") else None
         for ident in b.list_procs():
             pid = ident.pid
             if ident.zombie and pid not in fused:
@@ -370,14 +395,17 @@ class Sampler:
             args = self._all_cmd(pid, ident.start) if pid > 0 else None
             command = labels._basename(args[0]) if args else ident.name
             f = fused.get(pid)
+            daemon = None
+            if f is None and args and ident.ppid == 1 and ident.uid == my_uid:
+                daemon = labels.classify_template(args)
             rows.append({
                 "pid": pid, "ppid": ident.ppid or None, "user": user_name(ident.uid),
                 "command": command,
                 "args": (" ".join(args) if args else ident.name)[:ARGS_CHARS],
                 "cpuPct": cpu, "memBytes": mem, "startedAt": round(ident.start, 3),
-                "fused": f is not None,
-                "kind": f["kind"] if f else "system",
-                "label": f["label"] if f else command,
+                "fused": f is not None or daemon is not None,
+                "kind": f["kind"] if f else daemon.kind if daemon else "system",
+                "label": f["label"] if f else daemon.label if daemon else command,
             })
             if s is not None:
                 old = prev_rings.get(pid)
@@ -391,7 +419,10 @@ class Sampler:
         if len(self._all_args) > 4 * max(len(stamps), 256):
             live = set(stamps.items())
             self._all_args = {k: v for k, v in self._all_args.items() if k in live}
-        return samples, rows, stamps, rings
+        flat = [{"pid": r["pid"], "ppid": r["ppid"], "label": r["label"], "cpu": r["cpuPct"],
+                 "mem": r["memBytes"], "fused": r["fused"]} for r in rows]
+        clis = [x for x, r in zip(flat, rows) if r["command"] == "claude"]
+        return samples, rows, stamps, rings, labels.claude_summary(clis, flat)
 
     # ---- reading ------------------------------------------------------------
 
@@ -405,6 +436,7 @@ class Sampler:
                 "procs": [dict(r) for r in procs],
                 "history": [dict(h) for h in self._history if h["t"] >= cutoff],
                 "totals": dict(self._totals),
+                "claude": dict(self._claude) if self._claude else None,
             }
 
     def lookup(self, pid: int) -> tuple[str, dict, int] | None:
