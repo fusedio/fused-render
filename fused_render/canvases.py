@@ -2671,6 +2671,7 @@ class _SyncManager:
         checks on focus. Detect-only, like the timed poll: nothing is pulled.
         A plain attribute write; the loop reads it under its own locks."""
         self._last_pull_poll = 0.0
+        self.log_event("server_to_disk", "server check", detail="page focused")
 
     def _toml_rows(self) -> dict | None:
         """The compact rows of the clone's canvas.toml, or None."""
@@ -2778,7 +2779,14 @@ class _SyncManager:
         ms = (time.time() - started) * 1000
         if result.get("ok"):
             self._last_pull_error = None
-            self.log_event("server_to_disk", "pull end", ms=ms,
+            if hard and self.push_state == "error":
+                # The files that push failed on are gone: the clone is the
+                # server's copy now (or a fresh local edit over it, which the
+                # debounced push ships). The red banner would otherwise stay
+                # up over content it is no longer about.
+                self.last_error = None
+                self.push_state = "pending" if self._dirty_since is not None else "idle"
+            self.log_event("server_to_disk", "hard pull end" if hard else "pull end", ms=ms,
                            detail=f"pull_seq {self.pull_seq}")
         elif result.get("code") in ("busy", "agent_live"):
             # Deferred, not failed: nothing was written, and the leg stays
