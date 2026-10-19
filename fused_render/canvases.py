@@ -786,6 +786,15 @@ protection described above.
   canvas is rejected at push time and the error surfaces to the user.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
+- **Folders** are `[[canvas.nodes]]` rows with `type = "udf-folder"`. Give a
+  folder row `udfName` equal to its `folderName`. Membership lives ONLY in
+  the folder's `childUdfOrder` (the child rows' `udfName`s; one folder per
+  child, never a folder inside a folder). A child's `x`/`y` are RELATIVE to
+  its folder's `x`/`y`, so moving a node into or out of a folder means
+  converting its coordinates too. Deleting or renaming a node means
+  removing or renaming it in its folder's `childUdfOrder` as well: a stale
+  name there is tolerated, but it is a bug to fix. A node in a folder is
+  still a root-level file in this folder, never a subdirectory.
 
 ## Files can change between change sets — trust the filesystem, not your memory
 
@@ -1267,6 +1276,8 @@ class _SyncManager:
         self._rowless: dict[str, float] = {}
         self._rowless_lock = threading.Lock()
         self._rowless_hold_logged: frozenset = frozenset()
+        # leg → the last folder-fix set logged (`_log_folder_fixes`).
+        self._folder_fixes_logged: dict[str, frozenset] = {}
         self._pull_started_at: float | None = None
         self._pull_in_flight = False
         self._last_pull_error: str | None = None
@@ -1736,6 +1747,58 @@ class _SyncManager:
             return None
         return proc.returncode == 0
 
+    def _log_folder_fixes(self, leg: str, fixes: list[str]) -> None:
+        """Log `normalise_folders`' lines for `leg` once per distinct set:
+        the same stale grammar re-arrives on every snapshot and every pull
+        until someone fixes it, and one line says so."""
+        key = frozenset(fixes)
+        if self._folder_fixes_logged.get(leg) == key:
+            return
+        self._folder_fixes_logged[leg] = key
+        if fixes:
+            self.log_event(leg, "folder fixes",
+                           detail="; ".join(fixes[:5])
+                           + (f" (+{len(fixes) - 5})" if len(fixes) > 5 else ""))
+
+    def _normalise_clone_toml(self) -> bool:
+        """`_normalised_toml` over the clone's canvas.toml in place (a CLI
+        force pull wrote it); True when it rewrote the file."""
+        path = os.path.join(self.dir, "canvas.toml")
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return False
+        fixed = self._normalised_toml(data)
+        if fixed == data:
+            return False
+        try:
+            canvas_snapshot._write_atomic(path, fixed.decode("utf-8"))
+        except OSError:
+            return False
+        return True
+
+    def _normalised_toml(self, data: bytes) -> bytes:
+        """A canvas.toml the pull is about to write wholesale, with its
+        folder grammar normalised (`canvas_snapshot.normalise_folders`) —
+        never refused: the server accepts what this cannot honour, and a
+        refused pull would leave both pull and push stuck. `data` itself
+        when nothing needed fixing or it does not parse."""
+        try:
+            import rtoml
+            doc = rtoml.loads(data.decode("utf-8", "replace"))
+            canvas = doc.get("canvas")
+            rows = canvas.get("nodes") if isinstance(canvas, dict) else None
+            if not isinstance(rows, list):
+                return data
+            fixes = canvas_snapshot.normalise_folders(rows)
+            self._log_folder_fixes("server_to_disk", fixes)
+            if not [f for f in fixes if not f.endswith("(not fixed)")]:
+                return data
+            return canvas_snapshot._dump_toml(doc).encode("utf-8")
+        except Exception:  # noqa: BLE001 — rtoml's own error types
+            return data
+
     def _probe_remote(self) -> dict | None:
         """The remote manifest via the shim, or None (external CLI, not
         signed in, transient failure, junk output — all mean 'can't tell',
@@ -1922,6 +1985,11 @@ class _SyncManager:
                 if trash is None:
                     trash = self._new_trash_dir()
                 self._backup_to(trash, rel, local_bytes)
+            if rel == "canvas.toml":
+                # Taken whole from the remote: normalised like a merged one
+                # (the base stays the remote's hash, so a fix it needed is
+                # this clone's edit and the push publishes it).
+                data = self._normalised_toml(data)
             try:
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with open(dest, "wb") as fh:
@@ -2115,6 +2183,12 @@ class _SyncManager:
         # either way; not rotating would make the next poll see the same move
         # again and re-run this destructive branch.
         self._rotate_remote(probe)
+        if not still_diff:
+            # The sync point is what the server sent; a folder fix below is
+            # this clone's own edit on top of it, which the push publishes.
+            self._set_sync_point()
+        if self._normalise_clone_toml():
+            still_diff = True
         if still_diff:
             # Local diverged from what was pulled. Local wins: go dirty so the
             # debounced push re-asserts it, and leave the merge base ALONE.
@@ -2134,7 +2208,6 @@ class _SyncManager:
         # local == remote, so nothing is pending.
         if self.push_state == "pending":
             self.push_state = "idle"
-        self._set_sync_point()
         self._save_base()
         return None
 
@@ -2685,7 +2758,8 @@ class _SyncManager:
             import rtoml
             local_doc = rtoml.loads(local.decode("utf-8", "replace"))
             remote_doc = rtoml.loads(remote.decode("utf-8", "replace"))
-            merged, _info = canvas_snapshot.merge_toml(self._base_toml, local_doc, remote_doc)
+            merged, info = canvas_snapshot.merge_toml(self._base_toml, local_doc, remote_doc)
+            self._log_folder_fixes("server_to_disk", info.get("folder_fixes") or [])
             if canvas_snapshot.rows_of_doc(merged) == canvas_snapshot.rows_of_doc(local_doc):
                 return local
             return canvas_snapshot._dump_toml(merged).encode("utf-8")
@@ -3228,6 +3302,7 @@ class _SyncManager:
         # no node) is a delete, not an orphan to synthesize later.
         result = canvas_snapshot.apply_snapshot(self.dir, new, prev, backup=backup,
                                                 rowless_prev=self._rowless_peek())
+        self._log_folder_fixes("embed_to_disk", result.get("folder_fixes") or [])
         # The embed now holds what it just sent: disk rows for ITS nodes only
         # (a disk-only node is Claude's and still owed to it as a delta), its
         # edge set and ids, the note texts it sent over the texts it held
