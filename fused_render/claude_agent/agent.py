@@ -9951,15 +9951,19 @@ def _session_task_registry(file: str, session_id: str,
         names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
         return {}, "", ""
+    # THE FALLBACK LOOKS TWICE AS FAR (CodeRabbit, PR #1750): a dev server
+    # started this morning sits well behind 60 newer run dirs on a busy Mac,
+    # and the Tasks list still counts it (project_queue.RUN_SCAN_LIMIT, 120).
+    # Past the newest run the walk is one stat per dir, so the cost is small.
     if limit is not None:
-        names = names[:limit]
+        names = names[:limit * 2]
     newest = None
-    for name in names:
+    for i, name in enumerate(names):
         run_dir = os.path.join(RUNS, name)
-        # Past the newest run only a live host counts: one stat before the
-        # meta read, since this pass walks the rest of the window.
-        if newest is not None and not os.path.isfile(
-                os.path.join(run_dir, "host.json")):
+        # Past the newest run (or past the window it is looked for in) only a
+        # live host counts: one stat before the meta read.
+        older = newest is not None or (limit is not None and i >= limit)
+        if older and not os.path.isfile(os.path.join(run_dir, "host.json")):
             continue
         try:
             with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
@@ -9975,10 +9979,12 @@ def _session_task_registry(file: str, session_id: str,
                               _run_own_session(run_dir, meta)):
             continue
         host = _host_alive(run_dir)
-        turn_open = host and _turn_state(run_dir)[0]
-        # An older run's host must be up, and its `claude` alive too — the
-        # stale-pid guard `_run_tasks` applies, so a reused pid lists nothing.
-        if newest is not None and not (host and _alive(run_dir)):
+        # The run's own `claude` has to vouch too — the stale-pid guard
+        # `_run_tasks` applies: a `host.json` pid reused by an unrelated
+        # process must not read as an open turn or a live job.
+        cli = _alive(run_dir)
+        turn_open = host and cli and _turn_state(run_dir)[0]
+        if older and not (host and cli):
             continue
         if host and not turn_open:
             # The turn is over while the host runs background work on: absorb
@@ -9989,18 +9995,17 @@ def _session_task_registry(file: str, session_id: str,
             _catch_up_registry(run_dir)
         registry = _read_bg_tasks(run_dir)
         active = any(_task_active(rec) for rec in registry.values())
-        if newest is not None:
+        if older:
             if active or turn_open:
-                return registry, name, newest[2]
+                return registry, name, newest[2] if newest else run_dir
             continue
-        vouched = host or (bool(registry) and _alive(run_dir))
-        if registry and not vouched:
+        if registry and not cli:
             for rec in registry.values():
                 if _task_active(rec):
                     rec["status"] = "unknown"
                     rec["ended_at"] = None
         # The newest run answers while it has something live to say.
-        if turn_open or (active and vouched):
+        if turn_open or (active and cli):
             return registry, (name if host else ""), run_dir
         newest = (registry, (name if host else ""), run_dir)
     return newest or ({}, "", "")

@@ -316,6 +316,42 @@ def test_history_finds_the_job_an_older_host_still_holds(
     assert agent._read_bg_tasks(str(run_dir))["b1"]["status"] == "killed"
 
 
+def test_a_held_job_past_the_scan_window_still_answers(agent, run_dir, tmp_path):
+    """A dev server started hours ago sits behind `limit` newer run dirs; the
+    Tasks list (120 deep) still counts it, so the chat looks twice as far."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="b1", description="dev server",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    _newer_run(agent, run_dir, {"file": str(other), "session_id": "x"})
+    reg, host_run, last = agent._session_task_registry(str(target), "s", limit=1)
+    assert list(reg) == ["b1"] and host_run == "run" and last == str(run_dir)
+    run_dir.joinpath("host.json").unlink()
+    assert agent._session_task_registry(str(target), "s", limit=1) == ({}, "", "")
+
+
+def test_a_newest_run_whose_claude_died_yields_to_a_live_older_host(
+        agent, run_dir, tmp_path, monkeypatch):
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="old", description="o",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    newer = _newer_run(agent, run_dir, {"file": str(target), "session_id": "s"},
+                       [_sys("task_started", task_id="stale", description="n",
+                             task_type="local_bash"), _result()], host=True)
+    monkeypatch.setattr(agent, "_alive", lambda d: d != str(newer))
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert list(reg) == ["old"] and host_run == "run"
+
+
 def test_an_older_host_with_nothing_running_does_not_answer(
         agent, run_dir, tmp_path, monkeypatch):
     target = tmp_path / "proj"
