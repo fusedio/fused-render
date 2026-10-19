@@ -6585,21 +6585,28 @@ function writeCollapsedGroups(set: Set<string>) {
   }
 }
 
+// THE SEED MARKS, IN MEMORY FIRST (CodeRabbit, #1756): the store is only
+// persistence. `groups` recomputes on every listing publish and every tick of
+// `useNow`, and with a blocked store (quota, a locked-down webview) a mark that
+// lived in sessionStorage alone was never written, so every recompute seeded
+// again — a section the reader had just opened folded within the minute.
+const seededViews = new Set<TaskGroupBy>();
+
 function readSeededViews(): Set<TaskGroupBy> {
   try {
-    return parseSeededViews(sessionStorage.getItem(GROUPS_SEEDED_KEY));
+    for (const v of parseSeededViews(sessionStorage.getItem(GROUPS_SEEDED_KEY))) seededViews.add(v);
   } catch {
-    return new Set();
+    // Unreadable store: the in-memory marks are the whole answer.
   }
+  return seededViews;
 }
 
 function writeSeededView(by: TaskGroupBy) {
+  seededViews.add(by);
   try {
-    const next = readSeededViews();
-    next.add(by);
-    sessionStorage.setItem(GROUPS_SEEDED_KEY, JSON.stringify([...next]));
+    sessionStorage.setItem(GROUPS_SEEDED_KEY, JSON.stringify([...seededViews]));
   } catch {
-    // A blocked store seeds again next visit; the folds still happened.
+    // A blocked store seeds again next page load; this load remembers.
   }
 }
 
