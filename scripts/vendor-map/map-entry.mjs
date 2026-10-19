@@ -30,6 +30,7 @@ export { ZarrLayer } from '@carbonplan/zarr-layer';
 // (variables, dimension labels) — one copy, and its stores are interchangeable.
 export * as zarr from 'zarrita';
 export { LidarControl } from './pointcloud-gpu.mjs';
+export { shapefileToGeoJSON } from './shapefile.mjs';
 export { getClassificationName, getClassificationColor,
          COLORMAP_NAMES as LIDAR_COLORMAPS } from 'maplibre-gl-lidar';
 export { Protocol as PMTilesProtocol, PMTiles, FetchSource } from 'pmtiles';

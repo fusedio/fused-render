@@ -1130,6 +1130,8 @@ const raster = {
 
 /* vector ------------------------------------------------------------------- */
 const STREAM_BYTES = 256 << 20;
+const PARSE_SHAPEFILE_BYTES = 25 << 20;
+const PARSE_SHAPEFILE_FEATURES = 50000;
 async function fileFromPath(path) {
   const response = await fetch(httpUrl(path));
   if (!response.ok) throw new Error(`could not read ${path} (HTTP ${response.status})`);
@@ -1137,13 +1139,17 @@ async function fileFromPath(path) {
 }
 async function shapefileCompanions(path) {
   const stem = path.replace(/\.shp$/i, "");
-  const found = [];
-  for (const ext of [".shx", ".dbf", ".prj", ".cpg"]) {
-    for (const candidate of [stem + ext, stem + ext.toUpperCase()]) {
-      try { found.push(await fileFromPath(candidate)); break; } catch (_) { /* absent */ }
-    }
-  }
-  return found;
+  const found = await Promise.all([".shx", ".dbf", ".prj", ".cpg"].map(ext =>
+    fileFromPath(stem + ext).catch(() => fileFromPath(stem + ext.toUpperCase())).catch(() => null)));
+  return found.filter(Boolean);
+}
+async function shapefileGeoJSON(shp, companions) {
+  const shx = companions.find(file => extOf(file.name) === ".shx");
+  const files = [shp, ...companions].filter(file => file !== shx);
+  const bytes = files.reduce((sum, file) => sum + file.size, 0);
+  if (!shx || bytes > PARSE_SHAPEFILE_BYTES || (shx.size - 100) / 8 > PARSE_SHAPEFILE_FEATURES) return null;
+  const parts = Object.fromEntries(await Promise.all(files.map(async file => [extOf(file.name).slice(1), await file.arrayBuffer()])));
+  return M.shapefileToGeoJSON(parts).catch(() => null);
 }
 const vector = {
   ctl: null,
@@ -1178,18 +1184,17 @@ const vector = {
     const options = { id: r.handle, name: layer.name, fitBounds: false, visible: layer.visible,
                       opacity: layer.opacity, style: this.style(layer, r) };
     if (layer.options.source_layer) options.sourceLayer = layer.options.source_layer;
-    let source;
-    if (plan.geojson) {
-      source = plan.geojson;
-    } else {
-      options.format = plan.format;
-      if (plan.format === "shapefile" && !isRemote(plan.path) && extOf(plan.path) === ".shp") {
-        source = await fileFromPath(plan.path);
-        options.companionFiles = await shapefileCompanions(plan.path);
-        options.sourcePath = plan.path;
-      } else {
-        source = httpUrl(plan.path);
+    let source = plan.geojson;
+    if (!source && plan.format === "shapefile" && !isRemote(plan.path) && extOf(plan.path) === ".shp") {
+      const [shp, companions] = await Promise.all([fileFromPath(plan.path), shapefileCompanions(plan.path)]);
+      source = await shapefileGeoJSON(shp, companions);
+      if (!source) {
+        source = shp;
+        Object.assign(options, { format: plan.format, companionFiles: companions, sourcePath: plan.path });
       }
+    } else if (!source) {
+      options.format = plan.format;
+      source = httpUrl(plan.path);
       if (plan.format === "geoparquet") {
         // Query a big file in place, a range read per tile; load a smaller one
         // into memory once, which tiles faster from then on.

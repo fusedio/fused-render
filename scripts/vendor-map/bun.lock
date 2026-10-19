@@ -21,6 +21,8 @@
         "maplibre-gl-raster": "0.14.15",
         "maplibre-gl-vector": "0.11.1",
         "pmtiles": "4.5.0",
+        "proj4": "2.22.0",
+        "shpjs": "6.2.0",
       },
     },
   },
@@ -286,6 +288,8 @@
 
     "buf-compare": ["buf-compare@1.0.1", "", {}, "sha512-Bvx4xH00qweepGc43xFvMs5BKASXTbHaHm6+kDYIK9p/4iFwjATQkmPKHQSgJZzKbAymhztRbXUf1Nqhzl73/Q=="],
 
+    "but-unzip": ["but-unzip@0.1.10", "", {}, "sha512-hLfQ9WlUimmv/okzsRl6AYG3Ew5HNWhWgUslSR93FsDdeL0MAoQvmC/BJfs35lqEAO5t/QD7Y4vCFcPJtijt3A=="],
+
     "charenc": ["charenc@0.0.2", "", {}, "sha512-yrLQ/yVUFXkzg7EDQsPieE/53+0RlaWTs+wBrvW36cyilJ2SaDWfl4Yj7MtLTXleV9uEKefbAGUPv2/iWSooRA=="],
 
     "copc": ["copc@0.0.9", "", { "dependencies": { "cross-fetch": "^4.1.0", "laz-perf": "^0.0.7" } }, "sha512-10wWYz05hRuJ2um30fxCzumJzkBZUxMft2y7FGCv4RQfdA5gG22mKqb9VspEpXOdyRy1bRFSgIbDHOjWKNtHtw=="],
@@ -402,6 +406,8 @@
 
     "pako": ["pako@1.0.11", "", {}, "sha512-4hLB8Py4zZce5s4yd9XzopqwVv/yGNhV1Bl8NTmCq1763HeK2+EwVTv+leGeL13Dnh2wfbqowVPXCIO0z4taYw=="],
 
+    "parsedbf": ["parsedbf@2.0.0", "", {}, "sha512-WNjKn/cwgGBkXqQLif+2VMEahcRHkBRU0/RfBWZ7Vj7snRNNW63yW1mVuuHRDyXTRxuGCzAHHBcr/Fn+U/bXjQ=="],
+
     "path-expression-matcher": ["path-expression-matcher@1.6.2", "", {}, "sha512-enSlaiat05iasnzmgNxRj8reFdj3puY2QpNgP1aPIaVfT6nn9ICuPoFlKHk8EN22HcwewshO+mN2DGbkCEOtqQ=="],
 
     "pbf": ["pbf@3.3.0", "", { "dependencies": { "ieee754": "^1.1.12", "resolve-protobuf-schema": "^2.1.0" }, "bin": { "pbf": "bin/pbf" } }, "sha512-XDF38WCH3z5OV/OVa8GKUNtLAyneuzbCisx7QUCF8Q6Nutx0WnJrQe5O+kOtBlLfRNUws98Y58Lblp+NJG5T4Q=="],
@@ -431,6 +437,8 @@
     "safe-buffer": ["safe-buffer@5.1.2", "", {}, "sha512-Gd2UZBJDkXlY7GbJxfsE8/nvKkUEU1G38c1siN6QP6a9PT9MmHB8GnpscSmMJSoF8LOIrt8ud/wPtojys4G6+g=="],
 
     "setimmediate": ["setimmediate@1.0.5", "", {}, "sha512-MATJdZp8sLqDl/68LfQmbP8zKPLQNV6BIZoIgrscFDQ+RsvK/BxeDQOgyxKKoh0y/8h3BqVFnCqQ/gd+reiIXA=="],
+
+    "shpjs": ["shpjs@6.2.0", "", { "dependencies": { "but-unzip": "^0.1.4", "parsedbf": "^2.0.0", "proj4": "^2.1.4" } }, "sha512-8cR/RKYHQepmVyBMtzZQ+1bnSbWrtLXS6aoEJmpUlOSHtSUddterebVxYmIWq2g9kOEX9jm2kjHiikyPX7cNQA=="],
 
     "snappyjs": ["snappyjs@0.6.1", "", {}, "sha512-YIK6I2lsH072UE0aOFxxY1dPDCS43I5ktqHpeAsuLNYWkE5pGxRGWfDM4/vSUfNzXjC1Ivzt3qx31PCLmc9yqg=="],
 

@@ -12,6 +12,11 @@ Build workspace for the Map Viewer's browser rendering stack, committed under
     gamma and nodata are shader uniforms, so restyling never refetches
   - `maplibre-gl-vector` — GeoJSON as-is; GeoParquet, Shapefile, GeoPackage,
     FlatGeobuf, CSV, KML… through DuckDB-WASM, tiled in the browser
+  - `shapefileToGeoJSON` (`shapefile.mjs`, on `shpjs`): a local shapefile of
+    up to 25 MB and 50,000 features is parsed straight to GeoJSON, so it draws
+    without waiting for DuckDB-WASM and its spatial extension (several
+    seconds, even cached). Bigger files, and a `.prj` proj4 cannot read, still
+    go through DuckDB
   - `@carbonplan/zarr-layer` + `zarrita` — Zarr v2/v3 as a MapLibre custom layer
   - `pmtiles` — the `pmtiles://` protocol
   - `maplibre-gl-lidar` — LAS/LAZ/COPC/EPT point clouds through deck.gl's
