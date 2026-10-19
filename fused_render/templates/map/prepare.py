@@ -161,7 +161,7 @@ def _stream(path: str) -> dict:
     import rasterio
 
     with rasterio.open(path) as dataset:
-        if dataset.crs is None and not dataset.gcps[0]:
+        if dataset.crs is None and dataset.gcps[1] is None:
             raise Refusal(NO_CRS)
     engine = {"python": sys.executable, "daemon": os.path.join(HERE, "daemon.py"),
               "cache": str(CACHE), "version": DAEMON_VERSION}
@@ -169,8 +169,11 @@ def _stream(path: str) -> dict:
                                      json.dumps(engine).encode(), {"Content-Type": "application/json", "X-Fused": "1"})
     urllib.request.urlopen(request, timeout=120).close()
     CACHE.mkdir(parents=True, exist_ok=True)
-    with contextlib.suppress(FileExistsError), open(CACHE / "stream.key", "xb") as handle:
-        handle.write(os.urandom(32))
+    tmp = CACHE / f"stream.key.{os.getpid()}"
+    tmp.write_bytes(os.urandom(32))
+    with contextlib.suppress(FileExistsError):
+        os.link(tmp, CACHE / "stream.key")
+    tmp.unlink()
     key = base64.urlsafe_b64encode(path.encode()).decode().rstrip("=")
     signature = hmac.new((CACHE / "stream.key").read_bytes(), path.encode(), "sha256").hexdigest()[:32]
     return {"load": "raster", "path": path, "url": f"{ENGINE}/proxy/cog/{key}.{signature}.tif",
