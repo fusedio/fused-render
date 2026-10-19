@@ -178,7 +178,10 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   notice row "Handled by GitHub Copilot · model <id>" (host emits a
   `system/task_notification` row); agent mark on task rows/board/peek/cards
   wall/recents; New Task modal agent picker first + summary "Copilot will run
-  this task in <folder>"; notifications keep the task title and say "Copilot finished" on the detail line; terminal
+  this task in <folder>" (2026-10-19: the picker stands whenever more than one
+  agent is on, a session-bound card included — it opens on the session's agent
+  and a different pick, or that agent being off, starts a fresh session on the
+  resolved one; with one agent on, that one, never an off agent); notifications keep the task title and say "Copilot finished" on the detail line; terminal
   item "Continue with Copilot in terminal". Copilot mark = fused-drawn glyph +
   word, **never the GitHub Copilot logo**.
 

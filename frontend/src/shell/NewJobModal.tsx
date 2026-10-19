@@ -3159,8 +3159,9 @@ export default function NewJobModal({
   // WHICH AGENT RUNS IT (docs/COPILOT_BACKEND.md D2/D18): the draft's pick,
   // else the entry's, else "" — "the catalog's default", resolved below so a
   // Preferences switch reaches a card that has not chosen. A task that
-  // continues a session runs on THAT session's agent (`sessionAgent`, read
-  // once the binding is known), and the picker stands down for it.
+  // continues a session OPENS on that session's agent (`sessionAgent`, read
+  // once the binding is known), but the picker stays (owner, 2026-10-19: a
+  // dropdown whenever more than one agent is on, else the one that is on).
   const agents = useAgentBackends();
   // AN EDIT KEEPS ITS ENTRY'S AGENT: the edit is cancel + re-create, and a
   // create that names none is pinned to the CURRENT default — so an entry from
@@ -3171,6 +3172,10 @@ export default function NewJobModal({
   /** The agent resolved on the latest render, for the async Claude-default
    *  reads below, which must not land a Claude pair on another agent's card. */
   const agentRef = useRef("claude");
+  /** Has the reader picked an agent ON THIS CARD (as opposed to a pick the
+   *  draft or the entry carried in)? What `leavesSession` falls back on while
+   *  the session's own agent is unknown. */
+  const pickedHere = useRef(false);
   const [model, setModel] = useState(() => {
     const stored = saved.model ?? editing?.model ?? "";
     const known = taskModelsOf(saved.backend ?? editing?.backend).map((o) => o.key);
@@ -3841,10 +3846,13 @@ export default function NewJobModal({
     || (saved.sessionId ?? "");
   /**
    * THE AGENT OF THE SESSION THIS TASK CONTINUES, when it continues one: a
-   * session's agent never changes (D2), so the server runs the entry on it
-   * whatever the card says, and the card says the same. Read off the
-   * session's record (`GET /api/tasks/settings`, §8); "" until it answers, or
-   * for a card bound to nothing.
+   * session's agent never changes (D2), so a task that continues it runs on
+   * that agent, and the card OPENS on it. Read off the session's record
+   * (`GET /api/tasks/settings`, §8); "" until it answers, or for a card bound
+   * to nothing. A record from before the field answers "" too, which the
+   * server reads as Claude (`schedule._entry_backend`), so a landed blank is
+   * Claude here as well — otherwise a Copilot default would pair that session
+   * with Copilot and the save would refuse it as a mismatch.
    *
    * ONLY A SESSION THE ENTRY WILL ACTUALLY CONTINUE — `buildSchedulePayload`'s
    * own `continued` rule, restated on the live form: the task's learned thread
@@ -3864,7 +3872,7 @@ export default function NewJobModal({
     let live = true;
     readChatSettings(agentSession).then(
       (r) => {
-        if (live && r.backend) setSessionAgent(r.backend);
+        if (live) setSessionAgent(r.backend || "claude");
       },
       () => {},
     );
@@ -3872,19 +3880,32 @@ export default function NewJobModal({
       live = false;
     };
   }, [agentSession]);
-  const agentLocked = !!agentSession;
-  // The entry's own agent counts even switched off: the save then answers
-  // 400 in the banner, which is the truth, rather than quietly moving it.
-  const editingBackend = editing ? editing.backend || "claude" : "";
-  // The pick counts only while its agent is switched on; a session's own
-  // agent counts whatever the switch says (the server will refuse the save,
-  // and say so in the banner).
-  const agent = (agentLocked ? sessionAgent : "")
-    || (backendPick && (agentLocked || backendPick === editingBackend || isBackendEnabled(backendPick))
-      ? backendPick
-      : "")
+  // THE RULE (owner, 2026-10-19): the pick while its agent is on, else the
+  // session's agent while THAT is on, else the catalog's default — which is
+  // the one agent that is on when only one is. Nothing on the card can name
+  // an agent that is switched off: it used to (a session's own agent counted
+  // whatever the switch said, and the picker stood down for it), which left a
+  // card opened from a Copilot chat saying "What should Copilot do?" with no
+  // way to change it after Copilot was turned off, and a Create that could
+  // only answer 400.
+  const agent = (backendPick && isBackendEnabled(backendPick) ? backendPick : "")
+    || (sessionAgent && isBackendEnabled(sessionAgent) ? sessionAgent : "")
     || agents.default;
   agentRef.current = agent;
+  // DOES THIS TASK STILL CONTINUE ITS SESSION? Only on the session's own
+  // agent: a session belongs to one agent for good (D2), and the server
+  // refuses an entry that binds it to another (`schedule._mismatch`,
+  // `backend_mismatch`). So a card resolved onto another agent — by a pick,
+  // or because the session's agent is off — starts a NEW conversation there,
+  // and says so under the agent line. While the record has not answered (or
+  // never will — a failed read leaves `sessionAgent` ""), an EXPLICIT pick on
+  // this card leaves too (Bugbot, PR #1745): the card cannot tell the pick
+  // from the session's agent, and sending the session with a guessed-right
+  // agent is a coin toss against a 400. A card that continues nothing
+  // (`agentSession` "") is left to the payload's own `continued` rule.
+  const leavesSession = !!agentSession
+    && (sessionAgent ? agent !== sessionAgent : pickedHere.current);
+  const continuesSession = !leavesSession;
   const runModels = taskModelsOf(agent);
   const runEfforts = taskEffortsOf(agent);
   // ANOTHER AGENT'S CARD OPENS ON ITS OWN DEFAULTS: the global pair above is
@@ -3916,6 +3937,7 @@ export default function NewJobModal({
   }, [agent, agents.loaded]);
   const pickBackend = useCallback((value: string) => {
     if (value === agentRef.current) return;
+    pickedHere.current = true;
     setBackendPick(value);
     // The pair was the OTHER agent's; Claude's comes back to the global, and
     // follows it again until picked (the effect above fills anyone else's).
@@ -3979,7 +4001,13 @@ export default function NewJobModal({
         .map((i) => ({ path: i.path, name: i.name, kind: i.kind })),
       new_task_each_run: repeatOn ? newTaskEachRun : null,
       // WHERE THIS TASK IS GOING, restated on every save — see `boundSessionId`.
-      session_id: boundSessionId,
+      // …and NOWHERE once the card has left that session for another agent
+      // (`continuesSession`): the stored form is what a draft row dragged to In
+      // Progress sends (draft-run.ts `boundDraftPayload`), and it must carry the same
+      // pair the card's own Create would, or the server refuses it as a
+      // `backend_mismatch` (Bugbot, PR #1745). The binding is gone from the
+      // record then, by the reader's own choice of agent.
+      session_id: continuesSession ? boundSessionId : "",
       // THE RULE `repeat` POINTS AT, when the choice is Custom — null the same
       // moment `repeat` itself goes null, so a draft can never say "custom"
       // with nothing behind it (Bugbot, PR #1118; see `TaskDraftForm.custom_rule`).
@@ -4476,8 +4504,11 @@ export default function NewJobModal({
           // …and a REOPENED draft's stored binding is the third source, for the
           // card that has no `chatSessionId` because the hop that made it is
           // long over. See `boundSessionId`.
-          sessionId: (!learnedSession && editing?.session_id) || boundSessionId,
-          learnedSessionId: learnedSession,
+          // …NEITHER when the task has left its session for another agent
+          // (`continuesSession`): the server refuses a session bound to an
+          // agent other than its own, so the entry starts a fresh one instead.
+          sessionId: continuesSession ? (!learnedSession && editing?.session_id) || boundSessionId : "",
+          learnedSessionId: continuesSession ? learnedSession : "",
           newTaskEachRun,
           // The task's NUMBER has to survive the re-create an edit is; see
           // `replacesEntryId`. Empty on a new task, which replaces nothing.
@@ -5451,6 +5482,16 @@ export default function NewJobModal({
               : `${agentLabel(agent)} will run this task`}
           </span>
         )}
+        {/* …AND WHAT THAT COSTS when the card came out of another agent's
+            conversation: the task starts a fresh one (see `continuesSession`),
+            which must be said here, before Create, not discovered after. */}
+        {leavesSession && (
+          <span className="field-hint schedule-form-sub new-task-agent">
+            {sessionAgent
+              ? `Starts a new ${agentLabel(agent)} conversation — the ${agentLabel(sessionAgent)} one is not continued.`
+              : `Starts a new ${agentLabel(agent)} conversation — the one this came from is not continued.`}
+          </span>
+        )}
         <details className="schedule-form-more" open={moreOpen}
                  onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
           {/* The disclosure is a QUIET row, not a button: secondary text and a
@@ -5666,10 +5707,10 @@ export default function NewJobModal({
               behind it was the only one in the form that did not line up
               (audit 2026-08-16). */}
           {/* THE AGENT FIRST (D18), and only while there is a choice: the
-              Permissions, Model and Thinking under it are that agent's. A task
-              that continues a session has its agent already (D2) — the line
-              under the folder names it, and there is nothing to pick. */}
-          {agents.backends.length >= 2 && !agentLocked && (
+              Permissions, Model and Thinking under it are that agent's. A card
+              out of a session opens on that session's agent and may still
+              pick another — the task then starts fresh there (`continuesSession`). */}
+          {agents.backends.length >= 2 && (
             <div className="field schedule-form-sub">
               <span className="field-label">Agent</span>
               <Dropdown
