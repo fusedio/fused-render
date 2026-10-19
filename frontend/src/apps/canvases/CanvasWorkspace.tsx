@@ -130,14 +130,19 @@ function hostFocused(): boolean {
  * same-origin frames (the right pane's explorer embed nests the chat one
  * level deeper), is a text field or contenteditable. A cross-origin frame
  * (the canvas itself) cannot be seen into and reads as not typing.
+ *
+ * No `instanceof` here: an element from a child document belongs to that
+ * frame's realm, where `HTMLIFrameElement`/`HTMLElement` are different
+ * constructors — the walk would stop one level down (the explorer embed's
+ * own frames, the Code tab's CodeMirror) and read the typing user as idle.
  */
 function activeElementIsEditable(doc: Document): boolean {
   let el: Element | null = doc.activeElement;
   for (let depth = 0; el && depth < 8; depth++) {
-    if (el instanceof HTMLIFrameElement) {
+    if (el.tagName === "IFRAME") {
       let inner: Document | null = null;
       try {
-        inner = el.contentDocument;
+        inner = (el as HTMLIFrameElement).contentDocument;
       } catch {
         inner = null;
       }
@@ -147,7 +152,7 @@ function activeElementIsEditable(doc: Document): boolean {
     }
     const tag = el.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
-    return el instanceof HTMLElement && el.isContentEditable;
+    return (el as HTMLElement).isContentEditable === true;
   }
   return false;
 }
