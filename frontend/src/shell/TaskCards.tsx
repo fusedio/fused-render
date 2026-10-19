@@ -542,10 +542,10 @@ function TaskCard({
   // List's trash is on a folder-missing row because that row has nothing else
   // left, which is a fact about that row and not about the verb).
   //
-  // Its guard is the server's own (tasks-lib.eraseBlocked): a run in flight —
-  // in_progress OR a needs_attention turn parked on a permission card — cannot
-  // have its transcript pulled out from under it, so the door greys and its
-  // hint says the only thing that would help. Disabled means the dialog never
+  // Its guard is the server's own (tasks-lib.eraseBlocked): a streaming run
+  // cannot have its transcript pulled out from under it, so the door greys and
+  // its hint says the only thing that would help. A needs_attention turn
+  // parked on a card is NOT greyed — the server stops that run itself. Disabled means the dialog never
   // opens, so nobody reads the refusal for the first time inside a confirmation.
   const [erasing, setErasing] = useState(false);
   /** One discard at a time: the trash above stays down while its DELETE is out,

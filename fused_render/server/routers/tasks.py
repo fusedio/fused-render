@@ -1863,7 +1863,11 @@ def _hosted_runs() -> tuple[dict, dict]:
             # with a timestamp, so the first answer for a session is its most
             # recent run. A resumed conversation can have several runs in the
             # tree and only the newest is the one on screen.
-            out.setdefault(session_id, dict(news, reason=reason))
+            # …and WHICH run, so a door that has to stop it (`_stop_parked_run`)
+            # ends exactly the run this scan proved parked — not whatever
+            # `_live_run` would answer a moment later.
+            out.setdefault(session_id, dict(news, reason=reason,
+                                            run_id=os.path.basename(run_dir)))
     # Out of the window, out of the memo: one tuple per run dir ever seen
     # would otherwise grow for the life of the server.
     for run_dir in [d for d in list(_bg_memo) if d not in scanned]:
@@ -6659,7 +6663,7 @@ def api_task_archive(patch: ArchivePatch,
     task = _collect().get(key)
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
-    cancelled, filed = archive_task(task)
+    cancelled, filed, stopped = archive_task(task, _parked_runs())
     # THE UNSENT TEXT IS NOT TOUCHED (Akshil, 2026-09-15; design.md, PR C:
     # "Archive/unarchive touch NO drafts").
     #
@@ -6673,14 +6677,37 @@ def api_task_archive(patch: ArchivePatch,
     # an archived task already does. Delete and erase, which are the verbs that
     # mean it, drop both halves — see `api_task_delete` and `api_task_erase`.
     tasks_watch.notify({key})
-    return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
+    # `stopped` is the one thing the row cannot say for itself yet: a parked
+    # run that would not go leaves the row reading `needs_attention` with the
+    # filing kept underneath, and the card is how the reader finds out.
+    return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed,
+            "stopped": stopped}
 
 
-def archive_task(task: dict) -> tuple[int, bool]:
+def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     """The archive gesture on one collected task: how many messages were
-    called off, and whether a session was filed. Shared with the Current apps
-    router (server/routers/current_apps.py), where removing an app archives
-    every task under it."""
+    called off, whether a session was filed, and whether a run parked on a
+    card was stopped on the way. Shared with the Current apps router
+    (server/routers/current_apps.py), where removing an app archives every
+    task under it — `parked` is the caller's one `_parked_runs()` scan, so an
+    archive-all pays for the walk once.
+
+    A RUN PARKED ON A CARD IS STOPPED FIRST (Akshil, 2026-10-19: "even if the
+    task is in needs attention i should be able to archive it"). Filing does
+    not stop a run (`_status`, rule 0 over rule 2), so without this the row
+    would wear `needs_attention` for as long as the card waited — which is for
+    ever — and the archive would look like it did nothing. The parked run is
+    the one in-flight state that never ends on its own, and "put this away" is
+    an answer to its question: the card is denied, the tree ended
+    (`_stop_parked_run`, as delete does), and the filing lands on a run that
+    is over. Best-effort: a process that would not go leaves the row where it
+    was, honestly, and the filing is kept for when the run ends.
+
+    THE PENDING WORK IS CALLED OFF BEFORE THE STOP (CodeRabbit, PR #1752):
+    the stop can wait up to `_STOP_PARKED_WAIT_S`, and a due entry the
+    scheduler claims inside that window has left PENDING by the time the
+    cancel loops reach it — it would run after the filing and `_revived`
+    would drop the record. Cancel first, stop second, file last."""
     cancelled = 0
     # The rules FIRST: cancelling a template also cancels the occurrence it has
     # already materialised, so doing it the other way round would cancel one
@@ -6695,10 +6722,11 @@ def archive_task(task: dict) -> tuple[int, bool]:
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
+    stopped = _stop_parked_run(task, parked)
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
-    return cancelled, bool(session_id)
+    return cancelled, bool(session_id), stopped
 
 
 class UnarchivePatch(BaseModel):
@@ -6795,6 +6823,86 @@ def _queue_holds_live(key: str) -> bool:
         return False
 
 
+#: How long delete/erase wait for a parked run's process to be gone after the
+#: kill before taking the row. SIGTERM lands in milliseconds; past this the
+#: door reports the run still live and refuses, as it always did.
+_STOP_PARKED_WAIT_S = 2.0
+_STOP_PARKED_STEP_S = 0.05
+
+
+def _stop_parked_run(task: dict, parked: dict) -> bool:
+    """Delete's and erase's road through a run parked on a permission card
+    (Akshil, 2026-10-19: "even if the task is in needs attention i should be
+    able to archive it, delete it").
+
+    A `needs_attention` row is a live process waiting on a card nobody has
+    answered — the one kind of in-flight that never ends on its own — so a door
+    that answered "stop the run first" was sending the reader off to do the
+    thing deleting already means. The door does it instead, and the delete
+    goes ahead. True when the run is PROVEN gone, and the caller skips the
+    running guards on that word: a row rebuilt a moment after the kill can
+    still read `in_progress` off the spent entry, and the queue's index catches
+    up on its next reconcile.
+
+    EXACTLY THE RUN THE SCAN PROVED PARKED. `_parked_runs` records the run id
+    beside the card, and that id is what gets ended — not a fresh `_live_run`
+    lookup, which could answer a different run (an older one past the scan
+    window, or a cwd-less task's miss). And the card is READ AGAIN right before
+    the kill: one answered between the scan and now means the turn has resumed
+    streaming, which is the turn "streaming is still refused" protects — so
+    nothing is sent and False comes back, and the guards refuse as they would
+    have. (A card the queue is HOLDING an answer for still reads unanswered on
+    disk; that run was never in `parked`, so it never reaches here.)
+
+    THE CARD IS DENIED BEFORE THE KILL IS PROVEN. `_cancel` answers every open
+    card "cancelled" and then signals; a process that then outlives the wait
+    has lost its card and keeps its row. Accepted: the alternative is a kill
+    that leaves a subprocess holding the card open for its full timeout, and
+    the reader asked for this task to go.
+
+    THE WHOLE TREE, NOT AN INTERRUPT. `_cancel`'s default road asks a live host
+    to `interrupt` and, when the CLI answers, leaves host and CLI alive for the
+    next send — right for the Stop button, wrong here: the next thing that
+    happens to this session is its tombstone or the removal of its transcript.
+    `interrupt_first=False` is `_send`'s respawn road: deny the card, kill the
+    process group. And the kill is WAITED ON (`_alive` off the pid file, up to
+    `_STOP_PARKED_WAIT_S`): a True that raced the signal would erase a file a
+    dying CLI could still flush a row into.
+
+    ONLY A PARKED RUN. False, and nothing touched, when the session is not in
+    `parked` (the caller's `_parked_runs()` — the same scan its row was built
+    with, so the word it refused on and the run it stops agree); False, with
+    the kill sent, when the process would not go — the 409 that follows is
+    then the truth.
+    """
+    session_id = str(task.get("session_id") or "")
+    if not session_id:
+        return False
+    run_id = str((parked.get(session_id) or {}).get("run_id") or "")
+    if not run_id:
+        return False
+    agent = _agent_module()
+    if agent is None:
+        return False
+    run_dir = os.path.join(str(agent.RUNS), run_id)
+    try:
+        if not any(not p.get("decision") for p in agent._permissions(run_dir)):
+            return False
+        agent._cancel(run_id, interrupt_first=False)
+        deadline = time.monotonic() + _STOP_PARKED_WAIT_S
+        while agent._alive(run_dir):
+            if time.monotonic() >= deadline:
+                logger.warning("delete: the run parked under %s (%s) is still "
+                               "alive after the kill", session_id, run_id)
+                return False
+            time.sleep(_STOP_PARKED_STEP_S)
+    except Exception:  # noqa: BLE001 — a stop that failed leaves the guards on
+        logger.warning("delete: could not stop the run parked under %s",
+                       session_id, exc_info=True)
+        return False
+    return True
+
+
 def _queue_drop_task(key: str) -> None:
     """Take the task out of the queue for good — every line, every blocked
     list, the held answers, and the folder if it happened to hold one
@@ -6872,6 +6980,12 @@ def api_task_delete(patch: DeletePatch,
     asked is the same derived row every view paints (`_row`), so this endpoint
     cannot disagree with the pill the user is looking at.
 
+    EXCEPT A RUN PARKED ON A CARD (Akshil, 2026-10-19). A `needs_attention`
+    row is a process waiting on a question nobody will answer once the task is
+    gone, so "stop it first" was a chore the door can do itself:
+    `_stop_parked_run` denies the card and ends the tree the way the Stop
+    button does, and the delete proceeds. A streaming turn is still refused.
+
     AND REFUSED FOR A WORD THE ROW CANNOT SAY (`_queue_holds_live`). With the
     project queue on, a run parked on a card the user has already answered
     reads `queued` — the decision is held until the folder frees, so the run
@@ -6907,17 +7021,24 @@ def api_task_delete(patch: DeletePatch,
     # per-session record is not read for it. A caller that starts drawing
     # model/effort off this row must pass `tasks_store.settings_state()` like
     # the listing does, or the pair comes back from the entry alone.
+    # WITH THE PARKED INDEX, which this single-row request used to skip. The
+    # scan is what names a run parked on a card, and that is the run this door
+    # now stops (Bugbot, PR #1752): a hand-typed chat waiting on a card fails
+    # every other running test — no entry, registry `waiting`, transcript gone
+    # quiet — and read `done` here, which no guard refused and no stop reached.
+    # One walk serves both the word and the stop.
+    parked = _parked_runs()
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
-               schedule.busy_sessions(schedule.list_entries()), [])
-    # BOTH RUNNING WORDS. This row is built without the parked index (one
-    # request about one task does not pay for a scan of the runs tree), so a run
-    # waiting on a permission card reads `in_progress` here and the first word
-    # catches it. The second is the guard against that stopping being true: the
-    # question this asks is "is a run in flight", and `needs_attention` is a run
-    # in flight — a delete that slipped through would tombstone the row out from
-    # under a live process.
-    if row["status"] in ("in_progress", "needs_attention"):
+               schedule.busy_sessions(schedule.list_entries()), [], parked)
+    # BOTH RUNNING WORDS: `in_progress` is a turn streaming, `needs_attention`
+    # a run parked on a card — a delete that slipped past either would
+    # tombstone the row out from under a live process.
+    #
+    # UNLESS THE RUN IS PARKED ON A CARD, in which case the door stops it itself
+    # (`_stop_parked_run`) and both guards below stand down for this request.
+    stopped = _stop_parked_run(task, parked)
+    if not stopped and row["status"] in ("in_progress", "needs_attention"):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
@@ -6928,7 +7049,7 @@ def api_task_delete(patch: DeletePatch,
     # parked index or the queue's lines — so the queue is asked directly
     # whether a process is behind this key. A task merely WAITING in a line is
     # not refused: nothing is running, and the delete cancels its place.
-    if _queue_holds_live(key):
+    if not stopped and _queue_holds_live(key):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
@@ -7036,13 +7157,22 @@ def api_task_erase(patch: ErasePatch,
     # per-session record is not read for it. A caller that starts drawing
     # model/effort off this row must pass `tasks_store.settings_state()` like
     # the listing does, or the pair comes back from the entry alone.
+    # With the parked index, for the reason api_task_delete documents: the
+    # scan is the only thing that knows a quiet hand-typed chat is parked.
+    parked = _parked_runs()
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
-               schedule.busy_sessions(schedule.list_entries()), [])
+               schedule.busy_sessions(schedule.list_entries()), [], parked)
     # Both running words, for the reason api_task_delete's guard documents —
     # and one more here: what is refused is not a hidden row but a deleted
-    # file, under a process still writing to it.
-    if row["status"] in ("in_progress", "needs_attention"):
+    # file, under a process still writing to it. A run PARKED on a card is
+    # stopped here first (`_stop_parked_run`, as delete does) and the guards
+    # stand down: the kill denies the card and ends the tree before a file goes.
+    # (The stop lands before `_erase_session_files` can refuse: a run that was
+    # waiting on a question for a task the reader is erasing is not work worth
+    # keeping alive through a failed unlink.)
+    stopped = _stop_parked_run(task, parked)
+    if not stopped and row["status"] in ("in_progress", "needs_attention"):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
@@ -7050,7 +7180,7 @@ def api_task_erase(patch: ErasePatch,
     # guard documents — and, again, one more here: a held decision delivered
     # into a session whose transcript this endpoint has just removed would be
     # a run resumed onto nothing.
-    if _queue_holds_live(key):
+    if not stopped and _queue_holds_live(key):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")

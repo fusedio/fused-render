@@ -80,8 +80,11 @@ def _archive_folder(folder: str) -> dict:
     archived = 0
     cancelled = 0
     keys = set()
+    # One parked scan for the whole folder: a run under this app waiting on a
+    # card is stopped on the way out, as the single archive stops it.
+    parked = tasks_router._parked_runs()
     for task in _folder_tasks(folder):
-        n, filed = tasks_router.archive_task(task)
+        n, filed, _stopped = tasks_router.archive_task(task, parked)
         cancelled += n
         if filed or n:
             archived += 1

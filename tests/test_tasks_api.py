@@ -3094,7 +3094,8 @@ def test_archiving_a_task_with_no_session_only_cancels(client, tmp_path):
     key = _tasks(client)[0]["key"]
     r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False}
+    assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False,
+                        "stopped": False}
     assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
     assert _tasks(client) == []
 
@@ -4078,6 +4079,23 @@ class _FakeAgent:
         self.RUNS = str(runs_dir)
         self._runs = runs           # name -> list of permission dicts
         self._alive_set = set(alive)
+        self.cancelled: list[str] = []
+        #: `(run_id, interrupt_first)` per `_cancel` call.
+        self.cancel_calls: list[tuple[str, bool]] = []
+        #: Runs whose process survives a kill — the fake's way of saying the
+        #: signal did not land.
+        self.stubborn: set[str] = set()
+
+    def _cancel(self, run_id, interrupt_first=True, queued=False):
+        """The Stop button's action, faked: the card is denied and the process
+        is gone, which is what the real one does to the runs tree."""
+        self.cancelled.append(run_id)
+        self.cancel_calls.append((run_id, interrupt_first))
+        if run_id not in self.stubborn:
+            self._alive_set.discard(run_id)
+        for perm in self._runs.get(run_id, []):
+            perm["decision"] = "cancelled"
+        return {"cancelled": run_id}
 
     def _permissions(self, run_dir):
         return self._runs.get(os.path.basename(run_dir), [])
@@ -4538,17 +4556,185 @@ def test_the_listing_puts_what_wants_hands_on_top():
     assert [r["key"] for r in same] == ["newer", "older"]
 
 
-def test_a_waiting_task_cannot_be_deleted_out_from_under_its_run(
+def test_deleting_a_waiting_task_stops_its_run_first(
         client, projects_dir, parked):
-    """Delete refuses a run in flight, and a waiting run is one. The guard reads
-    both words so that a row whose status is the finer one is not a hole in it."""
+    """A run parked on a card is deletable (Akshil, 2026-10-19): the door
+    stops the run itself — the card denied, the tree ended, the Stop button's
+    own action — and then takes the row. "Stop the run first" is no longer an
+    answer the reader has to go and act on."""
     _running(projects_dir)
     _stage_run(parked.dir, "r-1", "sess-a")
-    parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]},
-           alive={"r-1"})
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
+
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    # The whole tree, not an interrupt: an interrupt the CLI answers leaves the
+    # host alive for a next send that is never coming.
+    assert agent.cancel_calls == [("r-1", False)]
+    assert "sess-a" not in _by_key(client)
+
+
+def test_erasing_a_quiet_hand_typed_chat_parked_on_a_card_stops_it_first(
+        client, projects_dir, parked, monkeypatch):
+    """Bugbot, PR #1752. No entry, no busy registry row, transcript gone quiet:
+    a row built WITHOUT the parked index reads this chat `done`, so neither
+    running word refused it and no stop reached it — erase would have removed
+    the transcript under a live parked process. The door's row now carries
+    the index, and the stop lands."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-10), uuid="u1"),
+    ])
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {"command": "rm -rf build"}}]},
+                   alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
+
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert agent.cancel_calls == [("r-1", False)]
+    assert not path.exists()
+    assert "sess-a" not in _by_key(client)
+
+    # …and the same quiet chat, stubborn, is refused by ERASE rather than
+    # filed `done` and unlinked: the parked word is what the door reads now,
+    # and the file stays under the process that would not go (CodeRabbit:
+    # delete never touches the transcript, so only erase can prove this).
+    monkeypatch.setattr(tasks_mod, "_STOP_PARKED_WAIT_S", 0.2)
+    path = _write_transcript(projects_dir, "sess-b", "/p", [
+        _user("go", _near_now(-10), uuid="u1"),
+    ])
+    _stage_run(parked.dir, "r-2", "sess-b")
+    agent._runs["r-2"] = [{"id": "p2", "tool": "Bash", "decision": "",
+                           "input": {"command": "rm -rf build"}}]
+    agent._alive_set.add("r-2")
+    agent.stubborn.add("r-2")
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-b"})
+    assert r.status_code == 409, r.text
+    assert path.exists()
+    assert "sess-b" in _by_key(client)
+
+
+def test_archiving_a_waiting_task_stops_its_run_and_files_it(
+        client, projects_dir, parked):
+    """Akshil, 2026-10-19. Filing does not stop a run, and a parked run never
+    stops on its own — so archive stops it (card denied, tree ended) and then
+    files, and the row reads `archived` rather than `needs_attention` for ever."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
+
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["filed"] is True
+    assert r.json()["stopped"] is True
+    assert agent.cancel_calls == [("r-1", False)]
+    # The transcript is untouched — archive is the reversible verb.
+    assert "sess-a" in _by_key(client)
+
+
+def test_archiving_a_stubborn_waiting_task_files_it_and_says_so(
+        client, projects_dir, parked, monkeypatch):
+    """Best-effort: the filing is kept, the row stays where the live process
+    puts it, and the answer says the run did not stop."""
+    monkeypatch.setattr(tasks_mod, "_STOP_PARKED_WAIT_S", 0.2)
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    agent.stubborn.add("r-1")
+
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["filed"] is True
+    assert r.json()["stopped"] is False
+    # The card was denied on the way (that is `_cancel`'s first act) and the
+    # process is still there, so the row reads as a turn in flight — NOT
+    # `archived`: the live process outranks the filing until it ends.
+    assert "r-1" in agent._alive_set
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_a_card_answered_between_scan_and_kill_is_not_killed(
+        client, projects_dir, parked):
+    """The race the docstring names: the scan proved the run parked, the user
+    answered the card a moment later, and the turn is streaming again. The
+    card is read again before the kill, nothing is sent, and the delete is
+    refused as a streaming run always is."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    perms = [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]
+    agent = parked({"r-1": perms}, alive={"r-1"})
+    real_scan = tasks_mod._parked_runs
+
+    def scan_then_answer():
+        out = real_scan()
+        perms[0]["decision"] = "allow"
+        return out
+    client.app  # noqa: B018 — the client is built; patch after
+    tasks_mod._parked_runs = scan_then_answer
+    try:
+        r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    finally:
+        tasks_mod._parked_runs = real_scan
+    assert r.status_code == 409, r.text
+    assert agent.cancel_calls == []
+    assert "sess-a" in _by_key(client)
+
+
+def test_a_waiting_task_whose_run_will_not_die_is_still_refused(
+        client, projects_dir, parked, monkeypatch):
+    """The kill is waited on, and a process that outlives it keeps the 409:
+    a tombstone over a live run is the exact thing the guard exists for, and
+    "proven gone" is the only word that lifts it."""
+    monkeypatch.setattr(tasks_mod, "_STOP_PARKED_WAIT_S", 0.2)
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    agent.stubborn.add("r-1")
 
     r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 409, r.text
+    assert agent.cancelled == ["r-1"]
+    assert "sess-a" in _by_key(client)
+
+
+def test_erasing_a_waiting_task_stops_its_run_before_the_files_go(
+        client, projects_dir, parked):
+    """Erase takes the same road: the parked run is stopped, THEN the transcript
+    leaves the disk — never a file removed under a process still holding it."""
+    _running(projects_dir)
+    path = projects_dir / "-encoded-sess-a" / "sess-a.jsonl"
+    assert path.exists()
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert agent.cancelled == ["r-1"]
+    assert not path.exists()
+    assert "sess-a" not in _by_key(client)
+
+
+def test_a_streaming_task_is_still_refused_when_nothing_is_parked(
+        client, projects_dir, parked):
+    """The lifted guard is for the PARKED run only: a turn in flight with no
+    card up is still "stop the run first" — nothing was stopped on the way."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash",
+                             "decision": "allow", "input": {}}]}, alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 409, r.text
+    assert agent.cancelled == []
 
 
 # ---- a number is never minted from a GUESSED project ---------------------------

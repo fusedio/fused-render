@@ -2154,10 +2154,14 @@ const LANE_EXITS: Record<BoardColumn, BoardLane[]> = {
   // keyed by column cannot express — it is a fact about the row. See `rowExits`
   // immediately below, which adds it, here and on Archive alike.
   done: ["archived"],
-  // Locked, for In Progress's reason and one more: a run waiting on an answer
-  // is still Claude's output, and the way out is answering the card in the
-  // chat — a drag cannot say yes on somebody's behalf.
-  needs_attention: [],
+  // ARCHIVE, AND ONLY ARCHIVE (Akshil, 2026-10-19: "even if the task is in
+  // needs attention i should be able to archive it, delete it"). A run waiting
+  // on an answer is Claude's output, so In Progress stays locked — a drag
+  // cannot say yes on somebody's behalf — but putting the task away is a
+  // different answer: the server stops the parked run (the card is denied, the
+  // tree ended) and files it, the same way delete does. The one in-flight
+  // lane that never ends on its own is the one the reader most needs out of.
+  needs_attention: ["archived"],
   // Retry, or file it away. The retry is a RE-RUN (Akshil, 2026-09-11: "allow
   // moving from blocked to in progress and trigger a rerun"): laneAction picks
   // what is sent again — see `rerunAction`.
@@ -3041,20 +3045,22 @@ export const ERASE_BLOCKED_HINT = "Stop the run first";
  * Whether deleting this task for good must be REFUSED — the client half of the
  * server's 409.
  *
- * `inFlight` and nothing else, so the trash and the endpoint cannot disagree
- * about what "running" means: both lanes count (`in_progress` and the
- * `needs_attention` run parked on a permission card, which is every bit as
- * live), and a control that only checked `in_progress` would offer to erase the
- * transcript a waiting `claude --resume` still has open.
+ * ONE lane, `in_progress`: a turn that is streaming cannot have its transcript
+ * pulled out from under it. The other in-flight lane, `needs_attention`, is NOT
+ * here (Akshil, 2026-10-19: "even if the task is in needs attention i should be
+ * able to archive it, delete it"): that run is parked on a permission card,
+ * and the server's delete/erase stop it themselves (`_stop_parked_run` denies
+ * the card and ends the tree) before taking the row — so the trash stays live
+ * and the dialog opens.
  *
  * NOT a version of `filingIntent`: archiving a mid-run task is refused because
  * filing work that is still happening is dishonest, and it is offered again the
- * moment the run ends. This is refused because the file is in use. Same lanes
- * today, two different reasons, and folding them together would tie an
- * irreversible verb's guard to a reversible one's rules.
+ * moment the run ends. This is refused because the file is in use. Two
+ * different reasons, and folding them together would tie an irreversible
+ * verb's guard to a reversible one's rules.
  */
 export function eraseBlocked(task: Pick<Task, "status">): boolean {
-  return inFlight(taskColumn(task));
+  return taskColumn(task) === "in_progress";
 }
 
 /**
