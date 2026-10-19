@@ -3172,6 +3172,10 @@ export default function NewJobModal({
   /** The agent resolved on the latest render, for the async Claude-default
    *  reads below, which must not land a Claude pair on another agent's card. */
   const agentRef = useRef("claude");
+  /** Has the reader picked an agent ON THIS CARD (as opposed to a pick the
+   *  draft or the entry carried in)? What `leavesSession` falls back on while
+   *  the session's own agent is unknown. */
+  const pickedHere = useRef(false);
   const [model, setModel] = useState(() => {
     const stored = saved.model ?? editing?.model ?? "";
     const known = taskModelsOf(saved.backend ?? editing?.backend).map((o) => o.key);
@@ -3893,11 +3897,14 @@ export default function NewJobModal({
   // refuses an entry that binds it to another (`schedule._mismatch`,
   // `backend_mismatch`). So a card resolved onto another agent — by a pick,
   // or because the session's agent is off — starts a NEW conversation there,
-  // and says so under the agent line. Unknown (the record not read yet) is
-  // "continues": there is nothing to differ from until it answers — and a
-  // card that continues nothing (`agentSession` "") is left to the payload's
-  // own `continued` rule, untouched.
-  const leavesSession = !!agentSession && !!sessionAgent && agent !== sessionAgent;
+  // and says so under the agent line. While the record has not answered (or
+  // never will — a failed read leaves `sessionAgent` ""), an EXPLICIT pick on
+  // this card leaves too (Bugbot, PR #1745): the card cannot tell the pick
+  // from the session's agent, and sending the session with a guessed-right
+  // agent is a coin toss against a 400. A card that continues nothing
+  // (`agentSession` "") is left to the payload's own `continued` rule.
+  const leavesSession = !!agentSession
+    && (sessionAgent ? agent !== sessionAgent : pickedHere.current);
   const continuesSession = !leavesSession;
   const runModels = taskModelsOf(agent);
   const runEfforts = taskEffortsOf(agent);
@@ -3930,6 +3937,7 @@ export default function NewJobModal({
   }, [agent, agents.loaded]);
   const pickBackend = useCallback((value: string) => {
     if (value === agentRef.current) return;
+    pickedHere.current = true;
     setBackendPick(value);
     // The pair was the OTHER agent's; Claude's comes back to the global, and
     // follows it again until picked (the effect above fills anyone else's).
@@ -3993,7 +4001,13 @@ export default function NewJobModal({
         .map((i) => ({ path: i.path, name: i.name, kind: i.kind })),
       new_task_each_run: repeatOn ? newTaskEachRun : null,
       // WHERE THIS TASK IS GOING, restated on every save — see `boundSessionId`.
-      session_id: boundSessionId,
+      // …and NOWHERE once the card has left that session for another agent
+      // (`continuesSession`): the stored form is what a draft row dragged to In
+      // Progress sends (draft-run.ts `boundDraftPayload`), and it must carry the same
+      // pair the card's own Create would, or the server refuses it as a
+      // `backend_mismatch` (Bugbot, PR #1745). The binding is gone from the
+      // record then, by the reader's own choice of agent.
+      session_id: continuesSession ? boundSessionId : "",
       // THE RULE `repeat` POINTS AT, when the choice is Custom — null the same
       // moment `repeat` itself goes null, so a draft can never say "custom"
       // with nothing behind it (Bugbot, PR #1118; see `TaskDraftForm.custom_rule`).
@@ -5473,7 +5487,9 @@ export default function NewJobModal({
             which must be said here, before Create, not discovered after. */}
         {leavesSession && (
           <span className="field-hint schedule-form-sub new-task-agent">
-            {`Starts a new ${agentLabel(agent)} conversation — the ${agentLabel(sessionAgent)} one is not continued.`}
+            {sessionAgent
+              ? `Starts a new ${agentLabel(agent)} conversation — the ${agentLabel(sessionAgent)} one is not continued.`
+              : `Starts a new ${agentLabel(agent)} conversation — the one this came from is not continued.`}
           </span>
         )}
         <details className="schedule-form-more" open={moreOpen}
