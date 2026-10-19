@@ -61,12 +61,25 @@ a history of superseded remote manifests used to refuse pulling a stale
 tab's re-save of pre-push state — is gone: it defended a push that raced a
 stale tab, and the push is now held whenever the remote moved.)
 
+Two loops, two locks (the 2026-10-19 "two loops" build). The LOCAL loop —
+embed snapshot → disk, disk → embed delta — must never wait on the network,
+so `_op_lock` is held only while files and sync-point state are read or
+written: a push freezes the clone into `.sync/push/<name>/` under it and runs
+the CLI on that copy with it released; probes and the merge's zip download
+run before it is taken. `_flight_lock` serializes whole pushes and pulls,
+network included. One fused-render process writes a clone
+(`.sync/<name>.lock`, canvas_sync_state.py); `sync/state`, `sync/log` and
+the `sync/events` socket report every leg with its age and reason, and a
+watchfiles thread turns a file write into a `disk_rev` bump within ~100 ms
+(the 1 s scan stays as the push debounce's backstop).
+
 No import of anything under fused_render.server (server includes this router —
 keep it acyclic); the X-Fused guard is duplicated locally, same as other
 shell/* routers.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import hashlib
@@ -82,10 +95,10 @@ import threading
 import time
 import zipfile
 
-from fastapi import APIRouter, Body, Header
+from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from fused_render import canvas_snapshot
+from fused_render import canvas_snapshot, canvas_sync_state
 from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
 
 logger = logging.getLogger(__name__)
@@ -126,15 +139,20 @@ _FRESH_WINDOW_S = 10.0
 # here also keeps the name safe as a path segment and an argv element.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
-# How long the manual-push endpoint waits for the watcher's _op_lock before
-# giving up with a 409. Short on purpose: the caller is a Claude session that
-# just asked to publish, and "a sync operation is in flight, try again" is a
-# better answer than a request that hangs for the whole PUSH_TIMEOUT. The
-# watcher's own legs are what hold this lock, and they finish in seconds
-# outside a stuck network call.
+# How long the manual push/pull endpoints wait for the manager's _flight_lock
+# (and a push or pull for each short _op_lock phase) before giving up with a
+# 409. Short on purpose: the caller is a Claude session that just asked to
+# publish, and "a sync operation is in flight, try again" is a better answer
+# than a request that hangs for the whole PUSH_TIMEOUT.
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
 # How long /api/canvases/snapshot waits on _op_lock before answering 409.
 SNAPSHOT_LOCK_WAIT_S = 1.0
+# stop()'s bound on joining the watcher thread. A push still inside its CLI
+# can hold that thread for up to PUSH_TIMEOUT; the quit rung terminates the
+# CLI first (terminate_push), and no caller should hang behind a network call.
+STOP_JOIN_S = 5.0
+# SIGTERM → SIGKILL grace for a push CLI the quit rung stops.
+PUSH_TERMINATE_GRACE_S = 2.0
 
 # Fused environment the canvases feature targets. One knob drives BOTH the
 # workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
@@ -1211,18 +1229,50 @@ class _SyncManager:
     event semantics.
     """
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, *, lock_since: float | None = None):
         self.name = name
         self.dir = _canvas_dir(name)
+        # Observability first: the property setters below (push_state,
+        # server_stale, _pulling) wake the state socket on every change.
+        self._log = canvas_sync_state.SyncLog(name, self._bump)
+        self._push_state = "idle"
+        self._server_stale: dict | None = None
+        self._pulling_flag = False
         self.stop_event = threading.Event()
         self.pause_count = 0
         self.pause_lock = threading.Lock()
-        # Held by the watcher thread for the duration of any _push/
-        # _pull_if_remote_changed call. pause() waits on it so it never
-        # returns while one of those is still writing to `self.dir` — a
-        # caller pausing to run its own CLI call (clone's re-pull) on the
-        # same folder would otherwise race it.
+        # SHORT: held only while this process reads or writes the clone's
+        # files and the sync-point state that describes them — a snapshot
+        # apply, a delta cut, a merge's apply, a push's freeze and fold.
+        # NEVER across a network call (invariant 5 of the two-loops build):
+        # the push runs the CLI on a frozen copy with this released, and the
+        # probe and zip download run before it is taken. An embed snapshot
+        # therefore waits milliseconds behind a push, not the push's length.
+        # (The one exception is a CLI `pull --force`, which writes the clone
+        # itself — see pull().)
         self._op_lock = threading.Lock()
+        # LONG: one push or pull at a time, network included — what the old
+        # whole-push _op_lock gave for free. Taken non-blocking by the
+        # watcher (a busy tick just skips) and with a bounded wait by the
+        # manual routes; pause() waits on it too, so a caller pausing to run
+        # its own CLI on the folder (clone's re-pull) never races a push's
+        # fold-in landing after its rebaseline.
+        self._flight_lock = threading.Lock()
+        self._push_started_at: float | None = None
+        self._push_proc: subprocess.Popen | None = None
+        self._pull_started_at: float | None = None
+        self._pull_in_flight = False
+        self._last_pull_error: str | None = None
+        # disk → embed leg bookkeeping for sync/state: when each disk_rev was
+        # cut (the age of the oldest one the frame has not acked), the last
+        # cut's hold reason, a refused delta, and whether any frame has spoken
+        # to this manager at all (no frame = nothing owed).
+        self._rev_times: dict[int, float] = {}
+        self._last_cut_held: str | None = None
+        self._delta_error: str | None = None
+        self._frame_seen = False
+        self._lock_path = _lock_path(name)
+        self._lock_since = lock_since
         self.push_seq = 0
         self.last_push_at: float | None = None
         self.last_error: str | None = None
@@ -1344,14 +1394,67 @@ class _SyncManager:
         self._dirty_since: float | None = None if fresh else now
         self.push_state = "idle" if fresh else "pending"  # idle | pending | pushing | error
         self._last_pull_poll = time.time()
-        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread = threading.Thread(target=self._run, daemon=True,
+                                       name=f"fused-canvas-sync-{name}")
         self.thread.start()
+        # Disk → events: a file write wakes the delta leg within ~100 ms
+        # instead of on the next 1 s scan (which stays as the push debounce's
+        # backstop, and the only disk signal when watchfiles is missing).
+        self.fs_thread = threading.Thread(target=self._watch_fs, daemon=True,
+                                          name=f"fused-canvas-fs-{name}")
+        self.fs_thread.start()
+
+    # -- observable state (each change wakes the sync/events socket) ---------
+
+    @property
+    def push_state(self) -> str:
+        return self._push_state
+
+    @push_state.setter
+    def push_state(self, value: str) -> None:
+        if value != self._push_state:
+            self._push_state = value
+            self._bump()
+
+    @property
+    def server_stale(self) -> dict | None:
+        return self._server_stale
+
+    @server_stale.setter
+    def server_stale(self, value: dict | None) -> None:
+        if value != self._server_stale:
+            self._server_stale = value
+            self._bump()
+
+    @property
+    def _pulling(self) -> bool:
+        return self._pulling_flag
+
+    @_pulling.setter
+    def _pulling(self, value: bool) -> None:
+        if value != self._pulling_flag:
+            self._pulling_flag = value
+            self._bump()
+
+    def _bump(self) -> None:
+        canvas_sync_state.notify(self.name)
+
+    def log_event(self, leg: str, action: str, *, ms: float | None = None,
+                  ok: bool = True, detail: str = "") -> dict:
+        return self._log.add(leg, action, ms=ms, ok=ok, detail=detail)
+
+    def _paused(self) -> bool:
+        with self.pause_lock:
+            return self.pause_count > 0
 
     def pause(self) -> None:
         with self.pause_lock:
             self.pause_count += 1
-        # Block until any push/pull already in flight finishes. pause_count
-        # is now >0, so the watcher loop won't start a NEW one once it does.
+        # Block until any push/pull already in flight finishes — its network
+        # leg (_flight_lock) and any file write (_op_lock). pause_count is
+        # now >0, so neither the watcher nor a route starts a NEW one.
+        with self._flight_lock:
+            pass
         with self._op_lock:
             pass
 
@@ -1382,15 +1485,65 @@ class _SyncManager:
                 self.error_detail = []
 
     def stop(self) -> None:
-        # Join, not just signal: every subprocess call in the loop carries its
-        # own timeout (PUSH_TIMEOUT/PULL_TIMEOUT), so this is bounded. Without
-        # the join, a caller (logout, test teardown) can race ahead while the
-        # thread is still mid-subprocess — e.g. logout clearing credentials
-        # out from under an in-flight push, or (in tests) the thread's next
-        # subprocess call landing in the NEXT test's env/log after monkeypatch
-        # has moved on.
+        # Join, not just signal: without the join, a caller (logout, test
+        # teardown) can race ahead while the thread is still mid-subprocess —
+        # e.g. logout clearing credentials out from under an in-flight push,
+        # or (in tests) the thread's next subprocess call landing in the NEXT
+        # test's env/log after monkeypatch has moved on. Bounded by
+        # STOP_JOIN_S all the same: a push inside its CLI can hold the thread
+        # for PUSH_TIMEOUT, and the quit rung terminates that CLI first.
         self.stop_event.set()
-        self.thread.join()
+        self.thread.join(timeout=STOP_JOIN_S)
+        if self.thread.is_alive():
+            logger.warning("canvas %s: watcher still busy after %.0fs; stopping without it",
+                           self.name, STOP_JOIN_S)
+        # watchfiles polls stop_event every `step` ms; bounded anyway so a
+        # wedged notify backend can never hang logout or a test teardown.
+        self.fs_thread.join(timeout=2.0)
+        if canvas_sync_state.release_lock(self._lock_path, self._lock_since):
+            self.log_event("watcher", "lock released",
+                           detail=f"pid {os.getpid()}")
+        self._bump()
+
+    def _watch_fs(self) -> None:
+        """fs-event leg of the disk signal: every batch of changes in the
+        clone (dot-names and the seeded helper files excluded, the same set
+        the fingerprint skips) advances `disk_rev` right away."""
+        try:
+            import watchfiles
+        except ImportError:
+            logger.info("canvas %s: watchfiles is not installed; disk changes reach "
+                        "the embed on the %.1fs scan only", self.name, SCAN_INTERVAL_S)
+            return
+
+        root = os.path.realpath(self.dir)
+
+        def keep(_change, path: str) -> bool:
+            try:
+                rel = os.path.relpath(os.path.realpath(path), root)
+            except ValueError:
+                return False
+            parts = rel.split(os.sep)
+            if parts[0] == os.pardir:
+                return False
+            if any(p.startswith(".") for p in parts):
+                return False
+            return parts[-1] not in _SYNC_IGNORED_BASENAMES
+
+        try:
+            for _changes in watchfiles.watch(self.dir, watch_filter=keep,
+                                             stop_event=self.stop_event,
+                                             debounce=50, step=20,
+                                             yield_on_timeout=False,
+                                             raise_interrupt=False):
+                if self.stop_event.is_set():
+                    break
+                self._note_disk()
+        except Exception as exc:  # noqa: BLE001 — the 1 s scan carries on alone
+            if not self.stop_event.is_set():
+                logger.warning("canvas %s: fs watcher stopped (%s); falling back to "
+                               "the %.1fs scan", self.name, exc, SCAN_INTERVAL_S)
+                self.log_event("watcher", "fs watch stopped", ok=False, detail=str(exc))
 
     def agent_run_id(self, *, fresh: bool = False) -> str:
         """The id of a Claude run live in this clone, or "" — cached.
@@ -1511,6 +1664,7 @@ class _SyncManager:
         stale."""
         self._remote = new_remote
         self.server_stale = None
+        self._last_pull_error = None
         # New ids reach the frame through the delta leg, which only wakes on
         # a disk_rev move: count a manifest rotation as one.
         self._note_disk()
@@ -1658,8 +1812,32 @@ class _SyncManager:
         except zipfile.BadZipFile:
             return None
 
-    def _merge_remote(self, probe: dict, begin_writes=None) -> bool:
+    def _fetch_bundle(self, probe: dict) -> dict[str, bytes] | None:
+        """The remote's files for `probe`, as {os-native relpath: bytes} — the
+        network half of a merge, run WITHOUT _op_lock. None on a transient
+        failure (no CLI, no shim, download error, junk zip)."""
+        zf = self._download_zip(probe["id"])
+        if zf is None:
+            return None
+        bundle: dict[str, bytes] = {}
+        with zf:
+            for info in zf.infolist():
+                rel = _safe_zip_member_relpath(info.filename)
+                if rel is None:
+                    continue
+                # A seeded helper file that somehow reached the remote (a
+                # push from elsewhere with --no-ignore) must not overwrite
+                # the local seed.
+                if rel.rsplit("/", 1)[-1] in _SYNC_IGNORED_BASENAMES:
+                    continue
+                bundle[os.path.join(*rel.split("/"))] = zf.read(info.filename)
+        return bundle
+
+    def _merge_remote(self, probe: dict, bundle: dict[str, bytes] | None,
+                      begin_writes=None) -> bool:
         """Apply remote changes into a DIRTY clone, per file, three-way.
+        Under _op_lock; `bundle` is `_fetch_bundle(probe)`, fetched by the
+        caller BEFORE taking the lock (None = that download failed).
 
         base = last sync point. For each bundle file: local untouched since
         base → remote wins; local changed → local wins (the debounced push
@@ -1695,21 +1873,8 @@ class _SyncManager:
             self._rotate_remote(probe)
             self._save_base()
             return True
-        zf = self._download_zip(probe["id"])
-        if zf is None:
+        if bundle is None:
             return False  # transient — retried with the same probe
-        with zf:
-            bundle: dict[str, bytes] = {}
-            for info in zf.infolist():
-                rel = _safe_zip_member_relpath(info.filename)
-                if rel is None:
-                    continue
-                # A seeded helper file that somehow reached the remote (a
-                # push from elsewhere with --no-ignore) must not overwrite
-                # the local seed.
-                if rel.rsplit("/", 1)[-1] in _SYNC_IGNORED_BASENAMES:
-                    continue
-                bundle[os.path.join(*rel.split("/"))] = zf.read(info.filename)
         new_base = dict(base)
         trash: str | None = None
         _MISSING = object()
@@ -1823,6 +1988,9 @@ class _SyncManager:
                 else:
                     new_base[rel] = prev_base  # type: ignore[assignment]
             self.merge_rollback_seq += 1
+            self.log_event("server_to_disk", "pull rollback", ok=False,
+                           detail="merged clone failed `fused canvas validate`; restored "
+                                  + ", ".join(r for r, _b, _p in rollback[:5]))
             rollback = []
             rolled_back = True
         else:
@@ -2000,14 +2168,179 @@ class _SyncManager:
         self._save_base()
         return None
 
-    def _push(self) -> None:
-        self.push_state = "pushing"
+    def _push_copy_dir(self) -> str:
+        return os.path.join(canvases_root(), ".sync", "push", self.name)
+
+    def _freeze_copy(self) -> str:
+        """Copy the clone to `.sync/push/<name>/` (fresh each push) for the
+        CLI to read while _op_lock is free. Dot-DIRS are left out (the
+        fingerprint and every sync walk skip them too); dot-files — the
+        clone's `.fusedignore` above all, which the CLI reads from the folder
+        it pushes — are copied. Under _op_lock, so no snapshot write lands
+        half-way through the copy. Raises OSError/shutil.Error on failure."""
+        import fnmatch
+
+        dest = self._push_copy_dir()
+        _rmtree_quiet(dest)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        # What the clone's .fusedignore lists is never pushed (the CLI skips
+        # it), so it is not worth copying either — but only where this can be
+        # SURE: the copy is what gets published, and a file wrongly left out
+        # here is deleted server-side, while one wrongly copied is still
+        # dropped by the CLI's own (full gitignore) filter. So a deliberately
+        # small subset: a pattern without a "/" matches a FILE by basename at
+        # the clone root only and a DIRECTORY by name at any depth (a trailing
+        # "/" = directories only), last match wins with `!` re-including. Any
+        # rule with a "/" in it (`/x.py`, `src/*.py`, where fnmatch's `*`
+        # would cross "/") turns the subset off: everything is copied and the
+        # CLI decides. `.fusedignore` itself always travels (the CLI reads it).
+        rules: list[tuple[str, bool, bool]] = []
+        try:
+            with open(os.path.join(self.dir, ".fusedignore"), encoding="utf-8",
+                      errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    negated = line.startswith("!")
+                    line = line[1:] if negated else line
+                    dir_only = line.endswith("/")
+                    line = line.rstrip("/")
+                    if not line:
+                        continue
+                    if "/" in line:
+                        rules = []
+                        break
+                    rules.append((line, negated, dir_only))
+        except OSError:
+            rules = []
+
+        def ignored(name: str, is_dir: bool, at_root: bool) -> bool:
+            if not is_dir and not at_root:
+                return False
+            out = False
+            for pattern, negated, dir_only in rules:
+                if dir_only and not is_dir:
+                    continue
+                if fnmatch.fnmatchcase(name, pattern):
+                    out = not negated
+            return out
+
+        root = os.path.normpath(self.dir)
+
+        def ignore(folder: str, names: list[str]) -> list[str]:
+            out = []
+            at_root = os.path.normpath(folder) == root
+            for n in names:
+                is_dir = os.path.isdir(os.path.join(folder, n))
+                if n.startswith(".") and is_dir:
+                    out.append(n)
+                    continue
+                if n == ".fusedignore" or not rules:
+                    continue
+                if ignored(n, is_dir, at_root):
+                    out.append(n)
+            return out
+
+        shutil.copytree(self.dir, dest, ignore=ignore, ignore_dangling_symlinks=True)
+        return dest
+
+    def _push_argv(self, cli, copy_dir: str) -> list[str]:
+        return [*cli.command, "workbench", "canvas", "push", copy_dir, "--canvas", self.name]
+
+    def _run_push_cli(self, cli, copy_dir: str) -> subprocess.CompletedProcess:
+        """`fused workbench canvas push <frozen copy> --canvas <name>` — the
+        one network call of a push, run with _op_lock RELEASED. Its own seam
+        so a test can stand in a slow push. The child is kept on the manager
+        (`_push_proc`) while it runs, so the quit rung can stop it
+        (`terminate_push`) instead of leaving it to outlive the app."""
+        argv = self._push_argv(cli, copy_dir)
+        if self.stop_event.is_set():
+            # Stopping (quit, logout) between the freeze and here: never start
+            # a CLI that terminate_push has already looked past.
+            raise OSError("canvas sync is stopping")
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=_cli_env(cli),
+        )
+        self._push_proc = proc
+        if self.stop_event.is_set():
+            proc.terminate()  # stop landed between the check above and here
+        try:
+            try:
+                out, err = proc.communicate(timeout=PUSH_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
+        finally:
+            self._push_proc = None
+        return subprocess.CompletedProcess(argv, proc.returncode, out, err)
+
+    def terminate_push(self, grace_s: float = PUSH_TERMINATE_GRACE_S) -> bool:
+        """Stop a push CLI in flight: SIGTERM, then SIGKILL after `grace_s`.
+        The push then folds as failed (no base rotation). Returns whether one
+        was running."""
+        proc = self._push_proc
+        if proc is None or proc.poll() is not None:
+            return False
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=grace_s)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        except OSError:
+            pass
+        self.log_event("disk_to_server", "push stopped", ok=False,
+                       detail="fused-render is quitting")
+        return True
+
+    def _push(self, *, lock_wait: float | None = None) -> str:
+        """Publish the clone. The caller holds `_flight_lock` and NOT
+        `_op_lock`, and has checked the pause count under the flight lock.
+
+        Three phases, `push_state == "pushing"` across all of them:
+          1. (network, no lock) the pre-push guard's probe — and, if the
+             remote moved, its bundle download; then the merge applies under
+             _op_lock.
+          2. (under _op_lock, short) take the fingerprint + file hashes +
+             toml rows this push publishes, and freeze them as a copy.
+          3. (network, no lock) the CLI pushes the COPY; the post-push probe
+             fetches the new manifest. Then (under _op_lock) fold the result
+             in. A write that landed during the CLI run is not in the copy:
+             the clone fingerprint moved, so `_dirty_since` re-arms and the
+             next tick pushes again.
+
+        Returns "done" (push_state says how it went) or "busy" when _op_lock
+        could not be had within `lock_wait` (default MANUAL_PUSH_LOCK_WAIT_S)
+        — nothing changed then, the clone stays as dirty as it was."""
+        wait = MANUAL_PUSH_LOCK_WAIT_S if lock_wait is None else lock_wait
+        prev_state, prev_dirty = self.push_state, self._dirty_since
         cli = fused_cli()
         if cli is None:
             self.push_state = "error"
             self.last_error = "the fused CLI is not available"
             self.error_detail = []
-            return
+            self.log_event("disk_to_server", "push error", ok=False, detail=self.last_error)
+            return "done"
+        started = time.time()
+        self._push_started_at = started
+        self.push_state = "pushing"
+        self.log_event("disk_to_server", "push start")
+
+        def deferred(why: str) -> str:
+            self._dirty_since = prev_dirty if self._dirty_since is None else self._dirty_since
+            self._push_started_at = None
+            self.push_state = prev_state
+            self.log_event("disk_to_server", "push busy", ok=False, detail=why)
+            return "busy"
+
         # Guard the wholesale replace: if the remote moved since the last
         # sync point, fold its changes in first (per-file, local wins ties)
         # so the push can't clobber a concurrent workbench edit.
@@ -2017,7 +2350,14 @@ class _SyncManager:
                 probe is not None
                 and self._remote_moved(self._remote, probe)
             ):
-                if not self._merge_remote(probe):
+                bundle = self._fetch_bundle(probe) if self._base_files is not None else None
+                if not self._op_lock.acquire(timeout=wait):
+                    return deferred("another sync step held the clone")
+                try:
+                    merged = self._merge_remote(probe, bundle)
+                finally:
+                    self._op_lock.release()
+                if not merged:
                     # The remote moved and could not be reconciled (zip
                     # download failed) — pushing now would wholesale-replace
                     # edits we haven't seen, the exact clobber the merge
@@ -2032,42 +2372,59 @@ class _SyncManager:
                     # interception's error_detail passthrough) would send the
                     # session to fix a problem this attempt never even
                     # encountered, one it may have already fixed.
-                    self.push_state = "pending"
                     self.last_error = None
                     self.error_detail = []
                     self._dirty_since = time.time()
-                    return
-        # Baseline BEFORE the push: a save landing while the push runs must
-        # re-arm the debounce, not vanish into the pushed snapshot. The file
-        # hashes are taken at the same instant — they describe the snapshot
-        # this push publishes, which becomes the merge base on success.
-        self._fingerprint = self._take_fingerprint()
-        self._dirty_since = None
-        base_snapshot = self._take_file_hashes()
-        base_toml_snapshot = self._toml_rows()
+                    self._push_started_at = None
+                    self.push_state = "pending"
+                    self.log_event("disk_to_server", "push deferred", ok=False,
+                                   ms=(time.time() - started) * 1000,
+                                   detail="the server changed and its files could not be "
+                                          "downloaded to merge first")
+                    return "done"
+        # Freeze. Baseline BEFORE the push: a save landing while the push runs
+        # must re-arm the debounce, not vanish into the pushed snapshot. The
+        # file hashes are taken at the same instant — they describe the
+        # snapshot this push publishes, which becomes the merge base on success.
+        if not self._op_lock.acquire(timeout=wait):
+            return deferred("another sync step held the clone")
         try:
-            proc = subprocess.run(
-                [*cli.command, "workbench", "canvas", "push", self.dir, "--canvas", self.name],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=PUSH_TIMEOUT,
-                env=_cli_env(cli),
-            )
-        except subprocess.TimeoutExpired:
-            self.push_state = "error"
-            self.last_error = f"`fused canvas push` timed out after {int(PUSH_TIMEOUT)}s"
-            self.error_detail = []
-            return
-        except OSError as e:
-            self.push_state = "error"
-            self.last_error = f"could not run the fused CLI: {e}"
-            self.error_detail = []
-            return
+            # Rows for orphan source files FIRST, so the fingerprint, hashes
+            # and copy below all include them.
+            self._synthesize_orphans()
+            frozen = self._take_fingerprint()
+            self._fingerprint = frozen
+            self._dirty_since = None
+            base_snapshot = self._take_file_hashes()
+            base_toml_snapshot = self._toml_rows()
+            try:
+                copy_dir = self._freeze_copy()
+            except (OSError, shutil.Error) as exc:
+                copy_dir = None
+                copy_error = str(exc)
+        finally:
+            self._op_lock.release()
+        if copy_dir is None:
+            # A file vanished mid-copy (Claude deleting while we froze) or the
+            # disk is full: nothing was pushed — retry after the debounce.
+            self._dirty_since = time.time()
+            self._push_started_at = None
+            self.push_state = "pending"
+            self.log_event("disk_to_server", "push deferred", ok=False,
+                           detail=f"could not freeze the clone for the push: {copy_error}")
+            return "done"
+        try:
+            try:
+                proc = self._run_push_cli(cli, copy_dir)
+            except subprocess.TimeoutExpired:
+                return self._push_failed(
+                    f"`fused canvas push` timed out after {int(PUSH_TIMEOUT)}s", [],
+                    started, frozen)
+            except OSError as e:
+                return self._push_failed(f"could not run the fused CLI: {e}", [], started, frozen)
+        finally:
+            _rmtree_quiet(copy_dir)
         if proc.returncode != 0:
-            self.push_state = "error"
-            self.last_error = cli_error(proc.stderr or proc.stdout, "fused canvas push failed")
             # Everything the CLI printed, one entry per line, capped so a
             # pathological run can't grow the status payload without bound.
             # Includes the summary line last_error already shows — the reader
@@ -2076,22 +2433,50 @@ class _SyncManager:
             lines = [ln.strip() for ln in
                      ((proc.stderr or "") + "\n" + (proc.stdout or "")).splitlines()
                      if ln.strip()]
-            self.error_detail = lines[:_ERROR_DETAIL_MAX]
-            return
-        self.push_seq += 1
-        self.last_push_at = time.time()
-        self.last_error = None
-        self.error_detail = []
-        self.push_state = "idle"
+            return self._push_failed(
+                cli_error(proc.stderr or proc.stdout, "fused canvas push failed"),
+                lines[:_ERROR_DETAIL_MAX], started, frozen)
         # New sync point: the pushed snapshot is the merge base, and the
         # remote is re-probed so its post-push hashes become the manifest
         # baseline (a workbench edit landing inside this probe window gets
         # absorbed — the documented blind window). Probe failure → None →
-        # the next poll adopts a fresh baseline.
-        self._base_files = base_snapshot
-        self._base_toml = base_toml_snapshot
-        self._rotate_remote(self._probe_remote())
-        self._save_base()
+        # the next poll adopts a fresh baseline. Probed BEFORE the fold, so the
+        # lock is not held across it.
+        after = self._probe_remote()
+        with self._op_lock:
+            self.push_seq += 1
+            self.last_push_at = time.time()
+            self.last_error = None
+            self.error_detail = []
+            self._base_files = base_snapshot
+            self._base_toml = base_toml_snapshot
+            self._rotate_remote(after)
+            self._save_base()
+            moved = self._take_fingerprint() != frozen
+            if moved:
+                # Written while the CLI ran: not in the copy, so not pushed.
+                self._dirty_since = self._dirty_since or time.time()
+        self._push_started_at = None
+        self.push_state = "pending" if moved else "idle"
+        self.log_event("disk_to_server", "push end", ms=(time.time() - started) * 1000,
+                       detail=f"push_seq {self.push_seq}"
+                              + ("; the clone changed during the push, pushing again"
+                                 if moved else ""))
+        return "done"
+
+    def _push_failed(self, error: str, detail: list[str], started: float,
+                     frozen: dict) -> str:
+        self.last_error = error
+        self.error_detail = detail
+        if self._take_fingerprint() != frozen:
+            # An edit landed during the failed push — maybe the fix. Re-arm so
+            # the debounce tries it (push_state stays "error" until one lands).
+            self._dirty_since = self._dirty_since or time.time()
+        self._push_started_at = None
+        self.push_state = "error"
+        self.log_event("disk_to_server", "push error", ok=False,
+                       ms=(time.time() - started) * 1000, detail=error)
+        return "done"
 
     def _pull_if_remote_changed(self) -> None:
         """Legacy downstream probe — external-CLI fallback only (no manifest
@@ -2176,9 +2561,7 @@ class _SyncManager:
 
     def _run(self) -> None:
         while not self.stop_event.wait(SCAN_INTERVAL_S):
-            with self.pause_lock:
-                paused = self.pause_count > 0
-            if paused:
+            if self._paused():
                 continue
             # Keep the live-run cache warm from the WATCHER thread, on every
             # tick, clean clone or not — not just from the dirty/debounce
@@ -2197,7 +2580,10 @@ class _SyncManager:
             if current != self._fingerprint:
                 self._fingerprint = current
                 self._dirty_since = time.time()
-                if self.push_state != "error":
+                # "pushing" spans a whole push (a manual one runs on a request
+                # thread while this loop keeps scanning): its fold decides
+                # what comes next, from the same fingerprint comparison.
+                if self.push_state not in ("error", "pushing"):
                     self.push_state = "pending"
                 continue
             if self._dirty_since is not None and time.time() - self._dirty_since >= DEBOUNCE_S:
@@ -2218,36 +2604,56 @@ class _SyncManager:
                 # a hosted tab does not save over a server it has not looked
                 # at, and neither does this one. Pull() clears it.
                 if not self.agent_run_id() and self.server_stale is None:
-                    with self._op_lock:
-                        self._push()
+                    # Non-blocking: a manual push or a pull in flight already
+                    # owns the network leg; this tick just skips. The pause
+                    # count is re-read UNDER the flight lock — pause() raises
+                    # it before waiting on that lock, so either it sees us
+                    # and waits, or we see it and stand down.
+                    if self._flight_lock.acquire(blocking=False):
+                        try:
+                            if not self._paused():
+                                self._push()
+                        finally:
+                            self._flight_lock.release()
                     continue
             if time.time() - self._last_pull_poll >= PULL_POLL_S:
                 # The downstream leg only DETECTS now (server_stale); it writes
                 # nothing, so it runs through a live Claude session too — the
                 # old hold existed because this leg pulled files from under a
-                # session mid-change-set. pull() is explicit and under the lock.
-                self._last_pull_poll = time.time()
-                cli = fused_cli()
-                if cli is not None and _shim_manifest_command(cli) is not None:
-                    # Manifest probe: runs clean OR dirty, and is read-only, so
-                    # it stays outside _op_lock.
-                    probe = self._probe_remote()
-                    if probe is not None:
-                        with self._op_lock:
-                            # NOTE: `_pulling` is set INSIDE _poll_remote, not
-                            # here. Wrapping probe-and-decide made a poll that
-                            # decided to do nothing register as a full lock
-                            # engagement the 2s status poll could sample — a
-                            # read-only flicker for a pull that never happened.
-                            self._poll_remote(probe)
-                elif self._dirty_since is None and self.push_state == "idle":
-                    # External CLI (no shims): legacy dry-run probe, detect
-                    # only, and CLEAN clones only — a `pull --dry-run` cannot
-                    # tell a local edit from a remote move, so on a dirty
-                    # clone it would read every unpushed edit as "server
-                    # changed" and hold the push forever.
-                    with self._op_lock:
+                # session mid-change-set. pull() is explicit and its own act.
+                # Skipped (retried next tick) while a push or pull holds the
+                # flight lock: a push moving the remote would read as a
+                # server change, and the push re-baselines the remote anyway.
+                if not self._flight_lock.acquire(blocking=False):
+                    continue
+                try:
+                    if self._paused():
+                        continue
+                    self._last_pull_poll = time.time()
+                    cli = fused_cli()
+                    if cli is not None and _shim_manifest_command(cli) is not None:
+                        # Manifest probe: runs clean OR dirty, read-only, and a
+                        # network call — so outside _op_lock; only adopting
+                        # the answer takes it.
+                        probe = self._probe_remote()
+                        if probe is not None:
+                            with self._op_lock:
+                                # NOTE: `_pulling` is set INSIDE _poll_remote, not
+                                # here. Wrapping probe-and-decide made a poll that
+                                # decided to do nothing register as a full lock
+                                # engagement the 2s status poll could sample — a
+                                # read-only flicker for a pull that never happened.
+                                self._poll_remote(probe)
+                    elif self._dirty_since is None and self.push_state == "idle":
+                        # External CLI (no shims): legacy dry-run probe, detect
+                        # only, and CLEAN clones only — a `pull --dry-run` cannot
+                        # tell a local edit from a remote move, so on a dirty
+                        # clone it would read every unpushed edit as "server
+                        # changed" and hold the push forever. A network call
+                        # that writes nothing: no _op_lock.
                         self._pull_if_remote_changed()
+                finally:
+                    self._flight_lock.release()
 
     # -- server-stale and the explicit pull -----------------------------------
 
@@ -2296,12 +2702,23 @@ class _SyncManager:
                 elif before[slug] != after[slug]:
                     udfs.append({"slug": slug, "kind": "changed"})
             layout = probe.get("last_updated") != self._remote.get("last_updated")
-        since = (self.server_stale or {}).get("since") or time.time()
+        prev = self.server_stale
+        since = (prev or {}).get("since") or time.time()
         self.server_stale = {"since": since, "udfs": udfs, "layout": layout}
+        if prev is None or prev.get("udfs") != udfs or prev.get("layout") != layout:
+            self.log_event("server_to_disk", "probe stale", ok=False,
+                           detail=_stale_reason(self.server_stale))
 
-    def pull(self) -> dict:
+    def pull(self, *, lock_wait: float | None = None) -> dict:
         """Bring the remote into the clone, on request (the page's Pull, or a
-        session answering the manual push's refusal). Under _op_lock.
+        session answering the manual push's refusal). The caller holds
+        `_flight_lock` and NOT `_op_lock` (and has read the pause count under
+        the flight lock): the manifest probe and the merge's zip download run
+        unlocked, and only the writes take _op_lock — an embed snapshot does
+        not wait out the download. The two CLI `pull --force` legs are the
+        exception: the CLI writes the clone itself, so they run under
+        _op_lock for their length (a snapshot arriving then answers 409 busy
+        past SNAPSHOT_LOCK_WAIT_S and the embed re-posts it).
 
         Clean clone → CLI `pull --force` (trash snapshot first). Dirty clone →
         the three-way merge (per file; canvas.toml per node); the merged
@@ -2321,11 +2738,43 @@ class _SyncManager:
         `ok: True` means the pull LANDED. A CLI that times out, cannot start
         or exits non-zero answers `ok: False` with its reason and leaves
         `server_stale` set, so the push stays held over a remote it never
-        brought down.
+        brought down. `code: "busy"` (with ok False) means _op_lock stayed
+        held past `lock_wait`: nothing was written.
         """
         cli = fused_cli()
         if cli is None:
             return {"ok": False, "error": "the fused CLI is not available"}
+        wait = MANUAL_PUSH_LOCK_WAIT_S if lock_wait is None else lock_wait
+        started = time.time()
+        self._pull_started_at = started
+        self._pull_in_flight = True
+        self.log_event("server_to_disk", "pull start")
+        try:
+            result = self._pull(cli, wait)
+        finally:
+            self._pull_in_flight = False
+            self._pull_started_at = None
+        # Even a failed `--force` may have half-written the clone before it
+        # timed out, so the embed's disk leg still has to look.
+        self._note_disk()
+        ms = (time.time() - started) * 1000
+        if result.get("ok"):
+            self._last_pull_error = None
+            self.log_event("server_to_disk", "pull end", ms=ms,
+                           detail=f"pull_seq {self.pull_seq}")
+        elif result.get("code") == "busy":
+            self.log_event("server_to_disk", "pull busy", ok=False, ms=ms,
+                           detail=result.get("error") or "")
+        else:
+            self._last_pull_error = result.get("error")
+            self.log_event("server_to_disk", "pull error", ok=False, ms=ms,
+                           detail=result.get("error") or "")
+        self._bump()
+        return result
+
+    def _pull(self, cli, wait: float) -> dict:
+        busy = {"ok": False, "code": "busy",
+                "error": "a sync operation is in flight for this canvas; try again in a moment"}
         dirty = self._dirty_since is not None or self._take_fingerprint() != self._fingerprint
         error: str | None = None
         if _shim_manifest_command(cli) is not None:
@@ -2333,48 +2782,65 @@ class _SyncManager:
             if probe is None:
                 return {"ok": False, "error": "could not read the canvas from the server"}
             if dirty and self._base_files is not None:
-                rollbacks_before = self.merge_rollback_seq
-                with self._pull_writes() as begin_writes:
-                    if not self._merge_remote(probe, begin_writes=begin_writes):
-                        return {"ok": False,
-                                "error": "could not download the canvas from the server; try again"}
-                if self.merge_rollback_seq != rollbacks_before:
+                bundle = self._fetch_bundle(probe)
+                if bundle is None:
                     return {"ok": False,
-                            "error": "merging the server's changes would break the canvas "
-                                     "(fused canvas validate failed); nothing was changed. "
-                                     "Publish or revert your local edits, then pull again"}
-                self.pull_seq += 1
-                self.last_pull_at = time.time()
-                _seed_clone_claude_files(self.dir, self.name)
-                # The merged folder carries this clone's unpushed edits: it
-                # stays dirty and the (no longer held) push ships it.
-                self._fingerprint = self._take_fingerprint()
-                self._dirty_since = time.time()
-                if self.push_state != "error":
-                    self.push_state = "pending"
+                            "error": "could not download the canvas from the server; try again"}
+                if not self._op_lock.acquire(timeout=wait):
+                    return busy
+                try:
+                    rollbacks_before = self.merge_rollback_seq
+                    with self._pull_writes() as begin_writes:
+                        if not self._merge_remote(probe, bundle, begin_writes=begin_writes):
+                            return {"ok": False,
+                                    "error": "could not download the canvas from the server; "
+                                             "try again"}
+                    if self.merge_rollback_seq != rollbacks_before:
+                        return {"ok": False,
+                                "error": "merging the server's changes would break the canvas "
+                                         "(fused canvas validate failed); nothing was changed. "
+                                         "Publish or revert your local edits, then pull again"}
+                    self.pull_seq += 1
+                    self.last_pull_at = time.time()
+                    _seed_clone_claude_files(self.dir, self.name)
+                    # The merged folder carries this clone's unpushed edits: it
+                    # stays dirty and the (no longer held) push ships it.
+                    self._fingerprint = self._take_fingerprint()
+                    self._dirty_since = time.time()
+                    if self.push_state != "error":
+                        self.push_state = "pending"
+                finally:
+                    self._op_lock.release()
             else:
                 # Clean — or dirty with no sync point to merge against, where
                 # the server wins and the trash keeps what it overwrote.
                 # `_force_pull` rotates the baseline (clearing `server_stale`)
                 # only on the path where the pull landed.
-                with self._pull_writes() as begin_writes:
-                    begin_writes()
-                    error = self._force_pull(probe, cli)
+                if not self._op_lock.acquire(timeout=wait):
+                    return busy
+                try:
+                    with self._pull_writes() as begin_writes:
+                        begin_writes()
+                        error = self._force_pull(probe, cli)
+                finally:
+                    self._op_lock.release()
         else:
             base = ["workbench", "canvas", "pull", self.name, "-o", self.dir]
-            if dirty:
-                self._snapshot_clone()
-            with self._pull_writes() as begin_writes:
-                begin_writes()
-                error = self._apply_legacy_pull(cli, base)
-            # No manifest here, so no rotation to clear it: clear by hand, and
-            # ONLY once the pull landed — this flag is the legacy leg's sole
-            # guard against the watcher pushing local over the remote.
-            if error is None:
-                self.server_stale = None
-        # Even a failed `--force` may have half-written the clone before it
-        # timed out, so the embed's disk leg still has to look.
-        self._note_disk()
+            if not self._op_lock.acquire(timeout=wait):
+                return busy
+            try:
+                if dirty:
+                    self._snapshot_clone()
+                with self._pull_writes() as begin_writes:
+                    begin_writes()
+                    error = self._apply_legacy_pull(cli, base)
+                # No manifest here, so no rotation to clear it: clear by hand, and
+                # ONLY once the pull landed — this flag is the legacy leg's sole
+                # guard against the watcher pushing local over the remote.
+                if error is None:
+                    self.server_stale = None
+            finally:
+                self._op_lock.release()
         if error is not None:
             return {"ok": False, "error": error}
         return {"ok": True}
@@ -2424,9 +2890,18 @@ class _SyncManager:
         fp = fingerprint if fingerprint is not None else self._take_fingerprint()
         key = (fp, self._remote_ids())
         with self._rev_lock:
-            if key != self._rev_key:
-                self._rev_key = key
-                self.disk_rev += 1
+            if key == self._rev_key:
+                return
+            self._rev_key = key
+            self.disk_rev += 1
+            # When each rev appeared, for sync/state's disk_to_embed age. Only
+            # revs the frame has not acked matter; bounded either way.
+            self._rev_times[self.disk_rev] = time.time()
+            if len(self._rev_times) > 64:
+                for old in [r for r in self._rev_times if r <= self._view_rev] or \
+                        sorted(self._rev_times)[:-64]:
+                    self._rev_times.pop(old, None)
+        self._bump()
 
     def _remote_ids(self) -> dict[str, str]:
         """slug → server id from the last remote manifest (the shim emits
@@ -2451,6 +2926,8 @@ class _SyncManager:
         view already describes the result."""
         self._note_disk()
         self._view_rev = self.disk_rev
+        self._frame_seen = True
+        self._bump()
         try:
             disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
         except Exception as exc:  # noqa: BLE001 — a view we cannot read is no view
@@ -2475,37 +2952,131 @@ class _SyncManager:
         write is either in `disk` already or bumps the rev on the next scan
         and a follow-up delta repairs the view. Noted after, the delta would
         carry the pre-write content under the post-write rev and the scan
-        would see nothing left to report."""
+        would see nothing left to report.
+
+        A source file with no row (Claude wrote `foo.py` and no
+        `[[canvas.nodes]]` entry) arrives in `disk` as a SYNTHESIZED row
+        (canvas_snapshot, invariant 2); it is written into canvas.toml here,
+        under the same lock, so the next push ships the node with its file.
+
+        A cut does NOT mark a frame as seen: the page cuts on every disk_rev
+        move and drops the answer when it has no frame (boot, a reload), so
+        only a frame's own ack or snapshot is evidence that one is there —
+        otherwise disk_to_embed would read "pending" with nobody to ack."""
         self._note_disk()
         rev = self.disk_rev
         try:
             disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
         except FileNotFoundError:
-            return {"rev": rev, "held": "the clone has no canvas.toml yet"}
+            return self._cut_held(rev, "the clone has no canvas.toml yet")
         except Exception as exc:  # noqa: BLE001 — rtoml's own error types
-            return {"rev": rev, "held": f"canvas.toml unreadable: {exc}"}
+            return self._cut_held(rev, f"canvas.toml unreadable: {exc}")
         if disk["missing"]:
-            return {"rev": rev,
-                    "held": "source file missing for " + ", ".join(disk["missing"][:3])}
+            return self._cut_held(rev, "source file missing for " + ", ".join(disk["missing"][:3]))
+        if self._last_cut_held is not None:
+            self.log_event("disk_to_embed", "delta unheld", detail=f"rev {rev}")
+            self._last_cut_held = None
+            self._bump()
+        if self._delta_error is not None:
+            # A good cut (the frame's hello asks for one) starts the leg over.
+            self._delta_error = None
+            self._bump()
+        synthesized = list(disk.get("synthesized") or [])
+        if synthesized:
+            self._persist_synthesized(synthesized)
         view = None if full else self._embed_view
         ops = canvas_snapshot.diff_views(disk, view)
         if view is not None and not ops:
             self._embed_view = self._adopt(disk)
             self._view_rev = rev
+            self._delta_error = None
+            self._bump()
             return {"rev": rev, "base_rev": rev, "ops": [], "full": False}
         self._delta_views[rev] = disk
         for old in sorted(self._delta_views)[:-8]:
             del self._delta_views[old]
+        self.log_event("disk_to_embed", "delta cut",
+                       detail=f"rev {rev}: {len(ops)} op(s)" + (" (full)" if view is None else ""))
         return {"rev": rev, "base_rev": None if view is None else self._view_rev,
                 "ops": ops, "full": view is None}
 
-    def ack_delta(self, rev: int, ok: bool) -> dict:
-        """The frame applied (or refused) the delta cut at `rev`."""
+    def _cut_held(self, rev: int, reason: str) -> dict:
+        """A delta the clone cannot answer yet. Logged once per distinct
+        reason — the page re-asks every few hundred ms while it holds."""
+        if reason != self._last_cut_held:
+            self._last_cut_held = reason
+            self.log_event("disk_to_embed", "delta held", ok=False, detail=f"rev {rev}: {reason}")
+        return {"rev": rev, "held": reason}
+
+    def _synthesize_orphans(self) -> None:
+        """Invariant 2 on the PUSH path: a root-level source file with no
+        `[[canvas.nodes]]` row gets its synthesized row written into
+        canvas.toml before the push freezes the clone — whether or not any
+        frame ever cut a delta — so a node is never published without its
+        file's row. Under _op_lock (the push's freeze phase)."""
+        orphans_of = getattr(canvas_snapshot, "orphan_sources", None)
+        if orphans_of is None:
+            return
+        rows = self._toml_rows()
+        if rows is None:
+            return  # no or unparsable canvas.toml: the push's validation says so
+        try:
+            orphans = orphans_of(self.dir, rows["nodes"].keys())
+        except Exception as exc:  # noqa: BLE001 — never block a push on this
+            logger.warning("canvas %s: orphan scan failed: %s", self.name, exc)
+            return
+        if orphans:
+            self._persist_synthesized([slug for slug, _file in orphans], leg="disk_to_server")
+
+    def _persist_synthesized(self, names: list[str], *, leg: str = "disk_to_embed") -> None:
+        """canvas_snapshot.persist_synthesized, when this build's snapshot
+        module has it (workstream B); a cut itself already carries the rows
+        either way. Under _op_lock (cut_delta's caller and the push's freeze
+        phase hold it)."""
+        persist = getattr(canvas_snapshot, "persist_synthesized", None)
+        if persist is None:
+            return
+        try:
+            written = persist(self.dir, names)
+        except Exception as exc:  # noqa: BLE001 — the row reaches the frame anyway
+            self.log_event(leg, "synthesize failed", ok=False,
+                           detail=f"{', '.join(names[:5])}: {exc}")
+            return
+        # canvas.toml moved: note it now rather than on the next scan/fs event.
+        # The rows are byte-identical to the reading the cut carries, so the
+        # follow-up cut diffs to nothing.
+        self._note_disk()
+        if isinstance(written, list):
+            if not written:
+                return  # idempotent: already in canvas.toml, nothing to log
+            names = written
+        self.log_event(leg, "rows synthesized",
+                       detail="canvas.toml rows written for " + ", ".join(names[:5])
+                              + (f" (+{len(names) - 5})" if len(names) > 5 else ""))
+
+    def ack_delta(self, rev: int, ok: bool, reason: str | None = None) -> dict:
+        """The frame applied (or refused) the delta cut at `rev`. `reason` is
+        the page's word for a refusal; one that only means "nobody could take
+        it yet" (no frame on the page, a frame not hydrated) resets the view
+        like any refusal but is not an error the strip should show — the
+        frame's hello brings a full state that settles it. Nor does such a
+        refusal mark a frame as seen: until the hello, there is no frame able
+        to ack, and disk_to_embed must not read "pending" over a boot."""
         view = self._delta_views.pop(rev, None)
+        benign = (not ok and bool(reason)
+                  and _BENIGN_DELTA_REFUSAL.search(reason) is not None)
+        if not benign:
+            self._frame_seen = True
         if not ok:
             # The frame holds something we cannot describe: start over with a
             # full state on its next hello or the next disk move.
             self._embed_view = None
+            if not benign:
+                self._delta_error = (f"the workbench refused the delta for rev {rev}"
+                                     + (f": {reason}" if reason else ""))
+                self._bump()
+            self.log_event("disk_to_embed", "delta refused", ok=benign,
+                           detail=f"rev {rev}" + (f": {reason}" if reason else ""))
             return {"ok": True, "rev": rev, "reset": True}
         if view is None or rev < self._view_rev:
             # Superseded: a snapshot write re-read disk since this was cut.
@@ -2521,9 +3092,15 @@ class _SyncManager:
                     if name in cur["nodes"] and name not in bodies:
                         bodies[name] = text
                 cur["bodies"] = bodies
+            self.log_event("disk_to_embed", "delta acked", detail=f"rev {rev} (stale)")
             return {"ok": True, "rev": rev, "stale": True}
         self._embed_view = self._adopt(view)
         self._view_rev = rev
+        self._delta_error = None
+        cut_at = self._rev_times.get(rev)
+        self.log_event("disk_to_embed", "delta acked",
+                       ms=None if cut_at is None else (time.time() - cut_at) * 1000,
+                       detail=f"rev {rev}")
         return {"ok": True, "rev": rev}
 
     def _adopt(self, disk: dict) -> dict:
@@ -2578,11 +3155,22 @@ class _SyncManager:
         # re-seat every node the embed is mid-way through dragging.
         bodies = dict(prev.get("bodies", {})) if prev else {}
         bodies.update(new["bodies"])
-        self._refresh_view_after_write(new["nodes"], edges=new["edges"], ids=new["ids"],
+        # Nodes the snapshot left out while still listing their UDF (a stale
+        # closure on the embed) were NOT deleted (canvas_snapshot's
+        # `deferred_deletes`): they stay in the view as known, or the next cut
+        # re-adds them as new and the following snapshot can no longer delete
+        # them.
+        held = list(new["nodes"]) + [n for n in result.get("deferred_deletes") or []
+                                     if n not in new["nodes"]]
+        self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
                                        bodies=bodies, embed_rows=new["nodes"])
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "upserted": result["upserted"], "deleted": result["deleted"],
                "created": result["created"], "push_seq": self.push_seq}
+        # Rows apply_snapshot wrote for files the snapshot sent with no node
+        # (canvas_snapshot, invariant 2) — the frame learns of them by delta.
+        if result.get("synthesized"):
+            ack["synthesized"] = list(result["synthesized"])
         return self._embed_record(gen, seq, ack)
 
     def apply_rename(self, gen: int, seq: int, frm: str, to: str,
@@ -2602,6 +3190,8 @@ class _SyncManager:
             # refresh.
             self._note_disk()
             self._view_rev = self.disk_rev
+            self._frame_seen = True
+            self._bump()
         else:
             self._refresh_view_after_write(
                 renamed["nodes"], edges=renamed.get("edges", []), ids=renamed.get("ids", {}),
@@ -2648,19 +3238,227 @@ class _SyncManager:
             "pulling": self._pulling,
         }
 
+    def sync_state(self) -> dict:
+        """GET /api/canvases/sync/state: one entry per leg of the two loops.
+        The server knows three; `embed_to_disk` (snapshots the page has
+        received and not yet had acked) is the host page's own knowledge and
+        is merged in client-side — here it is always idle."""
+        now = time.time()
+
+        def age(t: float | None) -> int | None:
+            return None if t is None else max(0, int((now - t) * 1000))
+
+        # disk → embed: the oldest disk_rev the frame has not acked.
+        rev, view_rev = self.disk_rev, self._view_rev
+        unacked = [t for r, t in list(self._rev_times.items()) if r > view_rev]
+        oldest = min(unacked) if unacked else None
+        if self._frame_seen and self._delta_error is not None:
+            d2e = {"state": "error", "oldest_age_ms": age(oldest), "reason": self._delta_error}
+        elif self._frame_seen and rev > view_rev and self._last_cut_held is not None:
+            d2e = {"state": "held", "oldest_age_ms": age(oldest), "reason": self._last_cut_held}
+        elif self._frame_seen and rev > view_rev:
+            d2e = {"state": "pending", "oldest_age_ms": age(oldest), "reason": None}
+        else:
+            d2e = {"state": "idle", "oldest_age_ms": None, "reason": None}
+
+        # disk → server.
+        ps, dirty, stale = self.push_state, self._dirty_since, self.server_stale
+        if ps == "pushing":
+            d2s = {"state": "pushing", "oldest_age_ms": age(self._push_started_at), "reason": None}
+        elif ps == "error":
+            d2s = {"state": "error", "oldest_age_ms": age(dirty), "reason": self.last_error}
+        elif stale is not None and (ps == "pending" or dirty is not None):
+            d2s = {"state": "held", "oldest_age_ms": age(dirty), "reason": _stale_reason(stale)}
+        elif ps == "pending" or dirty is not None:
+            reason = None
+            if self._paused():
+                reason = "sync is paused"
+            elif self._agent_run_id:
+                reason = "waiting for the Claude session in this folder to finish"
+            d2s = {"state": "pending", "oldest_age_ms": age(dirty), "reason": reason}
+        else:
+            d2s = {"state": "idle", "oldest_age_ms": None, "reason": None}
+        d2s["last_push_at"] = self.last_push_at
+        d2s["push_seq"] = self.push_seq
+
+        # server → disk.
+        if self._pull_in_flight:
+            s2d = {"state": "pulling", "since_ms": age(self._pull_started_at),
+                   "changed": _stale_changed(stale), "reason": None}
+        elif stale is not None:
+            s2d = {"state": "error" if self._last_pull_error else "stale",
+                   "since_ms": age(stale.get("since")), "changed": _stale_changed(stale),
+                   "reason": self._last_pull_error or _stale_reason(stale)}
+        else:
+            s2d = {"state": "idle", "since_ms": None, "changed": [], "reason": None}
+
+        return {
+            "name": self.name,
+            "watching": not self.stop_event.is_set(),
+            "legs": {
+                "embed_to_disk": dict(_IDLE_EMBED_TO_DISK),
+                "disk_to_embed": d2e,
+                "disk_to_server": d2s,
+                "server_to_disk": s2d,
+            },
+            "disk_rev": rev,
+            "watcher_epoch": self.watcher_epoch,
+            "owner": {"pid": os.getpid(), "port": canvas_sync_state.server_port()},
+            "other_watchers": _other_watchers(self.name),
+            "error_detail": list(self.error_detail),
+            # The Fix-with-Claude button's one input, so the page needs no
+            # sync/status poll beside this feed.
+            "fix_active": self.active_fix_run_id is not None,
+        }
+
+
+_IDLE_EMBED_TO_DISK = {"state": "idle", "oldest_age_ms": None, "reason": None}
+
+# A delta refusal that means "nobody could take it yet", not "the frame
+# choked on it": no frame on the page, a frame still hydrating.
+_BENIGN_DELTA_REFUSAL = re.compile(r"hydrat|no[ _-]?frame", re.IGNORECASE)
+
+
+def _stale_changed(stale: dict | None) -> list[dict]:
+    if not stale:
+        return []
+    changed = [{"slug": u.get("slug"), "kind": u.get("kind")} for u in stale.get("udfs", [])]
+    if stale.get("layout"):
+        changed.append({"slug": None, "kind": "layout"})
+    return changed
+
+
+def _stale_reason(stale: dict | None) -> str:
+    """"server changed: a (changed), b (added)" — the push route's wording."""
+    udfs = (stale or {}).get("udfs") or []
+    what = ", ".join(f"{u['slug']} ({u['kind']})" for u in udfs) or "the canvas layout"
+    return f"server changed: {what}"
+
+
+def _lock_path(name: str) -> str:
+    return os.path.join(canvases_root(), ".sync", f"{name}.lock")
+
+
+def _other_watchers(name: str) -> list[dict]:
+    """A live process other than this one holding the clone's writer lock —
+    only possible when this process holds no manager for it (the start was
+    refused) or the lock was taken over from under us."""
+    held = canvas_sync_state.lock_holder(_lock_path(name))
+    if held is None:
+        return []
+    return [{"pid": held.get("pid"), "port": held.get("port")}]
+
+
+def _unwatched_state(name: str) -> dict:
+    """sync/state for a canvas this process is not syncing: every leg idle,
+    and the owner if another process holds the lock (the page that got the
+    409 shows who)."""
+    others = _other_watchers(name)
+    return {
+        "name": name,
+        "watching": False,
+        "legs": {
+            "embed_to_disk": dict(_IDLE_EMBED_TO_DISK),
+            "disk_to_embed": {"state": "idle", "oldest_age_ms": None, "reason": None},
+            "disk_to_server": {"state": "idle", "oldest_age_ms": None, "reason": None,
+                               "last_push_at": None, "push_seq": 0},
+            "server_to_disk": {"state": "idle", "since_ms": None, "changed": [], "reason": None},
+        },
+        "disk_rev": 0,
+        "watcher_epoch": None,
+        "owner": others[0] if others else None,
+        "other_watchers": others,
+        "error_detail": [],
+        "fix_active": False,
+    }
+
+
+class _CanvasOwned(Exception):
+    """Another live fused-render process holds this clone's writer lock."""
+
+    def __init__(self, owner: dict):
+        super().__init__(f"pid {owner.get('pid')} owns this canvas")
+        self.owner = owner
 
 _SYNC_LOCK = threading.Lock()
 _syncs: dict[str, _SyncManager] = {}
+# Set by the quit rung (app.py `_stop_children`): no new manager — and so no
+# new writer lock — once the app is quitting.
+_QUITTING = False
+
+
+def refuse_new_managers() -> None:
+    """The quit rung's spawn latch (armed before any killer runs)."""
+    global _QUITTING
+    with _SYNC_LOCK:
+        _QUITTING = True
+
+
+def shutdown() -> None:
+    """Quit rung: stop every sync manager — a push CLI in flight, its watcher
+    and fs threads, its writer lock — then close any claim left open. The
+    packaged app never runs the server's lifespan (app.py
+    QUIT_CHILDREN_BUDGET_S), so without this a push CLI outlived the app as
+    an orphan and the lock fds were left to the process exit.
+
+    A push is STOPPED, not waited for: its CLI is terminated (SIGTERM, then
+    SIGKILL after PUSH_TERMINATE_GRACE_S) so its fold never runs on a half
+    state; the push folds as failed and the sync point is not rotated. If the
+    server had already taken the push, the next launch's first probe reads it
+    as "server changed" and the user pulls their own push back — accepted.
+    All stop events are set first so the joins overlap; each join is bounded
+    by STOP_JOIN_S, and the kernel drops any flock left at exit."""
+    global _QUITTING
+    with _SYNC_LOCK:
+        _QUITTING = True
+        managers = list(_syncs.values())
+        _syncs.clear()
+    for manager in managers:
+        manager.stop_event.set()
+    for manager in managers:
+        try:
+            manager.terminate_push()
+        except Exception:  # noqa: BLE001 — the stop below still runs
+            logger.warning("canvas %s: stopping the push on quit failed",
+                           manager.name, exc_info=True)
+    for manager in managers:
+        try:
+            manager.stop()
+        except Exception:  # noqa: BLE001 — the next manager still stops
+            logger.warning("canvas %s: stop on quit failed", manager.name, exc_info=True)
+    canvas_sync_state.release_all()
 
 
 def _sync_manager(name: str, create: bool) -> _SyncManager | None:
+    """The live manager for `name`; with `create`, start one if none runs.
+
+    Creating claims the clone's writer lock first (canvas_sync_state's
+    docstring): a live foreign pid raises _CanvasOwned and nothing starts; a
+    dead one's lock is taken over; this pid's own (a manager this process
+    replaced) is simply re-taken."""
     with _SYNC_LOCK:
         manager = _syncs.get(name)
         if manager is not None and manager.stop_event.is_set():
             manager = None
+        if manager is None and create and _QUITTING:
+            return None  # the quit rung's latch: no new watcher (and no lock)
         if manager is None and create:
-            manager = _SyncManager(name)
+            path = _lock_path(name)
+            outcome, record = canvas_sync_state.claim_lock(path)
+            if outcome == "refused":
+                logger.info("canvas %s: lock refused — pid %s (port %s) owns it since %s",
+                            name, record.get("pid"), record.get("port"), record.get("since"))
+                raise _CanvasOwned(record)
+            mine = canvas_sync_state.read_lock(path) or {}
+            manager = _SyncManager(name, lock_since=mine.get("since"))
             _syncs[name] = manager
+            if outcome == "taken_over":
+                manager.log_event("watcher", "lock taken over",
+                                  detail=f"stale lock of pid {record.get('pid')} "
+                                         f"(port {record.get('port')}) — that process is gone")
+            else:
+                manager.log_event("watcher", "lock taken",
+                                  detail=f"pid {os.getpid()} port {canvas_sync_state.server_port()}")
         return manager
 
 
@@ -2674,6 +3472,23 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     if not os.path.isfile(os.path.join(_canvas_dir(name), "canvas.toml")):
         return _error(f"canvas {name!r} is not cloned yet (no canvas.toml)", 409)
+    # The writer lock FIRST: a refused start must not touch a folder another
+    # process owns (the seeding below writes into it).
+    try:
+        manager = _sync_manager(name, create=True)
+    except _CanvasOwned as owned:
+        # One writer per clone: another fused-render (the desktop app and a
+        # dev server, two branches) is already syncing this folder. The page
+        # says who and does not start its delta leg (owner decision Q4).
+        owner = {k: owned.owner.get(k) for k in ("pid", "port", "since")}
+        return JSONResponse(
+            {"error": f"canvas {name!r} is synced by another fused-render "
+                      f"(pid {owner['pid']}, port {owner['port']})",
+             "code": "owned", "owner": owner}, status_code=409)
+    except OSError as exc:
+        return _error(f"could not take the canvas sync lock: {exc}", 500)
+    if manager is None:
+        return _busy("fused-render is quitting; canvas sync is not starting")
     # The page calls this when it OPENS a canvas (and again whenever a poll finds
     # the watcher dropped), which makes it the hook that covers a canvas cloned
     # before this feature existed — nearly every real canvas. /clone alone left
@@ -2693,7 +3508,6 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
     # every push (.fusedignore) — and shim-gated inside the helper, so the
     # external-CLI leg still cannot churn on it.
     _seed_clone_claude_files(_canvas_dir(name), name)
-    manager = _sync_manager(name, create=True)
     return manager.status()
 
 
@@ -2756,36 +3570,73 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
              "code": "no_watcher"}, status_code=409)
     # A short wait, not sync/push's 5 s: the page retries a 409 on its own
     # (SNAPSHOT_BUSY_WINDOW_MS), and holding the request open for the length of
-    # a pull would only delay the ack past the chip's "reconnecting" line.
+    # a pull would only delay the ack past the chip's "reconnecting" line. With
+    # _op_lock never held across a network call this should essentially never
+    # fire — the one remaining long holder is a CLI `pull --force` — so when it
+    # does, it is logged.
+    what = f"rename {rename.get('from')} → {rename.get('to')}" if isinstance(rename, dict) \
+        else "snapshot"
+    started = time.time()
     if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
+        manager.log_event("embed_to_disk", "snapshot busy", ok=False,
+                          ms=(time.time() - started) * 1000,
+                          detail=f"{what} {gen}/{seq}: the clone stayed locked past "
+                                 f"{SNAPSHOT_LOCK_WAIT_S:g}s")
         return _busy(
             "a sync operation is in flight for this canvas; try again in a moment")
     try:
         with manager.pause_lock:
             if manager.pause_count > 0:
+                manager.log_event("embed_to_disk", "snapshot busy", ok=False,
+                                  detail=f"{what} {gen}/{seq}: sync is paused")
                 return _busy(f"syncing for {name!r} is paused; try again in a moment")
         try:
             if isinstance(rename, dict):
-                return JSONResponse(manager.apply_rename(
+                ack = manager.apply_rename(
                     gen, seq, rename["from"], rename["to"],
-                    rename.get("file_from"), rename.get("file_to")))
-            return JSONResponse(manager.apply_snapshot(gen, seq, snapshot))
+                    rename.get("file_from"), rename.get("file_to"))
+            else:
+                ack = manager.apply_snapshot(gen, seq, snapshot)
         except FileNotFoundError:
+            manager.log_event("embed_to_disk", "snapshot rejected", ok=False,
+                              detail=f"{what} {gen}/{seq}: the clone has no canvas.toml yet")
             return JSONResponse(
                 {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
                  "error": "the clone has no canvas.toml yet"}, status_code=400)
         except OSError as exc:
             # A file write failed (disk full, a vanished folder): a 409 keeps
             # the snapshot queued on the embed, where a 400 would drop it.
-            logger.warning("canvas %s: snapshot %s/%s write failed: %s", name, gen, seq, exc)
+            manager.log_event("embed_to_disk", "snapshot busy", ok=False,
+                              detail=f"{what} {gen}/{seq}: write failed: {exc}")
             return _busy(f"could not write the snapshot: {exc}")
         except Exception as exc:  # noqa: BLE001 — the reason goes to the chip
-            logger.warning("canvas %s: snapshot %s/%s rejected: %s", name, gen, seq, exc)
+            manager.log_event("embed_to_disk", "snapshot rejected", ok=False,
+                              detail=f"{what} {gen}/{seq}: {type(exc).__name__}: {exc}")
             return JSONResponse(
                 {"ok": False, "gen": gen, "seq": seq, "code": "rejected",
                  "error": f"{type(exc).__name__}: {exc}"}, status_code=400)
+        manager.log_event("embed_to_disk", "snapshot applied",
+                          ms=(time.time() - started) * 1000,
+                          detail=_snapshot_ack_detail(what, gen, seq, ack))
+        return JSONResponse(ack)
     finally:
         manager._op_lock.release()
+
+
+def _snapshot_ack_detail(what: str, gen: int, seq: int, ack: dict) -> str:
+    if ack.get("stale"):
+        return f"{what} {gen}/{seq}: superseded by a later seq, not written"
+    parts = [f"{what} {gen}/{seq}"]
+    if not ack.get("changed"):
+        parts.append("no change")
+    for key in ("upserted", "deleted", "created", "synthesized"):
+        names = ack.get(key) or []
+        if names:
+            parts.append(f"{key} {', '.join(map(str, names[:5]))}"
+                         + (f" (+{len(names) - 5})" if len(names) > 5 else ""))
+    if ack.get("renamed"):
+        parts.append("renamed")
+    return ": ".join(parts[:1]) + (": " + "; ".join(parts[1:]) if len(parts) > 1 else "")
 
 
 @router.get("/api/canvases/delta")
@@ -2803,6 +3654,8 @@ def api_canvases_delta(name: str = "", full: str = ""):
             {"error": f"canvas {name!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
+        manager.log_event("disk_to_embed", "delta busy", ok=False,
+                          detail=f"the clone stayed locked past {SNAPSHOT_LOCK_WAIT_S:g}s")
         return _busy("a sync operation is in flight for this canvas; try again in a moment")
     try:
         return JSONResponse(manager.cut_delta(full == "1"))
@@ -2823,8 +3676,10 @@ def api_canvases_delta_ack(body: dict = Body(...), x_fused: str | None = Header(
     manager = _sync_manager(name, create=False)
     if manager is None:
         return JSONResponse({"ok": False, "code": "no_watcher"}, status_code=409)
+    reason = body.get("reason")
     with manager._op_lock:
-        return JSONResponse(manager.ack_delta(rev, bool(ok)))
+        return JSONResponse(manager.ack_delta(
+            rev, bool(ok), reason=reason if isinstance(reason, str) else None))
 
 
 @router.post("/api/canvases/sync/push")
@@ -2848,7 +3703,7 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         deleting every unignored local file the push did not publish, and
         showing a phantom "pulled from workbench".
 
-    Running the real `_push` under the real `_op_lock` keeps the module's
+    Running the real `_push` under the real `_flight_lock` keeps the module's
     "pushes are serialized per canvas" invariant true and makes the sync point
     move WITH the push, so the poll that follows has nothing to react to.
 
@@ -2887,6 +3742,16 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         # the CLI interception tell this apart from a genuine push failure it
         # must report verbatim, and matching on prose would break the moment
         # this wording changes.
+        others = _other_watchers(name)
+        if others:
+            # Not "nobody is watching": ANOTHER fused-render owns this clone
+            # (the writer lock). Telling the session to "open this canvas in
+            # fused-render" would send it to a start that 409s `owned`.
+            owner = others[0]
+            return JSONResponse(
+                {"error": f"canvas {name!r} is synced by another fused-render "
+                          f"(pid {owner['pid']}, port {owner['port']})",
+                 "code": "owned", "owner": owner}, status_code=409)
         return JSONResponse(
             {"error": f"canvas {name!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
@@ -2926,7 +3791,9 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
                       "then push again",
              "code": "server_changed", "server_stale": manager.server_stale},
             status_code=409)
-    if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+    # The flight lock, not _op_lock: _push takes _op_lock itself, only for its
+    # short freeze and fold phases, and never across the CLI.
+    if not manager._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
         return _busy(
             "a sync operation is in flight for this canvas; try again in a moment")
     try:
@@ -2936,14 +3803,18 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
             if manager.pause_count > 0:
                 return _busy(f"syncing for {name!r} is paused; try again in a moment")
         before = manager.push_seq
-        manager._push()
+        if manager._push() == "busy":
+            return _busy(
+                "a sync operation is in flight for this canvas; try again in a moment")
     finally:
-        manager._op_lock.release()
+        manager._flight_lock.release()
     status = manager.status()
-    # "idle AND the counter moved" is the only success: _push also returns in
-    # "pending" when it aborted because the remote moved and could not be
-    # reconciled, which must not read as published.
-    status["ok"] = status["push_state"] == "idle" and manager.push_seq > before
+    # "The counter moved and no error" is success: the push LANDED. Not
+    # `push_state == "idle"` — a write during the CLI run (not in the frozen
+    # copy) leaves the fold at "pending" for a follow-up push although this
+    # one published; and an abort (remote moved, could not be reconciled)
+    # never moves the counter, so it still does not read as published.
+    status["ok"] = manager.push_seq > before and manager.last_error is None
     return status
 
 
@@ -2996,7 +3867,7 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
              "code": "no_watcher"}, status_code=409)
     if manager.push_state == "pushing":
         return _busy("a push is running for this canvas; try again in a moment")
-    if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+    if not manager._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
         return _busy(
             "a sync operation is in flight for this canvas; try again in a moment")
     try:
@@ -3005,7 +3876,9 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
                 return _busy(f"syncing for {name!r} is paused; try again in a moment")
         result = manager.pull()
     finally:
-        manager._op_lock.release()
+        manager._flight_lock.release()
+    if result.get("code") == "busy":
+        return _busy(result.get("error") or "a sync operation is in flight for this canvas")
     status = manager.status()
     status["ok"] = bool(result.get("ok"))
     if not result.get("ok"):
@@ -3109,3 +3982,143 @@ def api_canvases_sync_status(name: str = ""):
                 "agent_active": False,
                 "pulling": False}
     return manager.status()
+
+
+# -- sync observability: state, log, events ------------------------------------
+
+# The events socket's heartbeat, and how often it re-sends the state while a
+# leg is not idle (so the page's ages tick and an over-budget leg turns amber
+# without waiting for the next change).
+SYNC_EVENTS_PING_S = 15.0
+SYNC_EVENTS_TICK_S = 1.0
+
+
+def _state_for(name: str) -> dict:
+    manager = _sync_manager(name, create=False)
+    return _unwatched_state(name) if manager is None else manager.sync_state()
+
+
+@router.get("/api/canvases/sync/state")
+def api_canvases_sync_state(name: str = ""):
+    """Every leg of the two sync loops for one canvas (the build contract's
+    shape). A canvas this process is not syncing answers all-idle with
+    `watching: false` — never a 409: the page polls this as the socket's
+    fallback, before and after a watcher exists."""
+    if not _NAME_RE.fullmatch(name or ""):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    return _state_for(name)
+
+
+@router.get("/api/canvases/sync/log")
+def api_canvases_sync_log(name: str = "", after: int = 0):
+    """The canvas's sync event ring (200 newest), events with seq > `after`.
+    `next` is the `after` for the following call. Seqs restart with a new
+    watcher (the state's `watcher_epoch`); an `after` past this ring's end is
+    read as 0."""
+    if not _NAME_RE.fullmatch(name or ""):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return {"events": [], "next": 0}
+    return manager._log.since(after)
+
+
+def _legs_busy(state: dict) -> bool:
+    return any(leg.get("state") != "idle" for leg in state.get("legs", {}).values())
+
+
+def _socket_read(name: str, epoch, log_after: int) -> tuple[dict, list[dict], object, int]:
+    """One socket wake's reads, in a worker thread: `_sync_manager` takes the
+    threading `_SYNC_LOCK` and the state reads the lock file — neither
+    belongs on the event loop. Returns (state, new log events, epoch,
+    log_after). A new watcher (or none) restarts the log cursor at its
+    ring's current end: only events from here on are "new" (the drawer reads
+    history off sync/log)."""
+    manager = _sync_manager(name, create=False)
+    state = _unwatched_state(name) if manager is None else manager.sync_state()
+    if state.get("watcher_epoch") != epoch:
+        return state, [], state.get("watcher_epoch"), \
+            (manager._log.last_seq if manager is not None else 0)
+    if manager is None:
+        return state, [], epoch, log_after
+    page = manager._log.since(log_after)
+    return state, page["events"], epoch, page["next"]
+
+
+@router.websocket("/api/canvases/sync/events")
+async def api_canvases_sync_events(ws: WebSocket):
+    """Push feed of `sync/state` for one canvas: `{"type": "state", "state"}`
+    on every change (disk_rev, push/pull state, stale detect, a log event) and
+    once a second while any leg is busy; `{"type": "log", "event"}` per new
+    ring event; `{"type": "ping"}` every SYNC_EVENTS_PING_S while idle.
+
+    Wakes come from canvas_sync_state's per-NAME notifier (the sync threads
+    call `loop.call_soon_threadsafe`), so a stop/start that replaces the
+    manager is followed without re-subscribing, and every read runs in a
+    worker thread — the event loop never waits on the clone or a threading
+    lock. The wake event is cleared only right before a read, never after a
+    timed-out wait, so a change that lands while a ping is being sent is not
+    lost. Origin-checked like every other socket (no CORS preflight on a
+    WebSocket)."""
+    if not canvas_sync_state.ws_origin_ok(ws):
+        await ws.close(code=1008)
+        return
+    name = ws.query_params.get("name") or ""
+    if not _NAME_RE.fullmatch(name):
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+    token = canvas_sync_state.subscribe(name)
+    wake = token[1]
+    closed = asyncio.Event()
+
+    async def drain() -> None:
+        # Read only to learn of the disconnect; the page sends nothing.
+        try:
+            while True:
+                msg = await ws.receive()
+                if msg["type"] == "websocket.disconnect":
+                    break
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            closed.set()
+            wake.set()
+
+    drainer = asyncio.create_task(drain())
+    loop = asyncio.get_running_loop()
+    try:
+        epoch: object = object()
+        log_after = 0
+        while not closed.is_set():
+            wake.clear()
+            state, events, epoch, log_after = await asyncio.to_thread(
+                _socket_read, name, epoch, log_after)
+            if closed.is_set():
+                break
+            await ws.send_text(json.dumps({"type": "state", "state": state}))
+            for event in events:
+                await ws.send_text(json.dumps({"type": "log", "event": event}))
+            busy = _legs_busy(state)
+            ping_at = loop.time() + SYNC_EVENTS_PING_S
+            woke = False
+            while not closed.is_set():
+                timeout = SYNC_EVENTS_TICK_S if busy else max(0.0, ping_at - loop.time())
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=timeout)
+                    woke = True
+                    break
+                except asyncio.TimeoutError:
+                    if busy:
+                        break  # re-send so the ages tick
+                    await ws.send_text(json.dumps({"type": "ping"}))
+                    ping_at = loop.time() + SYNC_EVENTS_PING_S
+            if woke and not closed.is_set():
+                # Coalesce a burst (a snapshot write bumps rev, then logs,
+                # then the fs thread notices) into one state message.
+                await asyncio.sleep(0.02)
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        canvas_sync_state.unsubscribe(name, token)
+        drainer.cancel()

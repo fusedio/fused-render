@@ -359,6 +359,19 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
             "moved in the hosted workbench while nothing was watching.\n"
             % (body.get("error") or "the canvas is not being synced"))
         return 1
+    if status == 409 and body.get("code") == "owned":
+        # Another fused-render process holds this clone's writer lock. Same
+        # refusal as no_watcher (the raw push is never inert for a clone), but
+        # the fix is "push from the one that owns it", not "open it here".
+        owner = body.get("owner") if isinstance(body.get("owner"), dict) else {}
+        err.write(
+            "fused-render: %s\n"
+            "Another fused-render (pid %s, port %s) is syncing this canvas "
+            "clone. Push from there, or quit it and open the canvas in this "
+            "fused-render, then push again.\n"
+            % (body.get("error") or "the canvas is synced by another fused-render",
+               owner.get("pid", "?"), owner.get("port", "?")))
+        return 1
     if status == 409 and body.get("code") == "busy":
         # Someone else holds the folder this instant (the watcher's own leg,
         # another session, a pause). Benign and retryable — say so in those

@@ -508,9 +508,12 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.bots import browser as bots_browser
         from fused_render.server import engine_host
 
+        from fused_render import canvases
+
         engine_host.refuse_new_children()
         supervisor.refuse_new_workers()
         bots_browser.refuse_launches()
+        canvases.refuse_new_managers()
 
     def engines():
         from fused_render.server import engine_host
@@ -546,6 +549,17 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
 
         bots_registry.shutdown(budget_s=budget_s)
 
+    def canvas_sync():
+        # Every canvas sync manager: a push CLI in flight terminated (not
+        # waited for — so it does not outlive the app as an orphan, and its
+        # fold never runs on a half state; the sync point stays unrotated, so
+        # the next launch may read its own push as "server changed", which is
+        # accepted), watcher + fs threads stopped with bounded joins, the
+        # clone's writer lock (an flock on an open fd) released.
+        from fused_render import canvases
+
+        canvases.shutdown()
+
     def discovery():
         from fused_render.server.app import remove_server_json
 
@@ -558,7 +572,8 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
     threads = []
     for name, step in (("engines", engines), ("ai", ai_workers),
                        ("terminals", terminals), ("index", index_runs),
-                       ("bots", bots), ("discovery", discovery)):
+                       ("bots", bots), ("canvas-sync", canvas_sync),
+                       ("discovery", discovery)):
         def _run(step=step, name=name):
             try:
                 step()

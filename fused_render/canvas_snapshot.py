@@ -47,6 +47,10 @@ the bottom of the module):
       a new UDF (no server id, body given)  → its source file is CREATED; an
                                               existing file is never
                                               overwritten (code is disk-owned)
+      … and the snapshot has no node
+        for it                              → a row is SYNTHESIZED in the same
+                                              write (every source file has a
+                                              row; `synthesize_row`)
 
   `apply_rename(...)`     — the rename hint the workbench posts the moment a
                             UDF is renamed, before any snapshot carries the
@@ -324,6 +328,171 @@ def _find_source(clone_dir: str, name: str) -> str | None:
     return None
 
 
+# -- every source file has a row --------------------------------------------
+#
+# A `.py/.json/.md/.html` in the clone root with no `[[canvas.nodes]]` row is
+# an ORPHAN: a UDF the embed created whose node never reached a snapshot (the
+# workbench sent `udfs` before `studioState.nodes` caught up), a file Claude
+# wrote without a row. Ignored, it is invisible to the delta leg (rows only)
+# and the push ships a node-less UDF. So it gets a SYNTHESIZED row: after the
+# last node, titled by its slug, visible. The same rule everywhere a row is
+# synthesized (`compact_state_from_disk`, `persist_synthesized`,
+# `apply_snapshot`), byte-identical, so a reading that synthesized a row and
+# the toml that later persists it diff to nothing.
+
+# Mirrors canvases._SYNC_IGNORED_BASENAMES (not imported: canvases imports
+# this module). Files the app seeds into a clone that are never nodes.
+_IGNORED_BASENAMES = frozenset({"CLAUDE.md", ".fusedignore"})
+
+# Synthesized node geometry: the workbench's NODE_DEFAULTS.UDF size, and
+# NODE_DEFAULTS.TEXTBOX for a note (`.md`).
+_SYNTH_WIDTH = 700
+_SYNTH_HEIGHT = 500
+_SYNTH_SIZE_BY_SUFFIX = {".md": (350, 250)}
+_SYNTH_GAP = 40
+_SYNTH_ORIGIN = (100, 100)
+
+# Per-kind data defaults, as the embed's `buildNode` (embed-delta-apply.ts)
+# gives a node it creates for a UDF: a node's KIND comes from its file suffix
+# (the server's NODE_TEMPLATE_TYPE_BY_EXTENSION), never from the row's
+# `type` — every non-folder node is `simple-udf`. Carrying the same defaults
+# keeps the embed's first snapshot of the node from re-upserting them.
+_SYNTH_DATA_DEFAULTS: dict[str, dict[str, Any]] = {
+    ".md": {"textBoxColor": "#FFF9C4", "textBoxGradient": True,
+            "textBoxScaleFactor": 1.0, "textBoxAlignment": "left"},
+    ".json": {"nodeDescriptionScaleFactor": 1.5, "widgetBackgroundColor": "#2e2e2e"},
+    ".py": {"nodeDescriptionScaleFactor": 1.5},
+    ".html": {"nodeDescriptionScaleFactor": 1.5},
+}
+
+
+def _fusedignore_rules(clone_dir: str) -> list[tuple[str, bool, bool]]:
+    """The clone's `.fusedignore` as `[(pattern, negated, directory_only)]`,
+    parsed as the CLI's `gitignore_filter.parse_ignore_line` does: blank and
+    `#` lines skipped, `!` negates, a trailing `/` is directory-only, a
+    leading `/` anchors to the clone root."""
+    data = _read_bytes(os.path.join(clone_dir, ".fusedignore"))
+    if data is None:
+        return []
+    out = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        negated = line.startswith("!")
+        if negated:
+            line = line[1:].strip()
+        directory_only = line.endswith("/")
+        line = line.rstrip("/").lstrip("/")
+        if line:
+            out.append((line, negated, directory_only))
+    return out
+
+
+def _fusedignored(base: str, rules: list[tuple[str, bool, bool]]) -> bool:
+    """Whether the CLI's push skips the root-level FILE `base`
+    (`gitignore_filter.resolve_ignore_source`): the last matching rule wins.
+    For a root file the root-relative path IS the basename, so an anchored
+    pattern matches it the same way an unanchored one does, a pattern with a
+    `/` in it never does, and a directory-only rule never matches a file."""
+    import fnmatch
+    ignored = False
+    for pattern, negated, directory_only in rules:
+        if not directory_only and fnmatch.fnmatchcase(base, pattern):
+            ignored = not negated
+    return ignored
+
+
+def orphan_sources(clone_dir: str, names: Iterable[str]) -> list[tuple[str, str]]:
+    """`[(slug, basename)]`, sorted by slug, of the root-level source files
+    whose slug is not in `names` (the rows on disk). Skips canvas.toml,
+    dotfiles, the app's seeded files and whatever `.fusedignore` lists. Two
+    files sharing a slug resolve as `_find_source` does (`.py` first)."""
+    have = set(names)
+    rules = _fusedignore_rules(clone_dir)
+    try:
+        entries = os.listdir(clone_dir)
+    except OSError:
+        return []
+    slugs: set[str] = set()
+    for base in entries:
+        if base.startswith(".") or base == "canvas.toml" or base in _IGNORED_BASENAMES:
+            continue
+        stem, suffix = os.path.splitext(base)
+        if suffix not in _SOURCE_SUFFIXES or not stem or stem in have:
+            continue
+        if _fusedignored(base, rules):
+            continue
+        if not os.path.isfile(os.path.join(clone_dir, base)):
+            continue
+        slugs.add(stem)
+    out = []
+    for slug in sorted(slugs):
+        file = _find_source(clone_dir, slug)
+        if file is not None:
+            out.append((slug, file))
+    return out
+
+
+def _num(value: Any, default: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return value
+
+
+def synthesize_row(rows: list[dict], slug: str, file: str) -> dict:
+    """The row an orphan source file gets, placed after the last row in
+    `rows` (x = its x, y = its y + height + 40; a fixed origin on an empty
+    canvas), above every node, titled by its slug, visible."""
+    last = next((r for r in reversed(rows) if isinstance(r, dict)), None)
+    if last is None:
+        x, y = _SYNTH_ORIGIN
+    else:
+        x = _num(last.get("x"), 0)
+        y = _num(last.get("y"), 0) + _num(last.get("height"), _SYNTH_HEIGHT) + _SYNTH_GAP
+    z = max((_num(r.get("zIndex"), 0) for r in rows if isinstance(r, dict)), default=0)
+    suffix = os.path.splitext(file)[1]
+    width, height = _SYNTH_SIZE_BY_SUFFIX.get(suffix, (_SYNTH_WIDTH, _SYNTH_HEIGHT))
+    row: dict[str, Any] = {
+        "udfName": slug, "x": x, "y": y, "zIndex": z + 1,
+        "width": width, "height": height,
+        "title": slug, "visible": True,
+    }
+    row.update(_SYNTH_DATA_DEFAULTS.get(suffix, {}))
+    return row
+
+
+def persist_synthesized(clone_dir: str, names: Iterable[str]) -> list[str]:
+    """Write the rows `compact_state_from_disk` synthesized for `names` into
+    canvas.toml (one atomic write), so the next push ships them. Re-derives
+    from disk: a name that has a row by now, or whose file is gone, is
+    skipped. Chained over `names` alone, in slug order — the same rows the
+    reading that reported them computed. Returns the names written."""
+    wanted = set(names)
+    if not wanted:
+        return []
+    path = os.path.join(clone_dir, "canvas.toml")
+    doc = _load_toml(path)
+    canvas = doc.setdefault("canvas", {})
+    if not isinstance(canvas, dict):
+        raise ValueError("canvas.toml: [canvas] is not a table")
+    rows = canvas.get("nodes")
+    if not isinstance(rows, list):
+        rows = []
+        canvas["nodes"] = rows
+    have = [r["udfName"] for r in rows
+            if isinstance(r, dict) and isinstance(r.get("udfName"), str)]
+    written: list[str] = []
+    for slug, file in orphan_sources(clone_dir, have):
+        if slug not in wanted:
+            continue
+        rows.append(synthesize_row(rows, slug, file))
+        written.append(slug)
+    if written:
+        _write_atomic(path, _dump_toml(doc))
+    return written
+
+
 def _rename_in_doc(canvas: dict, frm: str, to: str) -> bool:
     """Rename a node in a parsed `[canvas]` table: its row's `udfName` (and a
     title that was just the name), every edge endpoint. True if anything
@@ -401,7 +570,10 @@ def apply_snapshot(
     `prev` is the previous compact state from the same embed generation, or
     None. `backup(rel, data)` receives every file about to be deleted or
     overwritten. Returns `{changed, upserted, deleted, renamed, created,
-    written}`. Raises FileNotFoundError when the clone has no canvas.toml, and
+    written, synthesized, deferred_deletes}` (`synthesized`: new UDFs whose
+    file came without a node, given a row by `synthesize_row`;
+    `deferred_deletes`: known nodes the snapshot omitted while still listing
+    their UDF — the host keeps them in its view). Raises FileNotFoundError when the clone has no canvas.toml, and
     whatever `rtoml` raises on a malformed one (the caller reports both as
     rejections).
     """
@@ -460,13 +632,48 @@ def apply_snapshot(
         vanished.remove(name)
         changed = True
 
-    # Deletions.
+    # Deletions. A name with no row is still a deletion when its file is
+    # there: a synthesized node (an orphan file the frame received as a
+    # delta before its row was persisted) the embed then deleted — leaving
+    # the file would re-synthesize it on the next reading.
+    #
+    # A vanished name the snapshot still lists among its UDFs is NOT a
+    # deletion: the workbench drops a UDF with its node, so "UDF listed, node
+    # absent" is its `udfs` running ahead of `studioState.nodes` — the very
+    # case a synthesized row rescues. Deleting there would trash the UDF the
+    # previous snapshot or delta just delivered. Such a name is DEFERRED, not
+    # forgotten: reported so the host keeps it in the view (`held_view`'s
+    # `extra_names`), it stays "known before" for the next snapshot, which
+    # deletes it if that one lists neither its node nor its UDF. Dropped from
+    # the view instead, the next delta would re-add it and the delete be lost.
+    files_changed = False
+    deferred_deletes: list[str] = []
     for name in vanished:
+        if name in new["files"]:
+            # stale closure: the embed's nodes lag its udfs, not a delete
+            deferred_deletes.append(name)
+            continue
+
         row = by_name.pop(name, None)
         if row is None:
-            continue
-        rows.remove(row)
-        changed = True
+            file = files_before.get(name) or _find_source(clone_dir, name)
+            if not file or os.path.splitext(file)[0] != name \
+                    or not os.path.isfile(os.path.join(clone_dir, file)):
+                continue
+            sid = ids_before.get(name)
+            to = id_to_new_name.get(sid) if sid else None
+            if to and to != name:
+                # A rename of a row-less node: its file is the new name's
+                # source, never trash. The new name's row comes from the
+                # upserts below.
+                if _move_file(clone_dir, file, new["files"].get(to)):
+                    renamed.append([name, to])
+                    files_changed = True
+                continue
+            files_changed = True     # no row: only the file goes
+        else:
+            rows.remove(row)
+            changed = True
         deleted.append(name)
         file = files_before.get(name) or new["files"].get(name) or _find_source(clone_dir, name)
         if file:
@@ -560,25 +767,43 @@ def apply_snapshot(
     # New UDFs: create their source file, never overwrite one. A failure
     # propagates for the same reason — a row whose file is missing fails the
     # canvas validation on the push.
+    # A new UDF whose node the snapshot does not carry (the workbench's
+    # `udfs` ran ahead of its `studioState.nodes`) gets a SYNTHESIZED row in
+    # the same write as its file: every source file has a row, or the file is
+    # invisible to the delta leg and pushed node-less. The row is keyed by
+    # the file's stem, the name the push validates rows against.
+    synthesized: list[str] = []
     for entry in new["new_files"]:
         fpath = os.path.join(clone_dir, entry["file"])
-        if os.path.exists(fpath):
-            continue
-        _write_atomic(fpath, entry["body"])
-        created.append(entry["file"])
+        if not os.path.exists(fpath):
+            _write_atomic(fpath, entry["body"])
+            created.append(entry["file"])
+        slug, suffix = os.path.splitext(entry["file"])
+        if (slug and suffix in _SOURCE_SUFFIXES and slug not in new["nodes"]
+                and slug not in by_name and os.path.isfile(fpath)):
+            rows.append(synthesize_row(rows, slug, entry["file"]))
+            by_name[slug] = rows[-1]
+            synthesized.append(slug)
+            changed = True
 
     if changed:
         _write_atomic(path, _dump_toml(doc))
-    return {"changed": changed or bool(created) or bool(written),
+    return {"changed": changed or files_changed or bool(created) or bool(written),
             "upserted": upserted, "deleted": deleted, "renamed": renamed,
-            "created": created, "written": written, "at": time.time()}
+            "created": created, "written": written, "synthesized": synthesized,
+            "deferred_deletes": deferred_deletes,
+            "at": time.time()}
 
 
 def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
-              bodies: dict, embed_rows: dict | None) -> dict:
+              bodies: dict, embed_rows: dict | None,
+              extra_names: Iterable[str] = ()) -> dict:
     """The view the embed holds after one of its own writes landed: `disk`
     (a `compact_state_from_disk` reading taken AFTER the write) restricted
-    to `names`, the nodes the embed is known to hold. `edges` are the embed's
+    to `names`, the nodes the embed is known to hold, plus `extra_names`
+    (`apply_snapshot`'s `deferred_deletes`: nodes its snapshot omitted while
+    still listing their UDF, kept so the next snapshot can still delete
+    them and no delta re-adds them meanwhile). `edges` are the embed's
     own set, kept as given (disk may carry more: edges touching nodes it
     does not know; the embed's may name a raw id `compact_state` could not
     resolve, which disk carries too), `ids` the server ids it holds, `bodies` the texts it holds — a node with
@@ -587,7 +812,8 @@ def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
     scalars are disk's: a snapshot always carries the embed's and the write
     took them. See "the disk → embed leg" above for why this is not simply
     `disk`."""
-    known = [n for n in disk["order"] if n in names]
+    keep = set(names) | set(extra_names)
+    known = [n for n in disk["order"] if n in keep]
     return {
         "nodes": {n: disk["nodes"][n] for n in known},
         "order": known,
@@ -665,7 +891,10 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
          canvas: {viewport, viewportBounds, comments}, files: {name: basename},
          ids: {name: server id} (from the remote manifest, when known),
          bodies: {name: text} (every node's source file, all four kinds),
-         missing: [name]} (rows whose source file is not on disk)
+         missing: [name],     (rows whose source file is not on disk)
+         synthesized: [name]} (orphan source files given a row here, after
+                               every real row — NOT on disk until the caller
+                               `persist_synthesized`s them)
 
     Same shape as `compact_state` where the keys overlap, so it serves as
     `prev` for `apply_snapshot` too. Raises FileNotFoundError when there is
@@ -682,6 +911,16 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
         if isinstance(row, dict) and isinstance(row.get("udfName"), str) and row["udfName"]:
             nodes[row["udfName"]] = dict(row)
             order.append(row["udfName"])
+    # Orphan source files: synthesized rows, chained after the real ones
+    # exactly as `persist_synthesized` will write them.
+    synthesized: list[str] = []
+    placed = [r for r in rows if isinstance(r, dict)]
+    for slug, file in orphan_sources(clone_dir, nodes):
+        row = synthesize_row(placed, slug, file)
+        placed.append(row)
+        nodes[slug] = dict(row)
+        order.append(slug)
+        synthesized.append(slug)
     edges: list[list[str]] = []
     for e in canvas.get("edges") or []:
         if (isinstance(e, list) and len(e) == 2
@@ -704,7 +943,8 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
         bodies[name] = data.decode("utf-8", "replace") if data is not None else ""
     ids = {n: remote_ids[n] for n in nodes if remote_ids and isinstance(remote_ids.get(n), str)}
     return {"nodes": nodes, "order": order, "edges": edges, "canvas": scalars,
-            "files": files, "ids": ids, "bodies": bodies, "missing": missing}
+            "files": files, "ids": ids, "bodies": bodies, "missing": missing,
+            "synthesized": synthesized}
 
 
 def studio_patch_from_row(row: dict) -> dict:

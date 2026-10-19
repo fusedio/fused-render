@@ -34,7 +34,17 @@
 // minus code, as
 //   iframe → { type: "fused-embed-snapshot", gen, seq, body }
 // which this page relays to POST /api/canvases/snapshot; the answer goes back
-// as fused-embed-snapshot-applied / -rejected. The clone watcher is then the
+// as fused-embed-snapshot-applied / -rejected. A relay the page ABANDONS
+// because a newer snapshot superseded it while the clone was busy (the newer
+// one carries the full state) is answered
+//   parent → { type: "fused-embed-snapshot-applied", gen, seq, push_seq, stale: true }
+// so the embed's bridge settles that seq instead of holding it forever. One
+// whose busy window ran out with nothing newer is -rejected: it is not on disk.
+// The two sync loops' state (sync-state.ts: the four legs, the host's own
+// embed_to_disk leg merged in, the worst leg precomputed) goes to the frame
+// on every change, ≤ 10/s, for the embed's save chip:
+//   parent → { type: "fused-embed-sync-state", state }
+// The clone watcher is then the
 // ONE writer to the server, publishing the folder exactly as it publishes a
 // Claude edit — so there is no second writer to lock out, and the left-pane
 // lock this page used to run (decideLock, the ack handshake, the scrim, the
@@ -42,7 +52,8 @@
 //
 // The other direction (canvas_snapshot.py, "the disk → embed leg"): this page
 // never reloads the workbench iframe and never asks it to re-fetch. When the
-// clone moves on disk (the status poll's `disk_rev`) it fetches
+// clone moves on disk (`disk_rev` on the sync events socket's `state`
+// message — or the 2 s sync/state poll while the socket is down) it fetches
 // GET /api/canvases/delta — diff(disk, what the server believes the frame
 // holds) — and posts it as
 //   parent → { type: "fused-embed-delta", rev, base_rev, full, ops }
@@ -86,6 +97,7 @@ import { EMBED_PREFIX, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@plat
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
+  CanvasOwnedError,
   ackDelta,
   applyRename,
   applySnapshot,
@@ -93,14 +105,39 @@ import {
   getDelta,
   getAccessToken,
   getCanvasesStatus,
-  getSyncStatus,
+  getSyncState,
   getWhoami,
   pullCanvas,
   startSync,
-  type SyncStatus,
+  syncEventsUrl,
 } from "./api";
+import { SyncDrawer } from "./SyncDrawer";
+import { SyncFramePoster, SyncStrip } from "./SyncStrip";
+import {
+  mergeLogEvents,
+  noWatcher,
+  type EmbedFailure,
+  type MergedSyncState,
+  type RelayEntry,
+  type SyncLogEvent,
+  type SyncOwner,
+  type SyncState,
+} from "./sync-state";
 
+// Fallback cadence for GET sync/state while the events socket is down.
 const SYNC_POLL_MS = 2000;
+
+// Events socket reconnect backoff: doubles from MIN to MAX.
+const WS_RETRY_MIN_MS = 1000;
+const WS_RETRY_MAX_MS = 15_000;
+
+// While another process owns the clone (sync/start 409 `owned`), sync/start
+// is retried this often so the page recovers when that process quits.
+const OWNED_RETRY_MS = 5000;
+
+// Re-arming a dropped watcher (a state that says none runs here) at most
+// this often.
+const HEAL_MIN_INTERVAL_MS = 5000;
 
 // A snapshot that met a busy clone (409) is retried this many times, this far
 // apart — long enough to outlast a push, short enough that "Saving…" on the
@@ -125,9 +162,8 @@ const DELTA_RETRY_WINDOW_MS = 30_000;
 const NODE_FILE_PROBE_MS = 400;
 const NODE_FILE_WAIT_MS = 20_000;
 
-// A status poll that keeps failing is treated, after this many consecutive
-// misses, as a dropped watcher (`watching: false`), which is what re-arms the
-// self-heal on the next successful poll.
+// A fallback state poll that keeps failing is treated, after this many
+// consecutive misses, as a dropped watcher: sync/start is asked again.
 const FAILED_POLLS_BEFORE_RELEASE = 3;
 
 /** This window's focus as the canvas should count it. */
@@ -320,7 +356,33 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // shown (a Recent row's hop onto the selected node, below): the frame's src
   // is otherwise frozen per node and tab (`nodeBootSrc`).
   const [nodeBootSeq, setNodeBootSeq] = useState(0);
-  const [sync, setSync] = useState<SyncStatus | null>(null);
+  // The server's sync state (sync/state, or the events socket's `state`):
+  // disk_to_embed / disk_to_server / server_to_disk, disk_rev, watcher_epoch.
+  const [sync, setSync] = useState<SyncState | null>(null);
+  // Another process is this clone's one writer (sync/start 409 `owned`):
+  // the page shows who and loads nothing that would write.
+  const [owned, setOwned] = useState<SyncOwner | null>(null);
+  // sync/start failed for another reason (the server still coming up, a
+  // transient 5xx): shown, and retried like an owned clone.
+  const [startError, setStartError] = useState<string | null>(null);
+  // The embed_to_disk leg, the page's own: every snapshot / rename the frame
+  // posted that has not yet been acked, rejected or abandoned.
+  const [relayQueue, setRelayQueue] = useState<RelayEntry[]>([]);
+  const relayIdRef = useRef(0);
+  // Why the last relay did not land — refused, or busy-window expiry with
+  // nothing newer behind it (cleared by the next one applied). See
+  // EmbedFailure: a relay superseded by a newer one is NOT a failure.
+  const [relayFailure, setRelayFailure] = useState<EmbedFailure | null>(null);
+  // Mirrors sync/state's `fix_active`; set at once by a Fix click.
+  const [fixActive, setFixActive] = useState(false);
+  // Events socket up (else the page is polling sync/state).
+  const [live, setLive] = useState(false);
+  // The sync log drawer and its buffer (newest first).
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [logEvents, setLogEvents] = useState<SyncLogEvent[]>([]);
+  const wsLogAtRef = useRef(0);
+  // Bumped to make SyncFramePoster re-post the state (frame (re)loaded).
+  const [repostSeq, setRepostSeq] = useState(0);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
   const [dragging, setDragging] = useState(false);
@@ -348,6 +410,15 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // disk move (`disk_rev`), retried briefly in between. After a generous wait
   // the frame is shown anyway, so a file that is genuinely missing still
   // reports the real error instead of a spinner forever.
+  // Every server state lands through here. A state older than the one held
+  // (same watcher, lower disk_rev: a slow poll answer overtaken by the
+  // socket) is dropped, so the delta effect never reads it as a new watcher.
+  const applyState = useCallback((s: SyncState) => {
+    setSync((prev) =>
+      prev && prev.watcher_epoch === s.watcher_epoch && s.disk_rev < prev.disk_rev ? prev : s,
+    );
+  }, []);
+
   const [nodeFileReady, setNodeFileReady] = useState<string | null>(null);
   const nodePath = node && dir ? nodeFile(dir, node) : null;
   useEffect(() => {
@@ -378,9 +449,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     setPullBusy(true);
     setPullError(null);
     try {
+      // The answer is the old sync/status shape: read only its verdict. The
+      // new state follows on the events socket (or the next poll).
       const s = await pullCanvas(name);
-      setSync(s);
       if (!s.ok) setPullError(s.pull_error ?? s.error ?? "pull failed");
+      void getSyncState(name).then(applyState, () => undefined);
     } catch (e) {
       setPullError((e as Error).message);
     } finally {
@@ -441,9 +514,37 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     [name],
   );
 
-  // Boot: base URL + handle + make sure the watcher runs.
+  // Make sure THIS process's watcher runs on the clone. The one place
+  // sync/start is called (boot, self-heal, the owned retry): success clears
+  // `owned` and gives the clone dir; a 409 `owned` (another fused-render
+  // process holds the clone's lock) sets `owned` instead, which keeps the
+  // workbench frame, the delta relay and the events socket down until a
+  // retry gets the lock. Anything else is thrown to the caller.
+  const ensureSync = useCallback(async (): Promise<void> => {
+    try {
+      const started = await startSync(name);
+      setOwned(null);
+      setStartError(null);
+      setDir(started.dir);
+    } catch (e) {
+      if (e instanceof CanvasOwnedError) {
+        setOwned(e.owner);
+        return;
+      }
+      throw e;
+    }
+  }, [name]);
+
+  // Boot: base URL + handle + make sure the watcher runs. sync/start goes
+  // out at once, IN PARALLEL with status + whoami (it needs neither): the
+  // frame waits for both (it needs the handle for its URL and a running
+  // watcher for its snapshots), so its wait is the slower of the two — the
+  // whoami chain, as before — never their sum.
   useEffect(() => {
     let cancelled = false;
+    void ensureSync().catch((e) => {
+      if (!cancelled) setStartError((e as Error).message);
+    });
     void (async () => {
       try {
         const status = await getCanvasesStatus();
@@ -457,15 +558,6 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           return;
         }
         setHandle(who.handle);
-        const started = await startSync(name);
-        if (cancelled) return;
-        setDir(started.dir);
-        const st = await statPath(started.dir);
-        if (!cancelled) {
-          setChatTpl(
-            st.templates?.find((t) => t.mode === "claude")?.path ?? null,
-          );
-        }
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
       }
@@ -473,7 +565,37 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     return () => {
       cancelled = true;
     };
-  }, [name]);
+  }, [name, ensureSync]);
+
+  // The claude template's path for the clone (see `chatTpl`), once the clone
+  // dir is known — at boot, or when an owned canvas is finally released.
+  useEffect(() => {
+    if (!dir) return;
+    let cancelled = false;
+    void statPath(dir)
+      .then((st) => {
+        if (!cancelled) setChatTpl(st.templates?.find((t) => t.mode === "claude")?.path ?? null);
+      })
+      .catch((e) => {
+        if (!cancelled) setError((e as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dir]);
+
+  // Owned by another process, or sync/start failed: ask again every
+  // OWNED_RETRY_MS so the page recovers on its own when that process quits
+  // (its lock goes stale) or the server answers again — the self-heal the
+  // old status poll gave a failed boot.
+  const retryStart = !!owned || startError !== null;
+  useEffect(() => {
+    if (!retryStart) return;
+    const id = window.setInterval(() => {
+      void ensureSync().catch((e) => setStartError((e as Error).message));
+    }, OWNED_RETRY_MS);
+    return () => window.clearInterval(id);
+  }, [retryStart, ensureSync]);
 
   // Token handshake with the embedded workbench.
   const seedToken = useCallback(async () => {
@@ -547,10 +669,28 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // reach the clone first — the server would then read seq 1's older full
   // state as deletions of seq 2's nodes. Same chain for the rename hint,
   // which must land before the snapshot carrying the new name.
+  //
+  // Every relay is an entry in `relayQueue` (the embed_to_disk leg) from the
+  // moment the frame's message arrives until it is applied, rejected or
+  // abandoned. A relay SUPERSEDED by a newer one is answered
+  // `fused-embed-snapshot-applied` with `stale: true` and the last push_seq
+  // this page saw: the newer snapshot carries the full state, so the embed's
+  // bridge may settle this seq instead of holding it as pending for good. One
+  // whose busy window EXPIRED with nothing newer is rejected (see `abandon`).
   const relayChainRef = useRef<Promise<void>>(Promise.resolve());
   const relayTicketRef = useRef(0);
+  const enqueueRelay = useCallback((gen: number, seq: number): number => {
+    relayIdRef.current += 1;
+    const id = relayIdRef.current;
+    setRelayQueue((q) => [...q, { id, gen, seq, at: Date.now(), busy: false }]);
+    return id;
+  }, []);
+  const settleRelay = useCallback((id: number) => {
+    setRelayQueue((q) => q.filter((e) => e.id !== id));
+  }, []);
   const relaySnapshot = useCallback(
     async (
+      qid: number,
       gen: number,
       seq: number,
       body: Record<string, unknown> | null,
@@ -562,34 +702,66 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         if (!frame?.contentWindow || !origin) return;
         frame.contentWindow.postMessage(msg, origin);
       };
+      // Two different abandonments, two different answers:
+      //   superseded — a newer relay is queued behind this one and carries
+      //     the FULL state, so nothing is lost: a stale-applied ack settles
+      //     it on the embed, strip as is.
+      //   expired — 120 s of busy with nothing newer: this change is NOT on
+      //     disk. A REJECTION (an applied ack, stale or not, reads as saved
+      //     on the embed — its relay drops `stale`), and red on the strip.
+      const abandon = (why: "superseded" | "expired") => {
+        settleRelay(qid);
+        if (why === "expired") {
+          setRelayFailure({ kind: "expired", detail: "" });
+          post({
+            type: "fused-embed-snapshot-rejected",
+            gen,
+            seq,
+            reason: "the clone stayed busy for 2 min; edit again to retry",
+          });
+          return;
+        }
+        post({
+          type: "fused-embed-snapshot-applied",
+          gen,
+          seq,
+          push_seq: lastPushSeqRef.current ?? 0,
+          stale: true,
+        });
+      };
       const ticket = relayTicketRef.current;
       const started = Date.now();
+      let markedBusy = false;
       for (;;) {
         try {
           const ack = rename
             ? await applyRename(name, gen, seq, rename)
             : await applySnapshot(name, gen, seq, body ?? {});
+          settleRelay(qid);
+          setRelayFailure(null);
           post({ type: "fused-embed-snapshot-applied", gen, seq, push_seq: ack.push_seq });
           return;
         } catch (e) {
           const status = (e as { status?: number }).status;
           if (status === 409) {
-            if (relayTicketRef.current !== ticket) return; // a newer relay waits
-            if (Date.now() - started > SNAPSHOT_BUSY_WINDOW_MS) return; // still queued on the embed
+            if (relayTicketRef.current !== ticket) return abandon("superseded"); // a newer relay waits
+            if (Date.now() - started > SNAPSHOT_BUSY_WINDOW_MS) return abandon("expired");
+            if (!markedBusy) {
+              markedBusy = true;
+              setRelayQueue((q) => q.map((x) => (x.id === qid ? { ...x, busy: true } : x)));
+            }
             await new Promise((r) => window.setTimeout(r, SNAPSHOT_BUSY_RETRY_MS));
             continue;
           }
-          post({
-            type: "fused-embed-snapshot-rejected",
-            gen,
-            seq,
-            reason: (e as Error).message || "snapshot rejected",
-          });
+          const reason = (e as Error).message || "snapshot rejected";
+          settleRelay(qid);
+          setRelayFailure({ kind: "rejected", detail: reason });
+          post({ type: "fused-embed-snapshot-rejected", gen, seq, reason });
           return;
         }
       }
     },
-    [name],
+    [name, settleRelay],
   );
 
   // The delta leg: disk moved → fetch diff(disk, what the frame holds) → post
@@ -598,6 +770,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // answer is retried on a timer; the frame's hello asks for a full state.
   const deltaChainRef = useRef<Promise<void>>(Promise.resolve());
   const lastDeltaRevRef = useRef<number | null>(null);
+  // A full state was sent to heal a refused delta and no delta has been
+  // applied since: a second refusal does not heal again (no loop).
+  const deltaHealRef = useRef(false);
   const relayDelta = useCallback(
     (full: boolean) => {
       deltaChainRef.current = deltaChainRef.current.then(async () => {
@@ -620,9 +795,10 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             const frame = frameRef.current;
             const origin = baseOriginRef.current;
             if (!frame?.contentWindow || !origin) {
-              // No frame to tell: drop the server's picture so the next ask
-              // (the frame's hello) is a full state.
-              void ackDelta(name, delta.rev, false).catch(() => undefined);
+              // No frame to tell: drop the cut, unacked. The frame's hello
+              // asks for a full state whatever the server thinks it holds,
+              // and a refusal here would paint the strip red ("the workbench
+              // refused the delta") for a frame that was simply not there.
               return;
             }
             frame.contentWindow.postMessage(
@@ -689,7 +865,10 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       const type = event.data?.type;
       if (type === "fused-embed-auth-ready" || type === "fused-embed-auth-refresh") {
         void seedToken();
-        if (type === "fused-embed-auth-ready") sendHostFocus();
+        if (type === "fused-embed-auth-ready") {
+          sendHostFocus();
+          setRepostSeq((n) => n + 1); // a fresh frame has no sync state yet
+        }
         // Restore the node this page is on (a reload, or a frame that
         // reloaded): the workbench answers with a selection message, which is
         // what keeps the two sides in step — see the handler below.
@@ -703,8 +882,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         };
         if (typeof gen !== "number" || typeof seq !== "number" || !body || typeof body !== "object") return;
         relayTicketRef.current += 1;
+        const qid = enqueueRelay(gen, seq);
         relayChainRef.current = relayChainRef.current.then(() =>
-          relaySnapshot(gen, seq, body as Record<string, unknown>),
+          relaySnapshot(qid, gen, seq, body as Record<string, unknown>),
         );
       }
       if (type === "fused-embed-rename") {
@@ -718,8 +898,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         if (typeof gen !== "number" || typeof seq !== "number") return;
         if (typeof from !== "string" || typeof to !== "string" || !from || !to) return;
         relayTicketRef.current += 1;
+        const qid = enqueueRelay(gen, seq);
         relayChainRef.current = relayChainRef.current.then(() =>
-          relaySnapshot(gen, seq, null, {
+          relaySnapshot(qid, gen, seq, null, {
             from,
             to,
             file_from: typeof file_from === "string" ? file_from : null,
@@ -732,6 +913,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         // full state, whatever the server thought it held before.
         relayDelta(true);
         sendHostFocus();
+        setRepostSeq((n) => n + 1);
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;
@@ -743,9 +925,24 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         // holds the lock; the ack route waits for it) would make the server
         // read a node the delta added as one the snapshot deleted.
         const ok = type === "fused-embed-delta-applied";
+        const said = event.data?.reason;
+        const reason = ok ? undefined : typeof said === "string" ? said : "refused";
+        // A frame still booting refuses every delta ("not hydrated yet"):
+        // its hello asks for the full state once it hydrates, so that is
+        // no error and needs no heal (the server ignores the reason too).
+        const booting = reason === "not hydrated yet";
+        if (ok) deltaHealRef.current = false;
         relayChainRef.current = relayChainRef.current.then(() =>
-          ackDelta(name, rev, ok).then(() => undefined, () => undefined),
+          ackDelta(name, rev, ok, reason).then(() => undefined, () => undefined),
         );
+        // A REAL refusal: the server has dropped its picture of the frame
+        // and marks the leg red. Send a full state once, right away, so the
+        // error heals itself — once only: a full state refused again stays
+        // red (until the next applied delta) rather than looping.
+        if (!ok && !booting && !deltaHealRef.current) {
+          deltaHealRef.current = true;
+          relayChainRef.current = relayChainRef.current.then(() => relayDelta(true));
+        }
       }
       if (type === "fused-embed-selection") {
         const name = event.data?.udfName;
@@ -770,7 +967,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, name]);
+  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, name]);
 
   // Mirror the node onto this page's URL so a reload lands on it, and drop the
   // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
@@ -816,7 +1013,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // delta leg below is how disk changes reach it).
   const lastPushSeqRef = useRef<number | null>(null);
   useEffect(() => {
-    const seq = sync?.push_seq ?? null;
+    const seq = sync?.legs.disk_to_server.push_seq ?? null;
     if (seq === null) return;
     const prev = lastPushSeqRef.current;
     lastPushSeqRef.current = seq;
@@ -834,36 +1031,151 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       { type: "fused-embed-remote-changed", push_seq: seq },
       origin,
     );
-  }, [sync?.push_seq]);
+  }, [sync?.legs.disk_to_server.push_seq]);
 
 
-  // Sync status poll for the status strip; re-arms the watcher if it drops.
-  // The button's enabled/disabled state reads straight off sync.fix_active —
-  // set server-side the instant a fix spawns, cleared only by that run's own
-  // completion (D336 follow-up), never guessed from transcript activity here.
+  // Self-heal: a state saying no watcher runs here (a server restart, a
+  // stop) re-arms it through sync/start — which answers `owned` instead if
+  // another process took the clone meanwhile. Throttled.
+  const lastHealRef = useRef(0);
+  const heal = useCallback(() => {
+    if (Date.now() - lastHealRef.current < HEAL_MIN_INTERVAL_MS) return;
+    lastHealRef.current = Date.now();
+    void ensureSync().catch(() => undefined);
+  }, [ensureSync]);
   useEffect(() => {
-    let consecutiveFailures = 0;
-    const id = window.setInterval(() => {
-      void getSyncStatus(name)
-        .then((s) => {
-          consecutiveFailures = 0;
-          setSync(s);
-          setDir((d) => d ?? s.dir);
-          // Self-heal: a server restart drops the watcher; re-arm it.
-          if (!s.watching) void startSync(name).catch(() => undefined);
-        })
-        .catch(() => {
-          consecutiveFailures += 1;
-          // After a few misses, treat the canvas the same as a dropped
-          // watcher so the next successful poll's `if (!s.watching)` re-arms
-          // sync the normal way.
-          if (consecutiveFailures >= FAILED_POLLS_BEFORE_RELEASE) {
-            setSync((s) => (s ? { ...s, watching: false } : s));
+    if (sync && noWatcher(sync)) heal();
+  }, [sync, heal]);
+
+  // The sync state, live: WS /api/canvases/sync/events pushes a `state` on
+  // every change — a disk_rev bump reaches the delta effect above at once,
+  // where the old 2 s status poll lagged it — and `log` events for the
+  // drawer. While the socket is down the page polls sync/state every
+  // SYNC_POLL_MS and reconnects with backoff. Nothing runs while another
+  // process owns the clone (or before sync/start has answered).
+  const syncLive = !!dir && !owned;
+  useEffect(() => {
+    if (!syncLive) return;
+    let closed = false;
+    let sock: WebSocket | null = null;
+    let retryTimer: number | null = null;
+    let pollTimer: number | null = null;
+    let retryMs = 0;
+    let failures = 0;
+    const pollOnce = () => {
+      void getSyncState(name).then(
+        (s) => {
+          failures = 0;
+          if (!closed) applyState(s);
+        },
+        () => {
+          // A few misses in a row: treat it as a dropped watcher.
+          failures += 1;
+          if (!closed && failures >= FAILED_POLLS_BEFORE_RELEASE) {
+            failures = 0;
+            heal();
           }
-        });
-    }, SYNC_POLL_MS);
-    return () => window.clearInterval(id);
-  }, [name]);
+        },
+      );
+    };
+    const startPolling = () => {
+      if (pollTimer === null) pollTimer = window.setInterval(pollOnce, SYNC_POLL_MS);
+    };
+    const stopPolling = () => {
+      if (pollTimer !== null) window.clearInterval(pollTimer);
+      pollTimer = null;
+    };
+    const scheduleReconnect = () => {
+      if (closed || retryTimer !== null) return;
+      retryMs = Math.min(WS_RETRY_MAX_MS, retryMs ? retryMs * 2 : WS_RETRY_MIN_MS);
+      retryTimer = window.setTimeout(connect, retryMs);
+    };
+    const connect = () => {
+      retryTimer = null;
+      let s: WebSocket;
+      try {
+        s = new WebSocket(syncEventsUrl(name));
+      } catch {
+        startPolling();
+        scheduleReconnect();
+        return;
+      }
+      sock = s;
+      s.onopen = () => {
+        retryMs = 0;
+        stopPolling();
+        setLive(true);
+        pollOnce(); // whatever moved while the socket was down
+      };
+      s.onmessage = (ev) => {
+        let msg: unknown;
+        try {
+          msg = JSON.parse(String(ev.data));
+        } catch {
+          return;
+        }
+        if (!msg || typeof msg !== "object") return;
+        const m = msg as { type?: unknown; state?: unknown; event?: unknown };
+        if (m.type === "state" && m.state && typeof m.state === "object") {
+          applyState(m.state as SyncState);
+        } else if (m.type === "log" && m.event && typeof m.event === "object") {
+          wsLogAtRef.current = Date.now();
+          setLogEvents((buf) => mergeLogEvents(buf, [m.event as SyncLogEvent]));
+        }
+        // `ping` (heartbeat) and anything unknown: nothing to do.
+      };
+      // `error` is always followed by `close`, which does the bookkeeping.
+      s.onerror = () => {};
+      s.onclose = () => {
+        if (sock === s) sock = null;
+        if (closed) return;
+        setLive(false);
+        startPolling();
+        scheduleReconnect();
+      };
+    };
+    pollOnce(); // first paint does not wait for the socket
+    connect();
+    return () => {
+      closed = true;
+      stopPolling();
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      sock?.close();
+      setLive(false);
+    };
+  }, [syncLive, name, applyState, heal]);
+
+  // The log ring restarts with a new watcher (its seqs count from 0 again):
+  // drop the drawer's buffer when the epoch moves.
+  const logEpochRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const epoch = sync?.watcher_epoch;
+    if (epoch === undefined) return;
+    if (logEpochRef.current !== undefined && logEpochRef.current !== epoch) setLogEvents([]);
+    logEpochRef.current = epoch;
+  }, [sync?.watcher_epoch]);
+
+  // "Fix with Claude" reads `fix_active` — set server-side the instant a fix
+  // spawns, cleared only by that run's own completion (D336 follow-up),
+  // never guessed from transcript activity. It rides sync/state; the local
+  // copy only bridges the click → next state gap (`onFix` sets it at once).
+  const pushError = sync?.legs.disk_to_server.state === "error";
+  const stateFixActive = sync?.fix_active;
+  useEffect(() => {
+    if (stateFixActive !== undefined) setFixActive(stateFixActive);
+  }, [stateFixActive]);
+
+  // The merged state to the workbench frame (`fused-embed-sync-state`, the
+  // embed's save chip reads it). Exact targetOrigin, like every post.
+  const postSyncState = useCallback((state: MergedSyncState) => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    frame.contentWindow.postMessage({ type: "fused-embed-sync-state", state }, origin);
+  }, []);
+  const onLogEvents = useCallback((events: SyncLogEvent[]) => {
+    setLogEvents((buf) => mergeLogEvents(buf, events));
+  }, []);
 
   // Splitter drag: track the pointer over the whole window so the drag
   // survives entering the iframes (which would otherwise swallow mousemove —
@@ -920,7 +1232,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       // that a fix is now running — the gap let a double-click through to a
       // second POST (a 409, now that the server itself locks, but still a
       // confusing one to show right after a successful click).
-      setSync((s) => (s ? { ...s, fix_active: true } : s));
+      setFixActive(true);
     } catch (e) {
       setFixError((e as Error).message);
     } finally {
@@ -928,56 +1240,69 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     }
   };
 
+  // The workbench frame loads only once THIS process's watcher runs on the
+  // clone (sync/start answered): before that, and while another process owns
+  // the clone, every snapshot it posted would meet a 409 and sit in the
+  // relay's busy loop — the relay running in all but name.
   const frameSrc =
-    baseUrl && handle
+    baseUrl && handle && dir && !owned
       ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=3`
       : null;
 
-  // No header strip (owner call): the workspace is the two panes, full
-  // height. What the strip used to carry is either redundant or surfaces
-  // elsewhere — back is the browser's Back button, the canvas name is the
-  // page title/URL, "Open local files" is the chat pane's own affordances
-  // over the same folder, and sync state only matters when it FAILS, which
-  // the error banner below still reports. The poll keeps running for the
-  // banner and the watcher self-heal.
+  // No header bar (owner call): the workspace is the two panes, full height,
+  // under ONE line — the sync strip (SyncStrip.tsx): the worst of the four
+  // sync legs, "Published 12 s ago" when all is well, the Pull button when
+  // the server moved, and the sync log drawer on click.
+  const s2dState = sync?.legs.server_to_disk.state;
+  const pushLeg = sync?.legs.disk_to_server;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {sync?.server_stale && (
-        <div
-          style={{
-            padding: "8px 12px",
-            borderBottom: "1px solid rgba(200,140,30,0.4)",
-            background: "rgba(200,140,30,0.10)",
-            fontSize: 13,
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            flexWrap: "wrap",
-          }}
-        >
-          <strong>Server changes</strong>
-          <span style={{ opacity: 0.85 }}>
-            {sync.server_stale.udfs.length > 0
-              ? sync.server_stale.udfs.map((u) => `${u.slug} (${u.kind})`).join(", ")
-              : "the canvas layout"}
-            {" "}changed on the server. Nothing here is published until you pull. Pull
-            merges them with your local edits where it can; anything it has to
-            overwrite is kept in the canvas trash.
-          </span>
-          <button
-            className="btn btn-primary"
-            disabled={pullBusy || sync.pulling || sync.push_state === "pushing"}
-            onClick={() => void onPull()}
-            title="Bring the server's changes into this canvas; anything it overwrites is kept in the canvas trash"
-          >
-            {pullBusy ? "Pulling…" : "Pull"}
-          </button>
-          {pullError && <span style={{ color: "rgb(200,60,60)" }}>{pullError}</span>}
-        </div>
+      {startError && !error && (
+        <ErrorBanner>{`Could not start syncing this canvas (retrying): ${startError}`}</ErrorBanner>
       )}
-      {sync?.push_state === "error" && sync.error && (
+      {(sync || owned) && (
+        <SyncStrip
+          name={name}
+          server={sync}
+          queue={relayQueue}
+          failure={relayFailure}
+          owned={owned}
+          live={live}
+          open={drawerOpen}
+          onToggle={() => setDrawerOpen((o) => !o)}
+          pull={{
+            busy: pullBusy,
+            error: pullError,
+            disabled: pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
+            onPull: () => void onPull(),
+          }}
+        />
+      )}
+      {drawerOpen && (sync || owned) && (
+        <SyncDrawer
+          name={name}
+          events={logEvents}
+          wsLogAtRef={wsLogAtRef}
+          onEvents={onLogEvents}
+          onClose={() => setDrawerOpen(false)}
+        />
+      )}
+      {frameSrc && (
+        <SyncFramePoster
+          name={name}
+          server={sync}
+          queue={relayQueue}
+          failure={relayFailure}
+          repost={repostSeq}
+          post={postSyncState}
+        />
+      )}
+      {pushError && pushLeg && sync && (
+        // The disk_to_server leg's error, in full: the strip above carries
+        // the one-line reason; this is the CLI's per-line detail and the
+        // Fix with Claude door.
         <div
           style={{
             padding: "8px 12px",
@@ -986,16 +1311,18 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             fontSize: 13,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <strong>{sync.error}</strong>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+            <strong style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+              {pushLeg.reason ?? "Publishing failed"}
+            </strong>
             {/* Claude's feature (D17): no door while Claude is switched off. */}
             {!claudeOff && <button
               className="btn btn-primary"
-              disabled={fixBusy || !!sync.fix_active}
+              disabled={fixBusy || fixActive}
               onClick={() => void onFix()}
               title="Start a Claude session on the local clone, primed with these errors"
             >
-              {sync.fix_active
+              {fixActive
                 ? "Claude is on it — see chat →"
                 : fixBusy
                   ? "Starting…"
@@ -1048,7 +1375,15 @@ export default function CanvasWorkspace({ name }: { name: string }) {
               style={{ width: "100%", height: "100%", border: 0 }}
             />
           ) : (
-            !error && <p style={{ padding: 16 }}>Loading workbench…</p>
+            !error &&
+            (owned ? (
+              <p style={{ padding: 16, opacity: 0.8 }}>
+                Another Fused process (pid {owned.pid}, port {owned.port}) is syncing this
+                canvas. Close it there and this page picks the canvas up on its own.
+              </p>
+            ) : (
+              <p style={{ padding: 16 }}>Loading workbench…</p>
+            ))
           )}
         </div>
         <div

@@ -3,6 +3,9 @@
 // whoami, token) execute a CLI child / hand out a credential, so they carry
 // the X-Fused header too (the server 403s them without it).
 import { getJson, postJson } from "@platform/lib/api";
+import { ownerFromError, type SyncLogEvent, type SyncOwner, type SyncState } from "./sync-state";
+
+export type { SyncLeg, SyncLogEvent, SyncOwner, SyncState } from "./sync-state";
 
 const GUARD = { headers: { "X-Fused": "1" } };
 
@@ -175,8 +178,15 @@ export const getDelta = (name: string, full: boolean) =>
 
 /** The frame applied (`ok`) or refused a delta: the host's picture of the
  *  frame moves to that revision, or is dropped so the next delta is full. */
-export const ackDelta = (name: string, rev: number, ok: boolean) =>
-  postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", { name, rev, ok });
+export const ackDelta = (name: string, rev: number, ok: boolean, reason?: string) =>
+  postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", {
+    name,
+    rev,
+    ok,
+    // The frame's own words for a refusal ("not hydrated yet" during boot),
+    // so the server can tell a frame still booting from a real refusal.
+    ...(reason !== undefined ? { reason } : {}),
+  });
 
 /** Pull the server's canvas into the clone now (the "Server changes · Pull"
  *  chip). Clean clone: force pull; dirty: three-way merge, canvas.toml per
@@ -187,14 +197,57 @@ export const pullCanvas = (name: string) =>
     { name },
   );
 
-export const startSync = (name: string) =>
-  postJson<SyncStatus>("/api/canvases/sync/start", { name });
+/** Thrown by `startSync` when another fused-render process holds this
+ *  clone's `.sync/<name>.lock` (409 `owned`). Keeps HttpError's `status` and
+ *  `body` for callers that only read those. */
+export class CanvasOwnedError extends Error {
+  status = 409;
+  owner: SyncOwner;
+  body: unknown;
+  constructor(owner: SyncOwner, body: unknown, message: string) {
+    super(message);
+    this.name = "CanvasOwnedError";
+    this.owner = owner;
+    this.body = body;
+  }
+}
+
+/** Arm the clone watcher. A 409 `owned` (another process is this clone's one
+ *  writer) is rethrown as `CanvasOwnedError` carrying `{pid, port, since}`;
+ *  any other failure is the plain HttpError. */
+export const startSync = async (name: string): Promise<SyncStatus> => {
+  try {
+    return await postJson<SyncStatus>("/api/canvases/sync/start", { name });
+  } catch (e) {
+    const owner = ownerFromError(e);
+    if (owner) throw new CanvasOwnedError(owner, (e as { body?: unknown }).body, (e as Error).message);
+    throw e;
+  }
+};
 
 export const stopSync = (name: string) =>
   postJson<{ ok: boolean }>("/api/canvases/sync/stop", { name });
 
 export const getSyncStatus = (name: string) =>
   getJson<SyncStatus>(`/api/canvases/sync/status?name=${encodeURIComponent(name)}`);
+
+/** The four sync legs (embed_to_disk is the page's own: it fills that leg
+ *  from its relay queue), disk_rev / watcher_epoch, and the lock owner. */
+export const getSyncState = (name: string) =>
+  getJson<SyncState>(`/api/canvases/sync/state?name=${encodeURIComponent(name)}`);
+
+/** The sync log ring (200 per canvas) after `after` (a seq; 0 = all held).
+ *  `next` is the seq to pass on the following call. */
+export const getSyncLog = (name: string, after: number) =>
+  getJson<{ events: SyncLogEvent[]; next: number }>(
+    `/api/canvases/sync/log?name=${encodeURIComponent(name)}&after=${after}`,
+  );
+
+/** Same-origin URL of WS /api/canvases/sync/events (state / log / ping). */
+export const syncEventsUrl = (name: string) =>
+  (location.protocol === "https:" ? "wss://" : "ws://") +
+  location.host +
+  `/api/canvases/sync/events?name=${encodeURIComponent(name)}`;
 
 /** Spawn a Claude session on the canvas clone primed with the failing
  *  push's errors; attach the chat iframe with the returned run_id. */
