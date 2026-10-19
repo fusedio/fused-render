@@ -9930,7 +9930,20 @@ def _session_task_registry(file: str, session_id: str,
 
     A run whose process is gone cannot vouch for a task it last saw running:
     such records come back with status `unknown` (and `ended_at` null) rather
-    than a confident `running` the panel would tick a live clock for."""
+    than a confident `running` the panel would tick a live clock for.
+
+    …UNLESS AN OLDER RUN'S HOST STILL HOLDS THE WORK (Akshil, 2026-10-19: the
+    Tasks list said "1 job running", the chat showed nothing). One session can
+    have two hosts up: `_live_host` matches the exact target, so the same chat
+    opened on its folder (or its run pushed out of the scan window) spawns a
+    second host beside the one still running a dev server. The Tasks badge
+    counts ANY of the session's runs holding work (tasks.py `_hosted_runs`);
+    reading the newest run alone left the chat's panel empty while that job
+    ran on. So when the newest run has nothing active and no turn open, the
+    newest OLDER run whose host is alive with active records — or with a turn
+    open, the model that host's job just woke — answers instead (its registry
+    and its id, so Stop/Output reach that host and the page watches it) —
+    `run_dir` stays the newest one's, for the window size."""
     if not session_id or _bad_id(session_id):
         return {}, "", ""
     file = os.path.abspath(file)
@@ -9940,8 +9953,14 @@ def _session_task_registry(file: str, session_id: str,
         return {}, "", ""
     if limit is not None:
         names = names[:limit]
+    newest = None
     for name in names:
         run_dir = os.path.join(RUNS, name)
+        # Past the newest run only a live host counts: one stat before the
+        # meta read, since this pass walks the rest of the window.
+        if newest is not None and not os.path.isfile(
+                os.path.join(run_dir, "host.json")):
+            continue
         try:
             with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
                 meta = json.load(fh)
@@ -9956,7 +9975,12 @@ def _session_task_registry(file: str, session_id: str,
                               _run_own_session(run_dir, meta)):
             continue
         host = _host_alive(run_dir)
-        if host and not _turn_state(run_dir)[0]:
+        turn_open = host and _turn_state(run_dir)[0]
+        # An older run's host must be up, and its `claude` alive too — the
+        # stale-pid guard `_run_tasks` applies, so a reused pid lists nothing.
+        if newest is not None and not (host and _alive(run_dir)):
+            continue
+        if host and not turn_open:
             # The turn is over while the host runs background work on: absorb
             # what the CLI wrote since the last poll, so a job that ended reads
             # ended (`_catch_up_registry`). NEVER mid-turn: the poll owns the
@@ -9964,13 +9988,22 @@ def _session_task_registry(file: str, session_id: str,
             # `task_started` takes its subagent type and model from.
             _catch_up_registry(run_dir)
         registry = _read_bg_tasks(run_dir)
-        if registry and not (host or _alive(run_dir)):
+        active = any(_task_active(rec) for rec in registry.values())
+        if newest is not None:
+            if active or turn_open:
+                return registry, name, newest[2]
+            continue
+        vouched = host or (bool(registry) and _alive(run_dir))
+        if registry and not vouched:
             for rec in registry.values():
                 if _task_active(rec):
                     rec["status"] = "unknown"
                     rec["ended_at"] = None
-        return registry, (name if host else ""), run_dir
-    return {}, "", ""
+        # The newest run answers while it has something live to say.
+        if turn_open or (active and vouched):
+            return registry, (name if host else ""), run_dir
+        newest = (registry, (name if host else ""), run_dir)
+    return newest or ({}, "", "")
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
