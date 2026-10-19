@@ -3766,8 +3766,18 @@ function ChatBody(props: ChatBodyProps) {
     if (href) onNavigate(href);
   }, [onNavigate]);
 
-  // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
+  // T:16714 — one scroll to the tail after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.
+  //
+  // THROUGH THE FOLLOW FLAG, not a raw write (Akshil 2026-10-19). T's
+  // `scrollBottom()` here moved the reader whatever they were doing, and a
+  // reader who had scrolled up to re-read the middle of a long reply was yanked
+  // to the tail the moment the run ended — one of the "jumps to a different
+  // place" in the report. The settle exists for the working line leaving
+  // (the log gets SHORTER, which the follow's ResizeObserver answers only by
+  // not moving), so a pinned reader is put back on the tail and a reader who
+  // left it is left where they are. A finished run the reader was AWAY for is
+  // the other case, and it stays unconditional in `useRepairScroll` below.
   const settled = state.status === "idle";
   const wasRunning = useRef(false);
   useEffect(() => {
@@ -3777,8 +3787,7 @@ function ChatBody(props: ChatBodyProps) {
     }
     if (!wasRunning.current) return;
     wasRunning.current = false;
-    const log = rootRef.current?.querySelector(".chat-logwrap");
-    if (log) log.scrollTop = log.scrollHeight;
+    transcriptFollow.current?.();
   }, [settled]);
 
   // AND UNCONDITIONALLY AFTER A REPAIR (T:17851, P4-10) — the rule, and why it
