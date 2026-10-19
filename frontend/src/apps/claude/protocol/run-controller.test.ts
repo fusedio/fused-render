@@ -4917,6 +4917,24 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasks[0]!.status).toBe("killed");
   });
 
+  test("CodeRabbit: the older host's ended row keeps its grace through the newer run's polls", async () => {
+    let lap: string[] = [];
+    const ended = { ...T("h"), status: "killed" as const, ended_at: Date.now() / 1000 };
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [ended] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: (_f, n) => {
+        if (n === 1) lap = controller.getState().tasks.map((t) => t.id);
+        return n < 2 ? poll({}) : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    expect(lap).toEqual(["h"]);
+  });
+
   test("a restore lands history's tasks", async () => {
     const { controller } = makeController({
       history: () => ({ turns: [], transcript: null, live_run: "", tasks: [T("h", "completed")] }),

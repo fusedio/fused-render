@@ -25,6 +25,20 @@ export function endActiveTasks(tasks: readonly TaskRecord[]): TaskRecord[] | nul
   return tasks.map((t) => (isActive(t.status) ? { ...t, status: "unknown", ended_at: null } : t));
 }
 
+/** An ended, non-failed row stays this long (ms) before it leaves the open
+ *  list; "Show N finished" brings it back. */
+export const TASK_ENDED_GRACE_MS = 5000;
+
+/** Whether the list still has a row on show at `nowMs`: one still going, or
+ *  one that ended inside the panel's grace (TasksPanel `hideAfterMs`). */
+export function stillShown(tasks: readonly TaskRecord[], nowMs: number): boolean {
+  return tasks.some((t) => {
+    if (isActive(t.status)) return true;
+    const end = Number(t.ended_at) || 0;
+    return !!end && end * 1000 + TASK_ENDED_GRACE_MS > nowMs;
+  });
+}
+
 /** The summary's and the panel's kind order (SPEC T-5: "1 agent, 1 shell, 1 monitor"). */
 const SUMMARY_KINDS: TaskKind[] = ["agent", "shell", "monitor", "other"];
 

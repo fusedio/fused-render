@@ -10,6 +10,7 @@ import {
   statusLabel,
   kindLabel,
   sortTasks,
+  stillShown,
   subagentChipModel,
   summarizeTasks,
   taskFor,
@@ -298,5 +299,15 @@ describe("review #7: paused", () => {
     const seg = tool({ name: "Monitor", id: "tuM" });
     const paused = rec({ id: "M", kind: "monitor", tool_use_id: "tuM", events: 2, status: "paused" });
     expect(subagentChipModel(seg, taskFor(seg, taskIndex([paused]))).monitor).toBe("2 events");
+  });
+});
+
+describe("stillShown", () => {
+  test("a live row, or one ended inside the panel's grace, is still on show", () => {
+    expect(stillShown([rec({ status: "running" })], 0)).toBe(true);
+    expect(stillShown([rec({ status: "killed", ended_at: 100 })], 104_000)).toBe(true);
+    expect(stillShown([rec({ status: "killed", ended_at: 100 })], 106_000)).toBe(false);
+    expect(stillShown([rec({ status: "unknown", ended_at: null })], 0)).toBe(false);
+    expect(stillShown([], 0)).toBe(false);
   });
 });

@@ -65,7 +65,7 @@ import type {
 import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit, isPlanLimitText } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
-import { endActiveTasks, isActive } from "./tasks";
+import { endActiveTasks, isActive, stillShown } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
@@ -1958,11 +1958,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // chat reopened on its folder) while the older one runs a dev server
         // on. This run's empty list says nothing about that job, so the rows
         // stay, owned by their host (Stop/Output still reach it), and that
-        // host stays watched through this turn, so its end still lands.
+        // host stays watched through this turn, so its end still lands (and
+        // its ended row keeps the panel's 5 s grace, CodeRabbit).
         {
           const rows = Array.isArray(poll.tasks) ? poll.tasks : [];
           const owner = state.tasksRunId;
-          if (!rows.length && owner && owner !== runId && state.tasks.some((t) => isActive(t.status))) {
+          if (!rows.length && owner && owner !== runId && stillShown(state.tasks, now())) {
             if (loopSeq === seat) watchHostTasks(owner, seat);
           } else if (rows.length || owner !== runId) publishTasks(rows, runId);
         }
