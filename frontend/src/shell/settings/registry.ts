@@ -84,6 +84,9 @@ export interface SettingEntry {
   child?: true;
   /** A pointer to another page, not a control. */
   elsewhere?: true;
+  /** Fused Bot's own wording where it differs (its launcher searches bots,
+   *  not apps). Applied by `forFlavor`, so the row and the search agree. */
+  bot?: { label?: string; description?: string };
   /** Whether the running app can honour this at all (a server-reported
    *  capability). Absent = always. */
   available?: (ctx: SettingsContext) => boolean;
@@ -130,6 +133,9 @@ const ENTRIES = [
     description: "Global shortcut for the search panel over your apps. Click the key, then press the new combination; Esc cancels.",
     keywords: "hotkey shortcut keyboard spotlight search apps bots launcher option space",
     macOnly: true,
+    bot: {
+      description: "Global shortcut for the search panel over your bots. Click the key, then press the new combination; Esc cancels.",
+    },
     available: ({ prefs }) => !!prefs.launcher?.available,
   },
   {
@@ -140,6 +146,10 @@ const ENTRIES = [
     description: "Hold this and press 1–9 to open a recent app from anywhere. 0 opens the home window.",
     keywords: "shortcut modifier number recent hotkey keyboard digit",
     macOnly: true,
+    bot: {
+      label: "Open the Nth bot",
+      description: "Hold this and press 1–9 to open a bot from anywhere. 0 opens the home window.",
+    },
     available: ({ prefs }) => !!prefs.launcher?.available,
   },
   {
@@ -451,8 +461,19 @@ export function isVisible(entry: SettingEntry, ctx: SettingsContext): boolean {
   return true;
 }
 
+/** The entry in this flavor's words: Fused Bot's `bot` overrides applied. */
+export function forFlavor<T extends SettingEntry>(entry: T, bot: boolean): T {
+  if (!bot || !entry.bot) return entry;
+  return {
+    ...entry,
+    label: entry.bot.label ?? entry.label,
+    description: entry.bot.description ?? entry.description,
+  };
+}
+
+/** The rows this machine and flavor draw, in this flavor's words. */
 export function visibleSettings(ctx: SettingsContext): (SettingEntry & { id: SettingId })[] {
-  return SETTINGS.filter((e) => isVisible(e, ctx));
+  return SETTINGS.filter((e) => isVisible(e, ctx)).map((e) => forFlavor(e, ctx.bot));
 }
 
 /** Groups that have at least one visible row, in page order. */

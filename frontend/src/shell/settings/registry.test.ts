@@ -70,6 +70,16 @@ describe("visibility", () => {
     expect(bot.map((s) => s.id)).toContain("monitor");
   });
 
+  test("Fused Bot's launcher rows speak of bots, in the row and in search", () => {
+    const bot = visibleSettings(ctx({ bot: true }));
+    const row = bot.find((s) => s.id === "launcher-row")!;
+    expect(row.label).toBe("Open the Nth bot");
+    expect(bot.find((s) => s.id === "launcher-hotkey")!.description).toContain("your bots");
+    expect(searchSettings(bot, "open the nth bot").map((s) => s.id)).toEqual(["launcher-row"]);
+    // Render keeps its own words.
+    expect(visibleSettings(ctx()).find((s) => s.id === "launcher-row")!.label).toBe("Open the Nth app");
+  });
+
   test("capabilities the server says are missing are not drawn", () => {
     const ids = visibleSettings(ctx({}, { native_windows: undefined, launcher: undefined } as Partial<Prefs>)).map(
       (s) => s.id,

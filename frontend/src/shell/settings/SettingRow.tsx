@@ -10,7 +10,8 @@ import { Switch } from "@platform/shadcn/ui/switch";
 import { cn } from "@platform/lib/utils";
 import type { Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { groupOf, settingById, type SettingId } from "./registry";
+import { isBot } from "@platform/lib/flavor";
+import { forFlavor, groupOf, settingById, type SettingId } from "./registry";
 import { matchedVia, splitLabel } from "./search";
 
 export interface SettingsView {
@@ -47,7 +48,7 @@ export function SettingRow({
   off?: boolean;
 }) {
   const view = useContext(SettingsViewContext);
-  const entry = settingById(id)!;
+  const entry = forFlavor(settingById(id)!, isBot());
   const tokens = view.tokens;
   const label = tokens ? splitLabel(entry.label, tokens) : { pre: entry.label, hit: "", post: "" };
   const via = tokens ? matchedVia(entry, tokens) : [];

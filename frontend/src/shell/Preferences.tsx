@@ -112,19 +112,19 @@ function Section({
 // `showGroup`), so the next group paints at once instead of behind a skeleton.
 // The mount still re-reads; this is only what it shows meanwhile.
 let lastPrefs: Prefs | null = null;
+// Bumped by every write a control's PUT answers — MODULE-wide, not per mount,
+// because a PUT pressed just before a group switch answers into the page that
+// was unmounted. A mount's GET that a write has overtaken is older than that
+// write, so it is dropped and the write (in `lastPrefs`) painted instead.
+let writeGen = 0;
 
 export default function Preferences() {
   const [prefs, setPrefsState] = useState<Prefs | null>(lastPrefs);
-  // Set by the first write a control makes. The mount's GET was asked before
-  // it, so once a write has answered, that GET's (older) answer is dropped
-  // rather than painted over the newer one — the cached snapshot above makes
-  // the controls pressable before the GET lands.
-  const wroteRef = useRef(false);
   // STABLE: it is every control's `onChange`, and an effect that depends on it
   // (the hotkey recorder suspends the global shortcuts for as long as it runs)
   // must not be torn down by an unrelated re-render of this page.
   const setPrefs = useCallback((p: Prefs) => {
-    wroteRef.current = true;
+    writeGen += 1;
     lastPrefs = p;
     setPrefsState(p);
   }, []);
@@ -137,11 +137,12 @@ export default function Preferences() {
 
   useEffect(() => {
     let alive = true;
+    const asked = writeGen;
     getPrefs()
       .then((p) => {
-        if (!alive || wroteRef.current) return;
-        lastPrefs = p;
-        setPrefsState(p);
+        if (!alive) return;
+        if (writeGen === asked) lastPrefs = p;
+        setPrefsState(lastPrefs);
       })
       .catch((e) => alive && setError((e as Error).message));
     return () => {
