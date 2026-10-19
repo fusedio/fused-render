@@ -98,10 +98,11 @@ const NAME_SYSTEM_PROMPT =
   "\"hello, what can you do?\" -> " + NAME_NONE + "\n" +
   "Reply with ONLY the name — no quotes, no prose, no explanation.";
 
-// The relay alias the naming call pins. Named explicitly because the relay's
-// omitted-model default follows the user's default-model PREFERENCE, and a
-// pref of fable/opus turned a two-second utility call into a twenty-second
-// one. Haiku is the right model for a folder name whatever the chat runs on.
+// The relay alias the naming call pins. Named explicitly so the call never
+// depends on the relay's own default: when that followed a model preference, a
+// preference of fable/opus turned a two-second utility call into a
+// twenty-second one. Haiku is the right model for a folder name whatever the
+// chat runs on.
 const NAME_MODEL = "haiku";
 
 // A kebab-case folder name for an app described by `prompt`: ask the AI relay

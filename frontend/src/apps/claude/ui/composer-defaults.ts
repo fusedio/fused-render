@@ -4,7 +4,13 @@
 // (T:11901-11912, 12171-12176):
 //
 //   this chat's RECORD  >  seed param  >  the GLOBAL pair / detected
-//                        >  prefs default  >  constant
+//                        >  constant
+//
+// T ranked a "prefs default" between detection and the constant. That rank is
+// gone with fused-render's own `default_model` preference: the GLOBAL pair
+// above IS the user's default model (Claude Config › Model edits it), and a
+// second, lower-ranked default was a setting that only spoke when the first
+// said nothing.
 //
 // "seed param" and not "URL param" since 2026-09-21: a `?model=`/`?effort=`
 // counts only when a HOST stated it (ChatMount's props, into a per-mount memory
@@ -30,7 +36,7 @@
 // set a value matching no option, which renders as a blank pill (fitSelect
 // returns early with no `selectedOptions[0]`) and is also what reaches the CLI.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getPrefs, readChatSettings, recordChatSettings } from "@platform/lib/api";
+import { readChatSettings, recordChatSettings } from "@platform/lib/api";
 import {
   getClaudeDefaults,
   readClaudeDefaults,
@@ -134,23 +140,23 @@ function pickModel(want: string, list: readonly string[] = MODELS, fallback = DE
   return listedModelIn(want, list) || fallback;
 }
 
-/** `curModel()` (T:11901), with the chat's own record ahead of it.
+/** `curModel()` (T:11901), with the chat's own record ahead of it and T's
+ *  prefs rank removed (see the header).
  *
  *  `recorded` is LAST in the list and FIRST in the ranking, deliberately: the
- *  three below it are T's own order and are pinned by tests that quote it, so
+ *  two below it are T's own order and are pinned by tests that quote it, so
  *  the new rank is appended rather than threaded through them. See the header
  *  for why a record outranks a param. */
 export function resolveModel(
   param?: string,
   detected?: string,
-  pref?: string,
   recorded?: string,
   /** The AGENT's list and its default (D11) — the Claude constants when
    *  absent, which is every caller that predates the catalog. */
   list: readonly string[] = MODELS,
   fallback = DEFAULT_MODEL,
 ): string {
-  return pickModel(recorded || param || detected || pref || fallback, list, fallback);
+  return pickModel(recorded || param || detected || fallback, list, fallback);
 }
 /** `curEffort()` (T:11905) — prefs never reach effort, only detection does.
  *  `recorded` leads, exactly as it does for the model above. */
@@ -205,7 +211,7 @@ export interface ComposerDefaults {
    *  session, `agent._start`), and refused once `backendFixed`. */
   setBackend(value: string): void;
   /** Every best-effort read has landed (or failed) — the record, detection and
-   *  the prefs. The "Fix with AI" boot branch awaits this before its automatic
+   *  the global pair. The "Fix with AI" boot branch awaits this before its automatic
    *  send (T:12619, 12635), so the record read is IN it: an automatic send is
    *  the one send a human cannot hold back, and it must not launch on a value
    *  the record was about to overturn. */
@@ -231,7 +237,7 @@ export interface ComposerDefaults {
 
 /**
  * The three pills' resolved values, kept in step with the params store.
- * Detection (`defaults`) and the prefs read are both best-effort and both end
+ * Detection (`defaults`) and the global read are both best-effort and both end
  * in a re-resolve, so whichever lands second simply re-renders the same
  * ranking (T:12608-12645).
  */
@@ -268,7 +274,6 @@ export function useComposerDefaults(
     model: "",
     effort: "",
   });
-  const [pref, setPref] = useState("");
   // WHAT THE APP ITSELF WROTE DOWN for this conversation — the record that
   // outranks everything else here (see the header). It arrives off its OWN
   // read (`GET /api/tasks/settings`, one JSON file, milliseconds) rather than
@@ -281,7 +286,6 @@ export function useComposerDefaults(
     effort: "",
   });
   const [detectionReady, setDetectionReady] = useState(false);
-  const [prefsReady, setPrefsReady] = useState(false);
   // THE FAST HALF, and the one the pills actually wait on. See `pillsReady`.
   const [recordReady, setRecordReady] = useState(false);
 
@@ -494,23 +498,6 @@ export function useComposerDefaults(
     // and it is one cheap read of one transcript's tail.
   }, [file, sessionId]);
 
-  useEffect(() => {
-    let live = true;
-    void getPrefs()
-      .then((p) => {
-        const m = normalizeModel(p.model?.default);
-        if (live && m) setPref(m);
-      })
-      .catch(() => {
-        // Same footing as detection.
-      })
-      .finally(() => {
-        if (live) setPrefsReady(true);
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
 
   // ── WHEN A `?model=`/`?effort=` STILL COUNTS ──────────────────────────────
   //
@@ -557,7 +544,6 @@ export function useComposerDefaults(
   const model = resolveModel(
     paramModel,
     lm(globModel) || lm(detected.model),
-    lm(pref),
     lm(recorded.model) || lm(local.model),
     models,
     fallbackModel,
@@ -583,8 +569,8 @@ export function useComposerDefaults(
   //   * a record for this field, or a `?model=`/`?effort=` the host seeded —
   //     both outrank every read that is still out, so the field is settled the
   //     moment the (fast) record read has answered;
-  //   * neither — then the next rank down is detection, and for the model the
-  //     prefs default behind it, so the slow reads have to land first.
+  //   * neither — then the next rank down is detection, so the slow read has
+  //     to land first.
   //
   // An unlisted param is settled too, and deliberately: `resolveModel` folds it
   // to the constant rather than falling through, so nothing pending speaks for
@@ -592,8 +578,8 @@ export function useComposerDefaults(
   //
   // THE GLOBAL READ IS A THIRD WAY TO SETTLE, and for a brand-new chat it is
   // the usual one: it is fast, and it outranks both slow reads. A global that
-  // answers "" for a field settles nothing — the ranks below it are detection
-  // and the prefs, and those are still out.
+  // answers "" for a field settles nothing — the rank below it is detection,
+  // and that is still out.
   //
   // ASKED OF THE LISTED VALUES (`lm`/`le`), the same ones the resolve above
   // ranks by: a record naming a model THIS agent does not list speaks for
@@ -604,7 +590,7 @@ export function useComposerDefaults(
   const modelSettled =
     recordAnswered &&
     (!!lm(recorded.model) || !!lm(local.model) || !!paramModel || !!lm(globModel) ||
-      (globalReady && detectionReady && prefsReady));
+      (globalReady && detectionReady));
   const effortSettled =
     recordAnswered &&
     (!!le(recorded.effort) || !!le(local.effort) || !!paramEffort || !!le(globEffort) ||
@@ -701,13 +687,13 @@ export function useComposerDefaults(
       },
       setPermission: (value: PermissionMode) =>
         params.set({ permission: value }),
-      ready: detectionReady && prefsReady && recordReady && globalReady,
+      ready: detectionReady && recordReady && globalReady,
       pillsReady,
       modelSettled,
       effortSettled,
     }),
     [model, effort, permission, backend, ownBackend, setBackend, params, record,
-     localPick, pickLocal, detectionReady, prefsReady, recordReady, globalReady,
+     localPick, pickLocal, detectionReady, recordReady, globalReady,
      pillsReady, modelSettled, effortSettled],
   );
 }

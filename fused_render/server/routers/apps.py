@@ -1335,8 +1335,8 @@ def _app_name_error(name) -> str | None:
     return None
 
 
-# What the hero composer's two pickers may ask for. Models are the
-# default-model preference's own set — the claude template's MODELS vocabulary,
+# What the hero composer's two pickers may ask for. Models are
+# VALID_DEFAULT_MODELS — the claude template's MODELS vocabulary,
 # already written down once in shell/prefs.py — so a third copy of that list
 # cannot drift from the control it feeds. Efforts have no such home yet: the
 # template's EFFORTS list is JS, and this is the first Python caller that needs

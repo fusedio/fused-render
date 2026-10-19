@@ -17,7 +17,7 @@ const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
 const STORE = readFileSync(join(SHELL, "../apps/canvases/logged-in.ts"), "utf8");
 const PAGE = readFileSync(join(SHELL, "../apps/canvases/Canvases.tsx"), "utf8");
 const FLAG = readFileSync(join(SHELL, "../apps/canvases/feature-flag.ts"), "utf8");
-const PREFS_PAGE = readFileSync(join(SHELL, "Preferences.tsx"), "utf8");
+const PREFS_PAGE = readFileSync(join(SHELL, "settings/toggles.tsx"), "utf8");
 const APP = readFileSync(join(SHELL, "App.tsx"), "utf8");
 
 describe("the sidebar's Canvases entry", () => {
@@ -69,7 +69,7 @@ describe("the sidebar's Canvases entry", () => {
   it("reads the feature flag from prefs, one fetch plus a publish", () => {
     // No poll, unlike sign-in: this pref can only change on the Preferences
     // page of this app, and that page hands the new value over so the row
-    // appears with the checkbox instead of on the next navigation.
+    // appears with the switch instead of on the next navigation.
     expect(FLAG).toMatch(/export function publishCanvasesEnabled/);
     expect(FLAG).toMatch(/getPrefs(Shared)?\(\)/);
     expect(FLAG).not.toMatch(/setTimeout|setInterval/);

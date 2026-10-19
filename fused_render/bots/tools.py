@@ -1434,7 +1434,7 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             label = describe(bot, act, d, obs)  # BEFORE the install: afterwards the same call describes as "already installed"
             if not marketplace_on():
                 # The roster and the steps prompt drop these while the pref is off; a model that names one anyway is refused.
-                return label, "error: the Marketplace is off (the user turns it on in Preferences > Marketplace)"
+                return label, "error: the Marketplace is off (the user turns it on in Preferences › Optional features)"
             return label, (_market_search(d) if act == "marketplace_search" else _market_install(bot, d))
         if act == "note":
             text = " ".join(str(d.get("text") or d.get("message") or "").split())[:300]
