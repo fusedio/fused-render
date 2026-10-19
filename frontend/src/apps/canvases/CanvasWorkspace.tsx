@@ -102,6 +102,7 @@ import {
   getCanvasesStatus,
   getSyncState,
   getWhoami,
+  checkRemote,
   pullCanvas,
   startSync,
   syncEventsUrl,
@@ -156,6 +157,10 @@ const NODE_FILE_WAIT_MS = 20_000;
 // A fallback state poll that keeps failing is treated, after this many
 // consecutive misses, as a dropped watcher: sync/start is asked again.
 const FAILED_POLLS_BEFORE_RELEASE = 3;
+
+// A focus-triggered server check at most this often: a window that is
+// clicked in and out of repeatedly must not become a probe per click.
+const FOCUS_CHECK_MIN_MS = 3000;
 
 /** This window's focus as the canvas should count it. */
 function hostFocused(): boolean {
@@ -436,13 +441,13 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [nodePath, nodeFileReady, sync?.disk_rev]);
-  const onPull = useCallback(async () => {
+  const onPull = useCallback(async (hard = false) => {
     setPullBusy(true);
     setPullError(null);
     try {
       // The answer is the old sync/status shape: read only its verdict. The
       // new state follows on the events socket (or the next poll).
-      const s = await pullCanvas(name);
+      const s = await pullCanvas(name, hard);
       if (!s.ok) setPullError(s.pull_error ?? s.error ?? "pull failed");
       void getSyncState(name).then(applyState, () => undefined);
     } catch (e) {
@@ -638,6 +643,30 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       document.removeEventListener("visibilitychange", sendHostFocus);
     };
   }, [sendHostFocus]);
+
+  // Coming back to this canvas — the native window focused, or its tab shown
+  // again — asks the watcher to probe the server now rather than on its
+  // next timed poll, so a canvas edited elsewhere meanwhile shows its Pull
+  // button as the user looks (the hosted workbench tab does the same on
+  // focus). Detect-only; the verdict lands as the usual sync state. At most
+  // once per FOCUS_CHECK_MIN_MS, and not while another process owns the clone.
+  const lastFocusCheckRef = useRef(0);
+  useEffect(() => {
+    if (owned) return;
+    const check = () => {
+      if (!hostFocused()) return;
+      const now = Date.now();
+      if (now - lastFocusCheckRef.current < FOCUS_CHECK_MIN_MS) return;
+      lastFocusCheckRef.current = now;
+      void checkRemote(name).catch(() => undefined);
+    };
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
+    };
+  }, [name, owned]);
 
   // Pointer enters the canvas pane: give the frame focus, unless the user is
   // mid-drag from elsewhere or typing (header). `preventScroll`: a focus
@@ -1252,6 +1281,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           live={live}
           open={drawerOpen}
           onToggle={() => setDrawerOpen((o) => !o)}
+          workbenchUrl={
+            baseUrl && handle
+              ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+              : null
+          }
           pull={{
             busy: pullBusy,
             error: pullError,
@@ -1267,6 +1301,21 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           events={logEvents}
           wsLogAtRef={wsLogAtRef}
           onEvents={onLogEvents}
+          hardPull={{
+            busy: pullBusy,
+            error: pullError,
+            // Also held while a snapshot relay is queued: applied after the
+            // pull it would write the discarded canvas back (the server
+            // fences such snapshots too; this keeps the common case clean).
+            disabled:
+              !!owned ||
+              !sync ||
+              pullBusy ||
+              relayQueue.length > 0 ||
+              s2dState === "pulling" ||
+              pushLeg?.state === "pushing",
+            onPull: () => void onPull(true),
+          }}
           onClose={() => setDrawerOpen(false)}
         />
       )}

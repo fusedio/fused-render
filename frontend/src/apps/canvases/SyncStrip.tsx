@@ -82,6 +82,7 @@ export function SyncStrip({
   pull,
   open,
   onToggle,
+  workbenchUrl,
 }: {
   name: string;
   server: SyncState | null;
@@ -94,6 +95,10 @@ export function SyncStrip({
   pull: PullControl;
   open: boolean;
   onToggle: () => void;
+  /** The hosted workbench editor for this canvas (no embed flags); null
+   *  until the base URL and handle are known. Shown as "Open in workbench"
+   *  while every leg is green. */
+  workbenchUrl: string | null;
 }) {
   const now = useNow(tickFor(queue, server, true));
   const merged: MergedSyncState = mergeEmbedLeg(server, name, queue, failure, now);
@@ -104,6 +109,9 @@ export function SyncStrip({
   const verdicts = legVerdicts(merged);
   const pulling = pull.busy || s2d.state === "pulling";
   const pullFailed = s2d.state === "error" && s2d.changed.length > 0;
+  const pushState = merged.legs.disk_to_server.state;
+  const inFlight =
+    pushState === "pending" || pushState === "pushing" || s2d.state === "pulling" || queue.length > 0;
   const showPull = s2d.state === "stale" || s2d.state === "pulling" || pullFailed || pull.busy;
   // This page's own pull error first (it is the click the user just made),
   // else the server's reason for the failed pull leg.
@@ -191,6 +199,24 @@ export function SyncStrip({
           </button>
         </span>
       )}
+      {!owned && server && level === "ok" && !inFlight && workbenchUrl && (
+        // All green and nothing moving: the canvas on the server is what
+        // this folder holds, so the hosted editor is worth a look. A plain
+        // link in a new tab. (A pending/pushing push is "ok" to worstLeg but
+        // reads "Publishing…", so it is held out here.)
+        <a
+          href={workbenchUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn"
+          style={{ padding: "1px 10px", fontSize: 12, flex: "none", textDecoration: "none" }}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+          title="Open this canvas in the Fused workbench, in a new tab"
+        >
+          Open in workbench
+        </a>
+      )}
       {!owned && server && (
         // The four legs, local first, as bare dots (each names itself in its
         // tooltip; the drawer's legend line spells out the order).
@@ -206,10 +232,11 @@ export function SyncStrip({
           ))}
         </span>
       )}
-      <span style={{ flex: "none", color: "var(--fg-muted)" }} title={live ? "Live" : "Polling every 2 s"}>
-        {live ? "" : "· polling "}
-        {open ? "▴" : "▾"}
-      </span>
+      {!live && (
+        <span style={{ flex: "none", color: "var(--fg-muted)" }} title="Polling every 2 s">
+          · polling
+        </span>
+      )}
     </div>
   );
 }

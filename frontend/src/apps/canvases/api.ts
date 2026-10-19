@@ -153,12 +153,20 @@ export const ackDelta = (name: string, rev: number, ok: boolean, reason?: string
 /** Pull the server's canvas into the clone now (the "Server changes · Pull"
  *  chip). Clean clone: force pull; dirty: three-way merge, canvas.toml per
  *  node, local edits kept. Answers the status with `ok`; the page reads only
- *  the verdict (the new state follows on sync/events). */
-export const pullCanvas = (name: string) =>
+ *  the verdict (the new state follows on sync/events). `hard` (the sync
+ *  drawer's Hard pull) skips the merge: the clone's local files are
+ *  discarded (kept in the canvas trash) and the server's copy taken whole. */
+export const pullCanvas = (name: string, hard = false) =>
   postJson<SyncStatus & { ok: boolean; error?: string | null }>(
     "/api/canvases/sync/pull",
-    { name },
+    hard ? { name, hard: true } : { name },
   );
+
+/** Ask the watcher to probe the server for changes now (the window or tab
+ *  just came into focus) instead of on its next timed poll. Detect-only;
+ *  a stale verdict arrives as the usual sync state (the Pull button). */
+export const checkRemote = (name: string) =>
+  postJson<{ ok: boolean; watching: boolean }>("/api/canvases/sync/check", { name });
 
 /** Thrown by `startSync` when another fused-render process holds this
  *  clone's `.sync/<name>.lock` (409 `owned`). Keeps HttpError's `status` and

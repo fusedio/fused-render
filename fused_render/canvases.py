@@ -121,6 +121,9 @@ SCAN_INTERVAL_S = 1.0
 # slower than the local fingerprint walk), clean or dirty; with an external CLI
 # the legacy `pull --dry-run` probe instead, clean clones only. Detects only.
 PULL_POLL_S = 10.0
+# How long after a landed hard pull the frame's snapshots are acked stale
+# without a delta ack from it (see _SyncManager._hard_fence).
+HARD_FENCE_S = 60.0
 # Snapshots kept per canvas in .sync/trash before pulls/merges overwrite or
 # delete local files. Oldest pruned beyond this.
 _TRASH_MAX = 20
@@ -1381,6 +1384,16 @@ class _SyncManager:
         # applied and never touches disk — applied, it would read the newer
         # snapshot's nodes as deletions and trash their files.
         self._embed_max_seq = -1
+        # Set by a landed HARD pull: `{rev, until}` — the disk_rev the pull
+        # left and a deadline. Until the frame acks a delta at or past that
+        # rev (it now shows the server's copy), or a new generation hydrates,
+        # every snapshot of the current generation is acked stale and never
+        # touches disk: those snapshots describe the canvas the pull just
+        # discarded (one that met the pull's 409 and is retrying, one the
+        # frame cut before applying the delta), and applied they would write
+        # the old canvas straight back. The deadline keeps a frame that never
+        # acks (closed, reloading) from fencing the clone for good.
+        self._hard_fence: dict | None = None
         self._load_base()
         # Bumped on every `_fingerprint` assignment (the property below), so the
         # scan can tell that a pull or push re-baselined while it was walking.
@@ -2736,6 +2749,16 @@ class _SyncManager:
 
     # -- server-stale and the explicit pull -----------------------------------
 
+    def check_remote_now(self) -> None:
+        """Ask the loop to probe the server on its next tick (≤ SCAN_INTERVAL_S)
+        instead of waiting out PULL_POLL_S — the page calls this when its
+        window or tab comes into focus, so a canvas edited elsewhere shows
+        its Pull button as the user looks, the way the hosted workbench tab
+        checks on focus. Detect-only, like the timed poll: nothing is pulled.
+        A plain attribute write; the loop reads it under its own locks."""
+        self._last_pull_poll = 0.0
+        self.log_event("server_to_disk", "server check", detail="page focused")
+
     def _toml_rows(self) -> dict | None:
         """The compact rows of the clone's canvas.toml, or None."""
         try:
@@ -2789,9 +2812,12 @@ class _SyncManager:
             self.log_event("server_to_disk", "probe stale", ok=False,
                            detail=_stale_reason(self.server_stale))
 
-    def pull(self, *, lock_wait: float | None = None) -> dict:
+    def pull(self, *, lock_wait: float | None = None, hard: bool = False) -> dict:
         """Bring the remote into the clone, on request (the page's Pull, or a
-        session answering the manual push's refusal). The caller holds
+        session answering the manual push's refusal). `hard` is the sync
+        drawer's "Hard pull": no merge on any leg — the clone is replaced
+        wholesale by the server's files (trash snapshot first), local edits
+        and local-only files included. The caller holds
         `_flight_lock` and NOT `_op_lock` (and has read the pause count under
         the flight lock): the manifest probe and the merge's zip download run
         unlocked, and only the writes take _op_lock — an embed snapshot does
@@ -2828,9 +2854,9 @@ class _SyncManager:
         started = time.time()
         self._pull_started_at = started
         self._pull_in_flight = True
-        self.log_event("server_to_disk", "pull start")
+        self.log_event("server_to_disk", "hard pull start" if hard else "pull start")
         try:
-            result = self._pull(cli, wait)
+            result = self._pull(cli, wait, hard=hard)
         finally:
             self._pull_in_flight = False
             self._pull_started_at = None
@@ -2840,7 +2866,21 @@ class _SyncManager:
         ms = (time.time() - started) * 1000
         if result.get("ok"):
             self._last_pull_error = None
-            self.log_event("server_to_disk", "pull end", ms=ms,
+            if hard:
+                # The frame still shows the discarded canvas: drop the view so
+                # the next cut is a full state, and fence its snapshots until
+                # it has applied that state (see `_hard_fence`).
+                self._embed_view = None
+                self._hard_fence = {"rev": self.disk_rev,
+                                    "until": time.time() + HARD_FENCE_S}
+            if hard and self.push_state == "error":
+                # The files that push failed on are gone: the clone is the
+                # server's copy now (or a fresh local edit over it, which the
+                # debounced push ships). The red banner would otherwise stay
+                # up over content it is no longer about.
+                self.last_error = None
+                self.push_state = "pending" if self._dirty_since is not None else "idle"
+            self.log_event("server_to_disk", "hard pull end" if hard else "pull end", ms=ms,
                            detail=f"pull_seq {self.pull_seq}")
         elif result.get("code") in ("busy", "agent_live"):
             # Deferred, not failed: nothing was written, and the leg stays
@@ -2855,7 +2895,7 @@ class _SyncManager:
         self._bump()
         return result
 
-    def _pull(self, cli, wait: float) -> dict:
+    def _pull(self, cli, wait: float, hard: bool = False) -> dict:
         busy = {"ok": False, "code": "busy",
                 "error": "a sync operation is in flight for this canvas; try again in a moment"}
         # A wholesale CLI pull rewrites the folder outside anything a Claude
@@ -2871,7 +2911,7 @@ class _SyncManager:
             probe = self._probe_remote()
             if probe is None:
                 return {"ok": False, "error": "could not read the canvas from the server"}
-            if dirty and self._base_files is not None:
+            if dirty and self._base_files is not None and not hard:
                 bundle = self._fetch_bundle(probe)
                 if bundle is None:
                     return {"ok": False,
@@ -2920,7 +2960,7 @@ class _SyncManager:
             if not self._op_lock.acquire(timeout=wait):
                 return busy
             try:
-                if dirty:
+                if dirty or hard:
                     self._snapshot_clone()
                 error = self._apply_legacy_pull(cli, base)
                 # No manifest here, so no rotation to clear it: clear by hand, and
@@ -2944,13 +2984,27 @@ class _SyncManager:
             self._embed_gen = gen
             # A new generation: the embed re-hydrated from the SERVER, so what
             # it holds is no longer any disk reading. Its hello brings a full
-            # delta that re-seeds the view.
+            # delta that re-seeds the view. It also holds what a hard pull
+            # just brought down, so the fence has nothing left to hold out.
             self._embed_view = None
             self._embed_applied = {}
             self._embed_max_seq = -1
+            self._hard_fence = None
         done = self._embed_applied.get((gen, seq))
         if done is not None:
             return done
+        fence = self._hard_fence
+        if fence is not None and time.time() >= fence["until"]:
+            self._hard_fence = fence = None
+            self.log_event("embed_to_disk", "hard pull fence expired", ok=False,
+                           detail=f"no delta ack from the workbench in {HARD_FENCE_S:g}s")
+        if fence is not None:
+            # This snapshot describes the canvas the hard pull discarded.
+            self.log_event("embed_to_disk", "snapshot fenced",
+                           detail=f"{gen}/{seq}: predates the hard pull; not applied")
+            ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                   "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
+            return self._embed_record(gen, seq, ack)
         if seq < self._embed_max_seq:
             ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
                    "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
@@ -3231,6 +3285,11 @@ class _SyncManager:
             self.log_event("disk_to_embed", "delta refused", ok=benign,
                            detail=f"rev {rev}" + (f": {reason}" if reason else ""))
             return {"ok": True, "rev": rev, "reset": True}
+        if self._hard_fence is not None and rev >= self._hard_fence["rev"]:
+            # The frame applied a reading cut after the hard pull: it shows
+            # the server's copy now, and its snapshots describe that.
+            self._hard_fence = None
+            self.log_event("embed_to_disk", "hard pull fence lifted", detail=f"rev {rev}")
         if view is None or rev < self._view_rev:
             # Superseded: a snapshot write re-read disk since this was cut.
             # The frame still APPLIED this delta, so the bodies it carried
@@ -3996,6 +4055,9 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
     name = body.get("name")
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
+    # `hard`: the sync drawer's Hard pull — discard the clone's local files
+    # and take the server's copy wholesale (trash snapshot first, no merge).
+    hard = body.get("hard") is True
     manager = _sync_manager(name, create=False)
     if manager is None:
         return JSONResponse(
@@ -4010,7 +4072,7 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
         with manager.pause_lock:
             if manager.pause_count > 0:
                 return _busy(f"syncing for {name!r} is paused; try again in a moment")
-        result = manager.pull()
+        result = manager.pull(hard=hard)
     finally:
         manager._flight_lock.release()
     if result.get("code") == "busy":
@@ -4026,6 +4088,26 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
         if result.get("code"):
             status["code"] = result["code"]
     return status
+
+
+@router.post("/api/canvases/sync/check")
+def api_canvases_sync_check(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Probe the server for canvas changes NOW rather than on the next timed
+    poll — the canvas page's window/tab just came into focus. Detect-only:
+    the result is the ordinary `server_to_disk` leg on sync/state and the
+    events socket (stale → the Pull button). Answers ok even with no watcher
+    (nothing to hurry; sync/start is the page's own concern)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    manager = _sync_manager(name, create=False)
+    if manager is None:
+        return {"ok": True, "watching": False}
+    manager.check_remote_now()
+    return {"ok": True, "watching": True}
 
 
 @router.post("/api/canvases/fix")
