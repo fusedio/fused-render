@@ -3333,11 +3333,20 @@ def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
 
     The stored recap is shown only for the turn it is about (`for_uuid` equal
     to the row's anchor); a newer send makes it `None` until its own lands.
-    A turn wants a recap when it has ended (`done`, `blocked`, `archived`) with a reply to THIS turn
-    (`_last_reply` non-empty) and the store has nothing for its anchor, or has
-    one taken before the newest reply landed (`at < reply_at`: a fold recap
-    asked mid-reply). Decided on the uuid and the clocks, never on the scan
-    record's identity — `_SCAN` is rebuilt from disk on every boot."""
+    A turn wants a recap when it has ended (`done`, `blocked`, `archived`) and
+    the store has nothing for its anchor, or has one taken before the turn's
+    newest event landed (`at < ended_at`: a fold recap asked mid-reply).
+    A REPLY LINE IS NOT REQUIRED (2026-10-19): a turn that ended on tool calls,
+    a usage limit, an API error or a crash has no prose newer than the reader's
+    message (`_last_reply` is ""), and until then it was never asked — the one
+    class of finished turn that titled itself by the reader's own words for
+    good. `_recap_tail(ended=True)` reaches back to the newest prose for
+    exactly these, and a transcript with none anywhere is marked `empty` by
+    the worker rather than refused here. `ended_at` is the newer of the reply
+    and the reader's message, so the settle minute and the "already recapped"
+    test are measured from whatever ended the turn. Decided on the uuid and
+    the clocks, never on the scan record's identity — `_SCAN` is rebuilt from
+    disk on every boot."""
     sid = task["session_id"]
     tail = rec["tail"] if rec else []
     anchor = str(tail[-1].get("anchor") or "") if tail else ""
@@ -3346,6 +3355,10 @@ def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
     stored = tasks_store.session_recap(settings or {}, sid)
     same = stored is not None and stored["for_uuid"] == anchor
     reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
+    said_at = float(tail[-1].get("at") or 0.0)
+    # The reply only counts when it answers THIS message; otherwise the
+    # message is the newest thing that happened (`_last_reply`'s own rule).
+    reply_at = reply_at if reply and reply_at >= said_at else said_at
     # The transcript path rides on the job, so a task whose folder the disk
     # has lost is still recapped (`_recap_generate` reads the file directly).
     folder = task["project"]
@@ -3358,8 +3371,7 @@ def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
     settled = same and stored["at"] >= reply_at and (
         not failed or time.time() - stored["at"] < _RECAP_RETRY_S)
     now = time.time()
-    if (status in ("done", "blocked", "archived") and reply
-            and reply != _QUEUED_REPLY
+    if (status in ("done", "blocked", "archived") and reply != _QUEUED_REPLY
             and (folder or path) and not settled):
         # `stale_before` makes `_recap` skip its in-memory cache entry for the
         # key, which is where a failed ask's `""` is remembered.
@@ -3524,6 +3536,18 @@ def _recap_run(job: dict) -> None:
         # queue it again (the stored `""` holds it off until then).
         with _recap_cond:
             _recap_seen.discard((job["session_id"], job["for_uuid"], job["reply_at"]))
+        # Said out loud: a failure here is otherwise invisible — the row just
+        # keeps its reply line — and "some chats never get a recap" was the
+        # report that had no log to read (2026-10-19). An `empty` mark (no
+        # prose anywhere) is not a failure and stays quiet.
+        try:
+            stored = tasks_store.session_recap(tasks_store.settings_state(),
+                                               job["session_id"])
+        except Exception:  # noqa: BLE001
+            stored = None
+        if not (stored and stored["for_uuid"] == job["for_uuid"] and stored["empty"]):
+            logger.warning("tasks recap failed for session %s (turn %s); retry in %ds",
+                           job["session_id"], job["for_uuid"], int(_RECAP_RETRY_S))
     tasks_watch.notify({job["key"], job["session_id"]})
 
 

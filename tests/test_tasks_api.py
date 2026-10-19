@@ -4848,7 +4848,10 @@ def test_recap_candidate_rules(tmp_path):
 
     assert ask("in_progress", {}) == (None, [])
     assert ask("needs_attention", {}) == (None, [])
-    assert ask("done", {}, reply="")[1] == []
+    assert ask("queued", {}, reply=tasks_mod._QUEUED_REPLY)[1] == []
+    # A finished turn with no prose reply (tools only, a limit, an API error)
+    # is asked too: the worker's tail reaches back to the newest prose.
+    assert len(ask("done", {}, reply="")[1]) == 1
     shown, out = ask("done", {})
     assert shown is None and out[0]["stale_before"] == 0.0
 
@@ -4989,6 +4992,32 @@ def test_recap_candidate_waits_out_the_settle_minute(tmp_path):
     assert len(young) == 1 and young[0]["due"] > time.time()
     old = ask(61.0)
     assert len(old) == 1 and "due" not in old[0]
+
+
+def test_recap_candidate_without_a_reply_settles_from_the_message(tmp_path):
+    """A turn whose newest event is the reader's message (no prose answered
+    it yet) is measured from THAT: a message sent 10 s ago is still settling
+    even though the last reply is an hour old — the turn is about to start —
+    and one from 2 min ago is asked, keyed on the message time."""
+    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
+
+    def ask(said_age, settings=None):
+        out = []
+        rec = {"tail": [{"anchor": "u2", "at": time.time() - said_age}],
+               "reply_at": time.time() - 3600.0}
+        shown = tasks_mod._recap_candidate(task, rec, "done", "", settings or {}, out)
+        return shown, out
+
+    _, young = ask(10.0)
+    assert len(young) == 1 and young[0]["due"] > time.time()
+    _, old = ask(120.0)
+    assert len(old) == 1 and "due" not in old[0]
+    assert abs(old[0]["reply_at"] - (time.time() - 120.0)) < 2.0
+    # Recapped after the message landed: settled, and shown.
+    stored = {"s": {"recap": {"text": "Asked for X, waiting",
+                              "for_uuid": "u2", "at": time.time() - 60.0}}}
+    shown, out = ask(120.0, stored)
+    assert shown == {"text": "Asked for X, waiting", "for_uuid": "u2"} and out == []
 
 
 def _job(sid, reply_at):
