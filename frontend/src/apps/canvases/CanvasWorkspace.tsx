@@ -1304,7 +1304,16 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           hardPull={{
             busy: pullBusy,
             error: pullError,
-            disabled: !!owned || !sync || pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
+            // Also held while a snapshot relay is queued: applied after the
+            // pull it would write the discarded canvas back (the server
+            // fences such snapshots too; this keeps the common case clean).
+            disabled:
+              !!owned ||
+              !sync ||
+              pullBusy ||
+              relayQueue.length > 0 ||
+              s2dState === "pulling" ||
+              pushLeg?.state === "pushing",
             onPull: () => void onPull(true),
           }}
           onClose={() => setDrawerOpen(false)}

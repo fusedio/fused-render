@@ -121,6 +121,9 @@ SCAN_INTERVAL_S = 1.0
 # slower than the local fingerprint walk), clean or dirty; with an external CLI
 # the legacy `pull --dry-run` probe instead, clean clones only. Detects only.
 PULL_POLL_S = 10.0
+# How long after a landed hard pull the frame's snapshots are acked stale
+# without a delta ack from it (see _SyncManager._hard_fence).
+HARD_FENCE_S = 60.0
 # Snapshots kept per canvas in .sync/trash before pulls/merges overwrite or
 # delete local files. Oldest pruned beyond this.
 _TRASH_MAX = 20
@@ -1370,6 +1373,16 @@ class _SyncManager:
         # applied and never touches disk — applied, it would read the newer
         # snapshot's nodes as deletions and trash their files.
         self._embed_max_seq = -1
+        # Set by a landed HARD pull: `{rev, until}` — the disk_rev the pull
+        # left and a deadline. Until the frame acks a delta at or past that
+        # rev (it now shows the server's copy), or a new generation hydrates,
+        # every snapshot of the current generation is acked stale and never
+        # touches disk: those snapshots describe the canvas the pull just
+        # discarded (one that met the pull's 409 and is retrying, one the
+        # frame cut before applying the delta), and applied they would write
+        # the old canvas straight back. The deadline keeps a frame that never
+        # acks (closed, reloading) from fencing the clone for good.
+        self._hard_fence: dict | None = None
         self._load_base()
         # Bumped on every `_fingerprint` assignment (the property below), so the
         # scan can tell that a pull or push re-baselined while it was walking.
@@ -2779,6 +2792,13 @@ class _SyncManager:
         ms = (time.time() - started) * 1000
         if result.get("ok"):
             self._last_pull_error = None
+            if hard:
+                # The frame still shows the discarded canvas: drop the view so
+                # the next cut is a full state, and fence its snapshots until
+                # it has applied that state (see `_hard_fence`).
+                self._embed_view = None
+                self._hard_fence = {"rev": self.disk_rev,
+                                    "until": time.time() + HARD_FENCE_S}
             if hard and self.push_state == "error":
                 # The files that push failed on are gone: the clone is the
                 # server's copy now (or a fresh local edit over it, which the
@@ -2890,13 +2910,27 @@ class _SyncManager:
             self._embed_gen = gen
             # A new generation: the embed re-hydrated from the SERVER, so what
             # it holds is no longer any disk reading. Its hello brings a full
-            # delta that re-seeds the view.
+            # delta that re-seeds the view. It also holds what a hard pull
+            # just brought down, so the fence has nothing left to hold out.
             self._embed_view = None
             self._embed_applied = {}
             self._embed_max_seq = -1
+            self._hard_fence = None
         done = self._embed_applied.get((gen, seq))
         if done is not None:
             return done
+        fence = self._hard_fence
+        if fence is not None and time.time() >= fence["until"]:
+            self._hard_fence = fence = None
+            self.log_event("embed_to_disk", "hard pull fence expired", ok=False,
+                           detail=f"no delta ack from the workbench in {HARD_FENCE_S:g}s")
+        if fence is not None:
+            # This snapshot describes the canvas the hard pull discarded.
+            self.log_event("embed_to_disk", "snapshot fenced",
+                           detail=f"{gen}/{seq}: predates the hard pull; not applied")
+            ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
+                   "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
+            return self._embed_record(gen, seq, ack)
         if seq < self._embed_max_seq:
             ack = {"ok": True, "gen": gen, "seq": seq, "changed": False, "stale": True,
                    "upserted": [], "deleted": [], "created": [], "push_seq": self.push_seq}
@@ -3177,6 +3211,11 @@ class _SyncManager:
             self.log_event("disk_to_embed", "delta refused", ok=benign,
                            detail=f"rev {rev}" + (f": {reason}" if reason else ""))
             return {"ok": True, "rev": rev, "reset": True}
+        if self._hard_fence is not None and rev >= self._hard_fence["rev"]:
+            # The frame applied a reading cut after the hard pull: it shows
+            # the server's copy now, and its snapshots describe that.
+            self._hard_fence = None
+            self.log_event("embed_to_disk", "hard pull fence lifted", detail=f"rev {rev}")
         if view is None or rev < self._view_rev:
             # Superseded: a snapshot write re-read disk since this was cut.
             # The frame still APPLIED this delta, so the bodies it carried
