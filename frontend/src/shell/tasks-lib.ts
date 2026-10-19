@@ -6039,15 +6039,18 @@ function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
 export function activityAt(task: Task, now: number = Date.now()): number {
   const w = taskWhen(task, now);
   const nowSec = Math.floor(now / 1000);
-  // CLAMPED TO NOW (CodeRabbit, #1756): the server hands a pending entry its
-  // due time as `last_active` — and the row's own stamp can be that same
-  // value — and a due time is not an interaction yet.
-  const active = Math.min(task.last_active || 0, nowSec);
+  // A STAMP STILL AHEAD IS NO ACTIVITY AT ALL (CodeRabbit, #1756): the server
+  // keeps a pending run's DUE time in `last_active` (routers/tasks.py, "the
+  // row's last_active keeps the due time"), and the row's own stamp can be
+  // that same value — neither is an interaction, and clamping one to now
+  // would make a folder with nothing but a run next week read as live.
+  const past = (t: number | null | undefined) => (t && t <= nowSec ? t : 0);
+  const active = past(task.last_active);
   if (w.kind === "next") return active;
   // THE NEWER OF THE TWO (CodeRabbit, #1756): the row's stamp can be its last
   // RUN while `last_active` records a message since, and the section must
   // sort and open by the later one.
-  return Math.min(Math.max(w.at || 0, active), nowSec);
+  return Math.max(past(w.at), active);
 }
 
 /** Sections with activity inside the last day (Akshil, 2026-10-19): what the

@@ -11530,9 +11530,10 @@ describe("groupRows", () => {
       last_active: sec("2026-10-16T09:00:00"),
     }, 0);
     expect(taskWhen(t, NOW).at).toBe(sec("2026-10-10T09:00:00"));
-    // A pending entry's due time rides `last_active`; a future one is clamped to now.
+    // A pending entry's due time rides `last_active`; a future one is NO activity.
     const due = task({ key: "f", status: "upcoming", messages: [], last_active: Math.floor(NOW / 1000) + 7200 }, 0);
-    expect(activityAt(due, NOW)).toBe(Math.floor(NOW / 1000));
+    expect(activityAt(due, NOW)).toBe(0);
+    expect([...openOnFirstVisit(groupRows([{ ...due, project: "/later" }], "project", "", NOW), "project", NOW)]).toEqual([]);
     expect(activityAt(t, NOW)).toBe(sec("2026-10-16T09:00:00"));
   });
   it("by PR: repositories and pull requests newest activity first, the number breaking a tie", () => {
