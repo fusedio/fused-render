@@ -65,7 +65,7 @@ import type {
 import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit, isPlanLimitText } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
-import { endActiveTasks, isActive } from "./tasks";
+import { endActiveTasks, isActive, stillShown } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
@@ -1953,9 +1953,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // inbox, which is what it was before this field existed.
         publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
         // THE RUN'S BACKGROUND TASKS (SPEC T-5) — sticky per run, see `publishTasks`.
+        // …BUT NOT OVER A JOB ANOTHER HOST STILL HOLDS (Akshil, 2026-10-19):
+        // a follow-up can open a turn on a NEWER host of this session (the
+        // chat reopened on its folder) while the older one runs a dev server
+        // on. This run's empty list says nothing about that job, so the rows
+        // stay, owned by their host (Stop/Output still reach it), and that
+        // host stays watched through this turn, so its end still lands (and
+        // its ended row keeps the panel's 5 s grace, CodeRabbit).
         {
           const rows = Array.isArray(poll.tasks) ? poll.tasks : [];
-          if (rows.length || state.tasksRunId !== runId) publishTasks(rows, runId);
+          const owner = state.tasksRunId;
+          if (!rows.length && owner && owner !== runId && stillShown(state.tasks, now())) {
+            if (loopSeq === seat) watchHostTasks(owner, seat);
+          } else if (rows.length || owner !== runId) publishTasks(rows, runId);
         }
         // THE SLASH-COMMAND LIST MAY HAVE MOVED (SPEC C-2) — the host re-reads it.
         if (poll.commands_changed) deps.onCommandsChanged?.();

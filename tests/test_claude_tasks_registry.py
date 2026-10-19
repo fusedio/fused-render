@@ -267,6 +267,166 @@ def test_history_names_the_host_run_after_the_turn_ended(
     assert hist["tasks_run"] == ("run" if host else "")
 
 
+def _newer_run(agent, run_dir, meta, rows=(), host=False, name="run2"):
+    """A newer run dir for the same session, sorted after `run`."""
+    d = run_dir.parent / name
+    (d / "perm").mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps(meta))
+    (d / "out.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    if host:
+        (d / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    agent._poll(name)
+    return d
+
+
+@pytest.mark.parametrize("newer_host", [True, False])
+def test_history_finds_the_job_an_older_host_still_holds(
+        agent, run_dir, tmp_path, monkeypatch, newer_host):
+    """Akshil, 2026-10-19: one session, two hosts. The older one still runs
+    the `sleep`/dev server; the newer one (the chat reopened on its folder)
+    has nothing. The Tasks list counts the job — history must too, owned by
+    the host that holds it so Stop/Output reach it."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps(
+        {"file": str(target / "index.html"), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="b1", description="sleep 600",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    newer = _newer_run(agent, run_dir, {"file": str(target), "session_id": "s"},
+                       [_user("hi"), _result()], host=newer_host)
+    monkeypatch.setattr(agent, "PROJECTS", str(tmp_path / "projects"))
+    reg, host_run, last = agent._session_task_registry(str(target), "s")
+    assert list(reg) == ["b1"] and reg["b1"]["status"] == "running"
+    assert host_run == "run"
+    assert last == str(newer), "the window size still comes off the newest run"
+    hist = agent._history(str(target / "index.html"), "s")
+    assert [t["id"] for t in hist["tasks"]] == ["b1"] and hist["tasks_run"] == "run"
+
+    # The job ends and wakes that host's model: its open turn still answers.
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="killed")])
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert host_run == "run" and list(reg) == ["b1"]
+    # Once that turn is over the older host holds nothing, so the newest run
+    # answers again (the page's host watch on "run" carried the ending).
+    _append(run_dir, [_result()])
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert reg == {} and host_run == ("run2" if newer_host else "")
+    assert agent._read_bg_tasks(str(run_dir))["b1"]["status"] == "killed"
+
+
+def test_a_held_job_past_the_scan_window_still_answers(agent, run_dir, tmp_path):
+    """A dev server started hours ago sits behind `limit` newer run dirs; the
+    Tasks list (120 deep) still counts it, so the chat looks twice as far."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="b1", description="dev server",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    _newer_run(agent, run_dir, {"file": str(other), "session_id": "x"})
+    reg, host_run, last = agent._session_task_registry(str(target), "s", limit=1)
+    assert list(reg) == ["b1"] and host_run == "run" and last == str(run_dir)
+    run_dir.joinpath("host.json").unlink()
+    assert agent._session_task_registry(str(target), "s", limit=1) == ({}, "", "")
+
+
+def test_a_newest_run_whose_claude_died_yields_to_a_live_older_host(
+        agent, run_dir, tmp_path, monkeypatch):
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="old", description="o",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    newer = _newer_run(agent, run_dir, {"file": str(target), "session_id": "s"},
+                       [_sys("task_started", task_id="stale", description="n",
+                             task_type="local_bash"), _result()], host=True)
+    monkeypatch.setattr(agent, "_alive", lambda d: d != str(newer))
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert list(reg) == ["old"] and host_run == "run"
+
+
+def test_a_live_job_beats_a_nearer_host_whose_turn_holds_none(
+        agent, run_dir, tmp_path):
+    """Three runs: the oldest holds the job, a nearer host has a turn open
+    with no tasks, the newest has nothing. The job answers (CodeRabbit)."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    meta = {"file": str(target), "session_id": "s"}
+    (run_dir / "meta.json").write_text(json.dumps(meta))
+    _append(run_dir, [_sys("task_started", task_id="b1", description="dev server",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    _newer_run(agent, run_dir, meta, [_user("hi")], host=True)
+    _newer_run(agent, run_dir, meta, [_user("hi"), _result()], name="run3")
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert list(reg) == ["b1"] and host_run == "run"
+    # With no job left anywhere, the woken turn is still the answer.
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="killed")])
+    (run_dir / "host.json").unlink()
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert reg == {} and host_run == "run2"
+
+
+def test_an_older_host_with_nothing_running_does_not_answer(
+        agent, run_dir, tmp_path, monkeypatch):
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="old", description="done",
+                           task_type="local_bash"),
+                      _sys("task_notification", task_id="old", status="completed"),
+                      _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    _newer_run(agent, run_dir, {"file": str(target), "session_id": "s"},
+               [_sys("task_started", task_id="new", description="n",
+                     task_type="local_bash"),
+                _sys("task_notification", task_id="new", status="completed"),
+                _result()])
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert list(reg) == ["new"] and host_run == ""
+
+
+def test_the_newest_runs_own_live_work_wins(agent, run_dir, tmp_path, monkeypatch):
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="old", description="o",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    _newer_run(agent, run_dir, {"file": str(target), "session_id": "s"},
+               [_sys("task_started", task_id="new", description="n",
+                     task_type="local_bash"), _result()], host=True)
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert list(reg) == ["new"] and host_run == "run2"
+
+
+def test_a_dead_older_claude_does_not_answer(agent, run_dir, tmp_path, monkeypatch):
+    """A `host.json` whose pid was reused: `_alive` (the run's own `claude`)
+    has to vouch too, as in `_run_tasks`."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target), "session_id": "s"}))
+    _append(run_dir, [_sys("task_started", task_id="old", description="o",
+                           task_type="local_bash"), _result()])
+    agent._poll("run")
+    (run_dir / "host.json").write_text(json.dumps({"pid": os.getpid()}))
+    newer = _newer_run(agent, run_dir, {"file": str(target), "session_id": "s"},
+                       [_user("hi"), _result()])
+    monkeypatch.setattr(agent, "_alive", lambda d: d == str(newer))
+    reg, host_run, _last = agent._session_task_registry(str(target), "s")
+    assert reg == {} and host_run == ""
+
+
 # ------------------------------------------- after the turn (Akshil 2026-10-18)
 
 def test_tasks_action_catches_the_registry_up_while_the_host_runs_on(

@@ -4882,6 +4882,59 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasksRunId).toBe("r1");
   });
 
+  test("a follow-up on a newer host keeps the job an older host holds, and watches it through the turn", async () => {
+    // Akshil, 2026-10-19: the chat reopened on its folder starts a second
+    // host (r2) while r1 still runs the job. r2's empty polls say nothing
+    // about r1's job; r1's own `tasks` answer ends it.
+    let during: { ids: string[]; owner: string | null } | null = null;
+    let ended = false;
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: (_f, n) => {
+        if (n === 1) {
+          const st = controller.getState();
+          during = { ids: st.tasks.map((t) => t.id), owner: st.tasksRunId };
+        }
+        return n < 2 ? poll({}) : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
+      tasks: () =>
+        ended
+          ? { tasks: [{ ...T("h"), status: "killed" as const }], tasks_pending: false, host_alive: true }
+          : { tasks: [T("h", "running")], tasks_pending: true, host_alive: true },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    expect(during as unknown).toEqual({ ids: ["h"], owner: "r1" });
+    expect(controller.getState().tasksRunId).toBe("r1");
+    expect(controller.getState().tasks[0]!.status).toBe("running");
+    ended = true;
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(agent.of("tasks").length).toBeGreaterThan(0);
+    expect(agent.of("tasks").every((c) => c.fields.run_id === "r1")).toBe(true);
+    expect(controller.getState().tasks[0]!.status).toBe("killed");
+  });
+
+  test("CodeRabbit: the older host's ended row keeps its grace through the newer run's polls", async () => {
+    let lap: string[] = [];
+    const ended = { ...T("h"), status: "killed" as const, ended_at: Date.now() / 1000 };
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [ended] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: (_f, n) => {
+        if (n === 1) lap = controller.getState().tasks.map((t) => t.id);
+        return n < 2 ? poll({}) : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    expect(lap).toEqual(["h"]);
+  });
+
   test("a restore lands history's tasks", async () => {
     const { controller } = makeController({
       history: () => ({ turns: [], transcript: null, live_run: "", tasks: [T("h", "completed")] }),

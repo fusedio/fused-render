@@ -9955,7 +9955,20 @@ def _session_task_registry(file: str, session_id: str,
 
     A run whose process is gone cannot vouch for a task it last saw running:
     such records come back with status `unknown` (and `ended_at` null) rather
-    than a confident `running` the panel would tick a live clock for."""
+    than a confident `running` the panel would tick a live clock for.
+
+    …UNLESS AN OLDER RUN'S HOST STILL HOLDS THE WORK (Akshil, 2026-10-19: the
+    Tasks list said "1 job running", the chat showed nothing). One session can
+    have two hosts up: `_live_host` matches the exact target, so the same chat
+    opened on its folder (or its run pushed out of the scan window) spawns a
+    second host beside the one still running a dev server. The Tasks badge
+    counts ANY of the session's runs holding work (tasks.py `_hosted_runs`);
+    reading the newest run alone left the chat's panel empty while that job
+    ran on. So when the newest run has nothing active and no turn open, the
+    newest OLDER run whose host is alive with active records — or with a turn
+    open, the model that host's job just woke — answers instead (its registry
+    and its id, so Stop/Output reach that host and the page watches it) —
+    `run_dir` stays the newest one's, for the window size."""
     if not session_id or _bad_id(session_id):
         return {}, "", ""
     file = os.path.abspath(file)
@@ -9963,10 +9976,20 @@ def _session_task_registry(file: str, session_id: str,
         names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
         return {}, "", ""
+    # THE FALLBACK LOOKS TWICE AS FAR (CodeRabbit, PR #1750): a dev server
+    # started this morning sits well behind 60 newer run dirs on a busy Mac,
+    # and the Tasks list still counts it (project_queue.RUN_SCAN_LIMIT, 120).
+    # Past the newest run the walk is one stat per dir, so the cost is small.
     if limit is not None:
-        names = names[:limit]
-    for name in names:
+        names = names[:limit * 2]
+    newest = woken = None
+    for i, name in enumerate(names):
         run_dir = os.path.join(RUNS, name)
+        # Past the newest run (or past the window it is looked for in) only a
+        # live host counts: one stat before the meta read.
+        older = newest is not None or (limit is not None and i >= limit)
+        if older and not os.path.isfile(os.path.join(run_dir, "host.json")):
+            continue
         try:
             with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
                 meta = json.load(fh)
@@ -9981,7 +10004,14 @@ def _session_task_registry(file: str, session_id: str,
                               _run_own_session(run_dir, meta)):
             continue
         host = _host_alive(run_dir)
-        if host and not _turn_state(run_dir)[0]:
+        # The run's own `claude` has to vouch too — the stale-pid guard
+        # `_run_tasks` applies: a `host.json` pid reused by an unrelated
+        # process must not read as an open turn or a live job.
+        cli = _alive(run_dir)
+        turn_open = host and cli and _turn_state(run_dir)[0]
+        if older and not (host and cli):
+            continue
+        if host and not turn_open:
             # The turn is over while the host runs background work on: absorb
             # what the CLI wrote since the last poll, so a job that ended reads
             # ended (`_catch_up_registry`). NEVER mid-turn: the poll owns the
@@ -9989,13 +10019,25 @@ def _session_task_registry(file: str, session_id: str,
             # `task_started` takes its subagent type and model from.
             _catch_up_registry(run_dir)
         registry = _read_bg_tasks(run_dir)
-        if registry and not (host or _alive(run_dir)):
+        active = any(_task_active(rec) for rec in registry.values())
+        if older:
+            if active:
+                return registry, name, newest[2] if newest else run_dir
+            # A woken turn with no live job is kept only as the answer of
+            # last resort: an even older host may still hold one (CodeRabbit).
+            if turn_open and woken is None:
+                woken = (registry, name, newest[2] if newest else run_dir)
+            continue
+        if registry and not cli:
             for rec in registry.values():
                 if _task_active(rec):
                     rec["status"] = "unknown"
                     rec["ended_at"] = None
-        return registry, (name if host else ""), run_dir
-    return {}, "", ""
+        # The newest run answers while it has something live to say.
+        if turn_open or (active and cli):
+            return registry, (name if host else ""), run_dir
+        newest = (registry, (name if host else ""), run_dir)
+    return woken or newest or ({}, "", "")
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
