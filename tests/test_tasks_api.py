@@ -4629,6 +4629,25 @@ def test_erasing_a_quiet_hand_typed_chat_parked_on_a_card_stops_it_first(
     assert "sess-b" in _by_key(client)
 
 
+def test_archiving_a_waiting_task_stops_its_run_and_files_it(
+        client, projects_dir, parked):
+    """Akshil, 2026-10-19. Filing does not stop a run, and a parked run never
+    stops on its own — so archive stops it (card denied, tree ended) and then
+    files, and the row reads `archived` rather than `needs_attention` for ever."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
+
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["filed"] is True
+    assert agent.cancel_calls == [("r-1", False)]
+    # The transcript is untouched — archive is the reversible verb.
+    assert "sess-a" in _by_key(client)
+
+
 def test_a_waiting_task_whose_run_will_not_die_is_still_refused(
         client, projects_dir, parked, monkeypatch):
     """The kill is waited on, and a process that outlives it keeps the 409:

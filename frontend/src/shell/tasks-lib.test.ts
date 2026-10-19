@@ -2085,7 +2085,7 @@ describe("filingIntent", () => {
     expect(a.title).toBe("Unarchive");
   });
 
-  it("offers nothing while a run is in flight — the ONLY null now", () => {
+  it("offers nothing while a run is STREAMING — the ONLY null now", () => {
     // In Progress is Claude's output. The card cannot leave that lane by any
     // gesture, and the button asks the same question the drop does.
     expect(filingIntent(task({ status: "in_progress" }))).toBe(null);
@@ -2094,6 +2094,17 @@ describe("filingIntent", () => {
     for (const status of ["upcoming", "done", "archived", FAILED] as const) {
       expect(filingIntent(task({ status }))).not.toBe(null);
     }
+  });
+
+  it("offers Archive, and only Archive, on a run parked on a card", () => {
+    // Akshil, 2026-10-19. The parked run is the in-flight state that never
+    // ends on its own; the server stops it and files it. In Progress stays
+    // locked: a drag cannot answer the card.
+    const parked = task({ status: "needs_attention" });
+    expect(dropLanes(parked)).toEqual(["archived"]);
+    expect(isDraggable(parked)).toBe(true);
+    expect(filingIntent(parked)?.kind).toBe("archive");
+    expect(dropAction(parked, "in_progress")).toBe(null);
   });
 
   it("offers Archive on a task with no session at all", () => {

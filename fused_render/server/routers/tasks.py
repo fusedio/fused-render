@@ -6663,6 +6663,17 @@ def api_task_archive(patch: ArchivePatch,
     task = _collect().get(key)
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    # A RUN PARKED ON A CARD IS STOPPED FIRST (Akshil, 2026-10-19: "even if the
+    # task is in needs attention i should be able to archive it"). Filing does
+    # not stop a run (`_status`, rule 0 over rule 2), so without this the row
+    # would wear `needs_attention` for as long as the card waited — which is
+    # for ever — and the archive would look like it did nothing. The parked
+    # run is the one in-flight state that never ends on its own, and "put this
+    # away" is an answer to its question: the card is denied, the tree ended
+    # (`_stop_parked_run`, as delete does), and the filing lands on a run that
+    # is over. Best-effort: a process that would not go leaves the row where
+    # it was, honestly, and the filing is kept for when the run ends.
+    _stop_parked_run(task, _parked_runs())
     cancelled, filed = archive_task(task)
     # THE UNSENT TEXT IS NOT TOUCHED (Akshil, 2026-09-15; design.md, PR C:
     # "Archive/unarchive touch NO drafts").

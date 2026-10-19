@@ -2154,10 +2154,14 @@ const LANE_EXITS: Record<BoardColumn, BoardLane[]> = {
   // keyed by column cannot express — it is a fact about the row. See `rowExits`
   // immediately below, which adds it, here and on Archive alike.
   done: ["archived"],
-  // Locked, for In Progress's reason and one more: a run waiting on an answer
-  // is still Claude's output, and the way out is answering the card in the
-  // chat — a drag cannot say yes on somebody's behalf.
-  needs_attention: [],
+  // ARCHIVE, AND ONLY ARCHIVE (Akshil, 2026-10-19: "even if the task is in
+  // needs attention i should be able to archive it, delete it"). A run waiting
+  // on an answer is Claude's output, so In Progress stays locked — a drag
+  // cannot say yes on somebody's behalf — but putting the task away is a
+  // different answer: the server stops the parked run (the card is denied, the
+  // tree ended) and files it, the same way delete does. The one in-flight
+  // lane that never ends on its own is the one the reader most needs out of.
+  needs_attention: ["archived"],
   // Retry, or file it away. The retry is a RE-RUN (Akshil, 2026-09-11: "allow
   // moving from blocked to in progress and trigger a rerun"): laneAction picks
   // what is sent again — see `rerunAction`.
