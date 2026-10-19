@@ -59,8 +59,10 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
                     <span className="flex flex-wrap gap-1">{modelChips(b.models).map(([m, n]) => <i key={m} className={`chip ${m}`} title={`${n} on ${m}`}>{m}{n > 1 ? ` ${n}` : ""}</i>)}</span>
                     {/* The count opens the failures dialog (its errors); stopPropagation keeps the row's own click (select the bot) out of
                         it. Not for the collapsed "Deleted bots" row: its lines carry no id the failures route could match. Tailwind only:
-                        the dialog portals to <body>, outside .bots-page, so neither its button pill nor .lnk reach here. */}
-                    {b.errors && b.id !== "_deleted" ? <button type="button" className="cursor-pointer text-right tabular-nums text-destructive underline-offset-2 hover:underline"
+                        the dialog portals to <body>, outside .bots-page, so neither its button pill nor .lnk reach here. And no
+                        preflight: appearance-none / border-0 / bg-transparent / p-0 / [font:inherit] strip the UA's grey button
+                        tile that otherwise framed the count (owner, 2026-10-19). */}
+                    {b.errors && b.id !== "_deleted" ? <button type="button" className="cursor-pointer appearance-none border-0 bg-transparent p-0 text-right tabular-nums text-destructive underline-offset-2 outline-none [font:inherit] hover:underline focus-visible:ring-3 focus-visible:ring-ring/50"
                       title="Show the failed calls and their errors" aria-label={`Show ${b.errors} failed call${b.errors === 1 ? "" : "s"} for ${b.name}`}
                       onClick={(e) => { e.stopPropagation(); openDialog({ kind: "failures", id: b.id, back: true }); }}>{b.errors}</button>
                       : <span className={cn("text-right tabular-nums", b.errors ? "text-destructive" : "text-muted-foreground")}>{b.errors || "·"}</span>}
