@@ -56,9 +56,8 @@ class Handler(BaseHTTPRequestHandler):
             secret = open(os.path.join(CACHE, "stream.key"), "rb").read()
             if not hmac.compare_digest(hmac.new(secret, path.encode(), "sha256").hexdigest()[:32], key[2]):
                 return self._send(403, b"{}")
-            remote = path.startswith(("http://", "https://"))
-            stamp = None if remote else (os.stat(path).st_size, os.stat(path).st_mtime_ns)
-            cog = POOL.submit(_source, "/vsicurl/" + path if remote else path, stamp).result()
+            stat = os.stat(path)
+            cog = POOL.submit(_source, path, (stat.st_size, stat.st_mtime_ns)).result()
             start = int(match[1])
             end = min(int(match[2] or cog.size - 1) + 1, cog.size, start + CHUNK)
             if start >= cog.size:

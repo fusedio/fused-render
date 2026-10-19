@@ -13,6 +13,7 @@ Run explicitly:
 import json
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -123,6 +124,16 @@ def test_the_apps_own_interpreter_is_accepted(engine_host, stub_daemon, tmp_path
                                cache=str(tmp_path / "cache"), version="v1")
     with child_get(child, "/ping") as response:
         assert json.load(response)["ok"] is True
+
+
+def test_a_venv_built_on_another_base_interpreter_is_accepted(engine_host, stub_python, tmp_path):
+    base = tmp_path / "python3.12"
+    base.write_text("", encoding="utf-8")
+    python = Path(stub_python).parents[2] / "map-engine-other" / "bin" / "python"
+    python.parent.mkdir(parents=True, exist_ok=True)
+    python.unlink(missing_ok=True)
+    python.symlink_to(base)
+    engine_host._validate_interpreter(str(python))
 
 
 def test_a_daemon_outside_a_templates_root_is_refused(engine_host, stub_python, tmp_path):

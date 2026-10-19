@@ -182,8 +182,8 @@ def _validate_interpreter(python: str) -> None:
     from fused_render.shell.storage import home_dir
 
     venvs = os.path.realpath(os.path.join(home_dir(), "venvs"))
-    requested = os.path.realpath(python)
-    if (requested != os.path.realpath(sys.executable)
+    requested = os.path.join(os.path.realpath(os.path.dirname(python)), os.path.basename(python))
+    if (os.path.realpath(python) != os.path.realpath(sys.executable)
             and not requested.startswith(venvs + os.sep)):
         raise EngineError(
             f"refusing to spawn {python!r}: not an interpreter from the "

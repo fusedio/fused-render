@@ -55,7 +55,7 @@ def _mode(data: np.ndarray, k: int, nodata) -> np.ndarray:
 def _sampleable(dataset) -> bool:
     image, bits = dataset.tags(ns="IMAGE_STRUCTURE"), _bits(dataset)
     return (dataset.driver == "GTiff" and dataset.profile.get("tiled") and not dataset.overviews(1)
-            and not dataset.name.startswith("/vsi") and dataset.count * bits <= 512
+            and dataset.count * bits <= 512
             and image.get("COMPRESSION", "NONE") in ("NONE", "LZW", "DEFLATE") and image.get("PREDICTOR", "1") in ("1", "2")
             and (dataset.count == 1 or image.get("INTERLEAVE") == "PIXEL") and not (bits % 8 and (bits > 8 or dataset.count > 1)))
 
@@ -90,15 +90,10 @@ def _corners(dataset):
     return values
 
 
-def _open(path: str):
-    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR" if path.startswith("/vsi") else "FALSE"):
-        return rasterio.open(path)
-
-
 class VirtualCOG:
     def __init__(self, path: str):
         self.path, self.local = path, threading.local()
-        with _open(path) as dataset:
+        with rasterio.open(path) as dataset:
             epsg = dataset.crs.to_epsg() if dataset.crs else None
             self.warp = epsg is None or epsg > 65535 or not dataset.transform.is_rectilinear
             self.colormap = dataset.colormap(1) if dataset.count == 1 and dataset.dtypes[0] == "uint8" \
@@ -130,7 +125,7 @@ class VirtualCOG:
 
     def dataset(self):
         if not hasattr(self.local, "dataset"):
-            dataset = _open(self.path)
+            dataset = rasterio.open(self.path)
             self.local.dataset = WarpedVRT(dataset, crs="EPSG:4326") if self.warp else dataset
         return self.local.dataset
 
@@ -197,7 +192,7 @@ class VirtualCOG:
     def _coarse(self) -> np.ndarray:
         with self.lock:
             if self.grid is None and self.sample:
-                with _open(self.path) as dataset:
+                with rasterio.open(self.path) as dataset:
                     self.grid = _corners(dataset)
             elif self.grid is None:
                 shape = (self.count, _ceil(self.height, self.cell[0]), _ceil(self.width, self.cell[1]))

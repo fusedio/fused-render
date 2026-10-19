@@ -160,9 +160,7 @@ def _to_cog(source: str, final: Path) -> Path:
 def _stream(path: str) -> dict:
     import rasterio
 
-    remote = is_http_url(path)
-    with rasterio.Env(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR" if remote else "FALSE"), \
-            rasterio.open("/vsicurl/" + path if remote else path) as dataset:
+    with rasterio.open(path) as dataset:
         if dataset.crs is None and not dataset.gcps[0]:
             raise Refusal(NO_CRS)
     engine = {"python": sys.executable, "daemon": os.path.join(HERE, "daemon.py"),
@@ -673,7 +671,7 @@ def main(target: str = "", action: str = "plan", entrypoint: str = "", layer: st
         elif action == "localize":
             result = _localize(target)
         elif action == "convert":
-            result = _localize(target) if is_remote_path(target) and not is_http_url(target) else _stream(target)
+            result = _localize(target) if is_remote_path(target) else _stream(target)
         elif action == "pointcloud":
             result = _pointcloud_plan(target, crs)
         elif action == "crs":

@@ -1117,9 +1117,8 @@ const raster = {
     const rl = mgr.getLayer(r.handle);
     if (!rl || rl.error) throw rl && rl.error || new Error("raster did not load");
     const tiff = rl.geotiff, coarsest = tiff?.overviews.at(-1) || tiff;
-    if (tiff && !rl.members && !plan.url && !plan.fallback && (rl.palette && tiff.overviews.length && /^(https?:|\/)/i.test(plan.path)
-        || !isRemote(plan.path) && (![8, 16, 32, 64].includes(tiff.cachedTags.bitsPerSample[0])
-            || !BROWSER_CODECS.has(tiff.cachedTags.compression) || coarsest.tileCount.x * coarsest.tileCount.y > SAMPLE_TILES)))
+    if (tiff && !rl.members && !plan.url && !plan.fallback && !isRemote(plan.path) && (![8, 16, 32, 64].includes(tiff.cachedTags.bitsPerSample[0])
+        || !BROWSER_CODECS.has(tiff.cachedTags.compression) || coarsest.tileCount.x * coarsest.tileCount.y > SAMPLE_TILES))
       throw Object.assign(new Error("This TIFF cannot be streamed by the browser as it is."), { stream: true });
     if (rl.geotiff && typeof rl.geotiff === "object") void rl.geotiff.crs;
     r.auto = { mode: rl.state.mode, bands: rl.state.bands.slice(), colormap: rl.state.colormap };
@@ -1711,7 +1710,8 @@ async function fallbackPlan(plan, error) {
   if (plan.load === "pointcloud" && !isEpt(plan.path) && !/\.copc\.laz$/i.test(String(plan.path).split(/[?#]/)[0]))
     return { ...(await python(plan.path, "pointcloud")), fallback: true };
   if (plan.load === "raster") {
-    const action = error && error.stream ? "convert" : isRemote(plan.path) ? "localize" : plan.converted ? null : "convert";
+    if (error && error.stream) return python(plan.path, "convert").then(p => ({ ...p, fallback: true }), () => ({ ...plan, fallback: true }));
+    const action = isRemote(plan.path) ? "localize" : plan.converted ? null : "convert";
     return action && { ...(await python(plan.path, action)), fallback: true };
   }
   if (plan.load === "vector" && !plan.geojson) {
@@ -1746,7 +1746,7 @@ async function loadLayer(layer, r) {
       let fallbackError = null;
       const retry = await fallbackPlan(plan, error).catch(e => { fallbackError = e; return null; });
       // A point cloud's conversion explains a failure better than the reader.
-      if (!retry) throw ((plan.load === "pointcloud" || error.stream) && fallbackError) || error;
+      if (!retry) throw (plan.load === "pointcloud" && fallbackError) || error;
       r.plan = retry; r.note = retry.note || "";
       await ENGINES[retry.load].add(layer, retry, r);
     }
