@@ -1202,7 +1202,9 @@ describe("attentionCaption", () => {
     const VIEWS_SRC = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
     const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
     expect(VIEWS_SRC.match(/const asking = attentionCaption\(task\);/g)).toHaveLength(2);
-    expect(VIEWS_SRC).toContain('<span className="tasks-row-queue" data-hint={asking}>');
+    // The caption spends the row's press like the limit's and the job badge's
+    // (CodeRabbit, #1741): a click on it opens the chat, never a dead run of px.
+    expect(VIEWS_SRC).toContain('<span className="tasks-row-queue" data-hint={asking} {...pressRow}>');
     expect(VIEWS_SRC).toContain('{asking && <span className="tasks-card-queue">{asking}</span>}');
     expect(VIEWS_SRC).toContain('<StatusIcon status="needs_attention" label={asking || undefined} />');
     expect(VIEWS_SRC.match(/label=\{asking \|\| undefined\}/g)).toHaveLength(2);

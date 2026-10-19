@@ -4378,7 +4378,7 @@ function TaskNode({
             this says what they will find — which tool and what it wants, or the
             question. Never beside the limit's: a row has one reason. */}
         {asking && (
-          <span className="tasks-row-queue" data-hint={asking}>
+          <span className="tasks-row-queue" data-hint={asking} {...pressRow}>
             <span className="tasks-queue-text">{asking}</span>
           </span>
         )}
