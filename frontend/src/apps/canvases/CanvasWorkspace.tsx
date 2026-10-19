@@ -54,6 +54,20 @@
 // and gets a full state (`full=1`). The frame's own edits never come back
 // this way: after a snapshot lands the server re-reads disk as what the
 // frame holds, so the diff is empty.
+//
+// Focus. The canvas gates pan/zoom on its window being focused (a background
+// browser window must not half-react), and a framed document's own
+// `hasFocus()` is false until something INSIDE the frame takes focus — so the
+// canvas was dead until clicked, and dead again after every click into the
+// chat. Two layers fix that:
+//   host → { type: "fused-embed-host-focus", focused }  on this window's
+//     focus/blur/visibility changes and in reply to -auth-ready and -hello;
+//     the canvas counts the host window's focus as its own.
+//   The host also hands the frame real focus when the pointer ENTERS the
+//     canvas pane (keyboard follows the hover: Space-pan, Delete, Cmd+Z),
+//     unless the user is typing somewhere — a wandering mouse must not pull
+//     keystrokes out of the chat onto canvas hotkeys. The chat never takes
+//     focus on hover: a text surface is clicked into.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMount } from "@apps/claude";
@@ -105,6 +119,38 @@ const NODE_FILE_WAIT_MS = 20_000;
 // misses, as a dropped watcher (`watching: false`), which is what re-arms the
 // self-heal on the next successful poll.
 const FAILED_POLLS_BEFORE_RELEASE = 3;
+
+/** This window's focus as the canvas should count it. */
+function hostFocused(): boolean {
+  return document.visibilityState === "visible" && document.hasFocus();
+}
+
+/**
+ * Whether the user is typing: the active element, followed down through
+ * same-origin frames (the right pane's explorer embed nests the chat one
+ * level deeper), is a text field or contenteditable. A cross-origin frame
+ * (the canvas itself) cannot be seen into and reads as not typing.
+ */
+function activeElementIsEditable(doc: Document): boolean {
+  let el: Element | null = doc.activeElement;
+  for (let depth = 0; el && depth < 8; depth++) {
+    if (el instanceof HTMLIFrameElement) {
+      let inner: Document | null = null;
+      try {
+        inner = el.contentDocument;
+      } catch {
+        inner = null;
+      }
+      if (!inner) return false;
+      el = inner.activeElement;
+      continue;
+    }
+    const tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    return el instanceof HTMLElement && el.isContentEditable;
+  }
+  return false;
+}
 
 
 /** The selected node, as the workbench names it. `file` is the node's
@@ -349,6 +395,42 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
 
+  // Tell the canvas whether THIS window is focused (see the header): on every
+  // change, and whenever the frame (re)loads or re-hydrates, since it starts
+  // from "not focused" and a page that loaded while the window was already
+  // focused would never hear otherwise.
+  const sendHostFocus = useCallback(() => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    frame.contentWindow.postMessage(
+      { type: "fused-embed-host-focus", focused: hostFocused() },
+      origin,
+    );
+  }, []);
+  useEffect(() => {
+    // Focus moving INTO the frame blurs this window too, but `hasFocus()`
+    // stays true while a descendant frame holds focus — so that blur reports
+    // focused, as it should.
+    window.addEventListener("focus", sendHostFocus);
+    window.addEventListener("blur", sendHostFocus);
+    document.addEventListener("visibilitychange", sendHostFocus);
+    return () => {
+      window.removeEventListener("focus", sendHostFocus);
+      window.removeEventListener("blur", sendHostFocus);
+      document.removeEventListener("visibilitychange", sendHostFocus);
+    };
+  }, [sendHostFocus]);
+
+  // Pointer enters the canvas pane: give the frame focus, unless the user is
+  // mid-drag from elsewhere or typing (header). `preventScroll`: a focus
+  // must never shift the page.
+  const focusCanvasOnEnter = useCallback((e: React.MouseEvent) => {
+    if (e.buttons !== 0) return;
+    if (activeElementIsEditable(document)) return;
+    frameRef.current?.focus({ preventScroll: true });
+  }, []);
+
   // One embed snapshot → the clone, answered to the frame. A 409 is retried
   // here (SNAPSHOT_BUSY_WINDOW_MS), because the embed only re-posts on its
   // next change or reload and would otherwise sit on "Saving…" for a
@@ -502,6 +584,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       const type = event.data?.type;
       if (type === "fused-embed-auth-ready" || type === "fused-embed-auth-refresh") {
         void seedToken();
+        if (type === "fused-embed-auth-ready") sendHostFocus();
         // Restore the node this page is on (a reload, or a frame that
         // reloaded): the workbench answers with a selection message, which is
         // what keeps the two sides in step — see the handler below.
@@ -543,6 +626,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         // The frame (re)hydrated from the server: bring it to disk with a
         // full state, whatever the server thought it held before.
         relayDelta(true);
+        sendHostFocus();
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;
@@ -581,7 +665,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, relaySnapshot, relayDelta, name]);
+  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, name]);
 
   // Mirror the node onto this page's URL so a reload lands on it, and drop the
   // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
@@ -835,6 +919,9 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row" }}
       >
         <div
+          // The wrapper, not the iframe: a frame swallows pointer events, but
+          // the wrapper's mouseenter still fires as the pointer crosses in.
+          onMouseEnter={focusCanvasOnEnter}
           style={{
             flex: `0 0 ${leftFrac * 100}%`,
             minWidth: 0,
