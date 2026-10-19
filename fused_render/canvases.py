@@ -786,6 +786,14 @@ protection described above.
   canvas is rejected at push time and the error surfaces to the user.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
+- **Folders** are `[[canvas.nodes]]` rows with `type = "udf-folder"`. Give a
+  folder row `udfName` equal to its `folderName` (the sync keys every row by
+  `udfName`). Membership lives ONLY in the folder's `childUdfOrder` (the
+  child rows' `udfName`s; one folder per child, never a folder inside a
+  folder). A child's `x`/`y` are RELATIVE to its folder's `x`/`y`, so moving
+  a node into or out of a folder means converting its coordinates too. A
+  node in a folder is still a root-level file in this folder, never a
+  subdirectory.
 
 ## Files can change between change sets — trust the filesystem, not your memory
 
@@ -1736,6 +1744,15 @@ class _SyncManager:
             return None
         return proc.returncode == 0
 
+    def _folder_problems(self) -> list[str]:
+        """`canvas_snapshot.folder_problems` of the clone's canvas.toml; empty
+        when it cannot be read (validate reports that, as for a broken CLI)."""
+        try:
+            doc = canvas_snapshot._load_toml(os.path.join(self.dir, "canvas.toml"))
+        except Exception:  # noqa: BLE001 — no toml, or unparsable
+            return []
+        return canvas_snapshot.folder_problems(doc)
+
     def _probe_remote(self) -> dict | None:
         """The remote manifest via the shim, or None (external CLI, not
         signed in, transient failure, junk output — all mean 'can't tell',
@@ -1956,7 +1973,12 @@ class _SyncManager:
                     continue
                 rollback.append((rel, local_bytes, base.get(rel, _MISSING)))
             del new_base[rel]
-        if rollback and self._validate_clone() is False:
+        # `fused canvas validate` checks node files and edge refs, not the
+        # folder grammar (every childUdfOrder entry an existing node, no
+        # child in two folders); a broken one nests the canvas arbitrarily
+        # in every frame that loads it, so it rolls back the same way.
+        folder_problems = self._folder_problems() if rollback else []
+        if rollback and (folder_problems or self._validate_clone() is False):
             # The merged mix is unpushable. Restore what the merge touched;
             # the clone stays (or becomes) dirty and the debounced push
             # re-asserts local wholesale. _remote still advances to the
@@ -1977,8 +1999,11 @@ class _SyncManager:
                 else:
                     new_base[rel] = prev_base  # type: ignore[assignment]
             self.merge_rollback_seq += 1
+            why = ("merged canvas.toml breaks its folders ("
+                   + "; ".join(folder_problems[:3]) + ")"
+                   if folder_problems else "merged clone failed `fused canvas validate`")
             self.log_event("server_to_disk", "pull rollback", ok=False,
-                           detail="merged clone failed `fused canvas validate`; restored "
+                           detail=why + "; restored "
                                   + ", ".join(r for r, _b, _p in rollback[:5]))
             rollback = []
             rolled_back = True

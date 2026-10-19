@@ -76,6 +76,7 @@ clear error, not a silent skip.
 """
 from __future__ import annotations
 
+import copy
 import json
 import os
 import time
@@ -118,6 +119,167 @@ CANVAS_KEYS = ("viewport", "viewportBounds", "comments")
 EMBED_BODY_SUFFIXES = (".md",)
 
 _SYNTHETIC_DESCRIPTION = "Exported from Fused UDF Workbench"
+
+# -- folders ----------------------------------------------------------------
+#
+# A folder is a `[[canvas.nodes]]` row with `type = "udf-folder"`, a
+# `folderName`, an optional `folderColor`/`isLocked` and `childUdfOrder`, the
+# ordered names of the nodes inside it. Membership lives ONLY there (first
+# folder in document order wins, as the frame nests on load); a child row has
+# no pointer back. A child's `x`/`y` are RELATIVE to its folder's `x`/`y` (the
+# React Flow parent frame), absolute when no folder lists it. A folder has no
+# source file and no server id: its name is its only identity.
+#
+# The canvas-toml skill writes a folder row WITHOUT `udfName` (folderName
+# only); the server's translator keys it on `udfName` falling back to
+# `folderName`. `row_name` is that fallback, used at every site here that
+# keys rows by name, and a row read without `udfName` gets it filled in, so
+# the next write of the doc carries both keys and converges.
+
+FOLDER_TYPE = "udf-folder"
+
+
+def is_folder(row: Any) -> bool:
+    return isinstance(row, dict) and row.get("type") == FOLDER_TYPE
+
+
+def row_name(row: Any) -> str | None:
+    """A row's key: `udfName`, or a folder row's `folderName` when it has no
+    `udfName`. None for a row with neither."""
+    if not isinstance(row, dict):
+        return None
+    name = row.get("udfName")
+    if isinstance(name, str) and name:
+        return name
+    if row.get("type") == FOLDER_TYPE:
+        name = row.get("folderName")
+        if isinstance(name, str) and name:
+            return name
+    return None
+
+
+def _with_name(row: dict, name: str) -> dict:
+    """A copy of `row` carrying `udfName = name` (first, when it was missing,
+    so the dumped row reads like every other)."""
+    if row.get("udfName") == name:
+        return dict(row)
+    out = {"udfName": name}
+    out.update((k, v) for k, v in row.items() if k != "udfName")
+    return out
+
+
+def folder_of(rows: Iterable[Any]) -> dict[str, str]:
+    """`{child name: folder name}` from the folders' `childUdfOrder` — the
+    first folder in document order that lists a name wins."""
+    out: dict[str, str] = {}
+    for row in rows:
+        if not is_folder(row):
+            continue
+        fname = row_name(row)
+        order = row.get("childUdfOrder")
+        if not fname or not isinstance(order, list):
+            continue
+        for child in order:
+            if isinstance(child, str) and child and child not in out:
+                out[child] = fname
+    return out
+
+
+def _rows_list(doc_or_rows: Any) -> list:
+    """The row list of a parsed canvas.toml, a `[canvas]` table, a
+    `rows_of_doc` reading, or a plain list of rows."""
+    if isinstance(doc_or_rows, list):
+        return doc_or_rows
+    if not isinstance(doc_or_rows, dict):
+        return []
+    nodes = doc_or_rows.get("nodes")
+    if isinstance(nodes, dict):           # a reading: {nodes: {name: row}, order}
+        order = doc_or_rows.get("order")
+        if isinstance(order, list):
+            return [nodes[n] for n in order if n in nodes]
+        return list(nodes.values())
+    if isinstance(nodes, list):           # a [canvas] table
+        return nodes
+    canvas = doc_or_rows.get("canvas")    # a whole parsed canvas.toml
+    if isinstance(canvas, dict) and isinstance(canvas.get("nodes"), list):
+        return canvas["nodes"]
+    return []
+
+
+def folder_problems(doc_or_rows: Any) -> list[str]:
+    """What is wrong with a canvas's folder grammar, one line per problem
+    (empty = fine): a folder row with no name, a `childUdfOrder` that is not
+    a list, an entry naming no node or naming a folder, a name listed twice
+    by one folder or by two. Pure; `fused canvas validate` checks none of
+    this, and a frame given such a doc nests nodes arbitrarily."""
+    rows = [r for r in _rows_list(doc_or_rows) if isinstance(r, dict)]
+    leaves = {row_name(r) for r in rows if not is_folder(r)} - {None}
+    folders = {row_name(r) for r in rows if is_folder(r)} - {None}
+    problems: list[str] = []
+    listed_by: dict[str, str] = {}
+    for row in rows:
+        if not is_folder(row):
+            continue
+        fname = row_name(row)
+        if fname is None:
+            problems.append("a udf-folder row has neither udfName nor folderName")
+            continue
+        order = row.get("childUdfOrder")
+        if order is None:
+            continue
+        if not isinstance(order, list):
+            problems.append(f"folder {fname!r}: childUdfOrder is not a list")
+            continue
+        seen: set[str] = set()
+        for child in order:
+            if not isinstance(child, str) or child not in leaves:
+                what = "a folder" if child in folders else "not a node"
+                problems.append(f"folder {fname!r} lists {child!r}, which is {what}")
+            elif child in seen:
+                problems.append(f"folder {fname!r} lists {child!r} twice")
+            elif child in listed_by:
+                problems.append(f"{child!r} is listed by folders "
+                                f"{listed_by[child]!r} and {fname!r}")
+            else:
+                listed_by[child] = fname
+            if isinstance(child, str):
+                seen.add(child)
+    return problems
+
+
+def normalise_folders(rows: list) -> list[str]:
+    """Make `rows` (in place) satisfy `folder_problems` as far as dropping
+    names can: every `childUdfOrder` keeps only names of existing non-folder
+    rows, each once, and a name a folder EARLIER in document order already
+    lists is dropped from the later one. A `childUdfOrder` that is not a
+    list becomes empty. Returns one line per fix."""
+    leaves = {row_name(r) for r in rows if isinstance(r, dict) and not is_folder(r)} - {None}
+    claimed: set[str] = set()
+    fixes: list[str] = []
+    for row in rows:
+        if not is_folder(row) or "childUdfOrder" not in row:
+            continue
+        fname = row_name(row)
+        order = row["childUdfOrder"]
+        if not isinstance(order, list):
+            row["childUdfOrder"] = []
+            fixes.append(f"folder {fname!r}: childUdfOrder was not a list")
+            continue
+        kept: list[str] = []
+        for child in order:
+            if not isinstance(child, str) or child not in leaves:
+                fixes.append(f"folder {fname!r}: dropped {child!r} (not a node)")
+            elif child in kept:
+                fixes.append(f"folder {fname!r}: dropped a second {child!r}")
+            elif child in claimed:
+                fixes.append(f"folder {fname!r}: dropped {child!r} "
+                             "(an earlier folder lists it)")
+            else:
+                kept.append(child)
+                claimed.add(child)
+        if kept != order:
+            row["childUdfOrder"] = kept
+    return fixes
 
 
 def _trimmed(value: Any) -> str | None:
@@ -444,16 +606,34 @@ def _num(value: Any, default: float) -> float:
     return value
 
 
+def _absolute_xy(rows: list, row: dict) -> tuple[float, float]:
+    """`row`'s position on screen: its own x/y, plus its folder's when a
+    folder in `rows` lists it (child coordinates are folder-relative)."""
+    x, y = _num(row.get("x"), 0), _num(row.get("y"), 0)
+    if is_folder(row):
+        return x, y
+    home = folder_of(rows).get(row_name(row) or "")
+    if home is None:
+        return x, y
+    frow = next((r for r in rows if is_folder(r) and row_name(r) == home), None)
+    if frow is None:
+        return x, y
+    return _num(frow.get("x"), 0) + x, _num(frow.get("y"), 0) + y
+
+
 def synthesize_row(rows: list[dict], slug: str, file: str) -> dict:
     """The row an orphan source file gets, placed after the last row in
-    `rows` (x = its x, y = its y + height + 40; a fixed origin on an empty
-    canvas), above every node, titled by its slug, visible."""
+    `rows` (x = its x, y = its y + height + 40, in ABSOLUTE coordinates: a
+    last row inside a folder is resolved through the folder, and a last row
+    that IS a folder is cleared by its full height; a fixed origin on an
+    empty canvas), above every node, titled by its slug, visible. The
+    synthesized node is in no folder."""
     last = next((r for r in reversed(rows) if isinstance(r, dict)), None)
     if last is None:
         x, y = _SYNTH_ORIGIN
     else:
-        x = _num(last.get("x"), 0)
-        y = _num(last.get("y"), 0) + _num(last.get("height"), _SYNTH_HEIGHT) + _SYNTH_GAP
+        x, y = _absolute_xy(rows, last)
+        y = y + _num(last.get("height"), _SYNTH_HEIGHT) + _SYNTH_GAP
     z = max((_num(r.get("zIndex"), 0) for r in rows if isinstance(r, dict)), default=0)
     suffix = os.path.splitext(file)[1]
     width, height = _SYNTH_SIZE_BY_SUFFIX.get(suffix, (_SYNTH_WIDTH, _SYNTH_HEIGHT))
@@ -484,8 +664,7 @@ def persist_synthesized(clone_dir: str, names: Iterable[str]) -> list[str]:
     if not isinstance(rows, list):
         rows = []
         canvas["nodes"] = rows
-    have = [r["udfName"] for r in rows
-            if isinstance(r, dict) and isinstance(r.get("udfName"), str)]
+    have = [n for n in map(row_name, rows) if n]
     written: list[str] = []
     for slug, file in orphan_sources(clone_dir, have):
         if slug not in wanted:
@@ -493,20 +672,41 @@ def persist_synthesized(clone_dir: str, names: Iterable[str]) -> list[str]:
         rows.append(synthesize_row(rows, slug, file))
         written.append(slug)
     if written:
+        _fill_names(rows)
         _write_atomic(path, _dump_toml(doc))
     return written
 
 
+def _fill_names(rows: list) -> None:
+    """Give every named row without `udfName` (a folder row written with
+    `folderName` only) its `udfName`, in place — called right before a doc
+    is written, so the toml converges on both keys."""
+    for i, row in enumerate(rows):
+        name = row_name(row)
+        if name and row.get("udfName") != name:
+            rows[i] = _with_name(row, name)
+
+
 def _rename_in_doc(canvas: dict, frm: str, to: str) -> bool:
     """Rename a node in a parsed `[canvas]` table: its row's `udfName` (and a
-    title that was just the name), every edge endpoint. True if anything
+    title that was just the name; a folder's `folderName` too), every edge
+    endpoint, every folder's `childUdfOrder` entry. True if anything
     changed."""
     changed = False
-    for row in canvas.get("nodes") or []:
-        if isinstance(row, dict) and row.get("udfName") == frm:
+    rows = canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row_name(row) == frm:
             row["udfName"] = to
             if row.get("title") == frm:
                 row["title"] = to
+            if is_folder(row) and row.get("folderName") == frm:
+                row["folderName"] = to
+            changed = True
+        order = row.get("childUdfOrder") if is_folder(row) else None
+        if isinstance(order, list) and frm in order:
+            row["childUdfOrder"] = [to if n == frm else n for n in order]
             changed = True
     edges = canvas.get("edges")
     if isinstance(edges, list):
@@ -547,7 +747,7 @@ def apply_rename(clone_dir: str, frm: str, to: str,
     if not isinstance(canvas, dict):
         raise ValueError("canvas.toml: [canvas] is not a table")
     rows = canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []
-    names = {r.get("udfName") for r in rows if isinstance(r, dict)}
+    names = {row_name(r) for r in rows} - {None}
     if frm == to or (to in names and frm not in names):
         # Already on disk: a snapshot carrying the new name landed first, or
         # the embed re-posted the hint after a restart emptied the dedupe.
@@ -557,6 +757,7 @@ def apply_rename(clone_dir: str, frm: str, to: str,
     changed = _rename_in_doc(canvas, frm, to)
     moved = _move_file(clone_dir, file_from, file_to)
     if changed:
+        _fill_names(rows)
         _write_atomic(path, _dump_toml(doc))
     return {"changed": changed or moved is not None, "renamed": [frm, to],
             "moved": moved, "at": time.time()}
@@ -578,11 +779,13 @@ def apply_snapshot(
     `rowless_files` and the host still holds in grace: one this snapshot
     no longer lists (no UDF, no node, no row) has its file trashed and is
     reported in `deleted`. Returns `{changed, upserted, deleted, renamed, created,
-    written, synthesized, rowless_files, deferred_deletes}` (`rowless_files`:
+    written, synthesized, rowless_files, deferred_deletes, folder_fixes}`
+    (`rowless_files`:
     slugs of new UDFs whose file came without a node — file created, no row;
     `synthesized`: always empty here, kept for the ack's shape;
     `deferred_deletes`: known nodes the snapshot omitted while still listing
-    their UDF — the host keeps them in its view). Raises FileNotFoundError when the clone has no canvas.toml, and
+    their UDF — the host keeps them in its view; `folder_fixes`: one line per
+    `childUdfOrder` entry `normalise_folders` dropped). Raises FileNotFoundError when the clone has no canvas.toml, and
     whatever `rtoml` raises on a malformed one (the caller reports both as
     rejections).
     """
@@ -595,10 +798,19 @@ def apply_snapshot(
     if not isinstance(rows, list):
         rows = []
         canvas["nodes"] = rows
+    # Keyed by `row_name`: a folder row written with `folderName` only gets
+    # its `udfName` here, so it matches the embed's row (which always has
+    # one) and is written with both keys whenever this doc is written.
+    _fill_names(rows)
     by_name: dict[str, dict] = {}
     for row in rows:
-        if isinstance(row, dict) and isinstance(row.get("udfName"), str):
-            by_name[row["udfName"]] = row
+        name = row_name(row)
+        if name:
+            by_name[name] = row
+    # What the doc held before this snapshot: the toml is written only when
+    # the doc ends up different (the folder normalisation below can undo an
+    # upsert, and a write that changes nothing would loop through disk_rev).
+    doc_before = copy.deepcopy(doc)
 
     changed = False
     upserted: list[str] = []
@@ -665,6 +877,8 @@ def apply_snapshot(
 
         row = by_name.pop(name, None)
         if row is None:
+            if prev is not None and is_folder(prev["nodes"].get(name)):
+                continue    # a folder already gone from disk: no file of its own
             file = files_before.get(name) or _find_source(clone_dir, name)
             if not file or os.path.splitext(file)[0] != name \
                     or not os.path.isfile(os.path.join(clone_dir, file)):
@@ -683,6 +897,11 @@ def apply_snapshot(
         else:
             rows.remove(row)
             changed = True
+            if is_folder(row):
+                # A folder has no source file: a file sharing its name is
+                # another node's (or nobody's), never this deletion's.
+                deleted.append(name)
+                continue
         deleted.append(name)
         file = files_before.get(name) or new["files"].get(name) or _find_source(clone_dir, name)
         if file:
@@ -817,13 +1036,21 @@ def apply_snapshot(
                 and slug not in by_name and os.path.isfile(fpath)):
             rowless_files.append(slug)
 
+    # Folder grammar: normalised, never rejected — the embed's snapshot is
+    # its truth, and a frame nests by first-listing anyway. Names no row
+    # carries and names an earlier folder already lists are dropped.
+    folder_fixes = normalise_folders(rows)
+    if folder_fixes:
+        changed = True
+    if changed and doc == doc_before:
+        changed = False
     if changed:
         _write_atomic(path, _dump_toml(doc))
     return {"changed": changed or files_changed or bool(created) or bool(written),
             "upserted": upserted, "deleted": deleted, "renamed": renamed,
             "created": created, "written": written, "synthesized": synthesized,
             "rowless_files": rowless_files, "deferred_deletes": deferred_deletes,
-            "at": time.time()}
+            "folder_fixes": folder_fixes, "at": time.time()}
 
 
 def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
@@ -941,9 +1168,10 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
     nodes: dict[str, dict] = {}
     order: list[str] = []
     for row in rows:
-        if isinstance(row, dict) and isinstance(row.get("udfName"), str) and row["udfName"]:
-            nodes[row["udfName"]] = dict(row)
-            order.append(row["udfName"])
+        name = row_name(row)
+        if name:
+            nodes[name] = _with_name(row, name)
+            order.append(name)
     # Orphan source files: synthesized rows, chained after the real ones
     # exactly as `persist_synthesized` will write them. `exclude_orphans`
     # (files the embed just created, still in the host's grace window) are
@@ -1012,14 +1240,28 @@ def studio_patch_from_row(row: dict) -> dict:
     return patch
 
 
-def _upsert_op(disk: dict, name: str, *, row: bool, body: bool, sid: bool) -> dict:
+def _upsert_op(disk: dict, name: str, *, row: bool, body: bool, sid: bool,
+               view_row: dict | None = None) -> dict:
+    """One upsert. `view_row` is the row the frame holds for this node (None
+    on a full state or a node new to the frame): when the disk row's x AND y
+    equal it, `node` carries NO `position`. The frame reads a patch position
+    as "the host placed this node, in the frame it means" and then skips its
+    own frame conversion for a node whose folder membership changed in the
+    same delta; an unchanged x/y shipped on every title/colour change would
+    pin a node that only moved between folders to stale coordinates."""
     op: dict[str, Any] = {"op": "upsert", "name": name}
     file = disk["files"].get(name)
     if file:
         op["file"] = file
     if row:
-        op["row"] = disk["nodes"][name]
-        op["node"] = studio_patch_from_row(disk["nodes"][name])
+        drow = disk["nodes"][name]
+        op["row"] = drow
+        node = studio_patch_from_row(drow)
+        if (view_row is not None and "position" in node
+                and drow.get("x") == view_row.get("x")
+                and drow.get("y") == view_row.get("y")):
+            del node["position"]
+        op["node"] = node
     if body and name in disk["bodies"]:
         if file and file.endswith(CODE_SUFFIXES):
             op["code"] = disk["bodies"][name]
@@ -1081,7 +1323,8 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
         body = disk["bodies"].get(name) != vbodies.get(was)
         sid = name in dids and dids[name] != vids.get(was)
         if row or body or sid:
-            ops.append(_upsert_op(disk, name, row=row, body=body, sid=sid))
+            ops.append(_upsert_op(disk, name, row=row, body=body, sid=sid,
+                                  view_row=vnodes[was]))
     if sorted(map(tuple, disk["edges"])) != sorted(map(tuple, view.get("edges", []))):
         ops.append({"op": "edges", "set": [list(e) for e in disk["edges"]]})
     vcanvas = view.get("canvas", {})
@@ -1100,18 +1343,57 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
 # changed since the sync point → local wins" there drops a teammate's new
 # node row whenever the clone has any unpushed layout edit. This is the
 # three-way merge of that one file at the granularity it is actually edited:
-# the node row (keyed by udfName), the edge set, the canvas scalars.
+# the node row (keyed by `row_name`), the edge set, the canvas scalars.
+#
+# Folders merge as a UNIT with their children: a child's x/y mean nothing
+# without the folder that lists it (relative inside one, absolute outside),
+# and membership and coordinates live in different rows, so merged row by
+# row a node can end up with one side's membership and the other side's
+# coordinates — and jump across the canvas. After the per-row merge:
+#
+#   membership   A `childUdfOrder` both sides changed merges as a list:
+#                local's order minus every name either side removed since
+#                base, then the remote's additions in its order. Then every
+#                list keeps only existing non-folder rows, each once, and a
+#                name an EARLIER folder (document order) lists is dropped
+#                from the later one (`normalise_folders`) — never two
+#                folders listing one child. So a local row Claude listed
+#                before writing it is dropped from its folder by a merge.
+#   coordinates  Per axis, the merged value came from local, the remote, or
+#                both (base-equal included). If a side it came from had the
+#                node in the folder the merge puts it in (a paired rename
+#                counts as the same folder), it is kept: relative to that
+#                folder, it rides with the folder wherever the folder's own
+#                merge put it. Otherwise it is converted: absolute = value +
+#                that side's folder x/y when that side nested it (whether or
+#                not the folder survived the merge), then relative =
+#                absolute − the merged folder's x/y when the merge nests
+#                it. The node stays where that side had it on screen.
+#   renames      Folders have no id, so a rename reads as a delete plus an
+#                add. A folder NEW on the remote (in neither base nor local)
+#                whose `childUdfOrder` is a non-empty set-equal match of a
+#                local folder that the remote dropped and local kept
+#                unchanged or only restyled since base (same name, same
+#                `childUdfOrder`; colour, size, position, lock may differ)
+#                is that folder renamed: the merged row takes the remote's
+#                name and is merged field-wise against base, so local's
+#                restyle survives. One-to-one, first match in local order.
+#                A LOCAL rename needs no pairing: the remote's old-name row
+#                reads as "local deleted it" and stays deleted (a restyle
+#                the remote made to it is lost, as for any local delete).
 
 def rows_of_doc(doc: dict) -> dict:
     """`{nodes: {name: row}, order: [name], edges: [[a, b]], canvas: {...}}`
-    from a parsed canvas.toml. Rows without a udfName are dropped."""
+    from a parsed canvas.toml. Rows with no `row_name` are dropped; a folder
+    row written with `folderName` only is read with `udfName` filled in."""
     canvas = doc.get("canvas") if isinstance(doc.get("canvas"), dict) else {}
     nodes: dict[str, dict] = {}
     order: list[str] = []
     for row in canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []:
-        if isinstance(row, dict) and isinstance(row.get("udfName"), str) and row["udfName"]:
-            nodes[row["udfName"]] = dict(row)
-            order.append(row["udfName"])
+        name = row_name(row)
+        if name:
+            nodes[name] = _with_name(row, name)
+            order.append(name)
     edges = [[e[0], e[1]] for e in canvas.get("edges") or []
              if isinstance(e, list) and len(e) == 2
              and isinstance(e[0], str) and isinstance(e[1], str)]
@@ -1119,8 +1401,27 @@ def rows_of_doc(doc: dict) -> dict:
     return {"nodes": nodes, "order": order, "edges": edges, "canvas": scalars}
 
 
+_ORDER_KEY = "childUdfOrder"
+# What makes a folder the SAME folder for rename pairing: everything else
+# (colour, geometry, lock, title) is style.
+_FOLDER_IDENTITY_KEYS = ("udfName", "folderName", _ORDER_KEY)
+
+
+def _merge_order(base: list, local: list, remote: list) -> list:
+    """Three-way merge of a `childUdfOrder` both sides changed: local's
+    order minus what either side removed since base, then the remote's
+    additions in its order."""
+    removed = {n for n in base if n not in local or n not in remote}
+    out: list = []
+    for n in list(local) + list(remote):
+        if n not in removed and n not in out:
+            out.append(n)
+    return out
+
+
 def _merge_row(base: dict | None, local: dict, remote: dict) -> dict:
-    """Field-wise three-way merge of one row, local winning a same-field tie."""
+    """Field-wise three-way merge of one row, local winning a same-field
+    tie — except a folder's `childUdfOrder`, which merges as a list."""
     if local == remote:
         return dict(local)
     if base is not None:
@@ -1128,6 +1429,7 @@ def _merge_row(base: dict | None, local: dict, remote: dict) -> dict:
             return dict(remote)
         if remote == base:
             return dict(local)
+    had_base = base is not None
     base = base or {}
     out: dict = {}
     for key in list(local) + [k for k in remote if k not in local]:
@@ -1136,8 +1438,13 @@ def _merge_row(base: dict | None, local: dict, remote: dict) -> dict:
             val = lv
         elif lv == bv:
             val = rv          # only the remote changed this field
+        elif rv == bv:
+            val = lv          # only local changed it
+        elif (key == _ORDER_KEY and had_base and isinstance(lv, list)
+              and isinstance(rv, list) and (bv is _ABSENT or isinstance(bv, list))):
+            val = _merge_order(bv if isinstance(bv, list) else [], lv, rv)
         else:
-            val = lv          # only local changed it, or both did: local wins
+            val = lv          # both changed it: local wins
         if val is not _ABSENT:
             out[key] = val
     return out
@@ -1149,6 +1456,74 @@ _ABSENT = object()
 _LOCAL_ONLY_SCALARS = ("viewport", "viewportBounds")
 
 
+def _renamed_folder(row: dict, frm: str, to: str) -> dict:
+    out = dict(row, udfName=to)
+    for key in ("folderName", "title"):
+        if out.get(key) == frm:
+            out[key] = to
+    return out
+
+
+def _folder_renames(bn: dict, L: dict, R: dict) -> dict[str, str]:
+    """`{local name: remote name}` for the folders the remote renamed (see
+    "renames" above)."""
+    out: dict[str, str] = {}
+    for g in R["order"]:
+        rg = R["nodes"][g]
+        if not is_folder(rg) or g in bn or g in L["nodes"]:
+            continue
+        want = rg.get(_ORDER_KEY)
+        if not isinstance(want, list) or not want:
+            continue
+        for f in L["order"]:
+            lf = L["nodes"][f]
+            if (f in out or not is_folder(lf) or f in R["nodes"]
+                    or not is_folder(bn.get(f))):
+                continue
+            if any(bn[f].get(k, _ABSENT) != lf.get(k, _ABSENT)
+                   for k in _FOLDER_IDENTITY_KEYS):
+                continue          # local renamed or re-membered it: not style only
+            have = lf.get(_ORDER_KEY)
+            if isinstance(have, list) and set(have) == set(want):
+                out[f] = g
+                break
+    return out
+
+
+def _reframe_children(merged: dict[str, dict], L: dict, R: dict,
+                      renames: dict[str, str]) -> None:
+    """Convert, in place, the coordinates of every merged non-folder row
+    whose source side nested it in a different folder than the merge does
+    (see "coordinates" above)."""
+    def ordered(side: dict) -> list:
+        return [side["nodes"][n] for n in side["order"]]
+    home_m = folder_of(merged.values())
+    raw_l, home_r = folder_of(ordered(L)), folder_of(ordered(R))
+    for name, row in merged.items():
+        if is_folder(row):
+            continue
+        target = home_m.get(name)
+        tpos = merged.get(target) if target else None
+        for axis in ("x", "y"):
+            value = row.get(axis)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            # (the side's folder as the merge names it, the side's folder row)
+            sides: list[tuple[str | None, dict | None]] = []
+            if name in L["nodes"] and L["nodes"][name].get(axis) == value:
+                lf = raw_l.get(name)
+                sides.append((renames.get(lf, lf) if lf else None,
+                              L["nodes"].get(lf) if lf else None))
+            if name in R["nodes"] and R["nodes"][name].get(axis) == value:
+                rf = home_r.get(name)
+                sides.append((rf, R["nodes"].get(rf) if rf else None))
+            if not sides or any(home == target for home, _ in sides):
+                continue
+            _home, frow = sides[0]
+            absolute = value + (_num(frow.get(axis), 0) if frow else 0)
+            row[axis] = absolute - (_num(tpos.get(axis), 0) if tpos else 0)
+
+
 def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[dict, dict]:
     """Three-way merge of two canvas.toml documents at node granularity.
 
@@ -1157,43 +1532,58 @@ def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[di
     lacks come in, and local wins everything else — the old per-file rule's
     outcome for the file, but still per node). Returns `(merged_doc, info)`
     where merged_doc is `local_doc` with its [canvas] nodes/edges/scalars
-    replaced, and info = {added, removed, taken, kept} by node name.
+    replaced, and info = {added, removed, taken, kept} by node name, plus
+    `renamed`: [[local name, remote name]] for folders paired as renames.
 
     Per node: one side changed → that side; both → field-wise, local wins a
     same-field tie; deleted on one side and untouched on the other → deleted;
     deleted on one side and changed on the other → the change wins (local
     deletes beat remote changes, as the file rule did: the push propagates
-    the delete). Edges: union minus what either side deleted since base,
-    minus edges touching a dropped node. Scalars: viewport/viewportBounds
-    local; others local unless only the remote moved them.
+    the delete). Folders and their children: membership, coordinates and
+    renames as the section comment above says. Edges: union minus what
+    either side deleted since base, minus edges touching a dropped node.
+    Scalars: viewport/viewportBounds local; others local unless only the
+    remote moved them.
     """
     L, R = rows_of_doc(local_doc), rows_of_doc(remote_doc)
     B = base or {"nodes": {}, "edges": [], "canvas": {}}
     bn, ln, rn = B["nodes"], L["nodes"], R["nodes"]
+    renames = _folder_renames(bn, L, R)
     merged: dict[str, dict] = {}
-    info = {"added": [], "removed": [], "taken": [], "kept": []}
+    removed: list[str] = []
     for name in L["order"]:
-        if name in rn:
-            row = _merge_row(bn.get(name), ln[name], rn[name])
-            merged[name] = row
-            if row == rn[name] and row != ln[name]:
-                info["taken"].append(name)
-            elif row == ln[name]:
-                info["kept"].append(name)
-            else:
-                info["taken"].append(name)
+        if name in renames:
+            to = renames[name]
+            merged[to] = _merge_row(_renamed_folder(bn[name], name, to),
+                                    _renamed_folder(ln[name], name, to), rn[to])
+        elif name in rn:
+            merged[name] = _merge_row(bn.get(name), ln[name], rn[name])
         elif name in bn and bn[name] == ln[name]:
-            info["removed"].append(name)      # remote deleted an untouched node
+            removed.append(name)              # remote deleted an untouched node
         else:
             merged[name] = dict(ln[name])     # local added or changed it
-            info["kept"].append(name)
     for name in R["order"]:
         if name in merged or name in ln:
             continue
         if name in bn:
             continue                          # local deleted it: stays deleted
         merged[name] = dict(rn[name])         # new on the remote
-        info["added"].append(name)
+
+    normalise_folders(list(merged.values()))
+    _reframe_children(merged, L, R, renames)
+
+    paired = set(renames.values())
+    info: dict[str, list] = {"added": [], "removed": removed, "taken": [], "kept": [],
+                             "renamed": [[f, g] for f, g in renames.items()]}
+    for name, row in merged.items():
+        if name in paired:
+            info["taken"].append(name)
+        elif name not in ln:
+            info["added"].append(name)
+        elif name not in rn or row == ln[name]:
+            info["kept"].append(name)
+        else:
+            info["taken"].append(name)
 
     def edge_set(rows):
         return {(a, b) for a, b in rows}
