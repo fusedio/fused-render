@@ -518,68 +518,30 @@ def test_ranked_search_enabled_toggle_is_independent_of_other_prefs(
     assert body["indexing"]["ranked"] is False
 
 
-def test_default_model_defaults_to_unset_and_round_trips(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    # Unset is its own value — "" means "whatever each consumer's own default
-    # is", not a model. Every consumer treats it as no answer at all.
-    assert client.get("/api/prefs").json()["model"]["default"] == ""
-    body = client.put("/api/prefs", json={"default_model": "opus"}, headers=FUSED).json()
-    assert body["model"]["default"] == "opus"
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["default_model"] == "opus"
-    assert client.get("/api/prefs").json()["model"]["default"] == "opus"
-    # And back to unset, which is a settable choice and not just an absence.
-    assert (
-        client.put("/api/prefs", json={"default_model": ""}, headers=FUSED).json()["model"][
-            "default"
-        ]
-        == ""
-    )
-
-
-def test_default_model_accepts_exactly_the_short_names(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    # The short names are the claude template's own selector list — the
-    # preference has to speak the same vocabulary as the control it presets.
-    for name in ("fable", "opus", "sonnet", "haiku"):
-        assert (
-            client.put("/api/prefs", json={"default_model": name}, headers=FUSED).json()["model"][
-                "default"
-            ]
-            == name
-        )
-
-
-def test_put_rejects_an_unknown_default_model(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    # A full API id is NOT accepted: the pref is the short name, and the
-    # short→id mapping lives in exactly one place (server/ai.py).
-    for bad in ("claude-opus-5", "gpt-4", 3, None):
-        assert (
-            client.put("/api/prefs", json={"default_model": bad}, headers=FUSED).status_code == 400
-        )
-    assert not (home / "prefs.json").exists()
-
-
-def test_default_model_is_independent_of_the_other_prefs(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
-    client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
-    client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED)
-    body = client.put("/api/prefs", json={"default_model": "haiku"}, headers=FUSED).json()
-    assert body["engine"]["selected"] == "fused"
-    assert body["reader"]["enabled"] is True
-    assert body["model"]["default"] == "haiku"
-
-
-def test_default_model_reader_ignores_a_hand_edited_junk_value(tmp_path, monkeypatch):
-    # prefs.json is a user-editable file; an unknown value reads as unset
-    # rather than reaching a consumer that would pass it to a CLI.
+def test_the_default_model_pref_is_retired(tmp_path, monkeypatch):
+    # The global Claude model in ~/.claude/settings.json (Claude Config ›
+    # Model) is the one default every surface reads; fused-render's own
+    # `default_model` pref and its Preferences control are gone. The GET no
+    # longer reports it, a PUT naming only it changes nothing, and a value an
+    # older build stored is ignored rather than read by anyone.
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
-    (home / "prefs.json").write_text(json.dumps({"default_model": "wat"}), encoding="utf-8")
-    assert prefs_mod.default_model() == ""
-    assert client.get("/api/prefs").json()["model"]["default"] == ""
+    (home / "prefs.json").write_text(json.dumps({"default_model": "opus"}), encoding="utf-8")
+    assert "model" not in client.get("/api/prefs").json()
+    assert client.put("/api/prefs", json={"default_model": "haiku"}, headers=FUSED).status_code == 400
+    assert not hasattr(prefs_mod, "default_model")
+
+
+def test_the_menubar_pin_pref_is_retired(tmp_path, monkeypatch):
+    # The pinned-file popover is no longer a choice: the Dock is the status
+    # item's only surface, so the GET stops describing a `menubar` and the PUT
+    # stops accepting the switch.
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"menubar_pin_enabled": True}), encoding="utf-8")
+    assert "menubar" not in client.get("/api/prefs").json()
+    assert client.put("/api/prefs", json={"menubar_pin_enabled": True}, headers=FUSED).status_code == 400
+    assert not hasattr(prefs_mod, "menubar_pin_enabled")
 
 
 def test_env_var_reports_as_forcing(tmp_path, monkeypatch):

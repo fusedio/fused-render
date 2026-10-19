@@ -1,4 +1,4 @@
-// RankedSearchToggle (D720): renders, reflects the persisted value, writes
+// The "Rank results by relevance" row (D720): renders, reflects the persisted value, writes
 // on change via a real PUT /api/prefs, and publishes the new value into the
 // module-level cache the explorer's two search boxes read
 // (ranked-search-pref.ts) — same coverage shape as the pref-threading tests
@@ -12,7 +12,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import type { Prefs } from "@platform/lib/api";
-import { LowImpactToggle, RankedSearchToggle } from "@shell/Indexing";
+import { Switch } from "@platform/shadcn/ui/switch";
+import { LowImpactControl as LowImpactToggle, RankedSearchControl as RankedSearchToggle } from "@shell/settings/indexing";
+
+// The row's control is the shadcn Switch; its props are what the reader sees
+// (checked, disabled) and what a click calls (onCheckedChange).
+const sw = (box: ReactTestRenderer) => box.root.findByType(Switch);
+const press = (box: ReactTestRenderer) => sw(box).props.onCheckedChange(!sw(box).props.checked);
 
 function fakePrefs(ranked: boolean): Prefs {
   return { indexing: { enabled: true, ranked } } as unknown as Prefs;
@@ -50,18 +56,16 @@ async function mount(prefs: Prefs, onChange: (p: Prefs) => void) {
   return box;
 }
 
-describe("RankedSearchToggle", () => {
+describe("Rank results by relevance", () => {
   test("renders checked when the preference is ranked (the default)", async () => {
     const box = await mount(fakePrefs(true), () => {});
-    const input = box.root.findByType("input");
-    expect(input.props.checked).toBe(true);
+    expect(sw(box).props.checked).toBe(true);
     await act(async () => box.unmount());
   });
 
   test("renders unchecked when the persisted preference is unranked", async () => {
     const box = await mount(fakePrefs(false), () => {});
-    const input = box.root.findByType("input");
-    expect(input.props.checked).toBe(false);
+    expect(sw(box).props.checked).toBe(false);
     await act(async () => box.unmount());
   });
 
@@ -71,8 +75,7 @@ describe("RankedSearchToggle", () => {
     const box = await mount(fakePrefs(true), (p) => {
       latest = p;
     });
-    const input = box.root.findByType("input");
-    await act(async () => input.props.onChange({}));
+    await act(async () => press(box));
     expect(putCalls).toHaveLength(1);
     expect(putCalls[0].body).toEqual({ ranked_search_enabled: false });
     expect((latest as unknown as Prefs | null)?.indexing.ranked).toBe(false);
@@ -82,8 +85,7 @@ describe("RankedSearchToggle", () => {
   test("clicking again from unranked writes ranked_search_enabled=true", async () => {
     putResponseRanked = true;
     const box = await mount(fakePrefs(false), () => {});
-    const input = box.root.findByType("input");
-    await act(async () => input.props.onChange({}));
+    await act(async () => press(box));
     expect(putCalls).toHaveLength(1);
     expect(putCalls[0].body).toEqual({ ranked_search_enabled: true });
     await act(async () => box.unmount());
@@ -107,8 +109,7 @@ describe("RankedSearchToggle", () => {
       });
       expect(reader.root.findByType("span").props["data-ranked"]).toBe(true);
 
-      const input = box.root.findByType("input");
-      await act(async () => input.props.onChange({}));
+      await act(async () => press(box));
 
       expect(reader.root.findByType("span").props["data-ranked"]).toBe(false);
       await act(async () => {
@@ -122,7 +123,7 @@ function lowImpactPrefs(lowImpact: boolean, enabled = true): Prefs {
   return { indexing: { enabled, ranked: true, low_impact: lowImpact } } as unknown as Prefs;
 }
 
-describe("LowImpactToggle", () => {
+describe("Low-impact indexing", () => {
   async function mountLow(prefs: Prefs, onChange: (p: Prefs) => void) {
     let box!: ReactTestRenderer;
     await act(async () => {
@@ -133,9 +134,8 @@ describe("LowImpactToggle", () => {
 
   test("renders unchecked by default and enabled", async () => {
     const box = await mountLow(lowImpactPrefs(false), () => {});
-    const input = box.root.findByType("input");
-    expect(input.props.checked).toBe(false);
-    expect(input.props.disabled).toBe(false);
+    expect(sw(box).props.checked).toBe(false);
+    expect(sw(box).props.disabled).toBe(false);
     await act(async () => box.unmount());
   });
 
@@ -161,10 +161,10 @@ describe("LowImpactToggle", () => {
       await act(async () => {
         box = create(render());
       });
-      await act(async () => box.root.findByType("input").props.onChange({}));
+      await act(async () => press(box));
       expect(putCalls).toHaveLength(1);
       expect(putCalls[0].body).toEqual({ index_low_impact_enabled: true });
-      expect(box.root.findByType("input").props.checked).toBe(true);
+      expect(sw(box).props.checked).toBe(true);
       await act(async () => box.unmount());
     } finally {
       globalThis.fetch = fetchSaved;
@@ -173,12 +173,12 @@ describe("LowImpactToggle", () => {
 
   test("is disabled while indexing itself is off", async () => {
     const box = await mountLow(lowImpactPrefs(false, false), () => {});
-    expect(box.root.findByType("input").props.disabled).toBe(true);
+    expect(sw(box).props.disabled).toBe(true);
     await act(async () => box.unmount());
   });
 });
 
-// IndexingPanel's scanning-line arithmetic (the reused-vs-files fold) used to
+// The index status line's scanning arithmetic (the reused-vs-files fold) used to
 // be covered here by mounting the whole panel — moved to a pure test over
 // `scanningLine` in indexing-lib.test.ts (D736). Mounting IndexingPanel pulls
 // in `useIndexStatus`'s polling effect, and on CI (never locally, since the

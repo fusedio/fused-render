@@ -13,8 +13,7 @@ cached virtual environment (see [Dependencies](#dependencies)) — with
 or `=fused` (require it). The base install carries plain `fused`;
 `pip install "fused-render[fused]"` adds its deploy, share and MCP extras. Under the
 fused engine a file may also expose a `@fused.udf`-decorated function or assign
-`result = ...` directly instead of defining `main()`. You can also switch the
-engine in [Preferences](#preferences).
+`result = ...` directly instead of defining `main()`.
 
 ## Dependencies
 
@@ -251,16 +250,36 @@ where a first model comes from.
     the Hub publishes for the weights. Other files in the repo aren't counted,
     and a repo the Hub has no such metadata for shows no size rather than a
     guess.
-  - If this machine has a Hub token — from **Preferences → AI → Hugging Face**, an
+  - If this machine has a Hub token — from **Preferences → Accounts → Hugging Face**, an
     `HF_TOKEN` in the environment, or a `hf auth login` — it is used. That is
     what makes gated and private repos searchable and downloadable, and it
     raises the rate limit.
 
 ## Preferences
 
-The gear at the sidebar's bottom-left opens **Preferences**, whose controls
-are split across tabs — **Render preferences** (the one it opens on), **AI**,
-and **Indexing**:
+The gear at the sidebar's bottom-left opens **Preferences**: a list of groups
+down the left, the settings of the chosen group beside it, and a **search box
+over all of them** at the top. Search matches each setting's name, its
+description and the words people tend to use for it (*dark*, *hotkey*,
+*token*, *wifi*…), and the results are the real controls — change one in
+place, or follow the path above it to see it in its group. Settings that live
+on another page (the default Claude model in Claude Config, local model
+engines in AI Models) are in the list too, as a row that takes you there.
+
+| Group | What is in it |
+|---|---|
+| **General** | Appearance and colour theme · native windows · the launcher's shortcuts (macOS) · automatic update downloads |
+| **AI & agents** | Which coding agents (Claude Code, GitHub Copilot CLI) run chats and tasks, each with its health, and the default for new ones |
+| **Tasks** | One task at a time per folder (beta) · AI recap titles (beta) · notifications for terminal sessions |
+| **Apps & sharing** | Git sync · the Share sheet and its GitHub link · live previews in thumbnails |
+| **Files & search** | The file index: on/off, ranking, low-impact mode, skipped folders, rebuild |
+| **Optional features** | Canvases · Marketplace · the process Monitor · Reader. All off by default |
+| **Phone & network** | Sharing your apps with a phone on the same Wi-Fi, with QR pairing |
+| **Accounts** | Fused account · Hugging Face |
+| **Advanced** | The [call log](#call-log) · the index query console · diagnostics for a bug report |
+
+Links can open a group (`/preferences?tab=indexing`), a single setting
+(`/preferences?s=monitor`) or a search (`/preferences?q=token`).
 
 - **Appearance** — System (follows your desktop), Light or Dark. Applies
   immediately — to the app and to every open built-in view, with no reload —
@@ -271,10 +290,7 @@ and **Indexing**:
   buttons. **Your own `.html` views are never touched** — their CSS stays
   entirely yours; see the authoring skill for how to follow the desktop
   preference if you want to.
-- **AI › Default model** — which Claude model the chat and `fused.ai.text()` reach
-  for when nothing else has said. A page's own `model` argument still wins, and
-  a project's Claude settings win for the chat.
-- **AI › Hugging Face** — **Log in to Hugging Face** to download AI models.
+- **Accounts › Hugging Face** — **Log in to Hugging Face** to download AI models.
   Without an account the Hub serves this machine anonymously: a lower rate
   limit, slower downloads, no gated or private repos, and a "you are sending
   unauthenticated requests" warning in every model log. The button opens
@@ -288,19 +304,8 @@ and **Indexing**:
   offering a login that would change nothing; that is also the way to give
   fused-render one specific fine-grained token. See
   [SECURITY.md](../SECURITY.md#secrets-at-rest).
-- **Call log** — whether the app records the API calls your pages make, how
-  much of each run's parameters it keeps, and how long records are kept. See
-  [Call log](#call-log) below.
-- **Template registry** — the merged extension → templates bindings (built-in
-  plus your own overrides), read-only.
-- **Execution engine** — switch `fused.runPython` between the built-in
-  executor (fresh subprocess per call) and the fused engine (a folder's
-  `pyproject.toml` dependencies in cached venvs). Applied to the next run, no
-  restart; setting
-  `FUSED_RENDER_ENGINE` pins the engine and locks the switch.
-
-Execution engine sits last, since builtin suits almost everyone. The guided tour
-is not on this page — it runs itself the first time you open the app.
+The guided tour is not on this page — it runs itself the first time you open
+the app.
 
 The **server's own log** is not a preference, so it is not on that page. It
 exists for debugging: when something goes wrong (an "Internal Server Error" in
@@ -410,7 +415,7 @@ experienced as one. A large stale count next to a small ok count is the sign a
 page is re-running Python far more than it needs to (a slider with no debounce,
 or an `onChange` handler that retriggers itself).
 
-**Getting to it from Preferences.** **Browse call logs** opens the store in the
+**Getting to it from Preferences.** **Advanced › Record API calls › Browse** opens the store in the
 explorer: one directory per app, and clicking any `.calls.jsonl` opens it in
 **Log studio**.
 
@@ -430,7 +435,7 @@ INFO doesn't offer six filters that match nothing. Its Tail button switches
 auto-reload off while engaged, so watching a live file polls instead of
 reloading, and a poll updates only the lines that changed — a row you have
 expanded stays expanded and the scroll stays put. Log studio follows
-**Preferences → Appearance** like the rest of the app: System, Light or Dark,
+**Preferences → General → Appearance** like the rest of the app: System, Light or Dark,
 applied as you change it, with no button of its own.
 
 Opening a log file in any view is safe. Nothing watches a log file for changes,
@@ -457,7 +462,7 @@ query globs `logs/*/*.calls.jsonl`.
 
 **A note on parameters.** A run's parameters are recorded by default: they are
 usually the whole reproduction, and they are already visible in the URL. If a
-page passes something sensitive as a parameter, switch **Preferences → Call log
+page passes something sensitive as a parameter, switch **Preferences → Advanced
 → Parameters** to *names only* (or off). `FUSED_RENDER_CALLS=0` turns capture
 off entirely for a run, and `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides the
 retention window.

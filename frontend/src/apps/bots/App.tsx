@@ -86,7 +86,7 @@ export function Bots() {
   // `/bots?new=1` opens the "+ New bot" chooser (FusedBot's setup wizard handed
   // over this way). Read once, then dropped from the URL so a refresh does not
   // reopen it.
-  // `/bots?phone=1` (Preferences' Phone row) opens Super Bot's Settings on the Phone tab once the list knows it.
+  // `/bots?phone=1` (a deep link into Super Bot's phone setup) opens its Settings on the Phone tab once the list knows it.
   useEffect(() => {
     const u = new URL(location.href);
     const wantNew = u.searchParams.get("new") === "1", wantPhone = u.searchParams.get("phone") === "1";

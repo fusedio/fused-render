@@ -441,11 +441,12 @@ def test_the_cli_runs_before_onboarding():
 def test_the_app_migrates_before_anything_can_read_the_state_it_rewrites():
     """The migration is a STARTUP PRECONDITION, not a server concern: it
     rewrites on-disk state, so every component that reads that state must come
-    after it. The menu-bar pin is the one that reads early — PinController's
-    constructor caches the pinned (workspace-absolute) path, and the boot timer
-    builds it before the server thread exists — so a migration inside
-    _start_server_thread left the popover on the pre-move path for the whole
-    upgrade session.
+    after it. The menu-bar surface is the one built early — the boot timer
+    builds it before the server thread exists. The retired pinned-file popover
+    (PinController) cached the pinned workspace-absolute path in its
+    constructor, so a migration inside _start_server_thread left it on the
+    pre-move path for the whole upgrade session; the Dock that replaced it is
+    held to the same order.
 
     Source order, not behaviour: reaching main() means starting the AppKit run
     loop, which a test cannot do. It still catches the real failure mode, which
@@ -453,7 +454,8 @@ def test_the_app_migrates_before_anything_can_read_the_state_it_rewrites():
     src = _source("fused_render/app.py")
     body = _func_body(src, "main")
     migrate = body.index("workspace_migration.run()")
-    assert migrate < body.index("PinController("), "the pin would cache a stale path"
+    assert "PinController(" not in body
+    assert migrate < body.index("DockController("), "the menu-bar Dock is built early"
     assert migrate < body.index("target=_bootstrap_server"), "the server reads state too"
     # ...and still strictly before onboarding, which creates the destination the
     # migration refuses to move into. Expressed as reachability rather than text

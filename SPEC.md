@@ -249,7 +249,7 @@ const { text, usage, response, provider } = await fused.ai.text({
   pinned id under a different `provider` is a 400 in both directions. A tier is an
   **engine family**, not a privacy class: `local` and `apple` (Apple's on-device models,
   macOS 26+) both keep the prompt on the machine. The three omitted-`model` cases: no
-  `provider` → Claude, the user's default-model preference or haiku; `"claude"` →
+  `provider` → Claude on haiku (the default-model preference was retired, D1381); `"claude"` →
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
   `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
@@ -1238,7 +1238,9 @@ never imports server).
   returns the same shape. An unknown engine value,
   or a body naming no known preference → 400; the file merges
   (future prefs are new keys, not new files).
-- **PF-1b** `default_model` is the user's preferred Claude model as a **short
+- **PF-1b** *(Retired 2026-10-19, D1381: the pref, its GET/PUT keys and its
+  control are gone; the global Claude model in `~/.claude/settings.json` is the
+  one default, and fused.ai falls back to haiku.)* `default_model` was the user's preferred Claude model as a **short
   name** — `""` (unset), `fable`, `opus`, `sonnet` or `haiku`, the claude
   template's own selector vocabulary; anything else → 400, and a hand-edited
   unknown value in the file reads as unset. Two consumers rank it identically:
@@ -1414,7 +1416,9 @@ in-app affordance to gate.
 - **PF-9** The page is split into tabs, active tab in the URL
   (default clean-URL tab is **Render preferences** —
   Logs/Execution engine/Tour, unchanged).
-- **PF-9a** (D403) The **AI** tab, `?tab=ai`, holds **Default model** (PF-1b)
+- **PF-9a** *(Superseded 2026-10-19 by D1381's grouped page: `?tab=ai` is the
+  AI & agents group; Default model is retired, Hugging Face moved to Accounts.)*
+  (D403) The **AI** tab, `?tab=ai`, held **Default model** (PF-1b)
   and **Hugging Face** (PF-1c–PF-1f). Neither is about rendering — the same
   reason the engine picker left this page for /ai-models — and on the Render
   tab a reader after either one read past four sections answering a different
@@ -11127,8 +11131,8 @@ manifest is the entire contract between them.
   sense of one.
 - **MC-7** **AI curation is a PROPOSAL and an optional one, and it names
   `sonnet`.** The model choice is deliberate rather than inherited: omitting
-  `model` resolves to the user's default-model preference (Haiku where they have
-  none), and this is the panel's one hard reasoning task — read a folder's
+  `model` resolves to the relay's haiku (the default-model preference was
+  retired, D1381), and this is the panel's one hard reasoning task — read a folder's
   signatures and its page's call sites, then decide which entrypoints deserve to
   be tools and which of their parameters the page has already fixed. A weaker
   model answers with one tool per function and nothing pinned, i.e. the curation

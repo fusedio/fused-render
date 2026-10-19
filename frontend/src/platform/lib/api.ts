@@ -1525,12 +1525,6 @@ export interface Prefs {
     // list shows and can revoke.
     devices: LanDevice[];
   };
-  // The default Claude model, as one of the claude template's own short names
-  // — "" means unset, and each consumer keeps its own default (the fused.ai
-  // relay's haiku, the chat template's sonnet). `choices` is the server's own
-  // value set, shipped with the value so the page renders exactly what a PUT
-  // will accept rather than a second copy that can drift.
-  model: { default: DefaultModel; choices: DefaultModel[] };
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
@@ -1570,11 +1564,6 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
-  // macOS status item: the menu-bar Dock (fused_render/menubar_dock.py, the
-  // default) or the pinned-file popover (menubar_pin.py; `pin_enabled`,
-  // opt-in). `available` is false off macOS and under `fused-render serve`,
-  // where the section is not rendered. OPTIONAL like `launcher`.
-  menubar?: { pin_enabled: boolean; available: boolean };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
   // one new chats and tasks open on. The server refuses a PUT that would turn
@@ -1787,10 +1776,6 @@ export function getPrefsShared(): Promise<Prefs> {
   return p;
 }
 
-export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { engine });
-}
-
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
 }
@@ -1820,12 +1805,6 @@ export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
 
 export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
-}
-
-/** The macOS status item's surface: `true` = the pinned-file popover, `false` (the default) = the menu-bar Dock.
- *  Applied live by the running app (the status item is re-pointed; nothing restarts). */
-export function putMenubarPinEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { menubar_pin_enabled: enabled });
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
@@ -1929,10 +1908,6 @@ export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putIndexLowImpactEnabled(value: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { index_low_impact_enabled: value });
-}
-
-export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { default_model: model });
 }
 
 /** One agent's switch (D17). The server answers 400 with its own sentence
@@ -6054,14 +6029,9 @@ export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
 // utility completions (e.g. naming a new app from its prompt on Home), not for
 // anything conversational.
 //
-// No `model` is sent, deliberately: the server resolves one from the user's
-// default-model preference and falls back to haiku when that is unset. A model
-// named here would outrank the preference (that is the relay's precedence
-// rule), so every one of these call sites must keep NOT naming one for the
-// preference to mean anything.
-// `model` is a full id or a short alias ("haiku"); omitted, the relay follows
-// the user's default-model preference, which is the right answer for a chat
-// and the wrong one for a two-word utility call — pin those.
+// `model` is a full id or a short alias ("haiku"); omitted, the relay uses its
+// own default, haiku — the right size for these utility calls. It never follows
+// the user's chat model.
 export function aiComplete(
   prompt: string,
   systemPrompt?: string,

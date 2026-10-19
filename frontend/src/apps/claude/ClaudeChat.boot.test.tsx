@@ -23,8 +23,9 @@ interface RunCall {
 }
 
 const runs: RunCall[] = [];
-/** Held back so a test can park the boot inside its detection wait. */
-let holdPrefs = false;
+/** Held back so a test can park the boot inside its detection wait: the
+ *  agent's `defaults` read never answers. */
+let holdDetection = false;
 /** Held back so a test can send while the PANE is still unresolved: the only
  *  stat a booting chat makes is `usePaneState`'s own. */
 let holdPaneStat = false;
@@ -86,16 +87,16 @@ function stubFetch(): void {
       scheduleReads++;
       return jsonRes({ entries: [] });
     }
-    if (url === "/api/prefs") {
-      if (holdPrefs) return new Promise<Response>(() => {});
-      return jsonRes({});
-    }
+    if (url === "/api/prefs") return jsonRes({});
     if (url === "/api/claude/app-entry") return jsonRes({});
     if (url === "/api/claude/agent") {
       const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
       const action = String(body.action ?? "");
       runs.push({ action, params: body });
-      if (action === "defaults") return jsonRes({});
+      if (action === "defaults") {
+        if (holdDetection) return new Promise<Response>(() => {});
+        return jsonRes({});
+      }
       if (action === "live_host") return jsonRes({ run_id: "" });
       if (action === "start") return jsonRes({ run_id: "r1" });
       if (action === "poll") return jsonRes({ done: true, session_id: "s1", text: "ok" });
@@ -107,7 +108,7 @@ function stubFetch(): void {
 
 beforeEach(() => {
   runs.length = 0;
-  holdPrefs = false;
+  holdDetection = false;
   holdPaneStat = false;
   holdSessions = false;
   releaseSessions = () => {};
@@ -299,7 +300,7 @@ test("an UNRESOLVED pane sends has_pane EMPTY and lets agent.py decide", async (
 test("an unmount mid-boot sends NOTHING: no run is spawned for a dead mount", async () => {
   // Parked inside the 1.5 s detection wait — the exact window "Fix with AI"
   // spends before its automatic send.
-  holdPrefs = true;
+  holdDetection = true;
   const { r } = await mountChat({ initialAsk: "fix the chart" });
   expect(started()).toEqual([]);
   act(() => r.unmount());

@@ -41,7 +41,7 @@ export type SettingsTab = "general" | "permissions" | "browser" | "skills" | "ro
 
 export interface BotSettingsProps {
   bot: Bot;
-  /** The section to open on (Preferences' Phone row and the seeded greeting ask for "phone"). */
+  /** The section to open on (the seeded greeting asks for "phone"). */
   tab?: string;
   onClose: (v: BotDialogValue | null) => void;
 }
