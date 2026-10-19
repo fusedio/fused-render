@@ -6701,8 +6701,13 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     an answer to its question: the card is denied, the tree ended
     (`_stop_parked_run`, as delete does), and the filing lands on a run that
     is over. Best-effort: a process that would not go leaves the row where it
-    was, honestly, and the filing is kept for when the run ends."""
-    stopped = _stop_parked_run(task, parked)
+    was, honestly, and the filing is kept for when the run ends.
+
+    THE PENDING WORK IS CALLED OFF BEFORE THE STOP (CodeRabbit, PR #1752):
+    the stop can wait up to `_STOP_PARKED_WAIT_S`, and a due entry the
+    scheduler claims inside that window has left PENDING by the time the
+    cancel loops reach it — it would run after the filing and `_revived`
+    would drop the record. Cancel first, stop second, file last."""
     cancelled = 0
     # The rules FIRST: cancelling a template also cancels the occurrence it has
     # already materialised, so doing it the other way round would cancel one
@@ -6717,6 +6722,7 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
+    stopped = _stop_parked_run(task, parked)
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
