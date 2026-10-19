@@ -4588,18 +4588,17 @@ describe("the archive action", () => {
 // that nothing about it is red until it is pointed at.
 
 describe("the delete affordance", () => {
-  it("refuses exactly the lanes the server refuses, in the server's words", () => {
-    // in_progress AND the needs_attention turn parked on a permission card: a
-    // guard that read only `in_progress` would offer to erase a transcript a
-    // waiting `claude --resume` still has open.
+  it("refuses exactly the lane the server refuses, in the server's words", () => {
+    // in_progress ONLY. The needs_attention turn parked on a permission card
+    // is deletable (Akshil, 2026-10-19): the server stops that run itself
+    // before taking the row, so the trash stays live and the dialog opens.
     expect(eraseBlocked(task({ status: "in_progress" }))).toBe(true);
-    expect(eraseBlocked(task({ status: "needs_attention" }))).toBe(true);
-    for (const status of ["upcoming", "blocked", "done", "archived"] as const) {
+    expect(eraseBlocked(task({ status: "needs_attention" }))).toBe(false);
+    for (const status of ["upcoming", "queued", "blocked", "done", "archived"] as const) {
       expect(eraseBlocked(task({ status }))).toBe(false);
     }
-    // The same lanes `inFlight` names, spelled once — not a second list that
-    // could drift from it.
-    expect(LIB).toContain("return inFlight(taskColumn(task));");
+    // One lane, spelled once — NOT `inFlight`, which names both.
+    expect(LIB).toContain('return taskColumn(task) === "in_progress";');
     // And the hint is the refusal's own first clause, so the caption and the
     // 409 cannot promise different reasons.
     expect(ERASE_BLOCKED_HINT).toBe("Stop the run first");

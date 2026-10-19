@@ -5062,6 +5062,10 @@ function ChatBody(props: ChatBodyProps) {
               sessionId={inChat ? (state.sessionId ?? "") : ""}
               btnRef={kebabBtn}
               running={running}
+              // Only a RUNNING turn's hold is lifted by its open card: a
+              // `stopping` turn with a card still painted is a process on its
+              // way out, and the menu waits for it like before.
+              asking={!!openCards && state.status === "running"}
               landing={!inChat}
               onErased={onErased}
               // ARCHIVE LEAVES THROUGH THE SAME DOOR DELETE DOES (Akshil,
