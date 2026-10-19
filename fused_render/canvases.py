@@ -787,13 +787,14 @@ protection described above.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
 - **Folders** are `[[canvas.nodes]]` rows with `type = "udf-folder"`. Give a
-  folder row `udfName` equal to its `folderName` (the sync keys every row by
-  `udfName`). Membership lives ONLY in the folder's `childUdfOrder` (the
-  child rows' `udfName`s; one folder per child, never a folder inside a
-  folder). A child's `x`/`y` are RELATIVE to its folder's `x`/`y`, so moving
-  a node into or out of a folder means converting its coordinates too. A
-  node in a folder is still a root-level file in this folder, never a
-  subdirectory.
+  folder row `udfName` equal to its `folderName`. Membership lives ONLY in
+  the folder's `childUdfOrder` (the child rows' `udfName`s; one folder per
+  child, never a folder inside a folder). A child's `x`/`y` are RELATIVE to
+  its folder's `x`/`y`, so moving a node into or out of a folder means
+  converting its coordinates too. Deleting or renaming a node means
+  removing or renaming it in its folder's `childUdfOrder` as well: a stale
+  name there is tolerated, but it is a bug to fix. A node in a folder is
+  still a root-level file in this folder, never a subdirectory.
 
 ## Files can change between change sets — trust the filesystem, not your memory
 
@@ -1275,6 +1276,8 @@ class _SyncManager:
         self._rowless: dict[str, float] = {}
         self._rowless_lock = threading.Lock()
         self._rowless_hold_logged: frozenset = frozenset()
+        # leg → the last folder-fix set logged (`_log_folder_fixes`).
+        self._folder_fixes_logged: dict[str, frozenset] = {}
         self._pull_started_at: float | None = None
         self._pull_in_flight = False
         self._last_pull_error: str | None = None
@@ -1744,14 +1747,39 @@ class _SyncManager:
             return None
         return proc.returncode == 0
 
-    def _folder_problems(self) -> list[str]:
-        """`canvas_snapshot.folder_problems` of the clone's canvas.toml; empty
-        when it cannot be read (validate reports that, as for a broken CLI)."""
+    def _log_folder_fixes(self, leg: str, fixes: list[str]) -> None:
+        """Log `normalise_folders`' lines for `leg` once per distinct set:
+        the same stale grammar re-arrives on every snapshot and every pull
+        until someone fixes it, and one line says so."""
+        key = frozenset(fixes)
+        if self._folder_fixes_logged.get(leg) == key:
+            return
+        self._folder_fixes_logged[leg] = key
+        if fixes:
+            self.log_event(leg, "folder fixes",
+                           detail="; ".join(fixes[:5])
+                           + (f" (+{len(fixes) - 5})" if len(fixes) > 5 else ""))
+
+    def _normalised_toml(self, data: bytes) -> bytes:
+        """A canvas.toml the pull is about to write wholesale, with its
+        folder grammar normalised (`canvas_snapshot.normalise_folders`) —
+        never refused: the server accepts what this cannot honour, and a
+        refused pull would leave both pull and push stuck. `data` itself
+        when nothing needed fixing or it does not parse."""
         try:
-            doc = canvas_snapshot._load_toml(os.path.join(self.dir, "canvas.toml"))
-        except Exception:  # noqa: BLE001 — no toml, or unparsable
-            return []
-        return canvas_snapshot.folder_problems(doc)
+            import rtoml
+            doc = rtoml.loads(data.decode("utf-8", "replace"))
+            canvas = doc.get("canvas")
+            rows = canvas.get("nodes") if isinstance(canvas, dict) else None
+            if not isinstance(rows, list):
+                return data
+            fixes = canvas_snapshot.normalise_folders(rows)
+            self._log_folder_fixes("server_to_disk", fixes)
+            if not [f for f in fixes if not f.startswith("two rows share")]:
+                return data
+            return canvas_snapshot._dump_toml(doc).encode("utf-8")
+        except Exception:  # noqa: BLE001 — rtoml's own error types
+            return data
 
     def _probe_remote(self) -> dict | None:
         """The remote manifest via the shim, or None (external CLI, not
@@ -1939,6 +1967,11 @@ class _SyncManager:
                 if trash is None:
                     trash = self._new_trash_dir()
                 self._backup_to(trash, rel, local_bytes)
+            if rel == "canvas.toml":
+                # Taken whole from the remote: normalised like a merged one
+                # (the base stays the remote's hash, so a fix it needed is
+                # this clone's edit and the push publishes it).
+                data = self._normalised_toml(data)
             try:
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 with open(dest, "wb") as fh:
@@ -1973,12 +2006,7 @@ class _SyncManager:
                     continue
                 rollback.append((rel, local_bytes, base.get(rel, _MISSING)))
             del new_base[rel]
-        # `fused canvas validate` checks node files and edge refs, not the
-        # folder grammar (every childUdfOrder entry an existing node, no
-        # child in two folders); a broken one nests the canvas arbitrarily
-        # in every frame that loads it, so it rolls back the same way.
-        folder_problems = self._folder_problems() if rollback else []
-        if rollback and (folder_problems or self._validate_clone() is False):
+        if rollback and self._validate_clone() is False:
             # The merged mix is unpushable. Restore what the merge touched;
             # the clone stays (or becomes) dirty and the debounced push
             # re-asserts local wholesale. _remote still advances to the
@@ -1999,11 +2027,8 @@ class _SyncManager:
                 else:
                     new_base[rel] = prev_base  # type: ignore[assignment]
             self.merge_rollback_seq += 1
-            why = ("merged canvas.toml breaks its folders ("
-                   + "; ".join(folder_problems[:3]) + ")"
-                   if folder_problems else "merged clone failed `fused canvas validate`")
             self.log_event("server_to_disk", "pull rollback", ok=False,
-                           detail=why + "; restored "
+                           detail="merged clone failed `fused canvas validate`; restored "
                                   + ", ".join(r for r, _b, _p in rollback[:5]))
             rollback = []
             rolled_back = True
@@ -2710,7 +2735,13 @@ class _SyncManager:
             import rtoml
             local_doc = rtoml.loads(local.decode("utf-8", "replace"))
             remote_doc = rtoml.loads(remote.decode("utf-8", "replace"))
-            merged, _info = canvas_snapshot.merge_toml(self._base_toml, local_doc, remote_doc)
+            merged, info = canvas_snapshot.merge_toml(self._base_toml, local_doc, remote_doc)
+            if info.get("collisions"):
+                self.log_event("server_to_disk", "toml merge refused", ok=False,
+                               detail="a folder and a node (or two rows) share the name "
+                                      + ", ".join(repr(n) for n in info["collisions"][:5])
+                                      + "; local canvas.toml kept as is")
+            self._log_folder_fixes("server_to_disk", info.get("folder_fixes") or [])
             if canvas_snapshot.rows_of_doc(merged) == canvas_snapshot.rows_of_doc(local_doc):
                 return local
             return canvas_snapshot._dump_toml(merged).encode("utf-8")
@@ -3253,6 +3284,7 @@ class _SyncManager:
         # no node) is a delete, not an orphan to synthesize later.
         result = canvas_snapshot.apply_snapshot(self.dir, new, prev, backup=backup,
                                                 rowless_prev=self._rowless_peek())
+        self._log_folder_fixes("embed_to_disk", result.get("folder_fixes") or [])
         # The embed now holds what it just sent: disk rows for ITS nodes only
         # (a disk-only node is Claude's and still owed to it as a delta), its
         # edge set and ids, the note texts it sent over the texts it held
