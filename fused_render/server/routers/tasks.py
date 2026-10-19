@@ -6806,7 +6806,7 @@ _STOP_PARKED_WAIT_S = 2.0
 _STOP_PARKED_STEP_S = 0.05
 
 
-def _stop_parked_run(task: dict) -> bool:
+def _stop_parked_run(task: dict, parked: dict) -> bool:
     """Delete's and erase's road through a run parked on a permission card
     (Akshil, 2026-10-19: "even if the task is in needs attention i should be
     able to archive it, delete it").
@@ -6837,14 +6837,15 @@ def _stop_parked_run(task: dict) -> bool:
     dying CLI could still flush a row into.
 
     ONLY A PARKED RUN. False, and nothing touched, when the session is not in
-    `_parked_runs`; False, with the kill sent, when the process would not go —
-    the 409 that follows is then the truth.
+    `parked` (the caller's `_parked_runs()` — the same scan its row was built
+    with, so the word it refused on and the run it stops agree); False, with
+    the kill sent, when the process would not go — the 409 that follows is
+    then the truth.
     """
     session_id = str(task.get("session_id") or "")
     if not session_id:
         return False
-    parked = _parked_runs().get(session_id)
-    run_id = str((parked or {}).get("run_id") or "")
+    run_id = str((parked.get(session_id) or {}).get("run_id") or "")
     if not run_id:
         return False
     agent = _agent_module()
@@ -6985,23 +6986,23 @@ def api_task_delete(patch: DeletePatch,
     # per-session record is not read for it. A caller that starts drawing
     # model/effort off this row must pass `tasks_store.settings_state()` like
     # the listing does, or the pair comes back from the entry alone.
+    # WITH THE PARKED INDEX, which this single-row request used to skip. The
+    # scan is what names a run parked on a card, and that is the run this door
+    # now stops (Bugbot, PR #1752): a hand-typed chat waiting on a card fails
+    # every other running test — no entry, registry `waiting`, transcript gone
+    # quiet — and read `done` here, which no guard refused and no stop reached.
+    # One walk serves both the word and the stop.
+    parked = _parked_runs()
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
-               schedule.busy_sessions(schedule.list_entries()), [])
-    # BOTH RUNNING WORDS. This row is built without the parked index (one
-    # request about one task does not pay for a scan of the runs tree), so a run
-    # waiting on a permission card reads `in_progress` here and the first word
-    # catches it. The second is the guard against that stopping being true: the
-    # question this asks is "is a run in flight", and `needs_attention` is a run
-    # in flight — a delete that slipped through would tombstone the row out from
-    # under a live process.
+               schedule.busy_sessions(schedule.list_entries()), [], parked)
+    # BOTH RUNNING WORDS: `in_progress` is a turn streaming, `needs_attention`
+    # a run parked on a card — a delete that slipped past either would
+    # tombstone the row out from under a live process.
     #
     # UNLESS THE RUN IS PARKED ON A CARD, in which case the door stops it itself
     # (`_stop_parked_run`) and both guards below stand down for this request.
-    # Asked only when the row's own word would refuse: the runs-tree walk
-    # behind it is what this single-row request otherwise avoids.
-    stopped = (row["status"] in ("in_progress", "needs_attention")
-               and _stop_parked_run(task))
+    stopped = _stop_parked_run(task, parked)
     if not stopped and row["status"] in ("in_progress", "needs_attention"):
         raise HTTPException(
             status_code=409,
@@ -7121,9 +7122,12 @@ def api_task_erase(patch: ErasePatch,
     # per-session record is not read for it. A caller that starts drawing
     # model/effort off this row must pass `tasks_store.settings_state()` like
     # the listing does, or the pair comes back from the entry alone.
+    # With the parked index, for the reason api_task_delete documents: the
+    # scan is the only thing that knows a quiet hand-typed chat is parked.
+    parked = _parked_runs()
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
-               schedule.busy_sessions(schedule.list_entries()), [])
+               schedule.busy_sessions(schedule.list_entries()), [], parked)
     # Both running words, for the reason api_task_delete's guard documents —
     # and one more here: what is refused is not a hidden row but a deleted
     # file, under a process still writing to it. A run PARKED on a card is
@@ -7132,8 +7136,7 @@ def api_task_erase(patch: ErasePatch,
     # (The stop lands before `_erase_session_files` can refuse: a run that was
     # waiting on a question for a task the reader is erasing is not work worth
     # keeping alive through a failed unlink.)
-    stopped = (row["status"] in ("in_progress", "needs_attention")
-               and _stop_parked_run(task))
+    stopped = _stop_parked_run(task, parked)
     if not stopped and row["status"] in ("in_progress", "needs_attention"):
         raise HTTPException(
             status_code=409,

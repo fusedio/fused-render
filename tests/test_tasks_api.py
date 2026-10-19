@@ -4588,6 +4588,43 @@ def test_deleting_a_waiting_task_stops_its_run_first(
     assert "sess-a" not in _by_key(client)
 
 
+def test_erasing_a_quiet_hand_typed_chat_parked_on_a_card_stops_it_first(
+        client, projects_dir, parked):
+    """Bugbot, PR #1752. No entry, no busy registry row, transcript gone quiet:
+    a row built WITHOUT the parked index reads this chat `done`, so neither
+    running word refused it and no stop reached it — erase would have removed
+    the transcript under a live parked process. The door's row now carries
+    the index, and the stop lands."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-10), uuid="u1"),
+    ])
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {"command": "rm -rf build"}}]},
+                   alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
+
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert agent.cancel_calls == [("r-1", False)]
+    assert not path.exists()
+    assert "sess-a" not in _by_key(client)
+
+    # …and the same quiet chat, stubborn, is refused rather than filed `done`
+    # and erased: the parked word is what the door reads now.
+    path = _write_transcript(projects_dir, "sess-b", "/p", [
+        _user("go", _near_now(-10), uuid="u1"),
+    ])
+    _stage_run(parked.dir, "r-2", "sess-b")
+    agent._runs["r-2"] = [{"id": "p2", "tool": "Bash", "decision": "",
+                           "input": {"command": "rm -rf build"}}]
+    agent._alive_set.add("r-2")
+    agent.stubborn.add("r-2")
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-b"})
+    assert r.status_code == 409, r.text
+    assert path.exists()
+
+
 def test_a_waiting_task_whose_run_will_not_die_is_still_refused(
         client, projects_dir, parked, monkeypatch):
     """The kill is waited on, and a process that outlives it keeps the 409:
