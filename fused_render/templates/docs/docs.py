@@ -49,6 +49,14 @@ TYPST_VERSION = "v0.13.1"
 # dangling media/ paths.
 HTML_FROM = "html+tex_math_dollars+tex_math_single_backslash"
 
+IMPORT_TEMPLATE = (
+    '<header>$if(title)$<p class="title">$title$</p>$endif$'
+    '$if(subtitle)$<p class="subtitle">$subtitle$</p>$endif$'
+    '$for(author)$<p class="author">$author$</p>$endfor$'
+    '$if(date)$<p class="date">$date$</p>$endif$'
+    '$if(abstract)$<div class="abstract">$abstract$</div>$endif$</header>\n$body$\n'
+)
+
 # pandoc target format per requested extension (typst/pdf handled specially).
 PANDOC_TO = {
     "docx": "docx",
@@ -75,6 +83,22 @@ def _pandoc(args, input_text=None):
     if p.returncode != 0:
         raise RuntimeError("pandoc failed: " + p.stderr.decode("utf-8", "replace")[:800])
     return p.stdout
+
+
+def _import_template():
+    path = os.path.join(CACHE_ROOT, "import-template.html")
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == IMPORT_TEMPLATE:
+                return path
+    except OSError:
+        pass
+    os.makedirs(CACHE_ROOT, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(IMPORT_TEMPLATE)
+    os.replace(tmp, path)
+    return path
 
 
 def _typst_bin():
@@ -163,10 +187,30 @@ def _blank_docx() -> bytes:
     return buf.getvalue()
 
 
+def _first_line(path: str) -> str:
+    import html
+    import zipfile
+    import zlib
+    try:
+        with zipfile.ZipFile(path) as z, z.open("word/document.xml") as f:
+            xml = f.read(64 * 1024).decode("utf-8", "replace")
+    except (OSError, EOFError, KeyError, ValueError, RuntimeError, NotImplementedError, zipfile.BadZipFile, zlib.error):
+        return ""
+    for para in re.finditer(r"<w:p[ >].*?</w:p>", xml, re.S):
+        text = "".join(re.findall(r"<w:t(?: [^>]*)?>([^<]*)</w:t>", para.group(0))).strip()
+        if text:
+            return html.unescape(text)[:80]
+    return ""
+
+
+def _clean_name(name: str) -> str:
+    return re.sub(r'[\\/:*?"<>|]+', "", name).strip()
+
+
 def _unique_path(directory: str, stem: str, ext: str) -> str:
     """A collision-free path for <stem>.<ext> in directory, appending ' 2', ' 3',
     … the way a desktop 'New document' does."""
-    stem = re.sub(r'[\\/:*?"<>|]+', "", stem).strip() or "Untitled document"
+    stem = _clean_name(stem) or "Untitled document"
     cand = os.path.join(directory, f"{stem}.{ext}")
     n = 2
     while os.path.exists(cand):
@@ -208,7 +252,7 @@ def _resolve_dest(path: str, directory: str) -> str:
         # the characters a filesystem forbids, plus the reserved punctuation
         # some volumes reject (a title like "Q3: report"). Same rule as
         # _unique_path — don't touch Unicode or other legal characters.
-        base = re.sub(r'[\\/:*?"<>|]+', "", raw).strip() or "Untitled document"
+        base = _clean_name(raw) or "Untitled document"
         joined = os.path.join(directory, base) if directory else base
         dest = os.path.abspath(os.path.expanduser(joined))
     # The writer only produces .docx, so normalize a typed .docx/.odt to .docx
@@ -250,8 +294,10 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
             full = os.path.join(DOCS_DIR, nm)
             if not os.path.isfile(full) or not nm.lower().endswith((".docx", ".odt")):
                 continue
+            stem = nm.rsplit(".", 1)[0]
+            default_name = re.fullmatch(r"Untitled document( \d+)?", stem)
             docs.append({"path": full.replace(os.sep, "/"), "name": nm,
-                         "title": nm.rsplit(".", 1)[0],
+                         "title": (_first_line(full) or stem) if default_name else stem,
                          "mtime": os.path.getmtime(full), "size": os.path.getsize(full)})
         docs.sort(key=lambda e: -e["mtime"])
         return {"docs": docs, "dir": DOCS_DIR.replace(os.sep, "/")}
@@ -286,7 +332,7 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         editable, ro_msg, ro_tip = _editability(file)
         out = _pandoc(["-f", _source_fmt(file), "-t", "html+tex_math_dollars", "--mathjax",
                        "--track-changes=all", "--embed-resources",
-                       "--wrap=none", file])
+                       "--wrap=none", "--template", _import_template(), file])
         # `library`: the file is an unsaved draft in the New-document library
         # (~/.fused-render/docs), so the editor prompts for a real location on
         # the first manual Save instead of writing back into the library.
@@ -386,5 +432,19 @@ def main(action: str = "export", file: str = "", html: str = "", title: str = ""
         _pandoc(["-f", HTML_FROM, "-t", "docx", "--wrap=none",
                  "--standalone", "-o", dest], input_text=html)
         return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest)}
+
+    if action == "rename":
+        src = os.path.abspath(file)
+        if not os.path.isfile(src):
+            raise FileNotFoundError(f"file not found: {file}")
+        stem = _clean_name(re.sub(r"\.(docx|odt)$", "", title.strip(), flags=re.IGNORECASE))
+        if not stem:
+            raise ValueError("enter a name")
+        dest = os.path.join(os.path.dirname(src), stem + os.path.splitext(src)[1])
+        if os.path.lexists(dest) and not (os.path.exists(dest) and os.path.samefile(src, dest)):
+            raise FileExistsError(f"{os.path.basename(dest)} already exists in this folder")
+        os.rename(src, dest)
+        return {"path": dest.replace(os.sep, "/"), "name": os.path.basename(dest),
+                "mtime": os.path.getmtime(dest)}
 
     raise ValueError(f"unknown action: {action}")
