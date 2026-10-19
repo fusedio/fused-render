@@ -68,8 +68,18 @@
 //     unless the user is typing somewhere — a wandering mouse must not pull
 //     keystrokes out of the chat onto canvas hotkeys. The chat never takes
 //     focus on hover: a text surface is clicked into.
+//
+// The node pane's chat (owner, 2026-10-19: "when I switch from one node to
+// another, each time I get the new claude session screen"). Selecting a node
+// frames the explorer's embed route on its file, and that chat files its
+// `session_id` on the FRAME's URL; the frame goes with the node, so the next
+// node, and this node again, booted on a fresh chat. `nodeSessions` below
+// remembers, per canvas and node, the session the frame was last on —
+// mirrored off the frame's own URL (same origin) as it changes — and the next
+// frame on that node boots on it. In memory only: a reload starts over.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { SyntheticEvent } from "react";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
 import { EMBED_PREFIX, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
@@ -204,6 +214,41 @@ function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): str
   );
 }
 
+/**
+ * THE SESSION EACH NODE'S CHAT WAS LAST ON, per canvas: `<canvas>\0<file>` →
+ * `session_id`. Module-level so it outlives this component, which App.tsx
+ * keys on the canvas slug (a hop to another canvas and back must not forget).
+ * The chat inside the node pane runs on the frame's URL (`paramsSource` "url"
+ * in the explorer's embed), so the frame's `location.search` IS the chat's
+ * state: `session_id` present = that conversation, absent = the chat's home
+ * (New chat was pressed, or nothing has been sent). The entry mirrors that —
+ * set or deleted — rather than accumulating, so coming back after New chat
+ * lands on the fresh chat the user asked for, not the old session.
+ */
+const nodeSessions = new Map<string, string>();
+
+function nodeSessionKey(canvas: string, file: string): string {
+  return canvas + "\0" + file;
+}
+
+/** Mirror the node frame's current `session_id` into `nodeSessions`. The
+ *  chat's URL store coalesces history writes (≤1 per 400 ms) but announces
+ *  every write as `fused:urlchange`, and the flush itself goes through the
+ *  shell's wrapped `replaceState`, which announces again — so listening on
+ *  the frame window and reading its location converges on what landed,
+ *  including the `pagehide` flush as the frame navigates away. */
+function recordNodeSession(win: Window, key: string): void {
+  let search: string;
+  try {
+    search = win.location.search;
+  } catch {
+    return;
+  }
+  const sid = new URLSearchParams(search).get("session_id");
+  if (sid) nodeSessions.set(key, sid);
+  else nodeSessions.delete(key);
+}
+
 /** The clone file a chat hop names, when it is one of this canvas's nodes.
  *  A Recent row on the canvas chat that is a FILE chat navigates to the
  *  explorer's view of that file (`paneChatUrl`: `/explorer/view/<path>?_side=
@@ -267,10 +312,10 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // reload keeps the node; written back below.
   const [node, setNode] = useState<NodeSel | null>(() => nodeFromUrl());
   const [nodeTab, setNodeTab] = useState<NodeTab>(() => nodeTabFromUrl());
-  // A session the node pane's chat should resume (a Recent row's hop, below),
-  // keyed to the file it belongs to: it applies only while that node is the
-  // one shown, so no clearing is needed when the node changes.
-  const [nodeSession, setNodeSession] = useState<{ file: string; sessionId: string } | null>(null);
+  // Bumped when the node pane must REBOOT on a session for the node already
+  // shown (a Recent row's hop onto the selected node, below): the frame's src
+  // is otherwise frozen per node and tab (`nodeBootSrc`).
+  const [nodeBootSeq, setNodeBootSeq] = useState(0);
   const [sync, setSync] = useState<SyncStatus | null>(null);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
@@ -340,6 +385,56 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   }, [name]);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
+
+  // The node frame's src, COMPUTED ONCE per node, tab and boot: it reads the
+  // remembered session at that moment, and must not be re-derived on every
+  // host render — the frame moves on to new sessions on its own, so a src
+  // re-read later would differ from the one it booted on and React would set
+  // the attribute, reloading the frame onto the session it is already on.
+  const nodeBootRef = useRef<{ key: string; src: string } | null>(null);
+  const nodeBootSrc = (path: string, file: string, tab: NodeTab): string => {
+    const key = path + "\0" + tab + "\0" + nodeBootSeq;
+    if (nodeBootRef.current?.key !== key) {
+      nodeBootRef.current = {
+        key,
+        src: nodeEmbedSrc(
+          path,
+          tab,
+          tab === "claude" ? (nodeSessions.get(nodeSessionKey(name, file)) ?? null) : null,
+        ),
+      };
+    }
+    return nodeBootRef.current.src;
+  };
+  // …and forgotten with the frame: deselecting unmounts the node pane, and
+  // the same node selected again must boot on where its chat got to since,
+  // not on the src the pane was last given.
+  useEffect(() => {
+    if (!node) nodeBootRef.current = null;
+  }, [node]);
+  // Mirror the frame's chat session as it changes (see `nodeSessions`). Bound
+  // on every load — a new src and the tab remount both replace the window —
+  // and only for the Claude tab: the Code tab's URL carries no session.
+  const onNodeFrameLoad = useCallback(
+    (e: SyntheticEvent<HTMLIFrameElement>) => {
+      const frame = e.currentTarget;
+      if (frame.dataset.tab !== "claude" || !frame.dataset.file) return;
+      let win: Window | null = null;
+      try {
+        win = frame.contentWindow;
+      } catch {
+        win = null;
+      }
+      if (!win) return;
+      const key = nodeSessionKey(name, frame.dataset.file);
+      const record = () => recordNodeSession(win!, key);
+      record();
+      win.addEventListener("fused:urlchange", record);
+      win.addEventListener("popstate", record);
+      win.addEventListener("pagehide", record);
+    },
+    [name],
+  );
 
   // Boot: base URL + handle + make sure the watcher runs.
   useEffect(() => {
@@ -1021,11 +1116,10 @@ export default function CanvasWorkspace({ name }: { name: string }) {
                   // explorer's content-mode swap is for its own switcher.
                   key={nodeTab}
                   className="preview-side-frame"
-                  src={nodeEmbedSrc(
-                    nodeFile(dir, node),
-                    nodeTab,
-                    nodeSession && nodeSession.file === node.file ? nodeSession.sessionId : null,
-                  )}
+                  src={nodeBootSrc(nodeFile(dir, node), node.file, nodeTab)}
+                  data-tab={nodeTab}
+                  data-file={node.file}
+                  onLoad={onNodeFrameLoad}
                   title={`${node.udfName} — ${nodeTab === "code" ? "Code" : "Claude"}`}
                 />
               ) : (
@@ -1065,7 +1159,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
                 }
                 sendSelect(hop.node.udfName);
                 setNodeTab("claude");
-                setNodeSession(hop.sessionId ? { file: hop.node.file, sessionId: hop.sessionId } : null);
+                // The hop's session is what the node pane boots on — the same
+                // memory the frame's own moves feed, so one source of truth.
+                const key = nodeSessionKey(name, hop.node.file);
+                if (hop.sessionId) nodeSessions.set(key, hop.sessionId);
+                else nodeSessions.delete(key);
+                setNodeBootSeq((n) => n + 1);
                 setNode(hop.node);
               }}
             />
