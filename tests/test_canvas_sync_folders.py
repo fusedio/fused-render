@@ -215,17 +215,33 @@ def test_merge_survives_junk_child_entries():
     assert len(info["folder_fixes"]) == 2, info["folder_fixes"]
 
 
-def test_merge_refuses_a_doc_where_a_folder_and_a_node_share_a_name():
+def test_merge_a_folder_and_a_node_sharing_a_name_merge_independently():
     base = cs.rows_of_doc(doc([folder("X", ["a"]), udf("a", 10.0, 10.0), udf("X", 500.0, 500.0)]))
-    local = doc([folder("X", ["a"]), udf("a", 20.0, 10.0), udf("X", 500.0, 500.0)])
-    remote = doc([folder("X", ["a"]), udf("a", 10.0, 10.0), udf("X", 500.0, 500.0),
+    local = doc([folder("X", ["a"], folderColor="#f00"), udf("a", 20.0, 10.0),
+                 udf("X", 500.0, 500.0)])
+    remote = doc([folder("X", ["a"]), udf("a", 10.0, 10.0), udf("X", 600.0, 500.0),
                   udf("new", 0.0, 0.0)])
     merged, info = cs.merge_toml(base, local, remote)
-    assert merged is local and info["collisions"] == ["X"]
-    # Readers keep the FIRST row for a shared name, and report it.
+    assert info["collisions"] == []
+    rows = merged["canvas"]["nodes"]
+    kinds = [(cs.is_folder(r), cs.row_name(r)) for r in rows]
+    assert kinds == [(True, "X"), (False, "a"), (False, "X"), (False, "new")]
+    assert rows[0]["folderColor"] == "#f00" and rows[0]["childUdfOrder"] == ["a"]
+    assert rows[1]["x"] == 20.0                 # local's move of a
+    assert rows[2]["x"] == 600.0                # the remote's move of the UDF X
+    # The view leg still keys by name alone: first row wins, clash reported.
     assert cs.rows_of_doc(local)["order"] == ["X", "a"]
     assert cs.is_folder(cs.rows_of_doc(local)["nodes"]["X"])
-    assert "two rows share the name 'X'" in cs.folder_problems(local)
+    assert "a folder and a node share the name 'X'" in cs.folder_problems(local)
+
+
+def test_merge_refuses_two_rows_of_one_kind_sharing_a_name():
+    base = cs.rows_of_doc(doc([udf("a", 0.0, 0.0)]))
+    local = doc([udf("a", 1.0, 0.0)])
+    remote = doc([udf("a", 0.0, 0.0), udf("a", 9.0, 9.0), udf("new", 0.0, 0.0)])
+    merged, info = cs.merge_toml(base, local, remote)
+    assert merged is local and info["collisions"] == ["a"]
+    assert "two rows of one kind share the name 'a'" in cs.folder_problems(remote)
 
 
 # -- 1b. folder renames ------------------------------------------------------
@@ -277,17 +293,71 @@ def test_merge_remote_rename_that_added_a_child_pairs_with_a_moved_local_folder(
     assert (rows["c"]["x"], rows["c"]["y"]) == (700.0, 700.0)
 
 
-def test_merge_remote_rename_pairs_on_half_of_base_children():
-    base = cs.rows_of_doc(doc([folder("F", ["a", "b"]), udf("a", 0.0, 0.0),
-                               udf("b", 0.0, 0.0)]))
-    local = doc([folder("F", ["a", "b"]), udf("a", 0.0, 0.0), udf("b", 0.0, 0.0)])
-    # The remote renamed F and released b in the same edit.
-    remote = doc([folder("G", ["a"]), udf("a", 0.0, 0.0), udf("b", 1000.0, 1000.0)])
+def test_merge_remote_rename_pairs_on_half_of_three_or_more_children():
+    base = cs.rows_of_doc(doc([folder("F", ["a", "b", "c"]), udf("a", 0.0, 0.0),
+                               udf("b", 0.0, 0.0), udf("c", 0.0, 0.0)]))
+    local = doc([folder("F", ["a", "b", "c"]), udf("a", 0.0, 0.0), udf("b", 0.0, 0.0),
+                 udf("c", 0.0, 0.0)])
+    # The remote renamed F and released c in the same edit.
+    remote = doc([folder("G", ["a", "b"]), udf("a", 0.0, 0.0), udf("b", 0.0, 0.0),
+                  udf("c", 1000.0, 1000.0)])
     merged, info = cs.merge_toml(base, local, remote)
     rows = by_name(merged)
     assert info["renamed"] == [["F", "G"]]
-    assert rows["G"]["childUdfOrder"] == ["a"]
-    assert (rows["b"]["x"], rows["b"]["y"]) == (1000.0, 1000.0)
+    assert rows["G"]["childUdfOrder"] == ["a", "b"]
+    assert (rows["c"]["x"], rows["c"]["y"]) == (1000.0, 1000.0)
+
+
+def test_merge_two_child_folder_needs_a_subset_to_pair():
+    base = cs.rows_of_doc(doc([folder("F", ["a", "b"]), udf("a", 0.0, 0.0),
+                               udf("b", 0.0, 0.0)]))
+    # Local moved F, so the remote dropping it does not delete it.
+    local = doc([folder("F", ["a", "b"], x=300.0), udf("a", 0.0, 0.0), udf("b", 0.0, 0.0)])
+    # One shared child of two is too weak to call G a rename of F.
+    remote = doc([folder("G", ["a"]), udf("a", 0.0, 0.0), udf("b", 1000.0, 1000.0)])
+    merged, info = cs.merge_toml(base, local, remote)
+    rows = by_name(merged)
+    assert info["renamed"] == []
+    assert rows["F"]["childUdfOrder"] == ["a", "b"]       # local's F, untouched
+    assert rows["G"]["childUdfOrder"] == []               # F keeps a: local nests it
+
+
+def test_merge_pairs_each_remote_rename_with_its_best_base_folder():
+    base = cs.rows_of_doc(doc([folder("F1", ["a", "b"], x=0.0), folder("F2", ["c", "d"], x=500.0),
+                               udf("a", 0.0, 0.0), udf("b", 0.0, 100.0),
+                               udf("c", 0.0, 0.0), udf("d", 0.0, 100.0)]))
+    local = doc([folder("F1", ["a", "b"], x=50.0), folder("F2", ["c", "d"], x=550.0),
+                 udf("a", 0.0, 0.0), udf("b", 0.0, 100.0),
+                 udf("c", 0.0, 0.0), udf("d", 0.0, 100.0)])
+    # G2 comes first and holds half of F1, but ALL of F2: it is F2's rename.
+    remote = doc([folder("G2", ["a", "c", "d"], x=500.0), folder("G1", ["b"], x=0.0),
+                  udf("a", 0.0, 200.0), udf("b", 0.0, 100.0),
+                  udf("c", 0.0, 0.0), udf("d", 0.0, 100.0)])
+    merged, info = cs.merge_toml(base, local, remote)
+    rows = by_name(merged)
+    assert info["renamed"] == [["F2", "G2"]]
+    assert rows["G2"]["x"] == 550.0 and rows["G2"]["childUdfOrder"] == ["c", "d"]
+    # F1 (two children) cannot pair below a subset: local's F1 keeps a and b.
+    assert rows["F1"]["childUdfOrder"] == ["a", "b"]
+    assert rows["G1"]["childUdfOrder"] == []
+    assert cs.folder_problems(merged) == []
+
+
+def test_merge_local_ungroup_keeps_a_remote_folder_that_only_overlaps():
+    base = cs.rows_of_doc(doc([folder("F", ["a", "b", "c", "d"], x=100.0, y=100.0),
+                               udf("a", 0.0, 0.0), udf("b", 0.0, 100.0),
+                               udf("c", 0.0, 200.0), udf("d", 0.0, 300.0)]))
+    local = doc([udf("a", 100.0, 100.0), udf("b", 100.0, 200.0),
+                 udf("c", 100.0, 300.0), udf("d", 100.0, 400.0)])
+    remote = doc([folder("G", ["a", "b", "z"], x=2000.0, y=2000.0), udf("a", 0.0, 0.0),
+                  udf("b", 0.0, 100.0), udf("c", 100.0, 300.0), udf("d", 100.0, 400.0),
+                  udf("z", 0.0, 200.0)])
+    merged, info = cs.merge_toml(base, local, remote)
+    rows = by_name(merged)
+    # Half of F is not a rename: G is a folder the remote made, kept.
+    assert info["renamed"] == [] and rows["G"]["childUdfOrder"] == ["a", "b", "z"]
+    # a and b keep local's on-screen place, now inside G.
+    assert (rows["a"]["x"], rows["a"]["y"]) == (100.0 - 2000.0, 100.0 - 2000.0)
 
 
 def test_merge_local_delete_beats_a_remote_folder_rename():
@@ -603,22 +673,81 @@ def test_merge_remote_takes_a_stale_name_verbatim(tmp_path, monkeypatch):
     assert _events(manager, "folder fixes") == []
 
 
-def test_merge_remote_logs_a_name_collision_and_keeps_local(tmp_path, monkeypatch):
-    base = rtoml.dumps(doc([folder("X", ["a"]), udf("a", 10.0, 10.0),
-                            udf("X", 500.0, 500.0)])).encode()
-    local = rtoml.dumps(doc([folder("X", ["a"]), udf("a", 20.0, 10.0),
-                             udf("X", 500.0, 500.0)])).encode()
-    remote = rtoml.dumps(doc([folder("X", ["a"]), udf("a", 10.0, 10.0),
-                              udf("X", 500.0, 500.0), udf("new", 0.0, 0.0)])).encode()
-    manager = _manager(tmp_path, monkeypatch, base, {"a.py": b"A", "X.py": b"X"})
+def test_merge_remote_refusal_keeps_the_sync_point_and_holds(tmp_path, monkeypatch):
+    import hashlib
+    base = rtoml.dumps(doc([udf("a", 10.0, 10.0), udf("z", 50.0, 50.0)])).encode()
+    local = rtoml.dumps(doc([udf("a", 20.0, 10.0), udf("z", 50.0, 50.0)])).encode()
+    # The server's canvas.toml carries two rows named z (same kind).
+    remote = rtoml.dumps(doc([udf("a", 10.0, 10.0), udf("z", 900.0, 50.0),
+                              udf("z", 1.0, 1.0), udf("b", 0.0, 0.0)])).encode()
+    manager = _manager(tmp_path, monkeypatch, base, {"a.py": b"A", "z.py": b"Z"})
     with open(os.path.join(manager.dir, "canvas.toml"), "wb") as fh:
         fh.write(local)
-    assert manager._merge_remote({"udfs": {}}, {"canvas.toml": remote, "a.py": b"A",
-                                                "X.py": b"X"}) is True
+    base_toml = manager._base_toml
+    probe = {"udfs": {"b": {"id": "1"}}}
+    for _ in range(2):
+        assert manager._merge_remote(probe, {"canvas.toml": remote, "a.py": b"A",
+                                             "z.py": b"Z", "b.py": b"B"}) is True
+    assert manager.toml_refusal == ["z"]
     with open(os.path.join(manager.dir, "canvas.toml"), "rb") as fh:
         assert fh.read() == local
-    (event,) = _events(manager, "toml merge refused")
-    assert "'X'" in event["detail"], event
+    # Neither the sync point nor the remote baseline moved.
+    assert manager._base_files["canvas.toml"] == hashlib.md5(base).hexdigest()
+    assert manager._base_toml == base_toml
+    assert manager._remote != probe
+    (event,) = _events(manager, "toml merge refused")       # once, not per pull
+    assert "'z'" in event["detail"], event
+
+
+def test_merge_remote_merges_a_folder_and_node_sharing_a_name(tmp_path, monkeypatch):
+    base = rtoml.dumps(doc([udf("a", 10.0, 10.0), udf("z", 50.0, 50.0)])).encode()
+    # Claude added a folder named like the UDF a.
+    local = rtoml.dumps(doc([folder("a", []), udf("a", 10.0, 10.0),
+                             udf("z", 50.0, 50.0)])).encode()
+    remote = rtoml.dumps(doc([udf("a", 10.0, 10.0), udf("z", 900.0, 50.0),
+                              udf("b", 400.0, 400.0)])).encode()
+    manager = _manager(tmp_path, monkeypatch, base, {"a.py": b"A", "z.py": b"Z"})
+    with open(os.path.join(manager.dir, "canvas.toml"), "wb") as fh:
+        fh.write(local)
+    probe = {"udfs": {"b": {"id": "1"}}}
+    assert manager._merge_remote(probe, {"canvas.toml": remote, "a.py": b"A",
+                                         "z.py": b"Z", "b.py": b"B"}) is True
+    assert manager.toml_refusal is None and manager._remote == probe
+    rows = [(cs.is_folder(r), cs.row_name(r), r.get("x")) for r in _disk_rows(manager.dir)]
+    assert rows == [(True, "a", 1000.0), (False, "a", 10.0), (False, "z", 900.0),
+                    (False, "b", 400.0)]
+
+
+def test_force_pull_normalises_the_pulled_toml_and_goes_dirty(tmp_path, monkeypatch):
+    import subprocess
+    import types
+
+    from fused_render import canvases as canvases_mod
+
+    good = rtoml.dumps(doc([folder("F", ["a"]), udf("a", 40.0, 60.0)])).encode()
+    pulled = rtoml.dumps(doc([folder("F", ["a", "a", "F"]), udf("a", 40.0, 60.0)])).encode()
+    manager = _manager(tmp_path, monkeypatch, good, {"a.py": b"A"})
+
+    def fake_run(cmd, **_kw):
+        if "--force" in cmd:
+            with open(os.path.join(manager.dir, "canvas.toml"), "wb") as fh:
+                fh.write(pulled)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "already up to date", "")
+    monkeypatch.setattr(canvases_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(canvases_mod, "_cli_env", lambda cli: {})
+    monkeypatch.setattr(canvases_mod, "_seed_clone_claude_files", lambda *a: None)
+    probe = {"udfs": {}}
+    assert manager._force_pull(probe, types.SimpleNamespace(command=["fused"])) is None
+    rows = {cs.row_name(r): r for r in _disk_rows(manager.dir)}
+    assert rows["F"]["childUdfOrder"] == ["a"]
+    # The sync point is what the server sent; the fix is a local edit to push.
+    import hashlib
+    assert manager._base_files["canvas.toml"] == hashlib.md5(pulled).hexdigest()
+    assert manager.push_state == "pending" and manager._dirty_since is not None
+    assert manager._remote == probe
+    (event,) = _events(manager, "folder fixes")
+    assert "'F'" in event["detail"], event
 
 
 # -- synthesis inside a folder that already lists the slug ----------------------
@@ -651,3 +780,11 @@ def test_compact_and_persist_chain_synthesized_rows_inside_a_folder(tmp_path):
     again = cs.compact_state_from_disk(d)
     assert again["synthesized"] == []
     assert all(again["nodes"][n] == disk["nodes"][n] for n in disk["synthesized"])
+
+
+def test_normalise_reports_a_repeated_losing_entry_once():
+    rows = [folder("G", ["a"]), folder("F", ["a", "a", "G", "G"]), udf("a", 0.0, 0.0)]
+    fixes = cs.normalise_folders(rows)
+    assert fixes == ["folder 'F': dropped 'a' (folder 'G' keeps it)",
+                     "folder 'F': dropped 'G' (a folder)"], fixes
+    assert rows[1]["childUdfOrder"] == []

@@ -1278,6 +1278,11 @@ class _SyncManager:
         self._rowless_hold_logged: frozenset = frozenset()
         # leg → the last folder-fix set logged (`_log_folder_fixes`).
         self._folder_fixes_logged: dict[str, frozenset] = {}
+        # Names two canvas.toml rows of one kind share, when the last pull
+        # refused to merge over them (None = it did not); the refusal is
+        # logged once per set.
+        self.toml_refusal: list[str] | None = None
+        self._toml_refusal_logged: frozenset = frozenset()
         self._pull_started_at: float | None = None
         self._pull_in_flight = False
         self._last_pull_error: str | None = None
@@ -1760,6 +1765,24 @@ class _SyncManager:
                            detail="; ".join(fixes[:5])
                            + (f" (+{len(fixes) - 5})" if len(fixes) > 5 else ""))
 
+    def _normalise_clone_toml(self) -> bool:
+        """`_normalised_toml` over the clone's canvas.toml in place (a CLI
+        force pull wrote it); True when it rewrote the file."""
+        path = os.path.join(self.dir, "canvas.toml")
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return False
+        fixed = self._normalised_toml(data)
+        if fixed == data:
+            return False
+        try:
+            canvas_snapshot._write_atomic(path, fixed.decode("utf-8"))
+        except OSError:
+            return False
+        return True
+
     def _normalised_toml(self, data: bytes) -> bytes:
         """A canvas.toml the pull is about to write wholesale, with its
         folder grammar normalised (`canvas_snapshot.normalise_folders`) —
@@ -1775,7 +1798,7 @@ class _SyncManager:
                 return data
             fixes = canvas_snapshot.normalise_folders(rows)
             self._log_folder_fixes("server_to_disk", fixes)
-            if not [f for f in fixes if not f.startswith("two rows share")]:
+            if not [f for f in fixes if not f.endswith("(not fixed)")]:
                 return data
             return canvas_snapshot._dump_toml(doc).encode("utf-8")
         except Exception:  # noqa: BLE001 — rtoml's own error types
@@ -1912,6 +1935,7 @@ class _SyncManager:
             return True
         if bundle is None:
             return False  # transient — retried with the same probe
+        self.toml_refusal = None
         new_base = dict(base)
         trash: str | None = None
         _MISSING = object()
@@ -1942,7 +1966,10 @@ class _SyncManager:
                 # node row whenever the clone has any unpushed layout edit.
                 merged = self._merge_toml_bytes(local_bytes, data)
                 if merged is None:
-                    continue  # unparsable on a side: local wins, as for any file
+                    # Unparsable on a side, or two rows of one kind share a
+                    # name (`toml_refusal`): local wins, as for any file, and
+                    # the base stays at the sync point.
+                    continue
                 if merged != local_bytes:
                     if trash is None:
                         trash = self._new_trash_dir()
@@ -2035,6 +2062,13 @@ class _SyncManager:
         else:
             rolled_back = False
         self._base_files = new_base
+        if self.toml_refusal:
+            # canvas.toml could not be merged: the sync point and the remote
+            # baseline stay put, so the canvas stays server-changed and the
+            # push held — advancing them would let the next push overwrite
+            # the remote's canvas.toml and read its new rows as local deletes.
+            self._save_base()
+            return True
         if not rolled_back:
             remote_toml = bundle.get("canvas.toml")
             if remote_toml is not None:
@@ -2165,6 +2199,12 @@ class _SyncManager:
         # either way; not rotating would make the next poll see the same move
         # again and re-run this destructive branch.
         self._rotate_remote(probe)
+        if not still_diff:
+            # The sync point is what the server sent; a folder fix below is
+            # this clone's own edit on top of it, which the push publishes.
+            self._set_sync_point()
+        if self._normalise_clone_toml():
+            still_diff = True
         if still_diff:
             # Local diverged from what was pulled. Local wins: go dirty so the
             # debounced push re-asserts it, and leave the merge base ALONE.
@@ -2184,7 +2224,6 @@ class _SyncManager:
         # local == remote, so nothing is pending.
         if self.push_state == "pending":
             self.push_state = "idle"
-        self._set_sync_point()
         self._save_base()
         return None
 
@@ -2408,6 +2447,19 @@ class _SyncManager:
                     merged = self._merge_remote(probe, bundle)
                 finally:
                     self._op_lock.release()
+                if merged and self.toml_refusal:
+                    # canvas.toml could not be merged (two rows of one kind
+                    # share a name): the remote is NOT reconciled, so this is
+                    # a server change like any other — hold, never overwrite.
+                    self._note_server_stale(probe)
+                    self._dirty_since = time.time()
+                    self._push_started_at = None
+                    self.push_state = "pending"
+                    self.log_event("disk_to_server", "push held", ok=False,
+                                   ms=(time.time() - started) * 1000,
+                                   detail="the server changed and canvas.toml could not be "
+                                          "merged (rows of one kind share a name)")
+                    return "done"
                 if not merged:
                     # The remote moved and could not be reconciled (zip
                     # download failed) — pushing now would wholesale-replace
@@ -2730,17 +2782,25 @@ class _SyncManager:
         """canvas.toml merged per node against the sync point's rows, as the
         bytes to write; `local` itself when the merge changes nothing (the
         caller compares identity, so no rewrite); None when a side does not
-        parse (local wins, as for any file)."""
+        parse, or two rows of one kind share a name on a side (then
+        `toml_refusal` names them): local wins, as for any file."""
         try:
             import rtoml
             local_doc = rtoml.loads(local.decode("utf-8", "replace"))
             remote_doc = rtoml.loads(remote.decode("utf-8", "replace"))
             merged, info = canvas_snapshot.merge_toml(self._base_toml, local_doc, remote_doc)
-            if info.get("collisions"):
-                self.log_event("server_to_disk", "toml merge refused", ok=False,
-                               detail="a folder and a node (or two rows) share the name "
-                                      + ", ".join(repr(n) for n in info["collisions"][:5])
-                                      + "; local canvas.toml kept as is")
+            collisions = info.get("collisions") or []
+            key = frozenset(collisions)
+            if key != self._toml_refusal_logged:
+                self._toml_refusal_logged = key
+                if collisions:
+                    self.log_event("server_to_disk", "toml merge refused", ok=False,
+                                   detail="two canvas.toml rows of one kind share the name "
+                                          + ", ".join(repr(n) for n in collisions[:5])
+                                          + "; local kept, the server's changes wait")
+            if collisions:
+                self.toml_refusal = list(collisions)
+                return None
             self._log_folder_fixes("server_to_disk", info.get("folder_fixes") or [])
             if canvas_snapshot.rows_of_doc(merged) == canvas_snapshot.rows_of_doc(local_doc):
                 return local
@@ -2866,6 +2926,13 @@ class _SyncManager:
                         return {"ok": False,
                                 "error": "could not download the canvas from the server; "
                                          "try again"}
+                    if self.toml_refusal:
+                        return {"ok": False,
+                                "error": "canvas.toml has two rows of the same kind named "
+                                         + ", ".join(repr(n) for n in self.toml_refusal[:3])
+                                         + " (here or on the server); the server's changes "
+                                         "were not merged. Rename or remove one, then pull "
+                                         "again"}
                     if self.merge_rollback_seq != rollbacks_before:
                         return {"ok": False,
                                 "error": "merging the server's changes would break the canvas "
