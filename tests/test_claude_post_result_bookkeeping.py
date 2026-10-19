@@ -28,6 +28,7 @@ RESULT = {"type": "result", "subtype": "success", "session_id": "s1",
     {"type": "system", "subtype": "task_updated", "task_id": "t1",
      "patch": {"status": "completed"}},
     {"type": "system", "subtype": "background_tasks_changed", "tasks": []},
+    {"type": "system", "subtype": "commands_changed", "commands": []},
     {"type": "system", "subtype": "task_progress", "task_id": "t1",
      "description": "x", "usage": {"total_tokens": 1, "tool_uses": 0,
                                    "duration_ms": 5}},
@@ -97,7 +98,8 @@ def test_turn_state_closes_on_a_stopped_jobs_notification(tmp_path):
         {"type": "system", "subtype": "task_notification", "task_id": "t1",
          "status": "stopped", "summary": "Sleep for 10 minutes"},
         {"type": "system", "subtype": "background_tasks_changed", "tasks": []},
-        {"type": "control_response", "response": {"subtype": "success"}}))
+        {"type": "control_response", "response": {"subtype": "success"}},
+        {"type": "system", "subtype": "commands_changed", "commands": []}))
     turn_open, pending = agent._turn_state(str(run_dir))
     assert (turn_open, pending) == (False, False)
 

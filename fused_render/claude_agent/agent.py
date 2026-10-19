@@ -3961,9 +3961,15 @@ _NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
 #: so none may reopen it. Before this set, a run that had spawned a monitor
 #: never read as done: the trailing `task_summary` held the quiet-verb window
 #: open for as long as the host lived.
+#:
+#: `commands_changed` joined the set 2026-10-19: the CLI re-announces its
+#: slash-command list whenever a plugin or skill dir changes on disk, hours
+#: after the turn ended and with no reply behind it (the T417 run grew two of
+#: them overnight). Read as a wake, that row alone reopened the turn — the
+#: same "In progress on open" symptom as a stopped job's note.
 _BOOKKEEPING_SYSTEM_ROWS = frozenset({
     "task_summary", "post_turn_summary", "task_progress", "task_updated",
-    "background_tasks_changed"})
+    "background_tasks_changed", "commands_changed"})
 # THE CLI'S OWN PREAMBLE TO A TURN, not the turn itself. Claude Code 2.1.29x
 # writes `system/init` and `system/status` (and the SessionStart hook pair on
 # a fresh process) the moment it picks an input off stdin — BEFORE the
