@@ -1347,6 +1347,15 @@ def _app_name_error(name) -> str | None:
 _VALID_SESSION_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 
 
+def _agent_models(backend: str) -> tuple[str, ...]:
+    """What the composer's model picker may ask for on `backend`: that
+    agent's catalog row plus `""` ("no flag"). Claude's row IS
+    VALID_DEFAULT_MODELS (agent_backends/claude.py lists the same ids), so a
+    Claude create is checked against exactly the set it always was."""
+    from fused_render.agent_backends import registry
+    return ("",) + tuple(registry.get(backend).model_ids())
+
+
 def _session_choice_error(field: str, value, allowed) -> str | None:
     """Why `value` is not an acceptable `field`, or None.
 
@@ -1379,7 +1388,8 @@ def _task_error_keys(task_error) -> dict:
 def _create_app_task(entry_html: str, prompt: str, model: str = "",
                      effort: str = "",
                      images: list[str] | None = None,
-                     permission_mode: str = "") -> tuple[dict | None, str | None]:
+                     permission_mode: str = "",
+                     backend: str = "claude") -> tuple[dict | None, str | None]:
     """Create the scaffolding TASK: the prompt, on the app's index.html, due now.
 
     The seam a test stubs. `schedule.create` is the New task form's own path
@@ -1418,20 +1428,22 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
     `state`/`error` say so, where every task's does.
 
     `images` (5th, so `/api/apps/new` can pass it positionally) is the
-    composer's uploaded attachment paths, handed to `schedule.create` as-is."""
+    composer's uploaded attachment paths, handed to `schedule.create` as-is.
+
+    `backend` is which agent runs the turn. `/api/apps/new` passes the one
+    the composer chose (resolved and checked enabled there); the App Doctor
+    callers leave the default, Claude — their prompts, `plan` mode and the
+    doctor's checks are Claude's, so they never follow the Preferences
+    default, and Claude switched off is the ordinary disabled refusal."""
     try:
         # `permission_mode` "" keeps `schedule.create`'s default ("auto", the
         # broadest); the App Doctor CHECK task passes "plan" so the CLI itself
         # refuses every edit — see app_doctor_ai.PERMISSION_MODE.
-        # CLAUDE, NAMED: app-builder and App Doctor tasks are Claude-only
-        # (their prompts, `plan` mode and the doctor's checks are Claude's),
-        # so they never follow the Preferences default. Claude switched off
-        # is then the ordinary disabled refusal, said plainly.
         entry = schedule.create(
             entry_html, prompt, datetime.now(timezone.utc),
             immediate=True, model=model, effort=effort,
             permission_mode=permission_mode, images=images or None,
-            backend="claude")
+            backend=backend or "claude")
     except schedule.BackendRefused as exc:
         # The agent refusal WHOLE (`reason`, `backend`), not flattened into
         # the sentence below: the page needs `backend_disabled` to point at the
@@ -1487,21 +1499,33 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     prompt = body.get("prompt", "")
     if not isinstance(prompt, str):
         return _error("'prompt' must be a string")
-    # A PROMPT IS A CLAUDE TASK (`_create_app_task`), so with Claude off the
-    # whole request is refused HERE, with the full disabled body — before the
-    # starter is copied or a repo initialised — rather than leaving an app
-    # behind whose first turn could never start.
-    if prompt.strip():
-        from fused_render.agent_backends import registry
-        if not registry.is_enabled("claude"):
-            return JSONResponse(registry.disabled_error("claude"), status_code=400)
+    # WHICH AGENT BUILDS IT. The composer names one (`backend`), or "" for
+    # the catalog's default — an older client that sends neither gets Claude
+    # when Claude is on, exactly what it got before the field existed. A
+    # PROMPT IS THAT AGENT'S TASK (`_create_app_task`), so with the agent
+    # switched off the whole request is refused HERE, with the full disabled
+    # body — before the starter is copied or a repo initialised — rather than
+    # leaving an app behind whose first turn could never start. (Owner,
+    # 2026-10-19: Claude off in Preferences must not close the composer when
+    # Copilot is on — building an app follows the agents, not Claude alone.)
+    from fused_render.agent_backends import registry
+    backend = body.get("backend", "")
+    if not isinstance(backend, str) or not registry.is_known(backend):
+        return _error(f"invalid backend {backend!r}: expected one of "
+                      + ", ".join(repr(b) for b in registry.ORDER))
+    backend = backend or registry.default_id()
+    if prompt.strip() and not registry.is_enabled(backend):
+        return JSONResponse(registry.disabled_error(backend), status_code=400)
 
     # The composer's model/effort pickers. Both optional and both
     # defaulting to "" — an older client that sends neither gets exactly the
-    # session it got before this existed.
+    # session it got before this existed. The model vocabulary is the chosen
+    # agent's own catalog row (Claude's is VALID_DEFAULT_MODELS, the same
+    # list): a Copilot model on a Claude create, or the reverse, is a 400
+    # here and not a spawn that fails on `--model`.
     model = body.get("model", "")
     effort = body.get("effort", "")
-    for field, value, allowed in (("model", model, VALID_DEFAULT_MODELS),
+    for field, value, allowed in (("model", model, _agent_models(backend)),
                                   ("effort", effort, _VALID_SESSION_EFFORTS)):
         err = _session_choice_error(field, value, allowed)
         if err is not None:
@@ -1596,8 +1620,10 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
 
     task, task_error = None, None
     if prompt.strip():
+        # Positional through `permission_mode` ("" — the default "auto"): the
+        # seam's test stubs take `*rest`, and the doctor callers pass the mode.
         task, task_error = _create_app_task(entry_html, prompt, model, effort,
-                                            images)
+                                            images, "", backend)
 
     return {
         "path": os.path.abspath(dest),

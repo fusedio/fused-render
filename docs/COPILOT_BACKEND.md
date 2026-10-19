@@ -167,7 +167,12 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   `start`/`send`/`/api/tasks/create`/`/api/tasks/{key}/send`/`/api/schedule`;
   scheduler tick marks such an entry `error` reason "<agent> disabled"; existing
   sessions stay listed, open read-only, composer shows one line + Preferences
-  link. Claude-only surfaces following `claude_enabled`: explorer "open in
+  link. The Home composer (new app, `POST /api/apps/new`) FOLLOWS THE
+  CATALOG like the New task card — agent picker when ≥2 are on, else the one
+  that is on, `backend` in the body, model checked against that agent's row
+  (owner 2026-10-19: Claude off + Copilot on must still build apps; this
+  reverses the earlier "building an app is Claude's" closed composer). App
+  Doctor tasks stay Claude-only (`plan` mode). Claude-only surfaces following `claude_enabled`: explorer "open in
   terminal", recap for Claude sessions, `claude_health.warm_in_background`.
   NOT gated: onboarding, Claude Config page, `fused.ai` claude provider, Bots
   (Q7 owner: leave bots, say so in the toggle copy).
