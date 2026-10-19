@@ -3094,7 +3094,8 @@ def test_archiving_a_task_with_no_session_only_cancels(client, tmp_path):
     key = _tasks(client)[0]["key"]
     r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False}
+    assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False,
+                        "stopped": False}
     assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
     assert _tasks(client) == []
 
@@ -4085,19 +4086,6 @@ class _FakeAgent:
         #: signal did not land.
         self.stubborn: set[str] = set()
 
-    def _live_run(self, file, session_id="", limit=None):
-        """The live run answering to `session_id`, by its `session` file —
-        what `_stop_parked_run` asks before it stops one."""
-        for name in sorted(self._alive_set):
-            sess = os.path.join(self.RUNS, name, "session")
-            try:
-                with open(sess) as fh:
-                    if fh.read().strip() == session_id:
-                        return {"run_id": name}
-            except OSError:
-                continue
-        return {}
-
     def _cancel(self, run_id, interrupt_first=True, queued=False):
         """The Stop button's action, faked: the card is denied and the process
         is gone, which is what the real one does to the runs tree."""
@@ -4643,8 +4631,58 @@ def test_archiving_a_waiting_task_stops_its_run_and_files_it(
     r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 200, r.text
     assert r.json()["filed"] is True
+    assert r.json()["stopped"] is True
     assert agent.cancel_calls == [("r-1", False)]
     # The transcript is untouched — archive is the reversible verb.
+    assert "sess-a" in _by_key(client)
+
+
+def test_archiving_a_stubborn_waiting_task_files_it_and_says_so(
+        client, projects_dir, parked, monkeypatch):
+    """Best-effort: the filing is kept, the row stays where the live process
+    puts it, and the answer says the run did not stop."""
+    monkeypatch.setattr(tasks_mod, "_STOP_PARKED_WAIT_S", 0.2)
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    agent.stubborn.add("r-1")
+
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["filed"] is True
+    assert r.json()["stopped"] is False
+    # The card was denied on the way (that is `_cancel`'s first act) and the
+    # process is still there, so the row reads as a turn in flight — NOT
+    # `archived`: the live process outranks the filing until it ends.
+    assert "r-1" in agent._alive_set
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_a_card_answered_between_scan_and_kill_is_not_killed(
+        client, projects_dir, parked):
+    """The race the docstring names: the scan proved the run parked, the user
+    answered the card a moment later, and the turn is streaming again. The
+    card is read again before the kill, nothing is sent, and the delete is
+    refused as a streaming run always is."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    perms = [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]
+    agent = parked({"r-1": perms}, alive={"r-1"})
+    real_scan = tasks_mod._parked_runs
+
+    def scan_then_answer():
+        out = real_scan()
+        perms[0]["decision"] = "allow"
+        return out
+    client.app  # noqa: B018 — the client is built; patch after
+    tasks_mod._parked_runs = scan_then_answer
+    try:
+        r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    finally:
+        tasks_mod._parked_runs = real_scan
+    assert r.status_code == 409, r.text
+    assert agent.cancel_calls == []
     assert "sess-a" in _by_key(client)
 
 

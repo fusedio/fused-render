@@ -6663,18 +6663,7 @@ def api_task_archive(patch: ArchivePatch,
     task = _collect().get(key)
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
-    # A RUN PARKED ON A CARD IS STOPPED FIRST (Akshil, 2026-10-19: "even if the
-    # task is in needs attention i should be able to archive it"). Filing does
-    # not stop a run (`_status`, rule 0 over rule 2), so without this the row
-    # would wear `needs_attention` for as long as the card waited — which is
-    # for ever — and the archive would look like it did nothing. The parked
-    # run is the one in-flight state that never ends on its own, and "put this
-    # away" is an answer to its question: the card is denied, the tree ended
-    # (`_stop_parked_run`, as delete does), and the filing lands on a run that
-    # is over. Best-effort: a process that would not go leaves the row where
-    # it was, honestly, and the filing is kept for when the run ends.
-    _stop_parked_run(task, _parked_runs())
-    cancelled, filed = archive_task(task)
+    cancelled, filed, stopped = archive_task(task, _parked_runs())
     # THE UNSENT TEXT IS NOT TOUCHED (Akshil, 2026-09-15; design.md, PR C:
     # "Archive/unarchive touch NO drafts").
     #
@@ -6688,14 +6677,32 @@ def api_task_archive(patch: ArchivePatch,
     # an archived task already does. Delete and erase, which are the verbs that
     # mean it, drop both halves — see `api_task_delete` and `api_task_erase`.
     tasks_watch.notify({key})
-    return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
+    # `stopped` is the one thing the row cannot say for itself yet: a parked
+    # run that would not go leaves the row reading `needs_attention` with the
+    # filing kept underneath, and the card is how the reader finds out.
+    return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed,
+            "stopped": stopped}
 
 
-def archive_task(task: dict) -> tuple[int, bool]:
+def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     """The archive gesture on one collected task: how many messages were
-    called off, and whether a session was filed. Shared with the Current apps
-    router (server/routers/current_apps.py), where removing an app archives
-    every task under it."""
+    called off, whether a session was filed, and whether a run parked on a
+    card was stopped on the way. Shared with the Current apps router
+    (server/routers/current_apps.py), where removing an app archives every
+    task under it — `parked` is the caller's one `_parked_runs()` scan, so an
+    archive-all pays for the walk once.
+
+    A RUN PARKED ON A CARD IS STOPPED FIRST (Akshil, 2026-10-19: "even if the
+    task is in needs attention i should be able to archive it"). Filing does
+    not stop a run (`_status`, rule 0 over rule 2), so without this the row
+    would wear `needs_attention` for as long as the card waited — which is for
+    ever — and the archive would look like it did nothing. The parked run is
+    the one in-flight state that never ends on its own, and "put this away" is
+    an answer to its question: the card is denied, the tree ended
+    (`_stop_parked_run`, as delete does), and the filing lands on a run that
+    is over. Best-effort: a process that would not go leaves the row where it
+    was, honestly, and the filing is kept for when the run ends."""
+    stopped = _stop_parked_run(task, parked)
     cancelled = 0
     # The rules FIRST: cancelling a template also cancels the occurrence it has
     # already materialised, so doing it the other way round would cancel one
@@ -6713,7 +6720,7 @@ def archive_task(task: dict) -> tuple[int, bool]:
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
-    return cancelled, bool(session_id)
+    return cancelled, bool(session_id), stopped
 
 
 class UnarchivePatch(BaseModel):
@@ -6834,9 +6841,18 @@ def _stop_parked_run(task: dict, parked: dict) -> bool:
     EXACTLY THE RUN THE SCAN PROVED PARKED. `_parked_runs` records the run id
     beside the card, and that id is what gets ended — not a fresh `_live_run`
     lookup, which could answer a different run (an older one past the scan
-    window, or a cwd-less task's miss) or a turn that had resumed streaming in
-    between (the card answered under us: that turn is the one "streaming is
-    still refused" protects, and it is not touched).
+    window, or a cwd-less task's miss). And the card is READ AGAIN right before
+    the kill: one answered between the scan and now means the turn has resumed
+    streaming, which is the turn "streaming is still refused" protects — so
+    nothing is sent and False comes back, and the guards refuse as they would
+    have. (A card the queue is HOLDING an answer for still reads unanswered on
+    disk; that run was never in `parked`, so it never reaches here.)
+
+    THE CARD IS DENIED BEFORE THE KILL IS PROVEN. `_cancel` answers every open
+    card "cancelled" and then signals; a process that then outlives the wait
+    has lost its card and keeps its row. Accepted: the alternative is a kill
+    that leaves a subprocess holding the card open for its full timeout, and
+    the reader asked for this task to go.
 
     THE WHOLE TREE, NOT AN INTERRUPT. `_cancel`'s default road asks a live host
     to `interrupt` and, when the CLI answers, leaves host and CLI alive for the
@@ -6864,6 +6880,8 @@ def _stop_parked_run(task: dict, parked: dict) -> bool:
         return False
     run_dir = os.path.join(str(agent.RUNS), run_id)
     try:
+        if not any(not p.get("decision") for p in agent._permissions(run_dir)):
+            return False
         agent._cancel(run_id, interrupt_first=False)
         deadline = time.monotonic() + _STOP_PARKED_WAIT_S
         while agent._alive(run_dir):
