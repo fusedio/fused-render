@@ -63,6 +63,18 @@ const TOUCH_MS = 1500;
  *  that a reader who is being held off the tail by something else is not
  *  fought over. */
 const SETTLE_FRAMES = 4;
+/** The pinned card's ceiling is the port's measured height, as a custom
+ *  property (`.chat-tailpin.is-pinned { max-height: var(--c-port-h) }`) —
+ *  measured rather than said in CSS as `100cqh`, because making the port a
+ *  size container is what lost WebKit the scroll offset (styles/transcript.css).
+ *  A port with no layout yet (0px) keeps the fallback: a set variable would
+ *  otherwise pin the card to nothing. `style` is absent on a stub port. */
+function portHeight(wrap: HTMLDivElement): void {
+  if (!wrap.style) return;
+  const h = wrap.clientHeight;
+  if (h > 0) wrap.style.setProperty("--c-port-h", h + "px");
+  else wrap.style.removeProperty("--c-port-h");
+}
 /** The keys that scroll a focused port, and which way. */
 const KEY_DIR: Record<string, number> = {
   ArrowUp: -1,
@@ -177,6 +189,8 @@ export const Transcript = memo(function Transcript({
   const port = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLDivElement>(null);
   const followTail = useRef(true);
+  /** Filled by the gesture effect: forgets the gesture window in flight. */
+  const clearGesture = useRef<(() => void) | null>(null);
   const [flare, setFlare] = useState<string | null>(null);
   // Keyed by the anchor it was spent on, not a boolean: the chat does not
   // remount between two task-list clicks, and a latch that never re-armed made
@@ -236,13 +250,41 @@ export const Transcript = memo(function Transcript({
       gestureDir = dir;
       gestureUntil = now() + ms;
       // Up is answered on the spot, so no write can land between the gesture
-      // and the scroll event it produces.
+      // and the scroll event it produces. Down AT the tail is answered on the
+      // spot too (CodeRabbit, PR #1748): a reader clamped onto the bottom by
+      // a shrink has nowhere to scroll, so the wheel tick produces no scroll
+      // event for `onScroll` to re-arm on — the gesture itself is the answer.
       if (dir < 0) followTail.current = false;
+      else if (nearBottom()) followTail.current = true;
+    };
+    // A gesture the PINNED CARD owns is not the transcript's (CodeRabbit, PR
+    // #1748): wheel and touch bubble up from `.chat-tailpin.is-pinned`, whose
+    // own scroller answers them (`overscroll-behavior: contain` stops the
+    // chaining, not the event), and a flick up inside the card must not drop
+    // the follow of the reply behind it.
+    const ownedByPin = (target: EventTarget | null) => {
+      const box = pin.current;
+      // Optional reads: the pin is a bare stub in a suite.
+      return (
+        !!box &&
+        !!box.classList?.contains?.("is-pinned") &&
+        typeof Node !== "undefined" &&
+        target instanceof Node &&
+        !!box.contains?.(target)
+      );
     };
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY === 0) return;
+      if (e.deltaY === 0 || ownedByPin(e.target)) return;
       barDrag = false; // a wheel means the bar was let go, whatever we missed
       gesture(e.deltaY < 0 ? -1 : 1, GESTURE_MS);
+    };
+    // Lent to the effects that re-arm the follow on their own authority (a
+    // send, an open card): the gesture window they interrupt must not disarm
+    // it again on the scroll event their own write produces.
+    clearGesture.current = () => {
+      gestureDir = 0;
+      gestureUntil = 0;
+      barDrag = false;
     };
     // A finger dragging DOWN scrolls the content up: the same "let me read".
     // Tracked across touchmove rather than read off the scrollport, and the
@@ -254,7 +296,7 @@ export const Transcript = memo(function Transcript({
     let touchY: number | null = null;
     let touchMoved = false;
     const onTouchStart = (e: TouchEvent) => {
-      touchY = e.touches[0] ? e.touches[0].clientY : null;
+      touchY = ownedByPin(e.target) ? null : e.touches[0] ? e.touches[0].clientY : null;
       touchMoved = false;
       barDrag = false;
       // A fresh finger carries no direction: a tap after an earlier drag up
@@ -383,17 +425,8 @@ export const Transcript = memo(function Transcript({
     // flag decides what to do about it exactly as before, so a reader who has
     // scrolled up is not moved by the composer.
     if (grown) grown.observe(wrap);
-    // THE PINNED CARD'S CEILING is the port's height, written as a custom
-    // property (`.chat-tailpin.is-pinned { max-height: var(--c-port-h) }`) —
-    // measured here rather than said in CSS as `100cqh`, because making this
-    // box a size container is what lost WebKit the scroll offset (see the note
-    // at `.chat-logwrap` in styles/transcript.css).
-    const portHeight = () => {
-      // `style` is absent on a stub scrollport (a suite), present on the real one.
-      if (wrap.style) wrap.style.setProperty("--c-port-h", wrap.clientHeight + "px");
-    };
-    portHeight();
-    const sized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(portHeight);
+    // THE PINNED CARD'S CEILING follows the port (`portHeight`, above).
+    const sized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => portHeight(wrap));
     if (sized) sized.observe(wrap);
     return () => {
       if (settle && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(settle);
@@ -412,8 +445,16 @@ export const Transcript = memo(function Transcript({
       wrap.removeEventListener("load", followBottom, true);
       grown?.disconnect();
       if (followRef) followRef.current = null;
+      clearGesture.current = null;
     };
   }, [followRef]);
+  // The first measurement lands BEFORE the first paint (Bugbot, PR #1748): the
+  // observer above is armed from an effect, which runs after the frame a
+  // restored session with an open card is painted in, and that frame drew the
+  // pin at the `100vh` fallback — taller than a cards-wall tile or Peek.
+  useLayoutEffect(() => {
+    if (port.current) portHeight(port.current);
+  }, []);
 
   // A new turn is the reader asking for the tail again: sending re-arms the
   // follow that scrolling up turned off, so the answer to what they just asked
@@ -423,6 +464,10 @@ export const Transcript = memo(function Transcript({
   const userTurns = state.turns.filter((t) => t.role === "user").length;
   useLayoutEffect(() => {
     followTail.current = true;
+    // …and the gesture that turned it off is spent (CodeRabbit, PR #1748): a
+    // send inside a flick's window would otherwise see this write's own scroll
+    // event, read it as the flick, and drop the follow of the reply just asked for.
+    clearGesture.current?.();
     if (port.current) port.current.scrollTop = port.current.scrollHeight;
   }, [userTurns]);
   useLayoutEffect(() => {

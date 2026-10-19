@@ -186,6 +186,47 @@ test("a wheel DOWN that rubber-bands off the bottom edge still re-arms", () => {
   expect(scroller.scrollTop).toBe(1400);
 });
 
+test("a wheel DOWN while already on the tail re-arms without a scroll event (CodeRabbit, PR #1748)", () => {
+  const { scroller, followRef } = mount();
+  act(() => scroller.fire("wheel", { deltaY: -50 }));
+  // A shrink clamps the reader onto the bottom edge; there is nowhere left to
+  // scroll, so the next wheel tick produces no scroll event at all.
+  scroller.scrollHeight = 500;
+  scroller.scrollTop = 200;
+  act(() => scroller.fire("wheel", { deltaY: 50 }));
+  scroller.scrollHeight = 900;
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(900);
+});
+
+test("sending inside a flick's window keeps the follow the send re-armed (CodeRabbit, PR #1748)", () => {
+  const scroller = fakeScroller();
+  const followRef = createRef<(() => void) | null>() as { current: (() => void) | null };
+  const turn = (key: string, role: "user" | "assistant") =>
+    ({ key, role, text: "x", segments: [], streaming: false, uuid: key }) as unknown as ChatState["turns"][number];
+  let r!: ReturnType<typeof create>;
+  const mock = {
+    createNodeMock: (el: { props: { className?: string } }) =>
+      String(el.props.className ?? "").includes("chat-logwrap") ? scroller : {},
+  };
+  act(() => {
+    r = create(<Transcript state={state({ turns: [turn("u1", "user")] })} actions={actions} followRef={followRef} />, mock);
+  });
+  mounted.push(r);
+  // Flick up, then send straight away: the new-turn effect re-arms and writes
+  // to the bottom, and that write's own scroll event lands inside the flick's
+  // window.
+  scroller.scrollTop = 200;
+  act(() => scroller.fire("wheel", { deltaY: -50 }));
+  act(() => {
+    r.update(<Transcript state={state({ turns: [turn("u1", "user"), turn("u2", "user")] })} actions={actions} followRef={followRef} />);
+  });
+  act(() => scroller.fire("scroll", {}));
+  scroller.scrollHeight = 1400;
+  followRef.current?.();
+  expect(scroller.scrollTop).toBe(1400);
+});
+
 test("a scroll key is a gesture; a key in a field is not", () => {
   const { scroller, followRef } = mount();
   act(() => scroller.fire("keydown", { key: "PageUp", target: { tagName: "DIV", isContentEditable: false } }));
