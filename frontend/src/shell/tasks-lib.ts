@@ -6038,7 +6038,9 @@ function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
  *  the task has no clock of any kind. */
 export function activityAt(task: Task, now: number = Date.now()): number {
   const w = taskWhen(task, now);
-  const active = task.last_active || 0;
+  // CLAMPED TO NOW (CodeRabbit, #1756): the server hands a pending entry its
+  // due time as `last_active`, and a due time is not an interaction yet.
+  const active = Math.min(task.last_active || 0, Math.floor(now / 1000));
   if (w.kind === "next") return active;
   // THE NEWER OF THE TWO (CodeRabbit, #1756): the row's stamp can be its last
   // RUN while `last_active` records a message since, and the section must
