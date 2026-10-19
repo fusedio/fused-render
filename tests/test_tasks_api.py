@@ -4589,7 +4589,7 @@ def test_deleting_a_waiting_task_stops_its_run_first(
 
 
 def test_erasing_a_quiet_hand_typed_chat_parked_on_a_card_stops_it_first(
-        client, projects_dir, parked):
+        client, projects_dir, parked, monkeypatch):
     """Bugbot, PR #1752. No entry, no busy registry row, transcript gone quiet:
     a row built WITHOUT the parked index reads this chat `done`, so neither
     running word refused it and no stop reached it — erase would have removed
@@ -4610,8 +4610,11 @@ def test_erasing_a_quiet_hand_typed_chat_parked_on_a_card_stops_it_first(
     assert not path.exists()
     assert "sess-a" not in _by_key(client)
 
-    # …and the same quiet chat, stubborn, is refused rather than filed `done`
-    # and erased: the parked word is what the door reads now.
+    # …and the same quiet chat, stubborn, is refused by ERASE rather than
+    # filed `done` and unlinked: the parked word is what the door reads now,
+    # and the file stays under the process that would not go (CodeRabbit:
+    # delete never touches the transcript, so only erase can prove this).
+    monkeypatch.setattr(tasks_mod, "_STOP_PARKED_WAIT_S", 0.2)
     path = _write_transcript(projects_dir, "sess-b", "/p", [
         _user("go", _near_now(-10), uuid="u1"),
     ])
@@ -4620,9 +4623,10 @@ def test_erasing_a_quiet_hand_typed_chat_parked_on_a_card_stops_it_first(
                            "input": {"command": "rm -rf build"}}]
     agent._alive_set.add("r-2")
     agent.stubborn.add("r-2")
-    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-b"})
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-b"})
     assert r.status_code == 409, r.text
     assert path.exists()
+    assert "sess-b" in _by_key(client)
 
 
 def test_a_waiting_task_whose_run_will_not_die_is_still_refused(
