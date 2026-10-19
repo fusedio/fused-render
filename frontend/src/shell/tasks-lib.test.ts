@@ -83,6 +83,7 @@ import {
   isExpandable,
   isFailedTask,
   needsAttention,
+  attentionCaption,
   isMessageRunning,
   isRunningNow,
   isRunningIn,
@@ -1127,6 +1128,89 @@ describe("needsAttention", () => {
     // a run that broke, Open for one that is asking.
     expect(isFailedTask(task({ status: "needs_attention" }))).toBe(false);
     expect(laneOf(taskColumn(task({ status: "needs_attention" })))).toBe("blocked");
+  });
+});
+
+describe("attentionCaption", () => {
+  // What a waiting row is waiting on (Akshil, 2026-10-18: "Task shows me
+  // blocked but not what it is blocked on"). One sentence, drawn on the List
+  // row, the Board card and the Cards wall, and said by the ring.
+  const waiting = (over: Partial<Task>) => task({ status: "needs_attention", ...over });
+
+  it("names the tool and what it wants on a permission card", () => {
+    expect(attentionCaption(waiting({
+      blocked_reason: "permission",
+      attention: { tool: "Bash", summary: "List live Claude registry rows" },
+    }))).toBe("Waiting on your approval · Bash: List live Claude registry rows");
+    // Either half alone when the other is empty, and the bare clause on neither.
+    expect(attentionCaption(waiting({
+      blocked_reason: "permission", attention: { tool: "Bash", summary: "" },
+    }))).toBe("Waiting on your approval · Bash");
+    expect(attentionCaption(waiting({
+      blocked_reason: "permission", attention: { tool: "", summary: "rm -rf build" },
+    }))).toBe("Waiting on your approval · rm -rf build");
+    expect(attentionCaption(waiting({
+      blocked_reason: "permission", attention: { tool: "", summary: "" },
+    }))).toBe("Waiting on your approval");
+  });
+
+  it("keeps the summary on one short line", () => {
+    const long = "echo " + "x".repeat(200);
+    const out = attentionCaption(waiting({
+      blocked_reason: "permission",
+      attention: { tool: "Bash", summary: "  cd a &&\n  " + long },
+    }));
+    expect(out.startsWith("Waiting on your approval · Bash: cd a && echo x")).toBe(true);
+    expect(out.endsWith("…")).toBe(true);
+    expect(out).not.toMatch(/\n|  /);
+    expect(out.length).toBeLessThan(120);
+  });
+
+  it("prints the question on a question card, never the tool's name", () => {
+    expect(attentionCaption(waiting({
+      blocked_reason: "question",
+      attention: { tool: "AskUserQuestion", summary: "Which branch should I use?" },
+    }))).toBe("Waiting on your answer · Which branch should I use?");
+    expect(attentionCaption(waiting({
+      blocked_reason: "question", attention: { tool: "AskUserQuestion", summary: "" },
+    }))).toBe("Waiting on your answer");
+  });
+
+  it("says nothing without `attention`, off the waiting status, or for another reason", () => {
+    // An older server: no field, no caption, nothing breaks.
+    const bare = waiting({ blocked_reason: "permission" });
+    delete (bare as Partial<Task>).attention;
+    expect(attentionCaption(bare)).toBe("");
+    expect(attentionCaption(waiting({ blocked_reason: "permission", attention: null }))).toBe("");
+    // The status decides, as it does for needsAttention.
+    expect(attentionCaption(task({
+      status: "in_progress",
+      blocked_reason: "permission",
+      attention: { tool: "Bash", summary: "ls" },
+    }))).toBe("");
+    // "failed", "usage_limit" and "" keep their own (or no) caption.
+    for (const reason of ["failed", "usage_limit", ""] as const) {
+      expect(attentionCaption(task({
+        status: reason === "" ? "needs_attention" : "blocked",
+        blocked_reason: reason,
+        attention: { tool: "Bash", summary: "ls" },
+      }))).toBe("");
+    }
+  });
+
+  it("is drawn on all three surfaces and said by their rings", () => {
+    const VIEWS_SRC = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
+    const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
+    expect(VIEWS_SRC.match(/const asking = attentionCaption\(task\);/g)).toHaveLength(2);
+    // The caption spends the row's press like the limit's and the job badge's
+    // (CodeRabbit, #1741): a click on it opens the chat, never a dead run of px.
+    expect(VIEWS_SRC).toContain('<span className="tasks-row-queue" data-hint={asking} {...pressRow}>');
+    expect(VIEWS_SRC).toContain('{asking && <span className="tasks-card-queue">{asking}</span>}');
+    expect(VIEWS_SRC).toContain('<StatusIcon status="needs_attention" label={asking || undefined} />');
+    expect(VIEWS_SRC.match(/label=\{asking \|\| undefined\}/g)).toHaveLength(2);
+    expect(CARDS_SRC).toContain("const asking = attentionCaption(task);");
+    expect(CARDS_SRC).toContain('{asking && <span className="task-card-limit">{asking}</span>}');
+    expect(CARDS_SRC).toContain("label={asking || undefined}");
   });
 });
 
@@ -2358,7 +2442,7 @@ describe("the unread mark", () => {
     // held thread), so the ring hollows on the row's own press rather than on the
     // next poll — the same number that used to feed the dot.
     expect(ROW).toMatch(
-      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s+background=\{liveJobRow\(task\)\}\s*\/>/,
+      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+label=\{asking \|\| undefined\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s+background=\{liveJobRow\(task\)\}\s*\/>/,
     );
     // Nothing trails the title any more: the ring leads the row, the title
     // follows, and the next thing is the live ping.
@@ -2860,7 +2944,8 @@ describe("the board card's status ring", () => {
     // The waiting card's own ring, by the same rule: its status and its lane are
     // two different facts (Needs attention, drawn under Blocked), which is
     // exactly the condition the ring is drawn for.
-    expect(CARD).toContain('<StatusIcon status="needs_attention" />');
+    // It says WHAT it is waiting on when the server named it (attentionCaption).
+    expect(CARD).toContain('<StatusIcon status="needs_attention" label={asking || undefined} />');
     expect(CARD).toContain("<IdChip");
     const card = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
     expect(card).toContain('isFailedTask(task) && lane !== "blocked"');

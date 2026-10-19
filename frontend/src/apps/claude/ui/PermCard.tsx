@@ -106,6 +106,12 @@ function statusFor(
   }
   if (row.decision === "expired")
     return { cls: "expired", text: "◦ Unanswered — the reply ended before you decided" };
+  // A deny NOBODY CLICKED, in the same hollow skin as `expired`: the CLI walked
+  // away from the call (a subagent told to carry on while its card sat unseen)
+  // and agent.py closed the card so the task stops reading "waiting on you".
+  // "✗ Denied" here would pin on the reader a refusal they never made.
+  if (row.reason === "abandoned")
+    return { cls: "expired", text: "◦ Unanswered — the run moved on before you decided" };
   return { cls: "deny", text: "✗ Denied" };
 }
 

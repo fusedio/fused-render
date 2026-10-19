@@ -181,7 +181,10 @@ export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: 
   const stopping = status === "stopping";
   // A run owned by another tab or host: no process here to kill, and a "stop"
   // that quietly did nothing would be the worst control on the page (D415).
-  const fixedVerb = working.external ? "Running outside this app" : "";
+  // …except the card watch's own line (`Working.cardWait`: a reply ended with
+  // a background task still running, and that task's card is open): external,
+  // so no Stop, but the line says what it is actually waiting for.
+  const fixedVerb = working.external && !working.cardWait ? "Running outside this app" : "";
   const stoppable = !working.external;
   const secs = Math.round((now() - working.startedAt) / 1000);
   const quiet = Math.round((now() - lastChange.current) / 1000);

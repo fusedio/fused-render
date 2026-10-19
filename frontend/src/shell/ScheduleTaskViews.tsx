@@ -132,6 +132,7 @@ import {
   BACKGROUND_LABEL,
   jobBadge,
   liveJobRow,
+  attentionCaption,
   projectMatches,
   projectOptions,
   relativeWhen,
@@ -3344,6 +3345,10 @@ function TaskNode({
    *  caption at a time; in practice they never meet, since a limit row is
    *  Blocked and the badge needs a `done` status. null on every other row. */
   const jobs = limit ? null : jobBadge(task);
+  /** …and what a WAITING row is waiting on: "Waiting on your approval · Bash:
+   *  rm -rf build", "Waiting on your answer · <the question>". "" everywhere
+   *  else — a row has one reason, so never beside `limit`. */
+  const asking = attentionCaption(task);
   /** IS THE QUEUE ON. Only the thread's per-message word needs it — every other
    *  `queued` on this row comes from the server's status, which is never written
    *  while the flag is down, while `messageState` derives its own from "pending
@@ -4070,6 +4075,7 @@ function TaskNode({
           <StatusIcon
             status={taskColumn(task)}
             failed={ringFailed(task)}
+            label={asking || undefined}
             unread={unread > 0}
             count={unread}
             draftHeld={draftRing(task) && !heldInPeek}
@@ -4365,6 +4371,15 @@ function TaskNode({
             {...pressRow}
           >
             <span className="tasks-queue-text">{jobs.text}</span>
+          </span>
+        )}
+        {/* …AND WHAT A WAITING ROW IS WAITING ON (`attentionCaption`), in the
+            same seat for the same reason: the ring says somebody has to look,
+            this says what they will find — which tool and what it wants, or the
+            question. Never beside the limit's: a row has one reason. */}
+        {asking && (
+          <span className="tasks-row-queue" data-hint={asking} {...pressRow}>
+            <span className="tasks-queue-text">{asking}</span>
           </span>
         )}
 
@@ -6050,6 +6065,8 @@ function TaskCard({
    *  the List row's words on a line of their own, and its Stop in the hover
    *  strip — the card IS a button, so the Stop cannot sit inside it. */
   const jobs = limit ? null : jobBadge(task);
+  /** …and what a waiting card is waiting on — the List row's sentence. */
+  const asking = attentionCaption(task);
   const [busy, setBusy] = useState(false);
   // The Board's own copy of the List row's erase confirm; see the foot.
   const [erasing, setErasing] = useState(false);
@@ -6183,7 +6200,7 @@ function TaskCard({
             does not mention. */}
         <span className="schedule-tv-card-head">
           {waiting
-            ? <StatusIcon status="needs_attention" />
+            ? <StatusIcon status="needs_attention" label={asking || undefined} />
             /* THE THIRD CARD WHOSE RING SAYS WHAT ITS LANE DOES NOT: a finished
                turn with a job still running under it, drawn In Progress
                (tasks-lib.liveJobRow / boardLane). The List row's own ring —
@@ -6291,6 +6308,8 @@ function TaskCard({
             {jobs.text}
           </span>
         )}
+        {/* …and the waiting card's ask, the List row's words (`attentionCaption`). */}
+        {asking && <span className="tasks-card-queue">{asking}</span>}
         {/* The foot is the folder and the run ahead, so when neither says
             anything (spansProjects — every card in a board filtered to one
             project repeats it — and a card with no run coming) the whole line

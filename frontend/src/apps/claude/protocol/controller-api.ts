@@ -195,6 +195,10 @@ export interface Working {
   startedAt: number;
   /** "Claude is …" line for a run owned by another tab/host (T:17506 setExternalWorking). */
   external?: boolean;
+  /** The card watch's line (run-controller `paintCardWait`): the reply ended,
+   *  a background task's card is open, and this says "Waiting for your
+   *  approval" — external (no turn to stop), but not "running outside". */
+  cardWait?: boolean;
 }
 
 export type RunStatus = "idle" | "starting" | "running" | "stopping";

@@ -74,6 +74,7 @@ import {
   taskColumn,
   taskHref,
   usageLimitCaption,
+  attentionCaption,
   taskWhen,
   tildePath,
   cardTitleLine,
@@ -531,6 +532,9 @@ function TaskCard({
    *  List row's badge words under the title, and its Stop among the doors —
    *  the same rule and the same words on all three views. */
   const jobs = limit ? null : jobBadge(task);
+  /** "Waiting on your approval · Bash: rm -rf build" on a card parked on a
+   *  card, "" on every other — never beside `limit`, a row has one reason. */
+  const asking = attentionCaption(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
   // THE DELETE DOOR, on EVERY card (design.md §2's open question, answered:
@@ -639,6 +643,7 @@ function TaskCard({
           <StatusIcon
             status={taskColumn(task)}
             failed={ringFailed(task)}
+            label={asking || undefined}
             draftHeld={draftRing(task) && !heldInPeek}
             background={liveJobRow(task)}
           />
@@ -718,6 +723,9 @@ function TaskCard({
             {jobs.text}
           </span>
         )}
+        {/* …and what a waiting card is waiting on, in the same line's skin
+            (`attentionCaption`): the List row's and the Board card's words. */}
+        {asking && <span className="task-card-limit">{asking}</span>}
         {/* Inside the head (so hovering them keeps the head hovered) but not OF
             it: a press here stops before the head's onClick, so a door never
             also opens the popup. Keys are already the head's concern only when

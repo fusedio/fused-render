@@ -30,7 +30,8 @@ export type Action =
   | "commands"
   | "task_output"
   | "task_stop"
-  | "tasks";
+  | "tasks"
+  | "cards";
 
 /** A permission mode as the CLI spells it (PERMISSION_MODES, agent.py). */
 export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
@@ -215,6 +216,13 @@ export interface ImageToPngRequest {
   path: string;
 }
 
+/** `cards {run_id}` — the open permission cards of a run whose REPLY has ended
+ *  while a backgrounded task keeps its host alive (`run-controller`'s card
+ *  watch). */
+export interface CardsRequest {
+  run_id: string;
+}
+
 export interface AgentRequests {
   start: StartRequest;
   poll: PollRequest;
@@ -241,6 +249,7 @@ export interface AgentRequests {
   task_output: TaskOutputRequest;
   task_stop: TaskOutputRequest;
   tasks: RunTasksRequest;
+  cards: CardsRequest;
 }
 
 // ---- segments (agent.py:3253 _segments_from_rows; T:15591-15635) -----------
@@ -352,6 +361,11 @@ export interface PermissionRow {
   decision: LandedDecision;
   scope: "" | DecisionScope;
   mode: "" | SwitchableMode;
+  /** WHY a deny nobody clicked: "abandoned" (the CLI walked away from the
+   *  asking call — a subagent told to carry on; agent.py `_close_abandoned`),
+   *  "cancelled" (Stop), "timeout" (the permission server gave up). "" on a
+   *  click and on every allow. Optional: an older server does not send it. */
+  reason?: string;
   /** `{questionText: chosenLabels}` once a question was answered, else `{}`. */
   answers: Record<string, string>;
 
@@ -1032,6 +1046,18 @@ export interface AgentResponses {
   task_output: TaskOutputResponse | ErrorOnly;
   task_stop: TaskStopResponse | ErrorOnly;
   tasks: RunTasksResponse | ErrorOnly;
+  cards: CardsResponse | ErrorOnly;
+}
+
+/** `cards {run_id}`. `permissions` and `mode` are exactly `poll`'s (agent.py
+ *  `_permissions` / `_live_mode`); `mode` is "" when the run dir has none. */
+export interface CardsResponse {
+  /** The run's host is still up. */
+  alive: boolean;
+  /** A backgrounded shell / Monitor / subagent is still running on it. */
+  tasks_pending: boolean;
+  permissions: PermissionRow[];
+  mode: PermissionMode | "";
 }
 
 /** One slash command the CLI (or the disk scan) knows (SPEC C-2). */

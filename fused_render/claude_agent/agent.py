@@ -2028,6 +2028,160 @@ def _record_copilot_session(run_dir: str, meta: dict, session_id: str) -> None:
             pass
 
 
+# ------------------------------------------------ cards the run walked away from
+# `run_dir -> ((out.jsonl size, mtime_ns, ids asked), {request ids abandoned})`:
+# the scan below reads out.jsonl whole and is asked on every poll while a card
+# is open.
+_ABANDON_CACHE: dict = {}
+_ABANDON_CACHE_CAP = 64
+# `request id -> monotonic first seen abandoned`. A verdict this permanent is
+# not latched off one reading: the walk-away has to still be true a few
+# seconds later (`_ABANDON_GRACE`), across whatever rows landed meanwhile.
+_ABANDON_SEEN: dict = {}
+_ABANDON_GRACE = 5.0
+
+
+def _abandoned_requests(run_dir: str, rows: list) -> set:
+    """`{request id}` among `rows` — unanswered permission rows, each with a
+    `tool_use_id` — whose asking call the CLI has walked away from.
+
+    THE DROPPED CARD (Akshil, 2026-10-18: "task shows me blocked but not
+    what it is blocked on"). A backgrounded subagent asked for Bash a minute
+    after the main reply ended. Nobody saw the card — the chat had stopped
+    polling — and the next message restarted the main thread, which told the
+    subagent to carry on. The CLI never delivered a `tool_result` for that
+    call and never will: the subagent's next assistant row simply followed.
+    But the request sat in `perm/` with no decision beside it, so every reader
+    (`_parked_runs`, the Tasks row, the rail's "1 blocked") went on saying the
+    run was waiting on a human for as long as the process lived.
+
+    Read off out.jsonl. The assistant row carrying the `tool_use` block names
+    the SCOPE the call was made in (`parent_tool_use_id`; "" for the main
+    thread). The call is abandoned once that scope has SPOKEN again — a later
+    assistant row with a different message id that carries real content (a
+    `text` or `tool_use` block) — and no `tool_result` for the call ever
+    landed. The same message id is the CLI writing one row per content block
+    of ONE parallel-tools message: a pending call's sibling, not what came
+    after it. A row with no message id, an API-error row or a thinking-only
+    row is no evidence either way: a model cannot have produced a new message
+    while its call is still pending, so only a real one proves the call was
+    dropped. Only the scope that asked can walk away from its own call: the
+    main thread talking while a subagent's card waits is not that, and nor is
+    a subagent working while the main thread's card waits.
+
+    An answer that lands after the walk-away (the user clicks Allow at the
+    instant the CLI gives up) still counts as answered: the result row wins.
+
+    STRICT ON PURPOSE, because the verdict is permanent and goes back to the
+    model as a refusal: every "do not know" above reads as "still pending".
+    """
+    ids = {str(r.get("tool_use_id") or ""): str(r.get("id") or "")
+           for r in rows if r.get("tool_use_id") and r.get("id")}
+    if not ids:
+        return set()
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        st = os.stat(path)
+        key = (st.st_size, st.st_mtime_ns, frozenset(ids))
+    except OSError:
+        return set()
+    hit = _ABANDON_CACHE.get(run_dir)
+    if hit is not None and hit[0] == key:
+        return _abandon_settled(hit[1], set(ids.values()))
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return set()
+    asked: dict = {}      # tool_use_id -> (scope, message id)
+    answered: set = set()
+    walked: set = set()
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue  # half-written last line; the next read gets it
+        if not isinstance(row, dict) or row.get("type") not in ("assistant", "user"):
+            continue
+        msg = row.get("message") if isinstance(row.get("message"), dict) else {}
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        if row["type"] == "user":
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    answered.add(str(block.get("tool_use_id") or ""))
+            continue
+        mid = str(msg.get("id") or "")
+        if not mid or row.get("isApiErrorMessage"):
+            continue  # no evidence either way (see above)
+        kinds = {block.get("type") for block in content if isinstance(block, dict)}
+        if not kinds & {"text", "tool_use"}:
+            continue  # thinking-only / synthetic: the scope has not spoken
+        scope = str(row.get("parent_tool_use_id") or "")
+        # Does this row come AFTER a pending ask in its own scope? Asked before
+        # this row's own calls are recorded: a row cannot walk away from itself.
+        for tid, (sc, m) in asked.items():
+            if sc == scope and m != mid:
+                walked.add(tid)
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use" \
+                    and str(block.get("id") or "") in ids:
+                asked[str(block["id"])] = (scope, mid)
+    gone = {ids[tid] for tid in walked if tid not in answered}
+    if len(_ABANDON_CACHE) >= _ABANDON_CACHE_CAP:
+        _ABANDON_CACHE.clear()
+    # The cache holds what the FILE says; the clock is applied on every call.
+    _ABANDON_CACHE[run_dir] = (key, gone)
+    return _abandon_settled(gone, set(ids.values()))
+
+
+def _abandon_settled(gone: set, asked: set) -> set:
+    """The subset of `gone` that has read as abandoned for `_ABANDON_GRACE`
+    seconds — the second reading a permanent verdict needs. First sightings
+    are remembered; a request that stops reading as abandoned (its result
+    landed after all) is forgotten. `asked` is the request ids THIS reading
+    covers: sightings belonging to other runs are not this call's to drop."""
+    now = time.monotonic()
+    for req_id in asked:
+        if req_id not in gone:
+            _ABANDON_SEEN.pop(req_id, None)
+    out = set()
+    for req_id in gone:
+        first = _ABANDON_SEEN.setdefault(req_id, now)
+        if now - first >= _ABANDON_GRACE:
+            out.add(req_id)
+    return out
+
+
+def _close_abandoned(run_dir: str, perm_dir: str, out: list) -> None:
+    """Latch a `deny` on every row of `out` whose call the CLI dropped
+    (`_abandoned_requests`), and read the verdict back onto the row.
+
+    Written to disk, not just reported: the permission server is still parked
+    in `_await_answer` on that request (up to an hour), the Tasks listing reads
+    the same files through `project_queue.run_permissions`, and a verdict that
+    lived only in this reply would have to be re-derived by every reader on
+    every poll. First writer wins, like every other decision: a click that
+    lands in the same instant is the truth and this read picks it up."""
+    open_rows = [r for r in out if not r["decision"] and r["tool_use_id"]]
+    if not open_rows:
+        return
+    gone = _abandoned_requests(run_dir, open_rows)
+    for row in open_rows:
+        if row["id"] not in gone:
+            continue
+        verdict = {"decision": "deny", "reason": "abandoned"}
+        if not _write_decision(perm_dir, row["id"], verdict):
+            continue  # could not record it: the card stays open, truthfully
+        res = _read_decision(perm_dir, row["id"]) or verdict
+        _ABANDON_SEEN.pop(row["id"], None)
+        row["decision"] = str(res.get("decision") or "deny")
+        row["reason"] = str(res.get("reason") or "")
+        row["scope"] = str(res.get("scope") or "")
+        row["mode"] = str(res.get("mode") or "")
+
+
 def _permissions(run_dir: str) -> list:
     """Every permission request this run has raised, each with the user's
     decision if one has been made. The whole list, not just the unanswered
@@ -2089,11 +2243,16 @@ def _permissions(run_dir: str) -> list:
             "held": False,
             "scope": str(res.get("scope") or ""),
             "mode": str(res.get("mode") or ""),
+            # WHY a deny that nobody clicked: "abandoned" (the CLI dropped the
+            # call — `_close_abandoned`), "cancelled" (Stop), "timeout" (the
+            # permission server gave up). "" on a click, and on every allow.
+            "reason": str(res.get("reason") or ""),
             # Only a question card has these, and it is the same reason the whole
             # list is returned: a frame that re-attaches has to be able to
             # rebuild a card it never saw, including what was chosen on it.
             "answers": answers if isinstance(answers, dict) else {},
         })
+    _close_abandoned(run_dir, perm_dir, out)
     if any(not row["decision"] for row in out):
         held = _held_answers(os.path.basename(os.path.normpath(run_dir)))
         for row in out:
@@ -9857,6 +10016,41 @@ def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
 
 
 
+def _cards(run_id: str) -> dict:
+    """The cards a run is parked on, for a page whose REPLY has ended but
+    whose host is still running background work — the chat's card watch.
+
+    `_poll` says `done` the moment the main reply is over, on purpose ("the
+    reply is over, not necessarily the work"), and the page stops polling. A
+    backgrounded subagent that asks for a tool AFTER that writes a card nobody
+    is reading (Akshil, 2026-10-18): the Tasks row went red, the chat showed
+    nothing. The page keeps this lighter question going while `tasks_pending`
+    says the host still has work: the same rows and mode `_poll` carries, so
+    the page's dedupe-by-id contract holds, and the two facts that end the
+    watch — the host is gone, or nothing is pending any more.
+
+    Deliberately NOT `_poll`: that advances the run's cursor and hands back
+    the turn's text, and a watch that consumed the woken turn's first rows
+    would take them from the loop that is meant to stream them."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "unknown run_id", "alive": False,
+                "tasks_pending": False, "permissions": [], "mode": ""}
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    permissions = _permissions(run_dir)
+    registry = _read_bg_tasks(run_dir)
+    return {"alive": _host_alive(run_dir) or _alive(run_dir),
+            "tasks_pending": any(_task_active(r) for r in registry.values()),
+            "permissions": permissions,
+            "mode": _live_mode(meta, permissions)}
+
+
 def _interrupt_turn(run_dir: str, stranded: list, queued: bool) -> dict | None:
     """Queue the `interrupt` control request against a live host and settle
     the run's markers once it answers — the half of a Stop that talks to the
@@ -10432,6 +10626,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _live_run(file, session_id)
+    if action == "cards":
+        # "What is this run parked on?" — the chat's watch for a card raised
+        # by background work after the reply ended (`_cards`).
+        return _cards(run_id)
     if action == "defaults":
         if not file:
             return {"error": "missing target file (no _file param?)"}

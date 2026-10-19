@@ -76,6 +76,7 @@ ACTIONS: dict[str, str] = {
     "app_state": "_answer_app_state",
     "sessions": "_sessions",
     "live_run": "_live_run",
+    "cards": "_cards",
     "defaults": "_defaults",
     "history": "_history",
     "snapshots": "_snapshots",
