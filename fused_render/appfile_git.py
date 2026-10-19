@@ -269,8 +269,9 @@ def _kind(app_dir: str) -> str | None:
 
 def copy_view(app_dir: str) -> dict | None:
     """For a GitHub-link copy (§16.8): what the install page says about it,
-    off `engine.status` (no network) — ``{who, changes: [paths], blocked:
-    [paths]}``; None for any other folder."""
+    off `engine.status` (no network) — ``{who, changes: bool, collision:
+    [paths of the user's own files the update would land on]}``, merged
+    into the probe's ``git``; None for any other folder."""
     if _kind(app_dir) != "github":
         return None
     try:
@@ -280,10 +281,9 @@ def copy_view(app_dir: str) -> dict | None:
     except Exception:  # noqa: BLE001 — the page falls back to the plain words
         logger.exception("install page: copy status failed for %s", app_dir)
         return None
-    return {"who": st.get("who") or "the author",
-            "changes": list(st.get("changes_files") or [])[:12],
-            "blocked": list(st.get("blocked_files") or [])[:12],
-            "needs_merge": bool(st.get("needs_merge"))}
+    return {"who": st.get("who") or None,
+            "changes": bool(st.get("changes_files") or st.get("needs_merge")),
+            "collision": list(st.get("blocked_files") or [])[:12]}
 
 
 def _probe_github(app_dir: str, src: dict, head: str) -> str:
@@ -442,7 +442,9 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
     answer for a git-source file) describes. Answers the action taken."""
     from fused_render import app_fused_dir, app_git, appfile
 
-    src = target["git"]
+    # Only the link's own facts: `install_target` merges the copy's page
+    # words (who/changes/collision) into `git`, and `src` is stamped.
+    src = {"url": target["git"]["url"], "commit": target["git"]["commit"]}
     state = target["state"]
     dest = os.path.normpath(target["path"])
     if state == appfile.STATE_CLASH:

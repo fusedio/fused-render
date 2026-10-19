@@ -544,6 +544,33 @@ def _identity(root):
     return {"name": name, "email": email}
 
 
+# The contribution loop's push guard (docs/CONTRIB_LOOP.md §16.0 P2,
+# fused_render/contrib/classify.py — mirrored, not imported, PY-15; ops.py's
+# `_push_blocked` is the twin and refuses Push with the same sentence): a copy
+# of someone else's GitHub app carries this pushurl on `origin` (and the
+# repo-local `fused.kind=github` marker). Its changes leave the machine only
+# as a proposal from the app page, so the view hides Push and says why.
+_NO_PUSH_URL = "no-push://fused"
+_GITHUB_REPO = re.compile(
+    r"^(?:git@github\.com:|(?:https?|ssh)://(?:[^@/]+@)?(?:www\.)?github\.com/)"
+    r"([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$", re.I)
+
+
+def _push_blocked(root):
+    """The plain sentence the Push button is replaced by, or None."""
+    guard = _git(root, "config", "--get-all", "remote.origin.pushurl",
+                 allow=(0, 1)).decode("utf-8", "replace").split()
+    kind = _git(root, "config", "--local", "--get", "fused.kind",
+                allow=(0, 1)).decode("utf-8", "replace").strip()
+    if _NO_PUSH_URL not in guard and kind != "github":
+        return None
+    url = _git(root, "config", "--get", "remote.origin.url",
+               allow=(0, 1)).decode("utf-8", "replace").strip()
+    m = _GITHUB_REPO.match(url)
+    who = m.group(1) if m else "its author's version on GitHub"
+    return f"This app follows {who}. Send your changes from its app page."
+
+
 def _status(root, rel, is_dir):
     """The uncommitted entries under the scope, plus repo-wide dirtiness.
 
@@ -1366,6 +1393,7 @@ def main(
                 "ahead": ahead,
                 "behind": behind,
                 "remote": remote,
+                "push_blocked": _push_blocked(root),
             },
             "changes": changes,
             "changes_truncated": changes_truncated,

@@ -693,19 +693,24 @@ def test_push_publishes_local_commits(ops, wired):
     assert git(remote, "log", "-1", "--format=%s").strip() == "to push"
 
 
-def test_push_is_refused_in_plain_words_for_a_guarded_copy(ops, wired):
+def test_push_is_refused_in_plain_words_for_a_guarded_copy(ops, reader, wired):
     # A copy of someone else's GitHub app (docs/CONTRIB_LOOP.md §16.0 P2)
-    # carries `no-push://fused` on origin: the button answers in plain words,
-    # not git's "remote helper" error, and nothing reaches the remote.
+    # carries `no-push://fused` on origin: the view says so instead of Push
+    # (`repo.push_blocked`), the op answers with the same plain sentence, not
+    # git's "remote helper" error, and nothing reaches the remote.
     root, remote, _ = wired
     before = git(remote, "rev-parse", "HEAD").strip()
+    assert reader.main(root)["repo"]["push_blocked"] is None
+    git(root, "config", "remote.origin.url", "https://github.com/alice/x.git")
     git(root, "config", "remote.origin.pushurl", "no-push://fused")
+    blocked = reader.main(root)["repo"]["push_blocked"]
+    assert blocked == "This app follows alice/x. Send your changes from its app page."
     write(root, "pkg/mod.py", "kept here\n")
     git(root, "add", "-A")
     git(root, "commit", "-q", "-m", "local only", when="2026-10-04T10:00:00+00:00")
     got = ops.main(root, op="push")
     assert got["ok"] is False and got["reason"] == "follows-author"
-    assert not any(w in got["message"].lower() for w in ("remote", "helper", "no-push", "origin"))
+    assert got["message"] == blocked
     assert git(remote, "rev-parse", "HEAD").strip() == before
 
 

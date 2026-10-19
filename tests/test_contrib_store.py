@@ -708,6 +708,31 @@ def test_own_copy_divergence_goes_to_ownsync(world, monkeypatch):
     assert git_upstream.last_checked(a)
 
 
+def test_own_copy_ahead_only_push_asks_ownsync_first(world, monkeypatch):
+    """TL ruling (§16.7 rewind): only ahead + push → `ownsync.resolve` before
+    the plain push (a GitHub rewind must not re-publish removed commits);
+    None falls through to today's push."""
+    import types
+
+    import fused_render.contrib as pkg
+
+    a = _install(world)
+    store.update(a, lambda r: r.__setitem__("kind", "own"))
+    _commit(a, "b.txt", "mine\n", "mine")
+    before = _remote_main(world)
+    fake = types.ModuleType("fused_render.contrib.ownsync")
+    fake.resolve = lambda root, action, push: {"ok": True, "status": "skipped",
+                                               "why": "github-changed"}
+    monkeypatch.setitem(sys.modules, "fused_render.contrib.ownsync", fake)
+    monkeypatch.setattr(pkg, "ownsync", fake, raising=False)
+    assert _sync(a, push=True)["why"] == "github-changed"
+    assert _remote_main(world) == before
+    assert _sync(a)["status"] == "synced"  # no push asked: resolve not involved
+    fake.resolve = lambda root, action, push: None
+    r = _sync(a, push=True)
+    assert r["status"] == "synced" and r["pushed"] is True
+
+
 def test_own_copy_divergence_through_the_real_ownsync(world):
     """The hook end to end: the author's own copy, behind AND ahead of GitHub
     (a commit made elsewhere), is settled by `ownsync.resolve` — never
@@ -753,6 +778,7 @@ def test_install_page_for_a_github_copy_with_changes_is_plain(world):
     tip = _alice_push(world, "c.txt", "alice\n")
     src = {"url": URL, "commit": tip}
     assert appfile_git.probe(bob, src) == "local"
+    assert appfile_git.copy_view(bob) == {"who": "alice", "changes": True, "collision": []}
     target = {"git": src, "state": "local", "path": bob, "found_by": "git"}
     with pytest.raises(appfile_git.GitInstallError) as exc:
         appfile_git.install("x.fused", target, {}, force=False)

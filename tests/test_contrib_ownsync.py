@@ -551,14 +551,6 @@ def test_C_one_diverged_sync_costs_few_processes(env, monkeypatch):
     assert calls["anc"] <= 1 and calls["n"] <= 40, calls
 
 
-def _resolve(root, push=True):
-    """The hook's call for an own copy that is only AHEAD (TL ruling: also
-    when pushing with ahead > 0 and behind == 0), after its fetch."""
-    with replay.slot():
-        git_upstream._run(root, "fetch", "--", "origin", "main")
-        return ownsync.resolve(root, action="test", push=push)
-
-
 def test_rewind_never_republishes_what_github_removed(env):
     _commit(env.lap, "x.txt", "x\n", "kept")
     assert _sync(env.lap)["pushed"] is True
@@ -567,8 +559,9 @@ def test_rewind_never_republishes_what_github_removed(env):
     assert _sync(env.lap)["pushed"] is True
     git(env.other, "fetch", "-q", "origin")
     git(env.other, "push", "-q", "--force", "origin", f"{kept}:refs/heads/main")
-    res = _resolve(env.lap)
+    res = _sync(env.lap)        # only ahead now: the hook's push call site
     assert res["status"] == "skipped" and res["why"] == "github-changed"
+    assert git_upstream.sync_failures() == []
     assert _remote(env) == kept and _head(env.lap) == removed
     st = ownsync.status(env.lap)
     assert st["state"] == "github-changed" and st["fixes"] == ["use-github", "publish-over"]

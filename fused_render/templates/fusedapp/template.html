@@ -204,14 +204,15 @@
 
   // A GitHub-link build (SPEC §26 DL-9): installs as a copy that keeps
   // getting its author's latest. Plain words only (docs/CONTRIB_LOOP.md
-  // §0.1, §16.8): no git vocabulary reaches this page. `t.copy` is the
-  // contribution engine's view of an installed GitHub-link copy (whose
-  // latest, the user's changed files, a file of theirs in the way).
+  // §0.1, §16.8): no git vocabulary reaches this page. For an installed
+  // GitHub-link copy `t.git` also carries the contribution engine's view:
+  // `who` (whose latest), `changes` (the user has their own), `collision`
+  // (their own files the update would land on).
   function describeGit(t) {
     const repo = t.git.url.replace(/^https:\/\//, "");
     const owner = repo.split("/")[1] || "the author";
-    const c = t.copy;
-    const who = (c && c.who) || owner;
+    const c = "changes" in t.git ? { blocked: t.git.collision || [] } : null;
+    const who = t.git.who || owner;
     const words = (files) => files.length === 1 ? files[0] : files.length + " files";
     switch (t.state) {
       case "new": return { tone: "ok", title: "Not installed yet",
@@ -230,7 +231,7 @@
           list: c.blocked.length > 1 ? c.blocked : [], button: null };
         if (c) return { tone: "warn", title: "You have your own changes",
           body: "You have your own changes in this app. Open it to bring in " + who + "'s latest.",
-          list: c.changes || [], button: null };
+          button: null };
         return t.found_by === "git"
           ? { tone: "warn", title: "Your copy has changes of its own",
               body: t.path + " has changes that are not in " + repo + ", so it is not updated from here. Open it to see them, or ask Claude.", button: null }

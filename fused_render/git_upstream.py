@@ -1027,6 +1027,13 @@ def _sync_plain(root, *, action, push, kind=None):
         _record_pull(root, pulled)
 
     pushed = False
+    if kind == "own" and push and ahead and not behind:
+        # Only ahead: a plain push would re-publish commits GitHub may have
+        # had removed (a rewind) — ownsync checks, then pushes as today
+        # (§16.7). Ahead AND behind went to the diverged call above.
+        res = _own_resolve(root, action=action, push=push)
+        if res is not None:
+            return res
     if push and (ahead or 0) > 0:
         push_cmd = f"git push -- origin {default_branch}"
         result = _run(root, "push", "--", "origin", default_branch)

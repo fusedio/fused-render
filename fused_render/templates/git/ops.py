@@ -1592,24 +1592,33 @@ def _pull(root):
 # someone else's GitHub app carries this pushurl on `origin` and the
 # `fused.kind=github` marker, and its changes leave the machine only as a
 # proposal from the app's page. Without this refusal the button would end in
-# git's "remote helper" error about a URL the user never wrote.
+# git's "remote helper" error about a URL the user never wrote. log.py's
+# `_push_blocked` is the twin (the view's `repo.push_blocked`): same test, same
+# sentence.
 _NO_PUSH_URL = "no-push://fused"
-_GUARDED_PUSH = ("This app follows its author's version on GitHub, so your changes "
-                 "stay on this computer. To share them, propose them from the "
-                 "app's page.")
+_GITHUB_REPO = re.compile(
+    r"^(?:git@github\.com:|(?:https?|ssh)://(?:[^@/]+@)?(?:www\.)?github\.com/)"
+    r"([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$", re.I)
 
 
-def _push_guarded(root):
+def _push_blocked(root):
+    """The plain sentence Push refuses with on a guarded copy, or None."""
     code, out, _err = _run(root, "config", "--get-all", "remote.origin.pushurl")
-    if code == 0 and _NO_PUSH_URL in out.decode("utf-8", "replace").split():
-        return True
-    code, out, _err = _run(root, "config", "--local", "--get", "fused.kind")
-    return code == 0 and out.decode("utf-8", "replace").strip() == "github"
+    guarded = code == 0 and _NO_PUSH_URL in out.decode("utf-8", "replace").split()
+    if not guarded:
+        code, out, _err = _run(root, "config", "--local", "--get", "fused.kind")
+        if not (code == 0 and out.decode("utf-8", "replace").strip() == "github"):
+            return None
+    code, out, _err = _run(root, "config", "--get", "remote.origin.url")
+    m = _GITHUB_REPO.match(out.decode("utf-8", "replace").strip()) if code == 0 else None
+    who = m.group(1) if m else "its author's version on GitHub"
+    return f"This app follows {who}. Send your changes from its app page."
 
 
 def _push(root):
-    if _push_guarded(root):
-        raise _Refused("follows-author", _GUARDED_PUSH)
+    blocked = _push_blocked(root)
+    if blocked:
+        raise _Refused("follows-author", blocked)
     branch = _current_branch(root)
     if not branch:
         raise _Refused("detached",
