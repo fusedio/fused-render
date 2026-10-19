@@ -45,6 +45,14 @@ import {
   flattenGroups,
   groupOfView,
   groupRows,
+  activityAt,
+  defaultViewFacets,
+  LANES_BUT_ARCHIVE,
+  groupFoldKeys,
+  openOnFirstVisit,
+  parseSeededViews,
+  parseViewFilters,
+  seedCollapsedGroups,
   groupSize,
   parseViewTabs,
   prOfTask,
@@ -5709,7 +5717,7 @@ describe("the folder chip on a row and a card", () => {
     // Both views ask the ONE helper, of the set they are drawing, and neither
     // re-derives it per row: a chip that every visible row repeats is noise on the
     // busiest end of the row.
-    expect(VIEWS).toContain("const showProject = useMemo(() => spansProjects(tasks), [tasks]);");
+    expect(VIEWS).toContain('() => groupBy !== "project" && (spansProjects(tasks) || pinnedKey !== ""),');
     expect((VIEWS.match(/spansProjects\(tasks\)/g) ?? []).length).toBe(2);
     expect(ROW).toContain("{showProject && (");
     expect(CARD).toContain("{showProject && (");
@@ -6564,11 +6572,13 @@ describe("filtersForView — the calendar's Archive facet (2026-08-20)", () => {
   });
 });
 
-describe("filtersForView — the grouped lists hide Archive by default (2026-10-17)", () => {
+describe("the grouped lists start with every lane but Archive ticked (2026-10-17, synced 2026-10-19)", () => {
   // Time / Project / PR are the List cut into sections about live work, and
   // "in group by time, project and pr can we not show archived tasks, unless
-  // selected in status" (Akshil). An EMPTY status list on those views means
-  // every lane but Archive; a ticked Archive shows what it names, as always.
+  // selected in status" (Akshil). Since 2026-10-19 the status menu SHOWS it:
+  // a grouped tab's facets start as every lane but Archive (defaultViewFacets)
+  // and the query is exactly what is ticked — filtersForView no longer rewrites
+  // an empty list on those views.
   const tasks = [
     task({ key: "a", task_id: "TASK-001", title: "Upcoming thing", status: "upcoming" }),
     task({ key: "b", task_id: "TASK-002", title: "Archived thing", status: "archived" }),
@@ -6579,10 +6589,25 @@ describe("filtersForView — the grouped lists hide Archive by default (2026-10-
     task({ key: "f", task_id: "TASK-006", title: "Parked thing", status: "needs_attention" }),
   ];
 
-  it("drops archived rows from each grouped view when no status is ticked", () => {
+  it("starts a grouped tab on every lane but Archive, ticked; the others on nothing", () => {
     for (const view of GROUP_VIEWS) {
-      const out = filterTasks(tasks, filtersForView(EMPTY_FILTERS, view));
+      const f = defaultViewFacets(view);
+      expect(f.statuses).toEqual(LANES_BUT_ARCHIVE);
+      expect(f.statuses).not.toContain("archived");
+      expect(f.statuses.length).toBe(BOARD_LANES.length - 1);
+      expect(f.projects).toEqual([]);
+      const out = filterTasks(tasks, filtersForView({ ...EMPTY_FILTERS, ...f }, view));
       expect(out.map((t) => t.key)).toEqual(["a", "c", "d", "e", "f"]);
+    }
+    for (const view of BASE_VIEWS) expect(defaultViewFacets(view)).toEqual({ statuses: [], projects: [] });
+  });
+
+  it("the query is what is ticked — an emptied list means everything, Archive included", () => {
+    for (const view of [...GROUP_VIEWS, ...BASE_VIEWS]) {
+      expect(filtersForView(EMPTY_FILTERS, view)).toBe(EMPTY_FILTERS);
+      expect(filterTasks(tasks, filtersForView(EMPTY_FILTERS, view)).map((t) => t.key)).toEqual(
+        ["a", "b", "c", "d", "e", "f"],
+      );
     }
   });
 
@@ -6592,39 +6617,7 @@ describe("filtersForView — the grouped lists hide Archive by default (2026-10-
       expect(filtersForView(alone, view)).toBe(alone);
       expect(filterTasks(tasks, filtersForView(alone, view)).map((t) => t.key)).toEqual(["b"]);
       const withDone = { ...EMPTY_FILTERS, statuses: ["done" as const, "archived" as const] };
-      expect(filterTasks(tasks, filtersForView(withDone, view)).map((t) => t.key)).toEqual([
-        "b",
-        "c",
-      ]);
-    }
-  });
-
-  it("leaves any other status selection alone — same reference back", () => {
-    const f = { ...EMPTY_FILTERS, statuses: ["done" as const] };
-    for (const view of GROUP_VIEWS) expect(filtersForView(f, view)).toBe(f);
-  });
-
-  it("keeps the other facets on the effective query", () => {
-    const f = { ...EMPTY_FILTERS, projects: ["/p"], draft: true, search: "x" };
-    const out = filtersForView(f, "time");
-    expect(out.projects).toEqual(["/p"]);
-    expect(out.draft).toBe(true);
-    expect(out.search).toBe("x");
-    expect(out.statuses).not.toContain("archived");
-    expect(out.statuses.length).toBeGreaterThan(0);
-  });
-
-  it("does not touch the plain List, the Board, Cards or the Calendar", () => {
-    for (const view of BASE_VIEWS) {
-      expect(filtersForView(EMPTY_FILTERS, view)).toBe(EMPTY_FILTERS);
-      expect(filterTasks(tasks, filtersForView(EMPTY_FILTERS, view)).map((t) => t.key)).toEqual([
-        "a",
-        "b",
-        "c",
-        "d",
-        "e",
-        "f",
-      ]);
+      expect(filterTasks(tasks, filtersForView(withDone, view)).map((t) => t.key)).toEqual(["b", "c"]);
     }
   });
 });
@@ -6633,10 +6626,15 @@ describe("emptyTasksLabel — the grouped archived-only empty state (2026-10-17)
   const ARCHIVE_HINT = "Only archived tasks here. Tick Archive under Status to see them.";
   const NO_MATCH = "Nothing matches these filters.";
 
-  it("names the hidden Archive lane on a grouped view with no filter on", () => {
+  it("names the hidden Archive lane on a grouped view on its starting facets", () => {
     for (const view of GROUP_VIEWS) {
-      expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, false)).toBe(ARCHIVE_HINT);
-      expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, true)).toBe(ARCHIVE_HINT);
+      const f = { ...EMPTY_FILTERS, ...defaultViewFacets(view) };
+      expect(emptyTasksLabel(view, f, 3, false)).toBe(ARCHIVE_HINT);
+      expect(emptyTasksLabel(view, f, 3, true)).toBe(ARCHIVE_HINT);
+      // Order of the ticks is not a filter.
+      expect(emptyTasksLabel(view, { ...f, statuses: [...f.statuses].reverse() }, 3, false)).toBe(ARCHIVE_HINT);
+      // Nothing ticked at all is the reader's own doing — and shows Archive anyway.
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, false)).toBe(NO_MATCH);
     }
   });
 
@@ -8260,15 +8258,16 @@ describe("the two filter menus", () => {
     expect(SCHEDULE_CSS).not.toContain("schedule-tv-pop-check");
     // Every row of BOTH menus wears the same class for the same fact.
     expect((VIEWS.match(/"schedule-tv-pop-item" \+ \(/g) ?? []).length).toBe(3);
-    // …and the aria is unchanged by any of it: Status is many, Project is one.
+    // …and the aria says what each is: Status is pressed lanes, Project is
+    // ticked folders — several at once since 2026-10-19 (Akshil: "make it
+    // multi-select"), so the rows are checkboxes, not radios.
     expect(VIEWS).toContain("aria-pressed={on}");
-    // Two ROWS wear the role (the attribute is followed by a line break; the
-    // radiogroup's own arrow-key walk names it inside a selector string, which
-    // is not markup).
-    expect((VIEWS.match(/role="radio"\n/g) ?? []).length).toBe(2);
-    // …inside a group, because a radio outside a radiogroup is a role with
-    // nothing to belong to — no set, no "3 of 7", and no name for the facet.
-    expect(VIEWS).toContain('role="radiogroup" aria-label="Project"');
+    expect((VIEWS.match(/role="checkbox"\n/g) ?? []).length).toBe(2);
+    expect(VIEWS).not.toContain('role="radio"\n');
+    // …inside a named group, so the facet still has a name.
+    expect(VIEWS).toContain('role="group" aria-label="Project"');
+    // The trigger spells the chosen folders out on hover.
+    expect(VIEWS).toContain('hint={filters.projects.length ? filters.projects.map((p) => basename(p)).join("\\n") : undefined}');
   });
 
   it("lights it with the LIST ROW'S OWN tokens, a rung above its hover", () => {
@@ -10172,10 +10171,11 @@ describe("the folder chip as a filter tag", () => {
     // the stop the tag would do both.
     const chip = VIEWS.slice(VIEWS.indexOf("export function IdentityChip"));
     expect(chip.slice(0, chip.indexOf("\n}\n"))).toContain("e.stopPropagation();");
-    // It REPLACES the project selection rather than widening it, and pressing
-    // the pinned one again lets it go: the chip stays on screen wearing the
+    // It TOGGLES its folder in the set (multi-select since 2026-10-19), and
+    // pressing a pinned one lets it go: the chip stays on screen wearing the
     // state, so it has to be the way back out too.
-    expect(SCHEDULED).toContain("f.projects.length === 1 && f.projects[0] === project");
+    expect(SCHEDULED).toContain("f.projects.includes(project)");
+    expect(SCHEDULED).toContain("? f.projects.filter((p) => p !== project)");
     expect(SCHEDULED).toContain("pinnedProjects={filters.projects}");
   });
 
@@ -11497,10 +11497,45 @@ describe("groupRows", () => {
     );
     expect(g.map((x) => x.label)).toEqual(["Later"]);
   });
-  it("by project: folders A→Z under ~, the folderless last", () => {
+  it("by project: the folder worked in most recently first, the folderless last (Akshil, 2026-10-19)", () => {
+    // ~/b's one row moved today; ~/a's newest moved yesterday.
     const g = groupRows(rows, "project", "/Users/me", NOW);
-    expect(g.map((x) => x.label)).toEqual(["~/a", "~/b", "No folder"]);
-    expect(g[0]?.rows.map((r) => r.key)).toEqual(["b", "d"]);
+    // The folder's NAME on the heading, its path under ~ as the tooltip, the
+    // full path for the + (Akshil, 2026-10-19).
+    expect(g.map((x) => x.label)).toEqual(["b", "a", "No folder"]);
+    expect(g.map((x) => x.hint ?? null)).toEqual(["~/b", "~/a", null]);
+    expect(g.map((x) => x.folder ?? null)).toEqual(["/Users/me/b", "/Users/me/a", null]);
+    expect(g[1]?.rows.map((r) => r.key)).toEqual(["b", "d"]);
+    expect(g.map((x) => x.recentAt)).toEqual([
+      sec("2026-10-16T09:00:00"), sec("2026-10-15T09:00:00"), sec("2026-10-12T09:00:00"),
+    ]);
+  });
+  it("by project: a run still ahead is not activity — the folder sorts by what it last did", () => {
+    const g = groupRows(
+      [
+        row({ key: "cron", project: "/Users/me/z", status: "upcoming", next_run: Math.floor(NOW / 1000) + 7 * 86400, next_run_entry: "e1", last_active: sec("2026-09-01T09:00:00") }),
+        rows[0]!,
+      ],
+      "project", "/Users/me", NOW,
+    );
+    expect(g.map((x) => x.label)).toEqual(["b", "z"]);
+    expect(activityAt(g[1]!.rows[0]!, NOW)).toBe(sec("2026-09-01T09:00:00"));
+  });
+  it("by PR: repositories and pull requests newest activity first, the number breaking a tie", () => {
+    const pr = (key: string, n: number, repo: string, iso: string) =>
+      row({ key, title: `PR #${n}`, repo, last_active: sec(iso) });
+    const g = groupRows(
+      [
+        pr("p1", 10, "x/old", "2026-10-16T08:00:00"),
+        pr("p2", 99, "x/new", "2026-10-16T14:00:00"),
+        pr("p3", 100, "x/new", "2026-10-10T14:00:00"),
+        pr("p4", 5, "x/new", "2026-10-16T14:00:00"),
+      ],
+      "pr", "", NOW,
+    );
+    expect(g.map((x) => x.label)).toEqual(["x/new", "x/old"]);
+    expect(g[0]?.groups?.map((x) => x.label)).toEqual(["#99", "#5", "#100"]);
+    expect(g[0]?.recentAt).toBe(sec("2026-10-16T14:00:00"));
   });
   it("by PR: repository first, then pull request, each heading linked (Akshil, 2026-10-16)", () => {
     // a + d name #1203 in a folder whose remote the server read; b carries a
@@ -11520,6 +11555,54 @@ describe("groupRows", () => {
     const g = groupRows(rows, "pr", "", NOW);
     expect(g.map((x) => x.label)).toEqual(["x/y", "Unknown repository", "No PR"]);
     expect(g[1]?.groups?.map((x) => [x.label, x.href ?? null])).toEqual([["#1203", null]]);
+  });
+  it("opens Later / Last hour / Today on a first visit to Time, folds the rest", () => {
+    const g = groupRows(
+      [row({ key: "h", last_active: Math.floor(NOW / 1000) - 20 * 60 }), ...rows],
+      "time", "", NOW,
+    );
+    expect([...openOnFirstVisit(g, "time", NOW)]).toEqual(["time:Last hour", "time:Today"]);
+    const seeded = seedCollapsedGroups(new Set(["time:Today", "other:x"]), g, "time", NOW);
+    expect([...seeded].sort()).toEqual(["other:x", "time:Earlier", "time:This week", "time:Yesterday"]);
+  });
+  it("opens the folders and pull requests touched in the last day on a first visit", () => {
+    const p = groupRows(rows, "project", "/Users/me", NOW);
+    expect([...openOnFirstVisit(p, "project", NOW)]).toEqual(["project:/Users/me/b"]);
+    // Exactly a day old is still open; a second more is not.
+    const edge = [
+      row({ key: "e1", project: "/e1", last_active: Math.floor(NOW / 1000) - 86400 }),
+      row({ key: "e2", project: "/e2", last_active: Math.floor(NOW / 1000) - 86401 }),
+    ];
+    expect([...openOnFirstVisit(groupRows(edge, "project", "", NOW), "project", NOW)]).toEqual(["project:/e1"]);
+    // PR: the repo opens with its recent PR; its older PRs stay folded.
+    const pr = groupRows(
+      [
+        row({ key: "p1", title: "PR #1", repo: "x/y", last_active: sec("2026-10-16T14:00:00") }),
+        row({ key: "p2", title: "PR #2", repo: "x/y", last_active: sec("2026-10-01T14:00:00") }),
+        row({ key: "p3", title: "PR #3", repo: "x/z", last_active: sec("2026-10-01T14:00:00") }),
+      ],
+      "pr", "", NOW,
+    );
+    expect([...openOnFirstVisit(pr, "pr", NOW)]).toEqual(["pr:repo:x/y", "pr:pr:x/y#1"]);
+    expect([...seedCollapsedGroups(new Set(), pr, "pr", NOW)].sort()).toEqual(["pr:pr:x/y#2", "pr:pr:x/z#3", "pr:repo:x/z"]);
+    expect(groupFoldKeys(pr, "pr")).toEqual(["pr:repo:x/y", "pr:pr:x/y#1", "pr:pr:x/y#2", "pr:repo:x/z", "pr:pr:x/z#3"]);
+  });
+  it("reads the seeded views and the per-tab facets out of untrusted stores", () => {
+    expect([...parseSeededViews('["time","nope","pr"]')]).toEqual(["time", "pr"]);
+    expect(parseSeededViews("{").size).toBe(0);
+    expect(parseSeededViews(null).size).toBe(0);
+    expect(parseViewFilters(JSON.stringify({
+      board: { statuses: ["in_progress", "bogus"], projects: ["/a", 3] },
+      project: { statuses: [], projects: [] },
+      nope: { statuses: ["done"] },
+      list: "junk",
+    }))).toEqual({
+      board: { statuses: ["in_progress"], projects: ["/a"] },
+      // Kept empty: on a grouped view that is a choice, not an absence.
+      project: { statuses: [], projects: [] },
+    });
+    expect(parseViewFilters("{")).toEqual({});
+    expect(parseViewFilters("[]")).toEqual({});
   });
   it("prRefOf: a GitHub link names its own repo, a bare number takes the folder's", () => {
     expect(prRefOf(row({ title: "https://github.com/a/b/pull/12", repo: "c/d" }))).toEqual({ number: 12, repo: "a/b" });

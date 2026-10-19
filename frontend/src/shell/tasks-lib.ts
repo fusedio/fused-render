@@ -3200,12 +3200,12 @@ export interface TaskFilters {
   /**
    * Project FOLDERS, full paths — the value `Task.project` carries.
    *
-   * A LIST THAT HOLDS AT MOST ONE (design.md, 2026-09-14). The menu is radio-
-   * style — pick a folder, or All — and the row chips write the same shape
-   * (Scheduled's folder chip), so nothing in the app ever stores two. The TYPE
-   * stays a list because that is the one thing worth not churning: `taskMatches`
-   * asks it with `includes`, which is the right question for either shape, and a
-   * stored filter written by an older build still reads correctly.
+   * ANY NUMBER OF THEM (Akshil, 2026-10-19: "make it multi-select"). It held at
+   * most one from 2026-09-14 — a radio menu, and the row chips wrote the same
+   * shape — and the list type is why the widening cost nothing: `taskMatches`
+   * always asked it with `includes`. The menu now ticks folders like Status
+   * ticks lanes, a row chip toggles its folder in and out of the set, and the
+   * trigger names the one folder or counts the several.
    */
   projects: string[];
   /**
@@ -3233,6 +3233,53 @@ export const EMPTY_FILTERS: TaskFilters = {
   projects: [],
   draft: false,
 };
+
+// ---- the status and folder facets, remembered PER VIEW TAB ------------------
+// (Akshil, 2026-10-19: "remember the status and dir filter per tab and persist
+// them, till the window is open".) Search and the Draft chip stay one control
+// across the views, as before — a word typed is how you read the page this
+// minute. Status and Project are the facets a tab is FOR (the Board narrowed
+// to In progress, the Project view on one folder), so each tab keeps its own
+// and gets them back when you return. sessionStorage: this window, this
+// sitting; a closed window starts clean.
+
+/** The two facets a view tab keeps. */
+export type ViewFacets = Pick<TaskFilters, "statuses" | "projects">;
+
+/** Where the per-tab facets live: a JSON object, view name → facets. */
+export const VIEW_FILTERS_KEY = "fused-render:tasks-view-filters";
+
+/** The per-tab facets out of an untrusted store: every status checked against
+ *  the Board's columns, every project a string, every view a known view; an
+ *  unreadable row is "nothing remembered" rather than a throw mid-render. */
+export function parseViewFilters(raw: string | null | undefined): Partial<Record<TaskView, ViewFacets>> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const lanes = new Set<string>([...BOARD_COLUMNS.map((c) => c.key), "draft"]);
+  const out: Partial<Record<TaskView, ViewFacets>> = {};
+  for (const [view, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!(TASK_VIEWS as string[]).includes(view)) continue;
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    const row = v as { statuses?: unknown; projects?: unknown };
+    const statuses = Array.isArray(row.statuses)
+      ? row.statuses.filter((k): k is BoardColumn => typeof k === "string" && lanes.has(k))
+      : [];
+    const projects = Array.isArray(row.projects)
+      ? row.projects.filter((k): k is string => typeof k === "string" && k !== "")
+      : [];
+    // An EMPTY pair is kept: on a grouped view it is the reader's own
+    // "everything, Archive included", and dropping it would hand back the
+    // default ticks on the next reload (review).
+    out[view as TaskView] = { statuses, projects };
+  }
+  return out;
+}
 
 export function hasActiveFilters(f: TaskFilters): boolean {
   return (
@@ -3277,33 +3324,35 @@ export function hasActiveFilters(f: TaskFilters): boolean {
 //
 // THE GROUPED LISTS HIDE ARCHIVE BY DEFAULT (Akshil, 2026-10-17: "in group by
 // time, project and pr can we not show archived tasks, unless selected in
-// status"). Time, Project and PR are the List cut into sections, and every
-// section is a question about live work — what ran this hour, what each folder
-// is up to, where each pull request stands. A task somebody has filed away
-// answers none of them, and with no status ticked (the common case) the
-// archive outnumbered the rest in every section. So on those three views an
-// EMPTY status list means "every lane but Archive" — the same shape as a
-// person ticking all the other lanes — and ticking Archive (alone or with
-// others) shows exactly what it names, as it does everywhere else. The plain
-// List and the Board keep Archive in the unfiltered page: the Board has a lane
-// for it, and the List is the one place "everything" is meant to mean that.
-// Effective query only, as above — the stored filters do not change, so the
-// badge still reads as no filter and the popover shows nothing ticked.
-/** Every Board lane except Archive — what an unfiltered grouped list asks for. */
-const LANES_BUT_ARCHIVE: BoardColumn[] = BOARD_LANES.map((l) => l.key).filter(
+// status") — AND THE STATUS MENU SAYS SO (Akshil, 2026-10-19: "status filter
+// and what we show should be synced"). Time, Project and PR are the List cut
+// into sections about live work, and a task filed away answers none of them;
+// so a grouped tab's status facet STARTS as every lane but Archive, ticked
+// where the reader can see it, rather than an empty list the query quietly
+// rewrote. From there the menu means exactly what it shows: untick Done and
+// Done goes, tick Archive and the archive comes back. The plain List and the
+// Board start unfiltered, as they always did. Per tab, in sessionStorage
+// (Scheduled.tsx facets / defaultViewFacets), so the Board narrowed to one
+// lane and the Project view on its default never fight over one value.
+/** Every Board lane except Archive — what a grouped tab starts ticked with. */
+export const LANES_BUT_ARCHIVE: BoardColumn[] = BOARD_LANES.map((l) => l.key).filter(
   (k) => k !== "archived",
 );
+
+/** The status + folder facets a tab starts with before the reader touches
+ *  them: every lane but Archive on a grouped view, nothing elsewhere. */
+export function defaultViewFacets(view: TaskView): ViewFacets {
+  return { statuses: groupOfView(view) ? [...LANES_BUT_ARCHIVE] : [], projects: [] };
+}
 
 export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
   const draft = view === "calendar" && f.draft;
   const archived = view === "calendar" && f.statuses.includes("archived");
-  const unfilteredGroup = groupOfView(view) !== null && f.statuses.length === 0;
-  if (!draft && !archived && !unfilteredGroup) return f;
+  if (!draft && !archived) return f;
   return {
     ...f,
     ...(draft ? { draft: false } : {}),
     ...(archived ? { statuses: f.statuses.filter((s) => s !== "archived") } : {}),
-    ...(unfilteredGroup ? { statuses: LANES_BUT_ARCHIVE } : {}),
   };
 }
 
@@ -3311,10 +3360,10 @@ export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
  * The sentence a view shows when it has NOTHING to draw. The page's call, not a
  * view's: only the page knows whether the set is empty because the machine has
  * no tasks, this app (`scoped`) has none, or the filters matched none — and,
- * since 2026-10-17, whether a grouped view is hiding an all-archived scope with
- * nothing ticked (filtersForView). That last one must not read "Nothing matches
- * these filters": the badge is off and the reader set no filter, so it names
- * the lane that is hidden and where to lift it instead.
+ * since 2026-10-17, whether a grouped view is hiding an all-archived scope on
+ * its starting facets (defaultViewFacets). That last one must not read
+ * "Nothing matches these filters": the reader set no filter, so it names the
+ * lane that is hidden and where to lift it instead.
  */
 export function emptyTasksLabel(
   view: TaskView,
@@ -3327,7 +3376,16 @@ export function emptyTasksLabel(
       ? "No tasks for this app yet."
       : "No tasks yet. Everything Claude runs for you shows up here.";
   }
-  if (groupOfView(view) && !hasActiveFilters(filters)) {
+  // A grouped view on its starting facets (every lane but Archive ticked,
+  // nothing else on): the reader set no filter, so name the lane that hides.
+  const onDefault =
+    groupOfView(view) !== null
+    && filters.projects.length === 0
+    && !filters.draft
+    && filters.search.trim() === ""
+    && filters.statuses.length === LANES_BUT_ARCHIVE.length
+    && LANES_BUT_ARCHIVE.every((k) => filters.statuses.includes(k));
+  if (onDefault) {
     return "Only archived tasks here. Tick Archive under Status to see them.";
   }
   return "Nothing matches these filters.";
@@ -5881,10 +5939,21 @@ export interface TaskGroup {
   label: string;
   /** This section's own rows — empty on a section that only holds `groups`. */
   rows: Task[];
+  /** The newest activity under this heading, epoch seconds (`activityAt` of
+   *  its rows, nested sections included) — what the Project and PR views
+   *  order by and what a first visit opens on. 0 on a section whose rows have
+   *  no clock at all. */
+  recentAt: number;
   /** Where the heading links (the PR view: the pull request on GitHub). */
   href?: string;
   /** Nested sections (the PR view: a repository's pull requests). */
   groups?: TaskGroup[];
+  /** The Project view: the folder this section IS, full path — what a task
+   *  made from the section's + runs in. Absent on "No folder" and elsewhere. */
+  folder?: string;
+  /** The Project view: the folder's path under ~, for the heading's tooltip
+   *  (the heading itself prints the folder's name, like the row chip). */
+  hint?: string;
 }
 
 /** Every row under a list of sections, depth-first, in drawing order — the
@@ -5961,11 +6030,28 @@ function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
   return "Earlier";
 }
 
+/** When a task was last INTERACTED with, epoch seconds: the row's own stamp
+ *  (`taskWhen`) — a run behind it, a live session, a draft's last keystroke —
+ *  except that a run still AHEAD is not an interaction, so a row whose stamp
+ *  is its next run answers its last activity instead. A cron due next week
+ *  must not pin its folder to the top of the Project view for a week. 0 when
+ *  the task has no clock of any kind. */
+export function activityAt(task: Task, now: number = Date.now()): number {
+  const w = taskWhen(task, now);
+  if (w.kind === "next") return task.last_active || 0;
+  return w.at || 0;
+}
+
+/** Sections with activity inside the last day (Akshil, 2026-10-19): what the
+ *  Project and PR views open on a first visit. */
+export const RECENT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Cut `rows` (already in list order) into sections. Rows never re-sort inside a
  * section; sections order by what the cut means — the last hour, then days
- * newest first; folders
- * A→Z with the folderless last, pull requests highest number first with the
+ * newest first; folders by their newest activity (Akshil, 2026-10-19: "the
+ * project that I just was working on should be on top") with the folderless
+ * last; repositories and their pull requests likewise newest first, with the
  * PR-less rows last.
  */
 export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number = Date.now()): TaskGroup[] {
@@ -5973,10 +6059,11 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
   const put = (key: string, label: string, task: Task) => {
     let g = groups.get(key);
     if (!g) {
-      g = { key, label, rows: [] };
+      g = { key, label, rows: [], recentAt: 0 };
       groups.set(key, g);
     }
     g.rows.push(task);
+    g.recentAt = Math.max(g.recentAt, activityAt(task, now));
   };
   if (by === "time") {
     for (const task of rows) {
@@ -5985,22 +6072,33 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
     }
     return TIME_BUCKETS.map((b) => groups.get(b)).filter((g): g is TaskGroup => !!g);
   }
+  // Newest activity first; the label breaks a tie so the order is stable.
+  const byRecency = (a: TaskGroup, b: TaskGroup) =>
+    b.recentAt - a.recentAt || a.label.localeCompare(b.label);
   if (by === "project") {
+    // THE FOLDER'S NAME, as the row chip prints it (Akshil, 2026-10-19: "not
+    // the full path"); the path under ~ is the heading's tooltip.
     for (const task of rows) {
       const p = (task.project || "").trim();
-      put(p || "\u0000none", p ? tildePath(p, home) : "No folder", task);
+      put(p || "\u0000none", p ? basename(p) : "No folder", task);
+      if (p) {
+        const g = groups.get(p)!;
+        g.folder = p;
+        g.hint = tildePath(p, home);
+      }
     }
     return [...groups.values()].sort((a, b) => {
       if (a.key === "\u0000none") return 1;
       if (b.key === "\u0000none") return -1;
-      return a.label.localeCompare(b.label);
+      return byRecency(a, b) || (a.hint ?? "").localeCompare(b.hint ?? "");
     });
   }
   // PR: REPOSITORY, then pull request (Akshil, 2026-10-16) — a section per
-  // repo, A→Z, each holding one section per PR, highest number first, with
-  // the heading linking to the PR on GitHub. Rows naming a PR in a folder with
-  // no known GitHub remote sit under "Unknown repository" (no links); rows
-  // naming no PR at all come last, under "No PR".
+  // repo, each holding one section per PR, with the heading linking to the PR
+  // on GitHub. Both levels newest activity first (Akshil, 2026-10-19), the PR
+  // number breaking a tie. Rows naming a PR in a folder with no known GitHub
+  // remote sit under "Unknown repository" (no links); rows naming no PR at all
+  // come last, under "No PR".
   const NONE = "\u0000none";
   const UNKNOWN = "\u0000unknown";
   const repos = new Map<string, Map<number, Task[]>>();
@@ -6020,26 +6118,106 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
     if (list) list.push(task);
     else prs.set(ref.number, [task]);
   }
+  const recentOf = (list: Task[]) => list.reduce((m, t) => Math.max(m, activityAt(t, now)), 0);
   const out: TaskGroup[] = [...repos.keys()]
-    .sort((a, b) => {
-      if (a === UNKNOWN) return 1;
-      if (b === UNKNOWN) return -1;
-      return a.localeCompare(b);
-    })
-    .map((repo) => ({
-      key: `repo:${repo === UNKNOWN ? "?" : repo}`,
-      label: repo === UNKNOWN ? "Unknown repository" : repo,
-      rows: [],
-      groups: [...repos.get(repo)!.entries()]
-        .sort((a, b) => b[0] - a[0])
+    .map((repo) => {
+      const prs = [...repos.get(repo)!.entries()]
         .map(([n, list]) => ({
           key: `pr:${repo === UNKNOWN ? "?" : repo}#${n}`,
           label: `#${n}`,
           rows: list,
+          recentAt: recentOf(list),
+          number: n,
           ...(repo === UNKNOWN ? {} : { href: `https://github.com/${repo}/pull/${n}` }),
-        })),
-    }));
+        }))
+        .sort((a, b) => b.recentAt - a.recentAt || b.number - a.number)
+        .map(({ number: _n, ...g }) => g);
+      return {
+        key: `repo:${repo === UNKNOWN ? "?" : repo}`,
+        label: repo === UNKNOWN ? "Unknown repository" : repo,
+        rows: [],
+        recentAt: prs.reduce((m, g) => Math.max(m, g.recentAt), 0),
+        groups: prs,
+        unknown: repo === UNKNOWN,
+      };
+    })
+    .sort((a, b) => {
+      if (a.unknown !== b.unknown) return a.unknown ? 1 : -1;
+      return byRecency(a, b);
+    })
+    .map(({ unknown: _u, ...g }) => g);
   const none = groups.get(NONE);
   if (none) out.push(none);
   return out;
+}
+
+// ---- what a grouped view opens on, the first time ----------------------------
+// (Akshil, 2026-10-19: "it should be collapsed when first opening it".) Every
+// section starts folded except the ones about NOW: on Time, Later / Last hour /
+// Today; on Project and PR, the sections with a task interacted with inside
+// the last day — which, ordered as above, are the ones at the top. Seeded ONCE
+// per view and then remembered like any fold the reader makes themselves —
+// FOR THIS TAB (Akshil, 2026-10-19: "it should be like in-page memory"): the
+// folds and the seed marks live in sessionStorage beside the per-tab facets,
+// so a closed tab forgets them and a fresh one is seeded again.
+
+/** The views whose folds have been seeded, as a JSON array of view names. */
+export const GROUPS_SEEDED_KEY = "fused-render:tasks-groups-seeded";
+
+/** Time buckets a first visit leaves open: everything from today on. */
+const OPEN_TIME_BUCKETS: ReadonlySet<string> = new Set(["Later", "Last hour", "Today"]);
+
+/** Every section key, every depth, in `<view>:<group>` form — the same keys
+ *  the fold store holds (ScheduleTaskViews groupFrames.keyOf). */
+export function groupFoldKeys(groups: TaskGroup[], by: TaskGroupBy): string[] {
+  const out: string[] = [];
+  const walk = (g: TaskGroup) => {
+    out.push(`${by}:${g.key}`);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  for (const g of groups) walk(g);
+  return out;
+}
+
+/** The fold keys a first visit to `by` leaves OPEN. A repository whose newest
+ *  pull request is recent is open along with it; its older PRs are not. */
+export function openOnFirstVisit(groups: TaskGroup[], by: TaskGroupBy, now: number = Date.now()): Set<string> {
+  const open = new Set<string>();
+  const since = (now - RECENT_GROUP_WINDOW_MS) / 1000;
+  const walk = (g: TaskGroup) => {
+    const recent = by === "time" ? OPEN_TIME_BUCKETS.has(g.key) : g.recentAt > 0 && g.recentAt >= since;
+    if (recent) open.add(`${by}:${g.key}`);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  for (const g of groups) walk(g);
+  return open;
+}
+
+/** `collapsed` with every section of `by` folded but the ones a first visit
+ *  opens — a new Set, the old untouched. Folds already in the set stay. */
+export function seedCollapsedGroups(
+  collapsed: ReadonlySet<string>,
+  groups: TaskGroup[],
+  by: TaskGroupBy,
+  now: number = Date.now(),
+): Set<string> {
+  const next = new Set(collapsed);
+  const open = openOnFirstVisit(groups, by, now);
+  for (const k of groupFoldKeys(groups, by)) {
+    if (open.has(k)) next.delete(k);
+    else next.add(k);
+  }
+  return next;
+}
+
+/** The views already seeded, out of an untrusted store. */
+export function parseSeededViews(raw: string | null | undefined): Set<TaskGroupBy> {
+  if (!raw) return new Set();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((v): v is TaskGroupBy => typeof v === "string" && (GROUP_VIEWS as string[]).includes(v)));
+  } catch {
+    return new Set();
+  }
 }
