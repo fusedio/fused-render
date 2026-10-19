@@ -865,3 +865,66 @@ def test_merge_remote_renest_in_place_lands_in_the_new_folder():
                        udf("a", 60.0, 60.0), udf("b", 10.0, 150.0)])
     assert rows["G"]["childUdfOrder"] == ["a"]
     assert (rows["a"]["x"], rows["a"]["y"]) == (60.0, 60.0)
+
+
+# -- a re-nesting that lost takes its move with it ----------------------------------
+
+def _inside(rows, child, home):
+    f, c = rows[home], rows[child]
+    assert home in [n for n, r in rows.items() if child in (r.get("childUdfOrder") or [])]
+    assert 0 <= c["x"] <= f["width"] and 0 <= c["y"] <= f["height"], (c, f)
+
+
+def test_merge_remote_merging_two_folders_loses_to_a_locally_kept_folder():
+    base = cs.rows_of_doc(doc([folder("F1", ["a", "b"], x=0.0, y=0.0),
+                               folder("F2", ["c", "d"], x=500.0, y=0.0),
+                               udf("a", 0.0, 0.0), udf("b", 0.0, 100.0),
+                               udf("c", 0.0, 0.0), udf("d", 0.0, 100.0)]))
+    local = doc([folder("F1", ["a", "b"], x=0.0, y=0.0), folder("F2", ["c", "d"], x=700.0, y=0.0),
+                 udf("a", 0.0, 0.0), udf("b", 0.0, 100.0),
+                 udf("c", 0.0, 0.0), udf("d", 0.0, 100.0)])
+    remote = doc([folder("G", ["a", "b", "c", "d"], x=0.0, y=0.0), udf("a", 0.0, 0.0),
+                  udf("b", 0.0, 100.0), udf("c", 0.0, 200.0), udf("d", 0.0, 300.0)])
+    merged, _info = cs.merge_toml(base, local, remote)
+    rows = by_name(merged)
+    assert rows["F2"]["childUdfOrder"] == ["c", "d"]
+    # Local's nesting won, so local's relative positions, inside F2's box.
+    assert (rows["c"]["x"], rows["c"]["y"]) == (0.0, 0.0)
+    assert (rows["d"]["x"], rows["d"]["y"]) == (0.0, 100.0)
+    _inside(rows, "c", "F2")
+    _inside(rows, "d", "F2")
+    again, _info = cs.merge_toml(base, merged, remote)
+    assert cs.rows_of_doc(again) == cs.rows_of_doc(merged)
+
+
+def test_merge_remote_moving_a_node_to_a_renamed_folder_loses_to_local_nesting():
+    base = cs.rows_of_doc(doc([folder("F1", ["a", "b"], x=0.0, y=0.0),
+                               folder("F2", ["c", "d"], x=500.0, y=0.0),
+                               udf("a", 0.0, 0.0), udf("b", 0.0, 100.0),
+                               udf("c", 0.0, 0.0), udf("d", 0.0, 100.0)]))
+    local = doc([folder("F1", ["a", "b"], x=50.0, y=0.0), folder("F2", ["c", "d"], x=550.0, y=0.0),
+                 udf("a", 0.0, 0.0), udf("b", 0.0, 100.0),
+                 udf("c", 0.0, 0.0), udf("d", 0.0, 100.0)])
+    remote = doc([folder("G2", ["a", "c", "d"], x=500.0, y=0.0), folder("G1", ["b"], x=0.0, y=0.0),
+                  udf("a", 0.0, 200.0), udf("b", 0.0, 100.0),
+                  udf("c", 0.0, 0.0), udf("d", 0.0, 100.0)])
+    merged, _info = cs.merge_toml(base, local, remote)
+    rows = by_name(merged)
+    assert rows["F1"]["childUdfOrder"] == ["a", "b"]
+    assert (rows["a"]["x"], rows["a"]["y"]) == (0.0, 0.0)
+    _inside(rows, "a", "F1")
+    again, _info = cs.merge_toml(base, merged, remote)
+    assert cs.rows_of_doc(again) == cs.rows_of_doc(merged)
+
+
+def test_merge_both_sides_renest_local_wins_with_its_own_position():
+    base = cs.rows_of_doc(doc([folder("G", [], x=0.0, y=0.0), folder("F", [], x=1000.0, y=0.0),
+                               udf("c", 500.0, 500.0)]))
+    local = doc([folder("G", [], x=0.0, y=0.0), folder("F", ["c"], x=1000.0, y=0.0),
+                 udf("c", 10.0, 10.0)])
+    remote = doc([folder("G", ["c"], x=0.0, y=0.0), folder("F", [], x=1000.0, y=0.0),
+                  udf("c", 200.0, 300.0)])
+    merged, _info = cs.merge_toml(base, local, remote)
+    rows = by_name(merged)
+    assert (rows["c"]["x"], rows["c"]["y"]) == (10.0, 10.0)
+    _inside(rows, "c", "F")

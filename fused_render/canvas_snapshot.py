@@ -1520,7 +1520,11 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
 #                side moved it, that side's x/y are taken, in that side's
 #                frame. When both or neither did (or there is no base), the
 #                field-wise merge's x/y stand, attributed per axis to the
-#                side they came from (local first). If that side nested the node in
+#                side they came from (local first). Membership comes first:
+#                a side that re-nested the node into a folder the merge did
+#                not keep it in lost that move with it, so the node takes
+#                the other side's x/y (that side's nesting won) — a node is
+#                never drawn outside the folder that lists it. If that side nested the node in
 #                the folder the merge puts it in (a paired rename counts as
 #                the same folder), the x/y are kept: relative to that
 #                folder, they ride with it wherever its own merge put it.
@@ -1830,10 +1834,15 @@ def _folder_renames(B: _Side, L: _Side, R: _Side) -> dict:
     return out
 
 
+def _same_frame(B: _Side, S: _Side, key: tuple, renames: dict) -> bool:
+    """Whether side `S` keeps node `key` in base's folder (or its rename)."""
+    fb, fs = B.home_of(key), S.home_of(key)
+    return fs == fb or (fb in renames and renames[fb] == fs)
+
+
 def _moved(B: _Side, S: _Side, key: tuple, renames: dict) -> bool:
     """Whether side `S` moved node `key` since base (see "coordinates")."""
-    fb, fs = B.home_of(key), S.home_of(key)
-    same_frame = fs == fb or (fb in renames and renames[fb] == fs)
+    same_frame = _same_frame(B, S, key, renames)
     return S.position(key, absolute=not same_frame) != B.position(key, absolute=not same_frame)
 
 
@@ -1864,6 +1873,21 @@ def _reframe_children(merged: dict, B: _Side, L: _Side, R: _Side,
             row[axis] = absolute - (_num(tpos.get(axis), 0) if tpos else 0)
 
         if key in L.rows and key in R.rows and key in B.rows:
+            # A side that re-nested the node where the merge did NOT put it
+            # lost that re-nesting, and the move that came with it: the
+            # coordinates follow the side whose nesting won, so the node is
+            # never drawn outside the folder that lists it.
+            l_same = _same_frame(B, L, key, renames)
+            r_same = _same_frame(B, R, key, renames)
+            winner = None
+            if target == l_home and r_home != target and not r_same:
+                winner = (L, l_home)
+            elif target == r_home and l_home != target and not l_same:
+                winner = (R, r_home)
+            if winner is not None:
+                for axis in ("x", "y"):
+                    put(*winner, axis)
+                continue
             l_moved, r_moved = _moved(B, L, key, renames), _moved(B, R, key, renames)
             if l_moved != r_moved:
                 side, home = (L, l_home) if l_moved else (R, r_home)
