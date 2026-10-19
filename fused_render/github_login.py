@@ -289,6 +289,27 @@ def _setup_git(path: str) -> None:
         logger.warning("gh auth setup-git could not be run after sign-in")
 
 
+def _after_sign_in() -> None:
+    """The contribution loop's sign-in follow-up (docs/CONTRIB_LOOP.md
+    §16.1): re-check the owner of every copy classified while signed out, and
+    give GitHub-link copies this account's commit identity
+    (`contrib.classify.after_sign_in`). It asks GitHub, so on its own daemon
+    thread — the record settles without waiting for it — and nothing it does
+    can fail the sign-in."""
+    def run():
+        try:
+            from fused_render.contrib import classify
+
+            classify.after_sign_in()
+        except Exception:  # noqa: BLE001 - housekeeping, never the login's failure
+            logger.exception("contrib follow-up after GitHub sign-in failed")
+
+    try:
+        threading.Thread(target=run, daemon=True, name="contrib-after-sign-in").start()
+    except RuntimeError:  # interpreter shutting down
+        pass
+
+
 def _run(login: _Login) -> None:
     """Drain, reap, decide, and settle the record. Never raises out of the
     thread.
@@ -342,6 +363,7 @@ def _run(login: _Login) -> None:
                 # `setup-git` behind the confirmed sign-in only — never on the
                 # child's exit code alone.
                 _setup_git(login.path)
+                _after_sign_in()
                 login.error = None
             else:
                 login.error = _failure(login, code)

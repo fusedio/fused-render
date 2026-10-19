@@ -446,6 +446,25 @@ def test_raw_git_push_is_refused_by_the_push_guard(world):
     assert _remote_main(world) == before
 
 
+def test_sign_in_rechecks_unknown_owners_whatever_the_flags(world, monkeypatch):
+    """TL ruling 2026-10-19: the author's own repo installed while signed
+    out (unknown owner → github, guarded) gets its auto-push back at
+    sign-in, every flag off; someone else's copy gets the account's commit
+    identity instead."""
+    mine = _install(world, name="mine")  # alice/sine, owner unknown
+    assert store.get(mine)["owner_checked"] is False and classify.is_push_guarded(mine)
+    out = classify.after_sign_in({"login": "alice", "id": 1, "email": "1+alice@users.noreply.github.com"})
+    assert out["rechecked"] == 1
+    rec = store.get(mine)
+    assert rec["kind"] == "own" and rec["owner_checked"] is True
+    assert not classify.is_push_guarded(mine) and classify.kind_of(mine) == "own"
+    theirs = _install(world, name="theirs")
+    out = classify.after_sign_in(_ident())  # bob: not the owner
+    assert out == {"rechecked": 1, "identity": 1}
+    assert store.get(theirs)["kind"] == "github" and classify.is_push_guarded(theirs)
+    assert git(theirs, "config", "--local", "--get", "user.email").strip() == _ident()["email"]
+
+
 def test_push_guard_removed_when_kind_becomes_own(world):
     bob = _install(world)
     store.update(bob, lambda r: r.__setitem__("kind", "own"))

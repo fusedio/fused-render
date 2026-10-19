@@ -316,12 +316,14 @@ def _forget_kind(app_dir) -> None:
 
 
 def _kick(root, rec) -> None:
+    """A folder with no record is classified only with A1 on (as v1); an
+    unchecked owner is re-checked WHATEVER the flags — it decides whether
+    the author's own copy pushes, which is correctness, not UI (TL ruling
+    2026-10-19). Both on a background thread: `ensure` may ask GitHub."""
     from fused_render.contrib import flags
 
-    if not flags.sources():
-        return
     if rec is None:
-        if _in_workspace(root):
+        if flags.sources() and _in_workspace(root):
             ensure_in_background(root)
     elif rec.get("kind") == "github" and not rec.get("owner_checked"):
         ensure_in_background(root)
@@ -390,9 +392,11 @@ def _adopt(app_dir, repo, rc) -> dict | None:
     return None
 
 
-def _recheck(app_dir, rec, identity) -> dict | None:
+def _recheck(app_dir, rec, identity, *, block=False) -> dict | None:
     """The one deferred ownership check (module docstring): only with an
-    identity, only upgrading, then never again."""
+    identity, only upgrading, then never again. An upgrade to `own` takes
+    the push guard off (back to today's auto-push) — here when the slot is
+    free (`block`), else at the next sync's `settle_locked`."""
     ident = identity if identity is not None else _identity()
     repo = rec.get("repo")
     if not ident or not repo:
@@ -409,7 +413,39 @@ def _recheck(app_dir, rec, identity) -> dict | None:
 
     out = store.update(app_dir, fn)
     _forget_kind(app_dir)
+    root = follow.is_repo_root(app_dir) if out and out.get("kind") == "own" else None
+    if root is not None:
+        try:
+            with replay.slot(block=block) as held:
+                if held:
+                    ensure_push_guard(root, "own")
+        except Exception:  # noqa: BLE001 — the next sync settles it
+            logger.exception("contrib: unguarding %s failed", app_dir)
     return out
+
+
+def after_sign_in(ident=None) -> dict:
+    """The user just signed in to GitHub (github_login): re-check every
+    unchecked `github` record once — whatever the flags, an author's own
+    copy must get its auto-push back — then give the remaining `github`
+    copies the account's commit identity. Asks GitHub (fresh, not the
+    signed-out cache): never under the slot, never on a request thread.
+    Answers `{rechecked, identity}` counts."""
+    if ident is None:
+        gh = _gh()
+        try:
+            ident = gh.identity(refresh=True) if gh is not None else None
+        except Exception:  # noqa: BLE001 — unreachable: nothing to apply
+            ident = None
+    if not isinstance(ident, dict) or not ident.get("login"):
+        return {"rechecked": 0, "identity": 0}
+    rechecked = 0
+    for k, rec in store.all().items():
+        if (isinstance(rec, dict) and rec.get("kind") == "github"
+                and not rec.get("owner_checked") and os.path.isdir(k)
+                and store.get(k) is not None):
+            rechecked += _recheck(k, rec, ident, block=True) is not None
+    return {"rechecked": rechecked, "identity": apply_identity_everywhere(ident)}
 
 
 def record_install(app_dir, url) -> dict | None:

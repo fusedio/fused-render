@@ -658,6 +658,23 @@ def test_redirected_config_is_never_fetched(w):
     assert engine.status(w.app)["sync_error_code"] == "redirected"
 
 
+def test_github_kind_goes_to_the_engine_whatever_the_flags(w, monkeypatch):
+    """P1/P2: the recorded kind decides — with every flag off a `github`
+    copy is synced by `engine.sync` (never the plain, pushing body)."""
+    _flags(monkeypatch, sources=False, changes=False, inbox=False, loop=False, remix=False)
+    assert classify.kind_of(w.app) == "github"
+    calls = []
+    real = engine.sync
+    monkeypatch.setattr(engine, "sync", lambda root, **kw: calls.append(root) or real(root, **kw))
+    monkeypatch.setattr(git_upstream, "_sync_plain",
+                        lambda *a, **k: pytest.fail("plain sync of a github copy"))
+    tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    assert w.sync(push=True)["why"] == "changes-off"
+    assert calls == [w.app]
+    _remote_untouched(w, tip)
+
+
 def test_fetch_errors_reach_status_offline_stays_silent(w, monkeypatch):
     from fused_render.contrib import follow
     real = follow.fetch
