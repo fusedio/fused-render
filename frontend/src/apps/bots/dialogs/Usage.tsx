@@ -56,7 +56,15 @@ export function UsageDialog({ onClose }: { onClose: () => void }) {
                     <span className={cn("truncate", !b.live && "italic text-muted-foreground")}>{b.name}</span>
                     <span className="text-right tabular-nums text-muted-foreground">{b.today || "·"}</span>
                     <span className="text-right tabular-nums text-muted-foreground">{b.week}</span>
-                    <span className="flex flex-wrap gap-1">{modelChips(b.models).map(([m, n]) => <i key={m} className={`chip ${m}`} title={`${n} on ${m}`}>{m}{n > 1 ? ` ${n}` : ""}</i>)}</span>
+                    {/* Tailwind pill, not bots.css's .chip: that rule is scoped to .bots-page and never reaches this portaled
+                        dialog, so the chips sat as bare italic text (owner, 2026-10-19). Same pill as the Failures rows; opus
+                        and fable keep their accent tint from the page's .chip.opus rule. */}
+                    <span className="flex flex-wrap gap-1">{modelChips(b.models).map(([m, n]) => (
+                      <i key={m} title={`${n} on ${m}`} className={cn("rounded-full px-1.5 py-px font-mono text-[10px] not-italic whitespace-nowrap",
+                        m === "opus" || m === "fable" ? "bg-[color-mix(in_srgb,var(--accent)_18%,transparent)] text-[var(--accent-text,var(--text))]" : "bg-foreground/[0.06] text-muted-foreground")}>
+                        {m}{n > 1 ? ` ${n}` : ""}
+                      </i>
+                    ))}</span>
                     {/* The count opens the failures dialog (its errors); stopPropagation keeps the row's own click (select the bot) out of
                         it. Not for the collapsed "Deleted bots" row: its lines carry no id the failures route could match. Tailwind only:
                         the dialog portals to <body>, outside .bots-page, so neither its button pill nor .lnk reach here. And no
