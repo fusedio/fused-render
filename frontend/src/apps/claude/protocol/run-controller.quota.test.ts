@@ -489,6 +489,35 @@ describe("a tool-only reply", () => {
     expect(state.trouble).toBeNull();
   });
 
+  test("a bare 429 with a rejected window is the plan limit too, and retires the same way", async () => {
+    // The text classifies as an ordinary failure (no "usage limit" words), the
+    // quota says otherwise — agent.py `_is_limit_turn` agrees (Bugbot #1738).
+    let turn = 0;
+    const cancelled: string[] = [];
+    const c = make(
+      {
+        start: () => ({ run_id: "r" + ++turn }),
+        poll: () =>
+          turn === 1
+            ? poll({ done: true, error: "API Error: 429", quota: rejected() })
+            : poll({ done: true, segments: [toolSeg] }),
+      },
+      () => Promise.resolve({ entry: { id: "e1" } }),
+      (id) => {
+        cancelled.push(id);
+        return Promise.resolve({});
+      },
+      () => Promise.resolve({ entries: [{ id: "e1", session_id: "s1", message: CONTINUE_PROMPT, state: "pending" }] }),
+    );
+    await c.sendMessage("go");
+    await flush();
+    await c.sendMessage("try again");
+    await flush();
+    expect(c.getState().turns.map((t) => t.role)).toEqual(["user", "note", "user", "assistant"]);
+    expect(c.getState().trouble).toBeNull();
+    expect(cancelled).toEqual(["e1"]);
+  });
+
   test("retires nothing ELSE — an ordinary failure is not answered by a tool call", async () => {
     let turn = 0;
     let listed = 0;

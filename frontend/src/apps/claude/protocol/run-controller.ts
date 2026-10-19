@@ -998,7 +998,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       if (t.role === "user") lastUser = i;
     });
     const goes = (t: Turn, i: number): boolean =>
-      t.role === "error" && i < lastUser && (!opts.limitOnly || (t.kind === "limit" && isPlanLimit(t)));
+      t.role === "error" && i < lastUser && (!opts.limitOnly || isPlanLimit(t));
     const gone = state.turns.filter((t, i): t is ErrorTurn => goes(t, i));
     if (!gone.length) return;
     const turns = state.turns.filter((t, i) => !goes(t, i));
@@ -1010,11 +1010,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const cardStays =
       !!card &&
       turns.some((t) => t.role === "error") &&
-      !(opts.limitOnly && card.kind === "limit" && isPlanLimit({ text: card.message, quota: card.quota }));
+      !(opts.limitOnly && isPlanLimit({ text: card.message, quota: card.quota }));
     emit({ turns, ...(cardStays ? {} : { trouble: null }) });
+    // `isPlanLimit` alone, not `kind === "limit"`: a bare "API Error: 429"
+    // with `quota.status === "rejected"` is the plan's limit too (agent.py
+    // `_is_limit_turn`) but classifies as `generic` by its text (Bugbot #1738).
     const hadLimit =
-      gone.some((t) => t.kind === "limit" && isPlanLimit(t)) ||
-      (!cardStays && card?.kind === "limit" && isPlanLimit({ text: card.message, quota: card.quota }));
+      gone.some((t) => isPlanLimit(t)) ||
+      (!cardStays && !!card && isPlanLimit({ text: card.message, quota: card.quota }));
     if (!hadLimit) return;
     // AND EVERY COMEBACK BOOKED ON THIS SESSION. The scheduled "Your usage
     // limit has reset. Continue…" is for a chat that is still stuck; fired
