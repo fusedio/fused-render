@@ -3,6 +3,9 @@
 // whoami, token) execute a CLI child / hand out a credential, so they carry
 // the X-Fused header too (the server 403s them without it).
 import { getJson, postJson } from "@platform/lib/api";
+import { ownerFromError, type SyncLogEvent, type SyncOwner, type SyncState } from "./sync-state";
+
+export type { SyncLeg, SyncLogEvent, SyncOwner, SyncState } from "./sync-state";
 
 const GUARD = { headers: { "X-Fused": "1" } };
 
@@ -42,54 +45,16 @@ export interface CanvasEntry {
   updated_at: number | null;
 }
 
+/** The watcher's status as sync/start and sync/pull answer it, cut to what
+ *  this page reads: the clone dir (start) and a pull's verdict (pull). The
+ *  live picture — legs, disk_rev, fix_active — is sync/state (SyncState). */
 export interface SyncStatus {
   name: string;
   dir: string;
-  watching: boolean;
-  /** "held": the clone has unpushed edits but the server moved since the
-   *  last sync (see `server_stale`); nothing is pushed until the user pulls. */
-  push_state: "idle" | "pending" | "pushing" | "error" | "held";
-  push_seq: number;
-  last_push_at: number | null;
-  /** The clone's disk revision: moves whenever the folder's fingerprint moves
-   *  (a Claude edit, a merge, an embed snapshot landing). The workspace asks
-   *  for a delta (getDelta) when it advances. Older servers omit it. */
-  disk_rev?: number;
-  /** Identifies the watcher behind disk_rev; a new one counts from 0 again.
-   *  null when no watcher runs. Older servers omit it. */
-  watcher_epoch?: string | null;
-  /** Set on a pull answer that failed (`ok: false`); `error` is the push's. */
+  /** Set on a pull answer that failed (`ok: false`). */
   pull_error?: string | null;
-  /** The canvas changed on the server since the last sync point and has not
-   *  been pulled: what a hosted workbench tab shows as "Server changes". The
-   *  watcher stops pushing while this is set; `pullCanvas` clears it. */
-  server_stale?: {
-    since: number;
-    udfs: { slug: string; kind: "added" | "changed" | "removed" }[];
-    layout: boolean;
-  } | null;
-  /** Increments when the watcher pulls remote (workbench-side) changes down. */
-  pull_seq: number;
-  last_pull_at: number | null;
+  /** The last push's error, if any. */
   error: string | null;
-  /** Full per-line CLI output of the failing push (e.g. one validation
-   *  error per line); empty when the last push succeeded. */
-  error_detail: string[];
-  /** A "Fix with Claude" session is running on this clone right now — set the
-   *  instant one spawns, cleared only by that run's own completion (never a
-   *  transcript-activity guess), so it's safe to gate a second spawn on. */
-  fix_active: boolean;
-  /** A Claude session is live in this clone right now (a live claude
-   *  process, never a transcript-activity guess). Informational only — the
-   *  left-pane lock does NOT key off this: a live session with no edits yet
-   *  (a plain "hi") must not lock the workbench for the whole chat. See
-   *  push_state and `pulling` for what actually locks. */
-  agent_active: boolean;
-  /** A force-pull or three-way merge is writing to the clone's files right
-   *  now (the watcher's pull leg, under its _op_lock) — the other condition,
-   *  besides push_state pending/pushing, that locks the left pane: the
-   *  clone's files are moving on disk. */
-  pulling: boolean;
 }
 
 export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
@@ -175,26 +140,71 @@ export const getDelta = (name: string, full: boolean) =>
 
 /** The frame applied (`ok`) or refused a delta: the host's picture of the
  *  frame moves to that revision, or is dropped so the next delta is full. */
-export const ackDelta = (name: string, rev: number, ok: boolean) =>
-  postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", { name, rev, ok });
+export const ackDelta = (name: string, rev: number, ok: boolean, reason?: string) =>
+  postJson<{ ok: boolean; rev: number }>("/api/canvases/delta/ack", {
+    name,
+    rev,
+    ok,
+    // The frame's own words for a refusal ("not hydrated yet" during boot),
+    // so the server can tell a frame still booting from a real refusal.
+    ...(reason !== undefined ? { reason } : {}),
+  });
 
 /** Pull the server's canvas into the clone now (the "Server changes · Pull"
  *  chip). Clean clone: force pull; dirty: three-way merge, canvas.toml per
- *  node, local edits kept. Returns the full status with `ok`. */
+ *  node, local edits kept. Answers the status with `ok`; the page reads only
+ *  the verdict (the new state follows on sync/events). */
 export const pullCanvas = (name: string) =>
   postJson<SyncStatus & { ok: boolean; error?: string | null }>(
     "/api/canvases/sync/pull",
     { name },
   );
 
-export const startSync = (name: string) =>
-  postJson<SyncStatus>("/api/canvases/sync/start", { name });
+/** Thrown by `startSync` when another fused-render process holds this
+ *  clone's `.sync/<name>.lock` (409 `owned`). Keeps HttpError's `status` and
+ *  `body` for callers that only read those. */
+export class CanvasOwnedError extends Error {
+  status = 409;
+  owner: SyncOwner;
+  body: unknown;
+  constructor(owner: SyncOwner, body: unknown, message: string) {
+    super(message);
+    this.name = "CanvasOwnedError";
+    this.owner = owner;
+    this.body = body;
+  }
+}
 
-export const stopSync = (name: string) =>
-  postJson<{ ok: boolean }>("/api/canvases/sync/stop", { name });
+/** Arm the clone watcher. A 409 `owned` (another process is this clone's one
+ *  writer) is rethrown as `CanvasOwnedError` carrying `{pid, port, since}`;
+ *  any other failure is the plain HttpError. */
+export const startSync = async (name: string): Promise<SyncStatus> => {
+  try {
+    return await postJson<SyncStatus>("/api/canvases/sync/start", { name });
+  } catch (e) {
+    const owner = ownerFromError(e);
+    if (owner) throw new CanvasOwnedError(owner, (e as { body?: unknown }).body, (e as Error).message);
+    throw e;
+  }
+};
 
-export const getSyncStatus = (name: string) =>
-  getJson<SyncStatus>(`/api/canvases/sync/status?name=${encodeURIComponent(name)}`);
+/** The four sync legs (embed_to_disk is the page's own: it fills that leg
+ *  from its relay queue), disk_rev / watcher_epoch, and the lock owner. */
+export const getSyncState = (name: string) =>
+  getJson<SyncState>(`/api/canvases/sync/state?name=${encodeURIComponent(name)}`);
+
+/** The sync log ring (200 per canvas) after `after` (a seq; 0 = all held).
+ *  `next` is the seq to pass on the following call. */
+export const getSyncLog = (name: string, after: number) =>
+  getJson<{ events: SyncLogEvent[]; next: number }>(
+    `/api/canvases/sync/log?name=${encodeURIComponent(name)}&after=${after}`,
+  );
+
+/** Same-origin URL of WS /api/canvases/sync/events (state / log / ping). */
+export const syncEventsUrl = (name: string) =>
+  (location.protocol === "https:" ? "wss://" : "ws://") +
+  location.host +
+  `/api/canvases/sync/events?name=${encodeURIComponent(name)}`;
 
 /** Spawn a Claude session on the canvas clone primed with the failing
  *  push's errors; attach the chat iframe with the returned run_id. */

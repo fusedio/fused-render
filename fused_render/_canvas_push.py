@@ -15,14 +15,13 @@ Why it cannot just run:
     (`.sync/trash` only ever protects local files, and the watcher's next probe
     sees remote == local, so the merge no-ops).
   * a push that bypasses the watcher also moves the remote behind its back.
-    With a clean clone the next poll cannot tell that from a workbench edit and
-    takes the wholesale force-pull branch: the agent's own push comes straight
-    back down, every unignored local file the push did not publish is deleted,
-    and the UI shows a phantom "pulled from workbench".
+    The next poll cannot tell that from a workbench edit: it flags the canvas
+    server-changed, which holds every push until someone pulls the agent's
+    own push back down.
 
 So a push whose target is a clone is turned into a POST to
 ``/api/canvases/sync/push``, which performs the very same push inside the server
-process, under the watcher's own lock, with the guard intact.
+process, under the watcher's `_flight_lock`, with the guard intact.
 
 Design rules, all of them load-bearing:
 
@@ -358,6 +357,19 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
             "then push again; that also protects against the remote having "
             "moved in the hosted workbench while nothing was watching.\n"
             % (body.get("error") or "the canvas is not being synced"))
+        return 1
+    if status == 409 and body.get("code") == "owned":
+        # Another fused-render process holds this clone's writer lock. Same
+        # refusal as no_watcher (the raw push is never inert for a clone), but
+        # the fix is "push from the one that owns it", not "open it here".
+        owner = body.get("owner") if isinstance(body.get("owner"), dict) else {}
+        err.write(
+            "fused-render: %s\n"
+            "Another fused-render (pid %s, port %s) is syncing this canvas "
+            "clone. Push from there, or quit it and open the canvas in this "
+            "fused-render, then push again.\n"
+            % (body.get("error") or "the canvas is synced by another fused-render",
+               owner.get("pid", "?"), owner.get("port", "?")))
         return 1
     if status == 409 and body.get("code") == "busy":
         # Someone else holds the folder this instant (the watcher's own leg,

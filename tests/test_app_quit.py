@@ -324,6 +324,10 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
                         lambda: order.append("latch-ai"))
     monkeypatch.setattr(bots_browser, "refuse_launches",
                         lambda: order.append("latch-bots"))
+    from fused_render import canvases as canvases_mod
+    monkeypatch.setattr(canvases_mod, "refuse_new_managers",
+                        lambda: order.append("latch-canvases"))
+    monkeypatch.setattr(canvases_mod, "shutdown", lambda: order.append("canvas-sync"))
     monkeypatch.setattr(bots_registry, "shutdown",
                         lambda budget_s=None: order.append("bots"))
     monkeypatch.setattr(engine_host, "stop_all", lambda: order.append("engines"))
@@ -338,8 +342,9 @@ def test_children_rung_arms_the_spawn_latches_before_any_killer_runs(monkeypatch
 
     app_mod._stop_children(budget_s=2.0)
 
-    assert order[:3] == ["latch-engines", "latch-ai", "latch-bots"]
-    assert set(order[3:]) == {"engines", "ai", "terminals", "index", "bots", "discovery"}
+    assert order[:4] == ["latch-engines", "latch-ai", "latch-bots", "latch-canvases"]
+    assert set(order[4:]) == {"engines", "ai", "terminals", "index", "bots",
+                              "canvas-sync", "discovery"}
 
 
 def test_children_rung_is_bounded_by_its_budget(monkeypatch):
@@ -359,6 +364,9 @@ def test_children_rung_is_bounded_by_its_budget(monkeypatch):
     monkeypatch.setattr(supervisor, "refuse_new_workers", lambda: None)
     monkeypatch.setattr(bots_browser, "refuse_launches", lambda: None)
     monkeypatch.setattr(bots_registry, "shutdown", lambda budget_s=None: None)
+    from fused_render import canvases as canvases_mod
+    monkeypatch.setattr(canvases_mod, "refuse_new_managers", lambda: None)
+    monkeypatch.setattr(canvases_mod, "shutdown", lambda: None)
     monkeypatch.setattr(engine_host, "stop_all", lambda: never.wait(30))
     monkeypatch.setattr(supervisor, "unload_all", lambda: None)
     # Every other killer stubbed too: the real index path would cancel live runs
