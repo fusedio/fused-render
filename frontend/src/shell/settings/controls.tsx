@@ -40,7 +40,7 @@ import {
   SkippedFoldersControl,
 } from "./indexing";
 import { LanControl } from "./lan";
-import { FusedAccountControl, HuggingFaceControl } from "./accounts";
+import { FusedAccountControl, HuggingFaceControl, WorkbenchEnvControl } from "./accounts";
 import {
   CallLogControl,
   CallParamsControl,
@@ -79,6 +79,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   reader: ReaderControl,
   lan: LanControl,
   "fused-account": FusedAccountControl,
+  "workbench-env": WorkbenchEnvControl,
   huggingface: HuggingFaceControl,
   "agent-signin": AgentSigninPointer,
   "call-log": CallLogControl,

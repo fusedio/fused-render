@@ -380,6 +380,16 @@ const ENTRIES = [
     renderOnly: true,
   },
   {
+    id: "workbench-env",
+    group: "account",
+    section: "Sign-ins",
+    label: "Fused environment",
+    description: "Which Fused the Canvases, the fused CLI in chats and share uploads talk to. Switching deletes the canvases cloned to this machine.",
+    keywords: "environment unstable prod production staging workbench canvases switch",
+    renderOnly: true,
+    child: true,
+  },
+  {
     id: "huggingface",
     group: "account",
     section: "Sign-ins",

@@ -1564,6 +1564,12 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // Which Fused environment the canvases, the `fused` wrapper and the share
+  // uploads target (fusedcli.workbench_env). READ-ONLY through PUT /api/prefs:
+  // the writer is POST /api/canvases/env, which deletes the cloned canvases
+  // first. `locked` = FUSED_RENDER_WORKBENCH_ENV pins it. OPTIONAL: an older
+  // server answers without it.
+  workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
   // one new chats and tasks open on. The server refuses a PUT that would turn

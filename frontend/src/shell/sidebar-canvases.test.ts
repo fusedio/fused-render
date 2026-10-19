@@ -147,7 +147,9 @@ function status(over: Partial<CanvasesStatus>): CanvasesStatus {
     creds_stamp: null,
     login_in_flight: false,
     workbench_base_url: "https://www.fused.io",
+    workbench_env: "prod",
     canvases_dir: "/Users/x/.fused-render/canvases",
+    cloned_count: 0,
     ...over,
   };
 }

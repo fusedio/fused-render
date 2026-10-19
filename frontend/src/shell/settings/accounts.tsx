@@ -8,12 +8,32 @@
 // "signed in / as whom". Each POLLS only while a login it started is in flight
 // — the wait is a person finishing a browser round trip — and is otherwise idle.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { cancelLogin, getCanvasesStatus, getWhoami, logout, startLogin, type CanvasesStatus } from "@apps/canvases/api";
+import {
+  cancelLogin,
+  getCanvasesStatus,
+  getWhoami,
+  logout,
+  startLogin,
+  switchWorkbenchEnv,
+  type CanvasesStatus,
+  type WorkbenchEnv,
+} from "@apps/canvases/api";
 import { publishLoggedIn } from "@apps/canvases/logged-in";
-import { cancelHfLogin, getHfAuth, hfLogout, startHfLogin, type HfAuth } from "@platform/lib/api";
+import { cancelHfLogin, getHfAuth, getPrefsShared, hfLogout, startHfLogin, type HfAuth } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@platform/shadcn/ui/alert-dialog";
 import { Button } from "@platform/shadcn/ui/button";
-import { SettingRow } from "./SettingRow";
+import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
+import { labelId, SettingRow } from "./SettingRow";
 
 const FUSED_LOGIN_POLL_MS = 1500;
 
@@ -185,6 +205,122 @@ export function FusedAccountControl() {
       }
     >
       {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
+  );
+}
+
+const ENV_LABELS: Record<WorkbenchEnv, string> = { prod: "Production", unstable: "Unstable" };
+
+// Which Fused the canvases, the `fused` wrapper in chats and share uploads
+// target (fusedcli.workbench_env). NOT a plain pref write: a clone is bound to
+// the environment it was pulled from, so the switch goes through
+// POST /api/canvases/env, which deletes every clone first — and this row
+// warns before calling it, exactly when there is something to lose
+// (`cloned_count` > 0). Credentials are shared by both environments, so the
+// user stays signed in. Locked, with the reason, while the env var pins it.
+export function WorkbenchEnvControl() {
+  const [status, setStatus] = useState<CanvasesStatus | null>(null);
+  const [locked, setLocked] = useState(false);
+  const [pending, setPending] = useState<WorkbenchEnv | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void getCanvasesStatus()
+      .then((s) => alive && setStatus(s))
+      .catch((e) => alive && setError((e as Error).message));
+    // `locked` is a prefs fact, not a canvases one; the status payload only
+    // carries the resolved name.
+    void getPrefsShared()
+      .then((p) => alive && setLocked(p.workbench?.locked === true))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const apply = async (env: WorkbenchEnv) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const s = await switchWorkbenchEnv(env);
+      setStatus(s);
+      publishLoggedIn(s);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onPick = (env: WorkbenchEnv) => {
+    if (!status || env === status.workbench_env) return;
+    // Nothing cloned: nothing is lost, so no dialog.
+    if (status.cloned_count === 0) void apply(env);
+    else setPending(env);
+  };
+
+  const current = status?.workbench_env ?? "";
+  const known = current === "prod" || current === "unstable";
+  const n = status?.cloned_count ?? 0;
+  return (
+    <SettingRow
+      id="workbench-env"
+      status={
+        !status ? (
+          error ? undefined : "Checking…"
+        ) : locked ? (
+          <>
+            Pinned to <b>{current}</b> by <code>FUSED_RENDER_WORKBENCH_ENV</code>.
+          </>
+        ) : n > 0 ? (
+          `${n} ${n === 1 ? "canvas" : "canvases"} cloned to this machine.`
+        ) : (
+          "No canvases cloned."
+        )
+      }
+      control={
+        !status ? undefined : (
+          <NativeSelect
+            aria-labelledby={labelId("workbench-env")}
+            value={known ? current : ""}
+            disabled={busy || locked}
+            onChange={(e) => onPick(e.target.value as WorkbenchEnv)}
+          >
+            {!known && <NativeSelectOption value="">{current}</NativeSelectOption>}
+            <NativeSelectOption value="prod">{ENV_LABELS.prod}</NativeSelectOption>
+            <NativeSelectOption value="unstable">{ENV_LABELS.unstable}</NativeSelectOption>
+          </NativeSelect>
+        )
+      }
+    >
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+      <AlertDialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Switch to {pending ? ENV_LABELS[pending] : ""}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This deletes the {n} {n === 1 ? "canvas" : "canvases"} cloned to this machine
+              {status ? <> ({status.canvases_dir})</> : null}. Edits that were not pushed are lost.
+              You stay signed in.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                const env = pending;
+                setPending(null);
+                if (env) void apply(env);
+              }}
+            >
+              Delete clones and switch
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SettingRow>
   );
 }
