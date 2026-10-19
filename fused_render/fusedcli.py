@@ -362,10 +362,16 @@ def export_fused_cli_env() -> str | None:
     wrapper = os.path.join(bin_dir, "fused")
     try:
         os.makedirs(bin_dir, exist_ok=True)
-        with open(wrapper, "w", encoding="utf-8", newline="") as fh:
+        # Written beside and renamed over: the wrapper is also REWRITTEN while
+        # the server runs (an environment switch, canvases.api_canvases_env),
+        # and a Claude session exec'ing `fused` in that instant must see the
+        # old file or the new one, never a truncated one.
+        tmp = wrapper + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
             fh.write(_wrapper_text(cli))
-        os.chmod(wrapper, os.stat(wrapper).st_mode
+        os.chmod(tmp, os.stat(tmp).st_mode
                  | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        os.replace(tmp, wrapper)
     except OSError as exc:
         logger.warning("could not write the fused CLI wrapper at %s: %s",
                        wrapper, exc)
