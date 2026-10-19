@@ -1483,9 +1483,18 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
 # A row's merge key is (is folder, name, occurrence): a folder and a UDF may
 # share a name, and so may two folders (the workbench numbers new folders by
 # count, so a delete then a regroup makes a second Folder_2; paste copies a
-# folderName verbatim). The occurrence counts rows of that kind and name in
-# document order, which is how the server hydrates them, first one winning;
-# a `childUdfOrder` entry or an edge endpoint naming X means occurrence 0.
+# folderName verbatim). For a UDF the occurrence counts rows of that name in
+# document order, which is how the server hydrates them, first one winning.
+# A FOLDER's position in the document says nothing about which folder it is:
+# the workbench PREPENDS a new folder, so a teammate's new Folder_2 pushes
+# the existing one to second place. Same-named folders are matched to base's
+# by their children (`_align_folders`): base's children all present first,
+# then the larger share of them, one-to-one, best first; occurrence only
+# breaks ties (and decides among empty folders). A folder no base folder
+# matches is new on its side; a local-new and a remote-new folder of one
+# name are the same folder when they share a child (or one is empty).
+# A `childUdfOrder` entry or an edge endpoint naming X means the first row
+# of that name in the document, as on the server.
 #
 # Folders merge as a UNIT with their children: a child's x/y mean nothing
 # without the folder that lists it (relative inside one, absolute outside),
@@ -1501,15 +1510,17 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
 #                keeps it (local wins a both-sides move, as for any field);
 #                when local nests it in neither, the first in document
 #                order. Names with no row are kept (see "folders" above).
-#   coordinates  Who MOVED a node is read on screen: each side's position
-#                through its own folder (absolute) against base's. A side
-#                whose absolute position equals base's did not move it,
-#                whatever its raw x/y say (ungrouping a folder rewrites
-#                every child's x/y to the same spot on screen), so the
-#                other side's x/y are taken, in that side's frame. When
-#                both or neither moved it (or there is no base), the
-#                field-wise merge's x/y stand, attributed to the side they
-#                came from (local first). If that side nested the node in
+#   coordinates  Who MOVED a node is decided once per node, both axes
+#                together. A side that kept base's frame (the same folder,
+#                or none) moved it only if it changed the raw x/y — a drag
+#                of the FOLDER moves no child. A side that changed the frame
+#                moved it only if its position on screen (through its own
+#                folder) differs from base's — ungrouping or regrouping in
+#                place rewrites the x/y but moves nothing. When exactly one
+#                side moved it, that side's x/y are taken, in that side's
+#                frame. When both or neither did (or there is no base), the
+#                field-wise merge's x/y stand, attributed per axis to the
+#                side they came from (local first). If that side nested the node in
 #                the folder the merge puts it in (a paired rename counts as
 #                the same folder), the x/y are kept: relative to that
 #                folder, they ride with it wherever its own merge put it.
@@ -1596,6 +1607,74 @@ def _keyed(src: Any) -> tuple[list, dict]:
     return order, rows
 
 
+def _child_match_order(left: list, right: list, *, need_overlap: bool) -> list:
+    """One-to-one `(left key, right key)` pairs of same-named folders, best
+    first: `left`'s children all in `right` first, then the larger share of
+    `left`'s children in `right`, then the nearer occurrence. With
+    `need_overlap`, a pair must share a child (or one be empty)."""
+    scored = []
+    for li, (lk, lset) in enumerate(left):
+        for ri, (rk, rset) in enumerate(right):
+            common = lset & rset
+            if need_overlap and not common and lset and rset:
+                continue
+            subset = lset <= rset if lset else not rset
+            share = len(common) / len(lset) if lset else (1.0 if not rset else 0.0)
+            scored.append(((not subset, -share, abs(li - ri), li, ri), lk, rk))
+    scored.sort(key=lambda t: t[0])
+    pairs, used_l, used_r = [], set(), set()
+    for _score, lk, rk in scored:
+        if lk in used_l or rk in used_r:
+            continue
+        pairs.append((lk, rk))
+        used_l.add(lk)
+        used_r.add(rk)
+    return pairs
+
+
+def _by_name(order: list, rows: dict) -> dict[str, list]:
+    out: dict[str, list] = {}
+    for key in order:
+        if key[0]:
+            out.setdefault(key[1], []).append((key, _name_set(rows[key])))
+    return out
+
+
+def _align_folders(base: tuple, local: tuple, remote: tuple) -> tuple[tuple, tuple]:
+    """`local` and `remote` (`_keyed` results) with every folder re-keyed so
+    the same folder has the same key on all three sides (see the section
+    comment): matched to base's folder → base's key; a local-new and a
+    remote-new folder that are the same folder → a shared new key; any other
+    folder → a key of its own side."""
+    b_names = _by_name(*base)
+    maps: list[dict] = [{}, {}]
+    left: list[dict[str, list]] = []
+    for i, side in enumerate((local, remote)):
+        names = _by_name(*side)
+        for name, folders in names.items():
+            for sk, bk in _child_match_order(folders, b_names.get(name, []),
+                                             need_overlap=False):
+                maps[i][sk] = bk
+        left.append({n: [f for f in fs if f[0] not in maps[i]] for n, fs in names.items()})
+    for name, l_folders in left[0].items():
+        pairs = _child_match_order(l_folders, left[1].get(name, []), need_overlap=True)
+        for n, (lk, rk) in enumerate(pairs):
+            maps[0][lk] = maps[1][rk] = (True, name, ("new", n))
+    out = []
+    for i, (order, rows) in enumerate((local, remote)):
+        tag = ("local", "remote")[i]
+        mapping = maps[i]
+        new_order, new_rows = [], {}
+        for key in order:
+            if key[0] and key not in mapping:
+                mapping[key] = (True, key[1], (tag, key[2]))
+            nk = mapping.get(key, key)
+            new_order.append(nk)
+            new_rows[nk] = rows[key]
+        out.append((new_order, new_rows))
+    return out[0], out[1]
+
+
 class _Side:
     """One side of the merge, as the server reads it: rows by key, the
     folder that holds each child (first lister in document order), and the
@@ -1603,6 +1682,12 @@ class _Side:
 
     def __init__(self, order: list, rows: dict):
         self.order, self.rows = order, rows
+        # name → the first folder of that name in document order (what an
+        # edge endpoint naming a folder means).
+        self.first_folder: dict[str, tuple] = {}
+        for key in order:
+            if key[0]:
+                self.first_folder.setdefault(key[1], key)
         self.home: dict[str, tuple] = {}
         for key in order:
             row = rows[key]
@@ -1620,6 +1705,12 @@ class _Side:
             return None
         return self.home.get(key[1])
 
+    def position(self, key: tuple, *, absolute: bool) -> tuple:
+        """(x, y) of a row, raw or through its folder (None per axis that is
+        not a number)."""
+        return tuple(self.absolute(key, axis) if absolute else _number(
+            (self.rows.get(key) or {}).get(axis)) for axis in ("x", "y"))
+
     def absolute(self, key: tuple, axis: str) -> float | None:
         row = self.rows.get(key)
         value = row.get(axis) if row else None
@@ -1629,6 +1720,12 @@ class _Side:
         if home is None:
             return value
         return value + _num(self.rows[home].get(axis), 0)
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
 
 
 def _names(order: Any) -> list[str] | None:
@@ -1733,53 +1830,60 @@ def _folder_renames(B: _Side, L: _Side, R: _Side) -> dict:
     return out
 
 
+def _moved(B: _Side, S: _Side, key: tuple, renames: dict) -> bool:
+    """Whether side `S` moved node `key` since base (see "coordinates")."""
+    fb, fs = B.home_of(key), S.home_of(key)
+    same_frame = fs == fb or (fb in renames and renames[fb] == fs)
+    return S.position(key, absolute=not same_frame) != B.position(key, absolute=not same_frame)
+
+
 def _reframe_children(merged: dict, B: _Side, L: _Side, R: _Side,
                       renames: dict) -> None:
     """Set, in place, the x/y of every merged non-folder row: from the side
-    that moved it on screen, in the merged folder's frame (see
-    "coordinates" above)."""
+    that moved it, in the merged folder's frame (see "coordinates" above)."""
     M = _Side(list(merged), merged)
     for key, row in merged.items():
         if key[0]:
             continue
         target = M.home_of(key)
         tpos = merged.get(target) if target else None
-        for axis in ("x", "y"):
-            value = row.get(axis)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                continue
-            # (the side, the side's folder as the merge keys it)
-            sides: list[tuple[_Side, tuple | None]] = []
-            l_home = L.home_of(key)
-            l_home = renames.get(l_home, l_home)
-            r_home = R.home_of(key)
-            if key in L.rows and key in R.rows and key in B.rows:
-                b_abs = B.absolute(key, axis)
-                l_moved = L.absolute(key, axis) != b_abs
-                r_moved = R.absolute(key, axis) != b_abs
-                if r_moved and not l_moved:
-                    sides = [(R, r_home)]
-                elif l_moved and not r_moved:
-                    sides = [(L, l_home)]
-            if not sides:
-                if key in L.rows and L.rows[key].get(axis) == value:
-                    sides.append((L, l_home))
-                if key in R.rows and R.rows[key].get(axis) == value:
-                    sides.append((R, r_home))
-                if not sides:
-                    continue
-                if any(home == target for _side, home in sides):
-                    continue
-            side, home = sides[0]
-            value = side.rows[key].get(axis)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                continue
+        l_home = L.home_of(key)
+        l_home = renames.get(l_home, l_home)
+        r_home = R.home_of(key)
+
+        def put(side: _Side, home: tuple | None, axis: str) -> None:
+            value = _number(side.rows[key].get(axis))
+            if value is None:
+                return
             if home == target:
                 row[axis] = value
-                continue
-            frow = side.rows.get(side.home_of(key)) if side.home_of(key) else None
+                return
+            raw_home = side.home_of(key)
+            frow = side.rows.get(raw_home) if raw_home else None
             absolute = value + (_num(frow.get(axis), 0) if frow else 0)
             row[axis] = absolute - (_num(tpos.get(axis), 0) if tpos else 0)
+
+        if key in L.rows and key in R.rows and key in B.rows:
+            l_moved, r_moved = _moved(B, L, key, renames), _moved(B, R, key, renames)
+            if l_moved != r_moved:
+                side, home = (L, l_home) if l_moved else (R, r_home)
+                for axis in ("x", "y"):
+                    put(side, home, axis)
+                continue
+        # Both moved it, or neither, or a side lacks it: the field-wise x/y
+        # stand, each axis attributed to the side it came from.
+        for axis in ("x", "y"):
+            value = _number(row.get(axis))
+            if value is None:
+                continue
+            sides: list[tuple[_Side, tuple | None]] = []
+            if key in L.rows and L.rows[key].get(axis) == value:
+                sides.append((L, l_home))
+            if key in R.rows and R.rows[key].get(axis) == value:
+                sides.append((R, r_home))
+            if not sides or any(home == target for _side, home in sides):
+                continue
+            put(*sides[0], axis)
 
 
 def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[dict, dict]:
@@ -1806,8 +1910,9 @@ def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[di
     """
     info: dict[str, list] = {"added": [], "removed": [], "taken": [], "kept": [],
                              "renamed": [], "folder_fixes": []}
-    L, R = _Side(*_keyed(local_doc)), _Side(*_keyed(remote_doc))
-    B = _Side(*_keyed(base)) if base else _Side([], {})
+    b_keyed = _keyed(base) if base else ([], {})
+    l_keyed, r_keyed = _align_folders(b_keyed, _keyed(local_doc), _keyed(remote_doc))
+    B, L, R = _Side(*b_keyed), _Side(*l_keyed), _Side(*r_keyed)
     bn, ln, rn = B.rows, L.rows, R.rows
     Lr, Rr = rows_of_doc(local_doc), rows_of_doc(remote_doc)
     renames = _folder_renames(B, L, R)
@@ -1832,10 +1937,19 @@ def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[di
             continue                          # local deleted it: stays deleted
         merged[k] = dict(rn[k])               # new on the remote
 
+    # `normalise_folders` tells same-named folders apart by their place in
+    # the MERGED document: local's nesting, in those terms.
+    merged_at: dict = {}
+    counts: dict[str, int] = {}
+    for k in merged:
+        if k[0]:
+            merged_at[k] = (k[1], counts.get(k[1], 0))
+            counts[k[1]] = counts.get(k[1], 0) + 1
     local_nesting = {}
     for child, home in L.home.items():
         home = renames.get(home, home)
-        local_nesting[child] = (home[1], home[2])
+        if home in merged_at:
+            local_nesting[child] = merged_at[home]
     info["folder_fixes"] = normalise_folders(list(merged.values()), prefer=local_nesting)
     _reframe_children(merged, B, L, R, renames)
 
@@ -1854,8 +1968,10 @@ def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[di
     def edge_set(rows):
         return {(a, b) for a, b in rows}
 
-    # An endpoint names occurrence 0; one naming a renamed folder follows it.
-    by_name = {f[1]: g[1] for f, g in renames.items() if f[2] == 0 and g[2] == 0}
+    # An endpoint names the first row of its name; one naming a renamed
+    # folder follows it.
+    by_name = {f[1]: g[1] for f, g in renames.items()
+               if B.first_folder.get(f[1]) == f and R.first_folder.get(g[1]) == g}
 
     def follow(rows, side: _Side):
         def end(n):

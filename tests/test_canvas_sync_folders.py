@@ -800,3 +800,68 @@ def test_normalise_reports_a_repeated_losing_entry_once():
     assert fixes == ["folder 'F': dropped 'a' (folder 'G' keeps it)",
                      "folder 'F': dropped 'G' (a folder)"], fixes
     assert rows[1]["childUdfOrder"] == []
+
+
+# -- same-named folders are matched by their children, not their place ---------
+
+def _prepend_case(local_rows):
+    # The workbench PREPENDS a new folder: a teammate's second Folder_2 lands
+    # before the existing one.
+    base = cs.rows_of_doc(doc([folder("Folder_2", ["a"], x=100.0, y=100.0), udf("a", 10.0, 10.0),
+                               udf("c", 800.0, 0.0), udf("d", 800.0, 200.0)]))
+    remote = doc([folder("Folder_2", ["c", "d"], x=780.0, y=-20.0, folderColor="#new"),
+                  folder("Folder_2", ["a"], x=100.0, y=100.0), udf("a", 10.0, 10.0),
+                  udf("c", 20.0, 20.0), udf("d", 20.0, 220.0)])
+    merged, _info = cs.merge_toml(base, doc(local_rows), remote)
+    return [(cs.row_name(r), r.get("childUdfOrder"), r["x"], r["y"], r.get("folderColor"))
+            for r in merged["canvas"]["nodes"]]
+
+
+def test_merge_a_prepended_same_named_folder_is_not_the_old_one():
+    shape = _prepend_case([folder("Folder_2", ["a"], x=500.0, y=500.0), udf("a", 10.0, 10.0),
+                           udf("c", 800.0, 0.0), udf("d", 800.0, 200.0)])
+    assert shape == [
+        ("Folder_2", ["a"], 500.0, 500.0, None),             # local's move stays on it
+        ("a", None, 10.0, 10.0, None),
+        ("c", None, 20.0, 20.0, None), ("d", None, 20.0, 220.0, None),
+        ("Folder_2", ["c", "d"], 780.0, -20.0, "#new")]      # the teammate's, as made
+
+
+def test_merge_a_child_local_adds_nests_in_the_old_same_named_folder():
+    shape = _prepend_case([folder("Folder_2", ["a", "e"], x=100.0, y=100.0),
+                           udf("a", 10.0, 10.0), udf("e", 10.0, 300.0),
+                           udf("c", 800.0, 0.0), udf("d", 800.0, 200.0)])
+    assert shape[0] == ("Folder_2", ["a", "e"], 100.0, 100.0, None)
+    assert shape[-1] == ("Folder_2", ["c", "d"], 780.0, -20.0, "#new")
+
+
+# -- a folder drag moves no child; a regroup in place moves nothing ----------------
+
+def _drag_case(remote_rows):
+    base = cs.rows_of_doc(doc([folder("F", ["a", "b"], x=100.0, y=100.0, width=300, height=300),
+                               udf("a", 10.0, 10.0), udf("b", 10.0, 150.0)]))
+    local = doc([folder("F", ["a", "b"], x=900.0, y=900.0, width=300, height=300),
+                 udf("a", 10.0, 10.0), udf("b", 10.0, 150.0)])
+    merged, _info = cs.merge_toml(base, local, doc(remote_rows))
+    return by_name(merged)
+
+
+def test_merge_remote_release_in_place_beats_a_local_folder_drag():
+    rows = _drag_case([folder("F", ["b"], x=100.0, y=100.0, width=300, height=300),
+                       udf("a", 110.0, 110.0), udf("b", 10.0, 150.0)])
+    assert rows["F"]["childUdfOrder"] == ["b"] and rows["F"]["x"] == 900.0
+    assert (rows["a"]["x"], rows["a"]["y"]) == (110.0, 110.0)
+
+
+def test_merge_remote_release_beside_the_folder_keeps_both_axes():
+    rows = _drag_case([folder("F", ["b"], x=100.0, y=100.0, width=300, height=300),
+                       udf("a", 440.0, 110.0), udf("b", 10.0, 150.0)])
+    assert (rows["a"]["x"], rows["a"]["y"]) == (440.0, 110.0)
+
+
+def test_merge_remote_renest_in_place_lands_in_the_new_folder():
+    rows = _drag_case([folder("F", ["b"], x=100.0, y=100.0, width=300, height=300),
+                       folder("G", ["a"], x=50.0, y=50.0),
+                       udf("a", 60.0, 60.0), udf("b", 10.0, 150.0)])
+    assert rows["G"]["childUdfOrder"] == ["a"]
+    assert (rows["a"]["x"], rows["a"]["y"]) == (60.0, 60.0)
