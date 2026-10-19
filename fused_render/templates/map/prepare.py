@@ -170,6 +170,7 @@ def _stream(path: str) -> dict:
     urllib.request.urlopen(request, timeout=120).close()
     CACHE.mkdir(parents=True, exist_ok=True)
     tmp = CACHE / f"stream.key.{os.getpid()}"
+    tmp.touch(0o600)
     tmp.write_bytes(os.urandom(32))
     with contextlib.suppress(FileExistsError):
         os.link(tmp, CACHE / "stream.key")

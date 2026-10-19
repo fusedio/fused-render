@@ -95,7 +95,7 @@ class VirtualCOG:
         self.path, self.local = path, threading.local()
         with rasterio.open(path) as dataset:
             epsg = dataset.crs.to_epsg() if dataset.crs else None
-            self.warp = epsg is None or epsg > 65535 or not dataset.transform.is_rectilinear
+            self.warp = epsg is None or epsg > 65535 or dataset.transform.b or dataset.transform.d
             self.colormap = dataset.colormap(1) if dataset.count == 1 and dataset.dtypes[0] == "uint8" \
                 and dataset.colorinterp[0].name == "palette" else None
             self.sample = not self.warp and _sampleable(dataset)
