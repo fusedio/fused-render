@@ -932,7 +932,7 @@ def _is_canvas_node_file(file: str) -> bool:
 
 def _canvas_node_prompt(file: str) -> str:
     """The prompt for ONE FILE INSIDE A CANVAS CLONE — a node picked in the
-    embedded workbench on fused-render's /canvases/<name> page, which opens
+    embedded workbench on fused-render's /canvases/<env>/<name> page, which opens
     the explorer's file engine on `<clone>/<udfName>.py` beside it.
 
     The FILE prompt, then the canvas facts on top. The file half is exactly
@@ -3402,14 +3402,17 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     themselves is never overridden.
 
     The session must not inherit an ambient FUSED_ENV from the server's own
-    process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
-    FUSED_ENV when unset, so a value already present here — say the server
-    itself was launched from a shell that exports FUSED_ENV for unrelated
-    reasons — would look exactly like a deliberate `FUSED_ENV=x fused ...`
-    from the model and skip the workbench default, silently diverging from
-    canvases.py's own runs (`_cli_env` always forces FUSED_ENV=WORKBENCH_ENV,
-    ambient or not). Popping it here is what makes "unset" in the wrapper
-    mean what the model actually typed on that command line.
+    process: the `fused` wrapper (fusedcli._wrapper_text) only picks FUSED_ENV
+    when unset — from the canvas clone the session runs in
+    (`~/Fused/canvas/<env>/<name>`, the clone's own environment), else the
+    default — so a value already present here (say the server itself was
+    launched from a shell that exports FUSED_ENV for unrelated reasons) would
+    look exactly like a deliberate `FUSED_ENV=x fused ...` from the model and
+    switch that cwd rule off: a session in a prod clone would pull, validate
+    or push against whatever the shell happened to export, diverging from
+    canvases.py's own runs (`_cli_env` always forces the canvas's env, ambient
+    or not). Popping it here is what makes "unset" in the wrapper mean what
+    the model actually typed on that command line.
 
     File-history checkpoints are OFF by default in a non-interactive session,
     and every run here is non-interactive (`-p`). Without this the snapshots
