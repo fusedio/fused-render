@@ -806,11 +806,14 @@ button.sidebar-prefs-trigger {
    the last box inside each section ends 3px short of the section's edge (a
    .bookmark-row's bottom padding, or the collapsed heading's — see
    .recents-heading.collapsed), the nav group above ends 7px short (its last
-   .sidebar-item's). Until 2026-10-21 the margins differed by those 4px (20 /
-   24) to land both seams on 33px text-to-text; the owner then asked for the
-   sections to sit tighter AND for Favourites to carry the same margin as the
-   others, so both are 8px now (the sections are an accordion since the same
-   day, so a folded heading usually sits right under the one above). */
+   .sidebar-item's), so the margin after the nav group is 4px less than the
+   margin after a section, and every seam lands on one number:
+   7 + 8 + 6 = 3 + 12 + 6 = 21px from the last box's text to the heading text
+   (33px — 20 / 24 — until 2026-10-21, when the owner asked for the sections
+   to sit tighter). Keyed on WHAT PRECEDES the section, not on which section
+   it is: since Canvases sits between Projects and Favourites, "Favourites
+   gets the bigger margin" would leave the Projects→Canvases seam 4px short
+   (owner, 2026-10-21: "spacing is uneven"). */
 .sidebar-current-apps,
 .sidebar-bookmarks {
   flex: 1 1 0;
@@ -820,6 +823,10 @@ button.sidebar-prefs-trigger {
 }
 .sidebar-current-apps,
 .sidebar-bookmarks {
+  margin-top: 12px;
+}
+.sidebar-group + .sidebar-current-apps,
+.sidebar-group + .sidebar-bookmarks {
   margin-top: 8px;
 }
 .sidebar-current-apps > .sidebar-section-body,
