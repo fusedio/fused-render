@@ -6,6 +6,7 @@
 // state to the workbench frame (`fused-embed-sync-state`). Both own their own
 // clock tick so the ageing embed_to_disk leg and "Published 12 s ago" never
 // re-render the whole workspace (and its two iframes' parents) every second.
+import { ArrowLeftIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   LEG_LABEL,
@@ -151,8 +152,18 @@ export function SyncStrip({
     >
       <button
         type="button"
-        className="btn"
-        style={{ padding: "1px 10px", fontSize: 12, flex: "none" }}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          flex: "none",
+          padding: 0,
+          margin: 0,
+          border: "none",
+          background: "none",
+          color: "inherit",
+          cursor: "pointer",
+          opacity: 0.7,
+        }}
         aria-label="Back to canvases"
         title="Back to canvases"
         onClick={(e) => {
@@ -161,7 +172,7 @@ export function SyncStrip({
         }}
         onKeyDown={(e) => e.stopPropagation()}
       >
-        ← Canvases
+        <ArrowLeftIcon size={14} />
       </button>
       <Dot level={level} />
       <span
