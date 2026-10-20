@@ -3357,20 +3357,37 @@ export const LANES_BUT_ARCHIVE: BoardColumn[] = BOARD_LANES.map((l) => l.key).fi
   (k) => k !== "archived",
 );
 
+/** Every Board lane except Upcoming — what the Cards wall draws (CARD_LANES by
+ *  lane). Upcoming has no conversation on file, so the wall never draws it. */
+export const LANES_BUT_UPCOMING: BoardColumn[] = BOARD_LANES.map((l) => l.key).filter(
+  (k) => k !== "upcoming",
+);
+
 /** The status + folder facets a tab starts with before the reader touches
- *  them: every lane but Archive on a grouped view, nothing elsewhere. */
+ *  them: every lane but Archive on a grouped view, every lane the wall draws on
+ *  Cards (ticked, so the menu says what is on screen), nothing elsewhere. */
 export function defaultViewFacets(view: TaskView): ViewFacets {
+  if (view === "cards") return { statuses: [...LANES_BUT_UPCOMING], projects: [] };
   return { statuses: groupOfView(view) ? [...LANES_BUT_ARCHIVE] : [], projects: [] };
 }
 
 export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
   const draft = view === "calendar" && f.draft;
-  const archived = view === "calendar" && f.statuses.includes("archived");
-  if (!draft && !archived) return f;
+  // THE CARDS WALL DROPS UPCOMING the same way, and for the same reason the
+  // Calendar drops Archive: the wall never draws an Upcoming row (CARD_LANES —
+  // no conversation on file), so a stored `upcoming` tick — carried over from
+  // an older session or another tab's shape — is a facet with no control
+  // here (its row is hidden, TaskFilterControls `hideUpcomingStatus`) that
+  // would otherwise empty the wall with no badge to say why. Ignored for this
+  // view's query, never cleared from the stored value.
+  const drop: BoardColumn | null =
+    view === "calendar" ? "archived" : view === "cards" ? "upcoming" : null;
+  const dropped = drop !== null && f.statuses.includes(drop);
+  if (!draft && !dropped) return f;
   return {
     ...f,
     ...(draft ? { draft: false } : {}),
-    ...(archived ? { statuses: f.statuses.filter((s) => s !== "archived") } : {}),
+    ...(dropped ? { statuses: f.statuses.filter((s) => s !== drop) } : {}),
   };
 }
 
@@ -3405,6 +3422,20 @@ export function emptyTasksLabel(
     && LANES_BUT_ARCHIVE.every((k) => filters.statuses.includes(k));
   if (onDefault) {
     return "Only archived tasks here. Tick Archive under Status to see them.";
+  }
+  // The Cards wall on ITS starting facets (every lane but Upcoming, nothing
+  // else on) with nothing to draw: the scope holds only tasks that have never
+  // run, and a card is a conversation (cardsForTasks). No filter to lift — the
+  // reader needs the List, not the Status menu.
+  const cardsDefault =
+    view === "cards"
+    && filters.projects.length === 0
+    && !filters.draft
+    && filters.search.trim() === ""
+    && filters.statuses.length === LANES_BUT_UPCOMING.length
+    && LANES_BUT_UPCOMING.every((k) => filters.statuses.includes(k));
+  if (cardsDefault) {
+    return "Nothing has run yet. Cards show conversations; upcoming tasks are on the List.";
   }
   return "Nothing matches these filters.";
 }

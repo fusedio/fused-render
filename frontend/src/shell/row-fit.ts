@@ -228,6 +228,18 @@ export function naturalNeed(
  *     before any word in the row folds. Read from CSS rather than cached from a
  *     wide moment: a page first painted narrow has never seen the wide one.
  */
+/** Does this seat hang an out-of-flow child off itself — a menu under its
+ *  trigger? Direct children only: that is where a popover sits, and the one
+ *  case `scrollWidth` counts something that is not in the row. */
+function anchorsOutOfFlow(seat: HTMLElement): boolean {
+  for (const kid of Array.from(seat.children) as HTMLElement[]) {
+    if (typeof kid !== "object" || kid === null) continue;
+    const pos = getComputedStyle(kid).position;
+    if (pos === "absolute" || pos === "fixed") return true;
+  }
+  return false;
+}
+
 /** Does this child lay its OWN children out as seats — i.e. is it a box whose
  *  want is the sum of theirs, rather than a run of text that ellipsises? */
 function isBox(style: CSSStyleDeclaration): boolean {
@@ -321,6 +333,21 @@ export function rowNeed(scope: HTMLElement, restore?: readonly number[]): number
       // it is charged is the floor below which it stops being a title at all;
       // everything past that is the ellipsis doing its job.
       need += Math.min(rect.width, FIT_TEXT_FLOOR);
+    } else if (style.position !== "static" && anchorsOutOfFlow(child)) {
+      // A SEAT THAT ANCHORS A POPOVER — the toolbar's filter triggers, each a
+      // `position: relative` wrap so its menu can hang under it. `scrollWidth`
+      // on such a seat counts the open menu (190px, absolutely positioned,
+      // contained by this very box), so the moment Status opened the ladder
+      // read the trigger as five times its width and folded another rung —
+      // "+ New task" lost its words and Project merged into Status, under a
+      // menu the reader had just opened (measured live at 720px, WebKit and
+      // Chromium alike, 2026-10-20). A seat that cannot shrink IS its rect;
+      // what hangs off it is not in the row. Asked of the seat's CHILDREN
+      // rather than of its `position` alone: a relative seat with nothing
+      // hanging off it (a row's time, its id shield) still answers with its
+      // content, which is what ellipsised text in an `overflow: hidden` box
+      // needs the number for.
+      need += rect.width;
     } else {
       need += Math.max(rect.width, content);
     }

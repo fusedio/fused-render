@@ -1622,6 +1622,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               home={home}
               onChange={setFilters}
               hideArchiveStatus={view === "calendar"}
+              hideUpcomingStatus={view === "cards"}
               // The ladder's Project rung: one trigger instead of two, same rows
               // inside it, each under its own heading (shell/row-fit.ts
               // TOOLBAR_DROPS). Project loses its own control here and stays

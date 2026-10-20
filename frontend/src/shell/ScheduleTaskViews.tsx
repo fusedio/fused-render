@@ -1519,6 +1519,7 @@ export function TaskFilterControls({
   home = "",
   onChange,
   hideArchiveStatus = false,
+  hideUpcomingStatus = false,
   merged = false,
 }: {
   filters: TaskFilters;
@@ -1540,6 +1541,14 @@ export function TaskFilterControls({
    * act on it.
    */
   hideArchiveStatus?: boolean;
+  /**
+   * True on the Cards wall (Akshil, 2026-10-20: "for cards check and seed the
+   * status filter"). The wall never draws an Upcoming row — it has no
+   * conversation on file (tasks-lib.cardsForTasks) — so an Upcoming tick would
+   * change nothing on screen. The row is hidden, as Archive is on the Calendar,
+   * and the stored value is left alone.
+   */
+  hideUpcomingStatus?: boolean;
   /**
    * THE LAST RUNG OF THE TOOLBAR'S LADDER (shell/row-fit.ts): the two triggers
    * become ONE, and its popover holds both lists under their own headings.
@@ -1568,15 +1577,15 @@ export function TaskFilterControls({
   // the filter offers the lanes the Board draws, so one Blocked tick brings
   // both the broken run and the one waiting on you. taskMatches matches by
   // lane for the same reason.
-  const statusColumns = hideArchiveStatus
-    ? BOARD_LANES.filter((c) => c.key !== "archived")
-    : BOARD_LANES;
+  const statusColumns = BOARD_LANES.filter(
+    (c) => !(hideArchiveStatus && c.key === "archived") && !(hideUpcomingStatus && c.key === "upcoming"),
+  );
   // Excludes Archive from the badge for the same reason the row is hidden: a
   // count that includes a facet the popover will not even show would read as
   // a filter this menu cannot explain.
-  const statusCount = hideArchiveStatus
-    ? filters.statuses.filter((s) => s !== "archived").length
-    : filters.statuses.length;
+  const statusCount = filters.statuses.filter(
+    (s) => !(hideArchiveStatus && s === "archived") && !(hideUpcomingStatus && s === "upcoming"),
+  ).length;
 
   // ONE PROJECT AT A TIME (design.md, 2026-09-14). The STORED shape is still a
   // list — `taskMatches` asks it with `includes` and every caller that composes
