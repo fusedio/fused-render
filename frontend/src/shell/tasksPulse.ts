@@ -26,12 +26,11 @@
 // chat cards opened twelve.
 import { useEffect, useState } from "react";
 import { queueEnabled } from "@apps/claude/feature-flag";
-import { getTasks, getTasksPulse } from "@platform/lib/api";
+import { getTasks, getTasksPulse, putTasksSeen } from "@platform/lib/api";
 import { sharedLongPollFetch } from "@platform/lib/sharedLongPoll";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
-  TASKS_SEEN_KEY,
   mergeTaskChanges,
   parseTasksSeen,
   sameSeen,
@@ -40,7 +39,7 @@ import {
   tasksPulse,
 } from "./tasks-lib";
 import type { TasksPulse, TasksSeen } from "./tasks-lib";
-import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { CHAT_ACTIVITY_KEY, TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { requestTasksChanges } from "@platform/lib/tasksChangesSocket";
 import type { TasksChangesParams } from "@platform/lib/tasksChangesSocket";
 
@@ -50,7 +49,10 @@ const ACTIVE_MS = 10_000;
 const IDLE_MS = 30_000;
 
 let tasks: TaskPulseTask[] = [];
-let seen: TasksSeen = readSeen();
+/** The "done and unread" dismissals, `task key -> last_active` — the SERVER's
+ *  map (`read.json`'s `__seen_done__`, D1386), mirrored here. See "THE SEEN
+ *  MAP" below. */
+let seen: TasksSeen = {};
 let pulse: TasksPulse = EMPTY_TASKS_PULSE;
 let timer: number | null = null;
 let inFlight = false;
@@ -75,26 +77,140 @@ const listeners = new Set<(p: TasksPulse) => void>();
  *  reader alone keeps the poll alive too. */
 const rowListeners = new Set<(rows: TaskPulseTask[]) => void>();
 
-function readSeen(): TasksSeen {
-  try {
-    return parseTasksSeen(localStorage.getItem(TASKS_SEEN_KEY));
-  } catch {
-    // A blocked or throwing store (private mode, locked-down webviews) costs
-    // the dismissal — one dot too many — never the sidebar.
-    return {};
+// ---- THE SEEN MAP --------------------------------------------------------
+//
+// Which completions the reader has been shown lives on the server since D1386:
+// `POST /api/tasks/seen` writes it (whole map, the client computes the next
+// one) and every `GET /api/tasks/pulse` answer carries it back. It used to be a
+// localStorage row, and localStorage is per ORIGIN — the desktop app walks
+// ports 1777..1787 then an ephemeral one, each a new origin with empty storage,
+// so a relaunch on another port lit the dot for every finished task the reader
+// had already looked at.
+//
+// The pulse's map is the truth, adopted on every answer that carries one —
+// EXCEPT while this window's own write is in flight or newer than the request:
+// that answer left before the server heard the write, so adopting it would
+// put the dot back for a beat (and, off /tasks, until the next stamp). The
+// write's own answer is adopted instead. A failed write keeps the local map
+// for the session; it simply does not survive a relaunch.
+
+/** Writes sent and not yet answered. */
+let seenWritesInFlight = 0;
+/** Bumped by every local write, so a pulse that departed before it is known
+ *  to be older than the map this window holds. */
+let seenEpoch = 0;
+/** Has the server's map landed at least once (see `ensureSeen`)? */
+let seenFromServer = false;
+let seenSeeding = false;
+/** A visit `markTasksSeen` had to hold back because the server's map was not
+ *  in yet — run once it lands (see `markTasksSeen`). */
+let visitPending = false;
+
+function adoptServerSeen(next: TasksSeen | undefined, departedEpoch: number) {
+  if (!next || typeof next !== "object") return; // an older server: keep ours
+  if (seenWritesInFlight > 0 || departedEpoch !== seenEpoch) return;
+  seenFromServer = true;
+  if (!sameSeen(seen, next)) {
+    seen = next;
+    recompute();
+  }
+  if (visitPending) {
+    visitPending = false;
+    markTasksSeen();
   }
 }
 
 function writeSeen(next: TasksSeen) {
   if (sameSeen(seen, next)) return;
   seen = next;
-  try {
-    localStorage.setItem(TASKS_SEEN_KEY, JSON.stringify(next));
-  } catch {
-    // Same trade as readSeen: the dismissal is a convenience, not the feature.
-  }
+  seenEpoch += 1;
   recompute();
+  sendSeen(next);
 }
+
+function sendSeen(next: TasksSeen) {
+  seenWritesInFlight += 1;
+  putTasksSeen(next).then(
+    (r) => {
+      seenWritesInFlight -= 1;
+      // Newest write wins: an earlier write's answer must not undo a later one.
+      if (seenWritesInFlight === 0 && sameSeen(seen, next)) adoptServerSeen(r.seen, seenEpoch);
+    },
+    () => {
+      seenWritesInFlight -= 1;
+    },
+  );
+}
+
+/** A reader subscribed while somebody ELSE is the poller (the Tasks page, a
+ *  chat's listing feed): those answers are `/api/tasks` rows, which carry no
+ *  seen map, so the first pulse this module would have asked for never comes.
+ *  Ask once for the map alone. */
+function ensureSeen() {
+  if (seenFromServer || seenSeeding) return;
+  seenSeeding = true;
+  const departed = seenEpoch;
+  getTasksPulse().then(
+    (r) => {
+      seenSeeding = false;
+      adoptServerSeen(r.seen, departed);
+    },
+    () => {
+      seenSeeding = false;
+    },
+  );
+}
+
+// The one-shot import (D1386): the old localStorage row is read ONCE on the
+// first load of this build, merged over the server's map (later stamp wins per
+// key), written back through the normal write path, and removed. No
+// server-side "already imported" marker — a second window racing this one
+// re-pushes the same stamps, harmless. A failed write leaves the key so the
+// next load retries; the session shows the imported map either way.
+const LEGACY_TASKS_SEEN_KEY = "fused-render:tasks-seen";
+
+function importLegacySeen() {
+  let legacy: TasksSeen;
+  try {
+    const raw = localStorage.getItem(LEGACY_TASKS_SEEN_KEY);
+    if (raw === null) return;
+    legacy = parseTasksSeen(raw);
+    if (!Object.keys(legacy).length) {
+      localStorage.removeItem(LEGACY_TASKS_SEEN_KEY);
+      return;
+    }
+  } catch {
+    return; // No store: nothing was ever saved here.
+  }
+  seen = legacy;
+  seenEpoch += 1;
+  seenWritesInFlight += 1;
+  const done = () => {
+    seenWritesInFlight -= 1;
+  };
+  getTasksPulse()
+    .then((r) => {
+      const merged: TasksSeen = { ...(r.seen ?? {}) };
+      for (const [key, at] of Object.entries(legacy)) {
+        if (!(merged[key] >= at)) merged[key] = at;
+      }
+      return putTasksSeen(merged);
+    })
+    .then(
+      (r) => {
+        done();
+        try {
+          localStorage.removeItem(LEGACY_TASKS_SEEN_KEY);
+        } catch {
+          /* removal failed: the next load re-pushes the same stamps */
+        }
+        adoptServerSeen(r.seen, seenEpoch);
+      },
+      done,
+    );
+}
+
+if (typeof window !== "undefined") importLegacySeen();
 
 /** Publish only on a CHANGED pair. Every poll and every page publish lands here,
  *  and the sidebar re-rendering four times a minute over two identical numbers
@@ -112,7 +228,13 @@ async function poll() {
   inFlight = true;
   const departed = generation;
   try {
-    const answer = (await getTasksPulse()).tasks ?? [];
+    const departedSeen = seenEpoch;
+    const r = await getTasksPulse();
+    const answer = r.tasks ?? [];
+    // The seen map first, and whatever happened to the rows: it is its own
+    // fact (THE SEEN MAP above), and adopting it AFTER the publish would draw
+    // every done-unread dot for one tick on boot.
+    adoptServerSeen(r.seen, departedSeen);
     // A feeder or the listing feed took over, or a fresher publish landed, while
     // this request was in the air: this answer is already history. Drop it.
     if (!fedElsewhere() && generation === departed) publishTasks(answer);
@@ -264,18 +386,20 @@ export function pokeTasks() {
 }
 
 /** The localStorage key the chat (apps/claude ClaudeChat `stampChatActivity`)
- *  stamps when an interactive turn starts or ends. Interactive turns create no
- *  sys:schedule job and no schedule event — neither producer above fires for
- *  them — so a follow-up typed into a chat left every tasks surface stale until
- *  its next slow poll (Akshil, 2026-08-19: "the task's unread status does not
- *  update"). Every same-origin document EXCEPT the writer receives a `storage`
- *  event for the stamp, so a Tasks page open in another window hears the turn
- *  for free, with no postMessage and no new endpoint. */
-export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
+ *  stamps when an interactive turn starts or ends — a SIGNAL, not state (D1386
+ *  keeps those in storage). Interactive turns create no sys:schedule job and no
+ *  schedule event — neither producer above fires for them — so a follow-up
+ *  typed into a chat left every tasks surface stale until its next slow poll
+ *  (Akshil, 2026-08-19: "the task's unread status does not update"). Every
+ *  same-origin document EXCEPT the writer receives a `storage` event for the
+ *  stamp, so a Tasks page open in another window hears the turn for free, with
+ *  no postMessage and no new endpoint. The literal has one home,
+ *  platform/lib/tasksChanged; re-exported here for the shell's readers. */
+export { CHAT_ACTIVITY_KEY };
 
 /** The storage half of that poke: App forwards every storage event's key here,
  *  and only the chat's stamp is news about /api/tasks — the other rows this
- *  origin writes (seen stamps, list memory) are the readers' own state. */
+ *  origin writes (list memory, other signals) are the readers' own business. */
 export function pokeOnChatActivity(key: string | null) {
   if (key === CHAT_ACTIVITY_KEY) pokeTasks();
 }
@@ -415,9 +539,24 @@ export function useTasksFeeder() {
  * difference between "no tasks" and "no answer yet", and the write MERGES over
  * the answer (tasks-lib.seenAfterVisit) rather than replacing the map, so a
  * stamp survives anything short of its task leaving the list.
+ *
+ * AND A NO-OP UNTIL THE SERVER'S MAP HAS LANDED (D1386). The write REPLACES the
+ * server's map with one computed here, so computing it over the empty `{}` this
+ * module boots with — a /tasks boot where the page's listing feed publishes
+ * rows (no seen map) before `ensureSeen` answers — would drop the carried
+ * stamps of every task that is momentarily not done: the same loss as above,
+ * one level down. The held-back visit is REMEMBERED (`visitPending`) and run
+ * the moment the map is adopted: nothing else would re-run it — the sidebar's
+ * effect re-fires only on a changed route or a changed pulse — so without
+ * this the done dots stayed lit until the next count change.
  */
 export function markTasksSeen() {
   if (!loaded) return;
+  if (!seenFromServer) {
+    visitPending = true;
+    return;
+  }
+  visitPending = false;
   writeSeen(seenAfterVisit(tasks, seen));
 }
 
@@ -440,7 +579,10 @@ export function useTasksPulse(): TasksPulse {
     // publishes the same rows through the same door, with no Tasks page in
     // sight, and this read would have landed a thinner answer over them.
     if (!fedElsewhere()) void poll();
-    else schedule();
+    else {
+      ensureSeen();
+      schedule();
+    }
     return () => {
       listeners.delete(setCurrent);
       schedule();
@@ -465,7 +607,10 @@ export function useTasksPulseRows(enabled = true): TaskPulseTask[] {
     rowListeners.add(setRows);
     setRows(tasks);
     if (!fedElsewhere()) void poll();
-    else schedule();
+    else {
+      ensureSeen();
+      schedule();
+    }
     return () => {
       rowListeners.delete(setRows);
       schedule();

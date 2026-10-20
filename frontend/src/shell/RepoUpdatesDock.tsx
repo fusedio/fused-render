@@ -87,14 +87,18 @@ import {
 } from "@shell/tasks-lib";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 import {
+  dismissAttention,
+  dismissRepo,
+  dismissRepoMany,
+  getAttentionDismissed,
   getFirstSeenAt,
+  getRepoDismissed,
   isSeen,
   markSeen,
   stampFirstSeen,
   useSeenSnapshot,
   type SeenState,
 } from "@shell/notifications-seen-store";
-import { loadDismissed, saveDismissed } from "./dismiss-store";
 import {
   repoActionLabel,
   failuresForApp,
@@ -593,53 +597,44 @@ function AttentionRowView({
   );
 }
 
-// Persisted (dismiss-store.ts) so a repo dismissal survives reload. Held at
-// MODULE level, not component state, so a remount (switching panes or panels
-// tears this component down and back up) does not forget what the user just
-// dismissed either.
-const DISMISSED_KEY = "fused-render:repo-updates-dismissed";
-// A waiting-task dismissal gets its OWN key rather than sharing
-// `DISMISSED_KEY`'s map: the two are keyed on different id spaces (a repo
-// root vs. a task's session/pending key) and expire against different
-// signatures (`repoDismissSignature` vs. `attentionDismissSignature`) —
-// folding them into one map would risk a collision the moment either id
-// space grows a value that looks like the other's.
-const ATTENTION_DISMISSED_KEY = "fused-render:attention-dismissed";
-
-let moduleDismissed: Record<string, string> = loadDismissed(DISMISSED_KEY);
-
+// Dismissals are server state (`/api/notifications/state`, D1386) held in
+// `notifications-seen-store.ts`'s module-level cache — so a dismissal survives
+// a relaunch on any port, and a remount (switching panes or panels tears this
+// component down and back up) does not forget what the user just dismissed
+// either. Both hooks subscribe through the store's one snapshot, so a
+// dismissal re-renders the dock the same way a seen mark does.
+//
+// A waiting-task dismissal keeps its OWN map rather than sharing the repo
+// rows': the two are keyed on different id spaces (a repo root vs. a task's
+// session/pending key) and expire against different signatures
+// (`repoDismissSignature` vs. `attentionDismissSignature`) — folding them into
+// one map would risk a collision the moment either id space grows a value
+// that looks like the other's.
 function useDismissed() {
-  const [dismissed, setDismissedState] = useState<Record<string, string>>(moduleDismissed);
+  useSeenSnapshot();
+  const dismissed = getRepoDismissed();
 
   // Keyed on `repoDismissSignature`, never on `checked_at` (D584 finding 3):
   // a re-check that changes nothing must not resurrect a dismissed row.
   const dismissOne = useCallback((root: string, signature: string) => {
-    moduleDismissed = { ...moduleDismissed, [root]: signature };
-    saveDismissed(DISMISSED_KEY, moduleDismissed);
-    setDismissedState(moduleDismissed);
+    dismissRepo(root, signature);
   }, []);
 
   const dismissAll = useCallback((rows: RepoRow[]) => {
-    const next = { ...moduleDismissed };
-    for (const row of rows) next[row.repo.root] = repoDismissSignature(row.repo);
-    moduleDismissed = next;
-    saveDismissed(DISMISSED_KEY, next);
-    setDismissedState(next);
+    dismissRepoMany(
+      Object.fromEntries(rows.map((row) => [row.repo.root, repoDismissSignature(row.repo)])),
+    );
   }, []);
 
   return { dismissed, dismissOne, dismissAll };
 }
 
-let moduleAttentionDismissed: Record<string, string> = loadDismissed(ATTENTION_DISMISSED_KEY);
-
 function useAttentionDismissed() {
-  const [dismissed, setDismissedState] =
-    useState<Record<string, string>>(moduleAttentionDismissed);
+  useSeenSnapshot();
+  const dismissed = getAttentionDismissed();
 
   const dismissOne = useCallback((key: string, signature: string) => {
-    moduleAttentionDismissed = { ...moduleAttentionDismissed, [key]: signature };
-    saveDismissed(ATTENTION_DISMISSED_KEY, moduleAttentionDismissed);
-    setDismissedState(moduleAttentionDismissed);
+    dismissAttention(key, signature);
   }, []);
 
   return { dismissed, dismissOne };

@@ -61,8 +61,10 @@ import {
 import { createPortal } from "react-dom";
 import {
   getConfig,
+  getPrefsShared,
   getSchedule,
   getScheduleQueue,
+  putTasksViewTabs,
 } from "@platform/lib/api";
 import type {
   ScheduledMessage,
@@ -113,7 +115,6 @@ import {
   DEFAULT_VIEW_TABS,
   TASK_VIEWS,
   VIEW_LABELS,
-  VIEW_TABS_KEY,
   applyQueueOverrides,
   emptyTasksLabel,
   groupOfView,
@@ -184,6 +185,82 @@ const POLL_MS = 20000;
 // too. One page, one memory — a per-app key would make the same control forget
 // on every other app.
 const VIEW_KEY = "fused-render:scheduled-view";
+
+// THE SWITCHER'S TABS are a PREFERENCE, prefs.py `tasks_view_tabs` (D1386),
+// not layout: which views a reader keeps a click away is a choice about how
+// they work, and Preferences-shaped. Read through `getPrefsShared` on every
+// mount (another window may have edited the row), with the last answer kept
+// here so a remount paints the reader's row rather than flashing the defaults
+// while the read is out.
+let knownViewTabs: TaskView[] | null = null;
+
+/** import-only (D1386) — where the switcher's chosen tabs USED to live (a JSON
+ *  array of view names, per browser), until the desktop app's port walk was
+ *  found handing most relaunches a new origin with empty storage. Read once by
+ *  `readViewTabs`, pushed to prefs, removed. Here rather than in tasks-lib so
+ *  the literal sits beside its `removeItem` (tests/test_browser_storage_allowlist.py). */
+const VIEW_TABS_KEY = "fused-render:scheduled-view-tabs";
+
+// ONE WRITER AT A TIME for the tab row. `/api/prefs` serialises its own
+// read-modify-write but takes whatever value arrives last, and two writes can
+// be in flight here: the one-shot import above and an edit the reader saves
+// before that import's PUT has landed. Unqueued, the older imported row could
+// land AFTER the edit and overwrite it. Every write goes through this chain, so
+// the edit is always persisted last; a failed link never blocks the next.
+let viewTabsWrite: Promise<void> = Promise.resolve();
+// Set the moment the reader saves a row in this document. `readViewTabs` checks
+// it AFTER its prefs GET: an edit queued while that GET was out would otherwise
+// be followed by the import's PUT, which lands last and then removes the old
+// key — the server keeping the imported row with no retry left for the edit.
+// Once the reader has spoken, the old row is only ever removed, never pushed.
+let viewTabsEditedHere = false;
+function enqueueViewTabsWrite(tabs: TaskView[]): Promise<void> {
+  const write = viewTabsWrite.then(() => putTasksViewTabs(tabs).then(() => undefined));
+  viewTabsWrite = write.catch(() => {});
+  return write;
+}
+
+/**
+ * The tabs, from prefs — and, once, the old per-browser localStorage row
+ * (`VIEW_TABS_KEY`): pushed to prefs when prefs have none yet, then removed
+ * either way. Only an EMPTY preference is filled: a second origin (yesterday's
+ * port) still holding an old row must not overwrite the one the reader has
+ * saved since. A failed push
+ * keeps the old key for the next visit.
+ */
+async function readViewTabs(): Promise<TaskView[]> {
+  let legacy: string | null = null;
+  try {
+    legacy = localStorage.getItem(VIEW_TABS_KEY);
+  } catch {
+    legacy = null; // blocked storage: nothing to import
+  }
+  const stored = (await getPrefsShared()).tasks_view_tabs;
+  if (legacy === null) return parseViewTabs(stored);
+  if (!stored?.length && !viewTabsEditedHere) {
+    // The old row shows at once (the other D1386 importers apply the local
+    // value first too); the push is not awaited, so a failed PUT cannot cost
+    // this visit its tabs — the key stays and the next visit re-decides.
+    const tabs = parseViewTabs(legacy);
+    void enqueueViewTabsWrite(tabs).then(
+      () => {
+        try {
+          localStorage.removeItem(VIEW_TABS_KEY);
+        } catch {
+          // unreachable in practice: the read above succeeded
+        }
+      },
+      () => {},
+    );
+    return tabs;
+  }
+  try {
+    localStorage.removeItem(VIEW_TABS_KEY);
+  } catch {
+    // as above
+  }
+  return parseViewTabs(stored);
+}
 
 // The switcher's glyphs, one per view — the four the page always had
 // (ScheduleCalendar) and the three grouped lists' (lucide `clock`, `folder`,
@@ -639,14 +716,25 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     return viewFromSearch(location.search, saved);
   });
   // WHICH TABS THE SWITCHER SHOWS (Akshil, 2026-10-16) — the reader's own
-  // row, remembered per browser; the four defaults until they edit it.
-  const [tabs, setTabs] = useState<TaskView[]>(() => {
-    try {
-      return parseViewTabs(localStorage.getItem(VIEW_TABS_KEY));
-    } catch {
-      return DEFAULT_VIEW_TABS;
-    }
-  });
+  // row, a preference since D1386 (see `readViewTabs`); the defaults until
+  // they edit it, and until the first read of this document lands.
+  const [tabs, setTabs] = useState<TaskView[]>(() => knownViewTabs ?? DEFAULT_VIEW_TABS);
+  // An edit made while the read is still out outranks the read.
+  const tabsEdited = useRef(false);
+  useEffect(() => {
+    let live = true;
+    readViewTabs().then(
+      (next) => {
+        if (tabsEdited.current) return;
+        knownViewTabs = next;
+        if (live) setTabs(next);
+      },
+      (e) => console.warn("[fused] could not read the Tasks view tabs:", e)
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
   // The editor's draft: null while the row is a switcher, the tabs-in-progress
   // while it is being edited. Cancel drops it; Done makes it `tabs`.
   const [tabsDraft, setTabsDraft] = useState<TaskView[] | null>(null);
@@ -672,12 +760,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   };
   const finishTabs = () => {
     if (!tabsDraft) return;
+    viewTabsEditedHere = true;
     setTabs(tabsDraft);
-    try {
-      localStorage.setItem(VIEW_TABS_KEY, JSON.stringify(tabsDraft));
-    } catch {
-      // A blocked store forgets the row; the edit itself still lands.
-    }
+    tabsEdited.current = true;
+    knownViewTabs = tabsDraft;
+    // A failed write forgets the row; the edit itself still lands.
+    enqueueViewTabsWrite(tabsDraft).catch((e) => console.warn("[fused] could not save the Tasks view tabs:", e));
     setTabsDraft(null);
     // The view that was up was just taken OFF the row: land on the first tab
     // left rather than keep showing a view no button names. Only when it was

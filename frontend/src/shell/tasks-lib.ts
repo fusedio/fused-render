@@ -1593,9 +1593,6 @@ export const VIEW_LABELS: Record<TaskView, string> = {
   pr: "PR",
 };
 
-/** Where the switcher's chosen tabs live (a JSON array of view names). */
-export const VIEW_TABS_KEY = "fused-render:scheduled-view-tabs";
-
 /** `time` / `project` / `pr` for a grouped list, null for every other view. */
 export function groupOfView(view: TaskView): TaskGroupBy | null {
   return (GROUP_VIEWS as string[]).includes(view) ? (view as TaskGroupBy) : null;
@@ -1605,14 +1602,18 @@ export function groupOfView(view: TaskView): TaskGroupBy | null {
  * The tabs a stored value names — untrusted input (an older build, a hand
  * edit), so every name is checked against TASK_VIEWS, duplicates fold, and an
  * empty or unreadable answer is the default set rather than no tabs at all.
+ * Takes the prefs array (`Prefs.tasks_view_tabs`) or the old localStorage
+ * string (the one-shot import, Scheduled.tsx) alike.
  */
-export function parseViewTabs(raw: string | null | undefined): TaskView[] {
+export function parseViewTabs(raw: unknown): TaskView[] {
   if (!raw) return DEFAULT_VIEW_TABS;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return DEFAULT_VIEW_TABS;
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return DEFAULT_VIEW_TABS;
+    }
   }
   if (!Array.isArray(parsed)) return DEFAULT_VIEW_TABS;
   const out: TaskView[] = [];
@@ -5099,10 +5100,6 @@ export function popoverPill(
 // run that broke would be the one place in the app where a hue disagreed with
 // the ring the row wears (design-principles §1).
 
-/** Where the sidebar's dismissal lives. Per COMPLETION, not per task — see
- *  TasksSeen. */
-export const TASKS_SEEN_KEY = "fused-render:tasks-seen";
-
 /**
  * Which completions the reader has already been shown, as `task key ->
  * last_active`.
@@ -5120,9 +5117,12 @@ export const TASKS_SEEN_KEY = "fused-render:tasks-seen";
  */
 export type TasksSeen = Record<string, number>;
 
-/** What came out of localStorage is a string written by SOMEONE ELSE (an older
- *  build, a hand-edited devtools row): anything unreadable degrades to "nothing
- *  dismissed" — one extra dot — rather than throwing inside a render. */
+/** import-only (D1386) — the map lives on the server now (`POST
+ *  /api/tasks/seen`, carried back on the pulse); this reads the OLD
+ *  localStorage row once for tasksPulse's one-shot import. That string was
+ *  written by SOMEONE ELSE (an older build, a hand-edited devtools row):
+ *  anything unreadable degrades to "nothing dismissed" — one extra dot —
+ *  rather than throwing. */
 export function parseTasksSeen(raw: string | null): TasksSeen {
   if (!raw) return {};
   let parsed: unknown;

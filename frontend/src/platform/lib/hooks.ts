@@ -121,7 +121,7 @@ export function useUrlVersion(): number {
   return useEventCounter(["popstate", NAV_EVENT, "fused:urlchange"]);
 }
 
-// Bookmark store change signal. The localStorage store (lib/bookmarks.ts)
+// Bookmark store change signal. The server-backed store (lib/bookmarks.ts)
 // stays a pure data layer; every UI mutation calls notifyBookmarksChanged()
 // so all subscribed components (sidebar, breadcrumb star) re-read it.
 const BOOKMARKS_EVENT = "fused:bookmarks";

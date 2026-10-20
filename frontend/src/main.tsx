@@ -10,6 +10,7 @@ import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
+import { hydrateNotificationsState } from "@shell/notifications-seen-store";
 import { notifyBookmarksChanged, setDefaultFavicon } from "@platform/lib/hooks";
 import { displayName, isBot, seedFlavor } from "@platform/lib/flavor";
 import { openTerminal, type TerminalRequest } from "@platform/lib/terminalDockStore";
@@ -134,6 +135,12 @@ getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }).then(
     // Recents hydrate the same way; the store notifies its own subscribers.
     // (The app builder's parallel (tag, name) store went with its route.)
     void hydrateRecents();
+    // The Notifications panel's memory (seen rows, first-seen clock, repo and
+    // waiting-task dismissals) is server-held since D1386; one GET fills its
+    // cache and runs the one-shot import of the old localStorage keys. Not
+    // awaited: the panel is not first paint, and the store answers "nothing
+    // seen" until it lands, which is one dot too many rather than a blank.
+    void hydrateNotificationsState();
     // Poll every 30 s so another tab's/window's bookmark edits converge here
     // (D77). refreshBookmarks() re-renders only when the tree actually changed.
     // In-flight guarded (mirrors ServerStatusBanner's probingRef, D126): both
