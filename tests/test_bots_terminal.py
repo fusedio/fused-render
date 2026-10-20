@@ -155,6 +155,35 @@ def test_forever_rule_shape_and_prefix_cover(tbot):
     assert not tools.forever_match(tbot, tools.forever_rule(tbot, "terminal_run", run("gh pr view 1"), {}))
 
 
+GH_TEMPLATE_CMD = ("gh search prs --author @me --updated \">=2026-10-20\" --limit 100 --json repository,number,title,state,"
+                   "updatedAt --template '{{range .}}{{.repository.nameWithOwner}}#{{.number}} | {{.state}} | "
+                   "{{.updatedAt}} | {{.title}}{{\"\\n\"}}{{end}}'")
+
+
+def test_single_quoted_template_command_can_be_remembered(tbot):
+    assert not tools.has_shell_meta(GH_TEMPLATE_CMD)
+    assert tools.terminal_key(GH_TEMPLATE_CMD) == "gh search prs"
+    rule = tools.forever_rule(tbot, "terminal_run", run(GH_TEMPLATE_CMD), {})
+    assert rule["kind"] == "terminal" and rule["key"] == "gh search prs"
+    assert "shell syntax beyond plain words" not in tools.risk(tbot, "terminal_run", run(GH_TEMPLATE_CMD), {})
+
+
+@pytest.mark.parametrize("cmd", [
+    "ls; rm x", "echo 'a' | sh", "echo 'unterminated", 'echo "unterminated', 'echo "$(id)"', 'echo "a`id`"',
+    'echo "x\\y"', 'echo "!!"', "cat x > y", "echo $(id)", "a 'b'$(c)", "echo 'a\nb'", "echo 'a\x1bb'", "echo 'caf\u00e9'",
+])
+def test_quote_scanner_still_flags_real_shell_syntax(cmd):
+    assert tools.has_shell_meta(cmd)
+
+
+@pytest.mark.parametrize("cmd", [
+    "gh issue list --search 'is:open label:\"bug\"'", 'echo "it\'s"', "jq '.[] | .name' file.json",
+    'gh search prs --updated ">=2026-10-20"',
+])
+def test_quote_scanner_accepts_literal_quoted_text(cmd):
+    assert not tools.has_shell_meta(cmd)
+
+
 def test_describe_shows_the_command(tbot):
     assert tools.describe(tbot, "terminal_run", run("gh pr list"), {}) == "$ gh pr list"
 
