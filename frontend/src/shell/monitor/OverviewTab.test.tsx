@@ -228,7 +228,7 @@ test("a warn/bad tile outside the headline cards shows in the top row", async ()
   const r = await mount(() => {}, {
     load: async () => ({ ...DASH, index: { waiting: 2, abandoned: 0, scans: { running: 0, limit: 2 } } }) as Dashboard,
   });
-  expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual(["claude", "index", "jobs", "errors"]);
+  expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual(["claude", "index", "jobs", "errors", "calls", "ai", "disk"]);
 });
 
 test("lists render without expanding", async () => {
