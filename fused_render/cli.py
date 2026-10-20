@@ -193,9 +193,11 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     optional = extras.optional_missing_for_serve()
     if optional:
+        features = {"fused": "deploy/share/MCP", "desktop": "native desktop integrations"}
+        off = " and ".join(features[m] for m in optional if m in features)
         print(
             f"fused-render: running without {', '.join(f'[{m}]' for m in optional)}"
-            " — deploy/share/MCP and native desktop integrations are off "
+            f" — {off} are off "
             f"({extras.install_hint('all')})",
             file=sys.stderr,
         )

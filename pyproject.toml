@@ -321,9 +321,10 @@ cli = [
     "pillow",
     "fused-render[index,data,hf]",
 ]
-# Every feature extra. The full product: `[cli]` plus deploy/share/MCP and the
-# native desktop integrations. Every packaged build and `[dev]` include it.
+# Every feature extra. A superset of `[cli]` (its unconditional pillow included,
+# since `[desktop]` only brings pillow on Linux); every packaged build and `[dev]` include it.
 all = [
+    "pillow",
     "fused-render[index,data,desktop,hf,fused]",
 ]
 # ---------------------------------------------------------------------------

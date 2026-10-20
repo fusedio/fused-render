@@ -213,3 +213,31 @@ def test_serve_starts_when_every_extra_is_installed(monkeypatch):
 
     monkeypatch.setattr(extras, "missing_for_serve", lambda: [])
     cli._require_serve_extras()
+
+
+def _serve_notice(monkeypatch, capsys, missing):
+    import argparse
+
+    from fused_render import cli, extras
+
+    monkeypatch.setattr(extras, "missing_for_serve", lambda: [])
+    monkeypatch.setattr(extras, "optional_missing_for_serve", lambda: missing)
+    # Stop right after the notice: uvicorn is imported next.
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    try:
+        cli._run_serve(argparse.Namespace())
+    except ImportError:
+        pass
+    return capsys.readouterr().err
+
+
+def test_serve_notice_names_only_the_missing_features(monkeypatch, capsys):
+    err = _serve_notice(monkeypatch, capsys, ["fused"])
+    assert "[fused]" in err and "deploy/share/MCP are off" in err
+    assert "desktop" not in err
+    err = _serve_notice(monkeypatch, capsys, ["desktop", "fused"])
+    assert "native desktop integrations" in err and "deploy/share/MCP" in err
+    assert "deploy/share/MCP and native desktop integrations are off" in err or (
+        "native desktop integrations and deploy/share/MCP are off" in err
+    )
+    assert "fused-render[all]" in err
