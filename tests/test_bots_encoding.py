@@ -55,12 +55,26 @@ def _text_opens_without_encoding():
             with open(path, encoding="utf-8") as f:
                 tree = ast.parse(f.read(), path)
             for n in ast.walk(tree):
-                if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "open"):
+                if not isinstance(n, ast.Call):
                     continue
-                mode = n.args[1] if len(n.args) > 1 else next((k.value for k in n.keywords if k.arg == "mode"), None)
-                if isinstance(mode, ast.Constant) and isinstance(mode.value, str) and "b" in mode.value:
-                    continue
-                if len(n.args) > 3 or any(k.arg == "encoding" for k in n.keywords):
+                f = n.func
+                has_enc_kw = any(k.arg == "encoding" for k in n.keywords)
+                if isinstance(f, ast.Attribute) and f.attr in ("read_text", "write_text"):
+                    # Path.read_text(encoding) / Path.write_text(data, encoding)
+                    enc_pos = 1 if f.attr == "read_text" else 2
+                    if len(n.args) >= enc_pos or has_enc_kw:
+                        continue
+                elif (isinstance(f, ast.Name) and f.id == "open") or (
+                    isinstance(f, ast.Attribute) and f.attr == "open"
+                    and isinstance(f.value, ast.Name) and f.value.id in ("io", "codecs")
+                ):
+                    mode = n.args[1] if len(n.args) > 1 else next((k.value for k in n.keywords if k.arg == "mode"), None)
+                    if isinstance(mode, ast.Constant) and isinstance(mode.value, str) and "b" in mode.value:
+                        continue
+                    # open(file, mode, buffering, encoding): encoding is the 4th positional
+                    if len(n.args) >= 4 or has_enc_kw:
+                        continue
+                else:
                     continue
                 bad.append(f"{os.path.relpath(path, root)}:{n.lineno}")
     return bad
