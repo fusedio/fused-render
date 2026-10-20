@@ -1511,10 +1511,10 @@ def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
     # only engine that reads the format cannot run here.
     monkeypatch.setattr(_ai_registry, "_RUNNERS", tuple(
         dataclasses.replace(r, _available=lambda: _ai_registry.Availability(
-            False, "not here")) if r.code == "diffusers-image" else r
+            False, "not here")) if r.code.startswith("diffusers-image") else r
         for r in _ai_registry.all_runners()))
     other = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
-    assert other["code"].startswith("diffusers-image") and other["available"] is False
+    assert other["code"] == "diffusers-image" and other["available"] is False
     assert other["shortLabel"].startswith("Diffusers")
     assert other["familyLabel"] == "Diffusers"
 

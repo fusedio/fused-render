@@ -903,13 +903,50 @@ def test_describe_model_engines_builds_the_choices_once_per_capability(monkeypat
     real = registry._choice
     monkeypatch.setattr(registry, "_choice",
                         lambda runner: (probed.append(runner.code), real(runner))[1])
+    resolved = []
+    real_resolve = registry.resolve
+    monkeypatch.setattr(registry, "resolve",
+                        lambda cap: (resolved.append(cap), real_resolve(cap))[1])
     rows = registry.describe_model_engines()
     assert len(rows) == 5
+    # `resolve(capability)` is the capability's answer: once, not per model.
+    assert resolved == [registry.IMAGE_GENERATION]
     image = [r.code for r in registry.all_runners()
              if r.capability == registry.IMAGE_GENERATION]
     # `_choice` probes `available()`: once per runner for the capability, not
     # once per runner per model.
     assert sorted(probed) == sorted(image)
+
+
+def test_model_rows_do_not_repeat_the_capability_preferences_ignored_reason(
+        monkeypatch):
+    _mac(monkeypatch)
+    # The capability preference names a runner that cannot run here (platform).
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    assert registry.resolve(registry.IMAGE_GENERATION).ignored_reason
+    models = [CachedModel("org/a", registry.IMAGE_GENERATION, 1,
+                          ("diffusers-image",)),
+              CachedModel("org/b", registry.IMAGE_GENERATION, 1,
+                          ("diffusers-image",))]
+    monkeypatch.setattr(ai_models, "cached_models", lambda: models)
+    rows = registry.describe_model_engines()
+    assert [r["ignoredReason"] for r in rows] == [None, None]
+
+
+def test_a_model_the_capability_runner_does_not_read_keeps_its_own_reason(
+        monkeypatch):
+    _mac(monkeypatch)
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+    base = registry.resolve(registry.IMAGE_GENERATION)
+    assert base.runner is not None and base.runner.code == "mflux-image"
+    models = [CachedModel("org/d", registry.IMAGE_GENERATION, 1,
+                          ("diffusers-image",))]
+    monkeypatch.setattr(ai_models, "cached_models", lambda: models)
+    (row,) = registry.describe_model_engines()
+    assert row["effective"] == "diffusers-image"
+    assert "does not read this model" in row["ignoredReason"]
 
 
 def test_an_uncached_model_resolves_exactly_as_the_capability_does(monkeypatch):
