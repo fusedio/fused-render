@@ -89,3 +89,12 @@ TDD throughout: write the scoped test first, watch it fail, implement, watch it 
 - Task 5: needed `CacheReading.loaders` (it lacked the full loader set) and a `resolve_for_loaders` helper so `hub_cache._engine` avoids recursing into itself. Many tests stubbing `registry.for_capability` also needed a `resolve_for_model` stub.
 - Task 6 deviation: no code change. `_model_row` is a Hub-search row builder with no `CacheReading`; resolving per downloaded search row reads repo metadata, which `test_the_join_costs_what_the_results_cost_not_what_the_cache_costs` forbids. Downloaded cards already render `engine.reason` (aiModelGroups.ts), which Task 5 made follow the serving runner. `_active_engine_format` stays capability-level. If the ranking should follow the serving runner, it needs a metadata-free source (e.g. a cheap local loaders index) first.
 - DECISIONS.md: D1387.
+
+### Fix round 1 (code review)
+
+- Engines tab: `ignoredWarning` prints only the reason when `selected === "auto"` (test in `lib/engines.test.ts`).
+- `hub_cache._engine` resolves before the no-candidates return; a honoured pin is served/offered with reason "pinned to X on the Engines tab". Pinned test updated, unpinned-not-loadable test added.
+- `evict_stale_engines` resolves outside `_lock`; `ready_worker`/`evict_stale_engines` share `_resolved_code`, memoised on `Worker.resolution_key`/`resolved_code` (prefs.json stat + repo signature). Test: `tests/test_ai_supervisor_resolution_memo.py`.
+- `describe_model_engines`: one `prefs.model_engines()` read, `resolve_for_loaders` with the cached loaders, choices built once per capability. `resolve_for_model`/`resolve_for_loaders` take `pinned`. Test added in `tests/test_ai_runtime.py`.
+- Dead `for_capability` stubs removed from `tests/test_ai_benchmark.py`.
+- Pin scope documented (docstring + D1387 line).
