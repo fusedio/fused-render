@@ -375,6 +375,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [live, setLive] = useState(false);
   // The sync log drawer and its buffer (newest first).
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // The drawer is gated on (sync || owned). A drawer opened under `owned`
+  // whose ownership then clears before the first sync state would otherwise
+  // stay armed and pop open by itself when that state lands.
+  useEffect(() => {
+    if (!sync && !owned) setDrawerOpen(false);
+  }, [sync, owned]);
   const [logEvents, setLogEvents] = useState<SyncLogEvent[]>([]);
   const wsLogAtRef = useRef(0);
   // Bumped to make SyncFramePoster re-post the state (frame (re)loaded).
@@ -1271,29 +1277,34 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       {startError && !error && (
         <ErrorBanner>{`Could not start syncing this canvas (retrying): ${startError}`}</ErrorBanner>
       )}
-      {(sync || owned) && (
-        <SyncStrip
-          name={name}
-          server={sync}
-          queue={relayQueue}
-          failure={relayFailure}
-          owned={owned}
-          live={live}
-          open={drawerOpen}
-          onToggle={() => setDrawerOpen((o) => !o)}
-          workbenchUrl={
-            baseUrl && handle
-              ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
-              : null
-          }
-          pull={{
-            busy: pullBusy,
-            error: pullError,
-            disabled: pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
-            onPull: () => void onPull(),
-          }}
-        />
-      )}
+      {/* Always up ("Connecting…" before the first state): it carries the
+          way back to the listing, which must not wait on sync. */}
+      <SyncStrip
+        name={name}
+        server={sync}
+        queue={relayQueue}
+        failure={relayFailure}
+        owned={owned}
+        live={live}
+        open={drawerOpen}
+        // No drawer to open before the first state: arming it now would pop
+        // it unprompted when that state lands.
+        onToggle={() => {
+          if (sync || owned) setDrawerOpen((o) => !o);
+        }}
+        onBack={() => navigateUrl("/canvases")}
+        workbenchUrl={
+          baseUrl && handle
+            ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+            : null
+        }
+        pull={{
+          busy: pullBusy,
+          error: pullError,
+          disabled: pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
+          onPull: () => void onPull(),
+        }}
+      />
       {drawerOpen && (sync || owned) && (
         <SyncDrawer
           name={name}

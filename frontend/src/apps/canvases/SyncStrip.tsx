@@ -6,6 +6,7 @@
 // state to the workbench frame (`fused-embed-sync-state`). Both own their own
 // clock tick so the ageing embed_to_disk leg and "Published 12 s ago" never
 // re-render the whole workspace (and its two iframes' parents) every second.
+import { ArrowLeftIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   LEG_LABEL,
@@ -82,6 +83,7 @@ export function SyncStrip({
   pull,
   open,
   onToggle,
+  onBack,
   workbenchUrl,
 }: {
   name: string;
@@ -95,6 +97,9 @@ export function SyncStrip({
   pull: PullControl;
   open: boolean;
   onToggle: () => void;
+  /** Back to the canvases listing (/canvases). The strip is the page's only
+   *  top chrome, so the way out lives at its left end. */
+  onBack: () => void;
   /** The hosted workbench editor for this canvas (no embed flags); null
    *  until the base URL and handle are known. Shown as "Open in workbench"
    *  while every leg is green. */
@@ -137,7 +142,11 @@ export function SyncStrip({
         gap: 10,
         minWidth: 0,
         padding: "4px 12px",
-        minHeight: 28,
+        // Fixed at the height a .btn (32px) gives it, so the strip does not
+        // jump when Pull / Open in workbench come and go.
+        height: 40,
+        flex: "none",
+        boxSizing: "border-box",
         borderBottom: `1px solid ${style.border}`,
         background: style.bg,
         fontSize: 12,
@@ -145,6 +154,30 @@ export function SyncStrip({
         userSelect: "none",
       }}
     >
+      <button
+        type="button"
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          flex: "none",
+          padding: 0,
+          margin: 0,
+          border: "none",
+          background: "none",
+          color: "inherit",
+          cursor: "pointer",
+          opacity: 0.7,
+        }}
+        aria-label="Back to canvases"
+        title="Back to canvases"
+        onClick={(e) => {
+          e.stopPropagation();
+          onBack();
+        }}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        <ArrowLeftIcon size={14} />
+      </button>
       <Dot level={level} />
       <span
         style={{
@@ -232,7 +265,7 @@ export function SyncStrip({
           ))}
         </span>
       )}
-      {!live && (
+      {!live && server && (
         <span style={{ flex: "none", color: "var(--fg-muted)" }} title="Polling every 2 s">
           · polling
         </span>
