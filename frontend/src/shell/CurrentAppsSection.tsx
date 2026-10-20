@@ -32,7 +32,8 @@ import {
   setCurrentAppsOrder,
   type CurrentAppEntry,
 } from "@platform/lib/api";
-import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
+import { setSidebarSectionOpen, useSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
+import SectionFold from "@platform/ui/sidebar/SectionFold";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -941,22 +942,12 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
   // what an empty desk wants.
   const [composing, setComposing] = useState(false);
-  // Whole-section fold, the Bookmarks heading's pattern: sidebar layout, not
-  // desk data, so it lives in the ui-layout doc (`ui_layout.json`, D1386) —
-  // read synchronously off the cache filled at boot, written by the click and
-  // only by the click. One key per section: the two folds are two layout
-  // facts. The count chip carries the collapsed signal, no chevron.
-  const [collapsed, setCollapsed] = useState(() =>
-    canvases
-      ? getUiLayout().canvasesCollapsed ?? false
-      : getUiLayout().currentAppsCollapsed ?? false,
-  );
-  const toggleCollapsed = () => {
-    const next = !collapsed;
-    if (canvases) patchUiLayout((d) => ({ ...d, canvasesCollapsed: next }));
-    else patchUiLayout((d) => ({ ...d, currentAppsCollapsed: next }));
-    setCollapsed(next);
-  };
+  // Whole-section fold: the sidebar's sections are an accordion (one open at a
+  // time, platform/ui/sidebar/sidebar-accordion.ts), the flags in the ui-layout
+  // doc (`ui_layout.json`, D1386). The count chip carries the collapsed signal.
+  const sectionKey = canvases ? "canvases" : "projects";
+  const collapsed = !useSidebarSectionOpen(sectionKey);
+  const toggleCollapsed = () => setSidebarSectionOpen(sectionKey, collapsed);
   // This section and Bookmarks share the sidebar's free height (equal halves,
   // each its own scroll; a short or folded one yields its remainder) — the
   // hook writes the content-height cap flexbox needs for that. The rows live in
@@ -998,7 +989,8 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             #1303. Projects only: a canvas reaches the desk by being opened
             (the catalog's door) or by a task under its clone, not from here
             (owner, 2026-10-20: "remove open canvas option from sidebar"). */}
-        {!collapsed && !canvases && (
+        <SectionFold open={!collapsed}>
+        {!canvases && (
           <div
             className="bookmark-row current-app-row current-app-new"
             role="button"
@@ -1021,7 +1013,7 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
         {/* The Canvases half's door: "+ Canvas" opens the catalog (/canvases),
             where create and clone live — the one way in now that the
             primary nav has no Canvases row (owner, 2026-10-20). */}
-        {!collapsed && canvases && (
+        {canvases && (
           <div
             className="bookmark-row current-app-row current-app-new"
             role="button"
@@ -1041,7 +1033,8 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             <span className="bookmark-name">Canvas</span>
           </div>
         )}
-        {!collapsed && apps.map(render)}
+        {apps.map(render)}
+        </SectionFold>
       </div>
       {menu && (
         <ContextMenu
