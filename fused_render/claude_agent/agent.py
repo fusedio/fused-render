@@ -4970,8 +4970,9 @@ _echo_locks: dict = {}
 def _read_echo_texts(run_dir: str) -> tuple:
     """`(echoes, whole)` — every user turn `out.jsonl` has echoed back, in file
     order, each as `(uuid, key)` per text block (the uuid is `""` on an echo
-    that carries none; `key` is `_echo_key` of the words), and whether the
-    WHOLE file was read (always, once it
+    that carries none; `key` is `_echo_key` of the words), plus the CLI's
+    `command_lifecycle` receipts as `(uuid, "")`, and whether the WHOLE file
+    was read (always, once it
     is readable at all — the second half is kept for the one caller that
     tells "no echo yet" from "could not look").
 
@@ -5034,8 +5035,16 @@ def _read_echo_texts(run_dir: str) -> tuple:
             offset, echoes = state["offset"], list(state["echoes"])
         else:
             offset, echoes = 0, []   # a different file, or one that shrank
+        fresh = not offset
         try:
             with open(path, "rb") as fh:
+                if offset:
+                    # THE BYTE BEFORE THE INDEXED EDGE IS A NEWLINE on the file
+                    # this index was built from; a file rewritten in place to
+                    # the same size or longer is caught here when it is not.
+                    fh.seek(offset - 1)
+                    if fh.read(1) != b"\n":
+                        offset, echoes, fresh = 0, [], True
                 fh.seek(offset)
                 # LINE BY LINE, never the whole remainder in one buffer: the
                 # first look at a long session is the whole file.
@@ -5043,11 +5052,25 @@ def _read_echo_texts(run_dir: str) -> tuple:
                     if not raw.endswith(b"\n"):
                         break   # a line still being written: next time, whole
                     offset += len(raw)
-                    # The cheap screen, before any parse, and the second half
-                    # of it is the one that matters: a tool result is a
+                    # The cheap screen, before any parse. A tool result is a
                     # `type: "user"` row too and there are far more of them
                     # than there are turns, so screening them out here is what
                     # keeps this off `json.loads` for most of the file.
+                    if b'"command_lifecycle"' in raw:
+                        # THE CLI'S OWN RECEIPT for a stdin line that carried a
+                        # uuid: `started` is written as the turn opens on it,
+                        # `completed` when the turn that answered it ends. An
+                        # exact, per-entry proof of landing — no words needed.
+                        try:
+                            row = json.loads(raw.decode("utf-8", "replace"))
+                        except ValueError:
+                            continue
+                        if isinstance(row, dict) \
+                                and row.get("type") == "command_lifecycle" \
+                                and row.get("state") in ("started", "completed") \
+                                and row.get("command_uuid"):
+                            echoes.append((str(row["command_uuid"]), ""))
+                        continue
                     if b'"user"' not in raw or b'"tool_result"' in raw:
                         continue
                     try:
@@ -5063,11 +5086,11 @@ def _read_echo_texts(run_dir: str) -> tuple:
             return [], False
         if len(echoes) > _ECHO_INDEX_MAX:
             del echoes[:-_ECHO_INDEX_MAX]
-        return _echo_store(run_dir, ident, offset, echoes, st.st_size), True
+        return _echo_store(run_dir, ident, offset, echoes, st.st_size, fresh), True
 
 
 def _echo_store(run_dir: str, ident: tuple, offset: int, echoes: list,
-                size: int) -> list:
+                size: int, fresh: bool = False) -> list:
     """Put one reader's result into `_echo_index` and hand back the list that
     is current afterwards.
 
@@ -5080,11 +5103,14 @@ def _echo_store(run_dir: str, ident: tuple, offset: int, echoes: list,
     from a line said twice. Every reader's list is the stored base plus the
     bytes after it, so the further list is always a superset in order. A
     stored offset past the file's current `size` is a file that shrank since,
-    and vouches for nothing."""
+    and vouches for nothing; `fresh` is a reader that re-indexed from byte 0
+    because the file was not the one the index was built from, and its
+    answer replaces whatever is stored."""
     with _ECHO_LOCK:
         cur = _echo_index.get(run_dir)
-        if cur and cur["ident"] == ident and size >= cur["offset"] > offset:
-            return list(cur["echoes"])
+        if not fresh and cur and cur["ident"] == ident \
+                and size >= cur["offset"] > offset:
+            return cur["echoes"]   # never mutated in place: safe to share
         if cur is None and len(_echo_index) >= _ECHO_CACHE_MAX:
             # The run polled longest ago goes, not the whole index: a shell
             # visiting many live runs must not re-read every file.
@@ -5092,7 +5118,7 @@ def _echo_store(run_dir: str, ident: tuple, offset: int, echoes: list,
         _echo_index.pop(run_dir, None)   # re-insert as the newest
         _echo_index[run_dir] = {"ident": ident, "offset": offset,
                                 "echoes": echoes}
-        return list(echoes)
+        return echoes
 
 
 def _echo_key(text: str) -> str:
@@ -5100,6 +5126,19 @@ def _echo_key(text: str) -> str:
     words, so the index holds a fixed few dozen bytes per echo rather than a
     pasted prompt, and `_ECHO_INDEX_MAX` of them is a bounded cost."""
     return hashlib.sha1(text.strip().encode("utf-8", "replace")).hexdigest()
+
+
+def _text_blocks(content) -> list:
+    """The `text` of every text block in a message's `content`, in order —
+    the one extraction `_inbox_blocks`, `_inbox_text` and `_steered_prompt`
+    share, so the words the page dedupes on are joined the same way wherever
+    they were read. A bare string is one block; anything else is none."""
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    return [str(b.get("text") or "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text"]
 
 
 def _inbox_blocks(row) -> list:
@@ -5112,8 +5151,7 @@ def _inbox_blocks(row) -> list:
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, list):
         return []
-    return [str(b.get("text") or "").strip() for b in content
-            if isinstance(b, dict) and b.get("type") == "text"]
+    return [t.strip() for t in _text_blocks(content)]
 
 
 def _inbox_text(row) -> str:
@@ -5126,9 +5164,7 @@ def _inbox_text(row) -> str:
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, list):
         return ""
-    texts = [str(b.get("text") or "") for b in content
-             if isinstance(b, dict) and b.get("type") == "text"]
-    return "\n\n".join(t for t in texts if t)
+    return "\n\n".join(t for t in _text_blocks(content) if t)
 
 
 def _inbox_entry(path: str, name: str) -> dict | None:
@@ -5229,20 +5265,28 @@ def _drained_unechoed(run_dir: str) -> list:
     rest = recent[matched:]
     if rest:
         # WHAT THE IDS COULD NOT SETTLE goes by position, exactly as it
-        # always has: an entry with no uuid, a CLI that echoes none back, a
-        # folded row that carries one id for several lines. Texts against
-        # texts, over the echoes the id pass has not already spent.
+        # always has — but ONLY for an entry that has no id to be settled by:
+        # one an older server wrote, or any entry while the CLI echoes no ids
+        # at all. A STAMPED entry the ids did not match is WAITING, full stop
+        # (🔴 review, 2026-10-20): matching its words against a block that
+        # belongs to another entry — the second half of a folded row, a line
+        # said twice, a subagent's hand-back saying the same thing — dropped
+        # the reader's bubble while the CLI still held the line. And FIFO
+        # holds here too: once one entry is waiting, everything behind it is.
         #
         # IN ORDER, EACH ECHO SPENT ONCE: the oldest unsettled entry takes the
         # first echo that says its words, the next entry looks only past that
         # one, and the first entry that finds none stops the walk — so a line
         # said twice with one echo lands once (🔴 review, 2026-09-12), and a
-        # `user` row that is not an entry at all (a subagent's hand-back, a
-        # peer's note, injected as a turn by the CLI) is stepped over rather
-        # than read as "the newest echo is not ours, nothing landed".
-        words = [key for _uid, key in echoes[after:]]
+        # `user` row that is not an entry at all (a hand-back, a peer's note,
+        # injected as a turn by the CLI) is stepped over rather than read as
+        # "the newest echo is not ours, nothing landed".
+        ids_in_play = bool(last_echo)
+        words = [key for _uid, key in echoes[after:] if key]
         landed, j = 0, 0
         for entry in rest:
+            if ids_in_play and entry["uuid"]:
+                break
             key = _echo_key(entry["text"])
             while j < len(words) and words[j] != key:
                 j += 1
@@ -9608,14 +9652,9 @@ def _steered_prompt(row: dict) -> tuple | None:
     if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
         return None
     prompt = att.get("prompt")
-    if isinstance(prompt, list):
-        text = "\n".join(str(b.get("text") or "") for b in prompt
-                         if isinstance(b, dict) and b.get("type") == "text")
-    elif isinstance(prompt, str):
-        text = prompt
-    else:
+    if not isinstance(prompt, (list, str)):
         return None
-    text = _strip_terminal_hint(_strip_app_state(text))
+    text = _strip_terminal_hint(_strip_app_state("\n".join(_text_blocks(prompt))))
     return text, str(att.get("source_uuid") or row.get("uuid") or "")
 
 

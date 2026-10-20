@@ -511,16 +511,54 @@ def test_identity_settles_a_fold_that_position_cannot(agent, tmp_path):
     assert agent._poll("run")["inbox"] == []
 
 
-def test_a_fold_under_the_first_lines_uuid_still_lands_by_position(agent,
-                                                                   tmp_path):
-    """Should a CLI stamp a merged row with the FIRST line's uuid instead, the
-    other lines have no echo of their own to match — and the position walk
-    behind the id pass still reads them off the fold's blocks."""
+def test_a_stamped_entry_is_never_settled_by_somebody_elses_words(agent, tmp_path):
+    """🔴 review, 2026-10-20. Three "go on"s each echoed under their own id,
+    then the CLI's merged row repeating two of them under the last id; a
+    FOURTH "go on" not yet echoed. Matched by words it would take one of the
+    merged row's leftover blocks and vanish from the screen while the CLI
+    still held it. A stamped entry the ids did not match is waiting."""
     run_dir = _run_dir(tmp_path)
-    (x, ux), (y, uy), (z, uz) = _entries(agent, run_dir, "first", "second", "third")
-    _echo_uuid(run_dir, ux, "first")
-    _echo_uuid(run_dir, uy, "second", "third")
+    (a, ua), (b, ub), (c, uc) = _entries(agent, run_dir, "go on", "go on", "go on")
+    _echo_uuid(run_dir, ua, "go on")
+    _echo_uuid(run_dir, ub, "go on")
+    _echo_uuid(run_dir, uc, "go on")
+    _echo_uuid(run_dir, uc, "go on", "go on")
     assert agent._poll("run")["inbox"] == []
+    (d, ud), = _entries(agent, run_dir, "go on")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [d]
+    # …and a foreign user row saying the same words (a hand-back) is not it.
+    _echo(run_dir, "go on")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [d]
+    _echo_uuid(run_dir, ud, "go on")
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_a_lifecycle_receipt_lands_an_entry_without_its_echo(agent, tmp_path):
+    """The CLI's `command_lifecycle` frames name the stdin line by its uuid:
+    `started` as the turn opens on it, `completed` when its turn ends. Either
+    is proof of landing in its own right."""
+    run_dir = _run_dir(tmp_path)
+    (a, ua), (b, ub) = _entries(agent, run_dir, "first", "second")
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "command_lifecycle", "command_uuid": ua,
+                             "state": "queued"}) + "\n")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [a, b]
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "command_lifecycle", "command_uuid": ua,
+                             "state": "started"}) + "\n")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [b]
+
+
+def test_a_file_rewritten_to_the_same_length_is_indexed_again(agent, tmp_path):
+    run_dir = _run_dir(tmp_path)
+    (a, ua), = _entries(agent, run_dir, "one")
+    _echo_uuid(run_dir, ua, "one")
+    assert agent._poll("run")["inbox"] == []
+    size = os.path.getsize(run_dir / "out.jsonl")
+    # Same inode, same length, no newline where the index's edge was.
+    (run_dir / "out.jsonl").write_text("x" * size, encoding="utf-8")
+    (b, ub), = _entries(agent, run_dir, "two")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [a, b]
 
 
 def test_the_position_walk_only_spends_echoes_after_the_last_id_match(
