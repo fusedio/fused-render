@@ -76,10 +76,12 @@ def at_cap() -> bool:
     return limit > 0 and live_count() >= limit
 
 
-def has_live_host(entry: dict) -> bool:
+def has_live_host(entry: dict, session: str = "") -> bool:
     """Whether the entry's conversation already has a host to hand the message
-    to. That send adds no process, so the cap never blocks it."""
-    session = str(entry.get("session_id") or "")
+    to. That send adds no process, so the cap never blocks it. `session` is the
+    RESOLVED conversation (a follower's own `session_id` is empty; its leader's
+    conversation is what it resumes); it falls back to the entry's field."""
+    session = str(session or entry.get("session_id") or "")
     target = str(entry.get("target") or "")
     if not (session and target):
         return False
@@ -92,9 +94,9 @@ def has_live_host(entry: dict) -> bool:
         return False
 
 
-def held(entry: dict) -> bool:
+def held(entry: dict, session: str = "") -> bool:
     """Whether the cap holds this entry back from spawning a new session."""
-    return at_cap() and not has_live_host(entry)
+    return at_cap() and not has_live_host(entry, session)
 
 
 def waiting(entries: list[dict], now: datetime) -> list[str]:
@@ -112,7 +114,10 @@ def waiting(entries: list[dict], now: datetime) -> list[str]:
             when = schedule.parse_due(entry.get("due"))
         except ValueError:
             continue
-        if when > now or has_live_host(entry):
+        session = ""
+        if not entry.get("session_id"):
+            session, _ready = schedule._follow_session(entry, by_id)
+        if when > now or has_live_host(entry, session):
             continue
         due.append((when, schedule._task_key(entry, by_id)))
     due.sort(key=lambda pair: pair[0])

@@ -129,6 +129,39 @@ def test_waiting_skips_an_entry_with_a_live_host_and_is_empty_under_cap(
     assert session_cap.waiting([_entry("s-new")], now) == []
 
 
+def _follower(leader_session="sess-L", **extra):
+    """A queued follow-up: empty session_id, `follow_of` names its leader."""
+    leader = dict(_entry("", due_in=-90), id="leader-1", state=schedule.SENT,
+                  claude_session_id=leader_session)
+    follower = dict(_entry("", due_in=-5), id="follower-1", follow_of="leader-1",
+                    **extra)
+    return leader, follower
+
+
+def test_waiting_skips_a_follower_whose_conversation_has_a_live_host(
+        runs, tmp_path, monkeypatch):
+    _set_cap(monkeypatch, tmp_path, 1)
+    _host(runs, "20260101-000001-a", "live-1")
+    runs.hosts["sess-L"] = "run-9"
+    leader, follower = _follower()
+    now = datetime.now(timezone.utc)
+    assert session_cap.waiting([leader, follower], now) == []
+    runs.hosts.clear()
+    assert session_cap.waiting([leader, follower], now) == ["sess-L"]
+
+
+def test_held_follows_the_resolved_session_not_the_entry_field(
+        runs, tmp_path, monkeypatch):
+    _set_cap(monkeypatch, tmp_path, 1)
+    _host(runs, "20260101-000001-a", "live-1")
+    _, follower = _follower()
+    assert session_cap.held(follower) is True
+    runs.hosts["sess-L"] = "run-9"
+    assert session_cap.held(follower) is True  # entry has no session_id of its own
+    assert session_cap.held(follower, "sess-L") is False
+    assert session_cap.has_live_host(follower, "sess-L") is True
+
+
 def test_unlimited_never_holds(runs, tmp_path, monkeypatch):
     _set_cap(monkeypatch, tmp_path, 0)
     for i in range(5):
@@ -174,6 +207,21 @@ def test_dispatch_raises_busy_at_the_cap(sched):
     assert sched["sent"] == []
     stored = {e["id"]: e for e in schedule.list_entries()}
     assert stored[entry["id"]]["state"] == schedule.PENDING
+
+
+def test_dispatch_lets_a_follower_through_when_its_conversation_has_a_host(sched):
+    leader = _create(sched)
+    follower = _create(sched, follow_of=leader["id"])
+    with schedule._lock:
+        entries = schedule._read()
+        for e in entries:
+            if e["id"] == leader["id"]:
+                e.update(state=schedule.SENT, turn="done", claude_session_id="sess-L")
+        schedule._write(entries)
+    with pytest.raises(schedule.SpawnBusy):
+        schedule.dispatch_entry(follower["id"])
+    sched["runs"].hosts["sess-L"] = "run-1"
+    assert schedule.dispatch_entry(follower["id"]) is not None
 
 
 def test_dispatch_proceeds_with_a_live_host_or_no_cap(sched, tmp_path, monkeypatch):

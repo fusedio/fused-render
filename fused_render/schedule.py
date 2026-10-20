@@ -767,7 +767,7 @@ def dispatch_entry(entry_id: str, now: datetime | None = None) -> dict | None:
     if (session and _session_live(session, now)
             and not _verdict_echo(session, entries, now)):
         raise SpawnBusy(f"{entry_id}: session {session} has a live turn")
-    if session_cap.held(entry):
+    if session_cap.held(entry, session):
         raise SpawnBusy(f"{entry_id}: at the session cap")
     claimed = _claim(entry_id, now, resolved)
     if claimed is None:
@@ -4516,7 +4516,7 @@ def tick(now: datetime | None = None) -> list[dict]:
                 held_soon.append(left)
             continue
         by_entry = next((e for e in entries if str(e["id"]) == entry_id), None)
-        if by_entry is not None and session_cap.held(by_entry):
+        if by_entry is not None and session_cap.held(by_entry, session):
             # At the cap: left PENDING, like a busy session, and the next
             # `exited` event (or the 30-second poll) tries again.
             logger.debug("holding %s: at the session cap", entry_id)
