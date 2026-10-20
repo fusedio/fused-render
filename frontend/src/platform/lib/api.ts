@@ -1566,8 +1566,9 @@ export interface Prefs {
   native_windows?: { enabled: boolean; available: boolean };
   // Which Fused environment the canvases, the `fused` wrapper and the share
   // uploads target (fusedcli.workbench_env). READ-ONLY through PUT /api/prefs:
-  // the writer is POST /api/canvases/env, which deletes the cloned canvases
-  // first. `locked` = FUSED_RENDER_WORKBENCH_ENV pins it. OPTIONAL: an older
+  // the writer is POST /api/canvases/env, which stops the canvas sync
+  // watchers first (clones are kept, one folder per environment). `locked` =
+  // FUSED_RENDER_WORKBENCH_ENV pins it. OPTIONAL: an older
   // server answers without it.
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):

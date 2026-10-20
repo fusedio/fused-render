@@ -14,7 +14,6 @@ import {
   getWhoami,
   logout,
   startLogin,
-  clonesChanged,
   switchWorkbenchEnv,
   type CanvasesStatus,
   type WorkbenchEnv,
@@ -22,16 +21,6 @@ import {
 import { publishLoggedIn } from "@apps/canvases/logged-in";
 import { cancelHfLogin, getHfAuth, getPrefsShared, hfLogout, startHfLogin, type HfAuth } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@platform/shadcn/ui/alert-dialog";
 import { Button } from "@platform/shadcn/ui/button";
 import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { labelId, SettingRow } from "./SettingRow";
@@ -213,16 +202,16 @@ export function FusedAccountControl() {
 const ENV_LABELS: Record<WorkbenchEnv, string> = { prod: "Production", unstable: "Unstable" };
 
 // Which Fused the canvases, the `fused` wrapper in chats and share uploads
-// target (fusedcli.workbench_env). NOT a plain pref write: a clone is bound to
-// the environment it was pulled from, so the switch goes through
-// POST /api/canvases/env, which deletes every clone first — and this row
-// warns before calling it, exactly when there is something to lose
-// (`cloned_count` > 0). Credentials are shared by both environments, so the
-// user stays signed in. Locked, with the reason, while the env var pins it.
+// target (fusedcli.workbench_env). NOT a plain pref write: the switch goes
+// through POST /api/canvases/env, which stops the canvas sync watchers first
+// (one left running would push a clone into the other environment's
+// same-named canvas). Clones are kept: each environment has its own folder
+// (~/Fused/canvas/<env>), so there is nothing to warn about. Credentials are
+// shared by both environments, so the user stays signed in. Locked, with the
+// reason, while the env var pins it.
 export function WorkbenchEnvControl() {
   const [status, setStatus] = useState<CanvasesStatus | null>(null);
   const [locked, setLocked] = useState(false);
-  const [pending, setPending] = useState<WorkbenchEnv | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -241,45 +230,19 @@ export function WorkbenchEnvControl() {
     };
   }, []);
 
-  // The count the user agreed to (or that let the dialog be skipped) rides
-  // along; the server refuses when it moved — a clone made in another tab
-  // since this row loaded — and the row re-reads and asks again rather than
-  // letting a stale zero delete unseen work.
-  const apply = async (env: WorkbenchEnv, expected: number) => {
+  const onPick = async (env: WorkbenchEnv) => {
+    if (!status || env === status.workbench_env) return;
     setBusy(true);
     setError(null);
     try {
-      const s = await switchWorkbenchEnv(env, expected);
+      const s = await switchWorkbenchEnv(env);
       setStatus(s);
       publishLoggedIn(s);
     } catch (e) {
-      const moved = clonesChanged(e);
-      if (moved) {
-        try {
-          const fresh = await getCanvasesStatus();
-          setStatus(fresh);
-          if (fresh.cloned_count === 0) {
-            await apply(env, 0);
-            return;
-          }
-          setPending(env);
-          return;
-        } catch (e2) {
-          setError((e2 as Error).message);
-          return;
-        }
-      }
       setError((e as Error).message);
     } finally {
       setBusy(false);
     }
-  };
-
-  const onPick = (env: WorkbenchEnv) => {
-    if (!status || env === status.workbench_env) return;
-    // Nothing cloned: nothing is lost, so no dialog.
-    if (status.cloned_count === 0) void apply(env, 0);
-    else setPending(env);
   };
 
   const current = status?.workbench_env ?? "";
@@ -296,9 +259,9 @@ export function WorkbenchEnvControl() {
             Pinned to <b>{current}</b> by <code>FUSED_RENDER_WORKBENCH_ENV</code>.
           </>
         ) : n > 0 ? (
-          `${n} ${n === 1 ? "canvas" : "canvases"} cloned to this machine.`
+          `${n} ${n === 1 ? "canvas" : "canvases"} cloned under ${status.canvases_dir}.`
         ) : (
-          "No canvases cloned."
+          `No canvases cloned (${status.canvases_dir}).`
         )
       }
       control={
@@ -307,7 +270,7 @@ export function WorkbenchEnvControl() {
             aria-labelledby={labelId("workbench-env")}
             value={known ? current : ""}
             disabled={busy || locked}
-            onChange={(e) => onPick(e.target.value as WorkbenchEnv)}
+            onChange={(e) => void onPick(e.target.value as WorkbenchEnv)}
           >
             {!known && <NativeSelectOption value="">{current}</NativeSelectOption>}
             <NativeSelectOption value="prod">{ENV_LABELS.prod}</NativeSelectOption>
@@ -317,31 +280,6 @@ export function WorkbenchEnvControl() {
       }
     >
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      <AlertDialog open={pending !== null} onOpenChange={(open) => !open && setPending(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Switch to {pending ? ENV_LABELS[pending] : ""}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This deletes the {n} {n === 1 ? "canvas" : "canvases"} cloned to this machine
-              {status ? <> ({status.canvases_dir})</> : null}. Edits that were not pushed are lost.
-              You stay signed in.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => {
-                const env = pending;
-                setPending(null);
-                if (env) void apply(env, n);
-              }}
-            >
-              Delete clones and switch
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </SettingRow>
   );
 }

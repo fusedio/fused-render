@@ -20,8 +20,9 @@ export interface CanvasesStatus {
    *  target (fusedcli.workbench_env): `unstable` or `prod`, or whatever
    *  FUSED_RENDER_WORKBENCH_ENV pins. */
   workbench_env: string;
+  /** This environment's clone folder: `~/Fused/canvas/<env>`. */
   canvases_dir: string;
-  /** Clones on this machine — what a switch of environment deletes. */
+  /** Clones of this environment on this machine (informational). */
   cloned_count: number;
 }
 
@@ -90,23 +91,12 @@ export const createCanvas = (name: string) =>
   postJson<{ ok: boolean; name: string }>("/api/canvases/create", { name });
 
 export const logout = () => postJson<{ ok: boolean }>("/api/canvases/logout", {});
-/** Switch the Fused environment. DELETES every cloned canvas first (the one
- *  writer of the `workbench_env` preference); 409 while another process holds
- *  a clone, 423 while the env var pins the environment. */
-export const switchWorkbenchEnv = (env: WorkbenchEnv, expectedCloned: number) =>
-  postJson<CanvasesStatus>("/api/canvases/env", { env, expected_cloned: expectedCloned });
-
-/** The body of a switch 409 that means "the clone count moved since the
- *  page read it" — the page re-reads and asks again. */
-export interface ClonesChanged {
-  code: "clones_changed";
-  cloned_count: number;
-}
-export function clonesChanged(e: unknown): ClonesChanged | null {
-  const body = (e as { status?: number; body?: unknown }).body as Partial<ClonesChanged> | null;
-  if ((e as { status?: number }).status !== 409 || body?.code !== "clones_changed") return null;
-  return typeof body.cloned_count === "number" ? (body as ClonesChanged) : null;
-}
+/** Switch the Fused environment (the one writer of the `workbench_env`
+ *  preference). Clones are kept — each environment has its own folder under
+ *  ~/Fused/canvas — the server only stops the sync watchers; 423 while the env
+ *  var pins the environment, 409 while a sync leg is still running. */
+export const switchWorkbenchEnv = (env: WorkbenchEnv) =>
+  postJson<CanvasesStatus>("/api/canvases/env", { env });
 
 export const cloneCanvas = (name: string) =>
   postJson<{ ok: boolean; dir: string }>("/api/canvases/clone", { name });
