@@ -512,18 +512,15 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_route_disabled_by_default_then_400(home):
+def test_route_400_without_run_id_and_no_pref(home):
     c = TestClient(create_app(start_dir=str(home)))
-    assert c.get("/api/claude-sessions/headsup?run_id=r1").json() == {"state": "disabled"}
-    assert c.put("/api/prefs", json={"chat_headsup_enabled": True},
-                 headers=FUSED).status_code == 200
+    assert "chat_headsup" not in c.get("/api/prefs").json()
     assert c.get("/api/claude-sessions/headsup").status_code == 400
     assert c.get("/api/claude-sessions/headsup?run_id=").status_code == 400
 
 
-def test_route_enabled_polls_and_dismiss(home, agent, monkeypatch):
+def test_route_polls_and_dismiss(home, agent, monkeypatch):
     c = TestClient(create_app(start_dir=str(home)))
-    c.put("/api/prefs", json={"chat_headsup_enabled": True}, headers=FUSED)
     assert c.get("/api/claude-sessions/headsup?run_id=ghost").json() == {"state": "idle"}
     with headsup._lock:
         st = headsup._run_state("r1")
@@ -539,23 +536,8 @@ def test_route_enabled_polls_and_dismiss(home, agent, monkeypatch):
 
 def test_route_503_without_agent(home, monkeypatch):
     c = TestClient(create_app(start_dir=str(home)))
-    c.put("/api/prefs", json={"chat_headsup_enabled": True}, headers=FUSED)
     monkeypatch.setattr(tasks_mod, "_agent_module", lambda: None)
     assert c.get("/api/claude-sessions/headsup?run_id=r1").status_code == 503
-
-
-# ----------------------------------------------------------------- prefs
-
-def test_pref_round_trip(home):
-    c = TestClient(create_app(start_dir=str(home)))
-    assert c.get("/api/prefs").json()["chat_headsup"] == {"enabled": False}
-    assert c.put("/api/prefs", json={"chat_headsup_enabled": "yes"},
-                 headers=FUSED).status_code == 400
-    r = c.put("/api/prefs", json={"chat_headsup_enabled": True}, headers=FUSED)
-    assert r.json()["chat_headsup"] == {"enabled": True}
-    assert c.get("/api/prefs").json()["chat_headsup"] == {"enabled": True}
-    c.put("/api/prefs", json={"chat_headsup_enabled": False}, headers=FUSED)
-    assert c.get("/api/prefs").json()["chat_headsup"] == {"enabled": False}
 
 
 # ------------------------------------------------------ persistence

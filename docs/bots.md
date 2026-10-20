@@ -2085,11 +2085,10 @@ A bot can run a command in its own terminal (a pty session, `pty_session.py`) an
 site with a CLI (GitHub's `gh`) is driven by commands instead of the browser. The user watches the same session
 live beside the browser (Browser | Terminal switch in the preview column).
 
-**Two switches, both off by default.** Preferences > Optional features > "Bot terminals"
-(`shell.prefs.bot_terminals_enabled`) is the global one; turning it off kills every bot-owned terminal
-(`bot.close_all_terminals`). The per-bot `terminal` setting (Settings > Permissions > Terminal) is user-only: it is
-not in `MANAGE_FIELDS`, so a bot cannot give itself a shell, and presets never set it. The tools are on the roster
-only while `tools.terminal_enabled(bot)`: not Windows (the pty is POSIX-only), the pref is on, the bot's `terminal`
+**One switch, off by default.** The per-bot `terminal` setting (Settings > Permissions > Terminal) is user-only: it is
+not in `MANAGE_FIELDS`, so a bot cannot give itself a shell, and presets never set it. (There used to be a global
+"Bot terminals" preference as well; it was removed and the feature is always available.) The tools are on the roster
+only while `tools.terminal_enabled(bot)`: not Windows (the pty is POSIX-only), the bot's `terminal`
 is true, it is not Super Bot (which has Bash) and its engine resolves to `agent` (never the steps engine, so never
 a local model). The Settings row shows `terminal_needs_claude` when the engine is the only blocker.
 
