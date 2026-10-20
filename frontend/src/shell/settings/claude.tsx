@@ -177,7 +177,9 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
       git,
       catalog,
       catalogError,
-      catalogReady: !live || catalog !== null || catalogError !== null,
+      // On `available`, not `live`: the page wakes the store in an effect, and
+      // the render before that effect must still count as waiting.
+      catalogReady: !available || catalog !== null || catalogError !== null,
       reloadCatalog,
       patch,
       refreshCatalog,
