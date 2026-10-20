@@ -166,15 +166,21 @@ static const int64_t kMaxTimerDelayMs = 1000 / 30;
   settings.command_line_args_disabled = true;
   CefString(&settings.framework_dir_path) = framework.fileSystemRepresentation;
   // `main_bundle_path` travels to every helper as --main-bundle-path and
-  // becomes its outer bundle; Chromium's AmIBundled() is "outer bundle ends
-  // in .app", and a non-bundled host (python -m fused_render.app: the
-  // "bundle" is .venv/bin) makes the GPU helper look for libGLESv2.dylib
-  // beside its own executable instead of in the framework's Libraries, and
-  // exit. Left empty, each helper's own .app is its bundle, which is right.
+  // becomes the outer bundle of browser and helpers alike; two things hang
+  // off it. Chromium's AmIBundled() is "outer bundle ends in .app" (a
+  // non-bundled host — python -m fused_render.app, whose "bundle" is
+  // .venv/bin — made the GPU helper look for libGLESv2.dylib beside its
+  // own executable and exit), and the base bundle ID names the Mach
+  // rendezvous port every child looks up at start, so browser and helpers
+  // must derive it from the SAME bundle (left unset, the helpers used their
+  // own .app's ID, the browser Chromium's default, and every child died
+  // with "Unknown service name"). A real .app host is that bundle; any
+  // other host borrows the helper's.
   NSString *mainBundle = [[NSBundle mainBundle] bundlePath];
-  if ([mainBundle hasSuffix:@".app"]) {
-    CefString(&settings.main_bundle_path) = mainBundle.fileSystemRepresentation;
+  if (![mainBundle hasSuffix:@".app"]) {
+    mainBundle = [engineDir stringByAppendingPathComponent:@"FusedRender Helper.app"];
   }
+  CefString(&settings.main_bundle_path) = mainBundle.fileSystemRepresentation;
   CefString(&settings.browser_subprocess_path) = helper.fileSystemRepresentation;
   CefString(&settings.root_cache_path) = cachePath.fileSystemRepresentation;
   CefString(&settings.cache_path) = cachePath.fileSystemRepresentation;
