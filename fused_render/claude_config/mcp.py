@@ -39,7 +39,8 @@ _generation = 0
 
 
 class _Flight:
-    def __init__(self):
+    def __init__(self, generation=0):
+        self.generation = generation
         self.done = threading.Event()
         self.result = {"ok": False, "error": "failed to list MCP servers"}
 
@@ -84,10 +85,10 @@ def _refresh(generation=None) -> dict:
     return {"ok": True, "servers": servers, "checkedAt": checked, "stale": False}
 
 
-def _run(flight: _Flight, generation: int) -> None:
+def _run(flight: _Flight) -> None:
     global _inflight
     try:
-        flight.result = _refresh(generation)
+        flight.result = _refresh(flight.generation)
     except Exception as exc:  # noqa: BLE001 — the waiter gets the message, not a hang
         flight.result = {"ok": False, "error": str(exc) or "failed to list MCP servers"}
     finally:
@@ -98,15 +99,24 @@ def _run(flight: _Flight, generation: int) -> None:
 
 
 def _flight() -> _Flight:
-    """The refresh in flight, started if there is none (single-flight)."""
+    """The refresh in flight, started if there is none (single-flight). A
+    refresh begun before an add/remove/logout is not joined: its answer is
+    outdated, so a caller after the change gets a new one."""
     global _inflight
     with _lock:
-        if _inflight is not None:
+        if _inflight is not None and _inflight.generation == _generation:
             return _inflight
-        flight = _inflight = _Flight()
-        generation = _generation
-    threading.Thread(target=_run, args=(flight, generation), daemon=True,
-                     name="mcp-list-refresh").start()
+        flight = _Flight(_generation)
+        # Registered only once the thread is running, so a failed start cannot
+        # leave a flight nobody will ever finish.
+        try:
+            threading.Thread(target=_run, args=(flight,), daemon=True,
+                             name="mcp-list-refresh").start()
+        except Exception as exc:  # noqa: BLE001
+            flight.result = {"ok": False, "error": str(exc) or "could not start the refresh"}
+            flight.done.set()
+            return flight
+        _inflight = flight
     return flight
 
 

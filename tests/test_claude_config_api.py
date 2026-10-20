@@ -1800,3 +1800,59 @@ def test_mcp_failed_refresh_leaves_the_cache_alone(client, mcp_cache, monkeypatc
     body = _post(client, "mcp", action="list", fresh=True).json()
     assert body == {"ok": False, "error": "boom"}
     assert mcp_cache._read_cache()["servers"][0]["name"] == "srv"
+
+
+def test_mcp_fresh_list_after_a_change_does_not_join_a_pre_change_refresh(
+        client, mcp_cache, monkeypatch):
+    import threading
+
+    gate = threading.Event()
+    started = threading.Event()
+    lists = []
+
+    def fake(*args, timeout=25):
+        if args[:2] == ("mcp", "list"):
+            lists.append(args)
+            if len(lists) == 1:
+                started.set()
+                gate.wait(10)
+                return {"ok": True, "stdout": "old: https://x.test/mcp (HTTP) - ✓ Connected\n",
+                        "stderr": ""}
+            return {"ok": True, "stdout": "new: https://y.test/mcp (HTTP) - ✓ Connected\n",
+                    "stderr": ""}
+        return {"ok": True, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr(lib, "claude_cli", fake)
+    first = []
+    t = threading.Thread(target=lambda: first.append(mcp_cache.main(action="list", fresh=True)))
+    t.start()
+    assert started.wait(5)
+    assert mcp_cache.main(action="remove", name="srv")["ok"]
+    after = mcp_cache.main(action="list", fresh=True)
+    assert after["servers"][0]["name"] == "new" and len(lists) == 2
+    gate.set()
+    t.join(5)
+    assert mcp_cache._read_cache()["servers"][0]["name"] == "new", \
+        "the pre-change refresh must not write back over the post-change one"
+
+
+def test_mcp_refresh_that_raises_still_releases_its_waiters(client, mcp_cache, monkeypatch):
+    def boom(*args, timeout=25):
+        raise RuntimeError("cli exploded")
+
+    monkeypatch.setattr(lib, "claude_cli", boom)
+    body = mcp_cache.main(action="list", fresh=True)
+    assert body["ok"] is False and "cli exploded" in body["error"]
+    assert mcp_cache._inflight is None
+
+
+def test_mcp_failed_thread_start_does_not_hang_the_waiter(client, mcp_cache, monkeypatch):
+    import threading
+
+    def no_start(self):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", no_start)
+    body = mcp_cache.main(action="list", fresh=True)
+    assert body["ok"] is False and "thread" in body["error"]
+    assert mcp_cache._inflight is None
