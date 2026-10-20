@@ -194,14 +194,18 @@ def test_routes_without_their_extra_answer_503_naming_it():
     assert replies["embed"]["status"] == 200, replies["embed"]
 
 
-def test_serve_refuses_on_the_base_install_and_names_all():
+def test_serve_refuses_on_the_base_install_and_names_cli():
     result = _run_child(_SERVE_CHILD)
     assert "SERVE_REFUSED:" in result.stdout, (
         f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
     message = result.stdout.split("SERVE_REFUSED:", 1)[1]
-    assert "pip install 'fused-render[all]'" in message
-    for extra in ("index", "desktop", "hf", "fused"):
+    assert "pip install 'fused-render[cli]'" in message
+    assert "or [all]" in message
+    for extra in ("index", "data", "hf"):
         assert f"[{extra}]" in message
+    # Optional for serve, so never named as missing.
+    for extra in ("desktop", "fused"):
+        assert f"[{extra}]" not in message.split("or [all]")[0]
 
 
 def test_serve_starts_when_every_extra_is_installed(monkeypatch):

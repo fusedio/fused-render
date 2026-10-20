@@ -310,8 +310,19 @@ fused = [
     # the version those packages need.
     'cryptography<=48.0.1 ; python_version >= "3.11" and sys_platform == "darwin" and platform_machine == "x86_64"',
 ]
-# Every feature extra. What `fused-render serve` (the desktop file explorer)
-# requires, and what every packaged build and `[dev]` include.
+# The middle ground: what `fused-render serve` (the file explorer) needs, and
+# nothing more. Lights up search, the index, Repos, previews and the Hugging
+# Face login. Leaves out `[fused]` (deploy, share, MCP; +~266 MB) and
+# `[desktop]` (zeroconf, pyobjc, dbus-fast), which serve degrades without.
+# Sizes: base ~59 MB, `[cli]` adds ~200 MB (mostly pyarrow 123 + duckdb 49).
+# pillow is listed because the thumbnail route (server/routers/fs_read.py)
+# imports PIL unguarded and `[desktop]` only installs it on Linux.
+cli = [
+    "pillow",
+    "fused-render[index,data,hf]",
+]
+# Every feature extra. The full product: `[cli]` plus deploy/share/MCP and the
+# native desktop integrations. Every packaged build and `[dev]` include it.
 all = [
     "fused-render[index,data,desktop,hf,fused]",
 ]

@@ -853,3 +853,20 @@ def test_the_build_verifies_the_stdlib_in_a_venv_not_just_in_the_app():
         "the stdlib check must also run through a venv built on the bundled "
         "interpreter — that is the path PY-18 uses and the one that failed")
     assert 'for STDLIB_WHO in bundled venv' in text
+
+
+def test_cli_extra_is_exactly_what_serve_requires():
+    """`[cli]` is the middle tier: it must install every extra `serve` gates on
+    (extras.SERVE_EXTRAS) and no more, and those are all guarded extras."""
+    from packaging.requirements import Requirement
+
+    from fused_render import extras as fr_extras
+
+    table = _pyproject()["project"]["optional-dependencies"]
+    self_refs = [
+        Requirement(r) for r in table["cli"] if Requirement(r).name == "fused-render"
+    ]
+    assert len(self_refs) == 1
+    assert set(self_refs[0].extras) == set(fr_extras.SERVE_EXTRAS)
+    assert set(fr_extras.SERVE_EXTRAS) <= set(fr_extras.EXTRAS)
+    assert any(Requirement(r).name == "pillow" for r in table["cli"])
