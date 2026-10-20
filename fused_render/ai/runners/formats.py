@@ -2299,17 +2299,17 @@ ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm")
 
 
 def is_diffusers_snapshot(names) -> bool:
-    """The ONE "this repo is a Diffusers pipeline" predicate: a flat
-    `model_index.json` is present. Admission (`hub_architecture.
-    is_diffusers_repo`, `hub_loadable._admits('diffusers')`,
-    `_resolve_engine`) and loading (`loaders()`) all call it, so a repo
-    admitted on the diffusers signal is one `loaders()` loads.
+    """LOADING predicate: a flat `model_index.json` is present. `loaders()`
+    uses it. Admission (`hub_architecture.is_diffusers_repo`) is a wider
+    Hub-metadata net (flat index, modular index or `library_name`), because
+    the search path has only metadata, no filenames.
 
     Deliberately narrow. The worker only knows `AutoPipelineForText2Image.
-    from_pretrained`, which needs the flat index; a modular-only
-    (`modular_model_index.json`) repo has no loader until a `ModularPipeline`
-    adapter exists (D1386), and `library_name: diffusers` is set on every LoRA
-    repo, none of which load standalone. Neither is admitted either."""
+    from_pretrained`, which needs the flat index; a modular-only repo has no
+    loader until a `ModularPipeline` adapter exists, and `library_name:
+    diffusers` is set on every LoRA repo, none of which load standalone. So
+    such rows are admitted but not loadable; the gap is deliberate and
+    recorded in D1386."""
     return DIFFUSERS_INDEX in names
 
 

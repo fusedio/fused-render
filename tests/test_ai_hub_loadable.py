@@ -421,22 +421,22 @@ def test_genuine_diffusers_repo_with_model_index_stays_loadable():
     assert runs_on == "Diffusers"
 
 
-def test_modular_diffusers_repo_with_only_the_modular_index_is_not_admitted():
-    """No ModularPipeline adapter yet (D1386): not admitted, not loadable."""
+def test_modular_diffusers_repo_with_only_the_modular_index_is_admitted():
+    """Admission is the metadata net (D1386); loading has no adapter yet."""
     names = frozenset({formats.DIFFUSERS_MODULAR_INDEX})
     loadable, _reason, _runs_on = hub_loadable.admission(
         runner_codes=("diffusers-image",),
         model_id="OzzyGT/MiniMax_H3_sdnq_4bit_pruned", model_type=None,
         names=names)
-    assert loadable is False
+    assert loadable is True
 
 
-def test_library_name_diffusers_with_no_index_file_is_not_admitted():
+def test_library_name_diffusers_with_no_index_file_is_admitted():
     loadable, _reason, _runs_on = hub_loadable.admission(
         runner_codes=("diffusers-image",),
         model_id="some-org/diffusers-lib-repo", model_type=None,
         names=frozenset({"x"}), library_name="diffusers")
-    assert loadable is False
+    assert loadable is True
 
 
 def test_caller_with_neither_names_nor_library_name_never_flags_a_diffusers_row():
@@ -617,21 +617,31 @@ def test_mlx_vlm_model_types_caches_by_venv_dir(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("names,config,expected", [
-    (frozenset({formats.DIFFUSERS_INDEX}), {}, True),
-    (frozenset({formats.DIFFUSERS_MODULAR_INDEX}), {}, False),
-    (frozenset(), {"library_name": "diffusers"}, False),
-    (frozenset({"x"}), {"library_name": "diffusers"}, False),
-])
-def test_a_repo_admitted_on_the_diffusers_signal_is_one_loaders_loads(names, config, expected):
+def _admitted_and_loads(names, library_name=None):
     admitted, _ = hub_loadable._admits(
         "diffusers", None, model_id="org/m", model_type=None, names=names,
-        library_name=config.get("library_name"))
+        library_name=library_name)
     loads = bool(formats.loaders(
-        repo_id="org/m", names=names, dirnames=set(), config=config,
+        repo_id="org/m", names=names, dirnames=set(),
+        config={"library_name": library_name} if library_name else {},
         torch_weights=False))
-    assert admitted is expected
-    assert loads is expected
+    return admitted, loads
+
+
+def test_every_repo_loaders_loads_is_admitted():
+    """The contract: admission is a superset of loading."""
+    assert _admitted_and_loads(frozenset({formats.DIFFUSERS_INDEX})) == (True, True)
+
+
+@pytest.mark.parametrize("names,library_name", [
+    (frozenset({formats.DIFFUSERS_MODULAR_INDEX}), None),
+    (frozenset(), "diffusers"),
+    (frozenset({"x"}), "diffusers"),
+])
+def test_modular_only_and_library_name_rows_are_admitted_but_not_loadable(names, library_name):
+    """The documented gap (D1386): Hub rows are admitted on metadata, but
+    nothing loads them until a ModularPipeline adapter exists."""
+    assert _admitted_and_loads(names, library_name) == (True, False)
 
 
 def test_mflux_available_models_sees_a_venv_installed_after_a_none(tmp_path, monkeypatch):

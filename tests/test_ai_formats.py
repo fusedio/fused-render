@@ -1409,12 +1409,14 @@ def test_modular_only_and_library_name_snapshots_have_no_diffusers_loader(names,
     assert not formats.is_diffusers_snapshot(names)
 
 
-def test_is_diffusers_repo_delegates_to_the_formats_predicate():
+def test_admission_is_wider_than_the_loading_predicate():
+    """Admission is the Hub-metadata net; only the flat index is loadable."""
     from fused_render.ai import hub_architecture
-    for names in [frozenset({"modular_model_index.json"}),
-                  frozenset({"model_index.json"}), frozenset({"x"})]:
-        assert (hub_architecture.is_diffusers_repo(names)
-                == formats.is_diffusers_snapshot(names))
+    assert hub_architecture.is_diffusers_repo(frozenset({"model_index.json"}), None)
+    assert hub_architecture.is_diffusers_repo(frozenset({"modular_model_index.json"}), None)
+    assert hub_architecture.is_diffusers_repo(frozenset(), "diffusers")
+    assert not hub_architecture.is_diffusers_repo(frozenset({"x"}), None)
+    assert not formats.is_diffusers_snapshot(frozenset({"modular_model_index.json"}))
 
 
 def test_installed_registry_reader_only_swallows_a_missing_fused_render(monkeypatch):

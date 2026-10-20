@@ -327,10 +327,9 @@ def _admits(kind: str, data, *, model_id: str, model_type: str | None,
             return True, None
         return False, None
     if kind == "diffusers":
-        # A Diffusers runner admits a repo by the ONE predicate `formats.
-        # loaders()` loads by — a flat `model_index.json`
-        # (`is_diffusers_repo`), so an admitted repo is always loadable
-        # (D1386). The catch: `names`/`library_name` being absent must
+        # A Diffusers runner admits by `is_diffusers_repo` (flat index,
+        # modular index or `library_name`): Hub rows carry only metadata.
+        # Wider than loading by design (D1386). The catch: `names`/`library_name` being absent must
         # NEVER read as "therefore not Diffusers" — that would flag every
         # row a caller has not yet read siblings/library for, exactly the
         # module docstring's "never drops a row" guarantee this would
@@ -338,7 +337,7 @@ def _admits(kind: str, data, *, model_id: str, model_type: str | None,
         # was actually supplied; both absent stays loadable instead.
         if not names and library_name is None:
             return True, None
-        if is_diffusers_repo(names):
+        if is_diffusers_repo(names, library_name):
             return True, None
         return False, None
     return True, None

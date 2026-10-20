@@ -273,14 +273,25 @@ def _normalize_for_stutter_check(value: str) -> str:
     return value.lower().replace("-", " ").replace("_", " ").strip()
 
 
-def is_diffusers_repo(names: frozenset[str]) -> bool:
-    """Whether `names` (a repo's own sibling filenames) carry a flat
-    `model_index.json`. `formats.is_diffusers_snapshot` is the one predicate
-    — `_resolve_engine` below, `hub_loadable`'s admission rule and
-    `formats.loaders()` all share it, so admission and loading cannot drift
-    (D1386). A modular-only or `library_name`-only repo is not recognised
-    until a `ModularPipeline` adapter exists."""
-    return formats.is_diffusers_snapshot(names)
+def is_diffusers_repo(names: frozenset[str], library_name: str | None = None) -> bool:
+    """Whether `names` (a repo's sibling filenames) or `library_name`
+    identifies a row as a Diffusers repo: a flat `model_index.json`, a modular
+    `modular_model_index.json`, or `library_name == "diffusers"`.
+
+    This is ADMISSION, the Hub-metadata net: catalog, pool and live-search
+    rows carry only metadata (`library_name`, often no sibling list), so a
+    rule that needed a filename could never admit them. It is deliberately
+    wider than LOADING (`formats.is_diffusers_snapshot`, the flat index only,
+    which `formats.loaders()` uses): a modular-only or `library_name`-only repo
+    is admitted but not loadable until a `ModularPipeline` adapter exists. The
+    gap is deliberate and recorded in D1386. `_resolve_engine` and
+    `hub_loadable._admits('diffusers')` share this one copy. A caller lacking
+    one signal still gets a sound answer from the other; what an absence of
+    BOTH means is the caller's call (`hub_loadable`'s never-drops-a-row guard
+    reads it as "stay loadable")."""
+    return (formats.DIFFUSERS_INDEX in names
+            or formats.DIFFUSERS_MODULAR_INDEX in names
+            or library_name == "diffusers")
 
 
 def _resolve_engine(raw: dict, names: frozenset[str]) -> str | None:
@@ -309,13 +320,7 @@ def _resolve_engine(raw: dict, names: frozenset[str]) -> str | None:
         return "ltx-2-mlx"
     library = raw.get("library_name")
     library = library if isinstance(library, str) else None
-    # LABEL only, and pre-existing: the "Diffusers" engine chip has always read
-    # a modular index or `library_name: diffusers` too, so the card still
-    # names what a repo is built for. Admission and loading do NOT use this
-    # wider reading — they use `is_diffusers_repo` alone (D1386).
-    if (is_diffusers_repo(names)
-            or formats.DIFFUSERS_MODULAR_INDEX in names
-            or library == "diffusers"):
+    if is_diffusers_repo(names, library):
         return "Diffusers"
     if any(name.lower().endswith(".gguf") for name in names):
         return "llama.cpp"
