@@ -135,14 +135,25 @@ export function recapTitlesOn(task: { recap?: unknown }): boolean {
  *  switch means the feature is on by default) — until then it was the
  *  `task_card_last_message` experiment. The fallback is not a nicety: a wall
  *  where some cards carried a message and others were simply blank would read
- *  as a wall of broken cards. */
+ *  as a wall of broken cards.
+ *
+ *  SUMMARY-ONLY TITLES (prefs `task_summary_titles.enabled`; the server puts
+ *  `title_mode: "summary"` on every row with it on) beat everything below:
+ *  the row is titled by the server's stable `title` alone (user-set title,
+ *  else Claude Code's ai-title summary, else the first message), never by the
+ *  newest message, the recap or the reply. An empty title falls through. */
 export function cardTitleLine(task: {
   title?: string | null;
+  title_mode?: string;
   last_message?: { text: string } | null;
   status?: string;
   last_reply?: string;
   recap?: { text: string; for_uuid: string } | null;
 }): CardTitle {
+  if (task.title_mode === "summary") {
+    const title = firstLine(task.title ?? "");
+    if (title) return { text: title, said: false, kind: "title", hint: task.title ?? undefined };
+  }
   // TASK RECAPS (prefs `task_recap.enabled`; the server sends `recap` — even
   // as null — only with it on). A finished turn is titled by its haiku recap
   // once it lands, and by the first line of Claude's reply until then (or for

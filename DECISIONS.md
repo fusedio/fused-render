@@ -7144,3 +7144,9 @@ A 6-column table in a bot reply wrapped short cells ("fused-render", "#1641") on
 - **Output.** The command's own output is sliced from the scrollback by the parser's 133;C and 133;D byte offsets, so a shell that echoed earlier work does not leak it into the result.
 - **Rejected.** Letting "Never ask" cover read-looking commands (output is untrusted, and a prompt-injected `gh` read can be chained). Seeding `gh api` (it can write). A shared terminal across bots (one bot's cwd and environment would leak to another).
 - **Plain-command allowlist (round 3).** `has_shell_meta` is now an allowlist (`[A-Za-z0-9 _./:,=@%+~'"-]+` must fullmatch) instead of a metacharacter denylist, which missed zsh `=(cmd)`, `!`, `(`/`{` and terminal-editing bytes. Control bytes (< 0x20, DEL) are refused in `terminal_run` and never reach the pty.
+
+## D1385: Opt-in "Summary-only task titles" (2026-10-20, task-summary-titles)
+
+- **Problem.** Tasks rows are titled by the newest message (or the recap/reply), so a title changes every turn and says little about what the session is about.
+- **Decision.** Pref `task_summary_titles_enabled` (default off; only a stored `true` is on). On, the listing puts `title_mode: "summary"` on every row (key absent when off, read once per listing) and `cardTitleLine` titles by the server's stable `title` alone (user title, else Claude Code's `ai-title`, else the first message), beating the recap and last-message rules. An empty title falls through to the old rules. Measured: `ai-title` never changed in any of 53 real sessions.
+- **Rejected.** A per-view switch (one rule for List, Board, Cards and peek is the point).

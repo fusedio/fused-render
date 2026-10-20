@@ -358,6 +358,14 @@ const ENTRIES = [
     badge: "Beta",
   },
   {
+    id: "task-summary-titles",
+    group: "tasks",
+    section: "Titles",
+    label: "Summary-only titles",
+    description: "Keep each task's title fixed to Claude's one-line summary of the session (or its first message). Titles no longer change with your latest message or Claude's latest reply. Overrides AI recap titles.",
+    keywords: "summary title name fixed stable rename",
+  },
+  {
     id: "chat-headsup",
     group: "tasks",
     section: "Chat",
