@@ -525,9 +525,10 @@ def close_all_terminals() -> None:
     switch). Bots recreate a session lazily if the pref is later back on."""
     from fused_render import pty_session
 
-    for sess in pty_session.REGISTRY.list():
-        if (sess.owner or "").startswith(pty_session.BOT_OWNER_PREFIX):
-            sess.kill()
+    with _TERMINAL_LOCK:  # a creation holding the lock finishes first (and is killed here) or sees the pref off
+        for sess in pty_session.REGISTRY.list():
+            if (sess.owner or "").startswith(pty_session.BOT_OWNER_PREFIX):
+                sess.kill()
 
 
 def super_id():
@@ -2780,15 +2781,22 @@ class Bot:
     def terminal_session(self):
         """This bot's pty session: created on first use in the bot's own folder,
         reused across tasks, recreated if the shell died. Owned `bot:<id>`, so
-        the user's drawer never lists it. Raises SessionLimitError at the bot cap."""
+        the user's drawer never lists it. None when the bot is deleted or the terminal is off.
+        Raises SessionLimitError at the bot cap."""
         from fused_render import pty_session
 
         with _TERMINAL_LOCK:
+            # Re-checked under the lock so a creation racing delete / opt-out / the pref kill switch makes nothing.
+            if getattr(self, "deleted", False) or not _tools_mod().terminal_enabled(self):
+                return None
             sid = self._terminal_id
             sess = pty_session.REGISTRY.get(sid) if sid else None
             if sess is None or not sess.alive:
+                # Only a shell with completion markers (zsh/bash) works for terminal_run: the user's own wins.
+                shells = tuple(x for x in (os.environ.get("SHELL"),)
+                               if x and os.path.basename(x) in ("zsh", "bash")) + ("/bin/zsh", "/bin/bash")
                 sess = pty_session.REGISTRY.create(cwd=self.dir, owner=f"{pty_session.BOT_OWNER_PREFIX}{self.id}",
-                                                   env=dict(TERMINAL_ENV))
+                                                   env=dict(TERMINAL_ENV), shells=shells)
                 self._terminal_id = sess.id
             return sess
 

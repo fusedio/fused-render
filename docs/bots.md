@@ -2103,8 +2103,11 @@ Pagers are disabled (`PAGER`/`GH_PAGER`/`GIT_PAGER=cat`).
 
 **Approval.** `terminal_run` always cards, with the command as the preview, unless a stored `terminal` allow rule
 covers it. "Never ask" never covers it: command output (issue and PR text) is untrusted, so only an explicit rule
-skips the card (`agent_engine._act`). A command holding a shell metacharacter (`; | & \` < > $`, backslash,
-newline) always cards and is never offered "Approve forever", because rules match the typed text. A task that
+skips the card (`agent_engine._act`). Only plain words, flags, paths and quotes count as plain (an allowlist: letters, digits, space and
+`_ . / : , = @ % + ~ ' " -`); any other character (chaining, redirects, `$`, backticks, `=(...)`, `!`, `(`, `{`, globs,
+non-ASCII) always cards and is never offered "Approve forever", because rules match the typed text. Control characters
+(Ctrl-U, ESC, DEL, newline) are refused outright and never reach the terminal. The bot's shell is always zsh or bash
+(the user's own when `$SHELL` is one), since only those report command completion. A task that
 came from outside the Mac (phone, iMessage) always cards and gets no forever offer. The rule key is the
 executable plus up to two following plain words, stopping at a flag, path or number (`gh pr view 12` -> `gh pr
 view`); a rule covers any command whose key starts with the rule's words (`gh search` covers `gh search prs`).

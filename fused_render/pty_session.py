@@ -630,7 +630,8 @@ class PtySessionRegistry:
                rows: Optional[int] = None,
                cols: Optional[int] = None,
                owner: Optional[str] = None,
-               env: Optional[dict] = None) -> PtySession:
+               env: Optional[dict] = None,
+               shells: Optional[tuple] = None) -> PtySession:
         with self._lock:
             self._reap_dead_locked()
             is_bot = bool(owner) and owner.startswith(BOT_OWNER_PREFIX)
@@ -640,7 +641,7 @@ class PtySessionRegistry:
             if live >= cap:
                 raise SessionLimitError(
                     f"terminal session cap ({cap}) reached")
-            profile = resolve_profile(cwd=cwd)
+            profile = resolve_profile(cwd=cwd, **({} if shells is None else {"shells": shells}))
             if profile is None:
                 raise RuntimeError("no usable shell found ($SHELL, /bin/bash, /bin/sh)")
             if env:

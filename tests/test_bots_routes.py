@@ -420,7 +420,9 @@ def test_terminal_session_is_owned_reused_and_closed_on_opt_out(client, ws, term
         assert one(status(client), bid)["terminal_id"] == sess.id
         assert j(client.post(f"/api/bots/{bid}/settings", {"terminal": False}))[0] == 200
         assert not _live(sess.id) and one(status(client), bid)["terminal_id"] is None
-        again = b.terminal_session()  # a closed session is recreated lazily
+        assert b.terminal_session() is None  # opted out: nothing is recreated
+        assert j(client.post(f"/api/bots/{bid}/settings", {"terminal": True}))[0] == 200
+        again = b.terminal_session()  # a closed session is recreated lazily once opted back in
         assert again.id != sess.id and again.alive
     finally:
         b.close_terminal()

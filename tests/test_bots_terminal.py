@@ -100,7 +100,7 @@ def test_read_and_interrupt_never_ask(tbot):
     assert tools.risk(tbot, "terminal_interrupt", {}, {}) == ""
 
 
-@pytest.mark.parametrize("ch", [";", "|", "&", "`", "<", ">", "$", "\\", "\n"])
+@pytest.mark.parametrize("ch", [";", "|", "&", "`", "<", ">", "$", "\\"])
 def test_each_metacharacter_forces_a_card_and_no_forever_offer(tbot, ch):
     tbot.meta["allow_rules"] = [{"kind": "terminal", "key": "gh pr view", "label": "x"}]
     cmd = f"gh pr view 12 {ch} echo pwned"
@@ -110,7 +110,7 @@ def test_each_metacharacter_forces_a_card_and_no_forever_offer(tbot, ch):
 
 def test_subshell_and_and_and_forms_card(tbot):
     tbot.meta["allow_rules"] = [{"kind": "terminal", "key": "gh pr view", "label": "x"}]
-    for cmd in ("gh pr view 1 && rm -rf x", "gh pr view $(whoami)", "gh pr view 1 > /tmp/x", "gh pr view 1\nrm x"):
+    for cmd in ("gh pr view 1 && rm -rf x", "gh pr view $(whoami)", "gh pr view 1 > /tmp/x"):
         assert tools.risk(tbot, "terminal_run", run(cmd), {}), cmd
 
 
@@ -157,6 +157,84 @@ def test_forever_rule_shape_and_prefix_cover(tbot):
 
 def test_describe_shows_the_command(tbot):
     assert tools.describe(tbot, "terminal_run", run("gh pr list"), {}) == "$ gh pr list"
+
+
+META_CMDS = ["gh pr view =(rm -rf ~)", "gh pr view !!", "gh pr view (x)", "gh pr view {a,b}", "gh pr view *",
+             "gh pr view 1\x15rm -rf ~", "gh pr view 1\x1b[D", "gh pr view 1\x7f", "gh pr view ü", "gh pr view 1\nrm x"]
+
+
+@pytest.mark.parametrize("cmd", META_CMDS)
+def test_allowlist_cards_anything_beyond_plain_words(tbot, cmd):
+    tbot.meta["allow_rules"] = [{"kind": "terminal", "key": "gh pr view", "label": "x"}]
+    if tools.has_control_chars(cmd):
+        # execute refuses it, so no card; and it can never be remembered
+        assert tools.risk(tbot, "terminal_run", run(cmd), {}) == ""
+        _label, out = tools.execute(tbot, "terminal_run", run(cmd), {})
+        assert out == "error: the command contains control characters; send plain text"
+        assert tbot.terminal_id() is None  # nothing was spawned, so nothing was written
+    else:
+        assert tools.risk(tbot, "terminal_run", run(cmd), {}), repr(cmd)
+    assert tools.forever_rule(tbot, "terminal_run", run(cmd), {}) is None
+
+
+def test_control_bytes_never_reach_an_existing_session(tbot, monkeypatch):
+    sess = tbot.terminal_session()
+    writes = []
+    monkeypatch.setattr(sess, "write", lambda b: writes.append(b))
+    _label, out = tools.execute(tbot, "terminal_run", run("echo 1\x15rm -rf ~"), {})
+    assert out.startswith("error: the command contains control characters")
+    assert writes == []
+
+
+def test_quoted_search_stays_covered_by_a_list_rule(tbot):
+    tbot.meta["allow_rules"] = [{"kind": "terminal", "key": "gh pr list", "label": "x"}]
+    assert tools.risk(tbot, "terminal_run", run('gh pr list --search "is:open author:@me"'), {}) == ""
+
+
+# ---- terminal_session: creation racing teardown / shell choice ---------------------------
+
+def test_terminal_session_creates_nothing_when_not_allowed(tbot, monkeypatch):
+    tbot.deleted = True
+    assert tbot.terminal_session() is None
+    tbot.deleted = False
+    tbot.meta["terminal"] = False                       # opted out
+    assert tbot.terminal_session() is None
+    tbot.meta["terminal"] = True
+    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: False)   # pref off
+    assert tbot.terminal_session() is None
+    assert tbot.terminal_id() is None
+
+
+def test_close_all_terminals_holds_the_lock(tbot, monkeypatch):
+    import threading
+    assert tbot.terminal_session() is not None
+    seen = []
+    real_list = pty_session.REGISTRY.list
+    monkeypatch.setattr(pty_session.REGISTRY, "list", lambda: (seen.append(botmod._TERMINAL_LOCK.locked()), real_list())[1])
+    botmod.close_all_terminals()
+    assert seen == [True]
+    # a creation blocked on the lock sees the pref off once it gets in
+    out = []
+    with botmod._TERMINAL_LOCK:
+        t = threading.Thread(target=lambda: out.append(tbot.terminal_session()))
+        t.start()
+        monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: False)
+    t.join(10)
+    assert out == [None]
+
+
+def test_bot_shell_is_zsh_or_bash_even_when_shell_is_sh(tbot, monkeypatch):
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    sess = tbot.terminal_session()
+    assert os.path.basename(sess.profile.shell) in ("zsh", "bash")
+
+
+def test_terminal_run_turns_no_shell_into_an_error_string(tbot, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("no usable shell found")
+    monkeypatch.setattr(pty_session.REGISTRY, "create", boom)
+    _label, out = tools.execute(tbot, "terminal_run", run("echo hi"), {})
+    assert out.startswith("error: could not use the terminal")
 
 
 # ---- execute(): refusal and a live pty ------------------------------------------------

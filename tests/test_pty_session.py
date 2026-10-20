@@ -645,3 +645,12 @@ def test_last_output_marks_truncation_when_the_ring_dropped_the_start(registry, 
     out = session.last_output(200)
     assert out.startswith("[output truncated]")
     assert "tail-marker" in out
+
+
+def test_create_honours_the_shells_argument(registry, tmp_path, monkeypatch):
+    from fused_render import terminal_profiles as tp
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    monkeypatch.setattr(tp, "executable", lambda p: p == "/bin/bash")
+    assert tp.resolve_profile(shells=("/bin/zsh", "/bin/bash")).shell == "/bin/bash"
+    assert tp.resolve_profile(shells=("/bin/zsh",)) is None
+    assert tp.resolve_profile().shell == "/bin/bash"

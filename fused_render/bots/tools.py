@@ -348,10 +348,11 @@ TERMINAL_WAIT_DEFAULT_S, TERMINAL_WAIT_MAX_S = 30, 120
 TERMINAL_OUTPUT_LINES = 200
 TERMINAL_READ_DEFAULT, TERMINAL_READ_MAX = 50, 500
 TERMINAL_OFF = ("error: bot terminals are off (Preferences › Optional features, then this bot's settings)")
-#: Anything that can chain, redirect, substitute or continue a command: a command holding one always gets a card and
-#: is never "approved forever" (the allow-rule check reads the typed text, so this is what makes a rule safe).
-#: `$` and `\` go beyond the obvious set: a variable or an escape can smuggle the very characters this refuses.
-_SHELL_META = re.compile(r"[;|&`<>$\\\n\r]")
+#: An ALLOWLIST: only plain words, flags, paths and quotes count as plain. Anything else (chaining, redirects,
+#: expansions, groups, globs, history, control bytes, non-ASCII) gets a card and never an "approve forever" offer;
+#: the allow-rule check reads the typed text, so this is what makes a rule safe. A denylist missed zsh `=(cmd)`, `!`,
+#: `(`/`{` and terminal-editing bytes.
+_PLAIN_CMD = re.compile(r"[A-Za-z0-9 _./:,=@%+~'\"-]+")
 ALWAYS_ASK = frozenset(MANAGE_TOOLS + ("marketplace_install",))
 
 ALL_TOOLS = tuple(TOOL_SPECS)
@@ -489,7 +490,7 @@ def forever_rule(bot, act: str, d: dict, obs: dict):
     if act == "build":
         return {"kind": "build", "key": "build", "label": "builds or updates apps with Claude Code"}
     if act == "terminal_run":
-        if chan.is_outside(getattr(bot, "task_via", None)):
+        if chan.is_outside(getattr(bot, "task_via", None)) or has_control_chars(d.get("command")):
             return None
         key = terminal_key(d.get("command"))
         if len(key.split()) < 2:
@@ -503,7 +504,12 @@ _TERM_WORD = re.compile(r"^[A-Za-z][\w-]*$")
 
 
 def has_shell_meta(command) -> bool:
-    return bool(_SHELL_META.search(str(command or "").strip()))
+    return not _PLAIN_CMD.fullmatch(str(command or "").strip())
+
+
+def has_control_chars(command) -> bool:
+    """True when the text holds a C0 control character or DEL (Ctrl-U, ESC, ...): it must never reach the pty."""
+    return any(ord(c) < 0x20 or ord(c) == 0x7F for c in str(command or ""))
 
 
 def terminal_key(command) -> str:
@@ -1162,11 +1168,11 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
     if act == "terminal_run":
         # A call that cannot run gets no card: execute() returns the error to the model.
         cmd = str(d.get("command") or "").strip()
-        if not cmd or not terminal_enabled(bot):
+        if not cmd or has_control_chars(cmd) or not terminal_enabled(bot):
             return ""
         if has_shell_meta(cmd):
-            return ("It runs a shell command that chains, redirects or substitutes (; | & > < $ ` or several lines) "
-                    "on this Mac, in the bot's terminal.")
+            return ("It runs a command using shell syntax beyond plain words (chaining, redirects, substitution, globs "
+                    "or control characters) on this Mac, in the bot's terminal.")
         if chan.is_outside(getattr(bot, "task_via", None)):
             return "It runs a command on this Mac in the bot's terminal, and this task came from outside the Mac."
         if forever_match(bot, forever_rule(bot, act, d, obs)):
@@ -1469,6 +1475,8 @@ def _terminal_exec(bot, act: str, d: dict) -> str:
         command = str(d.get("command") or "").strip()
         if not command:
             return "error: terminal_run needs `command`"
+        if has_control_chars(command):
+            return "error: the command contains control characters; send plain text"
         try:
             wait_s = float(d.get("wait_s") if d.get("wait_s") is not None else TERMINAL_WAIT_DEFAULT_S)
         except (TypeError, ValueError):
