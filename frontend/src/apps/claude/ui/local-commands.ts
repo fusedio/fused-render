@@ -82,7 +82,7 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
       return "name" in parsed ? { do: "worktree", name: parsed.name } : { do: "worktree" };
     }
     case "remote-control":
-      if ((ctx.backend ?? "claude") !== "claude") {
+      if ((ctx.backend || "claude") !== "claude") {
         return { refuse: `Remote Control is a Claude Code feature, not available for ${agentLabel(ctx.backend)}` };
       }
       if (!ctx.hasSession) return { refuse: "Send a first message, then turn on Remote Control" };

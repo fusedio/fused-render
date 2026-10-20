@@ -14,11 +14,13 @@ from fused_render.terminal_profiles import TerminalProfile
 
 _URL = re.compile(rb"https://claude\.ai/code/session_[A-Za-z0-9_-]+")
 _TRUST_PROMPT = "I trust this folder"
+_TRUST_BYTES = _TRUST_PROMPT.replace(" ", "").encode()
 _SELECTED = "❯"
 _DOWN, _ENTER = b"\x1b[B", b"\r"
 _DOWN_GAP_S = 0.5
 _WATCH_TICK_S, _WATCH_SLOW_TICK_S, _WATCH_FAST_FOR_S = 0.25, 2.0, 30.0
 _HOST_EXIT_WAIT_S = 3.0
+_CONNECT_TIMEOUT_S = 120.0
 _IDENTITY_ENV = ("CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT",
                  "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_PID")
 _ROWS, _COLS = 40, 200
@@ -27,17 +29,28 @@ _TAIL_LINES = 12
 BUSY = ("Claude is still working in this chat. Wait for the turn to finish "
         "or stop it, then turn on Remote Control.")
 HELD = "Remote Control is driving this chat. Stop it to type here."
+NO_LINK = "Remote Control did not connect within two minutes, so it was stopped."
 STILL_EXITING = ("The chat's previous Claude process is still shutting down. "
                  "Try Remote Control again in a moment.")
 
 _lock = threading.RLock()
 _held: dict[str, dict] = {}
-_session_locks: dict[str, threading.RLock] = {}
+_session_locks: dict[str, list] = {}
 
 
-def _session_lock(session_id: str) -> threading.RLock:
+@contextlib.contextmanager
+def _session_lock(session_id: str):
     with _lock:
-        return _session_locks.setdefault(session_id, threading.RLock())
+        entry = _session_locks.setdefault(session_id, [threading.RLock(), 0])
+        entry[1] += 1
+    try:
+        with entry[0]:
+            yield
+    finally:
+        with _lock:
+            entry[1] -= 1
+            if not entry[1]:
+                _session_locks.pop(session_id, None)
 
 
 def run_sessions(run_id: str) -> list:
@@ -108,32 +121,49 @@ def _busy(agent, run_dir: str) -> bool:
         return False
 
 
-def _end_idle_host(agent, file: str, session_id: str) -> str:
-    if agent._live_run(file, session_id).get("run_id"):
+def _running(agent, run_dir: str) -> bool:
+    return agent._alive(run_dir) or agent._host_alive(run_dir)
+
+
+def _live_session_runs(agent, session_id: str) -> list:
+    try:
+        names = os.listdir(agent.RUNS)
+    except OSError:
+        return []
+    return [os.path.join(agent.RUNS, name) for name in names
+            if _running(agent, os.path.join(agent.RUNS, name))
+            and session_id in run_sessions(name)]
+
+
+def _end_session_runs(agent, session_id: str) -> str:
+    runs = _live_session_runs(agent, session_id)
+    if any(_busy(agent, run_dir) for run_dir in runs):
         return BUSY
-    run_id = agent._live_host(file, session_id).get("run_id") or ""
-    if not run_id:
-        return ""
-    run_dir = os.path.join(agent.RUNS, run_id)
-    if _busy(agent, run_dir):
-        return BUSY
-    agent._kill_tree(run_dir)
+    for run_dir in runs:
+        agent._kill_tree(run_dir)
     deadline = time.monotonic() + _HOST_EXIT_WAIT_S
-    while agent._host_alive(run_dir) and time.monotonic() < deadline:
+    while (any(_running(agent, run_dir) for run_dir in runs)
+           and time.monotonic() < deadline):
         time.sleep(0.05)
-    return STILL_EXITING if agent._host_alive(run_dir) else ""
+    return STILL_EXITING if any(_running(agent, run_dir) for run_dir in runs) else ""
 
 
 def _watch(rec: dict) -> None:
     term = rec["term"]
     fast_until = time.monotonic() + _WATCH_FAST_FOR_S
+    give_up = time.monotonic() + _CONNECT_TIMEOUT_S
     last_down = 0.0
     while term.alive:
-        found = _URL.search(_ANSI.sub(b"", term.scrollback()))
+        if time.monotonic() > give_up:
+            rec["timed_out"] = True
+            term.kill()
+            return
+        raw = _ANSI.sub(b"", term.scrollback())
+        found = _URL.search(raw)
         if found:
             rec["url"] = found.group().decode()
             return
-        if not rec["trusted"]:
+        if not rec["trusted"] and _TRUST_BYTES in raw.replace(b" ", b""):
             screen = term.text(_ROWS)
             if _TRUST_PROMPT in screen:
                 chosen = next((line for line in reversed(screen.splitlines())
@@ -160,8 +190,9 @@ def status(session_id: str) -> dict:
         term = rec["term"]
         if not term.alive:
             _held.pop(session_id, None)
+            tail = term.text(_TAIL_LINES).strip()
             return {"state": "ended", "exit_code": term.exit_code,
-                    "tail": term.text(_TAIL_LINES).strip()}
+                    "tail": f"{NO_LINK}\n{tail}" if rec.get("timed_out") else tail}
         return {"state": "active" if rec["url"] else "starting",
                 "url": rec["url"], "terminal_id": term.id}
 
@@ -174,6 +205,9 @@ def start(file: str, session_id: str, name: str = "") -> dict:
     agent = claude_agent.agent_module()
     if not session_id or agent._bad_id(session_id):
         return {"error": "Send a first message, then turn on Remote Control."}
+    name = " ".join(name.split())
+    if name.startswith("-"):
+        return {"error": "A Remote Control name can't start with '-'."}
     file = os.path.abspath(file)
     workdir = agent._workdir(file)
     backend = agent._backend_for_session(session_id, workdir,
@@ -193,7 +227,7 @@ def start(file: str, session_id: str, name: str = "") -> dict:
         if holds(session_id):
             return status(session_id)
         try:
-            refused = _end_idle_host(agent, file, session_id)
+            refused = _end_session_runs(agent, session_id)
             if refused:
                 return {"error": refused}
             argv = [binary, *agent._plugin_argv(file), "--resume", session_id,

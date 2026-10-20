@@ -9308,16 +9308,20 @@ def api_task_send(key: str, body: dict = Body(...),
     if refusal is not None:
         return refusal
 
-    if claude_remote.holds(session):
+    delivered = claude_remote.admit([session], _deliver_page_send, key, task, target,
+                                    session, text, model, effort, owner)
+    if delivered == {"error": claude_remote.HELD}:
         return _error(claude_remote.HELD, status=409)
+    return delivered
+
+
+def _deliver_page_send(key, task, target, session, text, model, effort, owner):
     agent = project_queue.agent_module()
     if agent is not None:
         try:
             run_id = str((agent._live_host(target, session) or {}).get("run_id") or "")
             if run_id:
-                res = claude_remote.admit([session], agent._send, run_id, text, "", "", "", "")
-                if isinstance(res, dict) and res.get("error") == claude_remote.HELD:
-                    return _error(claude_remote.HELD, status=409)
+                res = agent._send(run_id, text, "", "", "", "")
                 if isinstance(res, dict) and res.get("sent"):
                     tasks_watch.notify({key})
                     return {"queued": False, "key": key}

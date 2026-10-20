@@ -43,6 +43,11 @@ echo "boom: no remote control here"
 exit 3
 """
 
+SILENT_CLI = """#!/bin/sh
+echo "connecting"
+sleep 30
+"""
+
 
 def _cli(tmp_path, body):
     path = tmp_path / "fake-claude"
@@ -51,18 +56,36 @@ def _cli(tmp_path, body):
     return str(path)
 
 
+def _run(env, name, session=SID):
+    run_dir = os.path.join(env["runs"], name)
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"session": session}, fh)
+    env["alive"].add(name)
+    return run_dir
+
+
 @pytest.fixture
 def env(monkeypatch, tmp_path):
     reg = pty_session.PtySessionRegistry()
     monkeypatch.setattr(pty_session, "REGISTRY", reg)
     monkeypatch.setattr(claude_remote, "_held", {})
     monkeypatch.setattr(claude_remote, "_session_locks", {})
-    state = {"bin": "", "live": {}, "running": {}, "turn": (False, False),
-             "backend": "claude", "killed": [], "stuck": False}
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    state = {"bin": "", "turn": (False, False), "backend": "claude", "killed": [],
+             "stuck": False, "alive": set(), "runs": str(runs), "reg": reg,
+             "file": str(tmp_path / "page.html")}
+
+    def kill(run_dir):
+        state["killed"].append(os.path.basename(run_dir))
+        if not state["stuck"]:
+            state["alive"].discard(os.path.basename(run_dir))
+
     agent = types.SimpleNamespace(
         main=lambda action="", session_id="", file="", run_id="": {"ok": True},
         _start=lambda *a, **k: {"ok": True},
-        RUNS=str(tmp_path),
+        RUNS=str(runs),
         _bad_id=lambda sid: "/" in sid or ".." in sid,
         _workdir=lambda file: str(tmp_path),
         _session_backend=lambda sid: "claude",
@@ -71,19 +94,16 @@ def env(monkeypatch, tmp_path):
         _plugin_argv=lambda file: [],
         _spawn_env=lambda *a: dict(os.environ),
         _fused_cli_dir=lambda: "",
-        _live_host=lambda file, sid: state["live"],
-        _live_run=lambda file, sid: state["running"],
         _run_own_session=lambda run_dir, meta: meta.get("session", ""),
-        _turn_state=lambda path: state["turn"],
-        _kill_tree=lambda run_dir: state["killed"].append(os.path.basename(run_dir)),
-        _host_alive=lambda run_dir: state["stuck"],
+        _alive=lambda run_dir: os.path.basename(run_dir) in state["alive"],
+        _host_alive=lambda run_dir: os.path.basename(run_dir) in state["alive"],
+        _turn_state=lambda run_dir: state["turn"],
+        _kill_tree=kill,
         _inbox_dir=lambda run_dir: os.path.join(run_dir, "inbox"),
     )
     monkeypatch.setattr(claude_agent, "agent_module", lambda: agent)
     monkeypatch.setattr(claude_health, "_auth_status",
                         lambda binary: {"loggedIn": True, "authMethod": "claude.ai"})
-    state["file"] = str(tmp_path / "page.html")
-    state["reg"] = reg
     yield state
     reg.shutdown_all()
 
@@ -99,7 +119,8 @@ def _poll(until, timeout=10):
 
 def test_start_trust_prompt_url_hold_and_stop(env, tmp_path):
     env["bin"] = _cli(tmp_path, OK_CLI)
-    env["live"] = {"run_id": "run1"}
+    _run(env, "run1")
+    _run(env, "run2", session="someone-else")
     assert claude_remote.start(env["file"], SID, "my chat")["state"] == "starting"
     out = _poll(lambda s: s["state"] == "active")
     assert out["state"] == "active" and out["url"] == URL
@@ -113,10 +134,8 @@ def test_start_trust_prompt_url_hold_and_stop(env, tmp_path):
     resp = client.post("/api/claude/agent", headers={"X-Fused": "1"},
                        json={"action": "start", "session_id": SID, "file": env["file"]})
     assert resp.json() == {"error": claude_remote.HELD}
-    (tmp_path / "run9").mkdir()
-    (tmp_path / "run9" / "meta.json").write_text(json.dumps({"session": SID}))
     resp = client.post("/api/claude/agent", headers={"X-Fused": "1"},
-                       json={"action": "send", "run_id": "run9", "message": "hi"})
+                       json={"action": "send", "run_id": "run1", "message": "hi"})
     assert resp.json() == {"error": claude_remote.HELD}
     resp = client.post("/api/claude/remote-control", headers={"X-Fused": "1"},
                        json={"action": "status", "session_id": SID})
@@ -126,27 +145,31 @@ def test_start_trust_prompt_url_hold_and_stop(env, tmp_path):
     assert claude_remote.stop(SID) == {"state": "off"}
     assert not claude_remote.holds(SID)
     assert claude_remote.status(SID) == {"state": "off"}
+    assert claude_remote._session_locks == {}
     deadline = time.time() + 5
     while term.alive and time.time() < deadline:
         time.sleep(0.05)
     assert not term.alive
 
 
-def test_cli_exit_reports_ended_once(env, tmp_path):
-    env["bin"] = _cli(tmp_path, DEAD_CLI)
+@pytest.mark.parametrize("body,said", [(DEAD_CLI, "boom: no remote control here"),
+                                       (SILENT_CLI, claude_remote.NO_LINK)])
+def test_cli_that_never_connects_reports_ended_once(env, tmp_path, monkeypatch, body, said):
+    monkeypatch.setattr(claude_remote, "_CONNECT_TIMEOUT_S", 0.5)
+    env["bin"] = _cli(tmp_path, body)
     claude_remote.start(env["file"], SID)
     out = _poll(lambda s: s["state"] == "ended")
-    assert out["state"] == "ended" and out["exit_code"] == 3
-    assert "boom: no remote control here" in out["tail"]
+    assert out["state"] == "ended" and out["exit_code"] not in (0, None)
+    assert said in out["tail"]
     assert claude_remote.status(SID) == {"state": "off"}
     assert not claude_remote.holds(SID)
 
 
-@pytest.mark.parametrize("case", ["logged_out", "api_key", "copilot", "bad_id", "busy",
-                                  "inbox", "starting_run", "host_stuck"])
+@pytest.mark.parametrize("case", ["logged_out", "api_key", "copilot", "bad_id", "dash_name",
+                                  "busy", "inbox", "host_stuck"])
 def test_refusals_spawn_nothing(env, tmp_path, monkeypatch, case):
     env["bin"] = _cli(tmp_path, OK_CLI)
-    sid = SID
+    sid, name = SID, ""
     if case == "logged_out":
         monkeypatch.setattr(claude_health, "_auth_status",
                             lambda b: {"loggedIn": False})
@@ -157,22 +180,21 @@ def test_refusals_spawn_nothing(env, tmp_path, monkeypatch, case):
         env["backend"] = "copilot"
     elif case == "bad_id":
         sid = "../x"
+    elif case == "dash_name":
+        name = "--dangerously-skip-permissions"
     elif case == "busy":
-        env["live"] = {"run_id": "run1"}
+        _run(env, "run1")
         env["turn"] = (True, False)
-    elif case == "starting_run":
-        env["running"] = {"run_id": "run2"}
-    elif case == "host_stuck":
-        env["live"] = {"run_id": "run1"}
+    elif case == "inbox":
+        os.makedirs(os.path.join(_run(env, "run1"), "inbox"))
+        open(os.path.join(env["runs"], "run1", "inbox", "1.json"), "w").write("{}")
+    else:
+        _run(env, "run1")
         env["stuck"] = True
         monkeypatch.setattr(claude_remote, "_HOST_EXIT_WAIT_S", 0.1)
-    else:
-        env["live"] = {"run_id": "run1"}
-        (tmp_path / "run1" / "inbox").mkdir(parents=True)
-        (tmp_path / "run1" / "inbox" / "1.json").write_text("{}")
-    out = claude_remote.start(env["file"], sid)
+    out = claude_remote.start(env["file"], sid, name)
     assert set(out) == {"error"} and out["error"]
-    if case in ("busy", "inbox", "starting_run"):
+    if case in ("busy", "inbox"):
         assert out["error"] == claude_remote.BUSY
         assert env["killed"] == []
     if case == "host_stuck":

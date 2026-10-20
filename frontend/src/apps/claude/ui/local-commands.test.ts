@@ -38,6 +38,7 @@ test("/remote-control needs Claude and a session", () => {
   const rc = (backend: string, hasSession: boolean) =>
     planLocalCommand(classifyCommand("/remote-control  my laptop ")!, { worktreeReady: true, backend, hasSession });
   expect(rc("claude", true)).toEqual({ do: "remote-control", name: "my laptop" });
+  expect(rc("", true)).toEqual({ do: "remote-control", name: "my laptop" });
   expect("refuse" in rc("copilot", true)).toBe(true);
   const none = rc("claude", false);
   expect("refuse" in none && none.refuse).toContain("first message");

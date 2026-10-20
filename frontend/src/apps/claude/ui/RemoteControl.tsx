@@ -77,14 +77,16 @@ export function useRemoteControl(sessionId: string, file: string) {
         if (g !== gen.current) return;
         gen.current += 1;
         apply(r);
+        if ("error" in r) refresh();
       },
       (e: unknown) => {
         if (g !== gen.current) return;
         gen.current += 1;
         notify({ title: e instanceof Error ? e.message : failure, tone: "error" });
+        refresh();
       },
     );
-  }, [apply]);
+  }, [apply, refresh]);
 
   const ask = useCallback((name: string) => setAsking({ name }), []);
   const cancel = useCallback(() => setAsking(null), []);
