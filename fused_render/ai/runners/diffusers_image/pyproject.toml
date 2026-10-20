@@ -206,7 +206,8 @@
 #                  and enables its triton matmuls there), which is what makes
 #                  the speed number in `catalog.py` a fact about this app's
 #                  hardware rather than about CUDA.
-#   pillow         writes the PNG
+#   pillow         writes the PNG; CEILING <13 (see mflux_image: 13.0.0 does
+#                  not import on Python 3.12)
 #   huggingface_hub downloads
 #   psutil         answers "how much memory is this costing"
 [project]
@@ -224,7 +225,8 @@ dependencies = [
     "torchao>=0.15,<0.18",
     "bitsandbytes>=0.46.1,<1",
     "sdnq>=0.2.6,<0.3",
-    "pillow",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
     "huggingface_hub",
     "psutil",
 ]

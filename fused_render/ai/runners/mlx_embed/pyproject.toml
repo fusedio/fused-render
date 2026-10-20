@@ -53,7 +53,8 @@ requires-python = ">=3.10"
 dependencies = [
     "mlx-embeddings>=0.1,<0.2",
     "mlx-vlm>=0.7.9,<0.8",
-    "pillow",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
     # HEIC/HEIF and AVIF, which plain Pillow cannot open. iPhones have shot
     # HEIC by default since iOS 11, so without this the `paths` half of an
     # embed request works on screenshots and fails on the photographs.

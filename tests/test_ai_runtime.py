@@ -2724,7 +2724,6 @@ def test_the_mflux_runner_BOUNDS_mflux():
 UNBOUNDED_RUNNER_DEPENDENCIES = {
     "huggingface-hub": "a download client; it fetches weights, it does not run them",
     "psutil": "reads RSS for the memory column and nothing else",
-    "pillow": "writes the PNG",
     "sentencepiece": "a tokenizer file format, fixed by the checkpoints that use it",
     "protobuf": "sentencepiece's on-disk format, same argument",
     "jinja2": (
