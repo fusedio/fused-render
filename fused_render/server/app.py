@@ -177,6 +177,7 @@ def export_app_env() -> None:
     # and `canvases_base()` reads this very var first — exporting one env's
     # folder would nest every root under it (`<env>/<env>/<name>`).
     os.environ["FUSED_RENDER_CANVASES_DIR"] = canvases.canvases_base()
+    canvases.log_url_override_without_pin()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
     # script under home_dir()/fused-bin goes on PATH and its dir is published
     # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench

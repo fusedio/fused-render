@@ -306,28 +306,42 @@ def test_no_server_origin_falls_through(root, monkeypatch):
     assert server.calls == []
 
 
-def test_a_clone_of_the_other_environment_is_refused_locally(root, monkeypatch):
+def test_a_clone_of_the_other_environment_is_refused_on_every_fall_through(root, monkeypatch):
     """A FUSED_ENV naming the other environment (an explicit `FUSED_ENV=x
     fused ...`, or the wrapper's default when run outside the clone) must
-    never reach the raw CLI with a clone — not even when the server is
-    unreachable or `--canvas` names another canvas, the two shapes that
-    otherwise fall through."""
+    never reach the raw CLI with a clone: no origin, `--canvas` naming
+    another canvas, and an unreachable server — the three shapes that fall
+    through — all refuse."""
     env, other = ENV, OTHER_ENV
     clone = root.parent / other / "alpha"
     clone.mkdir(parents=True)
     monkeypatch.setenv("FUSED_ENV", env)
+    cases = [
+        (["workbench", "canvas", "push", str(clone)], None, _Server(200, {"ok": True})),
+        (["workbench", "canvas", "push", str(clone), "--canvas", "zeta"],
+         "http://127.0.0.1:9999", _Server(200, {"ok": True})),
+        (["workbench", "canvas", "push", str(clone)], "http://127.0.0.1:9999",
+         _Server(None, {})),
+    ]
+    for args, origin, server in cases:
+        code, _, err = _intercept(args, monkeypatch, server, origin=origin)
+        assert code == 1, (args, origin)
+        assert other in err and env in err
+        # The remedy names the clone's own env, not a Preferences switch.
+        assert f"FUSED_ENV={other}" in err and "Preferences" not in err
+
+
+def test_a_mismatched_fused_env_still_posts_when_the_server_takes_it(root, monkeypatch):
+    """With a server to take it, FUSED_ENV is irrelevant: the push is routed
+    by the clone's own env to that environment's manager. Refusing first
+    would turn away a push that was never at risk."""
+    clone = root.parent / OTHER_ENV / "alpha"
+    clone.mkdir(parents=True)
+    monkeypatch.setenv("FUSED_ENV", ENV)
     server = _Server(200, {"ok": True})
-    for args in (["workbench", "canvas", "push", str(clone)],
-                 ["workbench", "canvas", "push", str(clone), "--canvas", "zeta"]):
-        # With a server origin, and with NONE (the no-origin fall-through
-        # used to come first): refused either way.
-        for origin in ("http://127.0.0.1:9999", None):
-            code, _, err = _intercept(args, monkeypatch, server, origin=origin)
-            assert code == 1, (args, origin)
-            assert other in err and env in err
-            # The remedy names the clone's own env, not a Preferences switch.
-            assert f"FUSED_ENV={other}" in err and "Preferences" not in err
-    assert server.calls == []
+    code, _, _ = _intercept(["workbench", "canvas", "push", str(clone)], monkeypatch, server)
+    assert code == 0
+    assert [c[1:] for c in server.calls] == [("alpha", OTHER_ENV)]
 
 
 def test_a_clone_of_either_environment_routes_to_the_server_with_its_env(root, monkeypatch):

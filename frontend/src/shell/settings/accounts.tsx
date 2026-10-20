@@ -58,10 +58,10 @@ export function FusedAccountControl() {
       // store from a dead one. A 401 is DOWNGRADED to signed-out before
       // anything is shown or published — the Canvases page's verdict — so the
       // row offers Sign in rather than a Log out that would change nothing.
-      // Asked in the default environment: handles are per env, and the one
-      // credentials file serves both, so either answers the liveness question.
+      // No env: the server answers in the auth env, which is all a
+      // signed-in-as line needs.
       try {
-        const who = await getWhoami(s.workbench_env);
+        const who = await getWhoami();
         if (!aliveRef.current) return s;
         setHandle(who.handle);
       } catch (e) {

@@ -60,9 +60,13 @@ function envFromQuery(): WorkbenchEnv | null {
 }
 
 /** The environment the page lists: the pin when one is set (the server
- *  refuses every other env), else the URL's pick, else the default. */
-function effectiveEnv(s: CanvasesStatus, picked: WorkbenchEnv | null): WorkbenchEnv {
-  return s.locked ? s.workbench_env : (picked ?? s.workbench_env);
+ *  refuses every other env), else the URL's pick, else the default. Null when
+ *  that is not one of the choices — FUSED_RENDER_WORKBENCH_ENV can pin a
+ *  stg/dev/PR env the canvases have no folder or endpoint set for, and the
+ *  page says so instead of listing under a name it cannot serve. */
+function effectiveEnv(s: CanvasesStatus, picked: WorkbenchEnv | null): WorkbenchEnv | null {
+  const fallback = isWorkbenchEnv(s.workbench_env) ? s.workbench_env : null;
+  return s.locked ? fallback : (picked ?? fallback);
 }
 
 // `fused login`'s own browser callback times out server-side; polling any
@@ -188,6 +192,11 @@ export default function Canvases() {
       if (s.logged_in) {
         setLoggingIn(false);
         const env = effectiveEnv(s, pickedRef.current);
+        if (env === null) {
+          // Nothing to list: the render below explains the unsupported pin.
+          setError(null);
+          return;
+        }
         const { canvases } = await listCanvases(env);
         if (gen !== envGenRef.current) return;
         setCanvases(canvases);
@@ -373,7 +382,7 @@ export default function Canvases() {
                 htmlFor="canvases-env"
                 title={status.locked ? "Pinned by FUSED_RENDER_WORKBENCH_ENV" : undefined}
               >
-                <span className="canvases-env-label">Environment</span>
+                Environment
                 <select
                   id="canvases-env"
                   className="field-control"
@@ -472,15 +481,22 @@ export default function Canvases() {
             )}
           </div>
         )}
-        {status?.logged_in && filtered === null && !error && <p>Loading canvases…</p>}
-        {status?.logged_in && filtered !== null && filtered.length === 0 && (
+        {status?.logged_in && env === null && (
+          <p className="canvases-empty">
+            {status.locked
+              ? `Canvases are pinned to ${status.workbench_env} by FUSED_RENDER_WORKBENCH_ENV, which is not one of ${WORKBENCH_ENVS.join("/")}.`
+              : `The default environment ${status.workbench_env} is not one of ${WORKBENCH_ENVS.join("/")}.`}
+          </p>
+        )}
+        {status?.logged_in && env && filtered === null && !error && <p>Loading canvases…</p>}
+        {status?.logged_in && env && filtered !== null && filtered.length === 0 && (
           <p className="canvases-empty">
             {query
               ? "No canvases match your search."
               : "No canvases in this account yet — create one to get started."}
           </p>
         )}
-        {status?.logged_in && filtered !== null && filtered.length > 0 && (
+        {status?.logged_in && env && filtered !== null && filtered.length > 0 && (
           <div className="canvases-grid">
             {filtered.map((canvas) => {
               // Either the free public URL from the listing, or the signed one

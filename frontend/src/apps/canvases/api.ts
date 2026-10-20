@@ -25,8 +25,10 @@ export interface CanvasesStatus {
   login_in_flight: boolean;
   /** The DEFAULT environment (fusedcli.workbench_env): the catalog's initial
    *  pick, the `fused` wrapper's env outside a clone, share uploads' target.
-   *  Canvases keep the env they were cloned from regardless. */
-  workbench_env: WorkbenchEnv;
+   *  Canvases keep the env they were cloned from regardless. A string, not a
+   *  WorkbenchEnv: FUSED_RENDER_WORKBENCH_ENV may pin a stg/dev/PR env outside
+   *  the choices, so readers narrow it with isWorkbenchEnv. */
+  workbench_env: string;
   /** FUSED_RENDER_WORKBENCH_ENV pins the environment: the server answers 423
    *  to any other env (a dev server points unstable at localhost, so a prod
    *  tab from there would hit real prod), and the catalog disables its
@@ -116,9 +118,15 @@ export interface SyncStatus {
 
 export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
 
-/** The account handle in `env` — handles are per environment. */
-export const getWhoami = (env: WorkbenchEnv) =>
-  getJson<{ handle: string | null }>(`/api/canvases/whoami?env=${env}`, GUARD);
+/** The account handle. Handles are per environment: the canvas workspace
+ *  names its canvas's env (the handle goes into the workbench URL); a caller
+ *  that only needs "who is signed in" (Settings, Share) omits it and the
+ *  server answers in the auth env. */
+export const getWhoami = (env?: WorkbenchEnv) =>
+  getJson<{ handle: string | null }>(
+    env ? `/api/canvases/whoami?env=${env}` : "/api/canvases/whoami",
+    GUARD,
+  );
 
 export const startLogin = () => postJson<{ ok: boolean }>("/api/canvases/login", {});
 

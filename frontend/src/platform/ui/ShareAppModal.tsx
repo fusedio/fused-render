@@ -119,8 +119,6 @@ interface CanvasesStatusLite {
   logged_in: boolean;
   creds_stamp: number | null;
   login_in_flight: boolean;
-  /** The default Fused environment — the one share uploads target. */
-  workbench_env: string;
 }
 
 // The four actions that write something (a .fused, a published share) — at
@@ -248,16 +246,8 @@ export function ShareAppModal({
 
   // Who the link publishes as — a name beside the link, never a verdict:
   // a failed whoami leaves the card nameless and changes nothing else.
-  // Handles are per environment and whoami requires one: ask in the default
-  // environment, the one share_app uploads to.
   const readHandle = useCallback(() => {
-    getJson<CanvasesStatusLite>("/api/canvases/status")
-      .then((s) =>
-        getJson<{ handle: string | null }>(
-          `/api/canvases/whoami?env=${encodeURIComponent(s.workbench_env)}`,
-          GUARD,
-        ),
-      )
+    getJson<{ handle: string | null }>("/api/canvases/whoami", GUARD)
       .then((w) => {
         if (!goneRef.current) setHandle(w.handle);
       })

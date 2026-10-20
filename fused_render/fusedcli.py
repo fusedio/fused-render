@@ -363,7 +363,7 @@ def _clone_env_lines() -> list[str]:
     arms = [f"      {shlex.quote(base)}/{env}/*) FUSED_ENV={env}; break ;;"
             for base in bases for env in WORKBENCH_ENV_CHOICES]
     return ['if [ -z "${FUSED_ENV:-}" ]; then',
-            '  for _fused_cwd in "$PWD/" "$(pwd -P)/"; do',
+            '  for _fused_cwd in "$PWD/" "$(pwd -P 2>/dev/null)/"; do',
             '    case "$_fused_cwd" in',
             *arms,
             "    esac",

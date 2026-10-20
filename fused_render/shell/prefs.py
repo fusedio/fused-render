@@ -193,7 +193,7 @@ def canvases_enabled() -> bool:
     entry.
 
     A SWITCH OVER THE ENTRY POINTS, NOT A ROUTE GUARD: `/canvases` and
-    `/canvases/<name>` keep answering while this is off, the same way the
+    `/canvases/<env>/<name>` keep answering while this is off, the same way the
     signed-out state has always left them reachable and let the page explain
     itself. A deep link, a bookmark, or a workspace someone still has open is
     not what a reader turning this off asked to lose; the nav entries for a

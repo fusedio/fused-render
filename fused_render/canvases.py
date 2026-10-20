@@ -204,18 +204,34 @@ _ENV_WEB_URLS = {
 }
 
 
+# The pinned env's workbench origin override (dev recipe: a local workbench).
+_WORKBENCH_URL_VAR = "FUSED_RENDER_WORKBENCH_URL"
+
+
 def workbench_base_url(env: str) -> str:
     """The hosted workbench origin `env`'s canvases embed.
 
-    FUSED_RENDER_WORKBENCH_URL replaces it for the DEFAULT environment only.
-    The dev recipe points it at a local workbench (localhost:3000) standing in
-    for unstable; applied to every env it would also dress prod canvases in
-    that local frame. The dev recipe pins the env (FUSED_RENDER_WORKBENCH_ENV)
-    too, so the other env is refused outright there (`_require_env`)."""
-    override = os.environ.get("FUSED_RENDER_WORKBENCH_URL")
-    if override and env == workbench_env():
+    FUSED_RENDER_WORKBENCH_URL replaces it ONLY under a pin, and only for the
+    pinned env (FUSED_RENDER_WORKBENCH_ENV, which `_require_env` makes the one
+    env this process serves). The dev recipe points it at a local workbench
+    (localhost:3000) standing in for unstable. Keyed off the mutable DEFAULT
+    instead, flipping the preference to prod would dress prod canvases in
+    that local frame; without a pin the var is ignored
+    (`log_url_override_without_pin` says so once at startup)."""
+    override = os.environ.get(_WORKBENCH_URL_VAR)
+    if override and workbench_env_locked() and env == workbench_env():
         return override
     return _ENV_WEB_URLS.get(env, "https://www.fused.io")
+
+
+def log_url_override_without_pin() -> None:
+    """Startup breadcrumb (server/app.py `export_app_env`): a
+    FUSED_RENDER_WORKBENCH_URL set without FUSED_RENDER_WORKBENCH_ENV is
+    ignored (`workbench_base_url`), and a dev whose local workbench silently
+    stopped loading has no other clue why."""
+    if os.environ.get(_WORKBENCH_URL_VAR) and not workbench_env_locked():
+        logger.warning("%s is ignored without %s: the URL override applies only to "
+                       "the pinned environment", _WORKBENCH_URL_VAR, WORKBENCH_ENV_VAR)
 
 
 def _cli_env(cli, env: str) -> dict[str, str]:
@@ -297,20 +313,22 @@ def _canvas_dir(env: str, name: str) -> str:
 def _require_env(value) -> tuple[str | None, JSONResponse | None]:
     """`(env, None)` for a usable canvas environment, else `(None, refusal)`.
 
-    400 for anything outside WORKBENCH_ENV_CHOICES. 423 `env_locked` when
-    FUSED_RENDER_WORKBENCH_ENV pins the process to another env: the dev recipe
-    points the pinned env's iframe at a local workbench, and a canvas of the
-    other env served from that same server would talk to a real Fused the
-    developer did not mean to touch. (A pin outside the choices — stg, dev, a
-    PR number — therefore refuses every canvas call.)"""
-    if value not in WORKBENCH_ENV_CHOICES:
-        return None, _error(f"'env' must be one of: {', '.join(WORKBENCH_ENV_CHOICES)}")
+    The pin is checked FIRST: when FUSED_RENDER_WORKBENCH_ENV pins the process
+    to another env the answer is 423 `env_locked`, even for a valid choice
+    and even when the pin itself is outside the choices (stg, dev, a PR
+    number — which therefore refuses every canvas call as locked, the true
+    reason, rather than as a bad request). The dev recipe points the pinned
+    env's iframe at a local workbench, and a canvas of another env served
+    from that same server would talk to a real Fused the developer did not
+    mean to touch. Unpinned, anything outside WORKBENCH_ENV_CHOICES is 400."""
     if workbench_env_locked():
         pinned = workbench_env()
         if value != pinned:
             return None, JSONResponse(
                 {"error": f"the environment is pinned to {pinned} by {WORKBENCH_ENV_VAR}",
                  "code": "env_locked", "env": pinned}, status_code=423)
+    if value not in WORKBENCH_ENV_CHOICES:
+        return None, _error(f"'env' must be one of: {', '.join(WORKBENCH_ENV_CHOICES)}")
     return value, None
 
 
@@ -551,15 +569,22 @@ def _cloned_names(env: str) -> set[str]:
 @router.get("/api/canvases/whoami")
 def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None)):
     # EXECUTES a control-plane call — D36 guard, like account's probe=1.
-    # Per env: one login serves both, but the account behind it is a
-    # different user record in each Fused (same handle today, different
-    # user id), and the slug URL wants the one the iframe will load.
+    # `env` is OPTIONAL: the Settings account row and the Share sheet only ask
+    # "is this login alive, and whose is it", which one credentials file
+    # answers for both envs, so they omit it and get the `_auth_env()` run.
+    # The workspace names its canvas's env: the account behind the one login
+    # is a different user record in each Fused (same handle today, different
+    # user id), and the slug URL wants the one its iframe loads. Validated
+    # (400/423) whenever given.
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    env, bad = _require_env(env)
-    if bad is not None:
-        return bad
+    if not env:
+        env = _auth_env()
+    else:
+        env, bad = _require_env(env)
+        if bad is not None:
+            return bad
     proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
     if err is not None:
         return err
@@ -1674,7 +1699,7 @@ class _SyncManager:
         self.thread.join(timeout=STOP_JOIN_S)
         if self.thread.is_alive():
             logger.warning("canvas %s: watcher still busy after %.0fs; stopping without it",
-                           self.name, STOP_JOIN_S)
+                           _sync_key(self.env, self.name), STOP_JOIN_S)
         # watchfiles polls stop_event every `step` ms; bounded anyway so a
         # wedged notify backend can never hang logout or a test teardown.
         self.fs_thread.join(timeout=2.0)
@@ -1691,7 +1716,7 @@ class _SyncManager:
             import watchfiles
         except ImportError:
             logger.info("canvas %s: watchfiles is not installed; disk changes reach "
-                        "the embed on the %.1fs scan only", self.name, SCAN_INTERVAL_S)
+                        "the embed on the %.1fs scan only", _sync_key(self.env, self.name), SCAN_INTERVAL_S)
             return
 
         root = os.path.realpath(self.dir)
@@ -1720,7 +1745,7 @@ class _SyncManager:
         except Exception as exc:  # noqa: BLE001 — the 1 s scan carries on alone
             if not self.stop_event.is_set():
                 logger.warning("canvas %s: fs watcher stopped (%s); falling back to "
-                               "the %.1fs scan", self.name, exc, SCAN_INTERVAL_S)
+                               "the %.1fs scan", _sync_key(self.env, self.name), exc, SCAN_INTERVAL_S)
                 self.log_event("watcher", "fs watch stopped", ok=False, detail=str(exc))
 
     def agent_run_id(self, *, fresh: bool = False) -> str:
@@ -3229,7 +3254,7 @@ class _SyncManager:
             disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
         except Exception as exc:  # noqa: BLE001 — a view we cannot read is no view
             logger.warning("canvas %s: could not re-read the clone after a write: %s",
-                           self.name, exc)
+                           _sync_key(self.env, self.name), exc)
             self._embed_view = None
             return
         self._embed_view = canvas_snapshot.held_view(
@@ -3391,7 +3416,8 @@ class _SyncManager:
             orphans = canvas_snapshot.orphan_sources(
                 self.dir, rows["nodes"].keys(), exclude=exclude)
         except Exception as exc:  # noqa: BLE001 — never block a push on this
-            logger.warning("canvas %s: orphan scan failed: %s", self.name, exc)
+            logger.warning("canvas %s: orphan scan failed: %s",
+                           _sync_key(self.env, self.name), exc)
             return
         if orphans:
             self._persist_synthesized([slug for slug, _file in orphans], leg="disk_to_server")
@@ -3808,12 +3834,13 @@ def shutdown() -> None:
             manager.terminate_push()
         except Exception:  # noqa: BLE001 — the stop below still runs
             logger.warning("canvas %s: stopping the push on quit failed",
-                           manager.name, exc_info=True)
+                           _sync_key(manager.env, manager.name), exc_info=True)
     for manager in managers:
         try:
             manager.stop()
         except Exception:  # noqa: BLE001 — the next manager still stops
-            logger.warning("canvas %s: stop on quit failed", manager.name, exc_info=True)
+            logger.warning("canvas %s: stop on quit failed",
+                           _sync_key(manager.env, manager.name), exc_info=True)
     canvas_sync_state.release_all()
 
 
@@ -3876,7 +3903,7 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
         # says who and does not start its delta leg (owner decision Q4).
         owner = {k: owned.owner.get(k) for k in ("pid", "port", "since")}
         return JSONResponse(
-            {"error": f"canvas {name!r} is synced by another fused-render "
+            {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
                       f"(pid {owner['pid']}, port {owner['port']})",
              "code": "owned", "owner": owner}, status_code=409)
     except OSError as exc:
@@ -3949,7 +3976,7 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
     manager = _sync_manager(env, name, create=False)
     if manager is None:
         return JSONResponse(
-            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     # A short wait, not sync/push's 5 s: the page retries a 409 on its own
     # (SNAPSHOT_BUSY_WINDOW_MS), and holding the request open for the length of
@@ -3972,7 +3999,7 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
             if manager.pause_count > 0:
                 manager.log_event("embed_to_disk", "snapshot busy", ok=False,
                                   detail=f"{what} {gen}/{seq}: sync is paused")
-                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+                return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
         try:
             if isinstance(rename, dict):
                 ack = manager.apply_rename(
@@ -4038,7 +4065,7 @@ def api_canvases_delta(name: str = "", env: str = "", full: str = ""):
     manager = _sync_manager(env, name, create=False)
     if manager is None:
         return JSONResponse(
-            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
         manager.log_event("disk_to_embed", "delta busy", ok=False,
@@ -4147,11 +4174,11 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
             # fused-render" would send it to a start that 409s `owned`.
             owner = others[0]
             return JSONResponse(
-                {"error": f"canvas {name!r} is synced by another fused-render "
+                {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
                           f"(pid {owner['pid']}, port {owner['port']})",
                  "code": "owned", "owner": owner}, status_code=409)
         return JSONResponse(
-            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     # The three refusals below are all "someone else has this folder right
     # now", which is BENIGN — nothing is wrong with the canvas or its files.
@@ -4199,7 +4226,7 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         # this same lock, so holding it is what makes the answer stable.
         with manager.pause_lock:
             if manager.pause_count > 0:
-                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+                return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
         before = manager.push_seq
         if manager._push() == "busy":
             return _busy(
@@ -4267,7 +4294,7 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
     manager = _sync_manager(env, name, create=False)
     if manager is None:
         return JSONResponse(
-            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     if manager.push_state == "pushing":
         return _busy("a push is running for this canvas; try again in a moment")
@@ -4277,7 +4304,7 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
     try:
         with manager.pause_lock:
             if manager.pause_count > 0:
-                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+                return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
         result = manager.pull(hard=hard)
     finally:
         manager._flight_lock.release()

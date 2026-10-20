@@ -2648,7 +2648,6 @@ def test_every_canvas_call_requires_a_known_env(harness):
         q = "" if bad is None else f"&env={bad}"
         responses = [
             harness.client.get(f"/api/canvases/list?x=1{q}", headers=GUARD),
-            harness.client.get(f"/api/canvases/whoami?x=1{q}", headers=GUARD),
             harness.client.get(f"/api/canvases/delta?name=alpha{q}"),
             harness.client.get(f"/api/canvases/sync/state?name=alpha{q}"),
             harness.client.get(f"/api/canvases/sync/log?name=alpha{q}"),
@@ -2661,6 +2660,10 @@ def test_every_canvas_call_requires_a_known_env(harness):
                 f"/api/canvases/{path}",
                 json={"name": "alpha", "rev": 1, "gen": 1, "seq": 1, "body": {}, **extra},
                 headers=GUARD))
+        if bad:
+            # whoami alone treats an absent env as "the login's own" (the
+            # liveness probe); a given one is checked like everywhere else.
+            responses.append(harness.client.get(f"/api/canvases/whoami?x=1{q}", headers=GUARD))
         for res in responses:
             assert res.status_code == 400, (bad, res.request.url, res.text)
             assert "'env' must be one of: unstable, prod" in res.json()["error"]
@@ -2683,6 +2686,28 @@ def test_a_pinned_environment_refuses_the_other_one(harness, monkeypatch):
     assert res.status_code == 423 and res.json()["code"] == "env_locked"
     assert harness.calls() == []
     assert harness.client.get(f"/api/canvases/list?env={ENV}", headers=GUARD).status_code == 200
+    # The pin is checked before the choices: an unknown env under a pin is
+    # refused as locked (the real reason), not as a bad request.
+    res = harness.client.get("/api/canvases/list?env=staging", headers=GUARD)
+    assert res.status_code == 423 and res.json()["code"] == "env_locked"
+
+
+def test_a_pin_outside_the_choices_refuses_every_canvas_call_as_locked(harness, monkeypatch):
+    """FUSED_RENDER_WORKBENCH_ENV accepts the CLI's whole table (stg, dev, a
+    PR number) but canvases serve unstable and prod only: every canvas call
+    is 423 naming the pin, never a 400 that blames a valid env."""
+    harness.log_in()
+    monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", "stg")
+    for env in ("unstable", "prod"):
+        res = harness.client.get(f"/api/canvases/list?env={env}", headers=GUARD)
+        assert res.status_code == 423, res.text
+        assert res.json() == {
+            "error": "the environment is pinned to stg by FUSED_RENDER_WORKBENCH_ENV",
+            "code": "env_locked", "env": "stg"}
+    res = harness.client.post("/api/canvases/clone", json={"env": "unstable", "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 423
+    assert harness.calls() == []
 
 
 def test_list_is_per_environment(harness):
@@ -2705,6 +2730,18 @@ def test_whoami_runs_against_the_named_environment(harness):
     res = harness.client.get(f"/api/canvases/whoami?env={OTHER_ENV}", headers=GUARD)
     assert res.status_code == 200 and res.json()["handle"] == "tester"
     assert harness.env_calls()[-1][0] == OTHER_ENV
+
+
+def test_whoami_without_an_env_is_the_login_liveness_probe(harness):
+    """The Settings account row and the Share sheet ask only "is the login
+    alive, whose is it": one credentials file answers for both envs, so they
+    omit `env` and the run uses the default. A given env is still checked."""
+    harness.log_in()
+    res = harness.client.get("/api/canvases/whoami", headers=GUARD)
+    assert res.status_code == 200 and res.json()["handle"] == "tester"
+    assert harness.env_calls()[-1][0] == ENV
+    assert harness.client.get("/api/canvases/whoami?env=staging",
+                              headers=GUARD).status_code == 400
 
 
 def test_both_environments_sync_the_same_name_at_once(harness, tmp_path, monkeypatch):
@@ -2755,6 +2792,49 @@ def test_both_environments_sync_the_same_name_at_once(harness, tmp_path, monkeyp
         assert (harness.base / env / ".sync" / "alpha.lock").exists()
         state = harness.client.get(f"/api/canvases/sync/state?name=alpha&env={env}").json()
         assert state["env"] == env and state["watching"] is True
+
+    # The local loop is per env too: a snapshot, a delta and its ack on
+    # prod's `alpha` touch neither unstable's clone nor its manager.
+    mine, other = _manager(env=ENV), _manager(env=OTHER_ENV)
+    unstable_files = {p.name: p.read_bytes()
+                      for p in (harness.base / ENV / "alpha").iterdir() if p.is_file()}
+    mine_rev, mine_view = mine.disk_rev, mine._view_rev
+    snap = {"dashboard_body": {"studioState": {"nodes": []}}, "udfs": []}
+    res = harness.client.post("/api/canvases/snapshot",
+                              json={"env": OTHER_ENV, "name": "alpha", "gen": 1, "seq": 1,
+                                    "body": snap}, headers=GUARD)
+    assert res.status_code == 200 and res.json()["ok"] is True, res.text
+    cut = harness.client.get(f"/api/canvases/delta?name=alpha&env={OTHER_ENV}&full=1").json()
+    res = harness.client.post("/api/canvases/delta/ack",
+                              json={"env": OTHER_ENV, "name": "alpha", "rev": cut["rev"]},
+                              headers=GUARD)
+    assert res.status_code == 200 and res.json()["ok"], res.text
+    assert other._frame_seen is True
+    assert mine._frame_seen is False
+    assert (mine.disk_rev, mine._view_rev) == (mine_rev, mine_view)
+    assert {p.name: p.read_bytes() for p in (harness.base / ENV / "alpha").iterdir()
+            if p.is_file()} == unstable_files
+
+    # And the socket notifier: a socket on prod's `alpha` is woken by prod's
+    # manager only, never by unstable's same-named one.
+    import asyncio
+
+    from fused_render import canvas_sync_state
+
+    async def wakes() -> tuple[bool, bool]:
+        key = canvases_mod._sync_key(OTHER_ENV, "alpha")
+        token = canvas_sync_state.subscribe(key)
+        try:
+            mine._bump()
+            await asyncio.sleep(0.05)
+            by_mine = token[1].is_set()
+            other._bump()
+            await asyncio.sleep(0.05)
+            return by_mine, token[1].is_set()
+        finally:
+            canvas_sync_state.unsubscribe(key, token)
+
+    assert asyncio.run(wakes()) == (False, True)
 
 
 def test_a_push_for_an_unwatched_environment_is_not_routed_to_the_other(harness, tmp_path,

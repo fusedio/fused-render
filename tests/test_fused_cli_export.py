@@ -225,6 +225,7 @@ def test_wrapper_takes_fused_env_from_the_clone_it_runs_in(monkeypatch, tmp_path
     real_base = tmp_path / "real" / "canvas"
     (real_base / "prod" / "alpha" / "sub").mkdir(parents=True)
     (real_base / "unstable" / "alpha").mkdir(parents=True)
+    (real_base / "unstable" / "prod").mkdir(parents=True)
     link = tmp_path / "linked"
     link.symlink_to(tmp_path / "real")
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(link / "canvas"))
@@ -237,22 +238,33 @@ def test_wrapper_takes_fused_env_from_the_clone_it_runs_in(monkeypatch, tmp_path
     assert _wrapper_env(wrapper, str(real_base / "prod" / "alpha")) == "prod"
     assert _wrapper_env(wrapper, str(link / "canvas" / "prod" / "alpha" / "sub")) == "prod"
     assert _wrapper_env(wrapper, str(real_base / "unstable" / "alpha")) == "unstable"
+    # A canvas NAMED like an env is still its own env's clone: only the
+    # segment right under the base decides.
+    assert _wrapper_env(wrapper, str(real_base / "unstable" / "prod")) == "unstable"
     assert _wrapper_env(wrapper, str(tmp_path)) == "unstable"
     assert _wrapper_env(wrapper, str(real_base / "prod" / "alpha"), "unstable") == "unstable"
 
 
 def test_canvases_never_default_a_cli_run_to_the_preference(monkeypatch, tmp_path):
     """The preference is only the DEFAULT now: a CLI run names the canvas's
-    own env, and the dev URL override applies to the default env alone —
-    otherwise a prod canvas would load the local (unstable) workbench."""
+    own env, and the dev URL override follows the PIN, not the default — keyed
+    off the mutable default, flipping it to prod would load prod canvases in
+    the local (unstable) workbench."""
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FUSED_RENDER_WORKBENCH_URL", "http://localhost:3000")
     import fused_render.canvases as canvases
+    from fused_render.shell import prefs
 
     assert fusedcli.workbench_env() == "unstable"
     cli = fusedcli.FusedCli(command=["fused"], external=False)
     assert canvases._cli_env(cli, "prod")["FUSED_ENV"] == "prod"
+    # Unpinned: the override is ignored for every env, the default included.
+    assert canvases.workbench_base_url("unstable") == "https://unstable.fused.io"
+    prefs.write_pref("workbench_env", "prod")
+    assert canvases.workbench_base_url("prod") == "https://www.fused.io"
+    # Pinned: the pinned env alone takes it.
+    monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", "unstable")
     assert canvases.workbench_base_url("unstable") == "http://localhost:3000"
     assert canvases.workbench_base_url("prod") == "https://www.fused.io"
     src = open(canvases.__file__, encoding="utf-8").read()

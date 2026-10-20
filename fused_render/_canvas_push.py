@@ -293,6 +293,30 @@ def _decode(raw: bytes) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+def _fall_through(name: str, env: str, err) -> int | None:
+    """None (run the real CLI) unless that run would target the WRONG Fused:
+    1, with the refusal written.
+
+    Only the fall-through paths need this. A push the server takes is routed
+    by the clone's own `env` to that environment's manager, whatever this
+    process's FUSED_ENV says; the raw CLI instead pushes to FUSED_ENV — which
+    the wrapper takes from the clone path when run inside one, from the
+    DEFAULT environment otherwise, and an explicit `FUSED_ENV=x fused ...`
+    beats both. For a clone of the other environment that is one Fused's
+    files into the other's same-named canvas: not inert, so refuse."""
+    target_env = os.environ.get("FUSED_ENV")
+    if target_env and target_env != env:
+        err.write(
+            "fused-render: canvas clone %r belongs to the %s environment, but this "
+            "`fused` run targets %s (FUSED_ENV).\n"
+            "Pushing it there would overwrite a different canvas. Run the push "
+            "from inside the clone folder (`fused` then targets the clone's own "
+            "environment), or with FUSED_ENV=%s.\n"
+            % (name, env, target_env, env))
+        return 1
+    return None
+
+
 def maybe_intercept(args: list[str], out, err) -> int | None:
     """Handle a clone push and return its exit code, or None to fall through.
 
@@ -311,32 +335,14 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     if clone is None:
         return None  # not a canvas clone
     name, env = clone
-    # The clone's environment against the one this `fused` run targets —
-    # FUSED_ENV, which the wrapper takes from the clone path when run inside
-    # one and from the DEFAULT environment otherwise (an explicit
-    # `FUSED_ENV=x fused ...` wins over both). Decided HERE, before any of the
-    # fall-throughs below (no origin, `--canvas <other>`, server unreachable):
-    # every one of those runs the raw CLI against FUSED_ENV, and for a clone of
-    # the other environment that is one Fused's files into the other's
-    # same-named canvas. Not inert, so never fall through.
-    target_env = os.environ.get("FUSED_ENV")
-    if target_env and target_env != env:
-        err.write(
-            "fused-render: canvas clone %r belongs to the %s environment, but this "
-            "`fused` run targets %s (FUSED_ENV).\n"
-            "Pushing it there would overwrite a different canvas. Run the push "
-            "from inside the clone folder (`fused` then targets the clone's own "
-            "environment), or with FUSED_ENV=%s.\n"
-            % (name, env, target_env, env))
-        return 1
     origin = os.environ.get(_ORIGIN_ENV)
     if not origin:
-        return None  # no server around
+        return _fall_through(name, env, err)  # no server around
     if parsed["canvas"] is not None and parsed["canvas"] != name:
         # Pushing one clone's contents at a DIFFERENT canvas. The endpoint is
         # keyed on the watcher for this folder, so it cannot express that; the
         # real CLI can, and there is no merge base for the named canvas here.
-        return None
+        return _fall_through(name, env, err)
     if parsed["unsupported"]:
         err.write(
             "fused-render: %s cannot be used inside the canvas clone %r.\n"
@@ -349,7 +355,8 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
 
     status, body = _post_push(origin, name, env)
     if status is None:
-        return None  # server unreachable — the real CLI is the honest fallback
+        # Server unreachable — the real CLI is the honest fallback.
+        return _fall_through(name, env, err)
     if status == _TIMED_OUT:
         # We connected — the server IS running a guarded push for this canvas,
         # possibly still in flight. Falling through would run the raw,
