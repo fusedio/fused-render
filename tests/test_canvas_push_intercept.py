@@ -152,8 +152,8 @@ class _Server:
         self.status, self.body = status, body if body is not None else {}
         self.calls = []
 
-    def __call__(self, origin, name):
-        self.calls.append((origin, name))
+    def __call__(self, origin, name, env=None):
+        self.calls.append((origin, name, env))
         return self.status, self.body
 
 
@@ -174,7 +174,7 @@ def test_a_clone_push_is_sent_to_the_server(root, monkeypatch):
     code, out, err = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 0, err
-    assert server.calls == [("http://127.0.0.1:9999", "alpha")]
+    assert server.calls == [("http://127.0.0.1:9999", "alpha", fusedcli.workbench_env())]
     assert "alpha" in out
     assert err == ""
 
@@ -187,7 +187,7 @@ def test_a_relative_target_resolves(root, monkeypatch):
     code, _, err = _intercept(["workbench", "canvas", "push", "."],
                               monkeypatch, server)
     assert code == 0, err
-    assert server.calls == [("http://127.0.0.1:9999", "alpha")]
+    assert server.calls == [("http://127.0.0.1:9999", "alpha", fusedcli.workbench_env())]
 
 
 def test_a_validation_failure_reaches_the_session_verbatim(root, monkeypatch):
@@ -299,6 +299,34 @@ def test_no_server_origin_falls_through(root, monkeypatch):
                             monkeypatch, server, origin=None)
     assert code is None
     assert server.calls == []
+
+
+def test_a_clone_of_the_other_environment_is_refused_locally(root, monkeypatch):
+    """The wrapper's FUSED_ENV is the server's current environment; a clone
+    under the OTHER environment's folder must never reach the raw CLI with
+    it — not even when the server is unreachable or `--canvas` names another
+    canvas, the two shapes that otherwise fall through."""
+    env = fusedcli.workbench_env()
+    other = next(e for e in _canvas_push._ENVS if e != env)
+    clone = root.parent / other / "alpha"
+    clone.mkdir(parents=True)
+    monkeypatch.setenv("FUSED_ENV", env)
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    server = _Server(200, {"ok": True})
+    for args in (["workbench", "canvas", "push", str(clone)],
+                 ["workbench", "canvas", "push", str(clone), "--canvas", "zeta"]):
+        code, _, err = _intercept(args, monkeypatch, server)
+        assert code == 1
+        assert other in err and env in err
+    assert server.calls == []
+    # No FUSED_ENV at all (a bare shell, no wrapper): the server decides.
+    monkeypatch.delenv("FUSED_ENV")
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:1")
+    server = _Server(409, {"error": "other env", "code": "other_env", "env": other})
+    code, _, err = _intercept(["workbench", "canvas", "push", str(clone)], monkeypatch, server)
+    assert code == 1
+    assert server.calls and server.calls[0][2] == other
+    assert "Preferences" in err
 
 
 def test_a_push_outside_the_canvases_root_falls_through(root, monkeypatch, tmp_path):

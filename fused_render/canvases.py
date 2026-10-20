@@ -203,10 +203,17 @@ def workbench_base_url() -> str:
     )
 
 
-def _cli_env(cli) -> dict[str, str]:
+def _cli_env(cli, env: str | None = None) -> dict[str, str]:
     """child_env plus the env target, so CLI runs hit the same environment
     the iframe shows — and the marker that stops a CLI child of OURS from
     being re-routed back into this server.
+
+    `env` defaults to the CURRENT environment (module-level runs: list,
+    clone, create). A _SyncManager passes its own `self.env`, pinned when it
+    was built: its `dir` is one environment's folder for life, and a leg of
+    it that outlives an environment switch (a request-thread pull that held
+    the manager across `_syncs.clear()`) must keep talking to THAT Fused, or
+    it would fill the kept clone from the other one.
 
     Every fused CLI run this module makes goes through here, which is why the
     marker lives here rather than at the push site alone: none of these children
@@ -220,10 +227,10 @@ def _cli_env(cli) -> dict[str, str]:
     refused because a push was already running (itself), and recorded that
     refusal as a CLI failure: push_state "error" with push_seq stuck at 0.
     """
-    env = child_env(cli)
-    env["FUSED_ENV"] = workbench_env()
-    env[_canvas_push_internal_env()] = "1"
-    return env
+    child = child_env(cli)
+    child["FUSED_ENV"] = env or workbench_env()
+    child[_canvas_push_internal_env()] = "1"
+    return child
 
 
 def _canvas_push_internal_env() -> str:
@@ -470,23 +477,17 @@ def api_canvases_status():
     }
 
 
-def _cloned_names(*, strict: bool = False) -> set[str]:
+def _cloned_names() -> set[str]:
     """The clone dirs under canvases_root(): a dir holding a canvas.toml,
     the same rule /api/canvases/list uses to mark a card cloned.
 
-    A root that does not exist yet is simply empty. Any other listing
-    failure (permissions, an unmounted volume) is empty for the cheap status
-    read and RAISED for `strict` callers."""
+    A root that does not exist yet is simply empty, and so is any other
+    listing failure (permissions, an unmounted volume): the count is
+    informational only — nothing decides a deletion on it any more."""
     root = canvases_root()
     try:
         entries = os.listdir(root)
-    except FileNotFoundError:
-        return set()
-    except NotADirectoryError:
-        return set()
     except OSError:
-        if strict:
-            raise
         return set()
     return {d for d in entries if os.path.isfile(os.path.join(root, d, "canvas.toml"))}
 
@@ -564,17 +565,42 @@ def _switch_env(env: str):
                            manager.name, exc_info=True)
     for manager in managers:
         manager.stop()
-    # stop() joins the watcher thread for STOP_JOIN_S at most; one still alive
-    # could push after the preference flips. Refuse rather than switch under
-    # it — the user retries in a moment.
-    for manager in managers:
-        if manager.thread.is_alive():
-            return _busy(f"canvas {manager.name!r} is still syncing; try again in a moment")
-    canvas_sync_state.release_all()
-    prefs.write_pref("workbench_env", env)
-    # The `fused` wrapper bakes FUSED_ENV in as a default at server start;
-    # rewrite it so a Claude session's next `fused` call targets the new one.
-    export_fused_cli_env()
+    # stop() joins the watcher thread for STOP_JOIN_S at most; a thread still
+    # alive could run a CLI leg after the preference flips. Two request-thread
+    # writers remain even then: a manual pull under the manager's flight
+    # lock, and a snapshot or rename apply under its op lock (the order pull
+    # takes them in). A request already past `_sync_manager` when `_syncs`
+    # was cleared still holds the OLD manager — its `dir` is the old
+    # environment's folder, but `_cli_env` reads `workbench_env()` live, so a
+    # pull that reaches its CLI call after the write would fill the kept
+    # clone from the other Fused. So both locks are taken here and HELD
+    # through the preference write; anything still busy refuses rather than
+    # switches under it (the user retries in a moment).
+    held_flight: list[_SyncManager] = []
+    held_op: list[_SyncManager] = []
+    try:
+        for manager in managers:
+            if manager.thread.is_alive():
+                return _busy(f"canvas {manager.name!r} is still syncing; try again in a moment")
+            if not manager._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+                return _busy(f"a sync operation is in flight for {manager.name!r}; try again in a moment")
+            held_flight.append(manager)
+            if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+                return _busy(f"a write is in flight for {manager.name!r}; try again in a moment")
+            held_op.append(manager)
+        # Each stop() released its own lock; this is the belt for a claim
+        # left open by a manager that was already stopped before the switch.
+        canvas_sync_state.release_all()
+        prefs.write_pref("workbench_env", env)
+        # The `fused` wrapper bakes FUSED_ENV in as a default at server
+        # start; rewrite it so a Claude session's next `fused` call targets
+        # the new one.
+        export_fused_cli_env()
+    finally:
+        for manager in held_op:
+            manager._op_lock.release()
+        for manager in held_flight:
+            manager._flight_lock.release()
     logger.info("canvases: environment switched to %s (clones kept under %s)",
                 env, canvases_base())
     return api_canvases_status()
@@ -1401,6 +1427,10 @@ class _SyncManager:
     def __init__(self, name: str, *, lock_since: float | None = None):
         self.name = name
         self.dir = _canvas_dir(name)
+        # The environment this clone belongs to — the `<env>` segment of
+        # `dir`, pinned here and handed to every CLI run of this manager
+        # (`_cli_env(cli, self.env)`), never re-read from the preference.
+        self.env = workbench_env()
         # Observability first: the property setters below (push_state,
         # server_stale) wake the state socket on every change.
         self._log = canvas_sync_state.SyncLog(name, self._bump)
@@ -1912,7 +1942,7 @@ class _SyncManager:
                 [*cli.command, "workbench", "canvas", "validate", self.dir],
                 capture_output=True, text=True, timeout=VALIDATE_TIMEOUT,
                 encoding="utf-8", errors="replace",
-                env=_cli_env(cli),
+                env=_cli_env(cli, self.env),
             )
         except (subprocess.TimeoutExpired, OSError):
             return None
@@ -1985,7 +2015,7 @@ class _SyncManager:
                 [*cmd, self.name],
                 capture_output=True, text=True, timeout=LIST_SHIM_TIMEOUT,
                 encoding="utf-8", errors="replace",
-                env=_cli_env(cli),
+                env=_cli_env(cli, self.env),
             )
         except (subprocess.TimeoutExpired, OSError):
             return None
@@ -2035,7 +2065,7 @@ class _SyncManager:
             proc = subprocess.run(
                 [*cmd, collection_id],
                 capture_output=True, timeout=PULL_TIMEOUT,
-                env=_cli_env(cli),
+                env=_cli_env(cli, self.env),
             )
         except (subprocess.TimeoutExpired, OSError):
             return None
@@ -2300,7 +2330,7 @@ class _SyncManager:
                  "-o", self.dir, "--force"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
                 encoding="utf-8", errors="replace",
-                env=_cli_env(cli),
+                env=_cli_env(cli, self.env),
             )
         except subprocess.TimeoutExpired:
             return "pulling the canvas from the server timed out; try again"
@@ -2339,7 +2369,7 @@ class _SyncManager:
                  "-o", self.dir, "--dry-run"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
                 encoding="utf-8", errors="replace",
-                env=_cli_env(cli),
+                env=_cli_env(cli, self.env),
             )
         except (subprocess.TimeoutExpired, OSError):
             recheck = None
@@ -2496,7 +2526,7 @@ class _SyncManager:
             text=True,
             encoding="utf-8",
             errors="replace",
-            env=_cli_env(cli),
+            env=_cli_env(cli, self.env),
         )
         self._push_proc = proc
         if self.stop_event.is_set():
@@ -2744,7 +2774,7 @@ class _SyncManager:
                 [*cli.command, *base, "--dry-run"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
                 encoding="utf-8", errors="replace",
-                env=_cli_env(cli),
+                env=_cli_env(cli, self.env),
             )
         except (subprocess.TimeoutExpired, OSError):
             return
@@ -2773,7 +2803,7 @@ class _SyncManager:
                 [*cli.command, *base, "--force"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
                 encoding="utf-8", errors="replace",
-                env=_cli_env(cli),
+                env=_cli_env(cli, self.env),
             )
         except subprocess.TimeoutExpired:
             return "pulling the canvas from the server timed out; try again"
@@ -2794,7 +2824,7 @@ class _SyncManager:
                 [*cli.command, *base, "--dry-run"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
                 encoding="utf-8", errors="replace",
-                env=_cli_env(cli),
+                env=_cli_env(cli, self.env),
             )
         except (subprocess.TimeoutExpired, OSError):
             recheck = None

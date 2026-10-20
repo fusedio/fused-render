@@ -315,6 +315,23 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     if clone is None:
         return None  # not a canvas clone
     name, env = clone
+    # The clone's environment against the one this `fused` run targets —
+    # FUSED_ENV, which the wrapper fused-render hands every session defaults
+    # to the server's CURRENT environment. Decided HERE, before any of the
+    # fall-throughs below (no origin, `--canvas <other>`, server unreachable):
+    # every one of those runs the raw CLI against FUSED_ENV, and for a clone of
+    # the other environment that is one Fused's files into the other's
+    # same-named canvas. Not inert, so never fall through; the server's own
+    # `other_env` refusal below is the belt for a session with no FUSED_ENV.
+    target_env = os.environ.get("FUSED_ENV")
+    if target_env and target_env != env:
+        err.write(
+            "fused-render: canvas clone %r belongs to the %s environment, but this "
+            "`fused` run targets %s (FUSED_ENV).\n"
+            "Pushing it there would overwrite a different canvas. Switch the Fused "
+            "environment in fused-render's Preferences and push again.\n"
+            % (name, env, target_env))
+        return 1
     if parsed["canvas"] is not None and parsed["canvas"] != name:
         # Pushing one clone's contents at a DIFFERENT canvas. The endpoint is
         # keyed on the watcher for this folder, so it cannot express that; the
