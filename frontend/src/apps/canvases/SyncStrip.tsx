@@ -8,6 +8,7 @@
 // re-render the whole workspace (and its two iframes' parents) every second.
 import { ArrowLeftIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { ENV_LABELS, type WorkbenchEnv } from "./api";
 import {
   LEG_LABEL,
   legVerdicts,
@@ -74,6 +75,7 @@ export interface PullControl {
 }
 
 export function SyncStrip({
+  env,
   name,
   server,
   queue,
@@ -86,6 +88,10 @@ export function SyncStrip({
   onBack,
   workbenchUrl,
 }: {
+  /** The canvas's environment, shown as a chip beside the way back: with a
+   *  prod and an unstable canvas open at once, the strip is the one place on
+   *  the page that says which this is. */
+  env: WorkbenchEnv;
   name: string;
   server: SyncState | null;
   queue: readonly RelayEntry[];
@@ -97,8 +103,9 @@ export function SyncStrip({
   pull: PullControl;
   open: boolean;
   onToggle: () => void;
-  /** Back to the canvases listing (/canvases). The strip is the page's only
-   *  top chrome, so the way out lives at its left end. */
+  /** Back to the canvases listing, on this canvas's environment
+   *  (/canvases?env=<env>). The strip is the page's only top chrome, so the
+   *  way out lives at its left end. */
   onBack: () => void;
   /** The hosted workbench editor for this canvas (no embed flags); null
    *  until the base URL and handle are known. Shown as "Open in workbench"
@@ -178,6 +185,9 @@ export function SyncStrip({
       >
         <ArrowLeftIcon size={14} />
       </button>
+      <span className="canvases-env-chip" title={`${name} syncs with ${ENV_LABELS[env]}`}>
+        {ENV_LABELS[env]}
+      </span>
       <Dot level={level} />
       <span
         style={{

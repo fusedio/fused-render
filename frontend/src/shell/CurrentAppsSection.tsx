@@ -11,12 +11,10 @@
 // event that can add a row. The pulse is still read for one thing: the running
 // dot. That is a subscription this sidebar already holds, not a second poll.
 //
-// The ORDER is a sequence per app, not the added order it is seeded from
-// (current-apps-lib.ts): a row moves only when the user drags it, so new work
-// does not reshuffle the list under the cursor. The store is the module-level
-// `appOrder` below, hydrated from localStorage at import and written back BY A
-// DRAG AND ONLY BY A DRAG, so an arrangement survives a reload and the next
-// launch without a fetch ever having an opinion about it.
+// The ORDER is the server's: `apps` arrives in display order and is drawn as it
+// arrives (current-apps-lib.ts, D1386). A drag POSTs the whole list and adopts
+// the answer; a new app is inserted on top by the server. Nothing here numbers,
+// sorts or remembers an order of its own.
 import React, {
   useCallback,
   useEffect,
@@ -31,8 +29,10 @@ import {
   readCurrentAppTasks,
   removeCurrentApp,
   renameCurrentApp,
+  setCurrentAppsOrder,
   type CurrentAppEntry,
 } from "@platform/lib/api";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -57,108 +57,110 @@ import {
   appPageTabFromSearch,
   appPageUrl,
   appPathFromPath,
-  assignSequences,
-  bySequence,
   currentApps,
   moveSlug,
-  orderedSlugs,
   parseSavedOrder,
-  reorderTo,
-  type AppOrder,
   type CurrentApp,
 } from "@shell/current-apps-lib";
 
-// Bumped from `current-apps-order` with the redesign: the saved list was slugs
-// and is folder paths now, and a slug-shaped order would match nothing.
-export const ORDER_KEY = "fused-render:current-apps-order:v2";
-
 // A cross-window nudge, not a store: set to the stamp after POST
-// /api/current-apps/open lands, so the other windows' sections refetch the
-// desk (the server row is the truth; this only says "look again").
+// /api/current-apps/open (or a drag's POST /api/current-apps/order) lands, so
+// the other windows' sections refetch the desk (the server row is the truth;
+// this only says "look again").
 export const DESK_CHANGED_KEY = "fused-render:current-apps-changed";
-
-// The section fold, "1" when hidden — the Bookmarks section's own key pattern.
-export const COLLAPSED_KEY = "fused-render:current-apps-collapsed";
-
-function readCollapsed(): boolean {
-  try {
-    return localStorage.getItem(COLLAPSED_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
 
 // The last table this document fetched, kept at module level so the rows do not
 // blink empty on every per-navigation remount of the sidebar while the fetch
 // round-trips.
 let knownApps: CurrentAppEntry[] = [];
 
-// The displayed order: a module-level Map (it outlives the sidebar's
-// per-navigation remount — pushState routing) hydrated from localStorage at
-// import, so the order is already in hand before the first render and there is
-// no window where the fetch wins a race against what the user dragged.
-//
-// Every store touch sits inside a try: a blocked or full store costs the saved
-// order, not the section. Reading a JSON array of paths (top first) rather than
-// the sequence numbers themselves keeps the stored shape the one thing that
-// matters — nothing on disk has to agree with a numbering scheme this module is
-// free to change.
-const appOrder: AppOrder = new Map();
-
-function readSavedOrder(): string[] {
+/** Tell the OTHER windows the desk changed — `storage` fires only in other
+ *  documents, and their sections refetch on it. The value is a stamp so two
+ *  changes in one second still differ. */
+function announceDeskChanged(stamp: number): void {
   try {
-    return parseSavedOrder(localStorage.getItem(ORDER_KEY));
+    localStorage.setItem(DESK_CHANGED_KEY, String(stamp));
   } catch {
-    return [];
+    /* no store: this window is up to date, the others catch up on their own */
   }
 }
 
-// Called from the DROP HANDLER and nowhere else — that placement is the whole
-// cross-tab design, so it is worth stating plainly. A persist effect keyed on
-// the app list looks equivalent and is not: two tabs then take turns saving
-// their own view of a world they briefly disagree about (Bugbot twice,
-// 2026-08-26 — first a second tab clobbering a drag, then an outright write
-// loop). A drag is one user gesture. There is no second writer to race.
+// ---- the one-shot order import (D1386) -------------------------------------
+// The order used to live in localStorage, which is per ORIGIN — and the
+// desktop app walks ports 1777..1787 then an ephemeral one, so a relaunch on a
+// new port started from an empty store and lost it. The old key is read ONCE
+// on the first load of this build and, if it still has something to say,
+// pushed through the normal write path. (The section fold's old key is
+// imported with the rest of the layout, by platform/lib/ui-layout.)
 //
-// The equality guard is belt-and-braces on top of that: re-dragging a row back
-// where it was writes nothing.
-function saveOrder(paths: string[]): void {
+// "If it still has something to say" is the whole gate. The port walk leaves
+// a key behind on EVERY origin the user ever ran on, each frozen at whatever
+// they dragged there — so the first of those origins to load this build would
+// otherwise POST a stale arrangement over the one the user made since, and a
+// later visit to another old port would do it again. D1386 keeps no
+// server-side "already imported" marker, so the signal has to be derivable
+// from the table itself: a desk nobody has arranged is in ADDED order, newest
+// first (the server inserts new apps at index 0, and an old oldest-first file
+// is read back reversed server-side, so it is newest-first too). The legacy
+// list goes up only while the server's rows still equal that order; any other
+// order means someone already arranged it here, and the old key just goes.
+//
+// The key is removed only after that decision lands — the POST's success, or
+// the skip. A failed GET or POST leaves it, so the next load decides again.
+const LEGACY_ORDER_KEY = "fused-render:current-apps-order:v2";
+
+/** True while `apps` is in the order nobody chose: `added_at` descending, rows
+ *  without one last, ties keeping their place. */
+function neverArranged(apps: CurrentAppEntry[]): boolean {
+  const added = apps
+    .map((a, i) => ({ path: a.path, at: a.added_at, i }))
+    .sort((x, y) => {
+      if (x.at === null || y.at === null) {
+        if (x.at === y.at) return x.i - y.i;
+        return x.at === null ? 1 : -1;
+      }
+      return y.at - x.at || x.i - y.i;
+    });
+  return added.every((a, i) => a.path === apps[i].path);
+}
+
+function dropLegacyOrder(): void {
   try {
-    const next = JSON.stringify(paths);
-    if (localStorage.getItem(ORDER_KEY) === next) return;
-    localStorage.setItem(ORDER_KEY, next);
+    localStorage.removeItem(LEGACY_ORDER_KEY);
   } catch {
-    // A blocked store just means the order lasts as long as the page does.
+    /* removal failed: the next load decides again, harmless */
   }
 }
-
-/** Take `paths` as the whole order, replacing what this page held. Empty is NOT
- *  an order — a missing or cleared key must leave the live order alone rather
- *  than flattening it. A live app the incoming list does not mention gets a
- *  fresh sequence and goes on top, which is correct: the tab that dragged did
- *  not have that app, so its arrangement has nothing to say about where it
- *  belongs. Nothing answers back — adopting never writes. */
-function adoptSavedOrder(slugs: string[]): void {
-  if (!slugs.length) return;
-  appOrder.clear();
-  reorderTo(appOrder, slugs);
-}
-
-// Mounted sections, so another tab's drag can repaint this one.
-const orderListeners = new Set<() => void>();
 
 try {
-  adoptSavedOrder(readSavedOrder());
-  // `storage` fires only in OTHER documents, which makes it exactly the
-  // cross-tab channel — the same wiring App.tsx uses to hear the chat's
-  // activity stamp. Without it the two tabs disagree until a reload.
-  window.addEventListener("storage", (e: StorageEvent) => {
-    if (e.key !== ORDER_KEY) return;
-    adoptSavedOrder(parseSavedOrder(e.newValue));
-    for (const listener of orderListeners) listener();
-  });
+  const legacy = parseSavedOrder(localStorage.getItem(LEGACY_ORDER_KEY));
+  if (!legacy.length) {
+    localStorage.removeItem(LEGACY_ORDER_KEY);
+  } else {
+    getCurrentApps()
+      .then((current) => {
+        if (!neverArranged(current.apps ?? [])) {
+          dropLegacyOrder();
+          return;
+        }
+        return setCurrentAppsOrder(legacy).then((r) => {
+          dropLegacyOrder();
+          knownApps = r.apps ?? knownApps;
+          // The section's first GET was in flight beside this POST and may
+          // have answered with the pre-import order. Same-document `storage`
+          // events do not fire, so THIS window's sections are poked over the
+          // window event they already refetch on, the other windows over the
+          // nudge.
+          window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT));
+          announceDeskChanged(Date.now());
+        });
+      })
+      .catch(() => {
+        /* server unreachable or refused: keep the key, the next load retries */
+      });
+  }
 } catch {
-  // No store and no window: the order lives and dies with this page.
+  // No store and no window: nothing was ever saved here to import.
 }
 
 /** The desk's table, fetched on mount and again whenever `signal` changes —
@@ -202,37 +204,29 @@ function useCurrentApps(
 
 /** The desk in the order the section shows it — for the collapsed rail's app
  *  icons. Fetches only while `enabled` (the rail is on screen), on mount and on
- *  the same add/open nudges the section hears; no pulse-driven refetch, and no
- *  running/queued/unread state (the rail draws icons only). */
+ *  the same add/open/drag nudges the section hears; no pulse-driven refetch, and
+ *  no running/queued/unread state (the rail draws icons only). The order is the
+ *  server's array as fetched (D1386) — the same one the section draws. */
 export function useDeskAppsOrdered(enabled: boolean): CurrentApp[] {
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const { entries } = useCurrentApps("", refreshEpoch, enabled);
-  // Another tab's drag repaints here too (orderListeners): the bump is only a
-  // re-render, and the list below is rebuilt on every render — a handful of
-  // rows, so no memo to key.
-  const [, setOrderEpoch] = useState(0);
   useEffect(() => {
     if (!enabled) return;
     const refetch = () => setRefreshEpoch((n) => n + 1);
     const onStorage = (e: StorageEvent) => {
       if (e.key === DESK_CHANGED_KEY) refetch();
     };
-    const onOrder = () => setOrderEpoch((n) => n + 1);
     window.addEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
     window.addEventListener("storage", onStorage);
-    orderListeners.add(onOrder);
     return () => {
       window.removeEventListener(CURRENT_APPS_CHANGED_EVENT, refetch);
       window.removeEventListener("storage", onStorage);
-      orderListeners.delete(onOrder);
     };
   }, [enabled]);
   // Expanded: the rail is not drawn and `entries` is the snapshot of the last
-  // collapse — numbering off it would renumber the section's live rows.
+  // collapse.
   if (!enabled) return [];
-  const found = currentApps(entries, [], new Set(), []);
-  assignSequences(appOrder, found); // idempotent, same as the section's
-  return bySequence(found, appOrder);
+  return currentApps(entries, [], new Set(), []);
 }
 
 interface RowDragProps {
@@ -461,9 +455,6 @@ export default function CurrentAppsSection() {
   );
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const { entries, adopt } = useCurrentApps(pulseSignal, refreshEpoch);
-  // A drop mutates `appOrder`, which React cannot see; this counter is what
-  // turns that mutation into a render.
-  const [orderEpoch, setOrderEpoch] = useState(0);
   // The rows the user opened in THIS window whose open the server has not yet
   // answered — so the dot dies on the click rather than on the refetch. A path
   // leaves the set the moment the POST's answer (which carries the stamped
@@ -482,15 +473,12 @@ export default function CurrentAppsSection() {
       }),
     [],
   );
-  const apps = useMemo(() => {
-    const found = currentApps(entries, runningProjects, clearedHere, queuedProjects);
-    // Assigning during render is safe because it is idempotent: an app that
-    // already has a sequence keeps it, so a double-invoked render (StrictMode)
-    // or a re-run on the same rows cannot renumber anything.
-    assignSequences(appOrder, found);
-    return bySequence(found, appOrder);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
-  }, [entries, runningProjects, queuedProjects, clearedHere, orderEpoch]);
+  // Drawn in the order `entries` arrive: the server's array IS the display
+  // order (D1386), so there is nothing to sort here.
+  const apps = useMemo(
+    () => currentApps(entries, runningProjects, clearedHere, queuedProjects),
+    [entries, runningProjects, queuedProjects, clearedHere],
+  );
   // The user opened `path`: clear the dot here at once, tell the server (POST
   // /api/current-apps/open — the row's `opened_at` and `unread` are its to
   // keep), then read the table back and hand the row to the server's flag.
@@ -500,17 +488,10 @@ export default function CurrentAppsSection() {
       setClearedHere((s) => new Set(s).add(path));
       openCurrentApp(path).then(
         async (r) => {
-          // Tell the OTHER windows the desk changed: `storage` fires only in
-          // other documents (the ORDER_KEY wiring above, the chat's activity
-          // stamp), and their sections refetch on it. Without this a second
+          // Tell the OTHER windows the desk changed. Without this a second
           // window keeps the dot until something else makes it refetch (Bugbot,
-          // 2026-09-07). Value is the stamp so two opens in one second still
-          // differ; a blocked store just means no cross-window nudge.
-          try {
-            localStorage.setItem(DESK_CHANGED_KEY, String(r.opened_at));
-          } catch {
-            /* no store: this window is up to date, the others catch up on their own */
-          }
+          // 2026-09-07).
+          announceDeskChanged(r.opened_at);
           // The answer carries the table after the stamp: adopt it and lift the
           // cover in the same tick. No second read to race, and `adopt` takes
           // the newest sequence so a fetch still in flight from before the POST
@@ -529,19 +510,13 @@ export default function CurrentAppsSection() {
     },
     [adopt, uncover],
   );
-  // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
-  // those move rows on screen and write nothing to the store; the saved order is
-  // an arrangement the user made, and only they can change it.
-
-  // Repaint when another tab drags. The adopt already happened at the module
-  // listener; this is only the render half of it.
-  useEffect(() => {
-    const bump = () => setOrderEpoch((n) => n + 1);
-    orderListeners.add(bump);
-    return () => {
-      orderListeners.delete(bump);
-    };
-  }, []);
+  // NOTHING is saved from here. A new app, a removed one, a fetch landing — all
+  // of those are the server's own writes; the order POST below is sent by a
+  // drag and only by a drag. A persist effect keyed on the app list looks
+  // equivalent and is not: two windows then take turns saving their own view
+  // of a world they briefly disagree about (Bugbot twice, 2026-08-26 — first a
+  // second tab clobbering a drag, then an outright write loop). A drag is one
+  // user gesture; there is no second writer to race.
 
   // Which row is the page on screen. Read at render: the sidebar remounts on
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
@@ -593,12 +568,25 @@ export default function CurrentAppsSection() {
       clearDrag();
       if (from === null || from === path) return;
       e.preventDefault();
-      // Moved within the WHOLE store, not the visible run. They are the same
-      // list — the store is pruned to the desk on every assignment.
-      const next = moveSlug(orderedSlugs(appOrder), from, path, isBelow(e));
-      reorderTo(appOrder, next);
-      saveOrder(next);
-      setOrderEpoch((n) => n + 1);
+      // The whole list, rearranged, goes back in one POST. The rows move at
+      // once (the table re-sliced into the new order and adopted — newest
+      // sequence, so a read in flight from before the drop cannot put the old
+      // order back), then the POST's answer, the server's table in its new
+      // order, is adopted over it. A failed POST refetches, which puts the
+      // rows back where the server still has them. Re-dropping a row where it
+      // already sits sends nothing.
+      const paths = apps.map((a) => a.path);
+      const next = moveSlug(paths, from, path, isBelow(e));
+      if (next.every((p, i) => p === paths[i])) return;
+      const byPath = new Map(entries.map((en) => [en.path, en]));
+      adopt(next.flatMap((p) => byPath.get(p) ?? []));
+      setCurrentAppsOrder(next).then(
+        (r) => {
+          adopt(r.apps ?? []);
+          announceDeskChanged(Date.now());
+        },
+        () => refetch(),
+      );
     },
     onDragEnd: () => {
       // Fires on an Escape-cancelled drag too — the universal cleanup.
@@ -700,17 +688,9 @@ export default function CurrentAppsSection() {
     setRenameBusy(true);
     try {
       const r = await renameCurrentApp(app.path, name);
-      // Carry the row's SEQUENCE to the new path in memory, so the rename does
-      // not reshuffle the list (assignSequences would put an unknown path on
-      // top). The OLD path's entry is left in place: the fetched table still
-      // names it until the refetch lands, and deleting it early hands the row
-      // a fresh top-of-list sequence in that window (Bugbot). The prune on the
-      // next assignment drops it. Deliberately NOT saved — the store is
-      // written by a drag and only by a drag (the cross-tab rule above).
-      const seq = appOrder.get(app.path);
-      if (seq !== undefined && !appOrder.has(r.path)) {
-        appOrder.set(r.path, seq);
-      }
+      // The row keeps its place: the server rewrites the entry where it stands
+      // in the stored array, so the refetch below brings it back in the same
+      // slot under its new path.
       setRenaming(null);
       pokeTasks();
       // Refetch UNCONDITIONALLY — the desk row changed either way. Then, if
@@ -829,17 +809,16 @@ export default function CurrentAppsSection() {
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
   // what an empty desk wants.
   const [composing, setComposing] = useState(false);
-  // Whole-section fold, the Bookmarks heading's pattern: local to this machine
-  // (localStorage) — sidebar layout, not desk data. The count chip carries the
-  // collapsed signal, no chevron.
-  const [collapsed, setCollapsed] = useState(readCollapsed);
+  // Whole-section fold, the Bookmarks heading's pattern: sidebar layout, not
+  // desk data, so it lives in the ui-layout doc (`ui_layout.json`, D1386) —
+  // read synchronously off the cache filled at boot, written by the click and
+  // only by the click. The count chip carries the collapsed signal, no chevron.
+  const [collapsed, setCollapsed] = useState(
+    () => getUiLayout().currentAppsCollapsed ?? false,
+  );
   const toggleCollapsed = () => {
     const next = !collapsed;
-    try {
-      localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
-    } catch {
-      // No store: the fold lasts as long as the page does.
-    }
+    patchUiLayout((d) => ({ ...d, currentAppsCollapsed: next }));
     setCollapsed(next);
   };
   // This section and Bookmarks share the sidebar's free height (equal halves,
@@ -864,8 +843,9 @@ export default function CurrentAppsSection() {
           {collapsed && <span className="sidebar-count-chip">{apps.length}</span>}
         </div>
         {/* The composer trigger sits ABOVE the app rows — the first thing
-            in the list, where a new app will also land (new apps take the
-            top sequence). Replaces the heading + reverted in #1303. */}
+            in the list, where a new app will also land (the server inserts
+            new apps at index 0, D1386). Replaces the heading + reverted in
+            #1303. */}
         {!collapsed && (
           <div
             className="bookmark-row current-app-row current-app-new"

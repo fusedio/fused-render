@@ -1874,3 +1874,27 @@ select.c-pill {
 .chat-worktree-note.is-error {
   color: var(--c-error);
 }
+
+/* THE FORK NOTICE, directly above the composer: one muted line and a Cancel. */
+.chat-root .fork-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--c-dim);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+}
+.chat-root .fork-notice-cancel {
+  padding: 2px 8px;
+  font: inherit;
+  color: var(--c-fg);
+  background: none;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 6px;
+  cursor: pointer;
+}

@@ -2,7 +2,8 @@
 
 ``~/.fused-render/current_apps.json``::
 
-    {"apps": [{"path": "/Users/me/Fused/local/foo", "addedAt": "<iso>",
+    {"order": "top_first",
+     "apps": [{"path": "/Users/me/Fused/local/foo", "addedAt": "<iso>",
                "openedAt": <epoch>, "unread": <bool>}],
      "seen": ["<task key>", ...]}
 
@@ -35,6 +36,23 @@ the migration of what the derived section showed, widened from `local/` to all
 app kinds. `seen` is pruned to the keys still listed, so it is bounded by the
 machine's transcripts and a deleted task's key does not live here forever.
 
+`apps` is stored in DISPLAY order, top first (D1386). A new app — a task's
+(`observe`) or the explorer's button (`add`) — goes in at index 0, and a drag
+in the sidebar rewrites the whole order (`set_order`, POST
+/api/current-apps/order). The order used to be the browser's: the sidebar kept
+a per-app sequence map in localStorage and the server's list was only the
+"added" seed. That lost the user's arrangement on every relaunch that landed
+on a different port — the desktop app walks ports 1777..1787 then an ephemeral
+one, and each port is a new origin with empty storage — so the order moved
+here, and the client's old key is imported once and removed.
+
+The file used to be ADDED order (oldest first, `append`). A file without the
+``"order": "top_first"`` stamp is that legacy layout and is read REVERSED, so a
+desk nobody ever dragged keeps showing newest on top; `write_state` writes the
+stamp, so the first write after the upgrade settles the file. The two outside
+writers that edit this file in place (`app_state_move`, `app_state_remove`)
+keep whatever top-level keys they found, stamp included, and never reorder.
+
 Paths are stored CANONICAL (forward-slash, `_view_url_codec.canonical_fs_path`)
 — the form a task row's `project` already has, so the containment test is
 plain string work on one spelling. Everything degrades: a corrupt file reads
@@ -43,6 +61,7 @@ the user's to remove — a table that prunes itself is the coupling this module
 exists to end).
 """
 import os
+import threading
 from datetime import datetime, timezone
 
 from fused_render import app_listing, registered_apps
@@ -52,6 +71,17 @@ from fused_render.shell import storage
 
 FILENAME = "current_apps.json"
 
+#: The stamp that says `apps` is top-first display order (module docstring).
+ORDER_STAMP = "top_first"
+
+# Serialises every read-modify-write of the file in this process. Before the
+# order moved here only the listing (`observe`) and one-off gestures wrote it;
+# now a drag (`set_order`) rewrites the whole list, and a drag that read the
+# desk just before an `observe` pass inserted a new app would otherwise write
+# that app away — and `observe` never re-adds it, because its task key is
+# already `seen`. Re-entrant so a mutator may call `read_state` under it.
+_LOCK = threading.RLock()
+
 
 def _path() -> str:
     return os.path.join(storage.home_dir(), FILENAME)
@@ -59,23 +89,31 @@ def _path() -> str:
 
 def read_state() -> dict:
     """The store, shape-checked: ``{"apps": [...], "seen": [...]}`` with every
-    app a dict carrying a string ``path``. Missing or corrupt reads as empty."""
+    app a dict carrying a string ``path``, ``apps`` top first. Missing or
+    corrupt reads as empty; an unstamped (legacy, oldest-first) file reads
+    reversed — see the module docstring."""
     data = storage.read_json(_path())
     if not isinstance(data, dict):
         return {"apps": [], "seen": []}
     apps = data.get("apps")
     seen = data.get("seen")
+    apps = [
+        a for a in (apps if isinstance(apps, list) else [])
+        if isinstance(a, dict) and isinstance(a.get("path"), str) and a["path"]
+    ]
+    if data.get("order") != ORDER_STAMP:
+        apps.reverse()
     return {
-        "apps": [
-            a for a in (apps if isinstance(apps, list) else [])
-            if isinstance(a, dict) and isinstance(a.get("path"), str) and a["path"]
-        ],
+        "apps": apps,
         "seen": [k for k in (seen if isinstance(seen, list) else []) if isinstance(k, str)],
     }
 
 
 def write_state(state: dict) -> None:
-    storage.write_json(_path(), {"apps": state["apps"], "seen": state["seen"]})
+    """Write the store, always stamped top-first (`state["apps"]` must be in
+    display order — what `read_state` hands back)."""
+    storage.write_json(_path(), {"order": ORDER_STAMP, "apps": state["apps"],
+                                 "seen": state["seen"]})
 
 
 def is_under(project: str, folder: str) -> bool:
@@ -185,6 +223,11 @@ def observe(rows: list[dict]) -> None:
     ``unread`` (see the section comment above). Called from the tasks listing,
     so the listing's own response already reflects the add. Writes only when
     something changed — an idle poll must not rewrite the file."""
+    with _LOCK:
+        _observe_locked(rows)
+
+
+def _observe_locked(rows: list[dict]) -> None:
     state = read_state()
     seen = set(state["seen"])
     known = {a["path"] for a in state["apps"]}
@@ -199,11 +242,11 @@ def observe(rows: list[dict]) -> None:
         if not isinstance(a.get("openedAt"), (int, float)):
             a["openedAt"] = _now_epoch()
             changed = True
-    # OLDEST activity first: `_task_rows` sorts newest first, and the table is
-    # added-order (the sidebar numbers the first entry lowest, so the last
-    # added lands on top). Walking the listing as given would seed a first-run
-    # desk — or any pass that adds several apps — oldest on top, inverted
-    # (Bugbot on #867).
+    # OLDEST activity first: `_task_rows` sorts newest first, and every new
+    # app is inserted at the TOP (index 0 — the table is display order, D1386).
+    # Walking oldest → newest and inserting each at 0 leaves the newest on top;
+    # walking the listing as given would seed a first-run desk — or any pass
+    # that adds several apps — oldest on top, inverted (Bugbot on #867).
     for row in reversed(rows):
         key = str(row.get("key") or "")
         if not key:
@@ -220,7 +263,7 @@ def observe(rows: list[dict]) -> None:
             continue
         now = now or datetime.now(timezone.utc).isoformat()
         # Never opened: the task that put it here lights it once it finishes.
-        state["apps"].append({"path": folder, "addedAt": now, "openedAt": 0.0})
+        state["apps"].insert(0, {"path": folder, "addedAt": now, "openedAt": 0.0})
         known.add(folder)
     for a in state["apps"]:
         flag = _unread(a["path"], float(a["openedAt"]), rows)
@@ -239,36 +282,78 @@ def _now_epoch() -> float:
 
 def add(path: str) -> bool:
     """Put `path` on the desk by hand — the explorer's "Open in project"
-    button. True when it was added, False when it was already there (the
-    row keeps its place and its sequence: the sidebar focuses it rather than
-    re-inserting). The one way onto the desk besides a task; `observe`'s
-    dedupe on `known` means a later task under the folder adds nothing."""
+    button — at the TOP (index 0, D1386). True when it was added, False when
+    it was already there (the row keeps its place: the sidebar focuses it
+    rather than re-inserting). The one way onto the desk besides a task;
+    `observe`'s dedupe on `known` means a later task under the folder adds
+    nothing."""
     folder = canonical_fs_path(os.path.abspath(path)).rstrip("/")
-    state = read_state()
-    if any(a["path"] == folder for a in state["apps"]):
-        return False
-    state["apps"].append({
-        "path": folder,
-        "addedAt": datetime.now(timezone.utc).isoformat(),
-        # The button navigates to the app at once: it IS an open.
-        "openedAt": _now_epoch(),
-        "unread": False,
-    })
-    write_state(state)
-    return True
+    with _LOCK:
+        state = read_state()
+        if any(a["path"] == folder for a in state["apps"]):
+            return False
+        state["apps"].insert(0, {
+            "path": folder,
+            "addedAt": datetime.now(timezone.utc).isoformat(),
+            # The button navigates to the app at once: it IS an open.
+            "openedAt": _now_epoch(),
+            "unread": False,
+        })
+        write_state(state)
+        return True
+
+
+def set_order(paths) -> list[dict]:
+    """Reorder the desk after a drag in the sidebar: ``paths`` is the order
+    the user arranged, top first (any spelling of each path). The new order
+    is every desk app the list does NOT name, in its current relative order,
+    followed by the named apps in ``paths`` order. Unknown paths (not on the
+    desk, or not absolute) and repeats are dropped.
+
+    Unnamed apps go FIRST on purpose: the one way an app reaches the desk
+    without the client knowing is `observe` inserting it at the top while the
+    drag was in flight, and that app belongs where `observe` put it — on top —
+    not shuffled under the arrangement the user made of the older ones. This
+    is the reverse of `dock.set_order`, whose stragglers are old pins.
+
+    The order lives here, not in the browser, since D1386: localStorage is per
+    origin and the desktop app's port walk (1777..1787, then ephemeral) makes
+    a relaunch a new origin with an empty store. Writes only when the order
+    changed. Returns `list_apps()`. ValueError when ``paths`` is not a list
+    of strings."""
+    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+        raise ValueError("paths must be a list of app paths")
+    with _LOCK:
+        state = read_state()
+        by_path = {a["path"]: a for a in state["apps"]}
+        named: list[str] = []
+        for p in paths:
+            if not p or not os.path.isabs(p):
+                continue
+            folder = canonical_fs_path(os.path.abspath(p)).rstrip("/")
+            if folder in by_path and folder not in named:
+                named.append(folder)
+        chosen = set(named)
+        ordered = ([a for a in state["apps"] if a["path"] not in chosen]
+                   + [by_path[p] for p in named])
+        if [a["path"] for a in ordered] != [a["path"] for a in state["apps"]]:
+            state["apps"] = ordered
+            write_state(state)
+    return list_apps()
 
 
 def remove(path: str) -> bool:
     """Drop `path` from the desk. True when it was there. The archive
     side-effect is the ROUTER's (it owns the tasks) — this is only the table."""
     folder = canonical_fs_path(os.path.abspath(path)).rstrip("/")
-    state = read_state()
-    kept = [a for a in state["apps"] if a["path"] != folder]
-    if len(kept) == len(state["apps"]):
-        return False
-    state["apps"] = kept
-    write_state(state)
-    return True
+    with _LOCK:
+        state = read_state()
+        kept = [a for a in state["apps"] if a["path"] != folder]
+        if len(kept) == len(state["apps"]):
+            return False
+        state["apps"] = kept
+        write_state(state)
+        return True
 
 
 def mark_opened(path: str, at: float) -> bool:
@@ -279,14 +364,15 @@ def mark_opened(path: str, at: float) -> bool:
     lights it again. True when the row exists; False for a path not on the
     desk (nothing to clear on)."""
     folder = canonical_fs_path(os.path.abspath(path)).rstrip("/")
-    state = read_state()
-    for a in state["apps"]:
-        if a["path"] == folder:
-            a["openedAt"] = float(at)
-            a["unread"] = False
-            write_state(state)
-            return True
-    return False
+    with _LOCK:
+        state = read_state()
+        for a in state["apps"]:
+            if a["path"] == folder:
+                a["openedAt"] = float(at)
+                a["unread"] = False
+                write_state(state)
+                return True
+        return False
 
 
 def _added_epoch(ts) -> float | None:
@@ -317,7 +403,8 @@ def app_icon(folder: str) -> dict | None:
 
 
 def list_apps() -> list[dict]:
-    """The desk, in stored (added) order. Each: ``path`` (canonical), ``name``
+    """The desk, in stored order — display order, top first (D1386: new apps
+    are inserted at the top, a drag rewrites it via `set_order`). Each: ``path`` (canonical), ``name``
     (folder name), ``kind`` (``linked`` for a registry folder, ``workspace``
     otherwise), ``entry`` (the page to run, or None), ``exists``, ``icon`` /
     ``icon_mtime`` (the optional ``icon.svg`` / ``icon.png``, see `app_icon`), ``added_at``

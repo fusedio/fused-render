@@ -69,7 +69,6 @@ import type { BoardColumn, BoardLane } from "./schedule-lib";
 import {
   EMPTY_FILTERS,
   EMPTY_LIST_MEMORY,
-  LANE_CHOICE_KEY,
   listMemoryKey,
   UNREAD_LABEL,
   basename,
@@ -160,6 +159,8 @@ import {
   upcomingEditEntry,
   eraseBlocked,
   ERASE_BLOCKED_HINT,
+  opensCanvas,
+  pageDoorLabel,
 } from "./tasks-lib";
 import type {
   FilingIntent,
@@ -4584,8 +4585,8 @@ function TaskNode({
           <a
             className="tasks-act tasks-act--page"
             href={page}
-            aria-label={`Open ${shortTaskId(task.task_id)} in Explorer`}
-            data-hint="Open in Explorer"
+            aria-label={`Open ${shortTaskId(task.task_id)} in ${opensCanvas(task) ? "Canvas" : "Explorer"}`}
+            data-hint={pageDoorLabel(task)}
             onClick={(e) => {
               // A modified press is the browser's (the row's own link rule).
               if (opensElsewhere(e)) return;
@@ -5299,12 +5300,34 @@ const RUN_DROP_WORDS = {
 // toggle here, and a lane with none remembers nothing at all (the peek, in
 // TaskBoard). So a lane nobody has touched keeps following the rule as it fills
 // and empties, and so does one they touched while it was empty.
+//
+// The lane half is per-TAB, per-sitting (sessionStorage), like the grouped
+// views' folds: which lanes are open is how you read the board this minute,
+// not a fact to carry into the next window (Akshil, 2026-10-20). It was the
+// localStorage key `fused-render:scheduled-board-lanes`, dropped once here.
+// parseLaneChoices keeps only choices for lanes this build knows.
+const LANE_CHOICE_KEY = "fused-render:tasks-board-lanes";
+const OLD_LANE_CHOICE_KEY = "fused-render:scheduled-board-lanes";
+
 function readLaneChoices(): LaneChoices {
   try {
-    return parseLaneChoices(localStorage.getItem(LANE_CHOICE_KEY));
+    localStorage.removeItem(OLD_LANE_CHOICE_KEY);
+  } catch {
+    // no storage
+  }
+  try {
+    return parseLaneChoices(sessionStorage.getItem(LANE_CHOICE_KEY));
   } catch {
     // A blocked/private store costs the memory, never the board.
     return {};
+  }
+}
+
+function writeLaneChoices(next: LaneChoices): void {
+  try {
+    sessionStorage.setItem(LANE_CHOICE_KEY, JSON.stringify(next));
+  } catch {
+    // best-effort; a full or blocked store never breaks the board
   }
 }
 
@@ -5709,11 +5732,7 @@ export function TaskBoard({
     }
     setChoices((cur) => {
       const next = { ...cur, [key]: !nowCollapsed };
-      try {
-        localStorage.setItem(LANE_CHOICE_KEY, JSON.stringify(next));
-      } catch {
-        // best-effort; a full or blocked store never breaks the board
-      }
+      writeLaneChoices(next);
       return next;
     });
   };
@@ -6519,8 +6538,8 @@ function TaskCard({
             <a
               className="tasks-act tasks-card-act tasks-act--page"
               href={page}
-              aria-label={`Open ${shortTaskId(task.task_id)} in Explorer`}
-              data-hint="Open in Explorer"
+              aria-label={`Open ${shortTaskId(task.task_id)} in ${opensCanvas(task) ? "Canvas" : "Explorer"}`}
+              data-hint={pageDoorLabel(task)}
               onClick={(e) => {
                 if (opensElsewhere(e)) return;
                 e.preventDefault();

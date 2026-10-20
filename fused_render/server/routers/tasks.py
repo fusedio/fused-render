@@ -30,6 +30,10 @@ this file is written around:
   wrong for a time axis, and one field cannot mean both.
 * ``POST /api/tasks/read`` — mark one message read, or (``all: true``) every
   message in one task, in one request and one store write.
+* ``POST /api/tasks/seen`` — replace the sidebar's "seen it finished" map
+  (`tasks_store.set_seen_done`); the pulse carries it back as ``seen``. Moved off
+  localStorage by D1386 (the desktop app's port walk is a new origin, and so
+  empty storage, per launch). See `api_tasks_seen`.
 * ``POST /api/tasks/archive`` — file one task away. ONE gesture with two halves
   (cancel the work, archive the session), which is why it is a verb here rather
   than a triage write the client composes. See the archiving section at the end.
@@ -116,6 +120,7 @@ import hashlib
 import heapq
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -123,6 +128,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import unquote, urlencode
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -2850,6 +2856,81 @@ def _workdir(target: str) -> str:
     return target if os.path.isdir(target) else os.path.dirname(target)
 
 
+# `_task_canvas`'s roots: canvases base -> {env: {normpath, realpath}}. `_row`
+# runs per task per poll, and a realpath walks every segment; the roots do
+# not move while the server runs (only the test override changes the base).
+_CANVAS_ROOTS_MEMO: dict[str, dict[str, set[str]]] = {}
+
+
+def _canvas_roots(canvases) -> dict[str, set[str]]:
+    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
+
+    base = canvases.canvases_base()
+    roots = _CANVAS_ROOTS_MEMO.get(base)
+    if roots is None:
+        roots = {}
+        for env in WORKBENCH_ENV_CHOICES:
+            root = canvases.canvases_root(env)
+            roots[env] = {os.path.normpath(root), os.path.realpath(root)}
+        _CANVAS_ROOTS_MEMO[base] = roots
+    return roots
+
+
+def _is_canvas_node_file(file: str) -> bool:
+    """A node's source at the clone's top level — the same suffixes the
+    snapshot reads as node sources (canvas_snapshot `_SOURCE_SUFFIXES`: UDF
+    `.py`, widget `.json`, note `.md`, html `.html`), never a dotfile."""
+    from fused_render.canvas_snapshot import _SOURCE_SUFFIXES
+
+    return not file.startswith(".") and file.endswith(_SOURCE_SUFFIXES)
+
+
+def _task_canvas(target: str) -> dict | None:
+    """The canvas a task is on — `{env, name, file}` — or None.
+
+    A task whose target is a canvas CLONE (`~/Fused/canvas/<env>/<name>`,
+    canvases.canvases_root) or a NODE in it (a top-level file of the clone,
+    `<udf>.py` / `<widget>.json`) opens on the canvas page, not in the
+    explorer: the shell's door (`tasks-lib.taskHref`) lands on `/canvases/
+    <env>/<name>` with the node selected and the chat on the task's session
+    (owner, 2026-10-20: "it should go to the proper canvas page, with the node
+    selected and the session in focus on the right side"). `file` is "" for
+    the clone itself (the canvas chat) and the node's file name otherwise.
+
+    Anything deeper than one level — a `.sync/` internal, a nested file — or
+    a top-level entry that is not a node source (`.sync` itself,
+    `canvas.toml`; `_is_canvas_node_file`) is not a node the canvas page can
+    show, so it answers None and keeps the explorer door. Compared through `realpath` as well as
+    the plain path because the CLI wrapper reaches a clone through `pwd -P`,
+    and a task made from inside one may name it either way. No existence
+    check: a task on a deleted clone still names the door that was its own.
+    """
+    target = str(target or "").rstrip("/\\")
+    if not target:
+        return None
+    from fused_render import canvases
+
+    cands = {os.path.normpath(target), os.path.realpath(target)}
+    for env, bases in _canvas_roots(canvases).items():
+        for base in bases:
+            for cand in cands:
+                if cand == base or not cand.startswith(base + os.sep):
+                    continue
+                rest = cand[len(base) + 1:].split(os.sep)
+                name = rest[0]
+                if not canvases._NAME_RE.match(name) or len(rest) > 2:
+                    continue
+                file = rest[1] if len(rest) == 2 else ""
+                # A NODE is a source file the snapshot knows (`.py`, `.json`,
+                # `.md`, `.html`), nothing else at the top level: `.sync/`
+                # itself or `canvas.toml` is not a node the workbench can
+                # select, and a task on one keeps the explorer door.
+                if file and not _is_canvas_node_file(file):
+                    continue
+                return {"env": env, "name": name, "file": file}
+    return None
+
+
 # `_task_entry`'s memo: folder -> (dir mtime, answer). `_row` runs for every
 # task on every listing poll, and a listdir per app folder per poll adds up on a
 # long list; a folder whose mtime has not moved has not gained or lost a page.
@@ -3874,6 +3955,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The page a folder target opens as — "" unless it is an app
         # (`_task_entry`). The shell's door prefers it over the folder.
         "entry": canonical_fs_path(_task_entry(task["target"])),
+        # The canvas this task is on (`{env, name, file}`), None for every
+        # other row. The shell's door lands on the canvas page, node selected,
+        # chat on this session (`_task_canvas`).
+        "canvas": _task_canvas(task["target"] or task["project"]),
         "session_id": task["session_id"],
         "title": title,
         "title_source": source,
@@ -6105,6 +6190,11 @@ _PULSE_FIELDS = (
     # Which agent ran it, so a "Copilot finished: <title>" notice can say so
     # (D18) without a second fetch.
     "backend",
+    # The canvas the task is on (`_task_canvas`), None otherwise: the
+    # Notifications rows and the finished-task notice open through the same
+    # door as the Tasks page (`taskHref`), and that door is the canvas page
+    # for a canvas task. A small dict per row, not a path walk per click.
+    "canvas",
 )
 
 
@@ -6116,14 +6206,76 @@ def api_tasks_pulse():
     section are about work that is happening; a form somebody has not finished
     is not news, and design.md puts task drafts in the List and the Board only
     — never the Cards wall, never the Calendar, and by the same reasoning never
-    here (Akshil, 2026-09-11)."""
+    here (Akshil, 2026-09-11).
+
+    `seen` is the sidebar's "seen it finished" map (`tasks_store.seen_done`),
+    riding on the poll the sidebar already makes rather than a second fetch: the
+    two are read together (a finished row lights until its key's stamp matches)
+    and it is one small JSON read, the same cost class as the prefs read the
+    listing already pays. Server-side since D1386 — see `api_tasks_seen`."""
     return {
         "tasks": [
             {field: row[field] for field in _PULSE_FIELDS}
             for row in _task_rows()
             if row.get("kind") != "draft"
-        ]
+        ],
+        "seen": tasks_store.seen_done(),
     }
+
+
+def _seen_map(body) -> dict | None:
+    """`body["seen"]` if it is the exact shape the store keeps — a dict of
+    non-empty string keys to finite, non-bool numbers — else None.
+
+    Hand-validated rather than a pydantic model on purpose: `dict[str, float]`
+    in lax mode coerces `"5"` and `true` to numbers and answers a missing field
+    with 422, and the contract is a 400 on any bad shape. Python's json also
+    accepts a bare `NaN` token, hence `isfinite`."""
+    if not isinstance(body, dict):
+        return None
+    seen = body.get("seen")
+    if not isinstance(seen, dict):
+        return None
+    for key, at in seen.items():
+        if not isinstance(key, str) or not key:
+            return None
+        if isinstance(at, bool) or not isinstance(at, (int, float)) \
+                or not math.isfinite(at):
+            return None
+    return seen
+
+
+@router.post("/api/tasks/seen")
+def api_tasks_seen(body: Any = Body(default=None),
+        x_fused: str | None = Header(default=None)):
+    """Replace the sidebar's "seen it finished" map: `{seen: {key: last_active}}`.
+
+    WHY IT IS ON THE SERVER (D1386). This map — which finished tasks the user
+    has already looked at, stamped with the `last_active` they were seen at — was
+    the page's localStorage (`fused-render:tasks-seen`). The desktop app walks
+    ports 1777..1787 and then an ephemeral one; each port is a new browser origin
+    with empty storage, so every relaunch that landed elsewhere forgot the map
+    and re-announced every finished task the user had dismissed. A thing the
+    user would miss across a relaunch belongs behind an API.
+
+    WHOLE-MAP REPLACE: the client computes the next map (its `seenAfterVisit`
+    already drops keys the listing no longer carries), so the server stores what
+    it is given — merging would revive the keys just pruned. Two windows racing
+    is last-write-wins, which is the right answer for "what I have seen".
+
+    No `tasks_watch.notify`: nothing on a ROW changed (`unread` is per-message
+    and lives in the same file under other keys), and the other windows learn
+    through the client's own storage-event nudge (D1386 Q4)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    seen = _seen_map(body)
+    if seen is None:
+        raise HTTPException(
+            status_code=400,
+            detail="expected {seen: {key: number}} with non-empty string keys "
+                   "and finite numbers")
+    return {"ok": True, "seen": tasks_store.set_seen_done(seen)}
 
 
 class RunningPatch(BaseModel):

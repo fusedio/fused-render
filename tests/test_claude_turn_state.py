@@ -74,6 +74,24 @@ def test_rows_after_a_result_reopen_the_turn(agent, tmp_path):
     assert agent._turn_state(run_dir) == (True, False)
 
 
+def test_a_command_lifecycle_row_after_the_result_does_not_reopen_the_turn(
+        agent, tmp_path):
+    """Claude Code 2.1.302 writes a `command_lifecycle` ledger row after the
+    `result` when a message was queued behind the turn. Not a turn: the list
+    said Done while the chat re-attached as still going (Akshil, 2026-10-20).
+    A command that really starts a turn brings its own `init`."""
+    run_dir = str(tmp_path / "run3b")
+    _write_rows(run_dir, [_system_init(), _result(),
+                          {"type": "command_lifecycle", "state": "queued",
+                           "command_uuid": "c1", "uuid": "u1"}])
+    assert agent._turn_state(run_dir) == (False, False)
+    _write_rows(run_dir, [_system_init(), _result(),
+                          {"type": "command_lifecycle", "state": "queued",
+                           "command_uuid": "c1", "uuid": "u1"},
+                          _system_init()])
+    assert agent._turn_state(run_dir) == (True, False)
+
+
 def test_nonempty_tasks_is_pending_even_when_idle(agent, tmp_path):
     run_dir = str(tmp_path / "run4")
     _write_rows(run_dir, [_system_init(), _bg_tasks("t1"), _result()])

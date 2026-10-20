@@ -62,6 +62,7 @@ import {
   turnPhase,
 } from "./schedule-lib";
 import type { BoardColumn, BoardLane, RunStatus } from "./schedule-lib";
+import { canvasPagePath } from "@apps/canvases/api";
 
 // How many messages the LISTING carries per task — the server's window, not a
 // display cap: an expanded task draws every message it has (there is no Show more
@@ -1593,9 +1594,6 @@ export const VIEW_LABELS: Record<TaskView, string> = {
   pr: "PR",
 };
 
-/** Where the switcher's chosen tabs live (a JSON array of view names). */
-export const VIEW_TABS_KEY = "fused-render:scheduled-view-tabs";
-
 /** `time` / `project` / `pr` for a grouped list, null for every other view. */
 export function groupOfView(view: TaskView): TaskGroupBy | null {
   return (GROUP_VIEWS as string[]).includes(view) ? (view as TaskGroupBy) : null;
@@ -1605,14 +1603,18 @@ export function groupOfView(view: TaskView): TaskGroupBy | null {
  * The tabs a stored value names — untrusted input (an older build, a hand
  * edit), so every name is checked against TASK_VIEWS, duplicates fold, and an
  * empty or unreadable answer is the default set rather than no tabs at all.
+ * Takes the prefs array (`Prefs.tasks_view_tabs`) or the old localStorage
+ * string (the one-shot import, Scheduled.tsx) alike.
  */
-export function parseViewTabs(raw: string | null | undefined): TaskView[] {
+export function parseViewTabs(raw: unknown): TaskView[] {
   if (!raw) return DEFAULT_VIEW_TABS;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return DEFAULT_VIEW_TABS;
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return DEFAULT_VIEW_TABS;
+    }
   }
   if (!Array.isArray(parsed)) return DEFAULT_VIEW_TABS;
   const out: TaskView[] = [];
@@ -1817,12 +1819,28 @@ export function taskFile(task: Task): string {
  * the embed prefix) for the callers that need an address, e.g. a ⌘-click. */
 export const SHOW_PAGE_DOOR = !IS_QUERY_EMBED;
 
+/** Whether the door lands on the CANVAS PAGE — the exact condition of
+ *  `taskHrefView`'s canvas arm: a canvas task WITH a session. A queued canvas
+ *  task keeps its explorer door (the chat pane draws its waiting words), so
+ *  it must keep the explorer's words too. */
+export function opensCanvas(task: Pick<Task, "canvas" | "session_id">): boolean {
+  return !!task.canvas && !!task.session_id;
+}
+
+/** What the door's words say it opens — the canvas page or the explorer. A
+ *  door reading "Open in Explorer" that lands on the canvas page would read
+ *  as a bug, so every site that prints the door's label asks here. */
+export function pageDoorLabel(task: Pick<Task, "canvas" | "session_id">): string {
+  return opensCanvas(task) ? "Open in Canvas" : "Open in Explorer";
+}
+
 export function taskHref(
   task: Pick<Task, "session_id" | "target" | "project"> & {
     key?: string;
     status?: string;
     entry_origin?: string;
     entry?: string;
+    canvas?: Task["canvas"];
   },
 ): string | null {
   const href = taskHrefView(task);
@@ -1839,6 +1857,7 @@ function taskHrefView(
     status?: string;
     entry_origin?: string;
     entry?: string;
+    canvas?: Task["canvas"];
   },
 ): string | null {
   /**
@@ -1852,6 +1871,23 @@ function taskHrefView(
    * every task made from inside an app already has.
    */
   const where = task.entry || task.target || task.project;
+  /**
+   * THE CANVAS, NOT ITS CLONE (owner, 2026-10-20). A task on a canvas clone
+   * (`~/Fused/canvas/<env>/<name>`) or on one of its nodes used to land on
+   * the clone's listing in the explorer; the thing to see next to that
+   * conversation is the canvas itself, with that node selected and the chat
+   * on this session in the right pane. `canvas` is the server's answer to
+   * "which canvas is this folder" (routers/tasks.py `_task_canvas`), null
+   * for every other row, and the page's query grammar is the canvas app's
+   * own (`canvasPagePath`). Only once there IS a session: a queued row keeps
+   * its explorer door below, where the chat pane draws its waiting words.
+   */
+  if (task.session_id && task.canvas) {
+    return canvasPagePath(task.canvas.env, task.canvas.name, {
+      file: task.canvas.file,
+      sessionId: task.session_id,
+    });
+  }
   if (task.session_id) return explorerUrl(where, task.session_id);
   /**
    * A QUEUED TASK IS NOT A DEAD END ANY MORE (2026-09-12).
@@ -4150,8 +4186,9 @@ export const LANE_SPLIT_LABEL = "queued";
 //
 // So the two states are stored in two different places, on purpose:
 //
-//   * `choices` — the reader's answer for a lane WITH CARDS IN IT. localStorage,
-//     survives reloads, and is what `laneCollapsed` below reads.
+//   * `choices` — the reader's answer for a lane WITH CARDS IN IT.
+//     sessionStorage (this tab, this sitting — forgotten when the window
+//     closes), and is what `laneCollapsed` below reads.
 //   * the peek — a lane opened while empty. Component state in TaskBoard,
 //     survives nothing: not a reload, not a remount, and not the lane filling up
 //     and draining again. `laneRolledUp` is where the two meet.
@@ -4174,23 +4211,25 @@ export const LANE_SPLIT_LABEL = "queued";
 // 2026-08-18) — an Archive with cards in it is a column like the others, and an
 // Archive with none rolls up like the others.
 
-/** The key the board's lane choices live under. Distinct from the array-shaped
- * key an earlier build wrote: that one recorded "collapsed now", defaults
- * included, which cannot be told apart from "the reader chose this". */
-export const LANE_CHOICE_KEY = "fused-render:scheduled-board-lanes";
-
 /** Lane → the reader's own answer to "collapsed?". Absent ⇒ never chosen. */
 export type LaneChoices = Partial<Record<BoardColumn, boolean>>;
 
-/** Same contract as parseListMemory: a stored string is untrusted input, and an
- * unreadable one means "no choices yet", never a thrown render. */
-export function parseLaneChoices(raw: string | null): LaneChoices {
+/** Same contract as parseListMemory: a stored value is untrusted input, and an
+ * unreadable one means "no choices yet", never a thrown render. Takes an
+ * object or a JSON string alike — only a choice per KNOWN lane survives.
+ * Stores choices,
+ * not the board: distinct from the array-shaped key an earlier build wrote,
+ * which recorded "collapsed now", defaults included, and so could not be told
+ * apart from "the reader chose this". */
+export function parseLaneChoices(raw: unknown): LaneChoices {
   if (!raw) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {};
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const row = parsed as Record<string, unknown>;
@@ -5099,10 +5138,6 @@ export function popoverPill(
 // run that broke would be the one place in the app where a hue disagreed with
 // the ring the row wears (design-principles §1).
 
-/** Where the sidebar's dismissal lives. Per COMPLETION, not per task — see
- *  TasksSeen. */
-export const TASKS_SEEN_KEY = "fused-render:tasks-seen";
-
 /**
  * Which completions the reader has already been shown, as `task key ->
  * last_active`.
@@ -5120,9 +5155,12 @@ export const TASKS_SEEN_KEY = "fused-render:tasks-seen";
  */
 export type TasksSeen = Record<string, number>;
 
-/** What came out of localStorage is a string written by SOMEONE ELSE (an older
- *  build, a hand-edited devtools row): anything unreadable degrades to "nothing
- *  dismissed" — one extra dot — rather than throwing inside a render. */
+/** import-only (D1386) — the map lives on the server now (`POST
+ *  /api/tasks/seen`, carried back on the pulse); this reads the OLD
+ *  localStorage row once for tasksPulse's one-shot import. That string was
+ *  written by SOMEONE ELSE (an older build, a hand-edited devtools row):
+ *  anything unreadable degrades to "nothing dismissed" — one extra dot —
+ *  rather than throwing. */
 export function parseTasksSeen(raw: string | null): TasksSeen {
   if (!raw) return {};
   let parsed: unknown;

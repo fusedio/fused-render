@@ -117,6 +117,21 @@ _ended: dict[str, float] = {}
 # pid, and its turn is not over (`is_turn_ended`). `_ended` above is what an
 # UNSCOPED event leaves, and it speaks for every process on the session.
 _ended_by_pid: dict[str, dict[str, float]] = {}
+# session_id -> epoch when the session host last saw the CLI OPEN a turn on
+# its own (`mark_turn_started`, off the host's `turn_started` event): a
+# subagent hand-back or a task notification the CLI picks up with no page send
+# to mark it and — background jobs keeping its registry row `busy` — no
+# rewrite of that row either. The one word that the end above is history and
+# a later turn is on. Scoped exactly like the ended stamps (`_reopened_by_pid`
+# per process a registry file has shown, `_reopened` for the session);
+# `is_turn_ended` weighs the two (T329, 2026-10-20). ONLY EVER A COUNTERWEIGHT
+# TO AN END: it never makes a row the CLI itself calls `idle` read running —
+# the registry has to corroborate (`live_from_registry` still asks for
+# `busy`/`shell`), so a stray row the host misread as a reopen (`_turn_state`
+# has had its false positives) can at worst keep a busy row In Progress until
+# the CLI rewrites it idle, never pin an idle one.
+_reopened: dict[str, float] = {}
+_reopened_by_pid: dict[str, dict[str, float]] = {}
 _primed = False
 _sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
@@ -398,7 +413,12 @@ def is_turn_ended(session_id: str) -> bool:
       REWRITTEN (`_registry_mtime`) strictly after the ended stamp. The SAME
       turn's row, re-read unchanged or re-asserting the same status without a
       fresh write, keeps an mtime from before the stamp and does not clear it
-      — see `mark_turn_ended`.
+      — see `mark_turn_ended`;
+    * the session host's own word that the CLI REOPENED a turn
+      (`mark_turn_started`) strictly after the end that would speak for the
+      row — the turn the CLI wakes itself for (a subagent hand-back, a task
+      notification), which no page marks and no busy-kept row ever rewrites
+      for (T329, 2026-10-20).
 
     ONE SESSION, SEVERAL PROCESSES (`_sess_rows`): the registry check runs over
     every live file on the session, each against the stamps that speak for it
@@ -419,6 +439,15 @@ def is_turn_ended(session_id: str) -> bool:
         def covering(r: dict) -> float:
             return max(ended_at or 0.0, by_pid.get(str(r.get("pid") or ""), 0.0))
 
+        started_at = _reopened.get(session_id, 0.0)
+        started_by_pid = _reopened_by_pid.get(session_id, {})
+
+        def restarted(r: dict) -> bool:
+            # The host saw this process (or, unscoped, the session) open a
+            # turn after the end that speaks for it: that end is history.
+            started = max(started_at, started_by_pid.get(str(r.get("pid") or ""), 0.0))
+            return started > covering(r)
+
         mark = _marks.get(session_id)
         # `>=`, NOT `>`: a mark stamped in the same clock tick as the ended
         # stamp is the NEXT turn's — the queue marks a session running right
@@ -435,9 +464,17 @@ def is_turn_ended(session_id: str) -> bool:
             rows.append((row, _registry_mtime.get(session_id)))
         for r, mtime in rows:
             status = r.get("status")
-            if (isinstance(status, str) and status in RUNNING_STATUSES
-                    and mtime is not None and mtime > covering(r)):
+            running_row = isinstance(status, str) and status in RUNNING_STATUSES
+            # A start only counts on a row the CLI itself calls busy — the
+            # counterweight rule (`_reopened`): a false reopen on an idle
+            # sibling must not cancel the standing process's own end
+            # (CodeRabbit/Bugbot, PR #1780).
+            if running_row and restarted(r):
                 return False
+            if running_row and mtime is not None and mtime > covering(r):
+                return False
+        if not rows and restarted({}):
+            return False   # departed: the collapsed, unscoped stamps decide
     return True
 
 
@@ -867,6 +904,61 @@ def mark_turn_ended(session_id: str, run_id: str = "",
     _bump({session_id})
 
 
+def mark_turn_started(session_id: str, run_id: str = "",
+                      at: float | None = None, pid: int | None = None) -> None:
+    """The session host's word that the CLI just OPENED a turn on its own —
+    `POST /api/tasks/queue/event` (`turn_started`), the host seeing turn rows
+    land after a `result` row on the `out.jsonl` it tails (`_turn_state`).
+
+    THE TURN NOBODY ELSE ANNOUNCES (T329, Akshil, 2026-10-20). A subagent
+    hand-back or a task notification is picked up by the CLI itself, on the
+    same held-open stdin: no page sent it, so there is no `mark_running`, and
+    with background jobs still going the CLI leaves its registry row `busy`
+    — the row never gets the rewrite `is_turn_ended` watches for. So the end
+    the host reported for the previous turn outranked everything for the whole
+    of the next one, and the listing read Done while the chat said Brewing.
+    This is the matching fact: the same scoping as `mark_turn_ended` (a pid a
+    registry file has shown is that process's own, otherwise the session's),
+    the same never-backwards rule, and `is_turn_ended` weighs it against the
+    end that would otherwise speak for the row — a start strictly newer than
+    that end means the turn is open again.
+
+    A COUNTERWEIGHT ONLY. It cancels an end; it never asserts running on its
+    own. `live_from_registry` still needs the row to say `busy`/`shell`, so a
+    row the CLI rewrote `idle` reads idle whatever this says: the host's
+    reopen rule (`_turn_state`, any non-bookkeeping row after a `result`) has
+    misread stray rows before, and a start that could outrank the registry
+    would pin such a session In Progress with nothing left to clear it. With
+    the registry's say-so required, the worst case is a busy row that stays
+    In Progress until the CLI itself writes idle — which it does.
+
+    Fires for every reopen the host sees, a page-sent follow-up included:
+    harmless there, the page's mark and the CLI's busy rewrite already carry
+    that turn, and the next end lands after this by `at`.
+
+    Touches no send mark: a mark is the sending page's own account of a turn
+    it started. `run_id` is accepted for symmetry with `mark_turn_ended` and
+    not stored."""
+    if not session_id:
+        return
+    started_at = time.time() if at is None else float(at)
+    pid_s = "" if pid is None else str(pid)
+    with _cond:
+        known = pid_s in _session_pids.get(session_id, ())
+    if pid_s and not known and session_for_pid(pid_s) == session_id:
+        with _cond:
+            _session_pids.setdefault(session_id, set()).add(pid_s)
+    with _cond:
+        scoped = pid_s in _session_pids.get(session_id, ())
+        stamps = _reopened_by_pid.setdefault(session_id, {}) if scoped else _reopened
+        key = pid_s if scoped else session_id
+        prev = stamps.get(key)
+        if prev is not None and started_at <= prev:
+            return  # older or duplicate delivery: a stamp never moves back
+        stamps[key] = started_at
+    _bump({session_id})
+
+
 def _expire_marks(now: float) -> set[str]:
     """Session ids whose mark has just run out — CHANGED KEYS, because they are.
 
@@ -995,6 +1087,11 @@ def _settle(sid: str) -> dict | None:
         newest = max((_ended_by_pid.pop(sid, None) or {}).values(), default=None)
         if newest is not None:
             _ended[sid] = max(newest, _ended.get(sid, newest))
+        # …and the newest per-pid start the same way, so the two keep their
+        # order for `is_turn_ended`'s row-less read.
+        restart = max((_reopened_by_pid.pop(sid, None) or {}).values(), default=None)
+        if restart is not None:
+            _reopened[sid] = max(restart, _reopened.get(sid, restart))
         _departed[sid] = time.time()
         return None
     _registry[sid] = best[1]
@@ -1499,6 +1596,8 @@ def reset() -> None:
         _registry_mtime.clear()
         _ended.clear()
         _ended_by_pid.clear()
+        _reopened.clear()
+        _reopened_by_pid.clear()
         _marks.clear()
         _mark_turns.clear()
         _mark_busy_seen.clear()

@@ -9,17 +9,26 @@
 // — the wait is a person finishing a browser round trip — and is otherwise idle.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ENV_LABELS,
+  WORKBENCH_ENVS,
   cancelLogin,
   getCanvasesStatus,
   getWhoami,
+  isWorkbenchEnv,
   logout,
   startLogin,
-  switchWorkbenchEnv,
   type CanvasesStatus,
   type WorkbenchEnv,
 } from "@apps/canvases/api";
 import { publishLoggedIn } from "@apps/canvases/logged-in";
-import { cancelHfLogin, getHfAuth, getPrefsShared, hfLogout, startHfLogin, type HfAuth } from "@platform/lib/api";
+import {
+  cancelHfLogin,
+  getHfAuth,
+  hfLogout,
+  putWorkbenchEnv,
+  startHfLogin,
+  type HfAuth,
+} from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
 import { SettingRow, SettingSelect } from "./SettingRow";
@@ -49,6 +58,8 @@ export function FusedAccountControl() {
       // store from a dead one. A 401 is DOWNGRADED to signed-out before
       // anything is shown or published — the Canvases page's verdict — so the
       // row offers Sign in rather than a Log out that would change nothing.
+      // No env: the server answers in the auth env, which is all a
+      // signed-in-as line needs.
       try {
         const who = await getWhoami();
         if (!aliveRef.current) return s;
@@ -198,19 +209,15 @@ export function FusedAccountControl() {
   );
 }
 
-const ENV_LABELS: Record<WorkbenchEnv, string> = { prod: "Production", unstable: "Unstable" };
-
-// Which Fused the canvases, the `fused` wrapper in chats and share uploads
-// target (fusedcli.workbench_env). NOT a plain pref write: the switch goes
-// through POST /api/canvases/env, which stops the canvas sync watchers first
-// (one left running would push a clone into the other environment's
-// same-named canvas). Clones are kept: each environment has its own folder
-// (~/Fused/canvas/<env>), so there is nothing to warn about. Credentials are
-// shared by both environments, so the user stays signed in. Locked, with the
-// reason, while the env var pins it.
+// The DEFAULT Fused environment (fusedcli.workbench_env): where the canvas
+// catalog opens, what `fused` in a chat outside a canvas clone targets, and
+// where share uploads go. A plain PUT /api/prefs: nothing has to stop first,
+// because canvases no longer follow it — each keeps the env it was cloned
+// from (its clone lives under ~/Fused/canvas/<env>), so a prod and an
+// unstable canvas sync side by side whatever this says. Locked, with the
+// reason, while FUSED_RENDER_WORKBENCH_ENV pins it (the server 423s a write).
 export function WorkbenchEnvControl() {
   const [status, setStatus] = useState<CanvasesStatus | null>(null);
-  const [locked, setLocked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -219,11 +226,6 @@ export function WorkbenchEnvControl() {
     void getCanvasesStatus()
       .then((s) => alive && setStatus(s))
       .catch((e) => alive && setError((e as Error).message));
-    // `locked` is a prefs fact, not a canvases one; the status payload only
-    // carries the resolved name.
-    void getPrefsShared()
-      .then((p) => alive && setLocked(p.workbench?.locked === true))
-      .catch(() => undefined);
     return () => {
       alive = false;
     };
@@ -234,9 +236,9 @@ export function WorkbenchEnvControl() {
     setBusy(true);
     setError(null);
     try {
-      const s = await switchWorkbenchEnv(env);
-      setStatus(s);
-      publishLoggedIn(s);
+      await putWorkbenchEnv(env);
+      // Re-read rather than patch: the status is what the server resolved.
+      setStatus(await getCanvasesStatus());
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -245,22 +247,32 @@ export function WorkbenchEnvControl() {
   };
 
   const current = status?.workbench_env ?? "";
-  const known = current === "prod" || current === "unstable";
-  const n = status?.cloned_count ?? 0;
+  // A pin outside the two choices (a hand-set env var) still shows as itself.
+  const known = isWorkbenchEnv(current);
   return (
     <SettingRow
       id="workbench-env"
       status={
         !status ? (
           error ? undefined : "Checking…"
-        ) : locked ? (
-          <>
-            Pinned to <b>{current}</b> by <code>FUSED_RENDER_WORKBENCH_ENV</code>.
-          </>
-        ) : n > 0 ? (
-          `${n} ${n === 1 ? "canvas" : "canvases"} cloned under ${status.canvases_dir}.`
         ) : (
-          `No canvases cloned (${status.canvases_dir}).`
+          <>
+            {status.locked && (
+              <div>
+                Pinned to <b>{current}</b> by <code>FUSED_RENDER_WORKBENCH_ENV</code>.
+              </div>
+            )}
+            {WORKBENCH_ENVS.map((e) => {
+              const info = status.envs?.[e];
+              if (!info) return null;
+              const n = info.cloned_count;
+              return (
+                <div key={e}>
+                  {`${ENV_LABELS[e]}: ${n} ${n === 1 ? "canvas" : "canvases"} cloned under ${info.canvases_dir}`}
+                </div>
+              );
+            })}
+          </>
         )
       }
       control={
@@ -270,11 +282,12 @@ export function WorkbenchEnvControl() {
             value={known ? current : ""}
             options={[
               ...(known ? [] : [{ key: "", label: current }]),
-              { key: "prod", label: ENV_LABELS.prod },
-              { key: "unstable", label: ENV_LABELS.unstable },
+              ...WORKBENCH_ENVS.map((e) => ({ key: e, label: ENV_LABELS[e] })),
             ]}
-            disabled={busy || locked}
-            onChange={(v) => void onPick(v as WorkbenchEnv)}
+            disabled={busy || status.locked}
+            onChange={(v) => {
+              if (isWorkbenchEnv(v)) void onPick(v);
+            }}
           />
         )
       }

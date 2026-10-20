@@ -995,13 +995,13 @@ def test_appenv_canvases_root_matches_the_servers_own(monkeypatch, tmp_path):
 
     # 1. Exported (the production path): all three read the var. The template
     # and the shim see the BASE (`~/Fused/canvas`); the server's own
-    # `canvases_root()` is the current environment's folder under it.
+    # `canvases_root(env)` is each environment's folder under it.
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(tmp_path / "cans"))
     assert appenv.canvases_root() == str(tmp_path / "cans")
     assert canvases_mod.canvases_base() == appenv.canvases_root()
     assert _canvas_push.canvases_base() == appenv.canvases_root()
-    assert canvases_mod.canvases_root() == os.path.join(
-        appenv.canvases_root(), fusedcli.workbench_env())
+    for env in fusedcli.WORKBENCH_ENV_CHOICES:
+        assert canvases_mod.canvases_root(env) == os.path.join(appenv.canvases_root(), env)
 
     # 2. Unexported (a standalone template, or a server whose export regressed):
     # the fallbacks must still land on the same folder. Deliberately with

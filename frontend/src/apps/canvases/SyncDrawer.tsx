@@ -4,7 +4,7 @@
 // whenever no socket log event has arrived lately (socket down, or a server
 // that does not send them).
 import { useEffect, useRef, useState } from "react";
-import { getSyncLog } from "./api";
+import { getSyncLog, type WorkbenchEnv } from "./api";
 import type { PullControl } from "./SyncStrip";
 import { LEG_LABEL, LEG_ORDER, LEG_SHORT, formatClock, type SyncLogEvent } from "./sync-state";
 
@@ -31,6 +31,7 @@ const LOG_POLL_MS = 2000;
 const WS_LOG_FRESH_MS = 5000;
 
 export function SyncDrawer({
+  env,
   name,
   epoch,
   events,
@@ -39,6 +40,7 @@ export function SyncDrawer({
   hardPull,
   onClose,
 }: {
+  env: WorkbenchEnv;
   name: string;
   /** sync/state's `watcher_epoch`: a new watcher's ring counts from 0
    *  again, so the cursor restarts with it (the workspace drops the buffer). */
@@ -75,7 +77,7 @@ export function SyncDrawer({
       if (!force && Date.now() - wsLogAtRef.current < WS_LOG_FRESH_MS) return;
       inFlight = true;
       try {
-        const r = await getSyncLog(name, nextRef.current);
+        const r = await getSyncLog(env, name, nextRef.current);
         if (cancelled) return;
         // A new watcher's ring restarts below where we were: read it whole.
         if (r.next < nextRef.current) {
@@ -99,7 +101,7 @@ export function SyncDrawer({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [name, epoch, wsLogAtRef]);
+  }, [env, name, epoch, wsLogAtRef]);
 
   const cell: React.CSSProperties = { padding: "3px 8px", verticalAlign: "top" };
   return (

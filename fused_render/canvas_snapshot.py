@@ -1,7 +1,7 @@
 """Embedded-workbench canvas snapshots → `canvas.toml` on disk.
 
 The canvas sync's one writer to the server is the clone watcher (canvases.py).
-Under embed v3 the workbench inside /canvases/<name> never saves to the server:
+Under embed v3 the workbench inside /canvases/<env>/<name> never saves to the server:
 on its usual autosave cadence it posts the body it WOULD have saved — minus UDF
 code — over the postMessage bridge, the workspace page relays it to
 `POST /api/canvases/snapshot`, and this module folds it into the clone. The
