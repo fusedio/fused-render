@@ -744,10 +744,16 @@ def _safetensors_params(path: str, quantized_bits: int | None = None) -> tuple[i
     return total, unpacked
 
 
-# Metadata is read once per snapshot directory and remembered: a snapshot's
-# contents are immutable once written (every file in it is a link to a
-# content-addressed blob), so its own mtime is a sufficient key, and a Refresh
-# on a 40-repo cache re-reads nothing.
+# Metadata is read once per snapshot directory and remembered, keyed by
+# `(snapshot mtime, mflux registry stamp)`. A snapshot's contents are immutable
+# once written (every file in it is a link to a content-addressed blob), so its
+# own mtime alone would key everything that is read FROM the snapshot. It is
+# not the whole story: `loaders` also derives from the installed mflux's
+# `AVAILABLE_MODELS` registry (`hub_loadable.mflux_registry_stamp`), which lives
+# outside the snapshot and changes when mflux is installed or upgraded. The
+# second component makes that re-derive the card's loaders without the snapshot
+# being touched, while a Refresh on a 40-repo cache with an unchanged registry
+# still re-reads nothing.
 _META_CACHE: dict[str, tuple[tuple, _RepoMeta]] = {}
 
 
