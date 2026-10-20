@@ -78,6 +78,7 @@ import {
   taskWhen,
   tildePath,
   cardTitleLine,
+  pageDoorLabel,
 } from "./tasks-lib";
 import { MISSING_FOLDER_TOAST, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import {
@@ -819,8 +820,8 @@ function TaskCard({
               // the folder in a tab — the rule every row on this page follows.
               className={"task-card-door" + (peekOn ? " task-card-door--page" : "")}
               href={explorer}
-              data-hint={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
-              aria-label="Open in Explorer"
+              data-hint={`${pageDoorLabel(task)} — ${tildePath(task.target || task.project, home)}`}
+              aria-label={pageDoorLabel(task)}
               onClick={(e) => {
                 if (opensElsewhere(e)) return;
                 e.preventDefault();
@@ -838,7 +839,7 @@ function TaskCard({
               }
               aria-disabled="true"
               data-hint={MISSING_FOLDER_TOAST}
-              aria-label="Open in Explorer — folder deleted"
+              aria-label={`${pageDoorLabel(task)} — folder deleted`}
               onClick={toastMissingFolder}
             >
               {peekOn ? OPEN_DOOR_LABEL : ICON_FOLDER}
@@ -1057,7 +1058,7 @@ function TaskPeek({
               }}
             >
               {ICON_FOLDER}
-              Open in Explorer
+              {pageDoorLabel(task)}
             </a>
           )}
           {gone && (
@@ -1065,12 +1066,12 @@ function TaskPeek({
               type="button"
               className="btn btn-secondary modal-head-act"
               aria-disabled="true"
-              aria-label="Open in Explorer — folder deleted"
+              aria-label={`${pageDoorLabel(task)} — folder deleted`}
               data-hint={MISSING_FOLDER_TOAST}
               onClick={toastMissingFolder}
             >
               {ICON_FOLDER}
-              Open in Explorer
+              {pageDoorLabel(task)}
             </button>
           )}
         </>

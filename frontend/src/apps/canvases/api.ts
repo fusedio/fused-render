@@ -75,6 +75,30 @@ export function canvasNameFromPath(
  *  environment the canvas came from. */
 export const catalogPath = (env: WorkbenchEnv) => `/canvases?env=${env}`;
 
+/** The canvas page, optionally on one NODE with one CHAT open: `?node=` +
+ *  `node_file=` select the node (what CanvasWorkspace's `nodeFromUrl` reads;
+ *  the stem is the UDF name, exactly as its `nodeHopFromUrl` derives it) and
+ *  `session_id` is the conversation the right pane boots on — the node's
+ *  chat when a node is named, the canvas chat otherwise (both read it off
+ *  this page's URL). The Tasks page's door on a canvas task is built here
+ *  (tasks-lib `taskHref`), so the page's own query grammar has one author. */
+export function canvasPagePath(
+  env: WorkbenchEnv,
+  name: string,
+  opts?: { file?: string; sessionId?: string },
+): string {
+  const q = new URLSearchParams();
+  const file = opts?.file || "";
+  if (file) {
+    const dot = file.lastIndexOf(".");
+    q.set("node", dot > 0 ? file.slice(0, dot) : file);
+    q.set("node_file", file);
+  }
+  if (opts?.sessionId) q.set("session_id", opts.sessionId);
+  const search = q.toString();
+  return `/canvases/${env}/${name}` + (search ? "?" + search : "");
+}
+
 const q = (env: WorkbenchEnv, name: string) =>
   `name=${encodeURIComponent(name)}&env=${env}`;
 

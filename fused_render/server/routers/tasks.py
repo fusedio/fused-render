@@ -2856,6 +2856,46 @@ def _workdir(target: str) -> str:
     return target if os.path.isdir(target) else os.path.dirname(target)
 
 
+def _task_canvas(target: str) -> dict | None:
+    """The canvas a task is on — `{env, name, file}` — or None.
+
+    A task whose target is a canvas CLONE (`~/Fused/canvas/<env>/<name>`,
+    canvases.canvases_root) or a NODE in it (a top-level file of the clone,
+    `<udf>.py` / `<widget>.json`) opens on the canvas page, not in the
+    explorer: the shell's door (`tasks-lib.taskHref`) lands on `/canvases/
+    <env>/<name>` with the node selected and the chat on the task's session
+    (owner, 2026-10-20: "it should go to the proper canvas page, with the node
+    selected and the session in focus on the right side"). `file` is "" for
+    the clone itself (the canvas chat) and the node's file name otherwise.
+
+    Anything deeper than one level — a `.sync/` internal, a nested file — is
+    not a node the canvas page can show, so it answers None and keeps the
+    explorer door; the same line the canvas page's own chat hops draw
+    (CanvasWorkspace `nodeHopFromUrl`). Compared through `realpath` as well as
+    the plain path because the CLI wrapper reaches a clone through `pwd -P`,
+    and a task made from inside one may name it either way. No existence
+    check: a task on a deleted clone still names the door that was its own.
+    """
+    target = str(target or "").rstrip("/\\")
+    if not target:
+        return None
+    from fused_render import canvases
+    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
+
+    for env in WORKBENCH_ENV_CHOICES:
+        root = canvases.canvases_root(env)
+        for base in {os.path.normpath(root), os.path.realpath(root)}:
+            for cand in {os.path.normpath(target), os.path.realpath(target)}:
+                if cand == base or not cand.startswith(base + os.sep):
+                    continue
+                rest = cand[len(base) + 1:].split(os.sep)
+                name = rest[0]
+                if not canvases._NAME_RE.match(name) or len(rest) > 2:
+                    continue
+                return {"env": env, "name": name, "file": rest[1] if len(rest) == 2 else ""}
+    return None
+
+
 # `_task_entry`'s memo: folder -> (dir mtime, answer). `_row` runs for every
 # task on every listing poll, and a listdir per app folder per poll adds up on a
 # long list; a folder whose mtime has not moved has not gained or lost a page.
@@ -3880,6 +3920,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The page a folder target opens as — "" unless it is an app
         # (`_task_entry`). The shell's door prefers it over the folder.
         "entry": canonical_fs_path(_task_entry(task["target"])),
+        # The canvas this task is on (`{env, name, file}`), None for every
+        # other row. The shell's door lands on the canvas page, node selected,
+        # chat on this session (`_task_canvas`).
+        "canvas": _task_canvas(task["target"] or task["project"]),
         "session_id": task["session_id"],
         "title": title,
         "title_source": source,

@@ -62,6 +62,7 @@ import {
   turnPhase,
 } from "./schedule-lib";
 import type { BoardColumn, BoardLane, RunStatus } from "./schedule-lib";
+import { canvasPagePath } from "@apps/canvases/api";
 
 // How many messages the LISTING carries per task — the server's window, not a
 // display cap: an expanded task draws every message it has (there is no Show more
@@ -1818,12 +1819,21 @@ export function taskFile(task: Task): string {
  * the embed prefix) for the callers that need an address, e.g. a ⌘-click. */
 export const SHOW_PAGE_DOOR = !IS_QUERY_EMBED;
 
+/** What the door's words say it opens — the canvas page for a task on a
+ *  canvas, the explorer for every other (see `taskHrefView`'s canvas arm). A
+ *  door reading "Open in Explorer" that lands on the canvas page would read
+ *  as a bug, so every site that prints the door's label asks here. */
+export function pageDoorLabel(task: Pick<Task, "canvas">): string {
+  return task.canvas ? "Open in Canvas" : "Open in Explorer";
+}
+
 export function taskHref(
   task: Pick<Task, "session_id" | "target" | "project"> & {
     key?: string;
     status?: string;
     entry_origin?: string;
     entry?: string;
+    canvas?: Task["canvas"];
   },
 ): string | null {
   const href = taskHrefView(task);
@@ -1840,6 +1850,7 @@ function taskHrefView(
     status?: string;
     entry_origin?: string;
     entry?: string;
+    canvas?: Task["canvas"];
   },
 ): string | null {
   /**
@@ -1853,6 +1864,23 @@ function taskHrefView(
    * every task made from inside an app already has.
    */
   const where = task.entry || task.target || task.project;
+  /**
+   * THE CANVAS, NOT ITS CLONE (owner, 2026-10-20). A task on a canvas clone
+   * (`~/Fused/canvas/<env>/<name>`) or on one of its nodes used to land on
+   * the clone's listing in the explorer; the thing to see next to that
+   * conversation is the canvas itself, with that node selected and the chat
+   * on this session in the right pane. `canvas` is the server's answer to
+   * "which canvas is this folder" (routers/tasks.py `_task_canvas`), null
+   * for every other row, and the page's query grammar is the canvas app's
+   * own (`canvasPagePath`). Only once there IS a session: a queued row keeps
+   * its explorer door below, where the chat pane draws its waiting words.
+   */
+  if (task.session_id && task.canvas) {
+    return canvasPagePath(task.canvas.env, task.canvas.name, {
+      file: task.canvas.file,
+      sessionId: task.session_id,
+    });
+  }
   if (task.session_id) return explorerUrl(where, task.session_id);
   /**
    * A QUEUED TASK IS NOT A DEAD END ANY MORE (2026-09-12).
