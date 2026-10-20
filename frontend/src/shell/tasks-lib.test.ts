@@ -11358,6 +11358,34 @@ describe("the optimistic queue claim", () => {
   });
 });
 
+describe("cardTitleLine — summary-only titles (title_mode: summary)", () => {
+  const base = {
+    title: "Fix login\nsecond line",
+    last_message: { text: "newest message" },
+    last_reply: "Fixed it.",
+    status: "done",
+    recap: { text: "haiku recap", for_uuid: "u1" },
+  };
+
+  it("titles by `title` even with a message, a reply and a recap present", () => {
+    expect(cardTitleLine({ ...base, title_mode: "summary" })).toEqual({
+      text: "Fix login", said: false, kind: "title", hint: "Fix login\nsecond line",
+    });
+  });
+
+  it("an empty title falls through to the old rules", () => {
+    expect(cardTitleLine({ ...base, title: "", title_mode: "summary" }).kind).toBe("recap");
+    expect(
+      cardTitleLine({ title: "", last_message: { text: "hi" }, title_mode: "summary" }).kind,
+    ).toBe("said");
+  });
+
+  it("without title_mode the old behaviour is unchanged", () => {
+    expect(cardTitleLine(base).kind).toBe("recap");
+    expect(cardTitleLine({ ...base, recap: undefined }).kind).toBe("said");
+  });
+});
+
 describe("cardTitleLine — task recaps (prefs task_recap.enabled)", () => {
   const base = {
     title: "ai title",

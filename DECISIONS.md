@@ -7145,7 +7145,13 @@ A 6-column table in a bot reply wrapped short cells ("fused-render", "#1641") on
 - **Rejected.** Letting "Never ask" cover read-looking commands (output is untrusted, and a prompt-injected `gh` read can be chained). Seeding `gh api` (it can write). A shared terminal across bots (one bot's cwd and environment would leak to another).
 - **Plain-command allowlist (round 3).** `has_shell_meta` is now an allowlist (`[A-Za-z0-9 _./:,=@%+~'"-]+` must fullmatch) instead of a metacharacter denylist, which missed zsh `=(cmd)`, `!`, `(`/`{` and terminal-editing bytes. Control bytes (< 0x20, DEL) are refused in `terminal_run` and never reach the pty.
 
-## D1385: AI runner engine pins raised: diffusers 0.41, mflux 0.23, mlx-vlm 0.7.9, mlx-audio 0.6, laya-mlx 0.5 (2026-10-20, engine-pin-bumps)
+## D1385: Opt-in "Summary-only task titles" (2026-10-20, task-summary-titles)
+
+- **Problem.** Tasks rows are titled by the newest message (or the recap/reply), so a title changes every turn and says little about what the session is about.
+- **Decision.** Pref `task_summary_titles_enabled` (default off; only a stored `true` is on). On, the listing puts `title_mode: "summary"` on every row (key absent when off, read once per listing) and `cardTitleLine` titles by the server's stable `title` alone (user title, else Claude Code's `ai-title`, else the first message), beating the recap and last-message rules. An empty title falls through to the old rules. Measured: `ai-title` never changed in any of 53 real sessions.
+- **Rejected.** A per-view switch (one rule for List, Board, Cards and peek is the point).
+
+## D1386: AI runner engine pins raised: diffusers 0.41, mflux 0.23, mlx-vlm 0.7.9, mlx-audio 0.6, laya-mlx 0.5 (2026-10-20, engine-pin-bumps)
 
 - **Problem.** The runner manifests were a minor or more behind (diffusers 0.39, mflux 0.19, mlx-vlm 0.6.15, mlx-audio 0.5, laya-mlx 0.2), so every engine sat a minor or more behind its releases. mflux 0.23 ships the FLUX 3 Image Klein configs; the loader-side FLUX 3 support (a `MFLUX_VARIANTS` row and the modular-diffusers dispatch) is a follow-up PR planned in `/Users/iamsdas/Work/fused-render/.claude/handoffs/model-engine-resolution-plan.md`. The ceilings exist so a bump is deliberate with a probe behind it; this is that bump.
 - **Decision.** `diffusers>=0.41,<0.42` on `diffusers_image`, `_cuda`, `_rocm` (lockstep); `mflux>=0.23,<0.24`; `mlx-vlm>=0.7.9,<0.8` on both `mlx_text` and `mlx_embed`; `mlx-audio>=0.6,<0.7`; `laya-mlx>=0.5,<0.6`. Comment prose in each manifest rewritten to the new pin. No new model rows, pipelines or FLUX 3 support (follow-up). **Known gap, left to that follow-up on purpose:** hub admission (`hub_loadable.mflux_loadable_repos`) now lists 34 repos including flux-3-image-klein while `MFLUX_VARIANTS` has no FLUX 3 row, so the Hub advertises a repo the worker refuses at load.

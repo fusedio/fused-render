@@ -4,11 +4,10 @@ import { getConfig, getPrefs, postLauncherSuspend, putAutoDownloadUpdates, putLa
 import { THEME_PRESETS, useThemePref, useThemePreset } from "@platform/lib/theme";
 import { updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/update-status";
 import { isBot } from "@platform/lib/flavor";
-import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { Button } from "@platform/shadcn/ui/button";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { labelId, PrefToggleRow, SettingRow, usePrefWrite, type PrefControlProps } from "./SettingRow";
+import { labelId, PrefToggleRow, SettingRow, usePrefWrite, type PrefControlProps, SettingSelect } from "./SettingRow";
 
 // Appearance is the one control here that is NOT server-backed: it is
 // per-browser-profile localStorage by decision (SPEC §30 AP-1 / D134), so a
@@ -53,17 +52,12 @@ export function ThemeControl() {
     <SettingRow
       id="theme"
       control={
-        <NativeSelect
-          aria-labelledby={labelId("theme")}
+        <SettingSelect
+          id="theme"
           value={preset}
-          onChange={(e) => setPreset(e.target.value as typeof preset)}
-        >
-          {THEME_PRESETS.map((p) => (
-            <NativeSelectOption key={p.id} value={p.id}>
-              {p.label}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
+          options={THEME_PRESETS.map((p) => ({ key: p.id, label: p.label }))}
+          onChange={(v) => setPreset(v as typeof preset)}
+        />
       }
     />
   );
