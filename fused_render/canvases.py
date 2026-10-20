@@ -546,50 +546,63 @@ def api_canvases_env(body: dict = Body(...), x_fused: str | None = Header(defaul
 
 
 def _switch_env(env: str):
-    """Stop the managers, then write the preference: see api_canvases_env."""
-    # Same shape as logout: stop every manager (a push CLI in flight is
-    # terminated so its fold never runs against the other environment), then
-    # release this process's writer locks — they live under the OLD root's
-    # `.sync/`, where another fused-render on the old environment may now
-    # claim them.
+    """Quiesce the managers, then write the preference: see api_canvases_env.
+
+    ORDER IS THE SAFETY HERE. The locks come FIRST, before any manager is
+    touched: a manual pull runs under the manager's `_flight_lock`, a
+    snapshot or rename apply under its `_op_lock` (the order pull takes
+    them), and the watcher takes `_flight_lock` non-blocking for its own
+    legs. Holding both for every manager means no CLI leg of the OLD
+    environment is in flight or can start, and a refusal at this step
+    leaves everything exactly as it was — the managers still running, still
+    owning their writer locks — so no other fused-render can claim a clone
+    a request thread is still writing. Only once every lock is held are
+    the managers stopped and their writer locks released (they live under
+    the OLD root's `.sync/`, where another fused-render on the old
+    environment may now claim them), and the preference written while the
+    locks are still held: a request past `_sync_manager` when `_syncs` was
+    cleared still holds the old manager, whose `env`/`root` are pinned, so
+    even its next leg talks to the Fused it was built for.
+    """
     with _SYNC_LOCK:
         managers = list(_syncs.values())
-        _syncs.clear()
-    for manager in managers:
-        manager.stop_event.set()
-    for manager in managers:
-        try:
-            manager.terminate_push()
-        except Exception:  # noqa: BLE001 — the stop below still runs
-            logger.warning("canvas %s: stopping the push on env switch failed",
-                           manager.name, exc_info=True)
-    for manager in managers:
-        manager.stop()
-    # stop() joins the watcher thread for STOP_JOIN_S at most; a thread still
-    # alive could run a CLI leg after the preference flips. Two request-thread
-    # writers remain even then: a manual pull under the manager's flight
-    # lock, and a snapshot or rename apply under its op lock (the order pull
-    # takes them in). A request already past `_sync_manager` when `_syncs`
-    # was cleared still holds the OLD manager — its `dir` is the old
-    # environment's folder, but `_cli_env` reads `workbench_env()` live, so a
-    # pull that reaches its CLI call after the write would fill the kept
-    # clone from the other Fused. So both locks are taken here and HELD
-    # through the preference write; anything still busy refuses rather than
-    # switches under it (the user retries in a moment).
     held_flight: list[_SyncManager] = []
     held_op: list[_SyncManager] = []
     try:
         for manager in managers:
-            if manager.thread.is_alive():
-                return _busy(f"canvas {manager.name!r} is still syncing; try again in a moment")
             if not manager._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
                 return _busy(f"a sync operation is in flight for {manager.name!r}; try again in a moment")
             held_flight.append(manager)
             if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
                 return _busy(f"a write is in flight for {manager.name!r}; try again in a moment")
             held_op.append(manager)
-        # Each stop() released its own lock; this is the belt for a claim
-        # left open by a manager that was already stopped before the switch.
+        # Quiet: nothing of the old environment can run a leg now. Same
+        # shape as logout from here — unregister, stop (a push CLI cannot be
+        # in flight under the held flight lock; terminate_push is the belt),
+        # release.
+        with _SYNC_LOCK:
+            for manager in managers:
+                if _syncs.get(manager.name) is manager:
+                    del _syncs[manager.name]
+        for manager in managers:
+            manager.stop_event.set()
+        for manager in managers:
+            try:
+                manager.terminate_push()
+            except Exception:  # noqa: BLE001 — the stop below still runs
+                logger.warning("canvas %s: stopping the push on env switch failed",
+                               manager.name, exc_info=True)
+        for manager in managers:
+            manager.stop()
+        # stop() joins for STOP_JOIN_S at most. A thread still alive is
+        # inside a lock-free leg (a manifest probe); it cannot push or pull
+        # (we hold the flight lock) and its env/root are pinned, so refusing
+        # here is caution, not correctness — the user retries in a moment.
+        for manager in managers:
+            if manager.thread.is_alive():
+                return _busy(f"canvas {manager.name!r} is still syncing; try again in a moment")
+        # Each stop() released its own writer lock; this is the belt for a
+        # claim left open by a manager that was already stopped before.
         canvas_sync_state.release_all()
         prefs.write_pref("workbench_env", env)
         # The `fused` wrapper bakes FUSED_ENV in as a default at server
@@ -1429,8 +1442,12 @@ class _SyncManager:
         self.dir = _canvas_dir(name)
         # The environment this clone belongs to — the `<env>` segment of
         # `dir`, pinned here and handed to every CLI run of this manager
-        # (`_cli_env(cli, self.env)`), never re-read from the preference.
+        # (`_cli_env(cli, self.env)`), never re-read from the preference —
+        # and the root it sits under, so the `.sync/` bookkeeping (merge
+        # base, trash, push copy, lock) stays beside THIS clone for the
+        # manager's life even when the preference moves `canvases_root()`.
         self.env = workbench_env()
+        self.root = canvases_root()
         # Observability first: the property setters below (push_state,
         # server_stale) wake the state socket on every change.
         self._log = canvas_sync_state.SyncLog(name, self._bump)
@@ -1513,7 +1530,7 @@ class _SyncManager:
         # in-dir file that isn't in the bundle). None = unknown provenance:
         # merge classification degrades to local-wins until the next sync
         # point rebuilds it.
-        self._base_path = os.path.join(canvases_root(), ".sync", f"{name}.json")
+        self._base_path = os.path.join(self.root, ".sync", f"{name}.json")
         self._base_files: dict[str, str] | None = None
         self._remote: dict | None = None
         # The compact rows of canvas.toml at the sync point (merge_toml's base).
@@ -1885,7 +1902,7 @@ class _SyncManager:
         """A fresh timestamped folder under .sync/trash/<name>/ for the files
         the current pull/merge is about to overwrite or delete; prunes the
         oldest snapshots beyond _TRASH_MAX. None if it can't be created."""
-        root = os.path.join(canvases_root(), ".sync", "trash", self.name)
+        root = os.path.join(self.root, ".sync", "trash", self.name)
         path = os.path.join(root, time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}")
         try:
             os.makedirs(path, exist_ok=True)
@@ -2429,7 +2446,7 @@ class _SyncManager:
         return still_diff
 
     def _push_copy_dir(self) -> str:
-        return os.path.join(canvases_root(), ".sync", "push", self.name)
+        return os.path.join(self.root, ".sync", "push", self.name)
 
     def _freeze_copy(self) -> str:
         """Copy the clone to `.sync/push/<name>/` (fresh each push) for the

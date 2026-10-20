@@ -311,13 +311,15 @@ def test_a_clone_of_the_other_environment_is_refused_locally(root, monkeypatch):
     clone = root.parent / other / "alpha"
     clone.mkdir(parents=True)
     monkeypatch.setenv("FUSED_ENV", env)
-    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
     server = _Server(200, {"ok": True})
     for args in (["workbench", "canvas", "push", str(clone)],
                  ["workbench", "canvas", "push", str(clone), "--canvas", "zeta"]):
-        code, _, err = _intercept(args, monkeypatch, server)
-        assert code == 1
-        assert other in err and env in err
+        # With a server origin, and with NONE (the no-origin fall-through
+        # used to come first): refused either way.
+        for origin in ("http://127.0.0.1:9999", None):
+            code, _, err = _intercept(args, monkeypatch, server, origin=origin)
+            assert code == 1, (args, origin)
+            assert other in err and env in err
     assert server.calls == []
     # No FUSED_ENV at all (a bare shell, no wrapper): the server decides.
     monkeypatch.delenv("FUSED_ENV")

@@ -308,9 +308,6 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     parsed = parse_push(args)
     if parsed is None:
         return None
-    origin = os.environ.get(_ORIGIN_ENV)
-    if not origin:
-        return None  # no server around
     clone = _clone_name(parsed["source_dir"])
     if clone is None:
         return None  # not a canvas clone
@@ -332,6 +329,9 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
             "environment in fused-render's Preferences and push again.\n"
             % (name, env, target_env))
         return 1
+    origin = os.environ.get(_ORIGIN_ENV)
+    if not origin:
+        return None  # no server around
     if parsed["canvas"] is not None and parsed["canvas"] != name:
         # Pushing one clone's contents at a DIFFERENT canvas. The endpoint is
         # keyed on the watcher for this folder, so it cannot express that; the
