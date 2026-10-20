@@ -173,8 +173,12 @@ class Harness:
 
         self.creds = tmp_path / "fused-credentials.json"
         monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", str(self.creds))
-        self.root = tmp_path / "canvases"
-        monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(self.root))
+        # The var is the BASE above every environment's clone folder;
+        # `self.root` is the current environment's (`canvases_root()`).
+        monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(tmp_path / "canvases"))
+        from fused_render import fusedcli
+
+        self.root = tmp_path / "canvases" / fusedcli.workbench_env()
 
         self.log = tmp_path / "stub-log.jsonl"
         monkeypatch.setenv("FUSED_STUB_LOG", str(self.log))

@@ -4,7 +4,7 @@
 // `fused login` provider (distinct from the `fused cloud login` account the
 // Preferences page manages), list the account's canvases as a card gallery
 // (search, create, sign out), and open one — which clones it under
-// ~/.fused-render/canvases/<name> and lands on the workspace page
+// ~/Fused/canvas/<env>/<name> and lands on the workspace page
 // (/canvases/<name>: Claude-editable local files, watch-and-push sync,
 // embedded live workbench). Styling lives in styles/canvases.css.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

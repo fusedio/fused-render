@@ -23,11 +23,14 @@ from fused_render import _canvas_push, fusedcli
 
 @pytest.fixture()
 def root(tmp_path, monkeypatch):
-    """A canvases root with one clone in it."""
+    """The current environment's clone folder (`<base>/<env>`), with one
+    clone in it. FUSED_RENDER_CANVASES_DIR is the BASE above every
+    environment's folder."""
     canvases = tmp_path / "canvases"
-    (canvases / "alpha").mkdir(parents=True)
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
-    return canvases
+    root = canvases / fusedcli.workbench_env()
+    (root / "alpha").mkdir(parents=True)
+    return root
 
 
 # -- the matcher ---------------------------------------------------------------
@@ -120,13 +123,23 @@ def test_everything_else_falls_through(args):
 
 
 def test_the_clone_root_must_be_exactly_one_segment_under_the_root(root):
-    assert _canvas_push._clone_name(str(root / "alpha")) == "alpha"
+    env = fusedcli.workbench_env()
+    assert _canvas_push._clone_name(str(root / "alpha")) == ("alpha", env)
+    # The OTHER environment's clone is a clone too (the server refuses its
+    # push, `other_env`, rather than letting it fall through); an unknown
+    # segment in the environment position is not.
+    other = next(e for e in _canvas_push._ENVS if e != env)
+    (root.parent / other / "beta").mkdir(parents=True)
+    assert _canvas_push._clone_name(str(root.parent / other / "beta")) == ("beta", other)
+    (root.parent / "staging" / "gamma").mkdir(parents=True)
+    assert _canvas_push._clone_name(str(root.parent / "staging" / "gamma")) is None
     # A subdirectory of a clone is a different push (different content), and
     # the canvases root itself is not a canvas.
     (root / "alpha" / "sub").mkdir()
     assert _canvas_push._clone_name(str(root / "alpha" / "sub")) is None
     assert _canvas_push._clone_name(str(root)) is None
     assert _canvas_push._clone_name(str(root.parent / "elsewhere")) is None
+    assert _canvas_push._clone_name(str(root.parent)) is None
 
 
 # -- the request ---------------------------------------------------------------
@@ -444,7 +457,7 @@ def test_the_shim_intercepts_before_dispatching_to_the_real_cli(root, tmp_path):
         env = dict(os.environ)
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env["PYTHONPATH"] = os.pathsep.join([str(stub), repo])
-        env["FUSED_RENDER_CANVASES_DIR"] = str(root)
+        env["FUSED_RENDER_CANVASES_DIR"] = str(root.parent)
         env["FUSED_RENDER_ORIGIN"] = "http://127.0.0.1:%d" % port
 
         done = subprocess.run(
@@ -507,8 +520,11 @@ def test_the_guard_header_constant_matches_the_server(root):
 
 def test_the_canvases_root_rule_matches_canvases_py(root):
     """_canvas_push duplicates the rule to keep FastAPI off the CLI's startup
-    path; this is what keeps the copy honest."""
+    path; this is what keeps the copy honest — the base, and the environment
+    choices that name the folder under it."""
     from fused_render import canvases
 
-    assert _canvas_push.canvases_root() == canvases.canvases_root()
+    assert _canvas_push.canvases_base() == canvases.canvases_base()
+    assert _canvas_push._ENVS == fusedcli.WORKBENCH_ENV_CHOICES
+    assert str(root) == canvases.canvases_root()
     _ = json

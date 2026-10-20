@@ -68,15 +68,19 @@ import os
 # call would both be guesses about the same fact.)
 INTERNAL_ENV = "FUSED_RENDER_CANVAS_PUSH_INTERNAL"
 
-# Mirrors canvases.canvases_root(). Duplicated rather than imported: importing
+# Mirrors canvases.canvases_base(). Duplicated rather than imported: importing
 # canvases here would pull FastAPI into the startup path of every `fused`
 # command. Keep the two in step.
 _CANVASES_DIR_ENV = "FUSED_RENDER_CANVASES_DIR"
-# Under the app home, as canvases_root() does: the server passes
-# FUSED_RENDER_HOME through to anything it spawns, so a `fused` child sees the
-# same root the server resolved.
-_HOME_ENV = "FUSED_RENDER_HOME"
-_DEFAULT_HOME = "~/.fused-render"
+# Under the user's Fused workspace, as canvases_base() does (shell/seed.py
+# `fused_dir`): `~/Fused/canvas`, FUSED_RENDER_DIR overriding the workspace.
+_FUSED_DIR_ENV = "FUSED_RENDER_DIR"
+_DEFAULT_FUSED_DIR = "~/Fused"
+# The environment segment between the base and the clone name
+# (`~/Fused/canvas/<env>/<name>`): fusedcli.WORKBENCH_ENV_CHOICES, duplicated
+# for the same no-heavy-imports reason. Anything else in that position is not
+# a clone of ours.
+_ENVS = ("unstable", "prod")
 
 # The server's own bound origin, published by server/app.py:set_server_origin_env
 # before it serves, so every spawned session inherits it. Absent means "no
@@ -146,28 +150,36 @@ def _skip_global_options(args: list[str]) -> list[str]:
     return args[i:]
 
 
-def canvases_root() -> str:
+def canvases_base() -> str:
+    """`~/Fused/canvas` — the parent of every environment's clone folder."""
     override = os.environ.get(_CANVASES_DIR_ENV)
     if override:
         return override
-    home = os.environ.get(_HOME_ENV) or os.path.expanduser(_DEFAULT_HOME)
-    return os.path.join(home, "canvases")
+    fused_dir = os.path.abspath(os.path.expanduser(
+        os.environ.get(_FUSED_DIR_ENV) or _DEFAULT_FUSED_DIR))
+    return os.path.join(fused_dir, "canvas")
 
 
-def _clone_name(source_dir: str) -> str | None:
-    """The canvas name when `source_dir` IS a clone root, else None.
+def _clone_name(source_dir: str) -> tuple[str, str] | None:
+    """`(name, env)` when `source_dir` IS a clone root, else None.
 
-    A clone lives at exactly ``canvases_root()/<name>``. Requiring that precise
-    shape — one path segment under the root, not merely somewhere beneath it —
-    is what keeps a push of some subdirectory from being rewritten into a push
-    of the whole canvas, which is a different operation with different content.
+    A clone lives at exactly ``canvases_base()/<env>/<name>``. Requiring that
+    precise shape — one segment under a known environment folder, not merely
+    somewhere beneath the base — is what keeps a push of some subdirectory
+    from being rewritten into a push of the whole canvas, which is a different
+    operation with different content. EVERY environment's clones match, not
+    only the server's current one: a clone of the other environment is still
+    a clone, and the server refuses its push (`other_env`) rather than letting
+    it fall through to a raw push under the wrapper's new FUSED_ENV — which
+    would publish one environment's files into the other's same-named canvas.
     """
-    root = os.path.realpath(canvases_root())
+    base = os.path.realpath(canvases_base())
     target = os.path.realpath(source_dir)
-    parent, name = os.path.split(target)
-    if parent != root or not name:
+    env_dir, name = os.path.split(target)
+    parent, env = os.path.split(env_dir)
+    if parent != base or env not in _ENVS or not name:
         return None
-    return name
+    return name, env
 
 
 def parse_push(args: list[str]) -> dict | None:
@@ -230,8 +242,10 @@ def parse_push(args: list[str]) -> dict | None:
 _TIMED_OUT = -1  # sentinel status: connected, but no response within _HTTP_TIMEOUT_S
 
 
-def _post_push(origin: str, name: str) -> tuple[int | None, dict]:
-    """POST the push. `(status, body)`.
+def _post_push(origin: str, name: str, env: str | None = None) -> tuple[int | None, dict]:
+    """POST the push. `(status, body)`. `env` is the clone path's environment
+    segment; the server refuses (409 `other_env`) when it is not the one it
+    currently targets.
 
     status None        -> could not connect at all (server not around) — safe
                            to fall through to the real CLI.
@@ -248,7 +262,7 @@ def _post_push(origin: str, name: str) -> tuple[int | None, dict]:
     import urllib.error
     import urllib.request
 
-    payload = json.dumps({"name": name}).encode("utf-8")
+    payload = json.dumps({"name": name, "env": env} if env else {"name": name}).encode("utf-8")
     request = urllib.request.Request(
         origin.rstrip("/") + "/api/canvases/sync/push",
         data=payload, method="POST",
@@ -297,9 +311,10 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     origin = os.environ.get(_ORIGIN_ENV)
     if not origin:
         return None  # no server around
-    name = _clone_name(parsed["source_dir"])
-    if name is None:
+    clone = _clone_name(parsed["source_dir"])
+    if clone is None:
         return None  # not a canvas clone
+    name, env = clone
     if parsed["canvas"] is not None and parsed["canvas"] != name:
         # Pushing one clone's contents at a DIFFERENT canvas. The endpoint is
         # keyed on the watcher for this folder, so it cannot express that; the
@@ -315,7 +330,7 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
             % (", ".join(parsed["unsupported"]), name))
         return 2
 
-    status, body = _post_push(origin, name)
+    status, body = _post_push(origin, name, env)
     if status is None:
         return None  # server unreachable — the real CLI is the honest fallback
     if status == _TIMED_OUT:
@@ -329,6 +344,20 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
             "manager. Do not retry with a different push command — check the "
             "canvas's sync status in the workspace, and try again once it "
             "settles.\n")
+        return 1
+    if status == 409 and body.get("code") == "other_env":
+        # The clone belongs to the environment fused-render is NOT targeting
+        # right now. Falling through would run the raw push with the wrapper's
+        # FUSED_ENV for the CURRENT environment — this clone's files into the
+        # other Fused's same-named canvas, the clobber the per-environment
+        # folders exist to prevent.
+        err.write(
+            "fused-render: %s\n"
+            "This clone lives under the %s environment's folder, and pushing "
+            "it anywhere else would overwrite a different canvas. Switch the "
+            "Fused environment in Preferences and push again.\n"
+            % (body.get("error") or "the clone belongs to another environment",
+               body.get("env") or env))
         return 1
     if status == 409 and body.get("code") == "no_watcher":
         # No LIVE manager for this folder right now — but the target was

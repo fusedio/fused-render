@@ -216,8 +216,9 @@ def workbench_env() -> str:
     Resolved at CALL time, never cached by a caller: the env var
     (FUSED_RENDER_WORKBENCH_ENV, a process-level pin) wins; else the
     `workbench_env` preference in prefs.json, written only by
-    `POST /api/canvases/env` because a switch has to wipe the cloned canvases
-    first (canvases.py `api_canvases_env`); else DEFAULT_WORKBENCH_ENV.
+    `POST /api/canvases/env` because a switch has to stop the sync managers
+    first (canvases.py `api_canvases_env`; clones live per environment under
+    `~/Fused/canvas/<env>/` and are kept); else DEFAULT_WORKBENCH_ENV.
     Lives here rather than in canvases.py because canvases imports this
     module, not the other way around."""
     pinned = os.environ.get(WORKBENCH_ENV_VAR)

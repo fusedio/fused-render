@@ -723,14 +723,17 @@ def _path_is_inside(root: str, target: str) -> bool:
 
 def _in_canvases_root(target: str) -> bool:
     """Whether `target` is inside the canvas-clones root (`_canvases_root()`,
-    `~/.fused-render/canvases` or the flavor's own home). See `_path_is_inside`
-    for the four-step containment rule and why each step is there."""
+    `~/Fused/canvas` — the base above the per-environment clone folders). See
+    `_path_is_inside` for the four-step containment rule and why each step is
+    there."""
     return _path_is_inside(_canvases_root(), target)
 
 
 # Fused Web (the sandbox/showcase app, not this server) keeps its OWN local
 # canvas clones at `~/Fused/canvas/<name>` — each with its own `canvas.toml` —
-# entirely outside `_canvases_root()`, because those tasks are started through
+# the same base this server's per-environment clone folders sit under since
+# 2026-10-20 (so by default the two roots coincide; they differ only under a
+# FUSED_RENDER_CANVASES_DIR override), because those tasks are started through
 # `fused.tasks.create` rather than a canvas push. Resolved at CALL time
 # (`os.path.expanduser`, not module-import time) so a test can monkeypatch HOME
 # and so a real change of HOME mid-process is honored rather than frozen at
@@ -838,8 +841,8 @@ def _fused_cli_note(backend: str = "") -> str:
         "`fused workbench login` or `fused cloud login` (they wait on a "
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
-        "terminal instead. Inside a canvas folder under ~/.fused-render/"
-        "canvases, fused-render holds its own auto-push while you work and "
+        "terminal instead. Inside a canvas folder under ~/Fused/canvas/, "
+        "fused-render holds its own auto-push while you work and "
         "routes `fused workbench canvas push .` through its sync manager, "
         "which merges concurrent workbench edits first: publish a coherent "
         "change set with that command and read the errors it prints back."

@@ -787,9 +787,9 @@ def _prefs_response() -> dict:
         "github_link": {"enabled": github_link_enabled()},
         # Which Fused environment the canvases, the `fused` wrapper and the
         # share uploads target (fusedcli.workbench_env). READ-ONLY HERE: the
-        # one writer is `POST /api/canvases/env`, which wipes the cloned
-        # canvases first — a clone pulled from one environment and pushed to
-        # the other would create or clobber a canvas of the same name there.
+        # one writer is `POST /api/canvases/env`, which stops the canvas sync
+        # managers first — a watcher left running would push one environment's
+        # clone into the other's same-named canvas.
         # `locked` means FUSED_RENDER_WORKBENCH_ENV pins it for the process.
         "workbench": _workbench_state(),
         # Whether the macOS app opens the shell in native windows rather than
