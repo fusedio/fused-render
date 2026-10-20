@@ -1,8 +1,9 @@
-// The heads-up card: one short note the side check found worth interrupting for.
+// The heads-up note: one short suggestion from the side check.
 //
 // Drawn in the transcript's recap slot (ClaudeChat's `recap` prop), ahead of
-// the recap line. Not a permission card: nothing is blocked on it, so it takes
-// the quiet border rather than the accent ring.
+// the recap line, in the recap's register: an aside with a faint left rule
+// only, no plate and no accent, and its actions as plain text links. Nothing
+// is blocked on it. `warn` stays on the root as a hook but carries no styling.
 import type { HeadsUpNote } from "./useHeadsUp";
 import { MarkdownView } from "./MarkdownView";
 
@@ -17,8 +18,10 @@ export function HeadsUp({ note, onGotIt, onAsk, onDismiss }: HeadsUpProps) {
   if (!note) return null;
   return (
     <div className={"headsup" + (note.tag === "Heads up" ? " warn" : "")} data-headsup="" role="note">
-      <div className="headsup-tag">{note.tag}</div>
-      <div className="headsup-title">{note.title}</div>
+      <div className="headsup-head">
+        <span className="headsup-tag">{note.tag}</span>
+        <span className="headsup-title">{note.title}</span>
+      </div>
       <ul className="headsup-bullets">
         {note.bullets.map((b, i) => (
           <li key={i}>
