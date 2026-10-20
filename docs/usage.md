@@ -12,8 +12,8 @@ cached virtual environment (see [Dependencies](#dependencies)) — with
 `FUSED_RENDER_ENGINE=auto` (use it when `fused` is importable, else the builtin)
 or `=fused` (require it). The base install carries plain `fused`;
 `pip install "fused-render[fused]"` adds its deploy, share and MCP extras
-(`[all]` adds those plus the native desktop integrations; `[cli]` is the
-smaller tier that runs `fused-render serve` without either). Under the
+(`[cli]` includes it and runs `fused-render serve`; `[all]` adds the native
+desktop integrations). Under the
 fused engine a file may also expose a `@fused.udf`-decorated function or assign
 `result = ...` directly instead of defining `main()`.
 

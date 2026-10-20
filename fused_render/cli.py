@@ -168,10 +168,10 @@ def _require_serve_extras() -> None:
     """Exit with the install line when this install lacks what `serve` needs.
 
     `serve` is the file explorer, and its panels stand on `[index]` (search,
-    Repos), `[data]` and `[hf]` (Preferences' Hugging Face login), which is
-    what `[cli]` installs. Booting it on the base install would open a shell
-    that errors in half its tabs, so it refuses up front and says what to
-    install. `[fused]` (deploy/share/MCP) and `[desktop]` are optional.
+    Repos), `[data]`, `[hf]` (Preferences' Hugging Face login) and `[fused]`
+    (deploy/share/MCP), which is what `[cli]` installs. Booting it on the base
+    install would open a shell that errors in half its tabs, so it refuses up
+    front and says what to install. `[desktop]` is optional.
     `fused-render open` is the command the base install is for.
     """
     from fused_render import extras
@@ -182,7 +182,7 @@ def _require_serve_extras() -> None:
             "fused-render serve needs at least `[cli]`; this install is missing "
             f"{', '.join(f'[{m}]' for m in missing)}.\n"
             f"  {extras.install_hint('cli')}\n"
-            "or [all] for deploy/share/MCP and native desktop integrations\n"
+            "or [all] for native desktop integrations\n"
             "The base install runs one app: fused-render open <github-url or path>"
         )
 
@@ -193,12 +193,10 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     optional = extras.optional_missing_for_serve()
     if optional:
-        features = {"fused": "deploy/share/MCP", "desktop": "native desktop integrations"}
-        off = " and ".join(features[m] for m in optional if m in features)
         print(
             f"fused-render: running without {', '.join(f'[{m}]' for m in optional)}"
-            f" — {off} are off "
-            f"({extras.install_hint('all')})",
+            " — native desktop integrations (LAN discovery, screen capture,"
+            f" pasteboard) are off ({extras.install_hint('all')})",
             file=sys.stderr,
         )
     import uvicorn

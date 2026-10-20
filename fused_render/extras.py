@@ -15,10 +15,10 @@ asks whether a group is present:
   that reply.
 * `missing_for_serve()` lists the extras `fused-render serve` needs and this
   install lacks. `serve` is the desktop file explorer, and its panels lean on
-  `[index]`, `[data]` and `[hf]` (what `[cli]` installs), so it refuses to
-  start without `[cli]` rather than boot into a shell that errors in half its
-  tabs. `[fused]` and `[desktop]` are optional: `optional_missing_for_serve()`
-  lists the ones this install lacks.
+  `[index]`, `[data]`, `[hf]` and `[fused]` (what `[cli]` installs), so it
+  refuses to start without `[cli]` rather than boot into a shell that errors in
+  half its tabs. `[desktop]` is optional: `optional_missing_for_serve()` lists
+  it when this install lacks it.
 
 Only import names are listed in `EXTRAS`, one or two per group, enough to tell
 the group was installed. Platform-only members (pyobjc on macOS, dbus-fast on
@@ -40,9 +40,9 @@ EXTRAS: dict[str, tuple[str, ...]] = {
     "fused": ("boto3", "mcp", "anthropic"),
 }
 
-# What `fused-render serve` requires: exactly what `[cli]` installs. `[fused]`
-# and `[desktop]` are optional for serve; their features degrade on their own.
-SERVE_EXTRAS: tuple[str, ...] = ("index", "data", "hf")
+# What `fused-render serve` requires: exactly what `[cli]` installs. `[desktop]`
+# is optional for serve; its features degrade on their own.
+SERVE_EXTRAS: tuple[str, ...] = ("index", "data", "hf", "fused")
 
 
 def _importable(name: str) -> bool:
