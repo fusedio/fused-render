@@ -571,7 +571,7 @@ div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap
 .bots-page .viewsw .satab { font-size: 11.5px; padding: 4px 10px; border-radius: 999px; background: transparent; color: var(--muted); }
 .bots-page .viewsw .satab.on { background: var(--card); color: var(--text); }
 .bots-page .termwrap { position: relative; margin: 0 14px; height: 320px; border-radius: 14px; background: #000; overflow: hidden; box-shadow: 0 1px 0 var(--line); }
-.bots-page .shotwrap.termup { display: none; }
+.bots-page:not(.stage) .shotwrap.termup { display: none; }
 div.bots-page.stage .preview > :is(.viewsw, .termwrap) { display: none; }
 .bots-page .shotwrap img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
 .bots-page .shotwrap .ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--card); text-align: center; padding: 20px; font-size: 12px; }

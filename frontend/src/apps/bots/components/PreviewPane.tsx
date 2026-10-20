@@ -246,13 +246,21 @@ export function PreviewPane() {
       {/* Side app: a built app running in this column instead of the browser view. The strip switches between the two; × unloads the app. */}
       <SideApp />
       {termId ? (
-        <div className="viewsw" id="viewsw">
-          <button className={`satab${showTerm ? "" : " on"}`} id="vswb" onClick={() => setView("browser")}>Browser</button>
-          <button className={`satab${showTerm ? " on" : ""}`} id="vswt" title="The bot's own terminal, live" onClick={() => setView("terminal")}>Terminal</button>
+        <div className="viewsw" id="viewsw" role="tablist" aria-label="Preview" onKeyDown={(e) => {
+          if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+          e.preventDefault();
+          const next = showTerm ? "browser" : "terminal";
+          setView(next);
+          document.getElementById(next === "terminal" ? "vswt" : "vswb")?.focus();
+        }}>
+          <button className={`satab${showTerm ? "" : " on"}`} id="vswb" role="tab" aria-selected={!showTerm} aria-controls="shotwrap"
+            tabIndex={showTerm ? -1 : 0} onClick={() => setView("browser")}>Browser</button>
+          <button className={`satab${showTerm ? " on" : ""}`} id="vswt" role="tab" aria-selected={showTerm} aria-controls="termwrap"
+            tabIndex={showTerm ? 0 : -1} title="The bot's own terminal, live" onClick={() => setView("terminal")}>Terminal</button>
         </div>
       ) : null}
-      {showTerm ? <div className="termwrap" id="termwrap"><TerminalView key={termId} id={termId} /></div> : null}
-      <div className={`shotwrap${asleep ? " asleep" : ""}${showTerm ? " termup" : ""}`} id="shotwrap" onClick={() => openFull()}
+      {showTerm ? <div className="termwrap" id="termwrap" role="tabpanel" aria-labelledby="vswt"><TerminalView key={termId} id={termId} /></div> : null}
+      <div className={`shotwrap${asleep ? " asleep" : ""}${showTerm ? " termup" : ""}`} id="shotwrap" {...(termId ? { role: "tabpanel", "aria-labelledby": "vswb" } : {})} onClick={() => openFull()}
         title={asleep ? "Browser is asleep to save memory. Click to wake it." : "Click to watch this bot's browser"}>
         {/* One shared <img> whose src follows the selected bot's shot URL, so switching bots never leaves the old page up. */}
         <img id="shot" alt="" src={u || undefined} />
