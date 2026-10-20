@@ -290,6 +290,7 @@ function emptyState(file: string | null): ChatState {
     lastRunId: null,
     status: "idle",
     turns: [],
+    fork: null,
     permissions: [],
     appState: [],
     skills: [],
@@ -1035,6 +1036,29 @@ export function createChatController(deps: ControllerDeps): ChatController {
         return pending ? { ...rest, pending } : rest;
       }),
     });
+  };
+
+  /** "Fork from here" — see `ChatController.beginFork`. */
+  const beginFork = (turnKey: string): string | null => {
+    if (disposed || sending || state.status !== "idle" || curBackend() !== "claude") return null;
+    const at = state.turns.findIndex((t) => t.key === turnKey);
+    const turn = state.turns[at];
+    if (at < 0 || !turn || turn.role !== "user" || !turn.uuid || turn.pending) return null;
+    // A second fork while one is parked re-forks from what is still visible;
+    // the newly hidden turns come earlier in the transcript than the ones
+    // already parked, so they go first and cancelFork restores transcript order.
+    const hidden = [...state.turns.slice(at), ...(state.fork?.hidden || [])];
+    const text = turn.text;
+    emit({
+      turns: state.turns.slice(0, at),
+      fork: { uuid: turn.uuid, text, hidden },
+    });
+    return text;
+  };
+
+  const cancelFork = (): void => {
+    if (!state.fork) return;
+    emit({ turns: [...state.turns, ...state.fork.hidden], fork: null });
   };
 
   /** T:13722 `addNote` — the ◍ / ◆ / ⏹ rows. */
@@ -2559,7 +2583,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
     try {
       let runId = "";
       const sessionId = deps.params.get("session_id") || "";
-      if (sessionId) {
+      // A FORK starts a NEW session from the old one's transcript: never a
+      // follow-up into the old live host (which, if any, keeps running).
+      const forkAt = state.fork?.uuid || "";
+      if (sessionId && !forkAt) {
         // A session already live for this file absorbs this message into its own
         // held-open `claude` process (Task 6) instead of `start` spawning a
         // second, parallel one against the same session_id. A brand-new chat has
@@ -2623,6 +2650,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
               ...hintParam,
               message: outgoing,
               session_id: sessionId,
+              ...(forkAt ? { fork_at: forkAt } : {}),
               backend: curBackend(),
               model: curModel(),
               effort: curEffort(),
@@ -2669,7 +2697,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // thrown on to the ordinary hand-back + trouble. `"NotRun"` (the
           // job never left the queue) and every other failure skip the
           // probe — that start provably launched nothing.
-          if (!isTimeout(startErr)) throw startErr;
+          // A fork's `sessionId` is the OLD session, whose live host is not
+          // this turn's run: no probe, the fork stays set for a resend.
+          if (!isTimeout(startErr) || forkAt) throw startErr;
           runId = await liveAfterStartTimeout(sessionId);
           if (!runId) throw startErr;
         }
@@ -2699,6 +2729,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
         }
       }
       started = true;
+      // The fork has been spent: the new session exists. A failed start never
+      // reaches here, so the fork stays set and the hand-back re-offers it.
+      if (forkAt && logGen === gen && state.fork) emit({ fork: null });
       // A run id is in-flight bookkeeping — never a place the reader navigated
       // to — so no `run` write of any kind buys the visit's one history entry
       // (PR-3, T:16673-16678).
@@ -3498,6 +3531,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // flag arrives too late to have prevented it.
       adopting: true,
       turns: [],
+      fork: null,
       // The meter belongs to the conversation that is leaving. Cleared with the
       // turns rather than left to the fetch, so the window between the two does
       // not show the last chat's fill under an empty log.
@@ -4526,6 +4560,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
     postOptimisticUser,
     dropOptimisticUser,
     setOptimisticPending,
+    beginFork,
+    cancelFork,
     stopRun,
     decidePermission,
     answerQuestion,
