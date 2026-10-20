@@ -33,10 +33,16 @@ would un-see it.
 message's id is minted per window and not stable across a reload, so its
 seen state is per-window by design and lives in that window's memory only.
 """
+import contextlib
 import math
 import os
 import threading
 import time
+
+try:  # POSIX only; the lock below is advisory and degrades to the thread lock
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
 
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
@@ -56,6 +62,29 @@ _MAPS = ("repoDismissed", "attentionDismissed")
 # would otherwise each merge into the record they read and the slower write
 # would drop the faster one's keys — the exact loss the merge exists to stop.
 _LOCK = threading.Lock()
+
+
+@contextlib.contextmanager
+def _file_lock():
+    """ONE WRITER ACROSS PROCESSES. `_LOCK` serialises this process's threads,
+    but several servers can mount this router on one branch (the desktop
+    server and a lean `open` server share the same home dir), and a merge is a
+    read-modify-write: two processes interleaving would each write the record
+    it read and the slower one erases the faster one's marks. An advisory
+    `flock` on a sidecar file (same directory as the store, so `os.replace`
+    semantics are untouched) holds from the read to the write. Absent `fcntl`
+    the thread lock is all there is — the posture every other shell store has."""
+    if fcntl is None:
+        yield
+        return
+    lock_path = _path() + ".lock"
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "a+") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -154,7 +183,7 @@ def merge(patch, now_ms: float | None = None) -> dict:
     record as written. Raises `_Invalid` (a ValueError) on a bad patch."""
     clean = _validate(patch)
     now_ms = time.time() * 1000 if now_ms is None else now_ms
-    with _LOCK:
+    with _LOCK, _file_lock():
         state = read_state()
         if "seen" in clean:
             state["seen"] = list(dict.fromkeys([*state["seen"], *clean["seen"]]))

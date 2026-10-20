@@ -50,14 +50,16 @@ function hydrateAcks() {
   if (typeof window === "undefined") return;
   // One-shot import: each leftover slug is posted through the normal write
   // path, counts at once (no re-ask while the POSTs travel), and the key goes
-  // once every POST settled — a slug the server refuses would refuse forever.
+  // only once every POST LANDED — a failed one (server down, 5xx) keeps the
+  // key so the next load posts again rather than asking about that app twice.
   try {
     const raw = localStorage.getItem(ACK_KEY);
     if (raw !== null) {
       const arr = JSON.parse(raw) as unknown;
       const slugs = Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string" && !!x) : [];
       for (const s of slugs) acks.add(s);
-      void Promise.allSettled(slugs.map((s) => ackMarketplacePython(s))).then(() => {
+      void Promise.allSettled(slugs.map((s) => ackMarketplacePython(s))).then((rs) => {
+        if (!rs.every((r) => r.status === "fulfilled")) return;
         try { localStorage.removeItem(ACK_KEY); } catch { /* no storage */ }
       });
     }

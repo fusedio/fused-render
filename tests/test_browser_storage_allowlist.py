@@ -172,4 +172,16 @@ def test_the_functional_keys_are_gone_from_the_shell():
             problems.append(f"{key!r} named in {naming} but never removed (not an import)")
         if len(naming) > 2:
             problems.append(f"{key!r} named in {len(naming)} files: {naming}")
+        # ...and nobody WRITES it: an import reads and removes. A `setItem` of
+        # the literal, or of a constant that holds it, is the key coming back
+        # as a browser-held fact — the thing this test exists to refuse.
+        consts = set()
+        for rel in naming:
+            consts.update(re.findall(r"const (\w+)\s*=\s*[\"']" + re.escape(key) + r"[\"']",
+                                     _code_only(by_rel[rel])))
+        alts = [r"[\"']" + re.escape(key) + r"[\"']"] + [r"\b" + c + r"\b" for c in consts]
+        writer = re.compile(r"setItem\(\s*(?:" + "|".join(alts) + ")")
+        for rel, src in sources:
+            if writer.search(_code_only(src)):
+                problems.append(f"{rel}: writes {key!r} (setItem) — a moved key may only be read and removed")
     assert problems == [], problems
