@@ -743,19 +743,22 @@ export function spaLinkProps(
   };
 }
 
-export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
+export function navigateUrl(url: string, opts?: { isDir?: boolean; replace?: boolean }): void {
   // Like navigate(), but preserves the full url (incl. query string) — used
   // when opening a bookmark, whose url carries saved view params. Callers
   // that know the target's kind (e.g. Home's post-create hop into the app
   // folder's chat) pass the same isDir nav hint navigate() takes, so the
   // destination paints the right scaffold instead of the file one.
+  // `replace` swaps the current history entry instead of adding one (in-page
+  // tab switches, where Back should leave the page); the nav event still fires.
   const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
   // Stored urls (bookmarks, recents) may predate the
   // /explorer prefix rename; an in-app push skips the module-init rewrite, so
   // map here or the dispatcher won't recognize the path.
   const href = rewriteLegacyUrl(url);
   guarded(() => {
-    pushHistory(state, href);
+    if (opts?.replace) history.replaceState(state, "", href);
+    else pushHistory(state, href);
     notifyNavigate();
   });
 }
