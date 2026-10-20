@@ -33,6 +33,7 @@ import {
   type CurrentAppEntry,
 } from "@platform/lib/api";
 import { setSidebarSectionOpen, useSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
+import SectionFold from "@platform/ui/sidebar/SectionFold";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -988,7 +989,8 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             #1303. Projects only: a canvas reaches the desk by being opened
             (the catalog's door) or by a task under its clone, not from here
             (owner, 2026-10-20: "remove open canvas option from sidebar"). */}
-        {!collapsed && !canvases && (
+        <SectionFold open={!collapsed}>
+        {!canvases && (
           <div
             className="bookmark-row current-app-row current-app-new"
             role="button"
@@ -1011,7 +1013,7 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
         {/* The Canvases half's door: "+ Canvas" opens the catalog (/canvases),
             where create and clone live — the one way in now that the
             primary nav has no Canvases row (owner, 2026-10-20). */}
-        {!collapsed && canvases && (
+        {canvases && (
           <div
             className="bookmark-row current-app-row current-app-new"
             role="button"
@@ -1031,7 +1033,8 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             <span className="bookmark-name">Canvas</span>
           </div>
         )}
-        {!collapsed && apps.map(render)}
+        {apps.map(render)}
+        </SectionFold>
       </div>
       {menu && (
         <ContextMenu

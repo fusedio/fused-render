@@ -836,7 +836,45 @@ button.sidebar-prefs-trigger {
 .sidebar-bookmarks > .sidebar-section-body {
   display: flex;
   flex-direction: column;
+}
+
+/* The fold (platform/ui/sidebar/SectionFold): a one-row grid whose row goes
+   1fr ↔ 0fr, so the rows' height animates with nothing measured. The inner box
+   must be allowed to shrink (min-height: 0) and must clip (overflow: hidden) or
+   the rows would paint past a 0fr row. Rows stay mounted while folded (inert).
+   The section's max-height follows via useSectionContentCap's ResizeObserver on
+   the body, so the sibling sections take the room frame by frame. Bookmarks'
+   1px row rhythm lives on the inner box (it used to be the body's gap: a gap
+   between the head and a 0fr fold would be a stray 1px under a folded heading)
+   and its pinned block folds the same way inside the sticky head. */
+.sidebar-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 180ms ease;
+}
+.sidebar-fold.collapsed {
+  grid-template-rows: 0fr;
+}
+.sidebar-fold-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.sidebar-bookmarks .sidebar-fold-inner {
+  display: flex;
+  flex-direction: column;
   gap: 1px;
+}
+/* The tree's fold only (the pinned block's, inside the head, keeps its own
+   1px margin): the 1px the body's gap used to put between head and tree. A
+   margin on the first row, not padding on the inner box — padding survives
+   the 0fr row (a folded Favourites stood 1px taller than its heading). */
+.sidebar-bookmarks > .sidebar-section-body > .sidebar-fold > .sidebar-fold-inner > :first-child {
+  margin-top: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-fold {
+    transition: none;
+  }
 }
 
 /* Each section is its own scroll container, so the heading must pin itself or

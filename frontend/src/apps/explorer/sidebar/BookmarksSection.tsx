@@ -49,6 +49,7 @@ import {
 } from "@platform/lib/hooks";
 import { splitShellSearch } from "@platform/lib/layout-codec";
 import { setSidebarSectionOpen, useSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
+import SectionFold from "@platform/ui/sidebar/SectionFold";
 
 // The fs path a bookmark targets, decoded from its explorer url (same rule as
 // the hover card). Used for the tooltip. The bare legacy
@@ -1022,16 +1023,19 @@ export default function BookmarksSection() {
               <span className="sidebar-count-chip recents-count">{countBookmarks(items)}</span>
             )}
           </div>
-          {!sectionCollapsed && pins.length > 0 && (
-            <div className="sidebar-pinned">{pins.map(renderPinned)}</div>
+          {pins.length > 0 && (
+            <SectionFold open={!sectionCollapsed}>
+              <div className="sidebar-pinned">{pins.map(renderPinned)}</div>
+            </SectionFold>
           )}
         </div>
-        {!sectionCollapsed &&
-          (items.length === 0 ? (
+        <SectionFold open={!sectionCollapsed}>
+          {items.length === 0 ? (
             <div className="sidebar-empty">No favourites yet</div>
           ) : (
             renderItems(treeItems, null)
-          ))}
+          )}
+        </SectionFold>
       </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>
         {hover && <TooltipContent bookmark={hover.bookmark} missing={isBookmarkMissing(hover.bookmark.id)} />}
