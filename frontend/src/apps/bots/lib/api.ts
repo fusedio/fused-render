@@ -13,8 +13,9 @@ export type Effort = "low" | "medium" | "high" | "xhigh";
 export interface Offer { kind: "use" | "build"; name: string; dir: string; spec: string }
 export interface AppRef { name: string; dir: string; params?: Record<string, string> | string; tools?: unknown }
 export interface ReplyRef { seq: number; role: Role; text: string }
-/** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it. */
-export interface AllowRule { kind: "browser" | "tool" | "py" | "builtin" | "text" | "upload" | "build" | (string & {}); key: string; label: string }
+/** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it.
+ *  `source` is set when a preset pre-approved it rather than a card. */
+export interface AllowRule { kind: "browser" | "tool" | "py" | "builtin" | "text" | "upload" | "build" | (string & {}); key: string; label: string; source?: string }
 
 /** A channel address (docs §10): "imessage" + the sender's handle, "routine", "botsend", "handoff" + the Super Bot's id
  *  (a task Super Bot delegated, docs §11); the web is never stamped. */

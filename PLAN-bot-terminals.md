@@ -163,3 +163,4 @@ Deviations from the plan, and why:
 - Task 5: the Terminal row in Bot settings is a On/Off select (like its neighbours), and the pane switch lives in PreviewPane with local state. Stage (full live view) and side-app modes hide the switch and terminal. Not browser-verified by the builder.
 - Task 6: the preset test lives in `tests/test_bots_presets.py` (it owns the `bot` fixture) rather than `test_bots_terminal.py`. Preset `terminal_allow` is read by `presets.presets()` and hidden from `GET /api/bots/presets`. The GitHub instructions were rewritten tighter to stay under the 700-char preset rule.
 - DECISIONS.md entry is D1384 (origin/main's last was D1383 when written; renumber if main has moved).
+- Fix: an allow rule may carry `source` (preset display name); it marks preset-seeded rows in Approved forever, and card-approved rules have none.

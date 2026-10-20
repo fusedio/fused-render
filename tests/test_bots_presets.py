@@ -255,6 +255,18 @@ def test_github_preset_seeds_read_only_terminal_rules_and_never_turns_terminal_o
     assert not bot.meta.get("terminal")                    # the user turns the bot's Terminal on, never a preset
     assert "terminal_run" in bot.meta["instructions"]
     assert store.read_meta(bot.id)["allow_rules"] == rules
+    assert all(r["source"] == "GitHub" and "`" not in r["label"] for r in rules)
+
+
+def test_clean_allow_rules_keeps_source_only_when_given():
+    from fused_render.bots import tools
+    out = tools.clean_allow_rules([
+        {"kind": "terminal", "key": "gh pr view", "label": "x", "source": "S" * 50},
+        {"kind": "terminal", "key": "gh pr list", "label": "y"},
+        {"kind": "terminal", "key": "gh run view", "label": "z", "source": ""},
+    ])
+    assert out[0]["source"] == "S" * 40
+    assert "source" not in out[1] and "source" not in out[2]
 
 
 def test_presets_without_terminal_allow_seed_no_rules(bot):

@@ -494,7 +494,7 @@ def forever_rule(bot, act: str, d: dict, obs: dict):
         key = terminal_key(d.get("command"))
         if len(key.split()) < 2:
             return None  # a lone executable would cover every command it runs
-        return {"kind": "terminal", "key": key, "label": f"runs `{key} …` in its terminal"} if key else None
+        return {"kind": "terminal", "key": key, "label": f"runs {key} … in its terminal"} if key else None
     return None
 
 
@@ -559,7 +559,10 @@ def clean_allow_rules(v) -> list:
         if kind not in FOREVER_KINDS or not key or (kind, key) in seen:
             continue
         seen.add((kind, key))
-        out.append({"kind": kind, "key": key, "label": str(r.get("label") or "")[:120]})
+        rule = {"kind": kind, "key": key, "label": str(r.get("label") or "")[:120]}
+        if isinstance(r.get("source"), str) and r["source"]:
+            rule["source"] = r["source"][:40]  # set when a preset pre-approved it, not a card
+        out.append(rule)
     return out
 
 

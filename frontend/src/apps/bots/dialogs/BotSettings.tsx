@@ -264,11 +264,12 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                   </Row>
                 ) : null}
                 {allowRules.length ? (
-                  <Row title="Approved forever" text="Answers you gave with “Approve, don't ask again” on a card. Remove one and the bot asks again next time." stack>
+                  <Row title="Approved forever" text="Calls this bot makes without asking: ones you approved with “Approve, don't ask again” on a card, and ones its preset pre-approved. Remove one and the bot asks again next time." stack>
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmforever">
                       {allowRules.map((r) => (
                         <div key={`${r.kind}:${r.key}`} className="flex items-center gap-2.5 px-3 py-1.5 text-sm">
                           <span className="min-w-0 flex-1 truncate">{r.label || r.key}</span>
+                          {r.source ? <span className="shrink-0 text-xs text-muted-foreground">{`from the ${r.source} preset`}</span> : null}
                           <Button variant="ghost" size="icon-xs" aria-label="Ask again" title="Ask again" className="text-muted-foreground hover:text-destructive"
                             onClick={() => setAllowRules((cur) => cur.filter((x) => !(x.kind === r.kind && x.key === r.key)))}><Trash2Icon /></Button>
                         </div>

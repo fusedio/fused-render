@@ -90,7 +90,7 @@ def apply_preset(b, key, apps_root=None):
         b.meta["instructions"] = p["instructions"].strip()
     if p["terminal_allow"]:
         from fused_render.bots import tools
-        rules = [{"kind": "terminal", "key": k, "label": f"runs `{k} …` in its terminal"} for k in p["terminal_allow"]]
+        rules = [{"kind": "terminal", "key": k, "label": f"runs {k} … in its terminal", "source": p["name"]} for k in p["terminal_allow"]]
         b.meta["allow_rules"] = tools.clean_allow_rules(list(b.meta.get("allow_rules") or []) + rules)
     b.save()
     if p["apps"]:
