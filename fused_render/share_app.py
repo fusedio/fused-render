@@ -42,7 +42,7 @@ from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 
 from fused_render import app_id as app_identity
-from fused_render import app_listing, appfile, extras
+from fused_render import app_listing, appfile
 from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
 
 logger = logging.getLogger(__name__)
@@ -192,9 +192,6 @@ def _record_for(aid: str | None) -> dict | None:
 
 
 def _shim_command() -> tuple[list[str] | None, JSONResponse | None]:
-    if not extras.available("fused"):
-        # The standard 503 `missing_extra` reply, same as `requires_extra`.
-        return None, JSONResponse(extras.payload("fused", "Sharing to Fused"), status_code=503)
     cli = fused_cli()
     if cli is None:
         return None, _error(

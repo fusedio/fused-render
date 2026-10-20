@@ -33,11 +33,3 @@ def test_other_origins_get_no_cors_header():
         r = _get(origin)
         assert r.status_code == 200 and "boot_id" in r.json()
         assert "access-control-allow-origin" not in r.headers
-
-
-def test_health_reports_which_extras_are_installed():
-    from fused_render import extras
-
-    body = _get().json()
-    assert set(body["extras"]) == set(extras.EXTRAS)
-    assert all(isinstance(v, bool) for v in body["extras"].values())

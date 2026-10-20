@@ -25,7 +25,7 @@ from fastapi import APIRouter, Body, Header, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
-from fused_render import extras, health
+from fused_render import health
 from fused_render.server.common import _error, _require_fused
 
 logger = logging.getLogger(__name__)
@@ -74,13 +74,7 @@ async def api_health(request: Request):
     ):
         headers["Access-Control-Allow-Origin"] = origin
         headers["Vary"] = "Origin"
-    # `extras`: which optional groups this install has (find_spec only, cached,
-    # no import), so the shell can tell a `[cli]` install from `[all]`.
-    body = {
-        **health.snapshot(),
-        "extras": {name: extras.available(name) for name in extras.EXTRAS},
-    }
-    return JSONResponse(body, headers=headers)
+    return JSONResponse(health.snapshot(), headers=headers)
 
 
 @router.post("/api/health/outage")

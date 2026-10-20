@@ -336,8 +336,6 @@ export interface ServerHealth {
   started_at: number;
   uptime_s: number;
   version: string;
-  /** Which optional install groups this server has (`index`, `fused`, ...). */
-  extras?: Record<string, boolean>;
 }
 
 export function fetchServerHealth(): Promise<ServerHealth> {
