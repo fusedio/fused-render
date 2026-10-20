@@ -45,11 +45,10 @@
 // (scripts/check-boundaries.mjs); the shell may import anything, so the page
 // sits here and frames the sub-app's workspace.
 //
-// Chrome: the app page's header and tab-strip classes (`.app-page-head`,
-// `.app-page-tabbar`, their fit hooks) as they are; the BODY is this page's
-// own `.canvas-page-body` — full width, no 1050px column (the canvas wants
-// the room; `.app-page-body`'s frame is not touched). Inside it the Tasks
-// panel keeps the Tasks page's own column (schedule.css).
+// Chrome: the app page's header, tab strip and body classes (`.app-page-head`,
+// `.app-page-tabbar`, `.app-page-body`, their fit hooks) as they are — the
+// same 1050px column and gutters on every tab as the app page (owner,
+// 2026-10-20: "the exact same gutters"). Only the panels are this page's.
 import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import {
   AppWindow,
@@ -343,7 +342,10 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
           )}
         </div>
       </header>
-      <div className="canvas-page-body">
+      {/* THE APP PAGE'S BODY, as is (`.app-page-body`, app-page.css): the same
+          1050px column and gutters on every tab as the app page has (owner,
+          2026-10-20: "the exact same gutters on canvas project view"). */}
+      <div className="app-page-body canvas-page-body">
         <div className="app-page-tabbar flex-none" ref={tabbarRef} data-fit={tabbarFit}>
           {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
               ctrl/middle-click on a trigger opens the address elsewhere without

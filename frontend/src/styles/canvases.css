@@ -244,14 +244,9 @@
 }
 
 /* ---- The canvas project page (/canvases-project/<env>/<name>, CanvasPage.tsx) */
-/* The app page's header and tab strip (app-page.css) over a BODY of its own:
-   full width, no 1050px column — the canvas wants the room. `.app-page-body`
-   is not reused on purpose (its frame is fixed, by the owner). */
-/* The header takes the body's width, not the app page's 1050px column —
-   scoped to THIS page, so .app-page-head's own rule stands. */
-.canvas-page > .app-page-head {
-  width: calc(100% - 48px);
-}
+/* The app page's header, tab strip AND body (app-page.css) as they are: the
+   same 1050px column and gutters on every tab as the app page (owner,
+   2026-10-20). Only the panels below are this page's. */
 .canvas-page-icon {
   cursor: default;
   color: var(--fg-muted);
@@ -264,19 +259,6 @@
 }
 .canvas-page-env {
   font-weight: 400;
-}
-.canvas-page-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  width: calc(100% - 48px);
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 16px 0 16px;
-}
-.canvas-page-body > .error-banner {
-  flex: none;
 }
 /* Panels are stacked in one grid cell so a HIDDEN one keeps its box: the
    Overview's workbench frame (React Flow + deck.gl) must not see a resize to
