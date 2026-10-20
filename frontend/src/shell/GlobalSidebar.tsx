@@ -494,10 +494,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // through a different door, not a second destination (apps/bots/routes.ts).
   const botsActive = isBotsPath(pathname);
   const tasksActive = pathname === "/tasks";
-  // Exact, for the reason Home is: /canvases/<env>/<name> is a workspace you opened,
-  // not the list page, and lighting the row while you are inside a canvas reads
-  // as two selections.
-  const canvasesActive = pathname === "/canvases";
   // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
   // through a different tab, not a second destination, so every one of the five
   // lights the row. (The bare prefix is redirected to the default tab before
@@ -715,7 +711,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the feature off it is in NEITHER, so a deep link to /canvases lights
   // nothing here — the entry is not in the list to be matched.
   const prefsActive = menuEntries.some(
-    (e) => e !== "separator" && e.href === pathname && !(canvasesInNav && e.href === "/canvases")
+    (e) => e !== "separator" && e.href === pathname
   );
 
   // Owned here, not inside either trigger, because the popover must stay
@@ -813,19 +809,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       active: tasksActive,
       badge: tasksDot,
     },
-    // Same gate and same order as the expanded row below — a row that exists
-    // only until you collapse the sidebar is a destination people lose.
-    ...(canvasesInNav
-      ? [
-          {
-            key: "canvases",
-            label: "Canvases",
-            icon: CANVASES_ICON,
-            href: "/canvases",
-            active: canvasesActive,
-          },
-        ]
-      : []),
+    // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
+    // the canvases, and its "+ Canvas" row is the door to the catalog.
     ...(bot
       ? []
       : [
@@ -927,15 +912,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             extra={tasksDot}
             trailing={tasksTrailing}
           />
-          {canvasesInNav && (
-            <NavItem
-              href="/canvases"
-              id="canvases-link"
-              label="Canvases"
-              icon={CANVASES_ICON}
-              active={canvasesActive}
-            />
-          )}
+          {/* No Canvases row (owner, 2026-10-20): the Canvases section below
+              is the listing, its "+ Canvas" row the way to the catalog. */}
           {!bot && (
             <NavItem
               href={AI_MODELS_HOME}
@@ -966,6 +944,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             in a "+ New app" row. Neither under Fused Bot: a bot's apps are
             listed by the bot, and there is no file tree to bookmark into. */}
         {!bot && <CurrentAppsSection />}
+        {/* Canvases (2026-10-20): the clones on this machine, under Projects,
+            behind the primary row's own gate — the feature on AND an account
+            behind it (a clone with no login has no page that works). */}
+        {canvasesInNav && <CurrentAppsSection section="canvases" />}
         {!bot && <BookmarksSection />}
         <div className="sidebar-section sidebar-settings">
           <UpdateCard />

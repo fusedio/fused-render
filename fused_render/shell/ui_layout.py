@@ -91,7 +91,7 @@ def _clean(doc) -> dict:
         _check(_is_int(sb.get("width")) and SIDEBAR_MIN_W <= sb["width"] <= SIDEBAR_MAX_W)
         _check(isinstance(sb.get("collapsed"), bool))
         out["sidebar"] = {"width": sb["width"], "collapsed": sb["collapsed"]}
-    for key in ("bookmarksCollapsed", "currentAppsCollapsed"):
+    for key in ("bookmarksCollapsed", "currentAppsCollapsed", "canvasesCollapsed"):
         if key in doc:
             _check(isinstance(doc[key], bool))
             out[key] = doc[key]

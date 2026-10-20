@@ -107,6 +107,14 @@ def shell_canvas_workspace(name: str, env: str = "", shell_path: str = Depends(g
     return FileResponse(shell_path)
 
 
+# The canvas PROJECT page, `/canvases-project/<env>/<name>?_tab=` (frontend
+# shell/CanvasPage.tsx, canvasProjectFromPath): the tabbed, read-only view of
+# one canvas, a separate route from the editor above (owner, 2026-10-20).
+@router.get("/canvases-project/{env}/{name}")
+def shell_canvas_project(env: str, name: str, shell_path: str = Depends(get_shell_path)):
+    return FileResponse(shell_path)
+
+
 # The app page (D488, redesigned 2026-08-26): `/apps/<folder path>?_tab=<tab>`
 # is ONE app folder — anywhere the Current apps desk can name (a workspace
 # folder, a linked app elsewhere on disk) — with the app running in an

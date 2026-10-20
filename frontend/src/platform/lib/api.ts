@@ -1920,6 +1920,8 @@ export interface UiLayoutDoc {
   sidebar?: { width: number; collapsed: boolean };
   bookmarksCollapsed?: boolean;
   currentAppsCollapsed?: boolean;
+  /** The sidebar's Canvases section fold (the desk's canvas half). */
+  canvasesCollapsed?: boolean;
   explorerSide?: { hidden?: boolean; width?: number | null; maximized?: boolean };
   /** canonical fs path → "?sort=..&order=.." (platform/lib/viewstate.ts). */
   viewState?: Record<string, string>;
@@ -3262,6 +3264,10 @@ export interface CurrentAppEntry {
    *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
    *  and by nothing done to the tasks. */
   unread?: boolean;
+  /** This row is a canvas CLONE (`~/Fused/canvas/<env>/<name>`): the sidebar
+   *  lists it in its Canvases section, not Projects, and the row opens the
+   *  canvas's project page. Null / absent for an app folder. */
+  canvas?: { env: string; name: string } | null;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
