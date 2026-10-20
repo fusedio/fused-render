@@ -18,7 +18,7 @@ let latest: ReturnType<typeof useRemoteControl>;
 let root: ReactTestRenderer;
 
 function Probe() {
-  latest = useRemoteControl("s1", "/tmp/chat.jsonl");
+  latest = useRemoteControl("s1", "/tmp/chat.jsonl", () => {});
   return null;
 }
 

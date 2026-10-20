@@ -47,8 +47,21 @@ function viewOf(r: Reply): RemoteControlView | null {
   return { state: "off" };
 }
 
-export function useRemoteControl(sessionId: string, file: string) {
+function announce(url: string) {
+  notify({
+    title: "Remote Control is on",
+    detail: "This chat is live at claude.ai/code and in the Claude app. Messages you type here go to the same session.",
+    tone: "info",
+    action: { label: "Open on claude.ai", onClick: () => window.open(url, "_blank", "noreferrer") },
+    extraAction: { label: "Copy link", onClick: () => void copyToClipboard(url) },
+  });
+}
+
+export function useRemoteControl(sessionId: string, file: string, onLive: () => void) {
   const [view, setView] = useState<RemoteControlView>({ state: "off" });
+  const live = useRef(onLive);
+  live.current = onLive;
+  const announced = useRef("");
   const [askingName, setAskingName] = useState<string | null>(null);
   const gen = useRef(0);
 
@@ -58,6 +71,7 @@ export function useRemoteControl(sessionId: string, file: string) {
     call({ action: "status", session_id: sessionId }).then((r) => {
       const next = g === gen.current ? viewOf(r) : null;
       if (next) setView(next);
+      if (next?.state === "active") live.current();
     }, () => {});
   }, [sessionId]);
 
@@ -67,6 +81,12 @@ export function useRemoteControl(sessionId: string, file: string) {
     refresh();
     return () => { gen.current += 1; };
   }, [refresh]);
+
+  const url = view.state === "active" ? view.url : "";
+  useEffect(() => {
+    if (url && announced.current !== url) announce(url);
+    announced.current = url;
+  }, [url]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -131,16 +151,12 @@ export function RemoteControlConfirm({ open, onGo, onCancel }: { open: boolean; 
 
 export function RemoteControlNote({ view, onStop }: { view: RemoteControlView; onStop(): void }) {
   if (view.state === "off") return null;
-  const stop = <button type="button" onClick={onStop}>Stop</button>;
+  const stop = <button type="button" onClick={onStop}>Turn off</button>;
   if (view.state === "starting") return <>Connecting Remote Control… {stop}</>;
-  const copy = () =>
-    void copyToClipboard(view.url).then((ok) => notify({ title: ok ? "Link copied" : "Could not copy the link", tone: "info" }));
   return (
     <>
-      Remote Control is on ·{" "}
-      <a href={view.url} target="_blank" rel="noreferrer">Open on claude.ai</a>{" "}
-      <button type="button" onClick={copy}>Copy link</button>{" "}
-      {stop}
+      Remote Control is on: this chat is also live on{" "}
+      <a href={view.url} target="_blank" rel="noreferrer">claude.ai</a>. {stop}
     </>
   );
 }

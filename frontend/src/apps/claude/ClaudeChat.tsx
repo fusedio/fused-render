@@ -3446,7 +3446,9 @@ function ChatBody(props: ChatBodyProps) {
     ],
   );
 
-  const rc = useRemoteControl(state.sessionId ?? "", file ?? "");
+  const rc = useRemoteControl(state.sessionId ?? "", file ?? "", () => {
+    if (state.sessionId) void controller.refreshHistory(state.sessionId);
+  });
   const rcAsk = rc.ask;
   const rcOn = rc.view.state !== "off";
   const rcSay = rc.view.state === "active" ? rc.say : null;
