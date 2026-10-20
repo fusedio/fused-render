@@ -285,3 +285,20 @@ test("countUserTurns ignores queued/unsent rows until the send adopts them", () 
   const { pending: _gone, ...adopted } = queued;
   expect(countUserTurns([turns[0], adopted])).toBe(2);
 });
+
+test("idle on mount: asks once and shows a note the server still holds", async () => {
+  answers = [{ state: "note", id: "n1", note: NOTE }];
+  mount({ runId: "r1", running: false, enabled: true, userTurns: 4 });
+  await wait(60);
+  expect(polls.length).toBe(1);
+  expect(api.note?.title).toBe("T");
+  expect(api.id).toBe("n1");
+});
+
+test("idle on mount with nothing to show: exactly one poll, no more", async () => {
+  answers = [{ state: "idle" }];
+  mount({ runId: "r1", running: false, enabled: true, userTurns: 0 });
+  await wait(100);
+  expect(polls.length).toBe(1);
+  expect(api.note).toBeNull();
+});

@@ -546,3 +546,48 @@ def test_pref_round_trip(home):
     assert c.get("/api/prefs").json()["chat_headsup"] == {"enabled": True}
     c.put("/api/prefs", json={"chat_headsup_enabled": False}, headers=FUSED)
     assert c.get("/api/prefs").json()["chat_headsup"] == {"enabled": False}
+
+
+# ------------------------------------------------------ persistence
+
+def _offer(runs, gen):
+    calls, answer = gen
+    answer["note"] = dict(NOTE_FIXTURE)
+    _rows(runs, _asst(7))
+    return _wait(FakeAgent(runs), 0)
+
+
+def test_note_survives_a_restart(runs, gen):
+    first = _offer(runs, gen)
+    assert first["state"] == "note"
+    headsup._state.clear()                       # simulated server restart
+    again = headsup.poll(FakeAgent(runs), "r1")
+    assert again == first
+
+
+def test_dismissed_note_stays_dismissed_after_restart(runs, gen):
+    first = _offer(runs, gen)
+    headsup.dismiss("r1", first["id"])
+    headsup._state.clear()
+    assert headsup.poll(FakeAgent(runs), "r1")["state"] != "note"
+    headsup._state.clear()
+    assert headsup._run_state("r1", str(runs / "r1"))["dismissed"] == {first["id"]}
+
+
+def test_corrupt_headsup_json_is_ignored(runs, gen):
+    (runs / "r1" / "headsup.json").write_text("{not json")
+    assert headsup.poll(FakeAgent(runs), "r1")["state"] == "idle"
+    (runs / "r1" / "headsup.json").write_text("[1, 2]")
+    headsup._state.clear()
+    assert headsup.poll(FakeAgent(runs), "r1")["state"] == "idle"
+
+
+def test_expiry_after_restart_clears_and_persists(runs, gen):
+    _offer(runs, gen)
+    headsup._state.clear()
+    _rows(runs, _asst(7), RESULT, _asst(1), RESULT, _asst(1))
+    assert headsup.poll(FakeAgent(runs), "r1")["state"] == "idle"
+    saved = json.loads((runs / "r1" / "headsup.json").read_text())
+    assert saved["note"] is None
+    headsup._state.clear()
+    assert headsup.poll(FakeAgent(runs), "r1")["state"] == "idle"

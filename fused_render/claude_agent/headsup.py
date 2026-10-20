@@ -328,12 +328,75 @@ _lock = threading.Lock()
 _state: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 
 
-def _run_state(run_id: str) -> dict:
-    """The run's state record, LRU-bounded. Callers hold `_lock`."""
+#: Where run dirs live; set by the first poll, so `dismiss` (which gets no
+#: agent) can find a run's `headsup.json` after a restart.
+_runs_root: str | None = None
+_FILE = "headsup.json"
+
+
+def _state_path(run_id: str, run_dir: str | None) -> str | None:
+    if run_dir:
+        return os.path.join(run_dir, _FILE)
+    if _runs_root and run_id:
+        return os.path.join(_runs_root, run_id, _FILE)
+    return None
+
+
+def _load(path: str | None) -> dict:
+    """The persisted part of a run's state, or {} for a missing/corrupt file."""
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict = {}
+    note = data.get("note")
+    if isinstance(note, dict):
+        out["note"] = note
+        nid = data.get("note_id")
+        out["note_id"] = nid if isinstance(nid, str) else ""
+        turn = data.get("offered_turn")
+        out["offered_turn"] = turn if isinstance(turn, int) and not isinstance(turn, bool) else None
+    dismissed = data.get("dismissed")
+    if isinstance(dismissed, list):
+        out["dismissed"] = {d for d in dismissed if isinstance(d, str)}
+    return out
+
+
+def _save(st: dict) -> None:
+    """Persist the note and dismissed ids atomically. Callers hold `_lock`.
+    A failed write is only a lost restart-survival, never a fault."""
+    path = st.get("path")
+    if not path:
+        return
+    tmp = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"note": st["note"], "note_id": st["note_id"],
+                       "offered_turn": st["offered_turn"],
+                       "dismissed": sorted(st["dismissed"])}, fh)
+        os.replace(tmp, path)
+    except OSError:
+        logger.warning("could not save %s", path, exc_info=True)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _run_state(run_id: str, run_dir: str | None = None) -> dict:
+    """The run's state record, LRU-bounded, seeded from `headsup.json` the
+    first time it is built. Callers hold `_lock`."""
     st = _state.get(run_id)
     if st is None:
+        path = _state_path(run_id, run_dir)
         st = {"checked": set(), "offered_turn": None, "inflight": False,
-              "note": None, "note_id": "", "dismissed": set()}
+              "note": None, "note_id": "", "dismissed": set(), "path": path}
+        st.update(_load(path))
         _state[run_id] = st
     _state.move_to_end(run_id)
     while len(_state) > _MAX_RUNS:
@@ -353,11 +416,12 @@ def _worker(agent, run_id: str, run_dir: str, turn_index: int) -> None:
         cur, _, cur_open = main_steps(run_dir, agent)
         stale = cur > turn_index and cur_open
     with _lock:
-        st = _run_state(run_id)
+        st = _run_state(run_id, run_dir)
         if note and not stale:
             st["note"] = note
             st["note_id"] = uuid.uuid4().hex[:12]
             st["offered_turn"] = turn_index
+            _save(st)
         st["inflight"] = False
 
 
@@ -373,18 +437,21 @@ def poll(agent, run_id: str) -> dict:
 def _poll(agent, run_id: str) -> dict:
     if agent._bad_id(run_id):
         return {"state": "idle"}
+    global _runs_root
+    _runs_root = agent.RUNS
     run_dir = os.path.join(agent.RUNS, run_id)
     if not os.path.isdir(run_dir):
         return {"state": "idle"}
     with _lock:
-        st = _run_state(run_id)
+        st = _run_state(run_id, run_dir)
         has_note = st["note"] is not None
         offered = st["offered_turn"]
     if has_note and offered is not None and main_steps(run_dir, agent)[0] >= offered + 2:
         with _lock:
             st = _run_state(run_id)
-            if st["offered_turn"] == offered:
+            if st["offered_turn"] == offered and st["note"] is not None:
                 st["note"] = None
+                _save(st)
     with _lock:
         st = _run_state(run_id)
         if st["note"] is not None and st["note_id"] not in st["dismissed"]:
@@ -418,10 +485,14 @@ def _poll(agent, run_id: str) -> dict:
 
 
 def dismiss(run_id: str, note_id: str) -> None:
+    if not run_id or run_id.startswith(".") or any(c in run_id for c in "/\\:"):
+        return
     with _lock:
         st = _state.get(run_id)
-        if st is None:
+        if st is None and not (_runs_root and os.path.isdir(os.path.join(_runs_root, run_id))):
             return
+        st = _run_state(run_id)
         st["dismissed"].add(note_id)
         if st["note_id"] == note_id:
             st["note"] = None
+        _save(st)

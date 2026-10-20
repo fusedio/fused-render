@@ -2,7 +2,8 @@
 //
 // The SERVER decides when a side check is due; this hook only keeps asking
 // while a turn runs, so a closed tab means no checks. Polling stops as soon as
-// the run is over and nothing is still being worked out.
+// the run is over and nothing is still being worked out. One ask on mount
+// restores a note the server still holds after a page refresh.
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getJson, postJson } from "@platform/lib/api";
@@ -125,8 +126,11 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
       const delay = nextPollDelay({ running, state, ended: false }, clock);
       if (delay != null) timer = setTimeout(() => void tick(), delay);
     };
-    const first = nextPollDelay({ running, state: lastState.current, ended }, clock);
-    if (first != null) timer = setTimeout(() => void tick(), first);
+    // The server holds a note across a refresh, so every mount / run / enable
+    // asks once right away, even when idle. A run that just stopped keeps its
+    // settle delay (the turn-end check starts then).
+    if (ended) timer = setTimeout(() => void tick(), clock.settle);
+    else void tick();
     return () => {
       dead = true;
       if (timer) clearTimeout(timer);
