@@ -102,6 +102,11 @@ import threading
 import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
+
+try:  # POSIX only; the acks lock below is advisory and degrades to the thread lock
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
 from datetime import datetime, timezone
 from urllib.parse import quote, unquote, urlencode
 
@@ -853,14 +858,22 @@ def ack_python(slug: str) -> list[str]:
     Returns the acknowledged slugs. ValueError when `slug` is not a slug."""
     if not is_slug(slug):
         raise ValueError("not a marketplace slug")
-    with _ACKS_LOCK:
+    os.makedirs(state_dir(), exist_ok=True)
+    # `_ACKS_LOCK` serialises this process's threads; the advisory flock on a
+    # sidecar file serialises PROCESSES — other worktrees' servers share this
+    # state dir (it is not nested by branch), and two of them acknowledging
+    # different slugs at once would each write the list it read, the slower
+    # one dropping the other's slug (shell/notifications.py's `_file_lock`
+    # posture). Released when the file closes; absent `fcntl` the thread lock
+    # is all there is.
+    with _ACKS_LOCK, open(acks_path() + ".lock", "a+") as lock_fh:
+        if fcntl is not None:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
         slugs = python_acks()
         if slug in slugs:
             return slugs
         slugs = sorted({*slugs, slug})
-        os.makedirs(state_dir(), exist_ok=True)
-        # Unique per writer, like the catalog cache: other worktrees' servers
-        # share this state dir (it is not nested by branch).
+        # Unique per writer, like the catalog cache.
         tmp = f"{acks_path()}.{os.getpid()}.{threading.get_ident()}.tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:

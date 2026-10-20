@@ -85,10 +85,47 @@ _STORAGE = re.compile(
 
 
 def _code_only(src: str) -> str:
-    # Block comments first, then line comments. A `//` inside a string literal
-    # (a URL) is rare in these files and would only make the check stricter.
-    src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
-    return "\n".join(line.split("//", 1)[0] for line in src.splitlines())
+    """`src` with every comment removed and every string literal kept.
+
+    A scanner rather than a regex, because the one wrong answer that matters
+    is a `//` INSIDE a string (`"https://…"`): splitting the line there would
+    hide a storage call written after the URL, and a hidden call is exactly
+    what this suite exists to catch. Strings are kept verbatim (a key literal
+    is what the moved-key audit looks for); template literals are treated as
+    one string, their `${}` holes included — a storage call inside a template
+    hole is not a pattern this codebase has, and treating it as text only
+    makes that one case stricter to add later, not looser now."""
+    out = []
+    i, n = 0, len(src)
+    quote = None
+    while i < n:
+        c = src[i]
+        if quote:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(src[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            i += 1
+            continue
+        if c in ("'", '"', "`"):
+            quote = c
+            out.append(c)
+            i += 1
+            continue
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            i = n if j == -1 else j
+            continue
+        if src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            i = n if j == -1 else j + 2
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _sources():

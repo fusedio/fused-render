@@ -228,6 +228,13 @@ function anyLegacyKey(): boolean {
 }
 
 let hydration: Promise<void> | null = null;
+// A boot-time GET that fails is retried from HERE, not by a caller: main.tsx
+// calls `hydrateNotificationsState()` once and nothing else would. The delay
+// doubles from 5 s to a 60 s ceiling and is dropped by the test reset (`epoch`),
+// so a server that is merely slow to come up (an update restart, the port walk)
+// still fills the panel's memory this session rather than on the next reload.
+let retryMs = 5_000;
+const RETRY_MAX_MS = 60_000;
 /** Bumped by the test reset so a hydration still in flight from an earlier
  *  test cannot land in the next one's store. */
 let epoch = 0;
@@ -249,10 +256,25 @@ async function runHydration(): Promise<void> {
   try {
     server = normalize(await getNotificationsState());
   } catch {
-    // Server unreachable: keep what this window has. A later call retries.
-    if (mine === epoch) hydration = null;
+    // Server unreachable: keep what this window has, schedule the retry, and
+    // STOP — the legacy import below must not run against an unknown server
+    // copy: `fresh()` compares only with this window's cache, so an old
+    // dismissal signature could be posted over a newer one the server holds.
+    // The old keys stay for the attempt that does see the server.
+    if (mine === epoch) {
+      hydration = null;
+      if (typeof window !== "undefined") {
+        const delay = retryMs;
+        retryMs = Math.min(RETRY_MAX_MS, retryMs * 2);
+        window.setTimeout(() => {
+          if (mine === epoch) void hydrateNotificationsState();
+        }, delay);
+      }
+    }
+    return;
   }
   if (mine !== epoch) return;
+  retryMs = 5_000;
   // Anything this window wrote before the GET answered is newer than the
   // server's copy, so it is merged OVER it rather than replaced by it.
   if (server) cachedState = merge(server, cachedState);
