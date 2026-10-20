@@ -8,7 +8,6 @@
 import {
   putAppSharingEnabled,
   putCanvasesEnabled,
-  putChatHeadsupEnabled,
   putGitAutoSyncEnabled,
   putGithubLinkEnabled,
   putLivePreviewsEnabled,
@@ -27,7 +26,6 @@ import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import {
-  publishChatHeadsupEnabled,
   publishProjectQueueEnabled,
   publishTaskRecapTitlesEnabled,
 } from "@apps/claude/feature-flag";
@@ -78,21 +76,6 @@ export function TaskSummaryTitlesControl({ prefs, onChange }: PrefControlProps) 
       id="task-summary-titles"
       checked={prefs.task_summary_titles?.enabled === true}
       put={putTaskSummaryTitlesEnabled}
-      onChange={onChange}
-    />
-  );
-}
-
-// Heads-up notes: a side check may put one short note above the message box
-// while Claude works. Opt-in: every check spends tokens from the user's plan.
-// `=== true` because a server that predates the field has no notes.
-export function ChatHeadsupControl({ prefs, onChange }: PrefControlProps) {
-  return (
-    <PrefToggleRow
-      id="chat-headsup"
-      checked={prefs.chat_headsup?.enabled === true}
-      put={putChatHeadsupEnabled}
-      after={(next) => publishChatHeadsupEnabled(next.chat_headsup?.enabled === true)}
       onChange={onChange}
     />
   );

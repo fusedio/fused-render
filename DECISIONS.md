@@ -7196,3 +7196,10 @@ Each sent user message in a Claude chat has a hover-revealed back-arrow. Clickin
 - **Decision.** `[cli]` = `pillow` + `fused-render[index,data,hf,fused]` (base ~59 MB, `[cli]` ~290 MB, `[all]` ~325 MB). `[fused]` is included by user decision so cli users can deploy and share. `extras.SERVE_EXTRAS` is now `("index","data","hf","fused")`, so `serve` gates on `[cli]`; `optional_missing_for_serve()` drives one stderr line at startup naming the absent `[desktop]` (the only extra `[cli]` leaves out). `[all]` is unchanged.
 - **pillow is in `[cli]`** because the thumbnail route (`routers/fs_read.py`) does an unguarded `from PIL import Image`, and `[desktop]` installs pillow on Linux only.
 - **Canvases are not gated.** Whether canvas list/pull works on plain `fused` is unverified, so no guard was added on `canvases.py`.
+
+## Bot terminals and chat heads-up notes: global prefs removed (2026-10-20)
+
+The `bot_terminals_enabled` and `chat_headsup_enabled` preferences are gone (pref key, getter, GET payload field,
+PUT handling, Preferences rows, frontend readers). Both features are now always on. The per-bot `terminal` setting
+remains the only bot-terminal switch (user-only, off by default per bot). `useHeadsUp` still tolerates a
+`disabled` state from an older server. `bot.close_all_terminals` is kept but no longer called by prefs.

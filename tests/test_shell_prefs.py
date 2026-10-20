@@ -237,12 +237,8 @@ def test_marketplace_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
 
 def test_removed_always_on_prefs_are_not_in_the_payload(tmp_path, monkeypatch):
     client, _home = _client(tmp_path, monkeypatch)
-    calls = []
-    monkeypatch.setattr(bots_bot, "close_all_terminals", lambda: calls.append(1))
-    client.put("/api/prefs", json={"bot_terminals_enabled": True}, headers=FUSED)
-    assert calls == []
-    client.put("/api/prefs", json={"bot_terminals_enabled": False}, headers=FUSED)
-    assert calls == [1]
+    body = client.get("/api/prefs").json()
+    assert "bot_terminals" not in body and "chat_headsup" not in body
 
 
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
