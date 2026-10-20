@@ -208,6 +208,12 @@ const VIEW_TABS_KEY = "fused-render:scheduled-view-tabs";
 // land AFTER the edit and overwrite it. Every write goes through this chain, so
 // the edit is always persisted last; a failed link never blocks the next.
 let viewTabsWrite: Promise<void> = Promise.resolve();
+// Set the moment the reader saves a row in this document. `readViewTabs` checks
+// it AFTER its prefs GET: an edit queued while that GET was out would otherwise
+// be followed by the import's PUT, which lands last and then removes the old
+// key — the server keeping the imported row with no retry left for the edit.
+// Once the reader has spoken, the old row is only ever removed, never pushed.
+let viewTabsEditedHere = false;
 function enqueueViewTabsWrite(tabs: TaskView[]): Promise<void> {
   const write = viewTabsWrite.then(() => putTasksViewTabs(tabs).then(() => undefined));
   viewTabsWrite = write.catch(() => {});
@@ -231,8 +237,8 @@ async function readViewTabs(): Promise<TaskView[]> {
   }
   const stored = (await getPrefsShared()).tasks_view_tabs;
   if (legacy === null) return parseViewTabs(stored);
-  if (!stored?.length) {
-    // The old row shows at once (the other D1383 importers apply the local
+  if (!stored?.length && !viewTabsEditedHere) {
+    // The old row shows at once (the other D1384 importers apply the local
     // value first too); the push is not awaited, so a failed PUT cannot cost
     // this visit its tabs — the key stays and the next visit re-decides.
     const tabs = parseViewTabs(legacy);
@@ -754,6 +760,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   };
   const finishTabs = () => {
     if (!tabsDraft) return;
+    viewTabsEditedHere = true;
     setTabs(tabsDraft);
     tabsEdited.current = true;
     knownViewTabs = tabsDraft;
