@@ -20,7 +20,9 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import typing
@@ -277,18 +279,40 @@ def build_fork_argv(agent, run_dir: str):
     return Fork(argv, cwd, fork_dir, session_id)
 
 
+_SETSID_EXEC = ("import os,sys; os.setsid(); os.chdir(sys.argv[1]); "
+                "os.execvp(sys.argv[2], sys.argv[2:])")
+
+
 def _spawn_argv(argv: list, cwd: str) -> tuple:
     """`(argv, cwd_kwarg)` that runs `argv` in `cwd` WITHOUT `Popen(cwd=)`.
 
     `--resume` finds the session under the cwd's project dir, so the fork has
-    to start in the main session's cwd. But a `cwd=` makes CPython fork()+exec
-    instead of posix_spawn, and a fork with libproj resident dies SIGSEGV
-    (D277/D292). So on POSIX a `/bin/sh` (absolute) does the `cd` and execs;
-    Windows has no fork path to dodge."""
+    to start in the main session's cwd. But a `cwd=` (or `start_new_session=`
+    / `preexec_fn=`) makes CPython fork()+exec instead of posix_spawn, and a
+    fork with libproj resident dies SIGSEGV (D277/D292). So on POSIX the
+    interpreter (absolute `sys.executable`, `-B -I`: the bundled app's python
+    must never write .pyc) is the wrapper: the child itself calls setsid (so
+    the whole fork tree shares one process group, which `generate` kills on
+    timeout), chdirs and execs. Without an absolute interpreter, a `/bin/sh`
+    does only the `cd`. Windows has no fork path to dodge, so it passes cwd."""
     if os.name == "nt":
         return argv, cwd
+    if os.path.isabs(sys.executable or ""):
+        return ([sys.executable, "-B", "-I", "-c", _SETSID_EXEC, cwd, *argv], None)
     return (["/bin/sh", "-c", 'cd "$1" || exit 1; shift; exec "$@"', "sh", cwd, *argv],
             None)
+
+
+def _kill_tree(proc) -> None:
+    """SIGKILL the fork's whole process group (MCP children included); the
+    wrapper made the child a group leader. Falls back to the parent alone."""
+    if os.name != "nt":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    proc.kill()
 
 
 def _build_prompt(seen: list, known: list) -> str:
@@ -326,7 +350,7 @@ def generate(agent, run_dir: str) -> dict | None:
             stdout, _ = proc.communicate(input=message + "\n",
                                          timeout=HEADSUP_TIMEOUT)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            _kill_tree(proc)
             try:
                 proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:

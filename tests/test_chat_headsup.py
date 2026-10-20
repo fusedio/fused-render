@@ -840,3 +840,79 @@ def test_checked_set_is_saved_validated_and_capped(runs):
     (runs / "r1" / "headsup.json").write_text(json.dumps(
         {"checked": [[1, 2], [True, 1], ["a", 1], [1], [3, 4, 5], "x", [2, -1], [1.5, 1]]}))
     assert headsup._load(path)["checked"] == {(1, 2), (2, -1)}
+
+
+# --------------------------------------------- timeout kills the process tree
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_timeout_kills_the_process_group(agent, tmp_path, monkeypatch):
+    import subprocess as sp
+    killed = []
+
+    class FakePopen:
+        pid = 4242
+        returncode = None
+
+        def __init__(self, *a, **kw):
+            self.calls = 0
+
+        def communicate(self, input=None, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise sp.TimeoutExpired("x", timeout)
+            return "", None
+
+        def kill(self):
+            killed.append("kill")
+
+    monkeypatch.setattr(headsup.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(headsup.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    run_dir = _launch_run(agent, tmp_path)
+    assert headsup.generate(agent, run_dir) is None
+    import signal
+    assert killed == [(4242, signal.SIGKILL)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_timeout_kills_a_real_grandchild(agent, tmp_path, monkeypatch):
+    pidfile = tmp_path / "grandchild.pid"
+    stub = f"""#!{sys.executable}
+import subprocess, sys, time
+sys.stdin.read()
+gc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+open({str(pidfile)!r}, "w").write(str(gc.pid))
+time.sleep(60)
+"""
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", write_stub_cli(tmp_path / "bin", stub))
+    monkeypatch.setattr(headsup, "HEADSUP_TIMEOUT", 3.0)
+    run_dir = _launch_run(agent, tmp_path)
+    gc = None
+    try:
+        assert headsup.generate(agent, run_dir) is None
+        gc = int(pidfile.read_text())
+        for _ in range(100):
+            try:
+                os.kill(gc, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("grandchild survived the timeout")
+    finally:
+        if gc is None and pidfile.exists():
+            gc = int(pidfile.read_text())
+        if gc:
+            try:
+                os.kill(gc, 9)
+            except OSError:
+                pass
+
+
+def test_spawn_argv_posix_shape_is_the_interpreter_setsid_wrapper():
+    if os.name == "nt":
+        pytest.skip("POSIX shape")
+    argv, kw = headsup._spawn_argv(["/x/claude", "-p"], "/work")
+    assert kw is None
+    assert argv[:3] == [sys.executable, "-B", "-I"]
+    assert argv[3] == "-c" and "setsid" in argv[4]
+    assert argv[5:] == ["/work", "/x/claude", "-p"]
