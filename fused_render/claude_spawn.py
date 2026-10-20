@@ -24,6 +24,8 @@ from __future__ import annotations
 import os
 import time
 
+from fused_render import claude_remote
+
 # How long the recording poll follows a run before giving up. A turn can run
 # long — a scaffolding pass builds a whole app, and a scheduled message may hand
 # the model a substantial job — so this is deliberately generous. At 2s a tick,
@@ -121,6 +123,8 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
     thing they can act on instead. Everything else propagates as it did from
     the helper's stderr tail — as an `{"error": ...}` dict, never a raise, so
     a scheduler tick or an apps-API request keeps its own error path."""
+    if session_id and claude_remote.holds(session_id):
+        return {"error": claude_remote.HELD}
     agent = load_agent()
     try:
         return agent._start(target, prompt, session_id, model, effort,

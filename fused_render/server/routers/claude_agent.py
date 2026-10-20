@@ -55,7 +55,7 @@ from fastapi import APIRouter, Body, Header, Request, Response
 from fastapi.responses import JSONResponse
 
 from fused_render import calls as shell_calls
-from fused_render import claude_agent
+from fused_render import claude_agent, claude_remote
 from fused_render import tasks_watch
 from fused_render._binding import ParamError, bind_params
 from fused_render.claude_agent import gate, pool
@@ -339,6 +339,9 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
     refused = _backend_refusal(action, bound, agent)
     if refused is not None:
         return JSONResponse(refused, status_code=400)
+    if action in _SPAWN_ACTIONS and claude_remote.holds(str(bound.get("session_id") or "")):
+        return Response(content=dumps_result({"error": claude_remote.HELD}),
+                        media_type="application/json")
 
     # THE QUEUE'S GATE, ON THE SERVER TOO (Akshil's QA, 2026-09-16). The chat
     # asks `/api/tasks/queue/admit` before it spawns, but a page whose copy of

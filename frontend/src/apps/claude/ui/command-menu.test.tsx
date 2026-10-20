@@ -156,9 +156,9 @@ describe("composer: the slash menu", () => {
     expect(c.rows()).toHaveLength(0);
     c.type("/");
     expect(c.names()).toEqual([...LOCAL_COMMANDS.map((l) => "/" + l.name), "/compact"]);
-    c.type("/co");
+    c.type("/com");
     expect(c.names()).toEqual(["/compact"]);
-    c.type("/co ");
+    c.type("/com ");
     expect(c.rows()).toHaveLength(0);
     c.type("/zzz");
     expect(c.rows()).toHaveLength(0);

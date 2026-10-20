@@ -563,6 +563,19 @@
 .c-blocked-note a:hover {
   color: var(--c-fg);
 }
+.c-blocked-note button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--c-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.c-blocked-note button:hover {
+  color: var(--c-fg);
+}
 
 /* The Agent pill once the session has a turn (AgentSelect `fixed`): the same
    pill box and ink, the mark and the word side by side, and nothing that

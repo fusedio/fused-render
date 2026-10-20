@@ -151,6 +151,7 @@ import { takenAskBackend } from "@platform/lib/pending-claude-ask";
 import type { ClassifiedCommand } from "./protocol/commands";
 import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
+import { REMOTE_CONTROL_BLOCKED, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
 import { notify } from "@platform/lib/notifications";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
@@ -3678,6 +3679,9 @@ function ChatBody(props: ChatBodyProps) {
   }, [toggleTasksPanel, hostToggleTasks]);
   const setModelPick = defaults.setModel;
   const setEffortPick = defaults.setEffort;
+  const rc = useRemoteControl(state.sessionId ?? "", file ?? "");
+  const rcAsk = rc.ask;
+  const rcOn = rc.view.state !== "off";
   /** A local command from the composer. `false` = refused (bad argument), and
    *  the composer puts the words back. `/help` never arrives: it is the
    *  composer's own menu. */
@@ -3686,6 +3690,7 @@ function ChatBody(props: ChatBodyProps) {
       const plan = planLocalCommand(cmd, {
         backend: liveBackend.current,
         worktreeReady: worktreeTarget && worktreeReady.current,
+        hasSession: !!state.sessionId,
       });
       if ("refuse" in plan) {
         // The words stay in the box (`false`), and the reader is told why.
@@ -3710,9 +3715,12 @@ function ChatBody(props: ChatBodyProps) {
         case "tasks":
           onToggleTasks();
           return true;
+        case "remote-control":
+          rcAsk(plan.name);
+          return true;
       }
     },
-    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks],
+    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the
@@ -4652,13 +4660,17 @@ function ChatBody(props: ChatBodyProps) {
       // worse state than the one this feature prevents.
       // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
       // its own sentence, and the link to the switch under it.
-      blocked: sched.blocked || agentOff,
+      blocked: sched.blocked || agentOff || rcOn,
       blockedPlaceholder: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : sched.placeholder,
+        : rcOn
+          ? REMOTE_CONTROL_BLOCKED
+          : sched.placeholder,
       blockedReason: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : sched.reason,
+        : rcOn
+          ? REMOTE_CONTROL_BLOCKED
+          : sched.reason,
       blockedNote: agentOff ? (
         <>
           {agentLabel(state.backend)} is turned off in Preferences.{" "}
@@ -4666,6 +4678,8 @@ function ChatBody(props: ChatBodyProps) {
             Turn it on
           </a>
         </>
+      ) : rcOn ? (
+        <RemoteControlNote view={rc.view} onStop={rc.stop} />
       ) : undefined,
       // THE FLAG TAKES THE FOLLOW-UP FOOTNOTE AWAY (see `ComposerCardProps`):
       // under the queue this pane says "waiting" about messages that really are,
@@ -4684,6 +4698,9 @@ function ChatBody(props: ChatBodyProps) {
       state.sessionId,
       state.backend,
       agentOff,
+      rcOn,
+      rc.view,
+      rc.stop,
       state.status,
       state.queued,
       inboxRows,
@@ -4904,6 +4921,7 @@ function ChatBody(props: ChatBodyProps) {
    <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
    <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
+    <RemoteControlConfirm open={rc.asking} onGo={rc.start} onCancel={rc.cancel} />
     <div
       ref={rootRef}
       className={rootClass(
