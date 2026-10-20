@@ -74,7 +74,10 @@ export function getSidebarState(): SidebarState {
 
 subscribeUiLayout(() => {
   if (current === null || current !== seeded) return;
-  current = seeded = null;
+  // Any field of the document notifies; only a sidebar change re-seeds.
+  const fresh = loadSidebarState();
+  if (fresh.width === seeded.width && fresh.collapsed === seeded.collapsed) return;
+  current = seeded = fresh;
   listeners.forEach((fn) => fn());
 });
 

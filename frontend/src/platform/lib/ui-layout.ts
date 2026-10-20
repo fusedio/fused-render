@@ -256,6 +256,9 @@ let hydration: Promise<void> | null = null;
 /** Patches not yet on the server, in order. Replayed onto the server's copy at
  *  hydrate (so a patch made before a slow GET survives it) and at every flush. */
 let queue: Patch[] = [];
+/** The batch a flush has taken off `queue` and not yet landed: a hydrate GET
+ *  that lands meanwhile must replay it too, or the cache loses those patches. */
+let inflight: Patch[] = [];
 /** The one-shot import's patches → the old key each carries. A key is removed
  *  from localStorage only by the flush that PUT its own patch (D1386): keyed by
  *  the patch rather than held as a loose set, so a batch the server refused
@@ -326,7 +329,7 @@ export function whenUiLayoutReady(fn: () => void): void {
 
 function adopt(server: UiLayoutDoc | null): void {
   let next = sanitizeUiLayout(server ?? { v: 1 });
-  for (const fn of queue) next = applySafe(fn, next);
+  for (const fn of inflight.concat(queue)) next = applySafe(fn, next);
   next = sanitizeUiLayout(next);
   const changed = !sameDoc(next, cache);
   cache = next;
@@ -400,6 +403,7 @@ async function flush(): Promise<void> {
   const batch = queue;
   if (!batch.length && !mustCreate) return;
   queue = [];
+  inflight = batch;
   flushing = true;
   let ok = false;
   try {
@@ -444,6 +448,7 @@ async function flush(): Promise<void> {
       console.warn("[fused] ui layout not saved (will retry on the next change):", e);
     }
   } finally {
+    inflight = [];
     flushing = false;
     if (flushAgain || (ok && queue.length)) {
       flushAgain = false;
