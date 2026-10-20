@@ -1410,3 +1410,71 @@ def test_is_diffusers_repo_delegates_to_the_formats_predicate():
                        (frozenset({"x"}), "transformers")]:
         assert (hub_architecture.is_diffusers_repo(names, lib)
                 == formats.is_diffusers_snapshot(names, lib))
+
+
+# -- mflux variants derived from the installed AVAILABLE_MODELS ------------------
+
+_MFLUX_SOURCE = '''
+class ModelConfig: ...
+AVAILABLE_MODELS = {
+    "dev": ModelConfig(priority=0, aliases=["dev"],
+                       model_name="black-forest-labs/FLUX.1-dev", base_model=None),
+    "flux3-image-klein": ModelConfig(
+        priority=11, aliases=["flux3"],
+        model_name="black-forest-labs/flux-3-image-klein", base_model=None),
+    "flux3-image-klein-base": ModelConfig(
+        priority=11, aliases=["flux3-base"],
+        model_name="black-forest-labs/flux-3-image-klein-base", base_model=None),
+    "flux2-klein-base-4b": ModelConfig(
+        priority=11, aliases=["k"],
+        model_name="black-forest-labs/FLUX.2-klein-base-4B", base_model=None),
+    "dev-controlnet-canny": ModelConfig(
+        priority=1, aliases=["x"],
+        model_name="black-forest-labs/FLUX.1-dev", base_model=None),
+}
+'''
+
+
+def test_parse_mflux_available_models_maps_repo_id_to_registry_key():
+    parsed = formats.parse_mflux_available_models(_MFLUX_SOURCE)
+    assert parsed["black-forest-labs/flux-3-image-klein"] == "flux3-image-klein"
+    assert parsed["black-forest-labs/flux-3-image-klein-base"] == "flux3-image-klein-base"
+    # A shared repo id keeps the FIRST entry in source order.
+    assert parsed["black-forest-labs/FLUX.1-dev"] == "dev"
+    assert formats.parse_mflux_available_models("not python (") == {}
+
+
+def test_a_repo_only_the_installed_mflux_lists_derives_a_recipe():
+    formats.set_mflux_registry_reader(
+        lambda: formats.parse_mflux_available_models(_MFLUX_SOURCE))
+    recipe = formats.mflux_variant_recipe("black-forest-labs/flux-3-image-klein")
+    assert recipe == {"variant": "Flux3Klein", "module": "mflux.models.flux3.variants",
+                      "config": "flux3_image_klein"}
+    base = formats.mflux_variant_recipe("black-forest-labs/flux-3-image-klein-base")
+    assert base["config"] == "flux3_image_klein_base"
+    klein2 = formats.mflux_variant_recipe("black-forest-labs/FLUX.2-klein-base-4B")
+    assert (klein2["variant"], klein2["config"], klein2["vae"]) == (
+        "Flux2Klein", "flux2_klein_base_4b", "AutoencoderKLFlux2")
+    edit = formats.mflux_edit_recipe("black-forest-labs/flux-3-image-klein")
+    assert (edit["variant"], edit["config"]) == ("Flux3KleinEdit", "flux3_image_klein")
+    assert formats.mflux_native_mode("black-forest-labs/flux-3-image-klein") == "generate"
+    # A registry entry in a family nobody named classes for is not guessed at.
+    assert formats.mflux_variant_recipe("black-forest-labs/FLUX.1-dev") is None
+
+
+def test_the_override_table_wins_over_the_derived_map(monkeypatch):
+    mlx_id = "mlx-community/FLUX.2-Klein-4B-4bit"
+    formats.set_mflux_registry_reader(lambda: {mlx_id: "flux3-image-klein"})
+    assert formats.mflux_variant_recipe(mlx_id)["config"] == "flux2_klein_4b"
+    assert formats.mflux_edit_recipe(mlx_id)["variant"] == "Flux2KleinEdit"
+
+
+def test_a_cached_flux3_repo_gets_the_mflux_runner_once_the_registry_lists_it():
+    repo = "black-forest-labs/flux-3-image-klein"
+    kwargs = dict(repo_id=repo, names={"model_index.json"},
+                  dirnames={"transformer", "text_encoder", "vae"}, config={},
+                  torch_weights=False)
+    assert "mflux-image" not in formats.loaders(**kwargs)
+    formats.set_mflux_registry_reader(
+        lambda: formats.parse_mflux_available_models(_MFLUX_SOURCE))
+    assert "mflux-image" in formats.loaders(**kwargs)

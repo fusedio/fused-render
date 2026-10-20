@@ -77,7 +77,6 @@ here" chip over a repo someone already has would be redundant, not helpful.
 """
 from __future__ import annotations
 
-import ast
 import glob
 import os
 
@@ -94,7 +93,7 @@ _MLX_VLM_TYPES_CACHE: dict[str, frozenset | None] = {}
 #: runner venv dir -> the repo ids mflux's own installed `AVAILABLE_MODELS`
 #: registry recognises, or `None` if that venv is not installed yet. Same
 #: cache shape and same reason as `_MLX_VLM_TYPES_CACHE` above.
-_MFLUX_REPOS_CACHE: dict[str, frozenset | None] = {}
+_MFLUX_REPOS_CACHE: dict[str, dict[str, str] | None] = {}
 
 
 def reset_cache() -> None:
@@ -162,7 +161,10 @@ def _repo_ids_from_available_models(source: str) -> frozenset[str]:
     brief's own instruction and mirroring `mlx_vlm_model_types`'s choice to
     read the filesystem rather than import `mlx_vlm`.
 
-    Deliberately a SET, not a `repo_id -> variant` dict: `resolve_key`'s own
+    The parse itself is `formats.parse_mflux_available_models`, which keeps
+    `repo id -> registry key` (first entry in source order wins) so the mflux
+    runner can derive a variant recipe too; THIS function is the admission
+    view of it, deliberately a SET: `resolve_key`'s own
     docstring in `config_resolution.py` warns that several registry entries
     SHARE a repo id (the FLUX.1-dev ControlNets; z-image-turbo and its
     ControlNet) and are matched by object identity, not by name — a flat
@@ -175,44 +177,16 @@ def _repo_ids_from_available_models(source: str) -> frozenset[str]:
     `AVAILABLE_MODELS` assignment found) — the caller reads that the same
     way as "nothing found", i.e. still `None` overall, never "matches
     nothing" for an installed-but-unreadable venv."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return frozenset()
-    repos: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "AVAILABLE_MODELS" for t in node.targets):
-            continue
-        if not isinstance(node.value, ast.Dict):
-            continue
-        for value_node in node.value.values:
-            if not isinstance(value_node, ast.Call):
-                continue
-            for kw in value_node.keywords:
-                if kw.arg == "model_name":
-                    if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
-                        repos.add(kw.value.value)
-                elif kw.arg == "aliases":
-                    if isinstance(kw.value, ast.List):
-                        for elt in kw.value.elts:
-                            if (isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-                                    and "/" in elt.value):
-                                repos.add(elt.value)
-    return frozenset(repos)
+    return frozenset(formats.parse_mflux_available_models(source))
 
 
-def mflux_loadable_repos() -> frozenset[str] | None:
-    """The repo ids mflux's own installed `AVAILABLE_MODELS` registry
-    recognises — read off its `model_config.py` source (see
-    `_repo_ids_from_available_models` for why statically, never imported).
-
-    Returns `None` — "unknown", meaning no filtering — when the mflux venv
-    has not been installed yet, NEVER an empty set, for the same reason as
-    `mlx_vlm_model_types`: an uninstalled venv must not read as "this
-    runner can load nothing", which would flag the entire image capability
-    on a machine that has not installed mflux yet."""
+def mflux_available_models() -> dict[str, str] | None:
+    """`{repo id: registry key}` from the installed mflux's `AVAILABLE_MODELS`
+    (see `formats.MFLUX_FAMILIES` for the registry's shape), or `None` when the
+    mflux venv is not installed. The single reader: `mflux_loadable_repos`
+    is its key set, and it is installed into `formats` below so
+    `formats.loaders()` / `mflux_variant_recipe` derive the same variants the
+    admission rule admits."""
     from fused_render import envinstall
     from fused_render.ai import registry
 
@@ -225,18 +199,35 @@ def mflux_loadable_repos() -> frozenset[str] | None:
     pattern = os.path.join(venv_dir, "lib", "python3.*", "site-packages", "mflux",
                             "models", "common", "config", "model_config.py")
     matches = glob.glob(pattern)
-    result: frozenset[str] | None = None
+    result: dict[str, str] | None = None
     if matches:
         try:
             with open(matches[0], encoding="utf-8") as fh:
                 source = fh.read()
         except OSError:
             source = ""
-        repos = _repo_ids_from_available_models(source)
-        if repos:
-            result = repos
+        parsed = formats.parse_mflux_available_models(source)
+        if parsed:
+            result = parsed
     _MFLUX_REPOS_CACHE[venv_dir] = result
     return result
+
+
+formats.set_mflux_registry_reader(lambda: mflux_available_models() or {})
+
+
+def mflux_loadable_repos() -> frozenset[str] | None:
+    """The repo ids mflux's own installed `AVAILABLE_MODELS` registry
+    recognises — read off its `model_config.py` source (see
+    `_repo_ids_from_available_models` for why statically, never imported).
+
+    Returns `None` — "unknown", meaning no filtering — when the mflux venv
+    has not been installed yet, NEVER an empty set, for the same reason as
+    `mlx_vlm_model_types`: an uninstalled venv must not read as "this
+    runner can load nothing", which would flag the entire image capability
+    on a machine that has not installed mflux yet."""
+    models = mflux_available_models()
+    return None if models is None else frozenset(models)
 
 
 def loadable_kind(code: str) -> tuple[str, frozenset[str] | None]:

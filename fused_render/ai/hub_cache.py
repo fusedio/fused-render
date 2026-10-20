@@ -101,6 +101,7 @@ from typing import NamedTuple
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog as _catalog
+from fused_render.ai import hub_loadable as _hub_loadable  # noqa: F401 - installs formats' mflux registry reader
 from fused_render.ai import registry as _ai_registry
 from fused_render.ai import tasks as _tasks
 from fused_render.ai.runners import embed_common, formats

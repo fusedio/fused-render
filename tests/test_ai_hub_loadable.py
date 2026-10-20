@@ -635,3 +635,18 @@ def test_whatever_admission_admits_as_diffusers_loaders_names_a_runner(names, co
     assert formats.loaders(
         repo_id="org/m", names=names, dirnames=set(), config=config,
         torch_weights=False)
+
+
+def test_mflux_registry_parser_returns_repo_to_registry_key_and_the_set_is_its_keys():
+    source = '''
+AVAILABLE_MODELS = {
+    "flux3-image-klein": ModelConfig(
+        priority=11, aliases=["flux3", "org/alias"],
+        model_name="black-forest-labs/flux-3-image-klein", base_model=None),
+}
+'''
+    assert formats.parse_mflux_available_models(source) == {
+        "black-forest-labs/flux-3-image-klein": "flux3-image-klein",
+        "org/alias": "flux3-image-klein"}
+    assert hub_loadable._repo_ids_from_available_models(source) == frozenset({
+        "black-forest-labs/flux-3-image-klein", "org/alias"})

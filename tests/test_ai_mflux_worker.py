@@ -773,6 +773,24 @@ def test_a_model_with_no_variant_is_named_as_the_cause(monkeypatch, base, tmp_pa
     assert "Diffusers" in message
 
 
+def test_a_repo_only_the_installed_mflux_lists_resolves_to_a_recipe(monkeypatch, base, tmp_path):
+    """The variant is DERIVED from the installed mflux's `AVAILABLE_MODELS`,
+    not a two-entry table: a FLUX 3 repo that appears in no override table
+    builds, and the recipe names the registry key's config."""
+    worker, _ = load_worker(monkeypatch, base)
+    repo = "black-forest-labs/flux-3-image-klein"
+    # The worker imports `formats` as a top-level module (its own instance),
+    # so the registry reader is installed on THAT one.
+    monkeypatch.setattr(worker.formats, "_mflux_registry_reader",
+                        lambda: formats.parse_mflux_available_models(
+        'AVAILABLE_MODELS = {"flux3-image-klein": ModelConfig(priority=11, '
+        'aliases=["flux3"], model_name="%s", base_model=None)}' % repo))
+    recipe = worker._recipe_for(repo, "generate")
+    assert (recipe["variant"], recipe["config"]) == ("Flux3Klein", "flux3_image_klein")
+    assert worker._recipe_for(repo, "edit")["variant"] == "Flux3KleinEdit"
+    assert worker._recipe_for(repo, "fill") is None
+
+
 def test_a_repo_in_the_WRONG_FORMAT_is_named_as_the_cause(monkeypatch, base, tmp_path):
     """A known repo id whose download is a diffusers or GGUF layout. mflux's own
     answer is a ValueError about path resolution, which says nothing a user can

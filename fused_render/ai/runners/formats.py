@@ -209,6 +209,145 @@ MFLUX_VARIANTS = {
     },
 }
 
+#: **Derived variants: the installed mflux's own `AVAILABLE_MODELS`, not a
+#: table we maintain.** Shape of that registry (read off mflux 0.23's
+#: `mflux/models/common/config/model_config.py`): a module-level dict
+#: literal `AVAILABLE_MODELS = {"<key>": ModelConfig(priority=..,
+#: aliases=[..], model_name="<hf repo id>", base_model=None, ...), ...}`.
+#: The KEY (`"flux3-image-klein"`) names the `ModelConfig.<key with - as _>()`
+#: staticmethod that returns the entry; the VALUE is a `ModelConfig(...)` call
+#: whose `model_name` keyword is the Hub repo id. It names NO variant class —
+#: which class denoises a checkpoint lives in the per-family packages
+#: (`mflux.models.flux2.variants`, `...flux3.variants`) — so the one thing
+#: that stays a hand table is `MFLUX_FAMILIES` below: registry-key prefix ->
+#: variant classes, one row per model FAMILY (not per repo), which is what
+#: made the old per-repo `MFLUX_VARIANTS` rot (a new klein or FLUX 3 repo was
+#: refused until somebody typed its id). `MFLUX_VARIANTS` /
+#: `MFLUX_EDIT_VARIANTS` / `MFLUX_FILL_VARIANTS` are now OVERRIDES layered
+#: over the derived map: they keep the ids mflux does not list (the
+#: mlx-community quantised conversions) and win for any id they name.
+#:
+#: Longest prefix wins. `vae` is the autoencoder class name the live
+#: preview's projection table is keyed by; a family whose latent space has
+#: not been fitted names none and simply gets no thumbnail.
+MFLUX_FAMILIES = (
+    ("flux3-image-klein", {
+        "variant": "Flux3Klein",
+        "module": "mflux.models.flux3.variants",
+        "edit": {"variant": "Flux3KleinEdit", "module": "mflux.models.flux3.variants"},
+    }),
+    ("flux2-klein", {
+        "variant": "Flux2Klein",
+        "module": "mflux.models.flux2.variants",
+        "vae": "AutoencoderKLFlux2",
+        "edit": {"variant": "Flux2KleinEdit",
+                 "module": "mflux.models.flux2.variants.edit.flux2_klein_edit"},
+    }),
+)
+
+
+def parse_mflux_available_models(source: str) -> dict[str, str]:
+    """`{repo id: registry key}` read statically (`ast`, never imported —
+    importing mflux pulls in `mlx.core`) out of mflux's `model_config.py`
+    source: each `AVAILABLE_MODELS` entry's `model_name`, plus any repo-shaped
+    (`/`-containing) alias. Several entries can share a repo id (the FLUX.1-dev
+    ControlNets); the FIRST in source order wins, which is the plain
+    text-to-image entry. `{}` on a syntax error or no registry found."""
+    import ast
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    found: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "AVAILABLE_MODELS"
+                   for t in node.targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        for key_node, value_node in zip(node.value.keys, node.value.values):
+            if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
+                continue
+            if not isinstance(value_node, ast.Call):
+                continue
+            for kw in value_node.keywords:
+                if kw.arg == "model_name":
+                    if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                        found.setdefault(kw.value.value, key_node.value)
+                elif kw.arg == "aliases" and isinstance(kw.value, ast.List):
+                    for elt in kw.value.elts:
+                        if (isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                                and "/" in elt.value):
+                            found.setdefault(elt.value, key_node.value)
+    return found
+
+
+def _installed_mflux_registry() -> dict[str, str]:
+    """The default registry reader: the mflux importable in THIS process (the
+    mflux runner's own venv — where the worker runs). `{}` anywhere else; the
+    server process has no mflux and installs its own reader
+    (`set_mflux_registry_reader`, from `hub_loadable`)."""
+    import importlib.util
+    import os
+    try:
+        spec = importlib.util.find_spec("mflux")
+    except (ImportError, ValueError):
+        return {}
+    if spec is None or not spec.submodule_search_locations:
+        return {}
+    path = os.path.join(list(spec.submodule_search_locations)[0],
+                        "models", "common", "config", "model_config.py")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return parse_mflux_available_models(fh.read())
+    except OSError:
+        return {}
+
+
+_mflux_registry_reader = _installed_mflux_registry
+
+
+def set_mflux_registry_reader(reader) -> None:
+    """Install the `{repo id: registry key}` reader (a zero-arg callable);
+    `None` restores the in-process default. Tests and `hub_loadable` use it."""
+    global _mflux_registry_reader
+    _mflux_registry_reader = reader or _installed_mflux_registry
+
+
+def _derived_mflux_family(model_id: str) -> tuple[str, dict] | None:
+    key = _mflux_registry_reader().get(model_id)
+    if not key:
+        return None
+    best = None
+    for prefix, family in MFLUX_FAMILIES:
+        if key == prefix or key.startswith(prefix + "-"):
+            if best is None or len(prefix) > len(best[0]):
+                best = (prefix, family)
+    if best is None:
+        return None
+    return key, best[1]
+
+
+def mflux_variant_recipe(model_id: str) -> dict | None:
+    """The plain text-to-image recipe for `model_id`: the `MFLUX_VARIANTS`
+    override row when there is one, else one derived from the installed
+    mflux's registry key plus its family (`MFLUX_FAMILIES`), else None."""
+    row = MFLUX_VARIANTS.get(model_id)
+    if row is not None:
+        return dict(row)
+    derived = _derived_mflux_family(model_id)
+    if derived is None:
+        return None
+    key, family = derived
+    recipe = {"variant": family["variant"], "module": family["module"],
+              "config": key.replace("-", "_")}
+    if family.get("vae"):
+        recipe["vae"] = family["vae"]
+    return recipe
+
+
 #: The EDIT counterpart of `MFLUX_VARIANTS` — one entry per model that also
 #: supports base-image editing, keyed by the same repo id.
 #:
@@ -266,17 +405,18 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
     `MFLUX_EDIT_VARIANTS`'s own comment for why that would otherwise be a
     silent drift rather than a loud one.
     """
+    plain = mflux_variant_recipe(model_id)
     edit = MFLUX_EDIT_VARIANTS.get(model_id)
-    plain = MFLUX_VARIANTS.get(model_id)
+    if edit is None and plain is not None and model_id not in MFLUX_VARIANTS:
+        derived = _derived_mflux_family(model_id)
+        edit = derived[1].get("edit") if derived else None
     if edit is None or plain is None:
         return None
-    # `.get("vae")`, not a hard index: `MFLUX_VARIANTS`'s own docstring
-    # declares the key optional ("a variant with no `vae` simply gets no
-    # preview"), and `_build_variant` reads it the same soft way
-    # (`recipe.get("vae")`) — a plain row that ever ships without one must
-    # not make the edit recipe raise where the plain row itself would not.
-    # `config` stays a hard index: every row in this table names one, and
-    # `_build_variant` reads it unconditionally.
+    # `.get("vae")`, not a hard index: the plain recipe's `vae` is optional
+    # ("a variant with no `vae` simply gets no preview"), and `_build_variant`
+    # reads it the same soft way (`recipe.get("vae")`). `config` stays a hard
+    # index: every recipe names one, and `_build_variant` reads it
+    # unconditionally.
     return {**edit, "config": plain["config"], "vae": plain.get("vae")}
 
 
@@ -345,7 +485,7 @@ def mflux_native_mode(model_id: str) -> str | None:
     (one checkpoint cannot both need and refuse a mask); `generate` wins
     there only so the answer is deterministic.
     """
-    if model_id in MFLUX_VARIANTS:
+    if mflux_variant_recipe(model_id) is not None:
         return "generate"
     if model_id in MFLUX_FILL_VARIANTS:
         return "fill"
