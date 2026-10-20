@@ -189,6 +189,15 @@ Style it after `ui/PermCard.tsx` and `PlanCard.tsx`, using existing classes and 
 - The plugin's "make an artifact" and "explain simpler/more" follow-ups.
 - Any mid-turn server-side scheduler. The page's polling drives it, so a closed tab means no checks. That is acceptable.
 
+## Feedback
+
+Answers to a card steer later checks, as in Claude Code's own "You should know". State lives in one file shared by all runs, `headsup_memory.json`, next to the runs directory: `{seen, known, ignored_in_a_row, skip_checks}` (atomic write under `_lock`; missing or corrupt means defaults; lists keep the last 50, deduped with `_norm`).
+
+- A shown note's `learn` line goes into `seen`. `generate()` appends "already shown" (seen) and "already understood" (known) sections to the prompt when non-empty, and drops a reply whose `learn` matches either list.
+- `POST .../headsup/dismiss` takes `answer`: `got_it` (adds the line to `known`), `dismiss`, or `chat`; unknown means `dismiss`. Any answer resets `ignored_in_a_row` and `skip_checks`.
+- A note that expires unanswered (the two-turn rule) adds one to `ignored_in_a_row` and sets `skip_checks = 0 if n <= 2 else min(16, 2 ** (n - 3))`. While `skip_checks > 0`, `_poll` consumes one due check without spawning (the bucket still counts as checked).
+- We also merge in Claude Code's own `seen`/`known` lists, read-only, from `~/.claude/plugins/store/cc-plugin-you-should-know_builtin-*.json` (`CLAUDE_CONFIG_DIR` respected). Its back-off counters are ignored, and we never write to those files.
+
 ## Builder log
 
 (append here)
@@ -225,3 +234,4 @@ Style it after `ui/PermCard.tsx` and `PlanCard.tsx`, using existing classes and 
 - **Fix round 5 (task B).** `countUserTurns` also skips rows with a truthy `pending` (queued/unsent optimistic rows; the run controller drops `pending` on adoption), so they cannot age the card. Test failed first; HeadsUp + useHeadsUp suites 18 pass.
 - **Brevity round.** Notes were too verbose: prompt now asks for 1-3 short bullets (<=20 words, no recap, "read in five seconds"); `parse_note` caps at 3 bullets and accepts 1. Tests added first and failed; test_chat_headsup passes.
 - **Refresh/restart fix.** The card vanished on refresh because an idle chat never polled, and the note lived only in the `_state` LRU. `useHeadsUp` now polls once on every mount / run / enable (a just-stopped run keeps its 1.5 s settle poll); a restored note uses the current `userTurns` as its base. `headsup.py` persists `{note, note_id, offered_turn, dismissed}` to `<run_dir>/headsup.json` (atomic temp + `os.replace`) on store, expiry and dismiss, and `_run_state` seeds from it (missing/corrupt ignored); `checked`/`inflight` stay in memory. Tests added for both sides.
+- **Feedback round.** Answers steer later checks: `headsup_memory.json` (seen/known/ignored_in_a_row/skip_checks), prompt sections + reply dedupe, `answer` on the dismiss route and hook, ignore back-off, read-only merge of Claude Code's own lists. Tests first; test_chat_headsup 66 pass, HeadsUp + useHeadsUp 20 pass.
