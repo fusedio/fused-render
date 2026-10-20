@@ -1,8 +1,9 @@
 /* ---- /monitor — whole-machine process monitor (shell/monitor) -----------
    The settings pages' density (13px body, 12px secondary, --border hairlines,
-   --bg-alt cards) on a page that fills #content top to bottom: meters and
+   --bg-alt cards) on a page that fills #content top to bottom. On Processes, meters and
    toolbar stay put, the TABLE scrolls on its own, and the selection dock sits
-   under it so choosing rows never moves the rows under the pointer. Every
+   under it so choosing rows never moves the rows under the pointer; Overview
+   and Network instead scroll as one page. Every
    colour is a token (tests/test_theme.py), so light and dark both repaint. */
 .monitor-page {
   flex: 1 1 auto;
@@ -915,8 +916,17 @@ th[aria-sort="descending"] .monitor-sort {
   overflow: hidden;
 }
 
+/* Overview and Network scroll as a whole page (header included), so the
+   scrollbar sits at the pane edge, not at the 1280px column's edge.
+   Processes keeps the fixed page where only its table scrolls. */
+.monitor-page.is-page-scroll {
+  overflow-y: auto;
+  padding-bottom: 24px;
+}
+
 .monitor-tab-scroll {
-  overflow: auto;
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .monitor-tab-sub {

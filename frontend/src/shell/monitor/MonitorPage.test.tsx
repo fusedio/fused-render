@@ -50,3 +50,12 @@ test("a deep link opens its tab; a click switches and writes the URL in the hand
     (globalThis as { history?: unknown }).history = realHistory;
   }
 });
+
+test("Overview and Network scroll as a page; Processes keeps the fixed page", async () => {
+  const root = (r: ReactTestRenderer) => r.root.findAll((n) => typeof n.type === "string" && /\bmonitor-page\b/.test(n.props.className ?? ""))[0];
+  const o = await mount();
+  expect(root(o).props.className).toContain("is-page-scroll");
+  act(() => o.unmount());
+  const p = await mount({ tab: "processes" } as MonitorParams);
+  expect(root(p).props.className).not.toContain("is-page-scroll");
+});
