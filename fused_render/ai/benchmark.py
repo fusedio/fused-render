@@ -1333,7 +1333,7 @@ def run(model: str, capability: str) -> dict:
     }
 
     try:
-        runner = registry.for_capability(capability)
+        runner = registry.resolve_for_model(capability, model).runner
         if runner is None:
             raise supervisor.SupervisorError(
                 registry.unavailable_reason(capability)

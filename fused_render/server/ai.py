@@ -898,7 +898,7 @@ def _images_unsupported_by_runner(model: str) -> str | None:
     from fused_render.ai import registry
     from fused_render.server.routers import ai_runtime
 
-    runner = registry.for_capability(registry.TEXT_GENERATION)
+    runner = registry.resolve_for_model(registry.TEXT_GENERATION, model).runner
     runner_code = runner.code if runner else None
     if ai_runtime._accepts_image(registry.TEXT_GENERATION, runner_code, model):
         return None

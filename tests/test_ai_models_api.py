@@ -1506,22 +1506,43 @@ def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
     # blank on exactly the cards that need explaining.
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    # Since D1387 the runner follows the MODEL, so a Mac no longer parks this
+    # repo behind MLX FLUX by default; the non-serving site is reached by a
+    # per-model pin naming an engine that does not read the format.
+    monkeypatch.setattr(_ai_registry, "model_pin", lambda model_id: "mflux-image")
     other = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
     assert other["code"] == "diffusers-image" and other["available"] is False
     assert other["shortLabel"] == "Diffusers (CPU)"
     assert other["familyLabel"] == "Diffusers"
 
 
-def test_a_repo_the_OTHER_engine_reads_is_not_offered_a_load(client, hub, monkeypatch):
-    """A capability holds one resident model and the registry picks which
-    backend loads it — so on a Mac, whose image engine is MLX FLUX, a Diffusers
-    repo is not loadable today however available the Diffusers runner is. The
-    Load would reach mflux, which refuses it by name.
-
-    The reason names the remedy, because there is one and it is one switch
-    away: this is not a machine that cannot run the model."""
+def test_a_repo_the_OTHER_engine_reads_is_served_by_that_engine(client, hub, monkeypatch):
+    """The rule this test used to pin was "on a Mac, whose image engine is MLX
+    FLUX, a Diffusers repo is not offered a Load": the registry picked the
+    engine by capability, so the Load would have reached mflux, which refuses
+    it by name. Since D1387 the runner follows the model — the Diffusers repo is
+    served by Diffusers, which is available on the same Mac — so the card
+    offers it with no reason attached."""
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "Flux2KleinPipeline"}))
+    engine = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert engine["code"] == "diffusers-image"
+    assert engine["available"] is True
+    assert engine["reason"] is None
+
+
+def test_a_PINNED_engine_that_does_not_read_the_repo_is_not_offered_a_load(
+        client, hub, monkeypatch):
+    """The escape hatch's other face: a per-model pin outranks the classifier,
+    so pinning a Diffusers repo to mflux puts the card back to the old state —
+    not loadable, with the remedy named (the Engines tab, where the pin lives)."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(_ai_registry, "model_pin", lambda model_id: "mflux-image")
     repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
                  snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "model_index.json",
@@ -1761,6 +1782,10 @@ def test_a_cards_engine_reason_comes_from_the_probe_that_PICKED_the_row(
     # counting the resolution's probes too and would pass for the wrong reason.
     monkeypatch.setattr(_ai_registry, "for_capability",
                         lambda capability: _ai_registry.by_code("llamacpp-text"))
+    monkeypatch.setattr(
+        _ai_registry, "resolve_for_loaders",
+        lambda capability, model_id, loaders: _ai_registry.Resolution(
+            _ai_registry.by_code("llamacpp-text")))
 
     # An MLX text checkpoint on Linux: the only runner that reads it is the one
     # that cannot run here, which is the branch that does the double probe.

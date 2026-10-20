@@ -68,6 +68,8 @@ def bench(tmp_path, monkeypatch):
     clock = Clock()
     monkeypatch.setattr(benchmark, "_now", clock)
     monkeypatch.setattr(benchmark.registry, "for_capability", lambda cap: FakeRunner)
+    monkeypatch.setattr(benchmark.registry, "resolve_for_model",
+                        lambda cap, model: benchmark.registry.Resolution(FakeRunner))
     # Warm by default: the cold path is one test's subject, not every test's
     # preamble.
     monkeypatch.setattr(benchmark.supervisor, "ready_worker",
@@ -778,6 +780,8 @@ def test_a_capability_with_no_runner_here_fails_without_loading(bench, monkeypat
     have no runner and on this Mac it does, so the resolution is stubbed to
     `None` and the assertion is about what `run()` does with that."""
     monkeypatch.setattr(benchmark.registry, "for_capability", lambda cap: None)
+    monkeypatch.setattr(benchmark.registry, "resolve_for_model",
+                        lambda cap, model: benchmark.registry.Resolution(None))
     monkeypatch.setattr(
         benchmark.registry, "unavailable_reason",
         lambda cap: "needs Apple Silicon (this is linux/x86_64)")

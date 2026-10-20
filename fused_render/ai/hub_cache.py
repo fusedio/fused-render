@@ -1339,7 +1339,13 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     # a Diffusers repo on a Mac whose image engine is MLX FLUX, and a Load there
     # reaches a runner that refuses it by name. That is the exact promise this
     # field exists to stop the page making.
-    serving = _ai_registry.for_capability(capability)
+    # Resolved FOR THIS REPO (D1387): a pin, then the engines that read it, then
+    # the capability's preference. `resolve_for_loaders`, not `resolve_for_model`,
+    # because `meta.loaders` is the evidence being handed in — asking the cache
+    # for it again from here would recurse.
+    serving = (_ai_registry.resolve_for_loaders(
+        capability, repo_id, tuple(meta.loaders)).runner
+        if repo_id else _ai_registry.for_capability(capability))
     if serving is not None and any(r.code == serving.code for r in candidates):
         status = serving.available()
         return {
@@ -1425,6 +1431,11 @@ class CacheReading(NamedTuple):
     tag: str | None = None
     runner_code: str | None = None
     runner_reason: str | None = None
+    #: EVERY runner code whose format check accepts this snapshot
+    #: (`_RepoMeta.loaders`), not only the one `_engine` named: two runners of
+    #: one capability can both read a repo (mflux and diffusers on FLUX.2), and
+    #: `registry.resolve_for_model` picks among them (D1387).
+    loaders: tuple[str, ...] = ()
 
 
 def embed_family(repo_id: str) -> str | None:
@@ -1655,7 +1666,8 @@ def cached_capability(repo_id: str) -> CacheReading:
     return CacheReading(True, capability, looks_like,
                         reading.support, reading.reason, reading.tag,
                         _row.get("code") if _row else None,
-                        _row.get("reason") if _row else None)
+                        _row.get("reason") if _row else None,
+                        tuple(meta.loaders))
 
 
 def _article(word: str) -> str:

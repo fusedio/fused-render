@@ -16,7 +16,9 @@ similar the word is: it says which local-model backend serves a capability when
 more than one can, and `"auto"` (the default, and the absence of a key) means
 the registry's own ordering decides. See ``inference_engines``; the resolution,
 including what happens to a preference this machine cannot honour, belongs to
-``ai/registry.py``.
+``ai/registry.py``. Since D1387 that preference is the TIE-BREAKER among the
+runners that can read a given model, no longer the sole selector, and a model
+can carry its own pin (**model_engines**, ``model_engines()``) that outranks it.
 
 Five more preferences are persisted: **reader_enabled** (whether the Reader
 listen-to-files accessibility mode is offered — opt-in, default off; see

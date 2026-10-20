@@ -1641,7 +1641,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str,
         hub_cache.discard_empty_shell(model)
 
 
-def _runner_or_raise(capability: str) -> registry.Runner:
+def _runner_or_raise(capability: str, model: str | None = None) -> registry.Runner:
     """The runner serving `capability`, or a SupervisorError saying why there isn't
     one — the machine's reason ("needs Apple Silicon") where a runner exists but
     cannot run here, and a bare "no runner provides …" where none is registered.
@@ -1653,7 +1653,11 @@ def _runner_or_raise(capability: str) -> registry.Runner:
     three wrong answers the moment text generation had two — all three named the
     Apple Silicon runner on machines that were never going to use it.
     """
-    runner = registry.for_capability(capability)
+    # With a MODEL in hand the runner follows the model (D1387): a pin, then
+    # the runners that read it, with the capability's preference as the
+    # tie-breaker. Without one it is the capability-level answer as before.
+    runner = (registry.resolve_for_model(capability, model).runner if model
+              else registry.for_capability(capability))
     if runner is None:
         raise SupervisorError(registry.unavailable_reason(capability)
                               or f"no runner provides {capability!r}")
@@ -1820,7 +1824,7 @@ def _start_resident(model: str, capability: str, *,
     when `request_path` is set, and stamped onto the new `Worker` either way,
     so a LATER request-path eviction of this worker knows who loaded it.
     """
-    runner = _runner_or_raise(capability)
+    runner = _runner_or_raise(capability, model)
     _require_build_tools()
 
     # A worker is about to become resident (joined below, or spawned fresh) —
@@ -2026,7 +2030,7 @@ def load(model: str, capability: str, *, weights_only: bool = False,
                                hold=hold, requester_id=requester_id,
                                requester_label=requester_label)[0]
 
-    runner = _runner_or_raise(capability)
+    runner = _runner_or_raise(capability, model)
     _require_build_tools()
 
     job = job_id_for(model)
@@ -2104,7 +2108,7 @@ def _start_render(capability: str, model: str, request: dict, job: str,
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
-    _runner_or_raise(capability)
+    _runner_or_raise(capability, model)
     _require_build_tools()
 
     # A model-slot conflict is checked HERE too, for the reason the runner
@@ -2359,7 +2363,7 @@ def start_transcribe(model: str, request: dict, job: str, page: str = "",
     identity (`transcribe_row_fields`) rather than as a one-off, the same as
     every other field a rebuilt row must not lose.
     """
-    _runner_or_raise(registry.SPEECH_TO_TEXT)
+    _runner_or_raise(registry.SPEECH_TO_TEXT, model)
     _require_build_tools()
     # See `_start_render`'s identical pre-check: a transcription that loses a
     # standoff answers with it before the row opens, not as a generic error
@@ -2694,7 +2698,10 @@ def evict_stale_engines() -> list[str]:
     with _lock:
         stale = []
         for worker in list(_workers.values()):
-            resolved = registry.for_capability(worker.capability)
+            # The resolution FOR THE RESIDENT MODEL (D1387): the capability-level
+            # answer would call a model stale whenever its serving runner is
+            # not the one the preference names, and restart it forever.
+            resolved = registry.resolve_for_model(worker.capability, worker.model).runner
             if resolved is not None and resolved.code != worker.runner_code:
                 stale.append(worker)
     for worker in stale:
@@ -3296,7 +3303,7 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
     if _exited(worker):
         _drop_gone(worker)
         return None
-    resolved = registry.for_capability(capability)
+    resolved = registry.resolve_for_model(capability, worker.model).runner
     if resolved is not None and resolved.code != worker.runner_code:
         evict_stale_engines()
         return None

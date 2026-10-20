@@ -2005,7 +2005,9 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
             "'mask' needs 'image' — a mask says which region of a base image "
             "to repaint (white = repaint, black = keep), so fused.ai.image("
             "{image, mask}) needs both", status=400)
-    active_runner = registry.for_capability(registry.IMAGE_GENERATION)
+    # The runner for THIS model (D1387): a pin, then the engines that read it,
+    # then the capability's preference — the same resolution the load makes.
+    active_runner = registry.resolve_for_model(registry.IMAGE_GENERATION, model).runner
     # A FLUX.1 Fill checkpoint asked for a plain render or a whole-image
     # edit (no `mask`): refused here for the cost reason the model checks
     # below give — its `generate_image` requires a mask, and the worker's
@@ -2379,55 +2381,23 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         return _error(registry.unavailable_reason(registry.VIDEO_GENERATION)
                       or "no video model is configured", status=409)
 
-    # The runner that will actually SERVE this request — resolution is by
-    # CAPABILITY, not by `model` (`registry.py`'s own module docstring), so
-    # this is the same call `start_video`'s `_runner_or_raise` makes a few
-    # lines down, made here too because the request SHAPE (frame grid,
-    # canvas/step defaults) is that runner's fact, not the route's own.
-    # `None` when nothing can serve the capability at all — already answered
-    # with a 409 above via `catalog.default_for`'s dead branch, or about to
-    # be via `start_video`'s own error below; `video_traits_for` handles
-    # `None` by falling back to the shipping runner's own numbers.
-    serving_runner = registry.for_capability(registry.VIDEO_GENERATION)
-    traits = registry.video_traits_for(serving_runner.code if serving_runner else None)
-
-    # **Naming a model explicitly does NOT pick its runner.** Resolution is
-    # by CAPABILITY plus stored preference (`registry.resolve`), never by
-    # `model` — `start_video`'s own `_runner_or_raise` never reads it either.
-    # So naming a repo that some OTHER video runner reads would build and
-    # start the resolved worker against it anyway, raising deep inside
-    # `load()` after a (cheap, listing-only) Hub round trip — a confusing
-    # failure for someone who deliberately named the model they already have
-    # on disk. Refused here instead, naming the place a different engine IS
-    # reachable: the Engines tab, which is exactly the switch
-    # `registry.resolve` already honours (see that module's own docstring).
+    # The runner that will actually SERVE this request, for THIS model
+    # (D1387): a pin, then the engines whose format check reads it, then the
+    # capability's preference — the same call `start_video`'s
+    # `_runner_or_raise` makes a few lines down, made here too because the
+    # request SHAPE (frame grid, canvas/step defaults) is that runner's fact,
+    # not the route's own. `None` when nothing can serve the capability at all
+    # — already answered with a 409 above via `catalog.default_for`'s dead
+    # branch, or about to be via `start_video`'s own error below;
+    # `video_traits_for` handles `None` by falling back to the shipping
+    # runner's own numbers.
     #
-    # **CURRENTLY UNREACHABLE, and kept deliberately.** D468 dropped
-    # `h3-video`, leaving one video runner, and `formats.loaders` no longer
-    # names any video runner but `ltx-video` — so `runner_code !=
-    # serving_runner.code` cannot hold today. The guard is generic over
-    # runners rather than about those two specifically, and it is what a
-    # second video engine's own arrival would otherwise have to remember to
-    # add back; the same argument `formats.py`'s withdrawn-runner early
-    # returns make for themselves. Silent for anything not already cached —
-    # there is no
-    # format evidence to refuse on without a network call this route has
-    # never made, and an uncached id is the ordinary "let the runner's own
-    # `load()` refusal explain it" path every other capability already
-    # relies on.
-    if serving_runner is not None:
-        reading = cached_capability(model)
-        if (reading.cached and reading.capability == registry.VIDEO_GENERATION
-                and reading.runner_code is not None
-                and reading.runner_code != serving_runner.code):
-            other = registry.by_code(reading.runner_code)
-            other_name = other.short if other is not None else reading.runner_code
-            return _error(
-                f"{model} is an {other_name} model, and video generation is "
-                f"set to {serving_runner.short}, which does not read this "
-                f"format — switch the video engine to {other_name} on the "
-                f"Engines tab, or name a model {serving_runner.short} reads.",
-                status=409)
+    # There used to be a guard here refusing a cached model another video
+    # engine reads ("Naming a model explicitly does NOT pick its runner").
+    # Resolution now follows the model, so the request is simply served by the
+    # engine that reads it and the refusal has nothing left to say.
+    serving_runner = registry.resolve_for_model(registry.VIDEO_GENERATION, model).runner
+    traits = registry.video_traits_for(serving_runner.code if serving_runner else None)
 
     try:
         steps = max(_MIN_VIDEO_STEPS,
@@ -2731,7 +2701,9 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     if apple:
         return _apple_transcribe(body, source, task, diarizing, wants_words)
 
-    engine = registry.for_capability(registry.SPEECH_TO_TEXT)
+    model = _model_of(body) or catalog.default_for(registry.SPEECH_TO_TEXT)
+    engine = (registry.resolve_for_model(registry.SPEECH_TO_TEXT, model).runner if model
+              else registry.for_capability(registry.SPEECH_TO_TEXT))
     if engine is not None:
         try:
             engine_options.unsupported_or_raise(
@@ -2740,7 +2712,6 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         except ValueError as e:
             return _error(str(e), status=400)
 
-    model = _model_of(body) or catalog.default_for(registry.SPEECH_TO_TEXT)
     if not model:
         # See `api_ai_image`: no runner and no curated default are different
         # facts, and only the first one tells the user what to do.
@@ -3432,7 +3403,7 @@ def api_ai_vision(body: dict = Body(...), x_fused: str | None = Header(default=N
     for key in ("text", "reasoning", "objects", "points"):
         if key in result:
             payload[key] = result[key]
-    runner = registry.for_capability(registry.VISION)
+    runner = registry.resolve_for_model(registry.VISION, model).runner
     return {
         "ok": True,
         "result": ai_result(
