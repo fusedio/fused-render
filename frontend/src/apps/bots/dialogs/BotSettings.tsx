@@ -32,7 +32,6 @@ import type { BotDialogValue } from "./actions";
 import { askConfirm } from "./ask";
 import { FacePopover } from "./FacePopover";
 import { PhoneSection } from "./PhoneSection";
-import { useBotTerminalsFeature } from "@platform/lib/bot-terminals-flag";
 import { RoutinesSection } from "./RoutinesSection";
 import { Row, Rows } from "./SettingsRow";
 import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
@@ -71,8 +70,8 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [memory, setMemory] = useState(init.memory);
   const [approval, setApproval] = useState<string>(init.approval);
   const [buildAccess, setBuildAccess] = useState<string>(init.buildAccess);
-  // The Terminal row shows only while the global "Bot terminals" preference is on (and never for Super Bot, which has Bash).
-  const terminalFeature = useBotTerminalsFeature() === true && !isSuper;
+  // The Terminal row shows for every bot except Super Bot, which has Bash.
+  const terminalFeature = !isSuper;
   const [terminal, setTerminal] = useState(init.terminal);
   const [superAccess, setSuperAccess] = useState<string>(init.superAccess);
   const [encrypt, setEncrypt] = useState(init.encrypt);

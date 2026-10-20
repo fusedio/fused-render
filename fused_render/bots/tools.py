@@ -291,7 +291,7 @@ TOOL_SPECS: dict[str, dict] = {
                      "inputSchema": _s(bot=({"type": "string", "description": "the bot's current name from BOTS"}, True),
                                        name=STR, instructions=STR, model=STR, effort=STR,
                                        face={"type": "object", "description": FACE_DESC})},
-    # The bot's own terminal (agent engine, only while bot_terminals_enabled and the bot's `terminal` setting; docs §16).
+    # The bot's own terminal (agent engine, only while the bot's `terminal` setting is on; docs §16).
     "terminal_run": {
         "description": "Run one shell command in your own terminal (the user sees it live next to the browser) and get its "
                        "output, exit code and working directory back. The shell stays open between calls, so `cd` and "
@@ -349,7 +349,7 @@ TERMINAL_TOOLS = ("terminal_run", "terminal_read", "terminal_interrupt")
 TERMINAL_WAIT_DEFAULT_S, TERMINAL_WAIT_MAX_S = 30, 120
 TERMINAL_OUTPUT_LINES = 200
 TERMINAL_READ_DEFAULT, TERMINAL_READ_MAX = 50, 500
-TERMINAL_OFF = ("error: bot terminals are off (Preferences › Optional features, then this bot's settings)")
+TERMINAL_OFF = ("error: bot terminals are off (turn on Terminal in this bot's settings)")
 #: An ALLOWLIST scanned by quote state: outside quotes only plain words, flags, paths count; single quotes are
 #: fully literal (any printable ASCII); double quotes also allow `< > | & ; ( ) { } * ? [ ] # ^` but still reject `$`,
 #: backtick, `\` and `!`. Anything else (chaining, redirects, expansions, groups, globs, history, an unbalanced quote,
@@ -403,15 +403,10 @@ def effective_build_access(bot) -> str:
 
 def terminal_enabled(bot) -> bool:
     """Whether this bot may drive its own terminal right now. All of: not
-    Windows (the pty is POSIX-only), the global "Bot terminals" preference is
-    on, the bot's own `terminal` setting is on, it is not Super Bot (which
+    Windows (the pty is POSIX-only), the bot's own `terminal` setting is on, it is not Super Bot (which
     already has Bash), and its engine resolves to `agent` (the steps engine,
     local models, never gets terminal tools)."""
     if os.name == "nt":
-        return False
-    from fused_render.shell import prefs
-
-    if not prefs.bot_terminals_enabled():
         return False
     if (getattr(bot, "meta", None) or {}).get("terminal") is not True or is_super(bot):
         return False

@@ -1469,12 +1469,6 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it, and the reader
   // (marketplace-flag.ts) treats absence as off.
   marketplace?: { enabled: boolean };
-  // Whether bots may drive their own terminal (opt-in, default off —
-  // shell/prefs.py `bot_terminals_enabled`). The global half of two switches;
-  // turning it off closes every bot terminal. OPTIONAL: an older server
-  // answers without it, and the reader (bot-terminals-flag.ts) treats absence
-  // as off.
-  bot_terminals?: { enabled: boolean };
   // Whether the Share sheet offers its GitHub install-link card (opt-in,
   // default off — shell/prefs.py `github_link_enabled`). Gates the card, not
   // /api/share/github. OPTIONAL: an older server answers without it, and the
@@ -1865,10 +1859,6 @@ export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
-}
-
-export function putBotTerminalsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { bot_terminals_enabled: enabled });
 }
 
 export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
