@@ -373,6 +373,9 @@ class ShellEventParser:
         #: output begins) and of the 133;D that ended it (None while running).
         self.output_start: Optional[int] = None
         self.output_end: Optional[int] = None
+        #: How many commands have finished (a 133;D that ended a running one):
+        #: a caller that typed a command waits for this to move.
+        self.done_count = 0
 
     def feed(self, data: bytes) -> None:
         buf = self._tail + data
@@ -416,6 +419,7 @@ class ShellEventParser:
             elif kind == "D":
                 if self.running:
                     self.running = False
+                    self.done_count += 1
                     self.output_end = seq_start
                     try:
                         self.last_exit = int(arg)
