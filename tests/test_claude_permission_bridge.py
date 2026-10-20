@@ -2480,3 +2480,20 @@ def test_a_cancel_for_an_unknown_request_is_ignored(tmp_path):
         assert not list(perm_dir.glob("*.res.json"))
     finally:
         s.close()
+
+
+def test_permission_server_does_not_import_urllib_request_eagerly():
+    """~10 MB resident per session: `urllib.request` is imported only when an
+    event or terminal call is actually sent."""
+    import subprocess
+    import sys
+    path = os.path.join("fused_render", "claude_agent", "permission_server.py")
+    code = (
+        "import importlib.util, sys\n"
+        "spec = importlib.util.spec_from_file_location('ps_mod', sys.argv[1])\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "print('urllib.request' in sys.modules)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code, path],
+                         capture_output=True, text=True, check=True).stdout
+    assert out.strip() == "False"
