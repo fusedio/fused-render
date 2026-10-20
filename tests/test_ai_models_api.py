@@ -1514,7 +1514,9 @@ def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
             False, "not here")) if r.code.startswith("diffusers-image") else r
         for r in _ai_registry.all_runners()))
     other = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
-    assert other["code"] == "diffusers-image" and other["available"] is False
+    first = next(r.code for r in _ai_registry.all_runners()
+                 if r.code.startswith("diffusers-image"))
+    assert other["code"] == first and other["available"] is False
     assert other["shortLabel"].startswith("Diffusers")
     assert other["familyLabel"] == "Diffusers"
 
