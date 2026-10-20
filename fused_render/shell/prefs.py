@@ -733,6 +733,18 @@ def calls_retention_days() -> int:
     return DEFAULT_CALLS_RETENTION_DAYS
 
 
+DEFAULT_CLAUDE_MAX_CONCURRENT_SESSIONS = 10
+
+
+def claude_max_concurrent_sessions() -> int:
+    """How many Claude sessions may run at once before the scheduler queues the
+    rest (default 10). 0 = unlimited. Read by `session_cap.cap`."""
+    value = read_prefs().get("claude_max_concurrent_sessions")
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 64:
+        return value
+    return DEFAULT_CLAUDE_MAX_CONCURRENT_SESSIONS
+
+
 def ai_idle_unload_minutes() -> int:
     """How long a resident model may sit idle before the reaper unloads it
     (default 5). 0 disables the reaper — see `ai.supervisor.reap_idle`."""
@@ -964,6 +976,7 @@ def _prefs_response() -> dict:
             **_calls_store(),
             **_calls_effective(),
         },
+        "claude_sessions": {"max_concurrent": claude_max_concurrent_sessions()},
         # How long an idle local AI model stays resident before the reaper
         # unloads it (SPEC AI-13). Same store/effective/forced_by shape as
         # `calls` above, minus a separate `_store()` helper — there is no
@@ -1362,6 +1375,15 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 )
             prefs["calls_retention_days"] = value
             changed = True
+        if "claude_max_concurrent_sessions" in body:
+            value = body.get("claude_max_concurrent_sessions")
+            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 64:
+                return JSONResponse(
+                    {"error": "'claude_max_concurrent_sessions' must be an integer between 0 and 64"},
+                    status_code=400,
+                )
+            prefs["claude_max_concurrent_sessions"] = value
+            changed = True
         if "ai_idle_unload_minutes" in body:
             value = body.get("ai_idle_unload_minutes")
             if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1_440:
@@ -1474,6 +1496,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "
                           "'calls_params', 'calls_retention_days', "
+                          "'claude_max_concurrent_sessions', "
                           "'ai_idle_unload_minutes', 'workbench_env', 'launcher_hotkey' and/or "
                           "'launcher_row_modifier')"},
                 status_code=400,

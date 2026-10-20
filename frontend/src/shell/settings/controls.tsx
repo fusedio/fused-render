@@ -58,6 +58,7 @@ import {
   CallLogControl,
   CallParamsControl,
   CallRetentionControl,
+  ClaudeMaxSessionsControl,
   DiagnosticsControl,
   IndexQueryControl,
 } from "./advanced";
@@ -85,6 +86,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "task-recaps": TaskRecapsControl,
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
+  "claude-max-sessions": ClaudeMaxSessionsControl,
   "chat-headsup": ChatHeadsupControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,

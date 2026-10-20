@@ -374,6 +374,14 @@ const ENTRIES = [
     keywords: "mcp memory connectors strict lean",
   },
   {
+    id: "claude-max-sessions",
+    group: "tasks",
+    section: "Running",
+    label: "Concurrent Claude sessions",
+    description: "Tasks past this many running Claude sessions wait in the queue. Chat you start yourself is never held.",
+    keywords: "concurrent sessions limit cap memory queue parallel",
+  },
+  {
     id: "chat-headsup",
     group: "tasks",
     section: "Chat",
