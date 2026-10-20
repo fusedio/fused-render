@@ -282,8 +282,8 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
                 name (owner, 2026-10-20: the workbench link here, not the
                 folder; the clone folder is the Files tab's and the sidebar
                 menu's). A real anchor in a new tab: the native shell routes
-                target=_blank to the system browser. Until the URL is known,
-                the clone folder stands in, plain. */}
+                target=_blank to the system browser. "Loading…" until the
+                URL is known. */}
             {workbenchUrl ? (
               <a
                 className="app-page-folder"
@@ -295,11 +295,11 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
                 {workbenchUrl}
               </a>
             ) : (
-              dir && (
-                <span className="app-page-folder" title={dir}>
-                  {dir}
-                </span>
-              )
+              // Not the folder meanwhile (owner, 2026-10-20): a caption that
+              // changes meaning as it loads reads as two facts.
+              <span className="app-page-folder" aria-busy="true">
+                Loading…
+              </span>
             )}
           </div>
         </div>
