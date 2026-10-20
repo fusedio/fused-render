@@ -883,8 +883,12 @@ anything, and do not skip one because the change "looks small":
 | `workbench:canvas-toml` | ALWAYS — before the first edit. canvas.toml format, folder layout |
 | `workbench:fused-udfs` | writing or changing any `.py` UDF |
 | `workbench:json-ui-schemas` | writing or changing any `.json` widget |
+| `workbench:html-template-nodes` | writing or changing any `.html` node |
 | `workbench:fused-workbench-cli` | running any `fused` command |
 | `workbench:canvas-comments` | reading or resolving canvas comments |
+| `workbench:fused-runtime` | importing a library in a UDF, or a UDF fails with `ModuleNotFoundError` |
+| `workbench:fused-h3` | a UDF ingests to or queries H3 hex datasets (`fused.h3`) |
+| `workbench:fused-integrations` | a UDF reads, writes or calls a connected service (Snowflake, BigQuery, S3, Slack, LLM providers, …) |
 
 `workbench:` is the correct prefix. If you also see these skill names under a
 different prefix (`fused:` in particular), that is a stale copy from an older
