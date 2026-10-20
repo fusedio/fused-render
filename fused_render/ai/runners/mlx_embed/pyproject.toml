@@ -24,7 +24,11 @@
 #                   transformers' `AutoProcessor` even on this engine — see
 #                   `worker.py`'s module docstring); named here rather than
 #                   assumed because both are load-bearing.
-#   mlx-vlm         loads EmbeddingGemma 2 (`embedding_gemma2`), which
+#   mlx-vlm         (`>=0.7.9,<0.8`, the floor `mlx_text` carries too, from PyPI
+#                   as a wheel: this folder used to pin a GitHub source archive
+#                   with `allow_build = true` because `embedding_gemma2` was not
+#                   in a release yet; 0.7.9 ships it, so the archive and the
+#                   setuptools build it forced are gone) loads EmbeddingGemma 2 (`embedding_gemma2`), which
 #                   mlx-embeddings has no module for: one language model with
 #                   a vision tower and an audio tower, read through
 #                   `embedding_loader.load_embedding_model` and its own
@@ -48,7 +52,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "mlx-embeddings>=0.1,<0.2",
-    "mlx-vlm>=0.7.7,<0.8",
+    "mlx-vlm>=0.7.9,<0.8",
     "pillow",
     # HEIC/HEIF and AVIF, which plain Pillow cannot open. iPhones have shot
     # HEIC by default since iOS 11, so without this the `paths` half of an
@@ -61,9 +65,3 @@ dependencies = [
 # Not a distribution — a folder of scripts, not something to build and install.
 [tool.uv]
 package = false
-
-[tool.uv.sources]
-mlx-vlm = { url = "https://github.com/Blaizzy/mlx-vlm/archive/fec3f50379bb2cb0760ef3c8a68ebce9585e4d97.tar.gz" }
-
-[tool.fused-render.runner]
-allow_build = true
