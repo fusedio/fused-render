@@ -97,22 +97,20 @@ export function canvasPageTabFromSearch(search: string): CanvasPageTab {
     : DEFAULT_CANVAS_PAGE_TAB;
 }
 
-/** The canvas page, optionally on one NODE with one CHAT open: `?node=` +
- *  `node_file=` select the node (what CanvasWorkspace's `nodeFromUrl` reads;
- *  the stem is the UDF name, exactly as its `nodeHopFromUrl` derives it) and
- *  `session_id` is the conversation the right pane boots on — the node's
- *  chat when a node is named, the canvas chat otherwise (both read it off
- *  this page's URL). The Tasks page's door on a canvas task is built here
- *  (tasks-lib `taskHref`), so the page's own query grammar has one author. */
+/** The canvas page, on a tab, optionally naming one NODE: `?node=` (the
+ *  file's stem, the UDF name) is what the read-only Overview highlights in
+ *  the workbench (CanvasWorkspace's `nodeNameFromUrl`). The Tasks page's
+ *  door on a canvas task is built here (tasks-lib `taskHrefView`: the Tasks
+ *  tab with the task peeked), so the page's own query grammar has one author. */
 export function canvasPagePath(
   env: WorkbenchEnv,
   name: string,
-  opts?: { file?: string; sessionId?: string; tab?: CanvasPageTab; search?: string },
+  opts?: { file?: string; tab?: CanvasPageTab; search?: string },
 ): string {
   // `search`: the current query to carry across a TAB hop (a tab's own
-  // params — `?node=` on Overview, `?view=` on Tasks, `?file=` on Files —
-  // ride along untouched, the app page's rule); only `_tab` is rewritten,
-  // and dropped for the default so the default tab has one address.
+  // params — `?view=` on Tasks, `?file=` on Files — ride along untouched,
+  // the app page's rule); only `_tab` is rewritten, and dropped for the
+  // default so the default tab has one address.
   const q = new URLSearchParams(opts?.search ?? "");
   if (opts?.tab !== undefined) {
     if (opts.tab === DEFAULT_CANVAS_PAGE_TAB) q.delete(CANVAS_PAGE_TAB_PARAM);
@@ -122,9 +120,7 @@ export function canvasPagePath(
   if (file) {
     const dot = file.lastIndexOf(".");
     q.set("node", dot > 0 ? file.slice(0, dot) : file);
-    q.set("node_file", file);
   }
-  if (opts?.sessionId) q.set("session_id", opts.sessionId);
   const search = q.toString();
   return `/canvases/${env}/${name}` + (search ? "?" + search : "");
 }

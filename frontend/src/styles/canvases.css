@@ -218,29 +218,15 @@
   padding: 32px 0;
 }
 
-/* The canvas workspace's NODE PANE strip (CanvasWorkspace.tsx): the node's
-   name and the Claude / Code tabs over the explorer engine. Shares the
-   explorer sidebar's header rule (.preview-side-header, preview.css). */
-.canvas-node-side-name {
-  font-size: 12px;
-  font-weight: 600;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
-}
-
-/* The peek's close: the ✕ after the Claude / Code strip (CanvasWorkspace). */
-.canvas-node-close {
+/* The sync chrome's slot under the canvas page's header (CanvasPage.tsx):
+   the strip, its drawer and the failed-push banner, portalled in by the
+   Overview's CanvasWorkspace. Empty (zero height) until the Overview mounts
+   them. */
+.canvas-page-sync {
   flex: none;
-  margin-left: 6px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--fg-muted);
-}
-.canvas-node-close:hover {
-  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 /* ---- The canvas page (/canvases/<env>/<name>, CanvasPage.tsx) ------------ */

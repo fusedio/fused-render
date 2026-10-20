@@ -4,14 +4,15 @@
 // named by the `_tab` query param (absent = overview; api.ts
 // CANVAS_PAGE_TABS):
 //
-//   Overview  the canvas itself — the embedded live workbench under its sync
-//             strip (CanvasWorkspace.tsx), full width; READ ONLY in the sense
-//             that this page offers no editing surface of its own: no canvas
-//             chat beside it any more (a Claude task on the clone is the
-//             Tasks tab's job). The one pane it keeps is a NODE's — selecting
-//             a node in the workbench, or arriving with `?node=` (the Tasks
-//             page's door on a canvas task, PR #1791), opens that node's
-//             Claude / Code peek over the right edge.
+//   Overview  the canvas itself — the embedded workbench, READ ONLY
+//             (`fused_embed_readonly=1`, application#8312), and nothing
+//             else: no chat, no node pane, no sync chrome (owner,
+//             2026-10-20: "overview just shows the canvas … cannot make any
+//             changes to the canvas in the overview"). A Claude task on the
+//             clone is the Tasks tab's job; the Tasks page's door on a
+//             canvas task lands there with the task peeked. The sync chrome
+//             (strip, log drawer, failed-push banner) lives in a slot under
+//             this page's header, on every tab — CanvasWorkspace portals it.
 //   Tasks     the Tasks page (shell/Scheduled.tsx) scoped to the clone folder
 //             — same List / Board / Calendar, same modal, a new task prefilled
 //             with the clone.
@@ -89,6 +90,8 @@ type TabCtx = {
   /** The clone folder, `<canvases_dir>/<name>` — null until status answers. */
   dir: string | null;
   onWorkbenchUrl: (url: string | null) => void;
+  /** The page's sync slot (under the header), for the Overview's portal. */
+  syncSlot: HTMLElement | null;
 };
 
 type TabDef = {
@@ -105,8 +108,8 @@ const TAB_DEFS: Record<CanvasPageTab, TabDef> = {
     label: "Overview",
     Icon: AppWindow,
     keepMounted: true,
-    render: ({ env, name, onWorkbenchUrl }) => (
-      <CanvasWorkspace env={env} name={name} onWorkbenchUrl={onWorkbenchUrl} />
+    render: ({ env, name, onWorkbenchUrl, syncSlot }) => (
+      <CanvasWorkspace env={env} name={name} onWorkbenchUrl={onWorkbenchUrl} syncSlot={syncSlot} />
     ),
   },
   tasks: {
@@ -179,8 +182,8 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
   const onWorkbenchUrl = useCallback((url: string | null) => setWorkbenchUrl(url), []);
 
   // A tab's address: the current query rides along (a tab's own params —
-  // `?node=` on Overview, `?view=` on Tasks, `?file=` on Files — are
-  // harmless on the others and come back intact), only `_tab` is rewritten.
+  // `?view=` on Tasks, `?file=` on Files — are harmless on the others and
+  // come back intact), only `_tab` is rewritten.
   // `?peek=` is the ONE param that does not ride: it names a panel only the
   // Tasks tab can show, and a switch away is a close — carried along it
   // would re-open the panel on the way back (Bugbot on the app page, #1249).
@@ -223,7 +226,13 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
 
   const [headFit, headRef] = useAppHeadFit();
   const [tabbarFit, tabbarRef] = useAppTabbarFit();
-  const ctx = useMemo<TabCtx>(() => ({ env, name, dir, onWorkbenchUrl }), [env, name, dir, onWorkbenchUrl]);
+  // The sync slot as STATE, not a ref: the Overview portals into it, and a
+  // portal target read from a ref on the first render would be null.
+  const [syncSlot, setSyncSlot] = useState<HTMLElement | null>(null);
+  const ctx = useMemo<TabCtx>(
+    () => ({ env, name, dir, onWorkbenchUrl, syncSlot }),
+    [env, name, dir, onWorkbenchUrl, syncSlot],
+  );
 
   return (
     <div className="app-page canvas-page">
@@ -283,6 +292,11 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
           )}
         </div>
       </header>
+      {/* The sync chrome's slot: the strip (and its drawer, and the failed-push
+          banner) the Overview's CanvasWorkspace portals here, so sync is page
+          chrome on every tab and never inside the canvas view. Full width,
+          like the strip was. */}
+      <div className="canvas-page-sync" ref={setSyncSlot} />
       <div className="canvas-page-body">
         <div className="app-page-tabbar flex-none" ref={tabbarRef} data-fit={tabbarFit}>
           {/* Controlled by the URL and ONLY the URL: no onValueChange, so a

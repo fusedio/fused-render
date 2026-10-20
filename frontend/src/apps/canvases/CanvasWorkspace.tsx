@@ -1,10 +1,20 @@
-// Canvas workspace: the embedded live workbench under a sync status strip
-// for the local clone — the canvas page's OVERVIEW tab (shell/CanvasPage.tsx,
-// which owns the route /canvases/<env>/<name> and keeps this panel mounted
-// behind its other tabs, so the frame below boots once per visit). Full
-// width; a selected node opens its Claude / Code peek on the right. The
-// canvas chat that used to fill the right pane is gone (owner, 2026-10-20:
-// the Overview is read only; a Claude task on the clone is the Tasks tab's).
+// Canvas workspace: the embedded live workbench, READ ONLY, for the local
+// clone — the canvas page's OVERVIEW tab (shell/CanvasPage.tsx, which owns
+// the route /canvases/<env>/<name> and keeps this panel mounted behind its
+// other tabs, so the frame below boots once per visit). The frame takes the
+// whole panel: no chat, no node pane, no sync chrome (owner, 2026-10-20:
+// "overview just shows the canvas … no claude, no sync … cannot make any
+// changes to the canvas in the overview"). The workbench is told so with
+// `fused_embed_readonly=1` on its URL (application#8312): no drag, connect,
+// add, rename or delete, no autosave, no snapshot to this host.
+//
+// What still runs here is the SYNC that keeps the view current and the
+// clone published: this process's watcher (sync/start) pushes a Claude
+// task's edits upstream, and the disk → embed delta leg below patches the
+// frame in place as the clone moves. Its chrome — the sync strip, the log
+// drawer, the failed-push banner with "Fix with Claude" — is rendered
+// through a PORTAL into the page's own slot under the header (`syncSlot`),
+// so it is on every tab and never in the Overview.
 //
 // A canvas is (env, name): its clone is ~/Fused/canvas/<env>/<name>, and
 // every call below, the workbench origin and the whoami handle are that
@@ -21,21 +31,18 @@
 // is posted with an EXACT targetOrigin — never "*" — so it cannot leak to a
 // frame that navigated elsewhere.
 //
-// Node selection (the explorer's embed route framed in the right pane): the same
-// listener carries three more messages once the workbench is told this host
-// speaks v2 or later (`fused_embed_v=3` on the frame URL — the flag also hides the
-// workbench's own code editor, so an OLD host keeps that editor and an old
-// WORKBENCH simply never sends a selection):
+// Node selection: the same listener (the workbench is told this host speaks
+// v3 with `fused_embed_v=3`, which also hides its own code editor):
 //   iframe → { type: "fused-embed-selection", udfName, backendId, kind }
-//            on every change and once after ready; a null name (pane click,
-//            folder node, multi-select) closes the node peek, the canvas
-//            takes the width back (owner call: the pane follows the canvas)
-//   parent → { type: "fused-embed-select", udfName }  (restore ?node= on
-//            load; null from the sidebar's close button, so both sides agree)
+//            on every change and once after ready — read for nothing here
+//            since the node pane went (2026-10-20); kept in the protocol.
+//   parent → { type: "fused-embed-select", udfName }  highlight the node a
+//            link names (`?node=`, the Tasks page's door on a canvas task),
+//            on load and on every hop onto this canvas; null deselects.
 //   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
 //            workbench's save chip ("Published"); it triggers no reload.
 // Keyed by UDF NAME, never a React Flow node id (those are regenerated every
-// load): the node's source is `<clone>/<udfName>.py` (widgets: `.json`).
+// load).
 //
 // Sync (embed v3, canvas_snapshot.py): the embedded workbench never saves to
 // the server. On its autosave cadence it posts the body it would have saved,
@@ -64,8 +71,8 @@
 //   parent → { type: "fused-embed-delta", rev, base_rev, full, ops }
 //   iframe → { type: "fused-embed-delta-applied", rev } | "-rejected"
 // relaying the ack to POST /api/canvases/delta/ack. The frame patches its
-// nodes in place: camera, selection, results and the right pane's session
-// all survive. A frame that just hydrated says
+// nodes in place: camera, selection and results all survive. A frame that
+// just hydrated says
 //   iframe → { type: "fused-embed-hello" }
 // and gets a full state (`full=1`). The frame's own edits never come back
 // this way: after a snapshot lands the server re-reads disk as what the
@@ -80,25 +87,13 @@
 //     focus/blur/visibility changes and in reply to -auth-ready and -hello;
 //     the canvas counts the host window's focus as its own.
 //   The host also hands the frame real focus when the pointer ENTERS the
-//     canvas pane (keyboard follows the hover: Space-pan, Delete, Cmd+Z),
-//     unless the user is typing somewhere — a wandering mouse must not pull
-//     keystrokes out of the chat onto canvas hotkeys. The chat never takes
-//     focus on hover: a text surface is clicked into.
-//
-// The node pane's chat (owner, 2026-10-19: "when I switch from one node to
-// another, each time I get the new claude session screen"). Selecting a node
-// frames the explorer's embed route on its file, and that chat files its
-// `session_id` on the FRAME's URL; the frame goes with the node, so the next
-// node, and this node again, booted on a fresh chat. `nodeSessions` below
-// remembers, per canvas and node, the session the frame was last on —
-// mirrored off the frame's own URL (same origin) as it changes — and the next
-// frame on that node boots on it. In memory only: a reload starts over.
+//     canvas pane (keyboard follows the hover: Space-pan, zoom keys), unless
+//     the user is typing somewhere — a wandering mouse must not pull
+//     keystrokes out of a text field onto canvas hotkeys.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SyntheticEvent } from "react";
-import { statPath } from "@platform/lib/api";
-import { NAV_EVENT, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
-import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
+import { createPortal } from "react-dom";
+import { NAV_EVENT, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   CanvasOwnedError,
@@ -160,12 +155,6 @@ const SNAPSHOT_BUSY_RETRY_MS = 750;
 const DELTA_RETRY_MS = 1_000;
 const DELTA_RETRY_WINDOW_MS = 30_000;
 
-// A just-added node's file reaches disk with the next autosave snapshot
-// (debounce + relay, normally ~1–2 s). The node pane waits for it this often,
-// for at most this long.
-const NODE_FILE_PROBE_MS = 400;
-const NODE_FILE_WAIT_MS = 20_000;
-
 // A fallback state poll that keeps failing is treated, after this many
 // consecutive misses, as a dropped watcher: sync/start is asked again.
 const FAILED_POLLS_BEFORE_RELEASE = 3;
@@ -181,14 +170,14 @@ function hostFocused(): boolean {
 
 /**
  * Whether the user is typing: the active element, followed down through
- * same-origin frames (the right pane's explorer embed nests the chat one
- * level deeper), is a text field or contenteditable. A cross-origin frame
- * (the canvas itself) cannot be seen into and reads as not typing.
+ * same-origin frames (the Tasks tab's framed pages nest their fields a level
+ * deeper), is a text field or contenteditable. A cross-origin frame (the
+ * canvas itself) cannot be seen into and reads as not typing.
  *
  * No `instanceof` here: an element from a child document belongs to that
  * frame's realm, where `HTMLIFrameElement`/`HTMLElement` are different
- * constructors — the walk would stop one level down (the explorer embed's
- * own frames, the Code tab's CodeMirror) and read the typing user as idle.
+ * constructors — the walk would stop one level down and read the typing
+ * user as idle.
  */
 function activeElementIsEditable(doc: Document): boolean {
   let el: Element | null = doc.activeElement;
@@ -211,124 +200,16 @@ function activeElementIsEditable(doc: Document): boolean {
   return false;
 }
 
-
-/** The selected node, as the workbench names it. `file` is the node's
- *  source file IN THE CLONE, basename only (`<name>.py`, or a widget's
- *  `.json` / `.md` / `.html`), as the workbench's selection message states
- *  it — the authority on which file a node is. */
-interface NodeSel {
-  udfName: string;
-  kind: "udf" | "widget";
-  file: string;
-}
-
-/** The node's source under the clone. */
-function nodeFile(dir: string, node: NodeSel): string {
-  return `${dir.replace(/\/+$/, "")}/${node.file}`;
-}
-
-/** Which of the explorer's content modes the node pane frames: the chat on
- *  the file, or the file's code. It is the `_mode` of the framed embed URL and
- *  rides this page's URL as `node_tab` so a reload keeps it. */
-type NodeTab = "claude" | "code";
-
-function nodeTabFromUrl(): NodeTab {
-  return new URLSearchParams(window.location.search).get("node_tab") === "code" ? "code" : "claude";
-}
-
-/**
- * THE EXPLORER, HEADLESS, on the node's file (owner, 2026-10-17: "use embed —
- * that's the true headless thing"): the explorer's own embed route framed in
- * the right pane, chrome-free (no crumb bar, no sidebar column), with its
- * content mode set to the chat or the code. Same origin, so the chat inside
- * keeps its own file pane and files its sessions per FILE exactly as the
- * explorer does (the app-state block names the file); its `session_id` lives
- * on the frame's URL, not this page's.
- */
-function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): string {
-  // `_noann=1` on the chat: its Screenshot / Annotate seats and view toggle
-  // would open the chat's own preview of the file, which is the Code tab's
-  // job here (owner, 2026-10-17). `session_id` when a Recent row on the
-  // canvas chat hopped here: the frame's chat resumes that conversation.
-  return embedUrlForFsPath(
-    file,
-    "?_mode=" + tab + "&_side=off" +
-      (tab === "claude" ? "&_noann=1" : "") +
-      (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
-  );
-}
-
-/**
- * THE SESSION EACH NODE'S CHAT WAS LAST ON, per canvas: `<env>\0<canvas>\0
- * <file>` → `session_id` (env included: a prod and an unstable canvas may
- * share a name, and their nodes are different files). Module-level so it
- * outlives this component, which App.tsx keys on (env, name) (a hop to
- * another canvas and back must not forget).
- * The chat inside the node pane runs on the frame's URL (`paramsSource` "url"
- * in the explorer's embed), so the frame's `location.search` IS the chat's
- * state: `session_id` present = that conversation, absent = the chat's home
- * (New chat was pressed, or nothing has been sent). The entry mirrors that —
- * set or deleted — rather than accumulating, so coming back after New chat
- * lands on the fresh chat the user asked for, not the old session.
- */
-const nodeSessions = new Map<string, string>();
-
-function nodeSessionKey(env: WorkbenchEnv, canvas: string, file: string): string {
-  return env + "\0" + canvas + "\0" + file;
-}
-
-/** Mirror the node frame's current `session_id` into `nodeSessions`. The
- *  chat's URL store coalesces history writes (≤1 per 400 ms) but announces
- *  every write as `fused:urlchange`, and the flush itself goes through the
- *  shell's wrapped `replaceState`, which announces again — so listening on
- *  the frame window and reading its location converges on what landed,
- *  including the `pagehide` flush as the frame navigates away. */
-function recordNodeSession(win: Window, key: string, pathname: string): void {
-  let search: string;
-  try {
-    // Only while the frame is still on the node's own document: the embed
-    // shell routes client-side, and a chat that had navigated the frame
-    // elsewhere would file that page's session under this node.
-    if (win.location.pathname !== pathname) return;
-    search = win.location.search;
-  } catch {
-    return;
-  }
-  const sid = new URLSearchParams(search).get("session_id");
-  if (sid) nodeSessions.set(key, sid);
-  else nodeSessions.delete(key);
-}
-
-/** The node restored from this page's own URL (`?node=` + `node_file=`), or
- *  null. An older URL with `node=` alone is read as a UDF (`<name>.py`). */
-function nodeFromUrl(): NodeSel | null {
-  const q = new URLSearchParams(window.location.search);
-  const name = q.get("node");
-  if (!name) return null;
-  const file = q.get("node_file") || `${name}.py`;
-  return { udfName: name, kind: file.endsWith(".py") ? "udf" : "widget", file };
-}
-
-/** The chat this page's URL names for its node — `?node=…&session_id=…`, a
- *  reload or the Tasks page's door on a canvas task (`canvasPagePath`) —
- *  remembered under the node so the pane boots on it. The node frame's src
- *  reads `nodeSessions` alone (`nodeBootSrc`), and that map is empty on a
- *  fresh mount: without this the URL would select the node and land its
- *  pane on the chat's home, not the conversation the link named. Must run
- *  BEFORE the first render that computes the src, hence the state
- *  initializer below rather than an effect. Answers whether a session was
- *  named, for the nav listener that reboots the pane on one. */
-function seedNodeSessionFromUrl(env: WorkbenchEnv, canvas: string, node: NodeSel): string | null {
-  const sid = new URLSearchParams(window.location.search).get("session_id");
-  if (!sid) return null;
-  nodeSessions.set(nodeSessionKey(env, canvas, node.file), sid);
-  return sid;
+/** The node a link names for this page (`?node=`), by UDF name, or null. */
+function nodeNameFromUrl(): string | null {
+  return new URLSearchParams(window.location.search).get("node") || null;
 }
 
 export default function CanvasWorkspace({
   env,
   name,
   onWorkbenchUrl,
+  syncSlot,
 }: {
   env: WorkbenchEnv;
   name: string;
@@ -336,22 +217,14 @@ export default function CanvasWorkspace({
    *  the base URL and handle are known — the canvas page's header draws it as
    *  "Open in Workbench". Null until then. */
   onWorkbenchUrl?: (url: string | null) => void;
+  /** Where the sync chrome goes (the strip, the log drawer, the failed-push
+   *  banner): the page's slot under its header, so it shows on every tab and
+   *  never inside the Overview. Null = not rendered. */
+  syncSlot?: HTMLElement | null;
 }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
-  // The selected node (null = the canvas alone, full width). Seeded from `?node=` so a
-  // reload keeps the node; written back below.
-  const [node, setNode] = useState<NodeSel | null>(() => {
-    const seeded = nodeFromUrl();
-    if (seeded) seedNodeSessionFromUrl(env, name, seeded);
-    return seeded;
-  });
-  const [nodeTab, setNodeTab] = useState<NodeTab>(() => nodeTabFromUrl());
-  // Bumped when the node pane must REBOOT on a session for the node already
-  // shown (a Recent row's hop onto the selected node, below): the frame's src
-  // is otherwise frozen per node and tab (`nodeBootSrc`).
-  const [nodeBootSeq, setNodeBootSeq] = useState(0);
   // The server's sync state (sync/state, or the events socket's `state`):
   // disk_to_embed / disk_to_server / server_to_disk, disk_rev, watcher_epoch.
   const [sync, setSync] = useState<SyncState | null>(null);
@@ -385,10 +258,6 @@ export default function CanvasWorkspace({
   const wsLogAtRef = useRef(0);
   // Bumped to make SyncFramePoster re-post the state (frame (re)loaded).
   const [repostSeq, setRepostSeq] = useState(0);
-  // Splitter position: workbench pane width as a fraction of the row.
-  const [leftFrac, setLeftFrac] = useState(0.55);
-  const [dragging, setDragging] = useState(false);
-  const rowRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   // A "Fix with Claude" click in flight (the run itself shows on the Tasks tab).
   const [fixBusy, setFixBusy] = useState(false);
@@ -417,32 +286,6 @@ export default function CanvasWorkspace({
     );
   }, []);
 
-  const [nodeFileReady, setNodeFileReady] = useState<string | null>(null);
-  const nodePath = node && dir ? nodeFile(dir, node) : null;
-  useEffect(() => {
-    if (!nodePath || nodeFileReady === nodePath) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const started = Date.now();
-    const probe = async () => {
-      try {
-        await statPath(nodePath);
-        if (!cancelled) setNodeFileReady(nodePath);
-      } catch {
-        if (cancelled) return;
-        if (Date.now() - started > NODE_FILE_WAIT_MS) {
-          setNodeFileReady(nodePath); // give up waiting: let the frame say so
-          return;
-        }
-        timer = window.setTimeout(() => void probe(), NODE_FILE_PROBE_MS);
-      }
-    };
-    void probe();
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [nodePath, nodeFileReady, sync?.disk_rev]);
   const onPull = useCallback(async (hard = false) => {
     setPullBusy(true);
     setPullError(null);
@@ -460,57 +303,6 @@ export default function CanvasWorkspace({
   }, [env, name]);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
-
-  // The node frame's src, COMPUTED ONCE per node, tab and boot: it reads the
-  // remembered session at that moment, and must not be re-derived on every
-  // host render — the frame moves on to new sessions on its own, so a src
-  // re-read later would differ from the one it booted on and React would set
-  // the attribute, reloading the frame onto the session it is already on.
-  const nodeBootRef = useRef<{ key: string; src: string } | null>(null);
-  const nodeBootSrc = (path: string, file: string, tab: NodeTab): string => {
-    const key = path + "\0" + tab + "\0" + nodeBootSeq;
-    if (nodeBootRef.current?.key !== key) {
-      nodeBootRef.current = {
-        key,
-        src: nodeEmbedSrc(
-          path,
-          tab,
-          tab === "claude" ? (nodeSessions.get(nodeSessionKey(env, name, file)) ?? null) : null,
-        ),
-      };
-    }
-    return nodeBootRef.current.src;
-  };
-  // …and forgotten with the frame: deselecting unmounts the node pane, and
-  // the same node selected again must boot on where its chat got to since,
-  // not on the src the pane was last given.
-  useEffect(() => {
-    if (!node) nodeBootRef.current = null;
-  }, [node]);
-  // Mirror the frame's chat session as it changes (see `nodeSessions`). Bound
-  // on every load — a new src and the tab remount both replace the window —
-  // and only for the Claude tab: the Code tab's URL carries no session.
-  const onNodeFrameLoad = useCallback(
-    (e: SyntheticEvent<HTMLIFrameElement>) => {
-      const frame = e.currentTarget;
-      if (frame.dataset.tab !== "claude" || !frame.dataset.file) return;
-      let win: Window | null = null;
-      try {
-        win = frame.contentWindow;
-      } catch {
-        win = null;
-      }
-      if (!win) return;
-      const key = nodeSessionKey(env, name, frame.dataset.file);
-      const pathname = new URL(frame.src, window.location.origin).pathname;
-      const record = () => recordNodeSession(win!, key, pathname);
-      record();
-      win.addEventListener("fused:urlchange", record);
-      win.addEventListener("popstate", record);
-      win.addEventListener("pagehide", record);
-    },
-    [env, name],
-  );
 
   // Make sure THIS process's watcher runs on the clone. The one place
   // sync/start is called (boot, self-heal, the owned retry): success clears
@@ -871,74 +663,6 @@ export default function CanvasWorkspace({
     relayDelta(false);
   }, [sync?.disk_rev, sync?.watcher_epoch, relayDelta]);
 
-  // The node this page currently shows, readable from the message handler
-  // without re-subscribing it on every selection.
-  const nodeRef = useRef<NodeSel | null>(node);
-  nodeRef.current = node;
-
-  // A HOP ONTO THIS CANVAS WHILE IT IS MOUNTED — the Tasks page's door on
-  // another node of the canvas the reader is already on, a notification —
-  // changes the URL and nothing else: App.tsx keys this component on (env,
-  // name) alone, so `nodeFromUrl` never re-runs and the new `?node=` +
-  // `session_id` would go unread. The router announces every push on
-  // NAV_EVENT (the node effect's own replaceState writes never do), so re-read
-  // them there: select the node in the workbench, remember the session under
-  // it and reboot the pane; the same node with a new session reboots alone.
-  // A hop to the bare canvas page deselects. `navHopRef` marks a hop so the
-  // node effect below leaves the `session_id` the link carries on the URL
-  // (the pane boots off the seeded map; the address should still restore
-  // the task's session on reload).
-  const navHopRef = useRef(false);
-  useEffect(() => {
-    const onNav = () => {
-      // Every push announces here, including the ones that LEAVE: the hop
-      // to another canvas, or to /tasks, reaches this still-mounted instance
-      // first. Only this canvas's own URL is ours to read — otherwise B's
-      // session would be filed under A's node of the same name, and the old
-      // frame told to deselect on the way out.
-      const here = canvasNameFromPath(window.location.pathname);
-      if (!here || here.env !== env || here.name !== name) return;
-      const next = nodeFromUrl();
-      const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
-      const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
-      const cur = nodeRef.current;
-      if (!next) {
-        // No node named: nothing to select (a hop onto the bare canvas page
-        // with a session used to remount the canvas chat; that chat is gone,
-        // and a root task of the canvas is the Tasks tab's).
-        if (!cur) return;
-        navHopRef.current = true;
-        sendSelect(null);
-        setNode(null);
-        return;
-      }
-      if (cur && cur.file === next.file) {
-        // The same node: the link's tab wins (a Code tab left open would
-        // otherwise hide the chat the task named), and a session the pane
-        // is not on reboots it.
-        setNodeTab(nodeTabFromUrl());
-        if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
-        return;
-      }
-      // Marked as a hop so the node effect leaves the `session_id` the link
-      // carries on the URL: the pane boots off the seeded map either way,
-      // but the address should still restore the task's session on reload.
-      navHopRef.current = true;
-      sendSelect(next.udfName);
-      setNodeTab(nodeTabFromUrl());
-      setNodeBootSeq((n) => n + 1);
-      setNode(next);
-    };
-    // Back / Forward move the URL without a push: `popstate`, which the
-    // router does not re-announce, lands on this same reader.
-    window.addEventListener(NAV_EVENT, onNav);
-    window.addEventListener("popstate", onNav);
-    return () => {
-      window.removeEventListener(NAV_EVENT, onNav);
-      window.removeEventListener("popstate", onNav);
-    };
-  }, [env, name, sendSelect]);
-
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== baseOriginRef.current) return;
@@ -949,11 +673,11 @@ export default function CanvasWorkspace({
           sendHostFocus();
           setRepostSeq((n) => n + 1); // a fresh frame has no sync state yet
         }
-        // Restore the node this page is on (a reload, or a frame that
-        // reloaded): the workbench answers with a selection message, which is
-        // what keeps the two sides in step — see the handler below.
-        if (type === "fused-embed-auth-ready" && nodeRef.current) {
-          sendSelect(nodeRef.current.udfName);
+        // Highlight the node the URL names (a link's `?node=`, a reload, or
+        // a frame that reloaded).
+        if (type === "fused-embed-auth-ready") {
+          const wanted = nodeNameFromUrl();
+          if (wanted) sendSelect(wanted);
         }
       }
       if (type === "fused-embed-snapshot") {
@@ -1024,71 +748,12 @@ export default function CanvasWorkspace({
           relayChainRef.current = relayChainRef.current.then(() => relayDelta(true));
         }
       }
-      if (type === "fused-embed-selection") {
-        const name = event.data?.udfName;
-        if (typeof name === "string" && name) {
-          const kind = event.data?.kind === "widget" ? "widget" : "udf";
-          const stated = event.data?.file;
-          const file =
-            typeof stated === "string" && stated && !stated.includes("/")
-              ? stated
-              : `${name}.${kind === "widget" ? "json" : "py"}`;
-          setNode((cur) =>
-            cur && cur.udfName === name && cur.file === file ? cur : { udfName: name, kind, file },
-          );
-        } else {
-          // The canvas deselected (pane click, folder node, multi-select, or
-          // the node is gone after a re-hydrate): close the node peek. Owner
-          // call — the canvas is the one source of truth for what the right
-          // pane is about.
-          setNode(null);
-        }
-      }
+      // `fused-embed-selection` arrives too and is read for nothing: there
+      // is no node pane to follow it any more (header).
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, env, name]);
-
-  // Mirror the node onto this page's URL so a reload lands on it, and drop the
-  // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
-  // node chat the URL names, and node → none and node → node are a different
-  // chat. The previous chat's session is one click away in its own Recent list.
-  //
-  // Every transition clears, not only node → node (this page used to carry a
-  // canvas chat beside the node pane, 2026-10-17..20, and a canvas → node hop
-  // left alone made the node pane's fresh chat read the canvas chat's
-  // `session_id` off the URL and RESUME it — a folder session shown under a
-  // node, which the node's Recent list (filed by the transcript's leading
-  // app-state `entry`, which a folder chat never has) could not find again
-  // after the next remount; the rule stays, a Tasks-page door can still name
-  // a session for one node). The mount itself is exempt: a reload lands on
-  // `?node=` + `session_id` together and must resume that node's chat.
-  const prevNodeKeyRef = useRef<string | null>(null);
-  const nodeEffectRanRef = useRef(false);
-  useEffect(() => {
-    const key = node ? node.file : null;
-    const url = new URL(window.location.href);
-    if (node) {
-      url.searchParams.set("node", node.udfName);
-      url.searchParams.set("node_file", node.file);
-      if (nodeTab === "code") url.searchParams.set("node_tab", "code");
-      else url.searchParams.delete("node_tab");
-    } else {
-      url.searchParams.delete("node");
-      url.searchParams.delete("node_file");
-      url.searchParams.delete("node_tab");
-    }
-    if (nodeEffectRanRef.current && prevNodeKeyRef.current !== key && !navHopRef.current) {
-      url.searchParams.delete("session_id");
-      url.searchParams.delete("run");
-    }
-    navHopRef.current = false;
-    nodeEffectRanRef.current = true;
-    prevNodeKeyRef.current = key;
-    if (url.href !== window.location.href) {
-      window.history.replaceState(window.history.state, "", url);
-    }
-  }, [node, nodeTab]);
 
   // After every push, tell the workbench's save chip it is published. This
   // is informational only — the frame never reloads or re-fetches on it (the
@@ -1248,27 +913,6 @@ export default function CanvasWorkspace({
     setLogEvents((buf) => mergeLogEvents(buf, events));
   }, []);
 
-  // Splitter drag: track the pointer over the whole window so the drag
-  // survives entering the iframes (which would otherwise swallow mousemove —
-  // pointer-events are disabled on both panes while dragging).
-  useEffect(() => {
-    if (!dragging) return;
-    const onMove = (e: MouseEvent) => {
-      const row = rowRef.current;
-      if (!row) return;
-      const rect = row.getBoundingClientRect();
-      const frac = (e.clientX - rect.left) / rect.width;
-      setLeftFrac(Math.min(0.85, Math.max(0.15, frac)));
-    };
-    const onUp = () => setDragging(false);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, [dragging]);
-
   useAgentBackends();
   const claudeOff = isBackendOff("claude");
   const onFix = async () => {
@@ -1296,26 +940,43 @@ export default function CanvasWorkspace({
   // clone (sync/start answered): before that, and while another process owns
   // the clone, every snapshot it posted would meet a 409 and sit in the
   // relay's busy loop — the relay running in all but name.
+  // `fused_embed_readonly=1`: the viewer (header; application#8312).
   const frameSrc =
     baseUrl && handle && dir && !owned
-      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=3`
+      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=3&fused_embed_readonly=1`
       : null;
 
-  // No header bar (owner call): the workspace is the two panes, full height,
-  // under ONE line — the sync strip (SyncStrip.tsx): the worst of the four
-  // sync legs, "Published 12 s ago" when all is well, the Pull button when
-  // the server moved, and the sync log drawer on click.
+  // A HOP ONTO THIS CANVAS WHILE IT IS MOUNTED (a Tasks-page door naming a
+  // node, Back/Forward between two pushes on the same canvas) changes the
+  // URL and nothing else: App.tsx keys this component on (env, name). The
+  // router announces every push on NAV_EVENT and the browser Back/Forward on
+  // `popstate`; re-read `?node=` there and tell the workbench. Only this
+  // canvas's own URL is ours to read — hops AWAY announce here too.
+  useEffect(() => {
+    const onNav = () => {
+      const here = canvasNameFromPath(window.location.pathname);
+      if (!here || here.env !== env || here.name !== name) return;
+      sendSelect(nodeNameFromUrl());
+    };
+    window.addEventListener(NAV_EVENT, onNav);
+    window.addEventListener("popstate", onNav);
+    return () => {
+      window.removeEventListener(NAV_EVENT, onNav);
+      window.removeEventListener("popstate", onNav);
+    };
+  }, [env, name, sendSelect]);
+
   const s2dState = sync?.legs.server_to_disk.state;
   const pushLeg = sync?.legs.disk_to_server;
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
+  // The sync chrome, into the page's slot (header). Always up ("Connecting…"
+  // before the first state).
+  const chrome = (
+    <>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {startError && !error && (
         <ErrorBanner>{`Could not start syncing this canvas (retrying): ${startError}`}</ErrorBanner>
       )}
-      {/* Always up ("Connecting…" before the first state): it carries the
-          way back to the listing, which must not wait on sync. */}
       <SyncStrip
         name={name}
         env={env}
@@ -1363,16 +1024,6 @@ export default function CanvasWorkspace({
           onClose={() => setDrawerOpen(false)}
         />
       )}
-      {frameSrc && (
-        <SyncFramePoster
-          name={name}
-          server={sync}
-          queue={relayQueue}
-          failure={relayFailure}
-          repost={repostSeq}
-          post={postSyncState}
-        />
-      )}
       {pushError && pushLeg && sync && (
         // The disk_to_server leg's error, in full: the strip above carries
         // the one-line reason; this is the CLI's per-line detail and the
@@ -1390,18 +1041,20 @@ export default function CanvasWorkspace({
               {pushLeg.reason ?? "Publishing failed"}
             </strong>
             {/* Claude's feature (D17): no door while Claude is switched off. */}
-            {!claudeOff && <button
-              className="btn btn-primary"
-              disabled={fixBusy || fixActive}
-              onClick={() => void onFix()}
-              title="Start a Claude session on the local clone, primed with these errors"
-            >
-              {fixActive
-                ? "Claude is on it — see Tasks →"
-                : fixBusy
-                  ? "Starting…"
-                  : "Fix with Claude"}
-            </button>}
+            {!claudeOff && (
+              <button
+                className="btn btn-primary"
+                disabled={fixBusy || fixActive}
+                onClick={() => void onFix()}
+                title="Start a Claude session on the local clone, primed with these errors"
+              >
+                {fixActive
+                  ? "Claude is on it — see Tasks →"
+                  : fixBusy
+                    ? "Starting…"
+                    : "Fix with Claude"}
+              </button>
+            )}
             {fixError && <span style={{ color: "rgb(200,60,60)" }}>{fixError}</span>}
           </div>
           {sync.error_detail?.length > 0 && (
@@ -1420,153 +1073,45 @@ export default function CanvasWorkspace({
           )}
         </div>
       )}
-      <div
-        ref={rowRef}
-        style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row" }}
-      >
-        <div
-          // The wrapper, not the iframe: a frame swallows pointer events, but
-          // the wrapper's mouseenter still fires as the pointer crosses in.
-          onMouseEnter={focusCanvasOnEnter}
-          style={{
-            // Full width until a node is selected; then the node peek takes
-            // the rest of the row (the Tasks tab's own side-peek posture: a
-            // shrinking frame beside a panel).
-            flex: node && dir ? `0 0 ${leftFrac * 100}%` : "1 1 auto",
-            minWidth: 0,
-            position: "relative",
-            pointerEvents: dragging ? "none" : "auto",
-          }}
-        >
-          {frameSrc ? (
-            <iframe
-              ref={frameRef}
-              src={frameSrc}
-              title={`Workbench: ${name}`}
-              /* NO `data-fused-annotate-target` here, deliberately: the canvas
-                 chat gets this frame as a getter (`annotateTarget` below), and
-                 the explorer engine in the right pane finds its own content
-                 frame by that attribute — a marked workbench frame earlier in
-                 the DOM would win the query, a cross-origin frame the file
-                 chat can neither read nor pin into. */
-              style={{ width: "100%", height: "100%", border: 0 }}
-            />
-          ) : (
-            !error &&
-            (owned ? (
-              <p style={{ padding: 16, opacity: 0.8 }}>
-                Another Fused process (pid {owned.pid}, port {owned.port}) is syncing this
-                canvas. Close it there and this page picks the canvas up on its own.
-              </p>
-            ) : (
-              <p style={{ padding: 16 }}>Loading workbench…</p>
-            ))
-          )}
-        </div>
-        {node && dir && (
-          // THE NODE PEEK (owner, 2026-10-20: the Overview is the canvas, read
-          // only; the one editing surface it keeps is a node's own pane, and
-          // only while a node is selected). No canvas chat lives here any
-          // more — a Claude task on the clone is the Tasks tab's job.
-          <>
-        <div
-          onMouseDown={(e) => {
-            e.preventDefault();
-            setDragging(true);
-          }}
-          style={{
-            flex: "0 0 6px",
-            cursor: "col-resize",
-            background: dragging
-              ? "rgba(100,140,255,0.5)"
-              : "rgba(128,128,128,0.25)",
-          }}
-          title="Drag to resize"
+    </>
+  );
+
+  return (
+    <div
+      // The wrapper, not the iframe: a frame swallows pointer events, but
+      // the wrapper's mouseenter still fires as the pointer crosses in.
+      onMouseEnter={focusCanvasOnEnter}
+      style={{ flex: 1, minHeight: 0, minWidth: 0, position: "relative" }}
+    >
+      {syncSlot ? createPortal(chrome, syncSlot) : null}
+      {frameSrc && (
+        <SyncFramePoster
+          name={name}
+          server={sync}
+          queue={relayQueue}
+          failure={relayFailure}
+          repost={repostSeq}
+          post={postSyncState}
         />
-        <div
-          style={{
-            flex: 1,
-            minWidth: 0,
-            display: "flex",
-            flexDirection: "column",
-            pointerEvents: dragging ? "none" : "auto",
-          }}
-        >
-          {/* A node is selected: the explorer, open on the node's file —
-              its preview (the code template, writable) and its Claude / Git
-              sidebar, per-file sessions and all. Keyed per file so a node
-              switch is a fresh open. */}
-            <div
-              key={nodeFile(dir, node)}
-              className="canvas-node-file"
-              style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
-            >
-              {/* The framed embed's content mode, as two tabs — the same shadcn
-                  line strip the explorer's own sidebar uses (SideChrome). The
-                  strip is this page's; everything under it is the explorer's.
-                  The ✕ closes the peek: it deselects on BOTH sides (the
-                  workbench answers with a null selection, which is what keeps
-                  the two in step), so the canvas takes the width back. */}
-              <div className="preview-side-header">
-                <span className="canvas-node-side-name" title={nodeFile(dir, node)}>
-                  {node.udfName}
-                </span>
-                <div className="side-header-tail">
-                  <Tabs
-                    value={nodeTab}
-                    onValueChange={(v) => {
-                      if (v === "claude" || v === "code") setNodeTab(v);
-                    }}
-                    className="side-tabs self-stretch"
-                  >
-                    <TabsList
-                      variant="line"
-                      aria-label="Node panel"
-                      className="h-full justify-start gap-3 rounded-none border-b-0 p-0"
-                    >
-                      <TabsTrigger value="claude" className="flex-none px-2 text-[12px]">
-                        Claude
-                      </TabsTrigger>
-                      <TabsTrigger value="code" className="flex-none px-2 text-[12px]">
-                        Code
-                      </TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-                  <button
-                    type="button"
-                    className="icon-btn canvas-node-close"
-                    title="Close the node panel"
-                    aria-label="Close the node panel"
-                    onClick={() => {
-                      sendSelect(null);
-                      setNode(null);
-                    }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              </div>
-              {nodeFileReady === nodeFile(dir, node) ? (
-                <iframe
-                  // Keyed on the mode so a tab switch is a fresh document: the
-                  // chat's own `session_id` lives on the frame URL, and the
-                  // explorer's content-mode swap is for its own switcher.
-                  key={nodeTab}
-                  className="preview-side-frame"
-                  src={nodeBootSrc(nodeFile(dir, node), node.file, nodeTab)}
-                  data-tab={nodeTab}
-                  data-file={node.file}
-                  onLoad={onNodeFrameLoad}
-                  title={`${node.udfName} — ${nodeTab === "code" ? "Code" : "Claude"}`}
-                />
-              ) : (
-                <p style={{ padding: 16, opacity: 0.7 }}>Saving {node.file}…</p>
-              )}
-            </div>
-        </div>
-          </>
-        )}
-      </div>
+      )}
+      {frameSrc ? (
+        <iframe
+          ref={frameRef}
+          src={frameSrc}
+          title={`Workbench: ${name}`}
+          style={{ width: "100%", height: "100%", border: 0 }}
+        />
+      ) : (
+        !error &&
+        (owned ? (
+          <p style={{ padding: 16, opacity: 0.8 }}>
+            Another Fused process (pid {owned.pid}, port {owned.port}) is syncing this
+            canvas. Close it there and this page picks the canvas up on its own.
+          </p>
+        ) : (
+          <p style={{ padding: 16 }}>Loading workbench…</p>
+        ))
+      )}
     </div>
   );
 }

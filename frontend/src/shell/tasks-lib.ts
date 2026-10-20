@@ -1872,20 +1872,25 @@ function taskHrefView(
    */
   const where = task.entry || task.target || task.project;
   /**
-   * THE CANVAS, NOT ITS CLONE (owner, 2026-10-20). A task on a canvas clone
-   * (`~/Fused/canvas/<env>/<name>`) or on one of its nodes used to land on
-   * the clone's listing in the explorer; the thing to see next to that
-   * conversation is the canvas itself, with that node selected and the chat
-   * on this session in the right pane. `canvas` is the server's answer to
-   * "which canvas is this folder" (routers/tasks.py `_task_canvas`), null
-   * for every other row, and the page's query grammar is the canvas app's
-   * own (`canvasPagePath`). Only once there IS a session: a queued row keeps
-   * its explorer door below, where the chat pane draws its waiting words.
+   * THE CANVAS PAGE, NOT THE CLONE'S LISTING (owner, 2026-10-20). A task on
+   * a canvas clone (`~/Fused/canvas/<env>/<name>`) or on one of its nodes
+   * lands on the canvas's own page — its TASKS tab, with this task peeked
+   * (`?peek=<key>`, task-peek-store's param; the scoped Tasks page opens it
+   * on mount) and the node highlighted in the read-only Overview when the
+   * reader switches there (`?node=`). It used to land on the Overview with
+   * the node's chat in a right pane; that pane is gone (the Overview shows
+   * the canvas and nothing else), so the conversation is read where every
+   * other task's is. `canvas` is the server's answer to "which canvas is
+   * this folder" (routers/tasks.py `_task_canvas`), null for every other
+   * row; the page's query grammar is the canvas app's own (`canvasPagePath`).
+   * Only once there IS a session: a queued row keeps its explorer door
+   * below, where the chat pane draws its waiting words.
    */
   if (task.session_id && task.canvas) {
     return canvasPagePath(task.canvas.env, task.canvas.name, {
       file: task.canvas.file,
-      sessionId: task.session_id,
+      tab: "tasks",
+      search: task.key ? "peek=" + encodeURIComponent(task.key) : "",
     });
   }
   if (task.session_id) return explorerUrl(where, task.session_id);
