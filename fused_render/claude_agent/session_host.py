@@ -447,6 +447,19 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str,
                 _post_event(run_dir, "turn_ended", at=time.time(),
                             pid=getattr(cli, "pid", None))
                 _mark_cmd_log_turn_ended(agent, chat_id)
+            elif turn_open and not was_open:
+                # THE OTHER EDGE: turn rows after a `result` row — the CLI
+                # picking up another turn on the same held-open stdin. For a
+                # page-sent follow-up this is redundant (the page's mark and
+                # the CLI's busy rewrite already say so) and harmless. For a
+                # turn the CLI wakes ITSELF for — a subagent hand-back, a task
+                # notification — it is the only word there is: no page sent
+                # it, and a registry row kept `busy` by background jobs is
+                # never rewritten for it, so without this the listing went on
+                # reading the previous turn's end for the whole of the next
+                # turn (`tasks_watch.mark_turn_started`, T329, 2026-10-20).
+                _post_event(run_dir, "turn_started", at=time.time(),
+                            pid=getattr(cli, "pid", None))
             was_open = turn_open
             if turn_open or tasks_pending:
                 idle_since = None
