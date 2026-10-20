@@ -284,7 +284,7 @@ def is_diffusers_repo(names: frozenset[str], library_name: str | None = None) ->
     wider than LOADING (`formats.is_diffusers_snapshot`, the flat index only,
     which `formats.loaders()` uses): a modular-only or `library_name`-only repo
     is admitted but not loadable until a `ModularPipeline` adapter exists. The
-    gap is deliberate and recorded in D1386. `_resolve_engine` and
+    gap is deliberate and recorded in D1387. `_resolve_engine` and
     `hub_loadable._admits('diffusers')` share this one copy. A caller lacking
     one signal still gets a sound answer from the other; what an absence of
     BOTH means is the caller's call (`hub_loadable`'s never-drops-a-row guard
