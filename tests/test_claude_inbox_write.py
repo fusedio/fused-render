@@ -630,10 +630,9 @@ def test_a_slower_reader_never_moves_the_index_backwards(agent, tmp_path):
     st = os.stat(run_dir / "out.jsonl")
     ident = (st.st_dev, st.st_ino)
     further = [(ua, agent._echo_key("one")), (ub, agent._echo_key("two"))]
-    assert agent._echo_store(str(run_dir), ident, st.st_size, further, st.st_size) == further
+    assert agent._echo_store(str(run_dir), ident, st.st_size, further) == further
     # The slower reader comes back with only the first echo and an older offset.
-    assert agent._echo_store(str(run_dir), ident, st.st_size // 2, further[:1],
-                             st.st_size) == further
+    assert agent._echo_store(str(run_dir), ident, st.st_size // 2, further[:1]) == further
     assert agent._echo_index[str(run_dir)]["offset"] == st.st_size
     assert agent._poll("run")["inbox"] == []
 
@@ -655,3 +654,53 @@ def test_a_held_lock_is_never_evicted(agent, tmp_path):
         assert len(agent._echo_locks) <= agent._ECHO_CACHE_MAX + 1
     finally:
         held.release()
+
+
+def test_a_legacy_entry_is_not_settled_by_a_block_under_another_id(agent, tmp_path):
+    """CodeRabbit, PR #1778: the words-only walk for an unstamped entry must
+    not spend an echo block that carries some OTHER entry's id."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_row(str(run_dir), {"type": "user", "message": {
+        "role": "user", "content": [{"type": "text", "text": "go on"}]}})
+    legacy = [n for n in os.listdir(run_dir / "inbox") if n.endswith(".json")][0]
+    _drain(run_dir, legacy)
+    # An echo of the same words under a foreign id (another run's line, a
+    # message the CLI injected on its own) — not this entry's.
+    _echo_uuid(run_dir, "someone-else", "go on")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [legacy]
+    _echo(run_dir, "go on")
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_concurrent_readers_at_lock_capacity_agree(agent, tmp_path):
+    """CodeRabbit, PR #1778: with the lock table at capacity, readers of one
+    run on several threads must end on one consistent index — every one of
+    them holding the run's CURRENT lock, never an evicted orphan — and the
+    walk must answer the same thing on every thread."""
+    import threading
+    run_dir = _run_dir(tmp_path)
+    (a, ua), (b, ub) = _entries(agent, run_dir, "one", "two")
+    _echo_uuid(run_dir, ua, "one")
+    _stream(run_dir, 400_000)
+    _echo_uuid(run_dir, ub, "two")
+    for i in range(agent._ECHO_CACHE_MAX + 5):
+        agent._echo_locks.setdefault(f"idle-{i}", threading.Lock())
+    answers, errors = [], []
+
+    def read():
+        try:
+            answers.append([r["id"] for r in agent._poll("run")["inbox"]])
+        except Exception as exc:  # noqa: BLE001 — surfaced below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=read) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert answers == [[]] * 8
+    state = agent._echo_index[str(run_dir)]
+    assert state["offset"] == os.path.getsize(run_dir / "out.jsonl")
+    assert [uid for uid, _k in state["echoes"]] == [ua, ub]
+    assert not agent._echo_locks[str(run_dir)].locked()

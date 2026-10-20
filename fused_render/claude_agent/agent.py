@@ -5011,33 +5011,48 @@ def _read_echo_texts(run_dir: str) -> tuple:
     # slower thread writing an OLDER offset back over a newer one, and the
     # next read re-indexing a stretch it had already counted — duplicate
     # echoes, which the position walk cannot tell from a line said twice.
-    with _ECHO_LOCK:
-        lock = _echo_locks.get(run_dir)
-        if lock is None:
-            if len(_echo_locks) >= _ECHO_CACHE_MAX:
-                # Only a lock nobody holds may go (Bugbot, PR #1778): dropping
-                # a held one would let a second window on the same run mint
-                # another and read beside the first.
-                for key in [k for k, l in _echo_locks.items() if not l.locked()]:
-                    if len(_echo_locks) < _ECHO_CACHE_MAX:
-                        break
-                    del _echo_locks[key]
-            lock = _echo_locks[run_dir] = threading.Lock()
-    with lock:
+    while True:
+        with _ECHO_LOCK:
+            lock = _echo_locks.get(run_dir)
+            if lock is None:
+                if len(_echo_locks) >= _ECHO_CACHE_MAX:
+                    # Only a lock nobody holds may go (Bugbot, PR #1778):
+                    # dropping a held one would let a second window on the
+                    # same run mint another and read beside the first.
+                    for key in [k for k, l in _echo_locks.items()
+                                if not l.locked()]:
+                        if len(_echo_locks) < _ECHO_CACHE_MAX:
+                            break
+                        del _echo_locks[key]
+                lock = _echo_locks[run_dir] = threading.Lock()
+        lock.acquire()
+        # STILL THE RUN'S LOCK once held (CodeRabbit, PR #1778): between the
+        # lookup and the acquire another reader at capacity can have evicted
+        # this idle lock and minted a replacement; holding the orphan would
+        # be holding nothing.
+        with _ECHO_LOCK:
+            if _echo_locks.get(run_dir) is lock:
+                break
+        lock.release()
+    try:
         with _ECHO_LOCK:
             state = _echo_index.get(run_dir)
         try:
-            st = os.stat(path)
+            fh = open(path, "rb")
         except OSError:
             return [], False
-        ident = (st.st_dev, st.st_ino)
-        if state and state["ident"] == ident and state["offset"] <= st.st_size:
-            offset, echoes = state["offset"], list(state["echoes"])
-        else:
-            offset, echoes = 0, []   # a different file, or one that shrank
-        fresh = not offset
-        try:
-            with open(path, "rb") as fh:
+        with fh:
+            # THE FILE THAT IS OPEN, not the one a separate `stat` saw a moment
+            # earlier: a truncate-and-rewrite between the two would keep the
+            # inode and could regrow past the stored offset (CodeRabbit).
+            st = os.fstat(fh.fileno())
+            ident = (st.st_dev, st.st_ino)
+            if state and state["ident"] == ident and state["offset"] <= st.st_size:
+                offset, echoes = state["offset"], list(state["echoes"])
+            else:
+                offset, echoes = 0, []   # a different file, or one that shrank
+            fresh = not offset
+            try:
                 if offset:
                     # THE BYTE BEFORE THE INDEXED EDGE IS A NEWLINE on the file
                     # this index was built from; a file rewritten in place to
@@ -5082,15 +5097,17 @@ def _read_echo_texts(run_dir: str) -> tuple:
                     uid = str(row.get("uuid") or "")
                     echoes.extend((uid, _echo_key(t))
                                   for t in _inbox_blocks(row) if t)
-        except OSError:
-            return [], False
+            except OSError:
+                return [], False
         if len(echoes) > _ECHO_INDEX_MAX:
             del echoes[:-_ECHO_INDEX_MAX]
-        return _echo_store(run_dir, ident, offset, echoes, st.st_size, fresh), True
+        return _echo_store(run_dir, ident, offset, echoes, fresh), True
+    finally:
+        lock.release()
 
 
 def _echo_store(run_dir: str, ident: tuple, offset: int, echoes: list,
-                size: int, fresh: bool = False) -> list:
+                fresh: bool = False) -> list:
     """Put one reader's result into `_echo_index` and hand back the list that
     is current afterwards.
 
@@ -5101,15 +5118,14 @@ def _echo_store(run_dir: str, ident: tuple, offset: int, echoes: list,
     back — which would make the next read re-index a stretch already counted
     and append duplicate echoes, the one thing the position walk cannot tell
     from a line said twice. Every reader's list is the stored base plus the
-    bytes after it, so the further list is always a superset in order. A
-    stored offset past the file's current `size` is a file that shrank since,
-    and vouches for nothing; `fresh` is a reader that re-indexed from byte 0
-    because the file was not the one the index was built from, and its
-    answer replaces whatever is stored."""
+    bytes after it, so the further list is always a superset in order.
+    `fresh` is a reader that re-indexed from byte 0 because the file it
+    opened was not the one the index was built from (a new inode, a shorter
+    file, no newline at the indexed edge), and its answer replaces whatever
+    is stored."""
     with _ECHO_LOCK:
         cur = _echo_index.get(run_dir)
-        if not fresh and cur and cur["ident"] == ident \
-                and size >= cur["offset"] > offset:
+        if not fresh and cur and cur["ident"] == ident and cur["offset"] > offset:
             return cur["echoes"]   # never mutated in place: safe to share
         if cur is None and len(_echo_index) >= _ECHO_CACHE_MAX:
             # The run polled longest ago goes, not the whole index: a shell
@@ -5282,7 +5298,13 @@ def _drained_unechoed(run_dir: str) -> list:
         # injected as a turn by the CLI) is stepped over rather than read as
         # "the newest echo is not ours, nothing landed".
         ids_in_play = bool(last_echo)
-        words = [key for _uid, key in echoes[after:] if key]
+        # …AND ONLY OVER ECHOES THAT CAN BE THEIRS: a block with no id, or a
+        # block under the id of the entry the id pass just matched — the
+        # fold that repeats its lines. A block under any other id belongs to
+        # that other entry, whatever it says (CodeRabbit, PR #1778).
+        fold_uid = recent[matched - 1]["uuid"] if matched else ""
+        words = [key for uid, key in echoes[after:]
+                 if key and (not uid or uid == fold_uid)]
         landed, j = 0, 0
         for entry in rest:
             if ids_in_play and entry["uuid"]:
