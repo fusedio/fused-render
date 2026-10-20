@@ -144,7 +144,7 @@ def _build_bridge():
     work = tempfile.mkdtemp(prefix="build-", dir=parent)
     try:
         src, app = os.path.join(work, "bridge.js"), os.path.join(work, "NotesBridge.app")
-        with open(src, "w") as f:
+        with open(src, "w", encoding="utf-8") as f:
             f.write(BRIDGE_JS)
         subprocess.run(["osacompile", "-l", "JavaScript", "-o", app, src], check=True, capture_output=True, timeout=30)
         plist = os.path.join(app, "Contents", "Info.plist")
@@ -175,9 +175,9 @@ def _bridge(req):
     work = tempfile.mkdtemp(prefix="call-", dir=cache)
     try:
         paths = {k: os.path.join(work, k) for k in ("script.js", "req.json", "out.json")}
-        with open(paths["script.js"], "w") as f:
+        with open(paths["script.js"], "w", encoding="utf-8") as f:
             f.write(JXA)
-        with open(paths["req.json"], "w") as f:
+        with open(paths["req.json"], "w", encoding="utf-8") as f:
             json.dump(req, f)
         try:
             subprocess.run(["open", "-W", "-n", "-g", "-a", BRIDGE, "--env", "NB_SCRIPT=" + paths["script.js"],
@@ -187,7 +187,7 @@ def _bridge(req):
             raise PermissionError(f"Notes did not answer within {TIMEOUT_S} s. If macOS is asking whether NotesBridge "
                                   "may control Notes, click OK and retry.")
         try:
-            with open(paths["out.json"]) as f:
+            with open(paths["out.json"], encoding="utf-8") as f:
                 out = json.load(f)
         except (OSError, ValueError):
             raise RuntimeError("NotesBridge exited without an answer")
