@@ -2704,7 +2704,7 @@ def test_the_mflux_runner_BOUNDS_mflux():
     declared = projectenv.dependencies_of(runner.folder)
     bounds = [d for d in declared if d.replace(" ", "").startswith("mflux")]
     assert bounds, f"mflux is not declared at all: {declared}"
-    assert bounds[0].replace(" ", "") == "mflux>=0.19,<0.20", bounds
+    assert bounds[0].replace(" ", "") == "mflux>=0.23,<0.24", bounds
 
 
 #: Runner dependencies allowed to stay open-ended, and what each one buys by it.
