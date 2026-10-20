@@ -572,3 +572,76 @@ def test_kill_after_poll_reaped_the_child_never_signals(registry, tmp_path, monk
     assert calls == []
     session._paused.clear()
     session._flowing.set()
+
+
+# -- owner-tagged sessions, env overrides, last-command output ----------------
+
+def _osc_script(body: str) -> list:
+    return ["/bin/sh", "-c", body + "; sleep 30"]
+
+
+def test_owner_and_env_override(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh", "-c", "printf %s \"$PAGER-$KEEP\""],
+                                                   env={**os.environ, "PAGER": "less", "KEEP": "k"}))
+    session = registry.create(owner="bot:abc", env={"PAGER": "cat"})
+    assert session.owner == "bot:abc"
+    assert session.snapshot()["owner"] == "bot:abc"
+    assert _wait_until(lambda: b"cat-k" in bytes(session.scrollback()))
+    assert registry.create().owner is None
+
+
+def test_bot_sessions_have_their_own_cap(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, ["/bin/sh"]))
+    for i in range(pty_session.MAX_BOT_SESSIONS):
+        registry.create(owner=f"bot:{i}")
+    with pytest.raises(pty_session.SessionLimitError):
+        registry.create(owner="bot:extra")
+    # Bot sessions do not eat the user's slots, and vice versa.
+    for _ in range(pty_session.MAX_SESSIONS):
+        registry.create()
+    with pytest.raises(pty_session.SessionLimitError):
+        registry.create()
+
+
+def test_last_output_slices_between_c_and_d(registry, tmp_path, monkeypatch):
+    body = ("printf 'prompt$ echo one\\r\\n'; printf '\\033]133;C\\007'; "
+            "printf 'one\\r\\ntwo\\r\\n'; printf '\\033]133;D;3\\007'; printf 'next-prompt'")
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, _osc_script(body)))
+    session = registry.create()
+    assert _wait_until(lambda: session.shell_state.last_exit == 3 and b"next-prompt" in session.scrollback())
+    assert session.last_output(200) == "one\ntwo"
+    assert session.last_output(1) == "two"
+
+
+def test_last_output_is_live_while_running(registry, tmp_path, monkeypatch):
+    body = "printf '\\033]133;C\\007partial'"
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, _osc_script(body)))
+    session = registry.create()
+    assert _wait_until(lambda: b"partial" in session.scrollback())
+    assert session.shell_state.running
+    assert session.last_output() == "partial"
+
+
+def test_last_output_empty_before_any_command(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, _osc_script("printf hello")))
+    session = registry.create()
+    assert _wait_until(lambda: b"hello" in session.scrollback())
+    assert session.last_output() == ""
+
+
+def test_last_output_marks_truncation_when_the_ring_dropped_the_start(registry, tmp_path, monkeypatch):
+    monkeypatch.setattr(pty_session, "SCROLLBACK_CAP", 2048)
+    body = ("printf '\\033]133;C\\007'; head -c 20000 /dev/zero | tr '\\\\0' 'x'; "
+            "printf '\\r\\ntail-marker\\r\\n\\033]133;D;0\\007'")
+    monkeypatch.setattr(pty_session, "resolve_profile",
+                         lambda cwd=None: _profile(tmp_path, _osc_script(body)))
+    session = registry.create()
+    assert _wait_until(lambda: session.shell_state.last_exit == 0)
+    out = session.last_output(200)
+    assert out.startswith("[output truncated]")
+    assert "tail-marker" in out

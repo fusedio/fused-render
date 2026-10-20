@@ -366,9 +366,18 @@ class ShellEventParser:
         self.last_command_at: Optional[float] = None
         self.running = False
         self.cwd: Optional[str] = None
+        #: Total bytes ever fed: stream offsets are absolute, so they line up
+        #: with a scrollback ring that counts the same bytes.
+        self._fed = 0
+        #: Stream offset just past the latest 133;C (where that command's
+        #: output begins) and of the 133;D that ended it (None while running).
+        self.output_start: Optional[int] = None
+        self.output_end: Optional[int] = None
 
     def feed(self, data: bytes) -> None:
         buf = self._tail + data
+        base = self._fed - len(self._tail)  # absolute offset of buf[0]
+        self._fed += len(data)
         self._tail = b""
         pos = 0
         while True:
@@ -386,10 +395,10 @@ class ShellEventParser:
                     self._tail = pending
                 return
             end, width = min(ends)
-            self._handle(buf[start + 2:end])
+            self._handle(buf[start + 2:end], base + start, base + end + width)
             pos = end + width
 
-    def _handle(self, payload: bytes) -> None:
+    def _handle(self, payload: bytes, seq_start: int = 0, seq_end: int = 0) -> None:
         try:
             text = payload.decode("utf-8", errors="replace")
         except Exception:  # pragma: no cover - decode with replace cannot raise
@@ -402,9 +411,12 @@ class ShellEventParser:
                 self.last_exit = None
                 self.last_command_at = time.time()
                 self.running = True
+                self.output_start = seq_end
+                self.output_end = None
             elif kind == "D":
                 if self.running:
                     self.running = False
+                    self.output_end = seq_start
                     try:
                         self.last_exit = int(arg)
                     except ValueError:

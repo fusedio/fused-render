@@ -359,3 +359,11 @@ def test_pause_and_resume_control_frames_reach_the_session(client, scratch_regis
         assert _wait(lambda: len(session._paused) == 1)
     # Disconnecting while paused must not leave the shell frozen.
     assert _wait(lambda: session._paused == {} and session._flowing.is_set())
+
+
+def test_list_hides_bot_owned_sessions_but_text_still_works(client, scratch_registry):
+    mine = client.post("/api/terminal", json={}, headers=_HEADERS).json()["id"]
+    bot = scratch_registry.create(owner="bot:abc")
+    ids = [r["id"] for r in client.get("/api/terminal").json()["sessions"]]
+    assert mine in ids and bot.id not in ids
+    assert client.get(f"/api/terminal/{bot.id}/text").status_code == 200
