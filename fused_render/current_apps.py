@@ -414,13 +414,20 @@ def app_icon(folder: str) -> dict | None:
 def _canvas_of(path: str) -> dict | None:
     """`{env, name}` when the desk row IS a canvas clone (the clone dir
     itself, not a file in it), else None (see canvases.clone_dir_for)."""
-    from fused_render.canvases import clone_dir_for
+    from fused_render.canvases import canvases_root as canvases_root_for, clone_dir_for
 
     clone = clone_dir_for(path)
     if clone is None:
         return None
     env, name, clone_dir = clone
-    if canonical_fs_path(clone_dir).rstrip("/") != path and os.path.realpath(clone_dir) != os.path.realpath(path):
+    # The row must BE the clone (one level under the root), not a file in
+    # it. Plain and resolved spellings of the root both name the clone;
+    # nothing here resolves `path` (see clone_dir_for).
+    real_root = os.path.realpath(canvases_root_for(env))
+    if path.rstrip("/") not in (
+        canonical_fs_path(clone_dir).rstrip("/"),
+        canonical_fs_path(os.path.join(real_root, name)).rstrip("/"),
+    ):
         return None
     return {"env": env, "name": name}
 

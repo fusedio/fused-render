@@ -105,6 +105,7 @@ import {
   applyRename,
   applySnapshot,
   catalogPath,
+  canvasProjectPath,
   fixWithClaude,
   getDelta,
   getAccessToken,
@@ -1401,6 +1402,18 @@ export default function CanvasWorkspace({
     setFixError(null);
     try {
       const { run_id } = await fixWithClaude(env, name);
+      // Don't wait for the next sync state to reflect that a fix is now
+      // running: the gap would let a double-click through to a second POST
+      // (the server answers it 409, a confusing thing to show right after a
+      // successful click).
+      setFixActive(true);
+      if (embedded) {
+        // The project page has no chat to hand the run to: the fix is a
+        // task on the clone, so the Tasks tab is where it shows. No `run=`
+        // on this page's URL — nothing here reads it (CodeRabbit on #1795).
+        navigateUrl(canvasProjectPath(env, name, { tab: "tasks" }));
+        return;
+      }
       // The fix runs on the CLONE (canvases.py spawns on the dir), so it is
       // the canvas chat's to show: leave the node, on both sides.
       if (nodeRef.current) {
@@ -1408,11 +1421,6 @@ export default function CanvasWorkspace({
         setNode(null);
       }
       setFixRunId(run_id);
-      // Don't wait for the next sync state to reflect that a fix is now
-      // running: the gap would let a double-click through to a second POST
-      // (the server answers it 409, a confusing thing to show right after a
-      // successful click).
-      setFixActive(true);
     } catch (e) {
       setFixError((e as Error).message);
     } finally {
@@ -1538,7 +1546,9 @@ export default function CanvasWorkspace({
               title="Start a Claude session on the local clone, primed with these errors"
             >
               {fixActive
-                ? "Claude is on it — see chat →"
+                ? embedded
+                  ? "Claude is on it — see Tasks →"
+                  : "Claude is on it — see chat →"
                 : fixBusy
                   ? "Starting…"
                   : "Fix with Claude"}

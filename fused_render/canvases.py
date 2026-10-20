@@ -584,17 +584,23 @@ def clone_dir_for(path: str) -> tuple[str, str, str] | None:
     path = str(path or "").rstrip("/\\")
     if not path or not os.path.isabs(path):
         return None
-    cands = {os.path.normpath(path), os.path.realpath(path)}
+    # NO syscall on `path` (CodeRabbit on #1795): this runs on every task
+    # project the desk observes, including ones on a mount that may be
+    # wedged, and `app_dir_for` promises an answer before any syscall. The
+    # ROOTS are resolved instead — a fixed local set — so a path the CLI
+    # already resolved (`pwd -P`) matches the real root and a plain one the
+    # plain root. A symlink from elsewhere INTO a clone is not matched; it
+    # is not a documented way to reach one.
+    cand = os.path.normpath(path)
     for env in WORKBENCH_ENV_CHOICES:
         root = canvases_root(env)
         for base in {os.path.normpath(root), os.path.realpath(root)}:
-            for cand in cands:
-                if cand == base or not cand.startswith(base + os.sep):
-                    continue
-                name = cand[len(base) + 1:].split(os.sep)[0]
-                if not _NAME_RE.match(name):
-                    continue
-                return env, name, os.path.join(canvases_root(env), name)
+            if cand == base or not cand.startswith(base + os.sep):
+                continue
+            name = cand[len(base) + 1:].split(os.sep)[0]
+            if not _NAME_RE.match(name):
+                continue
+            return env, name, os.path.join(canvases_root(env), name)
     return None
 
 
