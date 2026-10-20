@@ -540,7 +540,7 @@ const ENTRIES = [
     group: "integrations",
     section: "Sign-ins",
     label: "Fused environment",
-    description: "Which Fused the Canvases, the fused CLI in chats and share uploads talk to. Switching deletes the canvases cloned to this machine.",
+    description: "Which Fused the Canvases, the fused CLI in chats and share uploads talk to.",
     keywords: "environment unstable prod production staging workbench canvases switch",
     renderOnly: true,
     child: true,
