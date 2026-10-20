@@ -43,8 +43,13 @@
 #                   bump adds no download; the floors only stop an old torch
 #                   from being kept. Re-run the stream measurements in
 #                   `worker.py::_pin_stream` with a render when this is bumped.
+#   pillow          CEILING <13, named here though mflux pulls it in: Pillow
+#                   13.0.0 imports `numbers._IntegralLike`, which exists only on
+#                   Python 3.15, so `import PIL._typing` (and mflux) fails on
+#                   3.12. Drop the ceiling once a 3.12-safe 13.x ships or mflux
+#                   stops importing `PIL._typing`.
 #   huggingface_hub downloads
-#   psutil          the RSS half of "how much memory is this costing"; the MLX
+#   psutil         the RSS half of "how much memory is this costing"; the MLX
 #                   half comes from mlx's own allocator (see `memory()`)
 #
 # No `av`, unlike the transcription runner: nothing here decodes media. The
@@ -74,6 +79,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "mflux>=0.23,<0.24",
+    "pillow>=12.3,<13",
     "huggingface_hub",
     "psutil",
 ]
