@@ -162,14 +162,25 @@ def _recipe(model_id):
 
 
 def _register_extra_quantizers():
-    """Teach diffusers the quantization backends it does not ship, by importing
-    the packages that register themselves into its mapping.
+    """Make sure the `sdnq` quantization backend is registered, by importing
+    the package that registers itself into diffusers' (and transformers')
+    mapping.
 
-    Today that is exactly one: `sdnq`, which
+    Today that is exactly one backend: `sdnq`, which
     `Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` (`catalog.py`) is serialized
-    with. diffusers 0.39 knows autoround, bitsandbytes, gguf, modelopt, quanto
-    and torchao — every other quantized repo this app loads is one of those,
-    and needs nothing here.
+    with. **diffusers 0.41 ships an sdnq quantizer of its own**
+    (`diffusers/quantizers/sdnq`), and `AUTO_QUANTIZER_MAPPING["sdnq"]` is
+    already `diffusers.quantizers.sdnq.sdnq_quantizer.SDNQQuantizer` before
+    anything imports the `sdnq` package; after `import sdnq` it is the same
+    class (probed on 0.41.0 with sdnq 0.2.8), so for diffusers this import no
+    longer changes anything. It is kept for the transformers twin:
+    `transformers.quantizers.auto.AUTO_QUANTIZER_MAPPING` has no `"sdnq"` until
+    `sdnq/quantizer.py` adds `sdnq.quantizer.SDNQQuantizer` to it, which a
+    transformers-side component (a text encoder in the same repo) needs. On
+    diffusers 0.39 and earlier, which knew only autoround, bitsandbytes, gguf,
+    modelopt, quanto and torchao, the import was also what taught diffusers
+    sdnq at all. Every other quantized repo this app loads is one of the
+    natively known backends and needs nothing here.
 
     **Imported for a SIDE EFFECT, which is why it looks like an unused
     import.** `sdnq/quantizer.py` ends by mutating
@@ -571,7 +582,7 @@ def load(model_id, fetched):
     _loaded["vae"] = None if vae is None else type(vae).__name__
     # Tile the VAE's own decode rather than the pipeline's: `Flux2KleinPipeline`
     # has neither `enable_vae_tiling` nor `enable_vae_slicing` (`hasattr` is
-    # False for both, diffusers 0.39), so the usual one-line pipeline wrapper
+    # False for both, diffusers 0.39 and still on 0.41), so the usual one-line pipeline wrapper
     # is not there to call — but `AutoencoderKLFlux2.enable_tiling()` is, and
     # going straight to the VAE object captured above is what this recipe has
     # instead. It is a no-op until a render is actually big enough to need it:
