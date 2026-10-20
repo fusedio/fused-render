@@ -176,6 +176,44 @@
     transition: none;
   }
 }
+/* FORK FROM HERE: a small icon button in the left lane, just before the bubble.
+   Its net flex size is zero (20px wide, minus 24px and plus 4px of margin), so
+   the bubble does not move and the row does not grow; the glyph hangs into the
+   lane. Hover-revealed like the stamp, and shown on keyboard focus too. */
+.chat-root .turn.user .turn-fork {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0 4px 0 -24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--c-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 90ms ease-out, color 90ms ease-out;
+}
+.chat-root .turn.user:hover .turn-fork,
+.chat-root .turn.user .turn-fork:focus-visible {
+  opacity: 1;
+}
+.chat-root .turn.user .turn-fork:hover,
+.chat-root .turn.user .turn-fork:focus-visible {
+  color: var(--c-fg);
+}
+.chat-root .turn.user .turn-fork:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.user .turn-fork {
+    transition: none;
+  }
+}
 .chat-root .turn.user .bubble {
   background: var(--c-bubble-user);
   border-radius: 18px 18px 4px 18px;

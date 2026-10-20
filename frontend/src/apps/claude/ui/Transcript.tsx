@@ -123,6 +123,8 @@ export interface TranscriptProps {
   /** A queued / not-sent bubble was clicked: pull it back into the box
    *  (`TurnProps.onPullPending`). */
   onPullPending?: (key: string) => void;
+  /** "Fork from here" on a user turn (`TurnProps.onFork`). */
+  onFork?: (key: string) => void;
   /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
   onOpenShot?: (shot: Viewable) => void;
   /** "preview" / "app" — the word a receipt's nouns use (`PaneState.paneNoun`). */
@@ -177,6 +179,7 @@ export const Transcript = memo(function Transcript({
   onAnchorSpent,
   onShowSent,
   onPullPending,
+  onFork,
   onOpenShot,
   paneNoun,
   what,
@@ -942,6 +945,7 @@ export const Transcript = memo(function Transcript({
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
                   {...(onPullPending ? { onPullPending } : {})}
+                  {...(onFork ? { onFork } : {})}
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}
