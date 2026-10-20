@@ -202,16 +202,23 @@ def test_app_serve_python_is_the_engines_resolution_not_a_second_one(monkeypatch
     assert "python_executable=envinstall.script_python()" in src
 
 
-def test_wrapper_default_matches_the_canvases_default(monkeypatch):
+def test_wrapper_default_matches_the_canvases_default(monkeypatch, tmp_path):
     """canvases.py and the wrapper share one knob through
     fusedcli.workbench_env — this pins that the canvases module actually
     reads it rather than keeping a default of its own (D146: a duplicated
     rule needs a test)."""
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
-    assert fusedcli.workbench_env() == "prod"
+    # Own home: the resolver now also reads the `workbench_env` preference.
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    assert fusedcli.workbench_env() == "unstable"
     import fused_render.canvases as canvases
     src = open(canvases.__file__, encoding="utf-8").read()
-    assert "WORKBENCH_ENV = workbench_env()" in src
+    # Read at call time, never frozen into a constant: the preference flips
+    # at runtime (POST /api/canvases/env) and the iframe URL and every CLI
+    # child have to follow without a restart.
+    assert "WORKBENCH_ENV = " not in src
+    assert 'env["FUSED_ENV"] = workbench_env()' in src
+    assert "_ENV_WEB_URLS.get(\n        workbench_env()" in src
 
 
 # --------------------------------------------------- the template's half

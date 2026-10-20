@@ -25,6 +25,7 @@ import {
   sortTasks,
   statusLabel,
   summarizeTasks,
+  TASK_ENDED_GRACE_MS,
 } from "../protocol/tasks";
 import type { ErrorOnly, TaskKind, TaskOutputResponse, TaskRecord, TaskStopResponse } from "../protocol/types";
 import { CollapsiblePre } from "./CollapsiblePre";
@@ -57,9 +58,7 @@ export function useTasksOpen(scope: string): [boolean, () => void] {
   return [open, toggle];
 }
 
-/** An ended, non-failed row stays this long (ms) before it leaves the open
- *  list; "Show N finished" brings it back. */
-export const TASK_ENDED_GRACE_MS = 5000;
+export { TASK_ENDED_GRACE_MS };
 
 /** When (ms epoch) an ended, non-failed row leaves the list; `null` for a row
  *  that never auto-hides (live, paused, failed). No `ended_at` = long ended. */

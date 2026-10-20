@@ -989,13 +989,13 @@ export default function App({ config }: { config: Config }) {
           <div className="monitor-off deploy-muted">
             The Monitor is off. Turn it on under{" "}
             <a
-              href="/preferences"
+              href="/preferences?s=monitor"
               onClick={(e) => {
                 e.preventDefault();
-                navigateUrl("/preferences");
+                navigateUrl("/preferences?s=monitor");
               }}
             >
-              Preferences › Monitor
+              Preferences › Optional features
             </a>
             .
           </div>
@@ -1019,13 +1019,13 @@ export default function App({ config }: { config: Config }) {
           <div className="monitor-off deploy-muted">
             The Marketplace is off. Turn it on under{" "}
             <a
-              href="/preferences"
+              href="/preferences?s=marketplace"
               onClick={(e) => {
                 e.preventDefault();
-                navigateUrl("/preferences");
+                navigateUrl("/preferences?s=marketplace");
               }}
             >
-              Preferences › Marketplace
+              Preferences › Optional features
             </a>
             .
           </div>

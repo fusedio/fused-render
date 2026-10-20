@@ -2169,6 +2169,17 @@ button.tasks-caret,
   white-space: nowrap;
 }
 
+/* …EXCEPT THE BACKGROUND-JOB BADGE, WHICH DOES NOT GIVE WAY. The queue
+   sentence yields first because its front survives a cut; "1 job running"
+   means nothing cut, and beside an ordinary prompt-length title the
+   `0 100 auto` above measured a caption like it at 0px — one that almost never
+   shows. So it keeps its width and the TITLE ellipsises instead. The job names
+   are the hint; the Stop is in the hover strip
+   (ScheduleTaskViews.StopJobButton). */
+.tasks-row-queue--bg {
+  flex: 0 0 auto;
+}
+
 .tasks-card-queue {
   /* A LINE OF ITS OWN on the card — the card is a column flex box, so this is a
      row rather than something trailing the title. Wraps freely for the reason
@@ -2943,6 +2954,43 @@ button.tasks-draft-pill.is-on:focus-visible {
 .tasks-group-count {
   font-weight: 500;
   opacity: 0.8;
+}
+/* The Project view's heading is the folder's NAME in the page's own ink
+   (Akshil, 2026-10-19: "the dir name in white"); the count stays muted. */
+.tasks-group[data-by="project"] .tasks-group-name {
+  color: var(--fg);
+}
+/* + New task in this folder: a slot the heading always holds (opacity, never
+   display, so nothing shifts), lit while the pointer is anywhere on the
+   section — its rows included — or the key reaches it. */
+.tasks-group-add,
+.prefs-section .tasks-group-add {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  /* Hidden until the pointer is on the section — its heading or its rows —
+     everywhere (Akshil, 2026-10-19: "only appear when we hover"). */
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.tasks-group:hover > .tasks-group-head .tasks-group-add,
+.tasks-group-add:focus-visible {
+  opacity: 1;
+}
+.tasks-group-add:hover,
+.tasks-group-add:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.tasks-group-add > svg {
+  width: 12px;
+  height: 12px;
 }
 /* A heading's link mark (the PR view): quiet beside the word, lit on hover. */
 .tasks-group-link {

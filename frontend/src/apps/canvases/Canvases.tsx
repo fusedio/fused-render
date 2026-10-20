@@ -4,7 +4,7 @@
 // `fused login` provider (distinct from the `fused cloud login` account the
 // Preferences page manages), list the account's canvases as a card gallery
 // (search, create, sign out), and open one — which clones it under
-// ~/.fused-render/canvases/<name> and lands on the workspace page
+// ~/Fused/canvas/<env>/<name> and lands on the workspace page
 // (/canvases/<name>: Claude-editable local files, watch-and-push sync,
 // embedded live workbench). Styling lives in styles/canvases.css.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -12,6 +12,7 @@ import previewTile from "@assets/canvas-preview-tile.png";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
+  CanvasOwnedError,
   cloneCanvas,
   createCanvas,
   getCanvasesStatus,
@@ -24,6 +25,18 @@ import {
   type CanvasesStatus,
 } from "./api";
 import { publishLoggedIn } from "./logged-in";
+
+/** sync/start before opening a canvas. Another process owning the clone
+ *  (409 `owned`) is not a reason to stay on the list: the workspace shows
+ *  who owns it and picks the canvas up when that process quits. */
+async function startSyncForOpen(name: string): Promise<void> {
+  try {
+    await startSync(name);
+  } catch (e) {
+    if (e instanceof CanvasOwnedError) return;
+    throw e;
+  }
+}
 
 // `fused login`'s own browser callback times out server-side; polling any
 // slower than this makes a completed sign-in feel stuck.
@@ -241,7 +254,7 @@ export default function Canvases() {
       // remote state, and an already-cloned canvas may hold local edits the
       // watcher hasn't pushed yet (e.g. after a server restart).
       if (!canvas.cloned) await cloneCanvas(canvas.name);
-      await startSync(canvas.name);
+      await startSyncForOpen(canvas.name);
       navigateUrl(`/canvases/${encodeURIComponent(canvas.name)}`);
     } catch (e) {
       setError((e as Error).message);
@@ -260,7 +273,7 @@ export default function Canvases() {
     try {
       await createCanvas(name);
       await cloneCanvas(name);
-      await startSync(name);
+      await startSyncForOpen(name);
       navigateUrl(`/canvases/${encodeURIComponent(name)}`);
     } catch (e) {
       setError((e as Error).message);

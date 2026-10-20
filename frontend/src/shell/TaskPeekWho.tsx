@@ -22,7 +22,17 @@ import type { Task } from "@platform/lib/api";
 import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { columnLabel } from "./schedule-lib";
 import { StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
-import { basename, cardTitleLine, firstLine, ringFailed, shortTaskId, taskColumn, tildePath } from "./tasks-lib";
+import {
+  BACKGROUND_LABEL,
+  basename,
+  cardTitleLine,
+  firstLine,
+  liveJobRow,
+  ringFailed,
+  shortTaskId,
+  taskColumn,
+  tildePath,
+} from "./tasks-lib";
 
 /** The title the header prints — the task's own first line, and the word every
  *  surface uses for a task that has none. Exported because the peek's menu and
@@ -80,13 +90,20 @@ export function TaskPeekWho({ task, running = false }: {
   // a question the reader is being asked (StatusIcon's own note on `failed`).
   const column = taskColumn(task);
   const status = running && column !== "needs_attention" ? "in_progress" : column;
+  // …and a finished turn whose chat still holds a live background job wears the
+  // List row's blue "Background" ring (tasks-lib.liveJobRow).
+  const background = !running && liveJobRow(task);
   return (
     <div className="task-side-peek-who">
       <span
         className="task-side-peek-status"
-        title={status ? columnLabel(status) : undefined}
+        title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
       >
-        <StatusIcon status={status} failed={running ? false : ringFailed(task)} />
+        <StatusIcon
+          status={status}
+          failed={running ? false : ringFailed(task)}
+          background={background}
+        />
       </span>
       <TaskAgentMark backend={task.backend} />
       <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>

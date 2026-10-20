@@ -2439,3 +2439,44 @@ def monkeypatch_alive(agent):
     """Treat the run as in flight — these fixtures write no pid file, and a
     decision on a finished run is deliberately recorded as expired."""
     agent._alive = lambda _run_dir: True
+
+
+def test_a_cancelled_request_latches_abandoned_and_ends_the_wait(tmp_path):
+    """The CLI stopped waiting on a request (`notifications/cancelled`, the
+    subagent was told to carry on): its card must not read "waiting for you"
+    for the rest of the hour."""
+    perm_dir = tmp_path / "perm"
+    s = _Server(perm_dir)
+    try:
+        s.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+        pending = s.send_async("tools/call", {
+            "name": "approve",
+            "arguments": {"tool_name": "Bash", "input": {"command": "ls"},
+                          "tool_use_id": "tu-1"}})
+        req = _wait_for_request(perm_dir)
+        s.proc.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": pending.id, "reason": "moved on"}}) + "\n")
+        s.proc.stdin.flush()
+        payload = _result_payload(pending.result(20))
+        assert payload["behavior"] == "deny"
+        assert "moved on" in payload["message"]
+        recorded = json.loads((perm_dir / (req["id"] + ".res.json")).read_text())
+        assert recorded == {"decision": "deny", "reason": "abandoned"}
+    finally:
+        s.close()
+
+
+def test_a_cancel_for_an_unknown_request_is_ignored(tmp_path):
+    perm_dir = tmp_path / "perm"
+    s = _Server(perm_dir)
+    try:
+        s.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+        s.proc.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 999}}) + "\n")
+        s.proc.stdin.flush()
+        assert s.call("ping")["result"] == {}
+        assert not list(perm_dir.glob("*.res.json"))
+    finally:
+        s.close()

@@ -3182,11 +3182,11 @@ def test_the_row_offers_the_sign_in_only_when_there_is_no_token(base, monkeypatc
     base._segmented_fetch("org/m", ["model.safetensors"], "c0m")
 
     detail = waits[0][1]
-    # "Preferences → AI" verbatim, the same place `hub_models.py` and
+    # "Preferences → Accounts" verbatim, the same place `hub_models.py` and
     # `discoverView.ts` send a rate-limited or refused reader: a message naming a
     # screen that does not hold the setting is a message that wastes a click.
     assert detail == ("Hugging Face is limiting this download — sign in to "
-                      "Hugging Face in Preferences → AI for a higher limit")
+                      "Hugging Face in Preferences → Accounts for a higher limit")
 
 
 def test_an_off_hub_throttle_names_neither_the_hub_nor_a_sign_in(base, monkeypatch,

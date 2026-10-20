@@ -277,8 +277,12 @@ _WORKBENCH_STAMP_SUFFIX = ".fetched"
 
 def fused_web_canvas_root() -> str:
     """`~/Fused/canvas` — Fused Web's (the sandbox/showcase app, a separate
-    codebase) own local canvas-clones folder, entirely outside anything this
-    server owns. Its tasks start via `fused.tasks.create` (routers/tasks.py
+    codebase) own local canvas-clones folder, `~/Fused/canvas/<name>`. Since
+    2026-10-20 this server's own clones live UNDER it too, one folder per
+    environment (`~/Fused/canvas/<env>/<name>`, `canvases.canvases_base()`),
+    so the two gate roots coincide by default; a Fused Web canvas literally
+    named `prod` or `unstable` would collide with those folders — accepted.
+    Fused Web's tasks start via `fused.tasks.create` (routers/tasks.py
     `api_task_create`) rather than a canvas push, so a target under here never
     passes through `canvases.py` at all — but a session spawned against it
     still has a canvas.toml CLAUDE.md naming the same `workbench:*` skills, and

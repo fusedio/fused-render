@@ -245,3 +245,21 @@ def host_cpu_ticks() -> tuple[int, int, int] | None:
 
 def descendants(root: int) -> dict[int, int]:
     return walk_descendants(root, child_pids)
+
+
+_PROC_PIDVNODEPATHINFO = 9
+_VNODE_INFO_SIZE = 152          # sizeof(struct vnode_info) before vip_path
+_VIP_PATH_SIZE = 1024           # MAXPATHLEN
+_VNODEPATH_SIZE = 2 * (_VNODE_INFO_SIZE + _VIP_PATH_SIZE)
+
+
+def cwd(pid: int) -> str | None:
+    """`pid`'s current directory (proc_pidinfo PROC_PIDVNODEPATHINFO; the cdir
+    entry comes first). None when unreadable (another user's process)."""
+    buf = ctypes.create_string_buffer(_VNODEPATH_SIZE)
+    n = _libc.proc_pidinfo(int(pid), _PROC_PIDVNODEPATHINFO, ctypes.c_uint64(0),
+                           buf, _VNODEPATH_SIZE)
+    if n != _VNODEPATH_SIZE:
+        return None
+    raw = buf.raw[_VNODE_INFO_SIZE:_VNODE_INFO_SIZE + _VIP_PATH_SIZE]
+    return raw.split(b"\0", 1)[0].decode("utf-8", "replace") or None

@@ -264,6 +264,11 @@ export interface ClaudeChatProps {
   annotateTarget?: () => HTMLIFrameElement | null;
   /** `_preview=1` — this mount is a thumbnail, so the pane's own render is too. */
   preview?: boolean;
+  /** `_noann=1` — no Screenshot / Comment / Annotate seats and no narrow-view
+   *  toggle: the host shows this chat where its pane must stay out of reach
+   *  (the canvas node pane, whose Code tab is the file's view). The pane
+   *  itself stays mounted — it is what files the chat under its file. */
+  noAnnTools?: boolean;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -581,7 +586,16 @@ function ChatBody(props: ChatBodyProps) {
       if (!frame) return null;
       // A frame still loading answers with its own `about:blank` document,
       // which is readable and no reason to disown it — the watcher polls.
-      if (!frame.contentDocument && !frame.contentWindow) return null;
+      //
+      // A CROSS-ORIGIN frame (the canvas workspace's hosted workbench) answers
+      // a WindowProxy but a null `contentDocument`, and that is a frame whose
+      // document is NOT ours to read: it used to pass here, which put
+      // `has_pane:"1"` on the wire — the `app_state` tool in the roster and
+      // the app-folder prompt for a page the model could never read. The
+      // annotation overlay is unaffected: it takes the frame straight from
+      // `annotateTarget` (useAnnotations `markedFrame`), never through here,
+      // because it only needs the frame's BOX, not its document.
+      if (!frame.contentDocument) return null;
       return frame;
     } catch {
       return null; // the getter threw, or the document is not ours to read
@@ -3756,8 +3770,18 @@ function ChatBody(props: ChatBodyProps) {
     if (href) onNavigate(href);
   }, [onNavigate]);
 
-  // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
+  // T:16714 — one scroll to the tail after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.
+  //
+  // THROUGH THE FOLLOW FLAG, not a raw write (Akshil 2026-10-19). T's
+  // `scrollBottom()` here moved the reader whatever they were doing, and a
+  // reader who had scrolled up to re-read the middle of a long reply was yanked
+  // to the tail the moment the run ended — one of the "jumps to a different
+  // place" in the report. The settle exists for the working line leaving
+  // (the log gets SHORTER, which the follow's ResizeObserver answers only by
+  // not moving), so a pinned reader is put back on the tail and a reader who
+  // left it is left where they are. A finished run the reader was AWAY for is
+  // the other case, and it stays unconditional in `useRepairScroll` below.
   const settled = state.status === "idle";
   const wasRunning = useRef(false);
   useEffect(() => {
@@ -3767,8 +3791,7 @@ function ChatBody(props: ChatBodyProps) {
     }
     if (!wasRunning.current) return;
     wasRunning.current = false;
-    const log = rootRef.current?.querySelector(".chat-logwrap");
-    if (log) log.scrollTop = log.scrollHeight;
+    transcriptFollow.current?.();
   }, [settled]);
 
   // AND UNCONDITIONALLY AFTER A REPAIR (T:17851, P4-10) — the rule, and why it
@@ -4976,7 +4999,7 @@ function ChatBody(props: ChatBodyProps) {
               // The row itself follows the ANNOTATE TARGET — ours or the
               // host's — because all three seats act on it
               // (`enterNoPane`'s step 6 note).
-              shown={annTarget}
+              shown={annTarget && !props.noAnnTools}
               // NO CAMERA GATE — T RENDERS THIS SEAT IN THE NARROW CHAT VIEW,
               // and the owner's rule is identical UX (visual pass 2, FIX-18).
               // T:3823's `body.view-chat .viewshot { display: none }` has
@@ -5045,7 +5068,7 @@ function ChatBody(props: ChatBodyProps) {
                 leftMode={leftMode}
               />
             ) : null}
-            {narrowView.narrow ? <ViewToggle narrowView={narrowView} /> : null}
+            {narrowView.narrow && !props.noAnnTools ? <ViewToggle narrowView={narrowView} /> : null}
             {/* The menu rides the same seat in BOTH views (T's `#kebab` is on
                 the one strip they share), so it never appears out of nowhere on
                 entering a chat. On the landing it is the one item that can mean
@@ -5055,6 +5078,10 @@ function ChatBody(props: ChatBodyProps) {
               sessionId={inChat ? (state.sessionId ?? "") : ""}
               btnRef={kebabBtn}
               running={running}
+              // Only a RUNNING turn's hold is lifted by its open card: a
+              // `stopping` turn with a card still painted is a process on its
+              // way out, and the menu waits for it like before.
+              asking={!!openCards && state.status === "running"}
               landing={!inChat}
               onErased={onErased}
               // ARCHIVE LEAVES THROUGH THE SAME DOOR DELETE DOES (Akshil,

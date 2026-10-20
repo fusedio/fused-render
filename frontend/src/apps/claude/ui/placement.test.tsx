@@ -531,7 +531,12 @@ test("a pinned card may fill the scrollport, and past it nothing else scrolls (R
   // R2-4's 70% ceiling is exactly what put a second scrollbar beside the
   // transcript's, so it is gone and the pin may be the whole port.
   expect(body).not.toContain("70cqh");
-  expect(body).toContain("max-height: 100cqh");
+  // The ceiling is the port's MEASURED height (`Transcript` writes
+  // `--c-port-h`), not `100cqh`: a scroll container that is also a size
+  // container loses its scroll offset in WebKit whenever the streaming reply
+  // rewrites its markup (Akshil 2026-10-19).
+  expect(body).toContain("max-height: var(--c-port-h");
+  expect(body).not.toMatch(/max-height:\s*\d+cqh/);
   expect(body).toContain("overflow-y: auto");
   // …and past that the transcript behind it stops scrolling altogether, which
   // is the half of the rule that makes "no double scroll" TRUE rather than
@@ -539,8 +544,8 @@ test("a pinned card may fill the scrollport, and past it nothing else scrolls (R
   const lock = sheet.slice(sheet.indexOf(".chat-root .chat-logwrap.is-locked {"));
   expect(lock).not.toBe("");
   expect(lock.slice(0, lock.indexOf("}"))).toContain("overflow-y: hidden");
-  // `cqh` only means anything if the scrollport is a size container.
-  expect(sheet).toContain("container-type: size");
+  // …and the scrollport is NOT a size container, for the WebKit reason above.
+  expect(sheet).not.toMatch(/^\s*container-type:/m);
   // The lock is MEASURED and starts OFF: this renderer has no layout to
   // overflow, and a transcript locked because nothing could be measured would
   // be the worse of the two bugs.

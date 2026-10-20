@@ -46,29 +46,28 @@ test("the lists and labels are the CLI's vocabulary, verbatim (T:11823-11876)", 
   ]);
 });
 
-test("model precedence: param > detected > pref > constant", () => {
-  expect(resolveModel("opus", "haiku", "fable")).toBe("opus");
-  expect(resolveModel(undefined, "haiku", "fable")).toBe("haiku");
-  expect(resolveModel(undefined, undefined, "fable")).toBe("fable");
+test("model precedence: param > detected > constant", () => {
+  expect(resolveModel("opus", "haiku")).toBe("opus");
+  expect(resolveModel(undefined, "haiku")).toBe("haiku");
   expect(resolveModel()).toBe(DEFAULT_MODEL);
   // "" is not an answer at any rank — it is what an unset param/read reads as.
   expect(resolveModel("", "", "")).toBe(DEFAULT_MODEL);
 });
 
-test("the chat's own RECORD outranks all three", () => {
+test("the chat's own RECORD outranks both", () => {
   // The params are a seed for a chat that does not exist yet (the New task
   // card's deep link, "Fix with AI", the Tasks peek's own two). The record is
   // what the app wrote down for a chat that does — every spawn, every send,
   // every pick — so it leads, or reopening a task undoes a pill its reader
   // moved mid-chat (Akshil, 2026-09-18).
-  expect(resolveModel("opus", "haiku", "fable", "sonnet")).toBe("sonnet");
+  expect(resolveModel("opus", "haiku", "sonnet")).toBe("sonnet");
   expect(resolveEffort("max", "low", "high")).toBe("high");
   // "" is not an answer at this rank either: a chat with no record falls
   // straight back to the ranking it always had.
-  expect(resolveModel("opus", "haiku", "fable", "")).toBe("opus");
+  expect(resolveModel("opus", "haiku", "")).toBe("opus");
   expect(resolveEffort("max", "low", "")).toBe("max");
   // …and a record naming something this build does not offer blanks nothing.
-  expect(resolveModel(undefined, undefined, undefined, "claude-9-turbo"))
+  expect(resolveModel(undefined, undefined, "claude-9-turbo"))
     .toBe(DEFAULT_MODEL);
 });
 
@@ -80,12 +79,11 @@ test("the retired pinned Fable id still reads as Fable, wherever it comes from",
   // an unknown model: a blank pill and a silent fall back to sonnet.
   expect(resolveModel("claude-fable-5-1")).toBe("fable");
   expect(resolveModel(undefined, "claude-fable-5-1")).toBe("fable");
-  expect(resolveModel(undefined, undefined, "claude-fable-5-1")).toBe("fable");
   // …and wearing the CLI's context qualifier, which this menu does not offer
   // as a row of its own: still the Fable row, not the default.
   expect(resolveModel("claude-fable-5-1[1m]")).toBe("fable");
-  expect(resolveModel(undefined, undefined, undefined, "fable[1m]")).toBe("fable");
-  expect(resolveModel(undefined, undefined, undefined, "claude-fable-5-1"))
+  expect(resolveModel(undefined, undefined, "fable[1m]")).toBe("fable");
+  expect(resolveModel(undefined, undefined, "claude-fable-5-1"))
     .toBe("fable");
   // Any Fable spelling, not just that one id — a transcript names the dated
   // build, and `agent._short_model` folds its own side the same way.

@@ -5,8 +5,8 @@ ones, then up to three recent of each kind), each a tile — an app's own ``icon
 a bot's face — with its name beneath, and a dot when a bot is busy. A click
 opens the app in its own window (or selects the bot in a Bots window);
 right-click pins, reveals, opens in the browser. The default surface of the
-status item since 2026-10-08; the pinned-file popover (menubar_pin.py) is the
-opt-in alternative (`prefs.menubar_pin_enabled`).
+status item since 2026-10-08, and its only surface since the pinned-file
+popover's preference was retired.
 
 The tray is HTML (``static/shell-dist/dock.html``, built from
 ``frontend/dock.html`` and served at ``/dock`` by the in-process server)
@@ -654,8 +654,8 @@ class DockController:
             it.setTarget_(self._target)
             menu.addItem_(it)
 
-        # The same actions the pinned-file popover's overflow menu carries
-        # (menubar_pin._show_overflow_menu), so swapping surfaces loses no door.
+        # The status item's own actions (the retired pinned-file popover's
+        # overflow menu carried the same set).
         item(f"Open {name}", b"openHome:")
         if self.actions.get("show_tasks"):
             item("Tasks…", b"showTasks:")

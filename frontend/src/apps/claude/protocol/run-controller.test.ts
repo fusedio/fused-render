@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 // The run loop against a FAKE agent.py. Every test here is one of the rules the
 // template earned the hard way: whole-turn replay, D687 slicing after a
 // follow-up, ownership by the newest loop, card placement, the two poll
@@ -4881,6 +4882,59 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasksRunId).toBe("r1");
   });
 
+  test("a follow-up on a newer host keeps the job an older host holds, and watches it through the turn", async () => {
+    // Akshil, 2026-10-19: the chat reopened on its folder starts a second
+    // host (r2) while r1 still runs the job. r2's empty polls say nothing
+    // about r1's job; r1's own `tasks` answer ends it.
+    let during: { ids: string[]; owner: string | null } | null = null;
+    let ended = false;
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: (_f, n) => {
+        if (n === 1) {
+          const st = controller.getState();
+          during = { ids: st.tasks.map((t) => t.id), owner: st.tasksRunId };
+        }
+        return n < 2 ? poll({}) : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
+      tasks: () =>
+        ended
+          ? { tasks: [{ ...T("h"), status: "killed" as const }], tasks_pending: false, host_alive: true }
+          : { tasks: [T("h", "running")], tasks_pending: true, host_alive: true },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    expect(during as unknown).toEqual({ ids: ["h"], owner: "r1" });
+    expect(controller.getState().tasksRunId).toBe("r1");
+    expect(controller.getState().tasks[0]!.status).toBe("running");
+    ended = true;
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(agent.of("tasks").length).toBeGreaterThan(0);
+    expect(agent.of("tasks").every((c) => c.fields.run_id === "r1")).toBe(true);
+    expect(controller.getState().tasks[0]!.status).toBe("killed");
+  });
+
+  test("CodeRabbit: the older host's ended row keeps its grace through the newer run's polls", async () => {
+    let lap: string[] = [];
+    const ended = { ...T("h"), status: "killed" as const, ended_at: Date.now() / 1000 };
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [ended] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: (_f, n) => {
+        if (n === 1) lap = controller.getState().tasks.map((t) => t.id);
+        return n < 2 ? poll({}) : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    expect(lap).toEqual(["h"]);
+  });
+
   test("a restore lands history's tasks", async () => {
     const { controller } = makeController({
       history: () => ({ turns: [], transcript: null, live_run: "", tasks: [T("h", "completed")] }),
@@ -4964,6 +5018,111 @@ describe("the run's tasks", () => {
     await controller.refreshHistory("s1");
     expect(controller.getState().tasks.map((t) => t.id)).toEqual(["a"]);
     expect(controller.getState().tasksRunId).toBe("r1");
+  });
+
+  /** Let the host watch's sleep → `tasks` → publish laps run (sleep is instant here). */
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+
+  test("Akshil 2026-10-18: a turn that ends with a live job keeps the row live, then ends it when the HOST says so", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+      tasks: (_f, n) =>
+        n === 0
+          ? { tasks: [SH], tasks_pending: true, host_alive: true }
+          : { tasks: [{ ...SH, status: "completed", ended_at: 5 }], tasks_pending: false, host_alive: true },
+    });
+    await controller.sendMessage("go");
+    await settle();
+    // Asked of THIS run, and only until nothing is pending.
+    expect(agent.of("tasks").map((c) => c.fields.run_id)).toEqual(["r1", "r1"]);
+    const sh = controller.getState().tasks[0]!;
+    expect([sh.status, sh.ended_at]).toEqual(["completed", 5]);
+    expect(controller.getState().tasksRunId).toBe("r1");
+  });
+
+  test("the host watch rides out a failed ask or two, and asks once per run+seat", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+      tasks: (_f, n) => {
+        if (n < 2) throw new Error("socket dropped");
+        return { tasks: [{ ...SH, status: "completed", ended_at: 5 }], tasks_pending: false, host_alive: true };
+      },
+    });
+    await controller.sendMessage("go");
+    await settle();
+    expect(agent.of("tasks")).toHaveLength(3);
+    expect(controller.getState().tasks[0]!.status).toBe("completed");
+  });
+
+  test("Bugbot 4307278676: a history refresh saying nothing live leaves the watched rows (and the watch) alone", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    let n = 0;
+    let refreshing = false;
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () =>
+        !refreshing
+          ? { turns: [], transcript: null }
+          : { turns: [], transcript: { path: "/p", mtime: ++n, size: 1 }, live_run: "", tasks: [] },
+      tasks: () => ({ tasks: [SH], tasks_pending: true, host_alive: true }),
+    });
+    await controller.sendMessage("go");
+    await settle();
+    refreshing = true;
+    await controller.refreshHistory("s1");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["sh"]);
+    expect(controller.getState().tasksRunId).toBe("r1");
+    // …and the watch is still asking the host.
+    const asked = agent.of("tasks").length;
+    await settle();
+    expect(agent.of("tasks").length).toBeGreaterThan(asked);
+    controller.newChat();
+  });
+
+  test("Bugbot 4307278686: only the OWNING loop's done starts (or retires) a host watch", () => {
+    const src = readFileSync(new URL("./run-controller.ts", import.meta.url), "utf8");
+    expect(src).toContain("if (loopSeq === seat) watchHostTasks(runId, seat);");
+    expect(src).not.toMatch(/if \(poll\.tasks_pending\) watchHostTasks\(runId, seat\);/);
+  });
+
+  test("a host that dies under the watch downgrades the live rows, the one case that still does", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+      tasks: () => ({ tasks: [SH], tasks_pending: false, host_alive: false }),
+    });
+    await controller.sendMessage("go");
+    await settle();
+    expect(agent.of("tasks")).toHaveLength(1);
+    expect(controller.getState().tasks[0]!.status).toBe("unknown");
+  });
+
+  test("a reload onto a live host with live rows watches it too; leaving the conversation stops the watch", async () => {
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      tasks: () => ({ tasks: [T("h", "running")], tasks_pending: true, host_alive: true }),
+    });
+    await controller.openSession("s9");
+    await settle();
+    expect(agent.of("tasks").length).toBeGreaterThan(0);
+    controller.newChat();
+    const asked = agent.of("tasks").length;
+    await settle();
+    expect(agent.of("tasks").length).toBeLessThanOrEqual(asked + 1);
+    expect(controller.getState().tasks).toEqual([]);
   });
 
   test("Bugbot: a done poll with tasks_pending keeps a running monitor running; without it, unknown", async () => {

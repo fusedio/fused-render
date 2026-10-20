@@ -413,4 +413,9 @@ test("hides Continue in terminal and Archive while the chat is queued", () => {
     '    inChat && !state.sessionId && (sched.rec?.status === "queued" || !!leaderId);',
   );
   expect(chat.slice(chat.indexOf("<Kebab"))).toContain("queued={queuedChat}");
+  // An open card on a RUNNING turn lifts `running`'s hold on Archive/Delete
+  // (Akshil, 2026-10-19); a stopping turn's card does not.
+  expect(chat.slice(chat.indexOf("<Kebab"))).toContain(
+    'asking={!!openCards && state.status === "running"}',
+  );
 });

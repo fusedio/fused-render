@@ -376,7 +376,7 @@ def test_new_app_has_no_dot_claude_and_publishes_the_plugin_root(
 def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     seen = {}
 
-    def fake_start(app_dir, prompt, model="", effort="", images=None):
+    def fake_start(app_dir, prompt, model="", effort="", images=None, *rest):
         seen["target"] = app_dir
         seen["prompt"] = prompt
         seen["model"] = model
@@ -406,7 +406,7 @@ def test_the_composers_model_and_effort_reach_the_session(client, workspace,
     started a default session is the whole feature missing."""
     seen = {}
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda e, p, model="", effort="", images=None:
+                        lambda e, p, model="", effort="", images=None, *rest:
                         seen.update(model=model, effort=effort) or ("r-1", None))
     r = client.post("/api/apps/new",
                     json={"name": "demo", "prompt": "build it",
@@ -444,7 +444,7 @@ def test_an_empty_pick_means_no_flag_and_older_clients_still_work(
     the pickers' "Auto" option sends and what a client predating them omits."""
     seen = []
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda e, p, model="", effort="", images=None:
+                        lambda e, p, model="", effort="", images=None, *rest:
                         seen.append((model, effort)) or ("r-1", None))
     for body in ({"model": "", "effort": ""}, {}):
         client.post("/api/apps/new",
@@ -455,10 +455,11 @@ def test_an_empty_pick_means_no_flag_and_older_clients_still_work(
 
 def test_the_composers_attachments_reach_the_task(client, workspace, monkeypatch):
     """Images pasted into the composer ride the create as uploaded paths and
-    reach the task seam positionally, after model/effort."""
+    reach the task seam positionally, after model/effort (then the permission
+    mode, "", and the agent)."""
     seen = []
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda e, p, *rest: seen.append(rest) or ("r-1", None))
+                        lambda e, p, *rest: seen.append(rest[:3]) or ("r-1", None))
     os.makedirs(schedule.shots_dir(), exist_ok=True)
     shots = [os.path.join(schedule.shots_dir(), n) for n in ("a.png", "b.pdf")]
     for shot in shots:
@@ -516,22 +517,70 @@ def _claude_off(monkeypatch):
     monkeypatch.setattr(registry, "is_enabled", lambda b: b != "claude")
 
 
-def test_a_new_app_with_a_prompt_and_claude_off_is_refused_before_any_copy(
+def test_a_new_app_with_a_prompt_on_a_disabled_agent_is_refused_before_any_copy(
         client, workspace, monkeypatch):
-    """The prompt is a Claude task, so the whole request is the disabled 400 —
-    no half-made app left behind whose first turn could never start."""
+    """The prompt is the named agent's task, so the whole request is the
+    disabled 400 — no half-made app left behind whose first turn could never
+    start. Named outright here; a blank `backend` is the catalog's default,
+    which is always an enabled agent."""
     from fused_render.agent_backends import registry
     _claude_off(monkeypatch)
     monkeypatch.setattr(apps_mod, "_create_app_task",
                         lambda *a, **k: pytest.fail("no task with Claude off"))
-    r = client.post("/api/apps/new", json={"name": "demo", "prompt": "hi"},
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "hi", "backend": "claude"},
                     headers=HDRS)
     assert r.status_code == 400
     assert r.json() == registry.disabled_error("claude")
     assert not (workspace / "app" / "demo").exists()
-    # No prompt, no Claude task: the app is made as ever.
-    r = client.post("/api/apps/new", json={"name": "demo"}, headers=HDRS)
+    # No prompt, no task: the app is made as ever.
+    r = client.post("/api/apps/new", json={"name": "demo", "backend": "claude"},
+                    headers=HDRS)
     assert r.status_code == 200, r.text
+
+
+def test_a_new_app_follows_the_enabled_agent_when_claude_is_off(
+        client, workspace, monkeypatch):
+    """Owner 2026-10-19: Claude off in Preferences + Copilot on still builds
+    apps. A blank `backend` resolves to the catalog's default and the task is
+    created on it; a named one is taken as named, with its own model list."""
+    from fused_render.agent_backends import registry
+    _claude_off(monkeypatch)
+    monkeypatch.setattr(registry, "default_id", lambda: "copilot")
+    seen = []
+
+    def fake_task(entry_html, prompt, model="", effort="", images=None,
+                  permission_mode="", backend="claude", *rest):
+        seen.append((model, backend))
+        return {"id": "t1", "run_id": "r1", "state": "sent"}, None
+    monkeypatch.setattr(apps_mod, "_create_app_task", fake_task)
+    r = client.post("/api/apps/new", json={"name": "demo", "prompt": "hi"},
+                    headers=HDRS)
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["run_id"] == "r1"
+    assert seen == [("", "copilot")]
+    r = client.post("/api/apps/new",
+                    json={"name": "demo2", "prompt": "hi", "backend": "copilot",
+                          "model": "auto"},
+                    headers=HDRS)
+    assert r.status_code == 200, r.text
+    assert seen[-1] == ("auto", "copilot")
+
+
+def test_a_new_app_checks_the_model_against_the_named_agent(client, workspace):
+    # A Copilot model on a Claude create is the composer's leak, a 400 here.
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "hi", "backend": "claude",
+                          "model": "auto"},
+                    headers=HDRS)
+    assert r.status_code == 400
+    assert "invalid model" in r.json()["error"]
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "hi", "backend": "nope"},
+                    headers=HDRS)
+    assert r.status_code == 400
+    assert "invalid backend" in r.json()["error"]
+    assert not (workspace / "app" / "demo").exists()
 
 
 def test_an_agent_refusal_from_the_app_task_keeps_its_body(tmp_path, monkeypatch):

@@ -58,6 +58,8 @@ export const KIND_CHIP: Partial<Record<MachineProc["kind"], string>> = {
   terminal: "Terminal",
   install: "Install",
   run: "Run",
+  template: "Template",
+  daemon: "Daemon",
   other: "fused-render",
 };
 

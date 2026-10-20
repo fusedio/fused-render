@@ -130,6 +130,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from fused_render import netlog
 from fused_render import (
     app_listing,
     current_apps,
@@ -1655,9 +1656,136 @@ def _attention_of(agent, perm: dict) -> dict:
 
 
 def _parked_runs() -> dict:
-    """`session id -> {reason, tool, summary}` for every LIVE run parked on a
-    card nobody has answered. Empty when nothing is waiting, which is the
-    ordinary case and the cheap one.
+    """The parked half of `_hosted_runs` — kept as its own name for the callers
+    and tests that only ever ask what a run is waiting on."""
+    return _hosted_runs()[0]
+
+
+# run_dir -> (bytes of out.jsonl already parsed, the background list as
+# `((task_id, description), ...)`, empty when nothing is held).
+# See `_holding_background`. Unlocked on purpose: two listing builds racing on
+# one run parse the same append-only bytes to the same answer, so the worst a
+# lost update costs is one re-read.
+_bg_memo: dict[str, tuple] = {}
+
+
+#: The most background jobs one row names (`background_jobs.jobs`).
+_BG_JOBS_CAP = 20
+#: How far back a COLD read (offset 0: first sight of a run, after a server
+#: restart, or after the run left the scan window) starts from the end of a
+#: long `out.jsonl`. A background Agent streams rows for hours, and only the
+#: newest `background_tasks_changed` row matters — the CLI re-sends its whole
+#: list on every change, so the last one in a 16 MB tail is the answer unless a
+#: single job has streamed more than that since the last change.
+_BG_COLD_TAIL = 16 * 1024 * 1024
+
+
+def _bg_pending_since(path: str, offset: int, jobs: tuple) -> tuple:
+    """`(new offset, jobs)` after parsing `path` from `offset` on — `jobs` the
+    CLI's background list as `((task_id, description), ...)`, () for none.
+
+    INCREMENTAL, because a background Agent streams rows into `out.jsonl` for
+    as long as it runs and `agent._turn_state` re-parses the whole file: only
+    the bytes past `offset` are read, line by line (never the file into
+    memory), and only whole lines count — a half-written last line is left for
+    the next read. The rule is `_turn_state`'s own: the newest top-level
+    `system/background_tasks_changed` row's `tasks` list, non-empty. A file
+    shorter than `offset` was replaced, and is read from the top."""
+    size = os.path.getsize(path)
+    if size < offset:
+        offset, jobs = 0, ()
+    if size == offset:
+        return offset, jobs  # nothing new: one stat, no open
+    partial = False
+    if offset == 0 and size > _BG_COLD_TAIL:
+        offset, partial = size - _BG_COLD_TAIL, True
+    with open(path, "rb") as fh:
+        fh.seek(offset)
+        if partial:
+            # Mid-line after the seek: drop up to the first newline so only
+            # whole rows are parsed.
+            offset += len(fh.readline())
+        for line in fh:
+            if not line.endswith(b"\n"):
+                break
+            offset += len(line)
+            if b"background_tasks_changed" not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if (not isinstance(row, dict) or row.get("parent_tool_use_id")
+                    or row.get("type") != "system"
+                    or row.get("subtype") != "background_tasks_changed"):
+                continue
+            arr = row.get("tasks")
+            if isinstance(arr, list):
+                # Capped: the row's badge names a handful, and a list this
+                # long is not one a row could print anyway.
+                jobs = tuple(
+                    (str(x["task_id"])[:200],
+                     str(x.get("description") or "")[:200])
+                    for x in arr
+                    if isinstance(x, dict) and x.get("task_id"))[:_BG_JOBS_CAP]
+    return offset, jobs
+
+
+def _holding_background(agent, run_dir: str, sessions) -> tuple | None:
+    """`(out.jsonl offset parsed, jobs)` when this run's session host AND its
+    `claude` are alive and the CLI is still holding background work — a
+    `run_in_background` Bash, a background Agent, a Monitor — else None.
+
+    The host's own rule: `session_host._reap_loop` stays up while the newest
+    `background_tasks_changed` row lists something, and the CLI wakes the model
+    when that work notifies. Every other liveness source has already said "not
+    running" by then — the registry row is idle, the transcript tail is a
+    finished reply — so this is the only place the fact exists.
+
+    TWO LIVENESS CHECKS, cheapest first, and a dead run never counts — that is
+    what keeps a stale `background_tasks_changed` row from captioning a row for
+    ever. `_host_alive` is one small file (absent on almost every run in the
+    window), but it is a bare pid probe on a file that survives a reboot or a
+    SIGKILL, and an unrelated process can own that pid. So the CLI has to
+    vouch too: one of this run's sessions is held in Claude Code's live
+    registry BY THIS RUN'S OWN `claude` (`run_dir/pid`,
+    `tasks_watch.session_has_pid`; the registry drops dead pids). Only then is
+    `out.jsonl` read, incrementally (`_bg_pending_since`, `_bg_memo`).
+
+    Best-effort: an agent without these probes (a stand-in), or a run that will
+    not read, is not holding anything."""
+    try:
+        if not agent._host_alive(run_dir):
+            return None
+        with open(os.path.join(run_dir, "pid"), encoding="utf-8") as fh:
+            pid = fh.read().strip()
+        if not pid or not any(tasks_watch.session_has_pid(sid, pid)
+                              for sid in sessions):
+            return None
+        offset, jobs = _bg_memo.get(run_dir, (0, ()))
+        offset, jobs = _bg_pending_since(
+            os.path.join(run_dir, "out.jsonl"), offset, jobs)
+        _bg_memo[run_dir] = (offset, jobs)
+    except Exception:  # noqa: BLE001 — a probe we cannot run holds nothing
+        return None
+    return (offset, jobs) if jobs else None
+
+
+def _hosted_runs() -> tuple[dict, dict]:
+    """`(parked, pending)` off ONE walk of the runs tree.
+
+    `pending` is `session id -> (run_dir, out.jsonl size, jobs)` for every
+    session id of every run whose live host is holding background work
+    (`_holding_background`) — the row's `background_jobs` badge. A session
+    is in it if ANY of its runs in the window is holding work (an older run's
+    host keeping a dev server up is still that conversation's background job);
+    when several are, the newest one's run dir is the one recorded, which is
+    the one the watcher stats. One walk for both because the walk is the
+    expensive part.
+
+    `parked` is `session id -> {reason, tool, summary}` for every LIVE run
+    parked on a card nobody has answered. Empty when nothing is waiting, which
+    is the ordinary case and the cheap one.
 
     Three conditions, and all three are load-bearing:
 
@@ -1702,10 +1830,17 @@ def _parked_runs() -> dict:
     """
     agent = _agent_module()
     if agent is None:
-        return {}
+        return {}, {}
     out: dict = {}
+    pending: dict = {}
+    scanned = set()
     for run in project_queue.scan_runs(agent):
         run_dir = run["run_dir"]
+        scanned.add(run_dir)
+        holding = _holding_background(agent, run_dir, run["sessions"])
+        if holding is not None:
+            for session_id in run["sessions"]:
+                pending.setdefault(session_id, (run_dir, *holding))
         held = _held_requests(run)
         perms = project_queue.run_permissions(agent, run)
         waiting = [p for p in perms
@@ -1728,8 +1863,30 @@ def _parked_runs() -> dict:
             # with a timestamp, so the first answer for a session is its most
             # recent run. A resumed conversation can have several runs in the
             # tree and only the newest is the one on screen.
-            out.setdefault(session_id, dict(news, reason=reason))
-    return out
+            # …and WHICH run, so a door that has to stop it (`_stop_parked_run`)
+            # ends exactly the run this scan proved parked — not whatever
+            # `_live_run` would answer a moment later.
+            out.setdefault(session_id, dict(news, reason=reason,
+                                            run_id=os.path.basename(run_dir)))
+    # Out of the window, out of the memo: one tuple per run dir ever seen
+    # would otherwise grow for the life of the server.
+    for run_dir in [d for d in list(_bg_memo) if d not in scanned]:
+        _bg_memo.pop(run_dir, None)
+    return out, pending
+
+
+def _background_jobs(held: tuple | None) -> dict | None:
+    """The row's `background_jobs` off one `_hosted_runs` pending entry
+    (`(run_dir, offset, jobs)`), or None when nothing is held.
+
+    `run_id` is the run dir's own name — the id the agent's `task_stop` takes
+    beside a job's `id` — so the row's Stop needs no second lookup. `title` is
+    the CLI's own description of the job ("" when it sent none)."""
+    if not held or not held[2]:
+        return None
+    run_dir, _offset, jobs = held
+    return {"count": len(jobs), "run_id": os.path.basename(run_dir),
+            "jobs": [{"id": tid, "title": title} for tid, title in jobs]}
 
 
 def _held_requests(run: dict) -> set:
@@ -2120,6 +2277,14 @@ def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
        entry at all. The transcript's vote is withdrawn by the caller for exactly one
        case — the tail's freshness is the finished run's own closing records —
        see `_verdict_outvotes_live`.
+
+       BACKGROUND WORK IS NOT RUNNING (Akshil, 2026-10-14). A reply that ended
+       with a `run_in_background` Bash, a background Agent or a Monitor still
+       going reads by its messages like any other finished turn — that work
+       can be a dev server or a `tail -f` that never ends, and a row that
+       could never leave In Progress would also never let anything waiting on
+       `done` (a bot's build watch) fire. The row says it separately, as
+       `background_jobs` (`_row`, off `_hosted_runs`).
     3. **Archived is a filing state.** The task the user put away is archived,
        and so is a task whose every message ended up filed (cancelling the last
        live message in a thread archives the task, without anybody having to say
@@ -3172,11 +3337,20 @@ def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
 
     The stored recap is shown only for the turn it is about (`for_uuid` equal
     to the row's anchor); a newer send makes it `None` until its own lands.
-    A turn wants a recap when it has ended (`done`, `blocked`, `archived`) with a reply to THIS turn
-    (`_last_reply` non-empty) and the store has nothing for its anchor, or has
-    one taken before the newest reply landed (`at < reply_at`: a fold recap
-    asked mid-reply). Decided on the uuid and the clocks, never on the scan
-    record's identity — `_SCAN` is rebuilt from disk on every boot."""
+    A turn wants a recap when it has ended (`done`, `blocked`, `archived`) and
+    the store has nothing for its anchor, or has one taken before the turn's
+    newest event landed (`at < ended_at`: a fold recap asked mid-reply).
+    A REPLY LINE IS NOT REQUIRED (2026-10-19): a turn that ended on tool calls,
+    a usage limit, an API error or a crash has no prose newer than the reader's
+    message (`_last_reply` is ""), and until then it was never asked — the one
+    class of finished turn that titled itself by the reader's own words for
+    good. `_recap_tail(ended=True)` reaches back to the newest prose for
+    exactly these, and a transcript with none anywhere is marked `empty` by
+    the worker rather than refused here. `ended_at` is the newer of the reply
+    and the reader's message, so the settle minute and the "already recapped"
+    test are measured from whatever ended the turn. Decided on the uuid and
+    the clocks, never on the scan record's identity — `_SCAN` is rebuilt from
+    disk on every boot."""
     sid = task["session_id"]
     tail = rec["tail"] if rec else []
     anchor = str(tail[-1].get("anchor") or "") if tail else ""
@@ -3185,6 +3359,10 @@ def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
     stored = tasks_store.session_recap(settings or {}, sid)
     same = stored is not None and stored["for_uuid"] == anchor
     reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
+    said_at = float(tail[-1].get("at") or 0.0)
+    # The reply only counts when it answers THIS message; otherwise the
+    # message is the newest thing that happened (`_last_reply`'s own rule).
+    reply_at = reply_at if reply and reply_at >= said_at else said_at
     # The transcript path rides on the job, so a task whose folder the disk
     # has lost is still recapped (`_recap_generate` reads the file directly).
     folder = task["project"]
@@ -3197,8 +3375,7 @@ def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
     settled = same and stored["at"] >= reply_at and (
         not failed or time.time() - stored["at"] < _RECAP_RETRY_S)
     now = time.time()
-    if (status in ("done", "blocked", "archived") and reply
-            and reply != _QUEUED_REPLY
+    if (status in ("done", "blocked", "archived") and reply != _QUEUED_REPLY
             and (folder or path) and not settled):
         # `stale_before` makes `_recap` skip its in-memory cache entry for the
         # key, which is where a failed ask's `""` is remembered.
@@ -3363,6 +3540,18 @@ def _recap_run(job: dict) -> None:
         # queue it again (the stored `""` holds it off until then).
         with _recap_cond:
             _recap_seen.discard((job["session_id"], job["for_uuid"], job["reply_at"]))
+        # Said out loud: a failure here is otherwise invisible — the row just
+        # keeps its reply line — and "some chats never get a recap" was the
+        # report that had no log to read (2026-10-19). An `empty` mark (no
+        # prose anywhere) is not a failure and stays quiet.
+        try:
+            stored = tasks_store.session_recap(tasks_store.settings_state(),
+                                               job["session_id"])
+        except Exception:  # noqa: BLE001
+            stored = None
+        if not (stored and stored["for_uuid"] == job["for_uuid"] and stored["empty"]):
+            logger.warning("tasks recap failed for session %s (turn %s); retry in %ds",
+                           job["session_id"], job["for_uuid"], int(_RECAP_RETRY_S))
     tasks_watch.notify({job["key"], job["session_id"]})
 
 
@@ -3386,13 +3575,19 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          bound_chips: dict | None = None,
          settings: dict | None = None,
          last_message: bool = False,
-         recaps: list | None = None) -> dict:
+         recaps: list | None = None,
+         pending: dict | None = None) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
     card — computed once by the caller for the same reason `busy` is: it is one
     scan of the runs tree, and asking it per row would re-read every run dir once
     per task on the machine.
+
+    `pending` is the other half of the same scan (`_hosted_runs`): sessions a
+    live host is still holding background work for. It only ever sets the
+    row's `background_jobs` caption — never the status. None (the
+    single-row callers) reads as nothing pending.
 
     `busy` is `schedule.busy_sessions` over the WHOLE store, computed once by
     the caller — one of the three things that say a run is happening (see
@@ -3615,6 +3810,11 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     entry_id = pending_id or _minting_entry(task)
     entry_origin = _leader_origin(task, pending_id) if pending_id else ''
     bot = _entry_bot(task, entry_id)
+    # A live session host still holding background work for this conversation
+    # (`_hosted_runs`). NOT a status — see `_status` rule 2 — only a badge.
+    # Same key rule as `waiting`.
+    held = (pending or {}).get(task["session_id"]) if task["session_id"] else None
+    background = _background_jobs(held)
     status = _status(merged, filed, task["session_id"], live, busy,
                      parked=waiting is not None, queued=bool(queued))
     # THE NEWEST MESSAGE THE USER SENT — one line of it — or None for a task
@@ -3739,6 +3939,16 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         "attention": ({"tool": waiting["tool"], "summary": waiting["summary"]}
                       if waiting is not None else None),
         "live": live,
+        # A live session host is still holding background work for this
+        # conversation — a `run_in_background` Bash, a background Agent, a
+        # Monitor (`_hosted_runs`): `{count, run_id, jobs: [{id, title}]}`,
+        # or None. A badge, never a status: the status reads the messages as
+        # before (`_status` rule 2) and stays `done`; the UI draws it In Progress
+        # (tasks-lib `liveJobRow`). `run_id` +
+        # `jobs[].id` are exactly what the agent's `task_stop` action takes.
+        # None on every row built without the scan (the single-row answers
+        # pass no `pending`).
+        "background_jobs": background,
         # UNSENT TEXT SITTING IN THIS TASK'S COMPOSER — `{preview, updated_at}`
         # or None, which is what the `✎ Draft` chip and its tooltip are drawn
         # from. A join and not a second poll: the chip has to appear and vanish
@@ -4129,6 +4339,7 @@ def _draft_row(ident: str, record: dict, number: str = "") -> dict:
         "blocked_reason": "",
         "attention": None,
         "live": False,
+        "background_jobs": None,
         # The chat half of the store keys on a session, and a draft has none.
         # Present anyway so one row shape answers one question.
         "draft": None,
@@ -4235,6 +4446,7 @@ def _new_chat_draft_row(key: str, record: dict, number: str = "") -> dict:
         "blocked_reason": "",
         "attention": None,
         "live": False,
+        "background_jobs": None,
         # THIS row's chip is about itself. Every other row joins its draft off
         # the session id; this one IS the draft, so the join is the identity.
         "draft": ({"preview": line, "updated_at": updated, "kind": "chat"}
@@ -5285,11 +5497,20 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # is never pruned, so the walk is 120 directories and a `json.load` each to
     # learn, in the ordinary case, that nobody is parked. Without the watcher
     # (tests) the walk is always taken.
+    # The same walk answers which conversations a live session host is still
+    # holding BACKGROUND WORK for (`_hosted_runs`) — and the same gate holds:
+    # a host keeps its `claude` alive, and a live `claude` is registered.
+    # Handed to the watcher too, so the row hears when that work ends without
+    # the CLI waking (`tasks_watch._read_background_runs`).
     t1 = time.monotonic()
     if tasks_watch.running() and not tasks_watch.anything_live():
-        parked = {}
+        parked, pending = {}, {}
     else:
-        parked = _parked_runs()
+        parked, pending = _hosted_runs()
+    by_run: dict = {}
+    for session_id, (run_dir, size, _jobs) in pending.items():
+        by_run.setdefault(run_dir, (size, set()))[1].add(session_id)
+    tasks_watch.watch_background(by_run)
     t_parked = time.monotonic() - t1
     # ONE read of the drafts store for the whole build, for the same reason
     # `read` and `busy` are read once: it is one small file, the join below
@@ -5341,7 +5562,7 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
                        busy, revived, parked, queue, queue_on,
                        chat_drafts, bound_chips, settings, last_message,
-                       recap_wants)
+                       recap_wants, pending)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -5707,6 +5928,7 @@ def _changes_answer(since: int, gen: int, keys, scope_dir: str) -> dict:
 
 
 @router.websocket("/api/tasks/changes/ws")
+@netlog.tracked_ws("tasks-changes")
 async def api_tasks_changes_ws(ws: WebSocket):
     """`/api/tasks/changes`, as requests multiplexed over one WebSocket.
 
@@ -6465,7 +6687,7 @@ def api_task_archive(patch: ArchivePatch,
     task = _collect().get(key)
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
-    cancelled, filed = archive_task(task)
+    cancelled, filed, stopped = archive_task(task, _parked_runs())
     # THE UNSENT TEXT IS NOT TOUCHED (Akshil, 2026-09-15; design.md, PR C:
     # "Archive/unarchive touch NO drafts").
     #
@@ -6479,14 +6701,37 @@ def api_task_archive(patch: ArchivePatch,
     # an archived task already does. Delete and erase, which are the verbs that
     # mean it, drop both halves — see `api_task_delete` and `api_task_erase`.
     tasks_watch.notify({key})
-    return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
+    # `stopped` is the one thing the row cannot say for itself yet: a parked
+    # run that would not go leaves the row reading `needs_attention` with the
+    # filing kept underneath, and the card is how the reader finds out.
+    return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed,
+            "stopped": stopped}
 
 
-def archive_task(task: dict) -> tuple[int, bool]:
+def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     """The archive gesture on one collected task: how many messages were
-    called off, and whether a session was filed. Shared with the Current apps
-    router (server/routers/current_apps.py), where removing an app archives
-    every task under it."""
+    called off, whether a session was filed, and whether a run parked on a
+    card was stopped on the way. Shared with the Current apps router
+    (server/routers/current_apps.py), where removing an app archives every
+    task under it — `parked` is the caller's one `_parked_runs()` scan, so an
+    archive-all pays for the walk once.
+
+    A RUN PARKED ON A CARD IS STOPPED FIRST (Akshil, 2026-10-19: "even if the
+    task is in needs attention i should be able to archive it"). Filing does
+    not stop a run (`_status`, rule 0 over rule 2), so without this the row
+    would wear `needs_attention` for as long as the card waited — which is for
+    ever — and the archive would look like it did nothing. The parked run is
+    the one in-flight state that never ends on its own, and "put this away" is
+    an answer to its question: the card is denied, the tree ended
+    (`_stop_parked_run`, as delete does), and the filing lands on a run that
+    is over. Best-effort: a process that would not go leaves the row where it
+    was, honestly, and the filing is kept for when the run ends.
+
+    THE PENDING WORK IS CALLED OFF BEFORE THE STOP (CodeRabbit, PR #1752):
+    the stop can wait up to `_STOP_PARKED_WAIT_S`, and a due entry the
+    scheduler claims inside that window has left PENDING by the time the
+    cancel loops reach it — it would run after the filing and `_revived`
+    would drop the record. Cancel first, stop second, file last."""
     cancelled = 0
     # The rules FIRST: cancelling a template also cancels the occurrence it has
     # already materialised, so doing it the other way round would cancel one
@@ -6501,10 +6746,11 @@ def archive_task(task: dict) -> tuple[int, bool]:
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
+    stopped = _stop_parked_run(task, parked)
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
-    return cancelled, bool(session_id)
+    return cancelled, bool(session_id), stopped
 
 
 class UnarchivePatch(BaseModel):
@@ -6601,6 +6847,86 @@ def _queue_holds_live(key: str) -> bool:
         return False
 
 
+#: How long delete/erase wait for a parked run's process to be gone after the
+#: kill before taking the row. SIGTERM lands in milliseconds; past this the
+#: door reports the run still live and refuses, as it always did.
+_STOP_PARKED_WAIT_S = 2.0
+_STOP_PARKED_STEP_S = 0.05
+
+
+def _stop_parked_run(task: dict, parked: dict) -> bool:
+    """Delete's and erase's road through a run parked on a permission card
+    (Akshil, 2026-10-19: "even if the task is in needs attention i should be
+    able to archive it, delete it").
+
+    A `needs_attention` row is a live process waiting on a card nobody has
+    answered — the one kind of in-flight that never ends on its own — so a door
+    that answered "stop the run first" was sending the reader off to do the
+    thing deleting already means. The door does it instead, and the delete
+    goes ahead. True when the run is PROVEN gone, and the caller skips the
+    running guards on that word: a row rebuilt a moment after the kill can
+    still read `in_progress` off the spent entry, and the queue's index catches
+    up on its next reconcile.
+
+    EXACTLY THE RUN THE SCAN PROVED PARKED. `_parked_runs` records the run id
+    beside the card, and that id is what gets ended — not a fresh `_live_run`
+    lookup, which could answer a different run (an older one past the scan
+    window, or a cwd-less task's miss). And the card is READ AGAIN right before
+    the kill: one answered between the scan and now means the turn has resumed
+    streaming, which is the turn "streaming is still refused" protects — so
+    nothing is sent and False comes back, and the guards refuse as they would
+    have. (A card the queue is HOLDING an answer for still reads unanswered on
+    disk; that run was never in `parked`, so it never reaches here.)
+
+    THE CARD IS DENIED BEFORE THE KILL IS PROVEN. `_cancel` answers every open
+    card "cancelled" and then signals; a process that then outlives the wait
+    has lost its card and keeps its row. Accepted: the alternative is a kill
+    that leaves a subprocess holding the card open for its full timeout, and
+    the reader asked for this task to go.
+
+    THE WHOLE TREE, NOT AN INTERRUPT. `_cancel`'s default road asks a live host
+    to `interrupt` and, when the CLI answers, leaves host and CLI alive for the
+    next send — right for the Stop button, wrong here: the next thing that
+    happens to this session is its tombstone or the removal of its transcript.
+    `interrupt_first=False` is `_send`'s respawn road: deny the card, kill the
+    process group. And the kill is WAITED ON (`_alive` off the pid file, up to
+    `_STOP_PARKED_WAIT_S`): a True that raced the signal would erase a file a
+    dying CLI could still flush a row into.
+
+    ONLY A PARKED RUN. False, and nothing touched, when the session is not in
+    `parked` (the caller's `_parked_runs()` — the same scan its row was built
+    with, so the word it refused on and the run it stops agree); False, with
+    the kill sent, when the process would not go — the 409 that follows is
+    then the truth.
+    """
+    session_id = str(task.get("session_id") or "")
+    if not session_id:
+        return False
+    run_id = str((parked.get(session_id) or {}).get("run_id") or "")
+    if not run_id:
+        return False
+    agent = _agent_module()
+    if agent is None:
+        return False
+    run_dir = os.path.join(str(agent.RUNS), run_id)
+    try:
+        if not any(not p.get("decision") for p in agent._permissions(run_dir)):
+            return False
+        agent._cancel(run_id, interrupt_first=False)
+        deadline = time.monotonic() + _STOP_PARKED_WAIT_S
+        while agent._alive(run_dir):
+            if time.monotonic() >= deadline:
+                logger.warning("delete: the run parked under %s (%s) is still "
+                               "alive after the kill", session_id, run_id)
+                return False
+            time.sleep(_STOP_PARKED_STEP_S)
+    except Exception:  # noqa: BLE001 — a stop that failed leaves the guards on
+        logger.warning("delete: could not stop the run parked under %s",
+                       session_id, exc_info=True)
+        return False
+    return True
+
+
 def _queue_drop_task(key: str) -> None:
     """Take the task out of the queue for good — every line, every blocked
     list, the held answers, and the folder if it happened to hold one
@@ -6678,6 +7004,12 @@ def api_task_delete(patch: DeletePatch,
     asked is the same derived row every view paints (`_row`), so this endpoint
     cannot disagree with the pill the user is looking at.
 
+    EXCEPT A RUN PARKED ON A CARD (Akshil, 2026-10-19). A `needs_attention`
+    row is a process waiting on a question nobody will answer once the task is
+    gone, so "stop it first" was a chore the door can do itself:
+    `_stop_parked_run` denies the card and ends the tree the way the Stop
+    button does, and the delete proceeds. A streaming turn is still refused.
+
     AND REFUSED FOR A WORD THE ROW CANNOT SAY (`_queue_holds_live`). With the
     project queue on, a run parked on a card the user has already answered
     reads `queued` — the decision is held until the folder frees, so the run
@@ -6713,17 +7045,24 @@ def api_task_delete(patch: DeletePatch,
     # per-session record is not read for it. A caller that starts drawing
     # model/effort off this row must pass `tasks_store.settings_state()` like
     # the listing does, or the pair comes back from the entry alone.
+    # WITH THE PARKED INDEX, which this single-row request used to skip. The
+    # scan is what names a run parked on a card, and that is the run this door
+    # now stops (Bugbot, PR #1752): a hand-typed chat waiting on a card fails
+    # every other running test — no entry, registry `waiting`, transcript gone
+    # quiet — and read `done` here, which no guard refused and no stop reached.
+    # One walk serves both the word and the stop.
+    parked = _parked_runs()
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
-               schedule.busy_sessions(schedule.list_entries()), [])
-    # BOTH RUNNING WORDS. This row is built without the parked index (one
-    # request about one task does not pay for a scan of the runs tree), so a run
-    # waiting on a permission card reads `in_progress` here and the first word
-    # catches it. The second is the guard against that stopping being true: the
-    # question this asks is "is a run in flight", and `needs_attention` is a run
-    # in flight — a delete that slipped through would tombstone the row out from
-    # under a live process.
-    if row["status"] in ("in_progress", "needs_attention"):
+               schedule.busy_sessions(schedule.list_entries()), [], parked)
+    # BOTH RUNNING WORDS: `in_progress` is a turn streaming, `needs_attention`
+    # a run parked on a card — a delete that slipped past either would
+    # tombstone the row out from under a live process.
+    #
+    # UNLESS THE RUN IS PARKED ON A CARD, in which case the door stops it itself
+    # (`_stop_parked_run`) and both guards below stand down for this request.
+    stopped = _stop_parked_run(task, parked)
+    if not stopped and row["status"] in ("in_progress", "needs_attention"):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
@@ -6734,7 +7073,7 @@ def api_task_delete(patch: DeletePatch,
     # parked index or the queue's lines — so the queue is asked directly
     # whether a process is behind this key. A task merely WAITING in a line is
     # not refused: nothing is running, and the delete cancels its place.
-    if _queue_holds_live(key):
+    if not stopped and _queue_holds_live(key):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
@@ -6842,13 +7181,22 @@ def api_task_erase(patch: ErasePatch,
     # per-session record is not read for it. A caller that starts drawing
     # model/effort off this row must pass `tasks_store.settings_state()` like
     # the listing does, or the pair comes back from the entry alone.
+    # With the parked index, for the reason api_task_delete documents: the
+    # scan is the only thing that knows a quiet hand-typed chat is parked.
+    parked = _parked_runs()
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
-               schedule.busy_sessions(schedule.list_entries()), [])
+               schedule.busy_sessions(schedule.list_entries()), [], parked)
     # Both running words, for the reason api_task_delete's guard documents —
     # and one more here: what is refused is not a hidden row but a deleted
-    # file, under a process still writing to it.
-    if row["status"] in ("in_progress", "needs_attention"):
+    # file, under a process still writing to it. A run PARKED on a card is
+    # stopped here first (`_stop_parked_run`, as delete does) and the guards
+    # stand down: the kill denies the card and ends the tree before a file goes.
+    # (The stop lands before `_erase_session_files` can refuse: a run that was
+    # waiting on a question for a task the reader is erasing is not work worth
+    # keeping alive through a failed unlink.)
+    stopped = _stop_parked_run(task, parked)
+    if not stopped and row["status"] in ("in_progress", "needs_attention"):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")
@@ -6856,7 +7204,7 @@ def api_task_erase(patch: ErasePatch,
     # guard documents — and, again, one more here: a held decision delivered
     # into a session whose transcript this endpoint has just removed would be
     # a run resumed onto nothing.
-    if _queue_holds_live(key):
+    if not stopped and _queue_holds_live(key):
         raise HTTPException(
             status_code=409,
             detail="that task is running — stop the run first, then delete")

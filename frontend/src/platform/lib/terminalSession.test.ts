@@ -211,6 +211,23 @@ describe("TerminalSession", () => {
     expect(fake.sent).toEqual([JSON.stringify({ resize: [40, 120] })]);
   });
 
+  test("pause() and resume() send JSON text control frames, only while OPEN", () => {
+    const fake = fakeSocket();
+    session = new TerminalSession({
+      id: "sid-1",
+      onData: () => {},
+      onExit: () => {},
+      wsFactory: () => fake.socket,
+      wsUrl: () => "ws://fake",
+    });
+    session.pause(); // still CONNECTING: dropped, like resize()
+    expect(fake.sent).toEqual([]);
+    fake.open();
+    session.pause();
+    session.resume();
+    expect(fake.sent).toEqual([JSON.stringify({ pause: true }), JSON.stringify({ resume: true })]);
+  });
+
   test("reconnects with the injected backoff schedule after an unexpected close", async () => {
     const sockets: ReturnType<typeof fakeSocket>[] = [];
     session = new TerminalSession({

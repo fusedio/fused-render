@@ -5,7 +5,7 @@
 //
 // A SEPARATE MODULE FROM index.ts, for the reason logged-in.ts spells out: the
 // barrel re-exports Canvases/CanvasWorkspace, so a sidebar that read the flag
-// through it would pull the whole canvases app — workspace, lock lib, embed
+// through it would pull the whole canvases app — workspace, embed
 // host — into the shell's main bundle for one boolean. Import this file
 // directly and the app itself stays lazy behind its route.
 //

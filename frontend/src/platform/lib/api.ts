@@ -1529,12 +1529,6 @@ export interface Prefs {
     // list shows and can revoke.
     devices: LanDevice[];
   };
-  // The default Claude model, as one of the claude template's own short names
-  // — "" means unset, and each consumer keeps its own default (the fused.ai
-  // relay's haiku, the chat template's sonnet). `choices` is the server's own
-  // value set, shipped with the value so the page renders exactly what a PUT
-  // will accept rather than a second copy that can drift.
-  model: { default: DefaultModel; choices: DefaultModel[] };
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
@@ -1574,11 +1568,13 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
-  // macOS status item: the menu-bar Dock (fused_render/menubar_dock.py, the
-  // default) or the pinned-file popover (menubar_pin.py; `pin_enabled`,
-  // opt-in). `available` is false off macOS and under `fused-render serve`,
-  // where the section is not rendered. OPTIONAL like `launcher`.
-  menubar?: { pin_enabled: boolean; available: boolean };
+  // Which Fused environment the canvases, the `fused` wrapper and the share
+  // uploads target (fusedcli.workbench_env). READ-ONLY through PUT /api/prefs:
+  // the writer is POST /api/canvases/env, which stops the canvas sync
+  // watchers first (clones are kept, one folder per environment). `locked` =
+  // FUSED_RENDER_WORKBENCH_ENV pins it. OPTIONAL: an older
+  // server answers without it.
+  workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
   // one new chats and tasks open on. The server refuses a PUT that would turn
@@ -1791,10 +1787,6 @@ export function getPrefsShared(): Promise<Prefs> {
   return p;
 }
 
-export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { engine });
-}
-
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
 }
@@ -1824,12 +1816,6 @@ export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
 
 export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
-}
-
-/** The macOS status item's surface: `true` = the pinned-file popover, `false` (the default) = the menu-bar Dock.
- *  Applied live by the running app (the status item is re-pointed; nothing restarts). */
-export function putMenubarPinEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { menubar_pin_enabled: enabled });
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
@@ -1937,10 +1923,6 @@ export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putIndexLowImpactEnabled(value: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { index_low_impact_enabled: value });
-}
-
-export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { default_model: model });
 }
 
 /** One agent's switch (D17). The server answers 400 with its own sentence
@@ -3324,12 +3306,18 @@ export type SessionEffort = "" | "low" | "medium" | "high" | "xhigh" | "max";
 export function createApp(
   name: string,
   prompt: string,
-  model: DefaultModel = "",
+  // The chosen agent's model id — Claude's `DefaultModel`, or another
+  // agent's own catalog id ("auto", "gpt-5.4"); the server checks it against
+  // that agent's row.
+  model: string = "",
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "" for the
+  // catalog's default (docs/COPILOT_BACKEND.md D17).
+  backend: string = "",
 ): Promise<NewAppResult> {
-  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort, images });
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort, images, backend });
 }
 
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------
@@ -3486,6 +3474,15 @@ export interface TaskMessage {
   // which skips these — and it says nothing about when the message ran. Absent on
   // a chat message and on anything an older server sent.
   immediate?: boolean;
+}
+
+/** `Task.background_jobs` — the jobs a live session host is still holding
+ *  for a chat whose reply is over. `title` is the CLI's own description ("" when
+ *  it sent none). */
+export interface TaskBackgroundJobs {
+  count: number;
+  run_id: string;
+  jobs: Array<{ id: string; title: string }>;
 }
 
 export interface Task {
@@ -3728,6 +3725,15 @@ export interface Task {
   // whenever nothing is waiting.
   attention?: { tool: string; summary: string } | null;
   live: boolean;
+  // A live session host is still holding BACKGROUND WORK for this chat — a
+  // `run_in_background` Bash, a background Agent, a Monitor
+  // (routers/tasks.py `_hosted_runs`). A badge, never a status: the reply may
+  // be over and that work may never end (a dev server), so the STATUS stays
+  // `done`; the UI draws the row In Progress with a blue ring (tasks-lib
+  // `liveJobRow` / `boardLane`). `run_id` + `jobs[].id` are what the agent's
+  // `task_stop` action takes. null when nothing is held; absent on an older
+  // server.
+  background_jobs?: TaskBackgroundJobs | null;
   unread: number;
   // WHEN THIS TASK BEGAN, epoch seconds — the EARLIEST clock the server has for
   // it: the scheduled entry's `created`, else the transcript's first record
@@ -6044,14 +6050,9 @@ export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
 // utility completions (e.g. naming a new app from its prompt on Home), not for
 // anything conversational.
 //
-// No `model` is sent, deliberately: the server resolves one from the user's
-// default-model preference and falls back to haiku when that is unset. A model
-// named here would outrank the preference (that is the relay's precedence
-// rule), so every one of these call sites must keep NOT naming one for the
-// preference to mean anything.
-// `model` is a full id or a short alias ("haiku"); omitted, the relay follows
-// the user's default-model preference, which is the right answer for a chat
-// and the wrong one for a two-word utility call — pin those.
+// `model` is a full id or a short alias ("haiku"); omitted, the relay uses its
+// own default, haiku — the right size for these utility calls. It never follows
+// the user's chat model.
 export function aiComplete(
   prompt: string,
   systemPrompt?: string,

@@ -15,7 +15,9 @@ const SHELL = new URL(".", import.meta.url).pathname;
 const API = readFileSync(join(SHELL, "../platform/lib/api.ts"), "utf8");
 const VIEWS = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
 const PAGE = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
-const PREFS = readFileSync(join(SHELL, "Preferences.tsx"), "utf8");
+const PREFS = readFileSync(join(SHELL, "settings/toggles.tsx"), "utf8");
+const REGISTRY = readFileSync(join(SHELL, "settings/registry.ts"), "utf8");
+const CONTROLS = readFileSync(join(SHELL, "settings/controls.tsx"), "utf8");
 const APPS = readFileSync(join(SHELL, "CurrentAppsSection.tsx"), "utf8");
 const LIB = readFileSync(join(SHELL, "tasks-lib.ts"), "utf8");
 const TASKS_CSS = readFileSync(join(SHELL, "../styles/tasks.css"), "utf8");
@@ -96,11 +98,11 @@ describe("the three endpoints", () => {
 
 describe("the Preferences switch", () => {
   it("is offered, is opt-in, and publishes so an open composer follows", () => {
-    expect(PREFS).toContain("function ProjectQueueSection(");
-    expect(PREFS).toContain("<ProjectQueueSection prefs={prefs} onChange={setPrefs} />");
+    expect(PREFS).toContain("function ProjectQueueControl(");
+    expect(CONTROLS).toContain('"project-queue": ProjectQueueControl,');
     // `=== true`: a server that predates the field has no queue.
     expect(PREFS).toContain("prefs.queue?.enabled === true");
-    expect(PREFS).toContain("await putProjectQueueEnabled(!enabled)");
+    expect(PREFS).toContain("putProjectQueueEnabled(!enabled)");
     // The chat's send path reads the flag from a module cache that is otherwise
     // only refreshed by a mount; without this, a composer already on screen
     // would keep admitting (or not) by the old answer until a navigation.
@@ -108,14 +110,13 @@ describe("the Preferences switch", () => {
   });
 
   it("says what it does in the words the page uses, not in the queue's internals", () => {
-    // "folder", "Queued", "front of the line" — never "lease" and never "holder".
-    const section = PREFS.slice(
-      PREFS.indexOf("function ProjectQueueSection("),
-      PREFS.indexOf("// Local-network sharing"),
-    );
-    expect(section).toContain("one task at a time per folder");
-    expect(section).not.toContain("lease");
-    expect(section).not.toContain("holder");
+    // "folder", "Queued" — never "lease" and never "holder". The words are
+    // the registry's (label + description), which search matches too.
+    const entry = REGISTRY.slice(REGISTRY.indexOf('id: "project-queue"'), REGISTRY.indexOf('id: "task-recaps"'));
+    expect(entry).toContain("One task at a time per folder");
+    expect(entry).toContain("Queued");
+    expect(entry).not.toContain("lease");
+    expect(entry).not.toContain("holder");
   });
 });
 
@@ -236,7 +237,20 @@ describe("the List's waiting row", () => {
     expect(css(TASKS_CSS)).toContain(".tasks-row-queue {");
     expect(css(TASKS_CSS)).toContain(".tasks-card-queue {");
     // …and the seat is still drawn for the one caption a row has left.
-    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit}>');
+    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit} {...pressRow}>');
+  });
+
+  it("wears a live background job in the same seat, and never beside the limit", () => {
+    // The Tasks List and Recent chats both draw `TaskRowItem` → this row.
+    expect(ROW).toContain("const jobs = limit ? null : jobBadge(task);");
+    expect(ROW).toContain('className="tasks-row-queue tasks-row-queue--bg tasks-job-badge"');
+    expect(ROW).toContain('<span className="tasks-queue-text">{jobs.text}</span>');
+    // It keeps its width — the title ellipsises, not the badge.
+    const bg = css(TASKS_CSS).slice(css(TASKS_CSS).indexOf(".tasks-row-queue--bg {"));
+    expect(bg.slice(0, bg.indexOf("}"))).toContain("flex: 0 0 auto;");
+    // The limit's seat is untouched.
+    expect(ROW).toContain('<span className="tasks-row-queue" data-hint={limit} {...pressRow}>');
+    expect(API).toContain("background_jobs?: TaskBackgroundJobs | null;");
   });
 
   it("grows FORCE START in the hover strip, and NO Run next anywhere", () => {
@@ -446,7 +460,10 @@ describe("the Status filter", () => {
     expect(VIEWS).toContain(
       "const laneOn = (key: BoardColumn) => filters.statuses.some((s) => laneOf(s) === laneOf(key));",
     );
-    expect(LIB).toContain("const lane = laneOf(taskColumn(task));");
+    // By the lane the row is DRAWN in (`boardLane` — a live background job is
+    // drawn In Progress), which is `laneOf(taskColumn(task))` for every other row.
+    expect(LIB).toContain("const lane = boardLane(task);");
+    expect(LIB).toContain('return liveJobRow(task) ? "in_progress" : laneOf(taskColumn(task));');
     expect(LIB).toContain("if (!filters.statuses.some((s) => laneOf(s) === lane)) return false;");
   });
 });

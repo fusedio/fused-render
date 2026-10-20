@@ -1,7 +1,13 @@
 // The Home hero — wordmark, headline, and the prompt-first composer that
 // names (haiku via /api/ai), scaffolds (POST /api/apps/new), and lands in the
-// new app's claude chat. Shared by Home ("/") and the /apps hub, which is why
+// new app's agent chat. Shared by Home ("/") and the /apps hub, which is why
 // it lives in the builder app rather than the shell.
+//
+// WHICH AGENT BUILDS IT follows the agent catalog (docs/COPILOT_BACKEND.md
+// D17), the way the New task card does: a picker when two or more agents are
+// on, else the one that is on — so Claude switched off in Preferences with
+// Copilot on still builds apps (owner, 2026-10-19; this reverses the earlier
+// "building an app is Claude's" line that closed the composer).
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   aiComplete,
@@ -18,7 +24,8 @@ import {
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
 import {
-  AGENT_PREFS_URL,
+  agentLabel,
+  defaultBackend,
   effortsOf,
   isBackendEnabled,
   modelLabelsOf,
@@ -98,10 +105,11 @@ const NAME_SYSTEM_PROMPT =
   "\"hello, what can you do?\" -> " + NAME_NONE + "\n" +
   "Reply with ONLY the name — no quotes, no prose, no explanation.";
 
-// The relay alias the naming call pins. Named explicitly because the relay's
-// omitted-model default follows the user's default-model PREFERENCE, and a
-// pref of fable/opus turned a two-second utility call into a twenty-second
-// one. Haiku is the right model for a folder name whatever the chat runs on.
+// The relay alias the naming call pins. Named explicitly so the call never
+// depends on the relay's own default: when that followed a model preference, a
+// preference of fable/opus turned a two-second utility call into a
+// twenty-second one. Haiku is the right model for a folder name whatever the
+// chat runs on.
 const NAME_MODEL = "haiku";
 
 // A kebab-case folder name for an app described by `prompt`: ask the AI relay
@@ -157,11 +165,12 @@ async function createAppUnderFreeName(
   model: ComposerPicks["model"],
   effort: ComposerPicks["effort"],
   images: string[],
+  backend: string,
 ) {
   for (let i = 1; ; i++) {
     const attempt = i === 1 ? name : `${name}-${i}`;
     try {
-      return await createApp(attempt, prompt, model, effort, images);
+      return await createApp(attempt, prompt, model, effort, images, backend);
     } catch (e) {
       if ((e as { status?: number }).status !== 409 || i >= 20) throw e;
     }
@@ -177,28 +186,27 @@ async function createAppUnderFreeName(
 // the strip so it stays visible however far the chips are scrolled.
 const SAMPLE_ROW = 4;
 
-// The composer's two session pickers — what the scaffolding turn runs with,
-// and what the chat it lands in opens showing. The agent catalog's Claude row
+// The composer's session pickers — what the scaffolding turn runs with, and
+// what the chat it lands in opens showing. The chosen agent's catalog row
 // (docs/COPILOT_BACKEND.md D11) — the same lists the chat's pills read —
 // handed straight to the CLI as --model / --effort.
 //
-// No "Auto": the composer always names a concrete pair, and the pair it shows
-// is the ONE global default (platform/lib/claude-defaults) — so a pick here
-// also moves it, like the New task card's dropdowns and the settings page.
+// No "Auto" row of the composer's own: it always names a concrete pair. On
+// Claude the pair it shows is the ONE global default
+// (platform/lib/claude-defaults) — so a pick here also moves it, like the
+// settings page. Another agent's pair is its own catalog default; the global
+// pair is Claude's and is neither read nor written for it.
 //
 // The labels are BARE — "Opus", "high" — not "high effort": each pill's glyph
 // names its axis, so repeating it in the text is the same word twice.
-/** The closed composer's one line (D17). */
-const CLAUDE_OFF_LINE = "Building an app uses Claude Code, which is turned off in Preferences.";
-
-const modelChoices = (): { value: ComposerPicks["model"]; label: string }[] =>
-  modelsOf("claude").map((m) => ({
-    value: m as ComposerPicks["model"],
-    label: modelLabelsOf("claude")[m] ?? m,
+const modelChoices = (agent: string): { value: ComposerPicks["model"]; label: string }[] =>
+  modelsOf(agent).map((m) => ({
+    value: m,
+    label: modelLabelsOf(agent)[m] ?? m,
   }));
 
-const effortChoices = (): { value: ComposerPicks["effort"]; label: string }[] =>
-  effortsOf("claude").map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
+const effortChoices = (agent: string): { value: ComposerPicks["effort"]; label: string }[] =>
+  effortsOf(agent).map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
 
 // A composer attachment — NewJobModal's TaskImage shape. `path` is "" until the
 // upload answers; `thumb` is a blob: URL for a picture the browser can draw.
@@ -249,6 +257,16 @@ export const PICK_GLYPHS = {
     <>
       <path d="M4.5 17a8 8 0 1 1 15 0" />
       <path d="M12 15l3.5-4" />
+    </>
+  ),
+  // Agent — a plain bot head (a rounded box, an antenna, two eyes): the one
+  // figure that says "who does the work" without naming either agent, so it
+  // is neither Claude's mark nor a Copilot glyph beside a list that holds
+  // both.
+  agent: (
+    <>
+      <rect x="4" y="8" width="16" height="11" rx="3" />
+      <path d="M12 4v4M9 13.5h.01M15 13.5h.01" />
     </>
   ),
 };
@@ -337,25 +355,46 @@ export function HeroComposer({
   // AI" button (?annot=). null means no model is annotated; the composer
   // reads as a plain prompt box exactly like today.
   const [annotation, setAnnotation] = useState<AppAnnotation | null>(null);
-  // The global pair, or the fallback while it is unknown; see modelChoices.
-  // Subscribed to the catalog, whose first read can re-list the pickers.
+  // Subscribed to the catalog, whose first read can re-list the pickers —
+  // or change the agent altogether (a static Claude row that lands as
+  // "Claude off, Copilot on").
   const agentCatalog = useAgentBackends();
-  // BUILDING AN APP IS CLAUDE'S (D17): the server refuses the scaffolding
-  // task with Claude switched off, so the composer closes and says why rather
-  // than taking a brief it cannot act on. Only on a real answer — before the
-  // catalog lands, Claude is on.
-  const claudeOff = agentCatalog.loaded && !isBackendEnabled("claude");
+  // WHICH AGENT BUILDS THE APP (D17): a pick here while that agent is still
+  // on, else the catalog's default — Claude on an install with Claude alone,
+  // the one agent that is on when Claude is off. Before the catalog lands the
+  // static row says Claude, which is what the composer always assumed.
+  const [agentPick, setAgentPick] = useState("");
+  const agent =
+    agentPick && isBackendEnabled(agentPick) ? agentPick : defaultBackend();
+  // The pair for the agent: Claude's global pair, or the other agent's own
+  // defaults; see modelChoices.
   const [model, setModel] = useState(
-    () => resolveComposerDefaults(getClaudeDefaults()).model,
+    () => resolveComposerDefaults(getClaudeDefaults(), agent).model,
   );
   const [effort, setEffort] = useState(
-    () => resolveComposerDefaults(getClaudeDefaults()).effort,
+    () => resolveComposerDefaults(getClaudeDefaults(), agent).effort,
   );
   // A field the user picked HERE stops following the global pair's updates.
   const picked = useRef({ model: false, effort: false });
+  // The agent the pair currently belongs to. When the agent changes — a pick,
+  // or the catalog landing on another default — the pair was the OTHER
+  // agent's and cannot ride along (a Claude model on a Copilot create is the
+  // server's foreign-model 400), so both halves re-resolve and any pick made
+  // here is let go with them.
+  const agentRef = useRef(agent);
+  useEffect(() => {
+    if (agentRef.current === agent) return;
+    agentRef.current = agent;
+    picked.current = { model: false, effort: false };
+    const r = resolveComposerDefaults(getClaudeDefaults(), agent);
+    setModel(r.model);
+    setEffort(r.effort);
+  }, [agent]);
   useEffect(() => {
     const follow = (d: ClaudeDefaults) => {
-      const r = resolveComposerDefaults(d);
+      // The global pair is Claude's; another agent's composer keeps its own.
+      if (agentRef.current !== "claude") return;
+      const r = resolveComposerDefaults(d, "claude");
       if (!picked.current.model) setModel(r.model);
       if (!picked.current.effort) setEffort(r.effort);
     };
@@ -365,16 +404,22 @@ export function HeroComposer({
     });
     return off;
   }, []);
+  // A pick on Claude moves the global pair (the settings page's value);
+  // another agent's pick is this composer's alone — writing "auto" into
+  // Claude's default would hand every Claude surface a model it cannot run.
   const pickModel = (next: ComposerPicks["model"]) => {
     picked.current.model = true;
     setModel(next);
-    void setClaudeDefaults({ model: next });
+    if (agentRef.current === "claude") void setClaudeDefaults({ model: next });
   };
   const pickEffort = (next: ComposerPicks["effort"]) => {
     picked.current.effort = true;
     setEffort(next);
-    void setClaudeDefaults({ effort: next });
+    if (agentRef.current === "claude") void setClaudeDefaults({ effort: next });
   };
+  // The agent picker (drawn only with two or more agents on, like the New
+  // task card's): the pair re-resolves in the effect above.
+  const pickAgent = (next: string) => setAgentPick(next);
   const [phase, setPhase] = useState<
     "idle" | "naming" | "askName" | "creating"
   >("idle");
@@ -446,7 +491,7 @@ export function HeroComposer({
     if (autoFocus) requestAnimationFrame(() => inputRef.current?.focus());
   }, [autoFocus]);
 
-  const busy = phase !== "idle" || claudeOff;
+  const busy = phase !== "idle";
   const canSubmit = prompt.trim().length > 0 && !busy;
 
   // Upload each file as a task shot; the chip shows at once and is dropped
@@ -556,13 +601,14 @@ export function HeroComposer({
       }
       const images = imagesRef.current.map((i) => i.path).filter(Boolean);
       const res = exact
-        ? await createApp(name, fullPrompt(), model, effort, images)
+        ? await createApp(name, fullPrompt(), model, effort, images, agent)
         : await createAppUnderFreeName(
             name,
             fullPrompt(),
             model,
             effort,
             images,
+            agent,
           );
       // The folder exists from here on, so the Recent grid is stale — refresh it
       // now, since the task-error branch below stays on this page.
@@ -582,14 +628,14 @@ export function HeroComposer({
         }
         return;
       }
-      // Land on the app's page with Claude building it in the side pane. The
-      // prompt is a task on this file now; the server ran it and waited for
-      // the run id, so the pane can attach. A task whose send failed (or is
-      // still spawning past the server's wait) lands on the bare page — the
-      // row in the app's Tasks tab tells the rest.
+      // Land on the app's page with the agent building it in the side pane.
+      // The prompt is a task on this file now; the server ran it and waited
+      // for the run id, so the pane can attach. A task whose send failed (or
+      // is still spawning past the server's wait) lands on the bare page —
+      // the row in the app's Tasks tab tells the rest.
       if (res.task?.run_id) {
         navigateUrl(
-          appLandingUrl(res.entry_html, res.task.run_id, model, effort),
+          appLandingUrl(res.entry_html, res.task.run_id, model, effort, agent),
           { isDir: false },
         );
       } else {
@@ -718,7 +764,13 @@ export function HeroComposer({
         <TextArea
           ref={inputRef}
           className="home-composer-input"
-          placeholder={claudeOff ? CLAUDE_OFF_LINE : "What do you want to build?"}
+          // The agent is named (D18) when it is not Claude, the composer's
+          // historical builder: "What do you want Copilot to build?"
+          placeholder={
+            agent === "claude"
+              ? "What do you want to build?"
+              : `What do you want ${agentLabel(agent)} to build?`
+          }
           aria-label="What do you want to build?"
           value={prompt}
           rows={1}
@@ -748,7 +800,8 @@ export function HeroComposer({
           {/* The bar's left end used to spell out ↵ / ⇧↵. Those are the two
               keystrokes every chat box on the machine already answers to, and
               the space is worth more spent on the one thing this composer could
-              not say at all: WHICH Claude builds the app. The pickers
+              not say at all: WHICH agent, and which of its models, builds the
+              app. The pickers
               stay mounted while a create is in flight — disabled, like the
               starter chips — and the phase text takes the space beside them
               rather than replacing them, so nothing moves when it appears. */}
@@ -802,11 +855,24 @@ export function HeroComposer({
             </div>
           ) : (
             <div className="home-composer-picks">
+              {agentCatalog.backends.length >= 2 && (
+                <ComposerPick
+                  glyph="agent"
+                  label="Agent"
+                  value={agent}
+                  choices={agentCatalog.backends.map((b) => ({
+                    value: b.id,
+                    label: b.label,
+                  }))}
+                  disabled={busy}
+                  onPick={pickAgent}
+                />
+              )}
               <ComposerPick
                 glyph="model"
                 label="Model"
                 value={model}
-                choices={modelChoices()}
+                choices={modelChoices(agent)}
                 disabled={busy}
                 onPick={pickModel}
               />
@@ -814,7 +880,7 @@ export function HeroComposer({
                 glyph="effort"
                 label="Effort"
                 value={effort}
-                choices={effortChoices()}
+                choices={effortChoices(agent)}
                 disabled={busy}
                 onPick={pickEffort}
               />
@@ -852,20 +918,6 @@ export function HeroComposer({
           </button>
         </div>
       </div>
-      {claudeOff ? (
-        <p className="home-composer-off">
-          {CLAUDE_OFF_LINE}{" "}
-          <a
-            href={AGENT_PREFS_URL}
-            onClick={(e) => {
-              e.preventDefault();
-              navigateUrl(AGENT_PREFS_URL);
-            }}
-          >
-            Turn it on
-          </a>
-        </p>
-      ) : null}
       <div className="home-composer-samples">
         <div className="home-composer-sample-strip" ref={stripRef}>
           {Array.from(
@@ -919,7 +971,7 @@ export function HeroComposer({
         </button>
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {/* THE OTHER PLACE A USER REACHES FOR CLAUDE, and the one where being
+      {/* THE OTHER PLACE A USER REACHES FOR AN AGENT, and the one where being
           told to install it matters most: they typed what to build. The app
           folder is already there, so the card says so rather than reading as a
           total failure — and the spawn error stays verbatim inside it, which a

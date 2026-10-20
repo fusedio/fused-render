@@ -13,6 +13,7 @@ exercises only code paths that raise or return BEFORE any pandoc call:
 """
 import importlib.util
 import os
+import zipfile
 
 import pytest
 
@@ -68,3 +69,30 @@ def test_editability_readonly(docs, docx):
     assert editable is False
     assert message == "Read-only"
     assert "read-only" in tooltip
+
+
+def _docx(path, *paragraphs):
+    body = "".join(f"<w:p><w:r><w:t xml:space=\"preserve\">{p}</w:t></w:r></w:p>" if p else "<w:p/>" for p in paragraphs)
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("word/document.xml", f'<w:document xmlns:w="w"><w:body>{body}</w:body></w:document>')
+    return str(path)
+
+
+def test_rename_keeps_extension_and_refuses_collisions(docs, tmp_path):
+    src = _docx(tmp_path / "old.odt", "x")
+    out = docs.main(action="rename", file=src, title='Q3: "plan".docx')
+    assert out["name"] == "Q3 plan.odt" and not os.path.exists(src)
+    assert docs.main(action="rename", file=out["path"], title="Q3 plan")["name"] == "Q3 plan.odt"
+    _docx(tmp_path / "taken.odt", "y")
+    with pytest.raises(FileExistsError):
+        docs.main(action="rename", file=out["path"], title="taken")
+
+
+def test_library_lists_drafts_by_first_line(docs, tmp_path, monkeypatch):
+    monkeypatch.setattr(docs, "DOCS_DIR", str(tmp_path))
+    _docx(tmp_path / "Untitled document.docx", "", "Groceries &amp; more", "milk")
+    _docx(tmp_path / "Untitled document 2.docx")
+    _docx(tmp_path / "Budget.docx", "rent")
+    (tmp_path / "Untitled document 3.docx").write_bytes(b"PK\x03\x04 truncated")
+    titles = sorted(d["title"] for d in docs.main(action="list")["docs"])
+    assert titles == ["Budget", "Groceries & more", "Untitled document 2", "Untitled document 3"]

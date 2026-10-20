@@ -65,7 +65,7 @@ import type {
 import { historyToTurns } from "./history";
 import { CONTINUE_PROMPT, CONTINUE_TITLE, continueDue, continueNote, limitHit, isPlanLimitText } from "./quota";
 import { pollBody, type SegmentView } from "./segments";
-import { endActiveTasks } from "./tasks";
+import { endActiveTasks, isActive, stillShown } from "./tasks";
 import { isNetworkFailure, isUnknownRun, troubleFromError, troubleFromMessage, troubleOf } from "./trouble";
 import type {
   Activity,
@@ -75,6 +75,7 @@ import type {
   Decision,
   DecideResponse,
   DecisionScope,
+  ErrorOnly,
   LandedDecision,
   HistoryResponse,
   InboxMessage,
@@ -83,9 +84,11 @@ import type {
   PermissionRow,
   Phase,
   PollResponse,
+  CardsResponse,
   Quota,
   RetryInfo,
   RunIdResponse,
+  RunTasksResponse,
   Segment,
   SendResponse,
   SkillRow,
@@ -102,6 +105,23 @@ import type { Receipt } from "../shots/types";
 
 /** T:16377 — the poll cadence. No backoff, ever. */
 export const POLL_MS = 400;
+/** How often a finished turn's tasks panel asks the session host that is still
+ *  running its background work (`watchHostTasks`, agent.py `_run_tasks`). */
+export const HOST_TASKS_MS = 5000;
+/** Failed `tasks` asks in a row before a host watch gives up. */
+export const HOST_TASKS_TRIES = 3;
+
+/**
+ * THE CARD WATCH'S CADENCE. The reply can end while a backgrounded subagent or
+ * shell keeps the host alive (`tasks_pending`), and that task can still raise a
+ * permission card minutes later — with no poll loop left to see it. The watch
+ * (`cardWatch` in the controller) asks the server's `cards` action this often
+ * until the host has nothing left running. Not `POLL_MS`: nothing streams here,
+ * a card is a human-speed event.
+ */
+export const CARD_WATCH_MS = 3000;
+/** Consecutive failed `cards` calls the watch rides out before it gives up. */
+export const CARD_WATCH_FAILURES = 5;
 
 /**
  * HOW MANY CONSECUTIVE TRANSIENT POLL FAILURES a live view rides out before it
@@ -345,6 +365,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
    */
   const runningMarks = new Map<number, Promise<void>>();
   /**
+   * RUNS WITH A CARD WATCH IN FLIGHT (see `cardWatch`) — one watch per run, so
+   * a second `done` for the same run while one is watching starts nothing.
+   */
+  const cardWatches = new Set<string>();
+  /** The working line on screen is the card watch's "Waiting for your
+   *  approval" (see `paintCardWait`), not a turn's. */
+  let cardLineUp = false;
+  /**
    * THE WINDOW THAT IS ALREADY ON SCREEN, so a follow-up never re-types the
    * reply before it (owner feedback R4-3).
    *
@@ -568,13 +596,89 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * THE RUN THAT OWNS THE LIST HAS ENDED (SPEC T-5 review #4): anything it
    * still had active is downgraded to `unknown`, `ended_at` null — the panel's
    * clock stops, a Monitor chip stops saying "watching" and no Output button
-   * aims at a dead host. A session host that does outlive the turn re-reports
-   * the real statuses on its next poll, which replaces this list wholesale.
+   * aims at a dead host.
+   *
+   * …UNLESS ITS SESSION HOST IS STILL RUNNING THE WORK (the done poll's
+   * `tasks_pending`; the callers then watch instead). A TURN ending is
+   * not the work ending (Akshil, 2026-10-18): a `sleep 600`, a dev server, a
+   * background Agent or a Monitor runs on after the reply, and its row stays
+   * LIVE — its clock, its Stop, its Output (they address this run, which the
+   * host still answers for) — until the host says the job is over
+   * (`watchHostTasks`), when it ends with its real status and leaves after the
+   * panel's 5 s grace. Only a host that is really gone downgrades.
    */
   const endRunTasks = (runId: string | null) => {
     if (!runId || state.tasksRunId !== runId) return;
     const ended = endActiveTasks(state.tasks);
     if (ended) publishTasks(ended, runId);
+  };
+  /**
+   * WATCH A HOST THAT OUTLIVED ITS TURN (Akshil, 2026-10-18). Nothing else
+   * polls it: the poll loop stopped at `done`, and the standing watch only
+   * refreshes history when the TRANSCRIPT grows — which a job that exits, or
+   * is stopped from the Tasks list, without waking the model never does. So
+   * while the panel holds live rows owned by `runId` and no turn is running,
+   * ask the agent's `tasks` (the registry caught up from `out.jsonl`) every
+   * `HOST_TASKS_MS`, and publish what it says.
+   *
+   * It stops by itself: a turn starting (a new poll loop owns the list), another
+   * conversation or run taking the panel, nothing left running
+   * (`tasks_pending` false), the host gone (`host_alive` false — the
+   * downgrade above, the one case it still applies), `HOST_TASKS_TRIES`
+   * failed asks in a row, or dispose. One watch at a time: a call for the run
+   * and seat already watched is a no-op (a history refresh every few seconds
+   * must not keep restarting the wait); any other call retires the older one.
+   *
+   * `loop` is the poll-loop seat the watch belongs to — the seat whose turn
+   * just ended (its own `seat`, so a stale loop unwinding late cannot adopt a
+   * newer one), or the current one for a history landing. A turn starting is a
+   * NEW seat, and ends the watch: that turn's poll owns the list.
+   */
+  let hostWatch = 0;
+  let hostWatched = "";
+  const watchHostTasks = (runId: string, loop: number = loopSeq) => {
+    const key = runId + "\u0000" + loop;
+    if (hostWatched === key) return;
+    hostWatched = key;
+    const seq = ++hostWatch;
+    const mine = () => seq === hostWatch && !disposed && loopSeq === loop && state.tasksRunId === runId;
+    void (async () => {
+      let failures = 0;
+      try {
+        for (;;) {
+          await sleep(HOST_TASKS_MS);
+          if (!mine()) return;
+          // A hidden tab does not ask: a dev server can hold a host for days.
+          // The lap resumes when the tab is looked at again.
+          if (typeof document !== "undefined" && document.hidden) continue;
+          let res: RunTasksResponse | ErrorOnly | null = null;
+          try {
+            res = await run("tasks", { run_id: runId });
+          } catch {
+            res = null;
+          }
+          if (!mine()) return;
+          if (!res || res.error || !("tasks" in res) || !Array.isArray(res.tasks)) {
+            // A dropped socket or a busy server is not the job ending: try a
+            // few laps before giving up on the host.
+            if (++failures >= HOST_TASKS_TRIES) return;
+            continue;
+          }
+          failures = 0;
+          publishTasks(res.tasks, runId);
+          if (!res.host_alive) {
+            endRunTasks(runId);
+            return;
+          }
+          // The last job ended: its row now carries its real status and
+          // leaves after the panel's own 5 s grace (TasksPanel); the task row
+          // moves to Done on the Tasks page.
+          if (!res.tasks_pending) return;
+        }
+      } finally {
+        if (seq === hostWatch) hostWatched = "";
+      }
+    })();
   };
   /**
    * HISTORY'S TASKS, on a restore and on every refresh — one rule for both
@@ -583,7 +687,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
    * included, owned by no run (its host is gone, so no Output) — unless the
    * session host is still alive (`tasks_run`): the turn ended but a background
    * task runs on, and the host's run owns the list so Stop/Output can reach
-   * it. A live run:
+   * it, watched until that work ends. A live run:
    * owned by THAT run; an empty answer about the run already drawn keeps the
    * list (the poll owns a live run's tasks), any other answer replaces it.
    */
@@ -591,6 +695,27 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // An older server sends no `tasks` at all: that says nothing, not "none".
     if (!Array.isArray(res.tasks)) return;
     const rows = res.tasks;
+    if (!res.live_run && res.tasks_run && rows.some((t) => t && isActive(t.status))) {
+      // NO TURN OPEN, a host alive with work it still runs: the rows stay live,
+      // owned by the host's run, and the host is watched for their end
+      // (`watchHostTasks`) — a reload, or the standing watch's refresh after
+      // the turn, lands here. A turn this page has under way owns the list
+      // through its poll. (Not `sending`: a restore holds that gate while it
+      // lands history.)
+      if (activeRun) return;
+      publishTasks(rows, res.tasks_run);
+      watchHostTasks(res.tasks_run);
+      // …and that work can still ASK something nobody would see (`cardWatch`;
+      // Bugbot 4312038980): this road has no poll loop to start it.
+      void cardWatch(res.tasks_run, logGen, state.transcriptGen);
+      return;
+    }
+    // …AND WHILE A HOST WATCH HOLDS LIVE ROWS, a history answer that says
+    // nothing live does not replace them (Bugbot 4307278676): history's walk
+    // can name another run dir, or race the host's own liveness, and nulling
+    // the owner here would kill the watch — the job's real end, the dead-host
+    // downgrade and the 5 s grace would never come. The watch ends by itself.
+    if (!res.live_run && state.tasksRunId && hostWatched.startsWith(state.tasksRunId + "\u0000")) return;
     const owner = res.live_run || res.tasks_run || null;
     if (owner && !rows.length && state.tasksRunId === owner && state.tasks.length) return;
     publishTasks(rows, owner);
@@ -620,6 +745,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** The conversation on screen is leaving: its tasks go with it. */
   const clearTasks = () => {
     tasksSig = "";
+    hostWatch++; // the host watch belongs to the conversation that is leaving
+    hostWatched = "";
     if (state.tasks.length || state.tasksRunId !== null) emit({ tasks: [], tasksRunId: null });
     // …and so does the worktree hint the model's tool calls raised.
     if (state.worktreeHint) emit({ worktreeHint: null });
@@ -986,20 +1113,38 @@ export function createChatController(deps: ControllerDeps): ChatController {
     !!text.trim() || segs.some((sg) => sg.kind === "text" && !!(sg.text || "").trim());
   const isPlanLimit = (t: { text: string; quota?: Quota } | null | undefined) =>
     !!t && (limitHit(t.quota) || isPlanLimitText(t.text));
-  const retireErrors = () => {
+  /** `limitOnly`: the reply has not SAID anything yet (its first bubble just
+   *  opened, or it ran only tools) — that resolves nothing about an ordinary
+   *  failure, but it is proof enough against the PLAN LIMIT: the API served
+   *  the retry's request, so the window is open. Akshil, 2026-10-18: the
+   *  limit reset, the retry was already running a Bash call, and the red card
+   *  still sat above it the whole turn. Mirrors agent.py `_drop_resolved_errors`. */
+  const retireErrors = (opts: { limitOnly?: boolean } = {}) => {
     let lastUser = -1;
     state.turns.forEach((t, i) => {
       if (t.role === "user") lastUser = i;
     });
-    const gone = state.turns.filter((t, i): t is ErrorTurn => t.role === "error" && i < lastUser);
+    const goes = (t: Turn, i: number): boolean =>
+      t.role === "error" && i < lastUser && (!opts.limitOnly || isPlanLimit(t));
+    const gone = state.turns.filter((t, i): t is ErrorTurn => goes(t, i));
     if (!gone.length) return;
-    const turns = state.turns.filter((t, i) => !(t.role === "error" && i < lastUser));
+    const turns = state.turns.filter((t, i) => !goes(t, i));
     const card = state.trouble;
-    const cardStays = !!card && turns.some((t) => t.role === "error");
+    // The card is the NEWEST error row's (`ui/Transcript.lastErrorKey`). A
+    // retired plan-limit card goes with its row even when an older failure of
+    // another kind is still on the log above it; any other card stays with
+    // the (newer) row it reports.
+    const cardStays =
+      !!card &&
+      turns.some((t) => t.role === "error") &&
+      !(opts.limitOnly && isPlanLimit({ text: card.message, quota: card.quota }));
     emit({ turns, ...(cardStays ? {} : { trouble: null }) });
+    // `isPlanLimit` alone, not `kind === "limit"`: a bare "API Error: 429"
+    // with `quota.status === "rejected"` is the plan's limit too (agent.py
+    // `_is_limit_turn`) but classifies as `generic` by its text (Bugbot #1738).
     const hadLimit =
-      gone.some((t) => t.kind === "limit" && isPlanLimit(t)) ||
-      (!cardStays && card?.kind === "limit" && isPlanLimit({ text: card.message, quota: card.quota }));
+      gone.some((t) => isPlanLimit(t)) ||
+      (!cardStays && !!card && isPlanLimit({ text: card.message, quota: card.quota }));
     if (!hadLimit) return;
     // AND EVERY COMEBACK BOOKED ON THIS SESSION. The scheduled "Your usage
     // limit has reset. Continue…" is for a chat that is still stuck; fired
@@ -1011,31 +1156,30 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // card actually went: an ordinary reply end must not fetch the schedule.
     const sid = state.sessionId;
     if (sid) {
-      retiredAt.set(sid, (retiredAt.get(sid) ?? 0) + 1);
-      void cancelComebacks(sid, Date.now());
+      const generation = (retiredAt.get(sid) ?? 0) + 1;
+      retiredAt.set(sid, generation);
+      void cancelComebacks(sid, generation);
     }
   };
 
   /** Cancel every pending comeback the server held for `sid` AT THE RETIRE,
-   *  fire-and-forget. `before` is the retire's wall clock: a comeback booked
-   *  after it (a retry that hit the limit again while the list was in
-   *  flight) is for a chat that is stuck again, and stays (CodeRabbit
-   *  #1699). An entry with no readable `created` is treated as older. */
-  const cancelComebacks = async (sid: string, before: number) => {
+   *  fire-and-forget. A comeback booked AFTER it (a retry that hit the limit
+   *  again while the list was in flight) is for a chat that is stuck again,
+   *  and stays (CodeRabbit #1699). "After" is read off THIS frame's own
+   *  bookings — the retire generation each POST started under — not off the
+   *  server-written `created` against the browser's clock, which skew can put
+   *  on either side of the retire (CodeRabbit #1738). Every booking in flight
+   *  is awaited first, so the one the list already holds has an id to keep. */
+  const cancelComebacks = async (sid: string, generation: number) => {
     const list = deps.listSchedule ?? getSchedule;
     const cancel = deps.cancelSchedule ?? cancelScheduledMessage;
     try {
       const { entries } = await list();
-      const bookedAfter = (created: string | undefined) => {
-        const at = created ? Date.parse(created) : NaN;
-        return Number.isFinite(at) && at > before;
-      };
+      const booked = await Promise.all([...bookings]);
+      const keep = new Set(booked.filter((b) => b.sid === sid && b.mark >= generation).map((b) => b.id));
       const mine = entries.filter(
         (e) =>
-          e.session_id === sid &&
-          e.message === CONTINUE_PROMPT &&
-          e.state === "pending" &&
-          !bookedAfter(e.created),
+          e.session_id === sid && e.message === CONTINUE_PROMPT && e.state === "pending" && !keep.has(e.id),
       );
       await Promise.all(mine.map((e) => cancel(e.id)));
       if (mine.length) announceTasksChanged();
@@ -1071,6 +1215,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
   /** session id → how many times its limit has been retired: a comeback whose
    *  POST settles after a reply already landed is cancelled on the spot. */
   const retiredAt = new Map<string, number>();
+  /** Every comeback POST this frame has made, with the retire generation it
+   *  started under (`retiredAt` at the time) — `cancelComebacks` keeps the
+   *  ones booked at or after its own generation. A failed POST yields no id. */
+  const bookings = new Set<Promise<{ sid: string; mark: number; id: string | null }>>();
   const scheduleComeback = (runId: string, error: string, quota: Quota): boolean => {
     if (scheduledRuns.has(runId)) return true;
     const sessionId = state.sessionId;
@@ -1080,7 +1228,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     reportTrouble(trouble);
     const post = deps.schedule ?? scheduleMessage;
     const retiredMark = retiredAt.get(sessionId) ?? 0;
-    void post({
+    const posted = post({
       target: FILE,
       message: CONTINUE_PROMPT,
       due: continueDue(quota),
@@ -1089,7 +1237,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // The session's own agent (D2): a create naming none is pinned to the
       // current Preferences default.
       ...(curBackend() ? { backend: curBackend() } : {}),
-    })
+    });
+    void posted
       .then((res: unknown) => {
         // A reply landed while this POST was in flight: the row it just made
         // is already stale. Cancel it now rather than note it.
@@ -1120,6 +1269,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
           "\u25f7",
         );
       });
+    const booking = posted.then(
+      (res: unknown) => {
+        const id = (res as { entry?: { id?: unknown } } | null)?.entry?.id;
+        return { sid: sessionId, mark: retiredMark, id: typeof id === "string" && id ? id : null };
+      },
+      () => ({ sid: sessionId, mark: retiredMark, id: null }),
+    );
+    bookings.add(booking);
     return true;
   };
 
@@ -1276,6 +1433,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const rows = permissionRows();
     emit({ permissions: rows });
     rememberCards(rows);
+    paintCardWait();
   };
   /** THE CACHE FOLLOWS THE CARDS. A Peek opened on a tile that has been
    *  polling for a minute must open on the card the tile shows NOW, not the one
@@ -1379,6 +1537,122 @@ export function createChatController(deps: ControllerDeps): ChatController {
       /* storage refused; nothing to forget */
     }
   };
+
+  /**
+   * THE STATUS LINE WHILE A CARD WATCH HOLDS AN OPEN CARD: "Waiting for your
+   * approval", because after the reply ended that card is the only thing the
+   * run is blocked on. External (no Stop): there is no turn here to stop — the
+   * reply already ended, `activeRun` is null and `stopRun` would do nothing.
+   * Cleared again the moment no watched card is open (a click parks it through
+   * `resolveLocally` → `publishPermissions`, which calls this). A live poll
+   * loop owns the line outright, so this stands aside while `activeRun` is set.
+   */
+  function paintCardWait(): void {
+    if (disposed || activeRun) {
+      cardLineUp = false;
+      return;
+    }
+    let open = false;
+    if (cardWatches.size) {
+      for (const row of permCards.values()) {
+        if (row.runId && cardWatches.has(row.runId) && !row.decision) {
+          open = true;
+          break;
+        }
+      }
+    }
+    if (open) {
+      // Already ours and still on screen: nothing to do. Ours but replaced by
+      // some other writer meanwhile: paint it again rather than go quiet for
+      // the rest of the watch (review, 2026-10-18).
+      if (cardLineUp && state.working?.cardWait) return;
+      if (!cardLineUp) workingStartedAt = now();
+      cardLineUp = true;
+      emit({
+        working: {
+          phase: "awaiting",
+          activity: null,
+          retry: null,
+          tokens: 0,
+          startedAt: workingStartedAt,
+          external: true,
+          cardWait: true,
+        },
+      });
+      return;
+    }
+    if (!cardLineUp) return;
+    cardLineUp = false;
+    if (state.working?.cardWait) emit({ working: null });
+  }
+
+  /**
+   * THE CARD WATCH: the reply ended (`done`) but `tasks_pending` says the host
+   * still runs a backgrounded task, and that task can raise a permission card
+   * long after any poll loop has gone. Nothing else would see it — the standing
+   * watch needs an open turn, and `shownRuns` keeps it off this run anyway — so
+   * the card never reached the chat and the task sat blocked.
+   *
+   * Fire-and-forget; one per run (`cardWatches`). Every `CARD_WATCH_MS` it asks
+   * `cards` and lands the answer through `syncPermissions`, so an open card
+   * renders in the tail pin and the reader answers it with the usual
+   * `decidePermission` (the card carries `runId`). It stops when the controller
+   * is disposed, the reader leaves (`logGen`) or the conversation is replaced
+   * (`transcriptGen`), a new loop adopts a turn (`activeRun` — the woken
+   * turn's own loop takes over), or the host has nothing left (`!alive` /
+   * `!tasks_pending`, which also retires the run's task records the `done`
+   * branch kept). A failed call is "not yet", up to `CARD_WATCH_FAILURES` in a
+   * row.
+   */
+  async function cardWatch(runId: string, gen: number, tGen: number): Promise<void> {
+    if (!runId || cardWatches.has(runId)) return;
+    const mine = () => !disposed && logGen === gen && state.transcriptGen === tGen && !activeRun;
+    // `sending` too, on every tick but the admission: a follow-up in flight is
+    // about to start a loop of its own, and that loop's `done` restarts the
+    // watch if work is still pending. Not at admission, because the reload
+    // road (`resumeAttach`) starts the watch while it still holds the gate.
+    const ours = () => mine() && !sending;
+    if (!mine()) return;
+    cardWatches.add(runId);
+    let failures = 0;
+    try {
+      for (;;) {
+        await sleep(CARD_WATCH_MS);
+        if (!ours()) return;
+        let res: CardsResponse | { error: string };
+        try {
+          res = (await run("cards", { run_id: runId }, { ...(life ? { signal: life.signal } : {}) })) as
+            | CardsResponse
+            | { error: string };
+        } catch {
+          if (++failures >= CARD_WATCH_FAILURES) return;
+          continue;
+        }
+        if (!ours()) return;
+        const error = (res as { error?: string } | null)?.error;
+        if (!res || error) {
+          // The run dir is gone: nothing is left to ask about.
+          if (isUnknownRun(error)) {
+            endRunTasks(runId);
+            return;
+          }
+          if (++failures >= CARD_WATCH_FAILURES) return;
+          continue;
+        }
+        failures = 0;
+        const cards = res as CardsResponse;
+        syncPermissions(cards.permissions, runId, cards.mode || undefined);
+        paintCardWait();
+        if (!cards.alive || !cards.tasks_pending) {
+          endRunTasks(runId);
+          return;
+        }
+      }
+    } finally {
+      cardWatches.delete(runId);
+      paintCardWait();
+    }
+  }
 
   const setStats = (
     tokens: number,
@@ -1600,6 +1874,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     let tick = 0;
     /** Consecutive transient poll failures (see `POLL_NETWORK_RETRIES`). */
     let transient = 0;
+    /** The reply ended with a background task still running — start the card
+     *  watch once this loop has fully let go (end of `finally`). */
+    let watchCards = false;
 
     try {
       for (;;) {
@@ -1676,9 +1953,19 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // inbox, which is what it was before this field existed.
         publishInbox(Array.isArray(poll.inbox) ? poll.inbox : []);
         // THE RUN'S BACKGROUND TASKS (SPEC T-5) — sticky per run, see `publishTasks`.
+        // …BUT NOT OVER A JOB ANOTHER HOST STILL HOLDS (Akshil, 2026-10-19):
+        // a follow-up can open a turn on a NEWER host of this session (the
+        // chat reopened on its folder) while the older one runs a dev server
+        // on. This run's empty list says nothing about that job, so the rows
+        // stay, owned by their host (Stop/Output still reach it), and that
+        // host stays watched through this turn, so its end still lands (and
+        // its ended row keeps the panel's 5 s grace, CodeRabbit).
         {
           const rows = Array.isArray(poll.tasks) ? poll.tasks : [];
-          if (rows.length || state.tasksRunId !== runId) publishTasks(rows, runId);
+          const owner = state.tasksRunId;
+          if (!rows.length && owner && owner !== runId && stillShown(state.tasks, now())) {
+            if (loopSeq === seat) watchHostTasks(owner, seat);
+          } else if (rows.length || owner !== runId) publishTasks(rows, runId);
         }
         // THE SLASH-COMMAND LIST MAY HAVE MOVED (SPEC C-2) — the host re-reads it.
         if (poll.commands_changed) deps.onCommandsChanged?.();
@@ -1853,6 +2140,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
               streaming: true,
               followup: slot,
             });
+            // THE PLAN LIMIT IS OVER THE MOMENT THE RETRY'S REPLY OPENS — a
+            // tool call is already the API answering — not at the end of a
+            // turn that may run for minutes with the red card still above it.
+            if (loopSeq === seat) retireErrors({ limitOnly: true });
           }
           // A REPLY THE PAYLOAD HAS CLOSED OFF WITH A SEAM IS FINISHED, and
           // saying so here rather than only at `poll.done` is what keeps the
@@ -1907,7 +2198,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // open while `tasks_pending`, and the model is woken when the task
           // notifies). Only the backend's own "nothing still running" fact
           // retires the live records.
-          if (!poll.tasks_pending) endRunTasks(runId);
+          // OWNERSHIP-GUARDED like the param above (Bugbot 4307278686): a
+          // superseded loop's late `done` must not retire the newer loop's
+          // host watch and leave none.
+          if (poll.tasks_pending) {
+            if (loopSeq === seat) watchHostTasks(runId, seat);
+            // …and that task can still ASK something, with no loop left to
+            // see it (`cardWatch`). Same guard.
+            if (loopSeq === seat) watchCards = true;
+          } else endRunTasks(runId);
           deps.onRunEnded?.();
           // T does one final `pollArtifacts()` at the run's end (T:16347), and
           // controller-api promises "every 8th poll AND once at the run's end".
@@ -1981,7 +2280,8 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // rows reported is over. `keepText` and not "no note": a reply that
           // finished before a stop landed is still a reply, and an empty end
           // is not one.
-          else if (loopSeq === seat && end.keepText && live.length && hasWords(fullText, segs)) retireErrors();
+          else if (loopSeq === seat && end.keepText && live.length)
+            retireErrors({ limitOnly: !hasWords(fullText, segs) });
           // Same guard: a superseded loop's own "Stopped." must not land in the
           // log while the newer loop's turn is the one actually streaming.
           if (loopSeq === seat && end.note) addNote(end.note, "⏹");
@@ -2053,6 +2353,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
       // Turn boundary either way — the tasks surfaces should hear about it even
       // when a newer loop owns the chrome (the ACTIVITY is real regardless).
       noteChatActivity();
+      // Started HERE rather than in the `done` branch so `activeRun` is already
+      // let go — the watch reads a set `activeRun` as "a new loop took over".
+      if (watchCards && loopSeq === seat) void cardWatch(runId, gen, tGen);
     }
   }
 
@@ -3732,7 +4035,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // the file while we were away (`annResolveSent` / `snapInvalidate`).
         // Same rule as `pollLoop`'s done branch: this payload is a done poll
         // too, and `tasks_pending` says the host is still running work.
-        if (!poll.tasks_pending) endRunTasks(runId || null);
+        if (poll.tasks_pending && runId) {
+          watchHostTasks(runId);
+          // …and that work can still raise a card nobody would see (`cardWatch`)
+          // — a reload while a backgrounded subagent runs lands exactly here.
+          void cardWatch(runId, gen, tGen);
+        } else endRunTasks(runId || null);
         deps.onRunEnded?.();
         /**
          * DID THIS REPAIR ACTUALLY PUT ROWS ON SCREEN? (Bugbot 3974939169 and
@@ -3981,6 +4289,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // road a comeback takes when it finished while this frame was away:
         // the red rows are over, and a limit's comeback is spent.
         if (hasWords(probeText, probeSegs)) retireErrors();
+        else if (probeSegs.length) retireErrors({ limitOnly: true });
         // A REPAIR IS NEWS THAT HAS TO BE SCROLLED TO (T:17851, P4-10). T calls
         // `scrollBottom()` here unconditionally, and the reason it must be
         // unconditional is that a repair has no `running` → `idle` edge for the
@@ -4140,6 +4449,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  token count this one cannot honestly offer. */
   function setExternalWorking(on: boolean): void {
     if (disposed) return;
+    // The card watch's "Waiting for your approval" is the truer line: the run
+    // is blocked on the reader, not running somewhere else (`paintCardWait`).
+    if (cardLineUp) return;
     if (on) {
       if (activeRun || sending) return;
       if (state.working && state.working.external) return;

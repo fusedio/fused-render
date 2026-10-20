@@ -76,6 +76,7 @@ ACTIONS: dict[str, str] = {
     "app_state": "_answer_app_state",
     "sessions": "_sessions",
     "live_run": "_live_run",
+    "cards": "_cards",
     "defaults": "_defaults",
     "history": "_history",
     "snapshots": "_snapshots",
@@ -90,6 +91,7 @@ ACTIONS: dict[str, str] = {
     "commands": "_commands",
     "task_output": "_task_output",
     "task_stop": "_task_stop",
+    "tasks": "_run_tasks",
 }
 
 #: The engine name the call log records for these routes. `/api/run` wrote

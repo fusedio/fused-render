@@ -436,22 +436,14 @@ def test_default_backend_is_repointed_in_the_same_write(client):
     assert r.status_code == 400
     body = client.get("/api/prefs").json()
     assert body["agents"] == {"claude": True, "copilot": False, "default": "claude"}
-    assert body["model"]["choices"] == list(prefs_mod.VALID_DEFAULT_MODELS)
 
 
-def test_a_copilot_default_never_reaches_fused_ai(monkeypatch):
+def test_fused_ai_never_reads_the_default_agent(monkeypatch):
+    # The relay is Claude-only and takes no default from any preference, so
+    # which agent new chats open on cannot reach it either way.
     from fused_render.server import ai as ai_mod
-    prefs_mod.write_pref("default_model", "opus")
-    assert ai_mod.default_model() == "opus"
-    # A STORED Copilot default with Copilot switched off is not the default:
-    # the relay asks the registry, which re-points to Claude.
-    prefs_mod.write_pref("default_backend", "copilot")
-    assert ai_mod.agent_registry.default_id() == "claude"
-    prefs_mod.write_pref("copilot_enabled", True)
-    assert ai_mod.agent_registry.default_id() == "copilot"
-    # The relay's own resolution: with Copilot the default the pref is ignored.
     src = open(ai_mod.__file__, encoding="utf-8").read()
-    assert 'agent_registry.default_id() == "claude"' in src
+    assert "default_id()" not in src
     assert "default_backend()" not in src
 
 

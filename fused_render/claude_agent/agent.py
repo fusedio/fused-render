@@ -723,14 +723,17 @@ def _path_is_inside(root: str, target: str) -> bool:
 
 def _in_canvases_root(target: str) -> bool:
     """Whether `target` is inside the canvas-clones root (`_canvases_root()`,
-    `~/.fused-render/canvases` or the flavor's own home). See `_path_is_inside`
-    for the four-step containment rule and why each step is there."""
+    `~/Fused/canvas` — the base above the per-environment clone folders). See
+    `_path_is_inside` for the four-step containment rule and why each step is
+    there."""
     return _path_is_inside(_canvases_root(), target)
 
 
 # Fused Web (the sandbox/showcase app, not this server) keeps its OWN local
 # canvas clones at `~/Fused/canvas/<name>` — each with its own `canvas.toml` —
-# entirely outside `_canvases_root()`, because those tasks are started through
+# the same base this server's per-environment clone folders sit under since
+# 2026-10-20 (so by default the two roots coincide; they differ only under a
+# FUSED_RENDER_CANVASES_DIR override), because those tasks are started through
 # `fused.tasks.create` rather than a canvas push. Resolved at CALL time
 # (`os.path.expanduser`, not module-import time) so a test can monkeypatch HOME
 # and so a real change of HOME mid-process is honored rather than frozen at
@@ -838,8 +841,8 @@ def _fused_cli_note(backend: str = "") -> str:
         "`fused workbench login` or `fused cloud login` (they wait on a "
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
-        "terminal instead. Inside a canvas folder under ~/.fused-render/"
-        "canvases, fused-render holds its own auto-push while you work and "
+        "terminal instead. Inside a canvas folder under ~/Fused/canvas/, "
+        "fused-render holds its own auto-push while you work and "
         "routes `fused workbench canvas push .` through its sync manager, "
         "which merges concurrent workbench edits first: publish a coherent "
         "change set with that command and read the errors it prints back."
@@ -912,6 +915,47 @@ def _custom_env(origin: str, file: str) -> bool | None:
         return bool(data.get("custom_env", True))
     except Exception:  # noqa: BLE001 — see docstring
         return None
+
+
+# A clone file that IS a node: the source kinds canvas_snapshot names, minus
+# the folder's own files, so canvas.toml or CLAUDE.md opened from Recent gets
+# the plain file prompt instead of being called "one node of a canvas".
+_NODE_FILE_SUFFIXES = (".py", ".json", ".md", ".html")
+_NOT_NODE_FILES = frozenset({"canvas.toml", "CLAUDE.md", "README.md"})
+
+
+def _is_canvas_node_file(file: str) -> bool:
+    name = os.path.basename(file)
+    return name.endswith(_NODE_FILE_SUFFIXES) and name not in _NOT_NODE_FILES
+
+
+def _canvas_node_prompt(file: str) -> str:
+    """The prompt for ONE FILE INSIDE A CANVAS CLONE — a node picked in the
+    embedded workbench on fused-render's /canvases/<name> page, which opens
+    the explorer's file engine on `<clone>/<udfName>.py` beside it.
+
+    The FILE prompt, then the canvas facts on top. The file half is exactly
+    `_system_prompt`'s, because the pane IS the same one the explorer shows
+    (the code template, this origin's, readable — the app_state tool is
+    real here). What that prompt cannot know is the folder's shape: the
+    canvas.toml beside the file names the node, every node's code is the
+    file named after it, publishing is `fused workbench canvas push .` (D350)
+    with the auto-push held while this session is live, and the user's own
+    edits to this file arrive through the same code pane. The clone's
+    CLAUDE.md (D340) carries the skills and layout.
+    """
+    name = os.path.basename(file)
+    folder = os.path.dirname(file)
+    return _system_prompt(file) + (
+        f" {name} is one node of a Fused workbench canvas: the user selected "
+        f"it in the live canvas, which is on screen beside this chat in a "
+        f"cross-origin frame you cannot read. The canvas folder is {folder}: "
+        "its canvas.toml defines the nodes and edges, and every node's code "
+        "is the file named after it — a change that needs a canvas.toml entry "
+        "(a rename, a new node) belongs in the same change set. Edits from "
+        "either side land in that folder and the sync publishes them to the "
+        "canvas."
+    )
 
 
 def _system_prompt(file: str) -> str:
@@ -1987,6 +2031,160 @@ def _record_copilot_session(run_dir: str, meta: dict, session_id: str) -> None:
             pass
 
 
+# ------------------------------------------------ cards the run walked away from
+# `run_dir -> ((out.jsonl size, mtime_ns, ids asked), {request ids abandoned})`:
+# the scan below reads out.jsonl whole and is asked on every poll while a card
+# is open.
+_ABANDON_CACHE: dict = {}
+_ABANDON_CACHE_CAP = 64
+# `request id -> monotonic first seen abandoned`. A verdict this permanent is
+# not latched off one reading: the walk-away has to still be true a few
+# seconds later (`_ABANDON_GRACE`), across whatever rows landed meanwhile.
+_ABANDON_SEEN: dict = {}
+_ABANDON_GRACE = 5.0
+
+
+def _abandoned_requests(run_dir: str, rows: list) -> set:
+    """`{request id}` among `rows` — unanswered permission rows, each with a
+    `tool_use_id` — whose asking call the CLI has walked away from.
+
+    THE DROPPED CARD (Akshil, 2026-10-18: "task shows me blocked but not
+    what it is blocked on"). A backgrounded subagent asked for Bash a minute
+    after the main reply ended. Nobody saw the card — the chat had stopped
+    polling — and the next message restarted the main thread, which told the
+    subagent to carry on. The CLI never delivered a `tool_result` for that
+    call and never will: the subagent's next assistant row simply followed.
+    But the request sat in `perm/` with no decision beside it, so every reader
+    (`_parked_runs`, the Tasks row, the rail's "1 blocked") went on saying the
+    run was waiting on a human for as long as the process lived.
+
+    Read off out.jsonl. The assistant row carrying the `tool_use` block names
+    the SCOPE the call was made in (`parent_tool_use_id`; "" for the main
+    thread). The call is abandoned once that scope has SPOKEN again — a later
+    assistant row with a different message id that carries real content (a
+    `text` or `tool_use` block) — and no `tool_result` for the call ever
+    landed. The same message id is the CLI writing one row per content block
+    of ONE parallel-tools message: a pending call's sibling, not what came
+    after it. A row with no message id, an API-error row or a thinking-only
+    row is no evidence either way: a model cannot have produced a new message
+    while its call is still pending, so only a real one proves the call was
+    dropped. Only the scope that asked can walk away from its own call: the
+    main thread talking while a subagent's card waits is not that, and nor is
+    a subagent working while the main thread's card waits.
+
+    An answer that lands after the walk-away (the user clicks Allow at the
+    instant the CLI gives up) still counts as answered: the result row wins.
+
+    STRICT ON PURPOSE, because the verdict is permanent and goes back to the
+    model as a refusal: every "do not know" above reads as "still pending".
+    """
+    ids = {str(r.get("tool_use_id") or ""): str(r.get("id") or "")
+           for r in rows if r.get("tool_use_id") and r.get("id")}
+    if not ids:
+        return set()
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        st = os.stat(path)
+        key = (st.st_size, st.st_mtime_ns, frozenset(ids))
+    except OSError:
+        return set()
+    hit = _ABANDON_CACHE.get(run_dir)
+    if hit is not None and hit[0] == key:
+        return _abandon_settled(hit[1], set(ids.values()))
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return set()
+    asked: dict = {}      # tool_use_id -> (scope, message id)
+    answered: set = set()
+    walked: set = set()
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue  # half-written last line; the next read gets it
+        if not isinstance(row, dict) or row.get("type") not in ("assistant", "user"):
+            continue
+        msg = row.get("message") if isinstance(row.get("message"), dict) else {}
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        if row["type"] == "user":
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    answered.add(str(block.get("tool_use_id") or ""))
+            continue
+        mid = str(msg.get("id") or "")
+        if not mid or row.get("isApiErrorMessage"):
+            continue  # no evidence either way (see above)
+        kinds = {block.get("type") for block in content if isinstance(block, dict)}
+        if not kinds & {"text", "tool_use"}:
+            continue  # thinking-only / synthetic: the scope has not spoken
+        scope = str(row.get("parent_tool_use_id") or "")
+        # Does this row come AFTER a pending ask in its own scope? Asked before
+        # this row's own calls are recorded: a row cannot walk away from itself.
+        for tid, (sc, m) in asked.items():
+            if sc == scope and m != mid:
+                walked.add(tid)
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use" \
+                    and str(block.get("id") or "") in ids:
+                asked[str(block["id"])] = (scope, mid)
+    gone = {ids[tid] for tid in walked if tid not in answered}
+    if len(_ABANDON_CACHE) >= _ABANDON_CACHE_CAP:
+        _ABANDON_CACHE.clear()
+    # The cache holds what the FILE says; the clock is applied on every call.
+    _ABANDON_CACHE[run_dir] = (key, gone)
+    return _abandon_settled(gone, set(ids.values()))
+
+
+def _abandon_settled(gone: set, asked: set) -> set:
+    """The subset of `gone` that has read as abandoned for `_ABANDON_GRACE`
+    seconds — the second reading a permanent verdict needs. First sightings
+    are remembered; a request that stops reading as abandoned (its result
+    landed after all) is forgotten. `asked` is the request ids THIS reading
+    covers: sightings belonging to other runs are not this call's to drop."""
+    now = time.monotonic()
+    for req_id in asked:
+        if req_id not in gone:
+            _ABANDON_SEEN.pop(req_id, None)
+    out = set()
+    for req_id in gone:
+        first = _ABANDON_SEEN.setdefault(req_id, now)
+        if now - first >= _ABANDON_GRACE:
+            out.add(req_id)
+    return out
+
+
+def _close_abandoned(run_dir: str, perm_dir: str, out: list) -> None:
+    """Latch a `deny` on every row of `out` whose call the CLI dropped
+    (`_abandoned_requests`), and read the verdict back onto the row.
+
+    Written to disk, not just reported: the permission server is still parked
+    in `_await_answer` on that request (up to an hour), the Tasks listing reads
+    the same files through `project_queue.run_permissions`, and a verdict that
+    lived only in this reply would have to be re-derived by every reader on
+    every poll. First writer wins, like every other decision: a click that
+    lands in the same instant is the truth and this read picks it up."""
+    open_rows = [r for r in out if not r["decision"] and r["tool_use_id"]]
+    if not open_rows:
+        return
+    gone = _abandoned_requests(run_dir, open_rows)
+    for row in open_rows:
+        if row["id"] not in gone:
+            continue
+        verdict = {"decision": "deny", "reason": "abandoned"}
+        if not _write_decision(perm_dir, row["id"], verdict):
+            continue  # could not record it: the card stays open, truthfully
+        res = _read_decision(perm_dir, row["id"]) or verdict
+        _ABANDON_SEEN.pop(row["id"], None)
+        row["decision"] = str(res.get("decision") or "deny")
+        row["reason"] = str(res.get("reason") or "")
+        row["scope"] = str(res.get("scope") or "")
+        row["mode"] = str(res.get("mode") or "")
+
+
 def _permissions(run_dir: str) -> list:
     """Every permission request this run has raised, each with the user's
     decision if one has been made. The whole list, not just the unanswered
@@ -2048,11 +2246,16 @@ def _permissions(run_dir: str) -> list:
             "held": False,
             "scope": str(res.get("scope") or ""),
             "mode": str(res.get("mode") or ""),
+            # WHY a deny that nobody clicked: "abandoned" (the CLI dropped the
+            # call — `_close_abandoned`), "cancelled" (Stop), "timeout" (the
+            # permission server gave up). "" on a click, and on every allow.
+            "reason": str(res.get("reason") or ""),
             # Only a question card has these, and it is the same reason the whole
             # list is returned: a frame that re-attaches has to be able to
             # rebuild a card it never saw, including what was chosen on it.
             "answers": answers if isinstance(answers, dict) else {},
         })
+    _close_abandoned(run_dir, perm_dir, out)
     if any(not row["decision"] for row in out):
         held = _held_answers(os.path.basename(os.path.normpath(run_dir)))
         for row in out:
@@ -2962,9 +3165,13 @@ def _appended_prompt(file: str, pane: bool, backend: str = "") -> str:
     `--append-system-prompt` and Copilot's generated agent file (D8) can never
     say different things about the same target — except where a sentence is
     about Claude Code itself (`_fused_cli_note`'s `backend`)."""
-    return ((_split_system_prompt(file, pane) if os.path.isdir(file)
-             else _system_prompt(file)) + _fused_cli_note(backend)
-            + _origin_note())
+    if os.path.isdir(file):
+        shape = _split_system_prompt(file, pane)
+    elif _in_workbench_root(file) and _is_canvas_node_file(file):
+        shape = _canvas_node_prompt(file)
+    else:
+        shape = _system_prompt(file)
+    return shape + _fused_cli_note(backend) + _origin_note()
 
 
 # The plugin root a Copilot session is handed (D8): its manifest, the one
@@ -3221,11 +3428,19 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     deliberate `=0` is an opt-out rather than a truthy string. Their
     CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING still wins inside the CLI either
     way — it is ANDed into the same branch — so this cannot override it."""
+    # A session started right at boot should still see the login-shell PATH
+    # the server merges into os.environ in the background (login_path.py).
+    # Looked up in sys.modules, not imported: this file never imports
+    # `fused_render` (see the header). Absent = no server started the probe.
+    _lp = sys.modules.get("fused_render.login_path")
+    if _lp is not None:
+        _lp.wait(2.0)
     env = os.environ.copy()
     env.pop("FUSED_ENV", None)
-    # A Finder-launched .app gets a minimal PATH (/usr/bin:/bin), so the
-    # session's Bash tool cannot find Homebrew tools (gh, node, brew) that
-    # work fine from a terminal claude. Append the usual install dirs.
+    # A Finder-launched .app gets a minimal PATH (/usr/bin:/bin). The login
+    # shell probe fixes that for everything it can see; this is the FALLBACK
+    # for when that probe failed or has not finished: append the usual
+    # Homebrew install dirs so gh/node/brew are still found.
     parts = [p for p in env.get("PATH", "").split(os.pathsep) if p]
     extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
              os.path.expanduser("~/.local/bin")]
@@ -3914,9 +4129,15 @@ _NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
 #: so none may reopen it. Before this set, a run that had spawned a monitor
 #: never read as done: the trailing `task_summary` held the quiet-verb window
 #: open for as long as the host lived.
+#:
+#: `commands_changed` joined the set 2026-10-19: the CLI re-announces its
+#: slash-command list whenever a plugin or skill dir changes on disk, hours
+#: after the turn ended and with no reply behind it (the T417 run grew two of
+#: them overnight). Read as a wake, that row alone reopened the turn — the
+#: same "In progress on open" symptom as a stopped job's note.
 _BOOKKEEPING_SYSTEM_ROWS = frozenset({
     "task_summary", "post_turn_summary", "task_progress", "task_updated",
-    "background_tasks_changed"})
+    "background_tasks_changed", "commands_changed"})
 # THE CLI'S OWN PREAMBLE TO A TURN, not the turn itself. Claude Code 2.1.29x
 # writes `system/init` and `system/status` (and the SessionStart hook pair on
 # a fresh process) the moment it picks an input off stdin — BEFORE the
@@ -3932,13 +4153,32 @@ _TURN_PREAMBLE_SYSTEM_ROWS = frozenset({
     "init", "status", "hook_started", "hook_response"})
 
 
+#: A `task_notification` whose job was STOPPED (the page's Stop job, or a
+#: kill) does not always wake the model: on an idle run the CLI writes the
+#: note, `background_tasks_changed []`, and nothing more (seen live
+#: 2026-10-18, two runs). Read as a wake, that note held the turn open for as
+#: long as the process lived — the Tasks row flashed "In progress" on every
+#: open, and the session host, whose idle reap keys off `_turn_state`, never
+#: died (Akshil, 2026-10-19: "opened it, said in progress 5 s, then done").
+#: A completed/failed job's note IS followed by the wake (its synthetic
+#: `<task-notification>` user row, `init`, the reply), and those rows reopen
+#: the turn on their own — so a stopped note is bookkeeping, nothing else.
+_STOPPED_TASK_STATUSES = frozenset({"stopped", "killed"})
+
+
 def _not_a_turn_row(row: dict) -> bool:
     """Whether `row` is one of the shapes that never opens or reopens a turn
-    (`_NOT_A_TURN_ROW` and `_BOOKKEEPING_SYSTEM_ROWS`)."""
+    (`_NOT_A_TURN_ROW`, `_BOOKKEEPING_SYSTEM_ROWS`, and a stopped job's
+    `task_notification` — `_STOPPED_TASK_STATUSES`)."""
     t = row.get("type")
     if t in _NOT_A_TURN_ROW:
         return True
-    return t == "system" and row.get("subtype") in _BOOKKEEPING_SYSTEM_ROWS
+    if t != "system":
+        return False
+    sub = row.get("subtype")
+    if sub == "task_notification":
+        return str(row.get("status") or "") in _STOPPED_TASK_STATUSES
+    return sub in _BOOKKEEPING_SYSTEM_ROWS
 
 
 def _turn_preamble_row(row: dict) -> bool:
@@ -5225,10 +5465,13 @@ def _drop_resolved_errors(turns: list, now: float = None) -> list:
       * A REPLY FOLLOWS IT — an `assistant` turn WITH WORDS later in the log.
         A tool-only turn (a retry that called a tool and then failed again)
         answered nothing, and does not retire anything (CodeRabbit #1699).
-      * IT IS THE PLAN'S LIMIT (`_is_limit_turn`) AND EITHER a newer limit row
-        follows (that one is the card now) OR its reset (`quota.resets_at`,
-        the CLI's own `quotaLimits` on the failed row) is behind `now`:
-        nothing to wait for any more.
+      * IT IS THE PLAN'S LIMIT (`_is_limit_turn`) AND EITHER ANY `assistant`
+        turn follows — words or a bare tool call: the API served the retry,
+        so the window is open (Akshil, 2026-10-18: the reset came, the retry
+        was already running a Bash call, and the card still sat above it) —
+        OR a newer limit row follows (that one is the card now) OR its reset
+        (`quota.resets_at`, the CLI's own `quotaLimits` on the failed row) is
+        behind `now`: nothing to wait for any more.
 
     A row with only a later USER turn, or only a later failure of another
     kind, stays: the retry is in flight, died writing nothing, or died
@@ -5244,13 +5487,17 @@ def _drop_resolved_errors(turns: list, now: float = None) -> list:
                            and str(t.get("text") or "").strip()
                            for t in later)
             if not resolved and _is_limit_turn(turn):
+                any_reply = any(t.get("role") == "assistant"
+                                and (str(t.get("text") or "").strip()
+                                     or t.get("segments"))
+                                for t in later)
                 newer_limit = any(t.get("role") == "error" and _is_limit_turn(t)
                                   for t in later)
                 quota = turn.get("quota") or {}
                 resets = quota.get("resets_at") or 0
                 reset_passed = (isinstance(resets, (int, float))
                                 and 0 < resets <= now)
-                resolved = newer_limit or reset_passed
+                resolved = any_reply or newer_limit or reset_passed
             if resolved:
                 continue
         out.append(turn)
@@ -6859,6 +7106,114 @@ def _task_stop(run_id: str, task_id: str) -> dict:
     if resp is None:
         return {"error": refused[0] if refused else "the session did not answer"}
     return {"ok": True}
+
+
+#: The most `out.jsonl` bytes one `_catch_up_registry` reads. A longer
+#: backlog (hours of a background Agent streaming with nobody polling) is
+#: folded this much per call, so the registry still converges.
+_REGISTRY_CATCH_UP_MAX = 4 * 1024 * 1024
+#: Rows a catch-up stops in front of: `_update_run_registry` also captures the
+#: slash command list off them and reports `commands_changed` to the poll that
+#: absorbs them, so they are left for a poll — unless one is the very next
+#: row, where stopping would wedge the registry behind it for good.
+_CATCH_UP_STOP = (b'"init"', b'"commands_changed"')
+
+
+def _catch_up_registry(run_dir: str) -> None:
+    """Fold the task rows the CLI wrote after the last poll into
+    `bg_tasks.json` — for a run whose TURN HAS ENDED while its session host
+    still holds background work (Akshil, 2026-10-18).
+
+    Nobody polls such a run: the page's poll loop stopped at `done`, and only
+    a poll ever advanced the registry. But the CLI keeps writing the work's
+    own rows into `out.jsonl` — `task_notification` when a shell exits or is
+    stopped, `background_tasks_changed` with the shorter list — so without
+    this the chat's tasks panel (history's `tasks`, the `tasks` action) went
+    on saying "running" about a job that had ended, until the host itself
+    died and every row read `unknown`.
+
+    Only WHOLE lines, from the registry's own offset, through the same
+    `_update_run_registry` a poll uses (same lock, same rules). Stops in front
+    of an `init`/`commands_changed` row (`_CATCH_UP_STOP`). Best-effort: any
+    failure leaves the registry as it was."""
+    try:
+        _registry, applied, _current = _load_registry(run_dir)
+        path = os.path.join(run_dir, "out.jsonl")
+        size = os.path.getsize(path)
+        if size <= applied:
+            return
+        rows, ends = [], []
+        last = None   # the last whole line read, whatever its kind
+        with open(path, "rb") as fh:
+            fh.seek(applied)
+            pos = applied
+            for line in fh:
+                if not line.endswith(b"\n"):
+                    break   # half-written: the next read gets it whole
+                if pos - applied >= _REGISTRY_CATCH_UP_MAX:
+                    break   # the rest on the next call
+                system = b'"system"' in line
+                if system and pos > applied and any(m in line for m in _CATCH_UP_STOP):
+                    break
+                pos += len(line)
+                last = line
+                if not system:
+                    continue   # task rows are all `system` rows; not parsed
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                rows.append(row)
+                ends.append(pos)
+        # The offset moves to the last whole line READ, not only the last task
+        # row: a backlog of other rows is passed over once, not re-read on
+        # every call. That line is handed over as-is (a non-task row, ignored).
+        if last is not None and (not ends or ends[-1] < pos):
+            try:
+                rows.append(json.loads(last))
+                ends.append(pos)
+            except ValueError:
+                pass
+        if rows:
+            _update_run_registry(run_dir, rows, ends, {}, {})
+    except Exception:  # noqa: BLE001 — a stale answer, never a failed read
+        return
+
+
+def _run_tasks(run_id: str) -> dict:
+    """THE TASKS PANEL OF A RUN WHOSE TURN IS OVER (Akshil, 2026-10-18):
+    `{"tasks", "tasks_pending", "host_alive"}`.
+
+    The page asks this while its panel holds live rows for a run that ended
+    its turn with background work still running on the session host (the
+    done poll's `tasks_pending`, or history's `tasks_run`). While the host is
+    alive the registry is caught up from `out.jsonl` first
+    (`_catch_up_registry`), so a job that exits or is stopped leaves the panel
+    with its real status (and the panel's 5 s grace). Once the host is gone,
+    still-active records read `unknown` — `_session_task_registry`'s rule —
+    and `host_alive` is False, which is the page's cue to stop asking."""
+    if _bad_id(run_id):
+        return {"error": "unknown run_id"}
+    run_dir = os.path.join(RUNS, run_id)
+    if not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    # BOTH pids, the host's (`host.json`) and its `claude`'s (`run_dir/pid`):
+    # a stale `host.json` whose pid was reused by an unrelated process would
+    # otherwise read "alive" for ever and keep the page asking (review,
+    # 2026-10-18). Two unrelated pids both reused is not a case worth a poll.
+    host = _host_alive(run_dir) and _alive(run_dir)
+    if host:
+        _catch_up_registry(run_dir)
+    registry = _read_bg_tasks(run_dir)
+    if registry and not (host or _alive(run_dir)):
+        for rec in registry.values():
+            if _task_active(rec):
+                rec["status"] = "unknown"
+                rec["ended_at"] = None
+    return {"tasks": _task_list(registry),
+            "tasks_pending": bool(host) and any(
+                _task_active(r) for r in registry.values()),
+            "host_alive": bool(host)}
 
 
 def _starts_new_turn(row: dict) -> bool:
@@ -9609,7 +9964,20 @@ def _session_task_registry(file: str, session_id: str,
 
     A run whose process is gone cannot vouch for a task it last saw running:
     such records come back with status `unknown` (and `ended_at` null) rather
-    than a confident `running` the panel would tick a live clock for."""
+    than a confident `running` the panel would tick a live clock for.
+
+    …UNLESS AN OLDER RUN'S HOST STILL HOLDS THE WORK (Akshil, 2026-10-19: the
+    Tasks list said "1 job running", the chat showed nothing). One session can
+    have two hosts up: `_live_host` matches the exact target, so the same chat
+    opened on its folder (or its run pushed out of the scan window) spawns a
+    second host beside the one still running a dev server. The Tasks badge
+    counts ANY of the session's runs holding work (tasks.py `_hosted_runs`);
+    reading the newest run alone left the chat's panel empty while that job
+    ran on. So when the newest run has nothing active and no turn open, the
+    newest OLDER run whose host is alive with active records — or with a turn
+    open, the model that host's job just woke — answers instead (its registry
+    and its id, so Stop/Output reach that host and the page watches it) —
+    `run_dir` stays the newest one's, for the window size."""
     if not session_id or _bad_id(session_id):
         return {}, "", ""
     file = os.path.abspath(file)
@@ -9617,10 +9985,20 @@ def _session_task_registry(file: str, session_id: str,
         names = sorted(os.listdir(RUNS), reverse=True)
     except OSError:
         return {}, "", ""
+    # THE FALLBACK LOOKS TWICE AS FAR (CodeRabbit, PR #1750): a dev server
+    # started this morning sits well behind 60 newer run dirs on a busy Mac,
+    # and the Tasks list still counts it (project_queue.RUN_SCAN_LIMIT, 120).
+    # Past the newest run the walk is one stat per dir, so the cost is small.
     if limit is not None:
-        names = names[:limit]
-    for name in names:
+        names = names[:limit * 2]
+    newest = woken = None
+    for i, name in enumerate(names):
         run_dir = os.path.join(RUNS, name)
+        # Past the newest run (or past the window it is looked for in) only a
+        # live host counts: one stat before the meta read.
+        older = newest is not None or (limit is not None and i >= limit)
+        if older and not os.path.isfile(os.path.join(run_dir, "host.json")):
+            continue
         try:
             with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
                 meta = json.load(fh)
@@ -9634,14 +10012,41 @@ def _session_task_registry(file: str, session_id: str,
         if session_id not in (meta.get("resumed_from", ""),
                               _run_own_session(run_dir, meta)):
             continue
+        host = _host_alive(run_dir)
+        # The run's own `claude` has to vouch too — the stale-pid guard
+        # `_run_tasks` applies: a `host.json` pid reused by an unrelated
+        # process must not read as an open turn or a live job.
+        cli = _alive(run_dir)
+        turn_open = host and cli and _turn_state(run_dir)[0]
+        if older and not (host and cli):
+            continue
+        if host and not turn_open:
+            # The turn is over while the host runs background work on: absorb
+            # what the CLI wrote since the last poll, so a job that ended reads
+            # ended (`_catch_up_registry`). NEVER mid-turn: the poll owns the
+            # registry then, and only it holds the tool inputs a fresh
+            # `task_started` takes its subagent type and model from.
+            _catch_up_registry(run_dir)
         registry = _read_bg_tasks(run_dir)
-        if registry and not (_host_alive(run_dir) or _alive(run_dir)):
+        active = any(_task_active(rec) for rec in registry.values())
+        if older:
+            if active:
+                return registry, name, newest[2] if newest else run_dir
+            # A woken turn with no live job is kept only as the answer of
+            # last resort: an even older host may still hold one (CodeRabbit).
+            if turn_open and woken is None:
+                woken = (registry, name, newest[2] if newest else run_dir)
+            continue
+        if registry and not cli:
             for rec in registry.values():
                 if _task_active(rec):
                     rec["status"] = "unknown"
                     rec["ended_at"] = None
-        return registry, (name if _host_alive(run_dir) else ""), run_dir
-    return {}, "", ""
+        # The newest run answers while it has something live to say.
+        if turn_open or (active and cli):
+            return registry, (name if host else ""), run_dir
+        newest = (registry, (name if host else ""), run_dir)
+    return woken or newest or ({}, "", "")
 
 
 def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
@@ -9685,6 +10090,41 @@ def _history_live(file: str, session_id: str, inbox: bool = True) -> dict:
             # replays them identically (Akshil, 2026-09-12).
             "inbox": _inbox_waiting(run_dir) if inbox else []}
 
+
+
+def _cards(run_id: str) -> dict:
+    """The cards a run is parked on, for a page whose REPLY has ended but
+    whose host is still running background work — the chat's card watch.
+
+    `_poll` says `done` the moment the main reply is over, on purpose ("the
+    reply is over, not necessarily the work"), and the page stops polling. A
+    backgrounded subagent that asks for a tool AFTER that writes a card nobody
+    is reading (Akshil, 2026-10-18): the Tasks row went red, the chat showed
+    nothing. The page keeps this lighter question going while `tasks_pending`
+    says the host still has work: the same rows and mode `_poll` carries, so
+    the page's dedupe-by-id contract holds, and the two facts that end the
+    watch — the host is gone, or nothing is pending any more.
+
+    Deliberately NOT `_poll`: that advances the run's cursor and hands back
+    the turn's text, and a watch that consumed the woken turn's first rows
+    would take them from the loop that is meant to stream them."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "unknown run_id", "alive": False,
+                "tasks_pending": False, "permissions": [], "mode": ""}
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    permissions = _permissions(run_dir)
+    registry = _read_bg_tasks(run_dir)
+    return {"alive": _host_alive(run_dir) or _alive(run_dir),
+            "tasks_pending": any(_task_active(r) for r in registry.values()),
+            "permissions": permissions,
+            "mode": _live_mode(meta, permissions)}
 
 
 def _interrupt_turn(run_dir: str, stranded: list, queued: bool) -> dict | None:
@@ -10262,6 +10702,10 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _live_run(file, session_id)
+    if action == "cards":
+        # "What is this run parked on?" — the chat's watch for a card raised
+        # by background work after the reply ended (`_cards`).
+        return _cards(run_id)
     if action == "defaults":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -10359,4 +10803,7 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "task_stop":
         # Stop a running task: `stop_task` control request.
         return _task_stop(run_id, task_id)
+    if action == "tasks":
+        # A finished turn's tasks panel while its host runs on (`_run_tasks`).
+        return _run_tasks(run_id)
     return {"error": f"unknown action: {action}"}

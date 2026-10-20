@@ -37,8 +37,7 @@ and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **github_link_enabled** (whether the Share sheet offers a GitHub install link
 for an app whose folder is its own pushed GitHub repo — opt-in, default off;
 see ``github_link_enabled``),
-**default_model** (the preferred Claude model as a short
-name, unset by default; see ``default_model``), **indexing_enabled** (whether
+**indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
 and the **execution engine** for /api/run:
 
@@ -91,14 +90,14 @@ VALID_ENGINES = ("builtin", "fused")
 #: a runner named "auto" and be dropped as unknown.
 AUTO_ENGINE = "auto"
 VALID_CALLS_PARAMS = ("full", "keys", "off")
-# The default-model preference's value set. SHORT NAMES, not API model ids, and
-# `""` — unset — is a first-class member rather than an absence: it is what the
-# page's "Automatic" option writes, and it means "let each consumer keep its own
-# default" (see default_model). The names are the claude template's own selector
-# list (frontend/src/apps/claude composer MODELS) — the pref has to speak the same
-# vocabulary as the control it presets, and the CLI those names reach accepts
-# them as aliases. The relay (server/ai.py) wants a full API id instead, so the
-# short→id mapping lives THERE, in one place, next to the caller that needs it.
+# The Claude model SHORT NAMES a session or task may be started with — not API
+# model ids — with `""` a first-class member meaning "no flag, keep the
+# session's own default". The claude template's own selector list (frontend/
+# src/apps/claude composer MODELS) and the CLI's aliases. Once also the value
+# set of a `default_model` preference, retired with its Preferences control:
+# the global model is `model` in ~/.claude/settings.json (server/ai.py
+# `default_model`). The relay wants a full API id, so the short→id mapping
+# lives THERE, in one place, next to the caller that needs it.
 VALID_DEFAULT_MODELS = ("", "fable", "opus", "sonnet", "haiku")
 DEFAULT_CALLS_RETENTION_DAYS = 14
 #: How long a resident local model may sit idle before the reaper unloads it
@@ -198,19 +197,6 @@ def canvases_enabled() -> bool:
     reads as off, so an existing install — signed in or not — has to opt in.
     """
     return read_prefs().get("canvases_enabled") is True
-
-
-def menubar_pin_enabled() -> bool:
-    """Whether the macOS status item shows the PINNED-FILE popover
-    (menubar_pin.py) instead of the menu-bar Dock (menubar_dock.py).
-
-    The Dock is the default (owner's call, 2026-10-08): a stored `true` is
-    the only way back to the pin, same idiom as `canvases_enabled`. Read at
-    launch (app.py `_kickoff`) and applied live by `PUT /api/prefs` through
-    `window_policy.native_hooks["menubar_apply"]` when the running app has
-    installed it.
-    """
-    return read_prefs().get("menubar_pin_enabled") is True
 
 
 def native_windows_enabled() -> bool:
@@ -464,25 +450,6 @@ def _agents_state() -> dict:
     return {"claude": registry.is_enabled("claude"),
             "copilot": registry.is_enabled("copilot"),
             "default": registry.default_id()}
-
-
-def default_model() -> str:
-    """The user's preferred Claude model, as a short name — `""` when unset.
-
-    One preference, two consumers, and neither is allowed to be the authority
-    on it: the fused.ai relay (server/ai.py, which maps the short name to the
-    full API id it hands the CLI) and the claude chat template (which uses it
-    to preselect its model chip). Both rank it the same way — an EXPLICIT
-    choice always wins, this is the next-best answer, and each keeps its own
-    hardcoded fallback beneath it — so the pref changes what happens when
-    nobody asked for a model, never what happens when somebody did.
-
-    An unknown value reads as unset, exactly like `selected_engine`'s: prefs.json
-    is a plain file a user may hand-edit, and the one thing that must not happen
-    is an arbitrary string reaching a subprocess argv.
-    """
-    value = read_prefs().get("default_model")
-    return value if value in VALID_DEFAULT_MODELS else ""
 
 
 def inference_engines() -> dict:
@@ -793,6 +760,18 @@ def _lan_status() -> dict:
         return {"running": False, "url": None, "error": str(e)}
 
 
+def _workbench_state() -> dict:
+    # Imported here, not at module top: fusedcli is the heavier module and
+    # calls.py imports prefs on a hot path.
+    from fused_render import fusedcli
+
+    return {
+        "env": fusedcli.workbench_env(),
+        "locked": fusedcli.workbench_env_locked(),
+        "choices": list(fusedcli.WORKBENCH_ENV_CHOICES),
+    }
+
+
 def _prefs_response() -> dict:
     return {
         "engine": engine_state(),
@@ -823,19 +802,19 @@ def _prefs_response() -> dict:
         # Whether the Share sheet offers the GitHub install-link card (opt-in,
         # default off). Not an API guard; see `github_link_enabled`.
         "github_link": {"enabled": github_link_enabled()},
+        # Which Fused environment the canvases, the `fused` wrapper and the
+        # share uploads target (fusedcli.workbench_env). READ-ONLY HERE: the
+        # one writer is `POST /api/canvases/env`, which stops the canvas sync
+        # managers first — a watcher left running would push one environment's
+        # clone into the other's same-named canvas.
+        # `locked` means FUSED_RENDER_WORKBENCH_ENV pins it for the process.
+        "workbench": _workbench_state(),
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (default ON, opt-out). `available` says whether THIS
         # process can honour it — the packaged macOS app installs the hook; a
         # `fused-render serve` or another platform has no windows to offer, so
         # the Preferences section stays hidden there.
         "native_windows": _native_windows_state(),
-        # An app clicked inside a native window opens in the explorer view
-        # instead of its embed (opt-in, default off).
-        # Which surface the macOS status item shows: the menu-bar Dock
-        # (default) or the pinned-file popover (`menubar_pin_enabled`, opt-in).
-        # `available` is the same test as the windows above: this process is
-        # the macOS app (the hook is installed), not a `fused-render serve`.
-        "menubar": _menubar_state(),
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
@@ -862,11 +841,6 @@ def _prefs_response() -> dict:
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
         "lan": {"enabled": lan_enabled(), **_lan_status()},
-        # The default Claude model, as a short name; "" = unset (each consumer
-        # keeps its own default). `choices` ships the value set with the value
-        # so the Preferences page renders the options the server will accept
-        # rather than a second copy of this list that can drift from it.
-        "model": {"default": default_model(), "choices": list(VALID_DEFAULT_MODELS)},
         # The two agent switches and the agent new chats/tasks start from
         # (docs/COPILOT_BACKEND.md D17). `default` is the EFFECTIVE one — the
         # stored choice re-pointed to an enabled agent by the registry — so
@@ -930,13 +904,6 @@ def _native_windows_state() -> dict:
     # default `lambda: True` keeps that platform's behavior exactly as before.
     available = "apply" in hooks and hooks.get("usable", lambda: True)()
     return {"enabled": native_windows_enabled(), "available": available}
-
-
-def _menubar_state() -> dict:
-    from fused_render import window_policy
-
-    return {"pin_enabled": menubar_pin_enabled(),
-            "available": "menubar_apply" in window_policy.native_hooks}
 
 
 def _launcher_state() -> dict:
@@ -1047,6 +1014,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     # — would otherwise each write the record they read, and the slower one
     # erases the faster one's change. The lock covers the pair, not just the
     # write `storage.write_json` already makes atomic.
+    if "workbench_env" in body:
+        # The one preference this door refuses: switching environments has to
+        # delete the cloned canvases first, and only canvases.py can do that.
+        return JSONResponse(
+            {"error": "'workbench_env' is set through POST /api/canvases/env"},
+            status_code=400,
+        )
     with _PREFS_LOCK:
         prefs = read_prefs()
         changed = False
@@ -1142,21 +1116,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     status_code=409,
                 )
             changed = True
-        if "menubar_pin_enabled" in body:
-            value = body.get("menubar_pin_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'menubar_pin_enabled' must be a boolean"}, status_code=400)
-            prefs["menubar_pin_enabled"] = value
-            storage.write_json(_path(), prefs)
-            # Live, like the windows: the app re-points the status item at
-            # the other surface (app.py `_apply_menubar`). Returns None
-            # (queues main-thread work); nothing to roll back.
-            from fused_render import window_policy
-
-            apply_menubar = window_policy.native_hooks.get("menubar_apply")
-            if apply_menubar is not None:
-                apply_menubar(value)
-            changed = True
         if "task_notify_terminal_sessions" in body:
             value = body.get("task_notify_terminal_sessions")
             if not isinstance(value, bool):
@@ -1186,16 +1145,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             # listener either): known key, nothing stored, `lan.apply` below skipped.
             if not _flavor.is_bot():
                 prefs["lan_enabled"] = value
-            changed = True
-        if "default_model" in body:
-            value = body.get("default_model")
-            if value not in VALID_DEFAULT_MODELS:
-                return JSONResponse(
-                    {"error": "'default_model' must be one of: "
-                              + ", ".join(repr(v) for v in VALID_DEFAULT_MODELS)},
-                    status_code=400,
-                )
-            prefs["default_model"] = value
             changed = True
         if "engines" in body:
             # A MAP, applied key by key onto whatever is stored — the page changes
@@ -1374,7 +1323,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
                           "'lan_enabled', "
-                          "'default_model', 'claude_enabled', 'copilot_enabled', "
+                          "'claude_enabled', 'copilot_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
                           "'index_low_impact_enabled', "
                           "'git_auto_sync_enabled', 'auto_download_updates', "

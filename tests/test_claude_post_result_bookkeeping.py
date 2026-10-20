@@ -28,6 +28,7 @@ RESULT = {"type": "result", "subtype": "success", "session_id": "s1",
     {"type": "system", "subtype": "task_updated", "task_id": "t1",
      "patch": {"status": "completed"}},
     {"type": "system", "subtype": "background_tasks_changed", "tasks": []},
+    {"type": "system", "subtype": "commands_changed", "commands": []},
     {"type": "system", "subtype": "task_progress", "task_id": "t1",
      "description": "x", "usage": {"total_tokens": 1, "tool_uses": 0,
                                    "duration_ms": 5}},
@@ -83,3 +84,35 @@ def test_poll_reports_done_with_task_summary_after_result(tmp_path, monkeypatch)
     assert out["done"] is True
     assert out["error"] == ""
     assert os.path.exists(run_dir / "out.jsonl")
+
+
+@pytest.mark.parametrize("notification_status", ["stopped", "killed"])
+def test_turn_state_closes_on_a_stopped_jobs_notification(
+        tmp_path, notification_status):
+    """Stop job on an idle run: the CLI writes the note and never wakes the
+    model (seen live 2026-10-18). The turn is over, and the host may reap."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text(_rows(
+        RESULT,
+        {"type": "system", "subtype": "task_updated", "task_id": "t1",
+         "patch": {"status": "killed"}},
+        {"type": "system", "subtype": "task_notification", "task_id": "t1",
+         "status": notification_status, "summary": "Sleep for 10 minutes"},
+        {"type": "system", "subtype": "background_tasks_changed", "tasks": []},
+        {"type": "control_response", "response": {"subtype": "success"}},
+        {"type": "system", "subtype": "commands_changed", "commands": []}))
+    turn_open, pending = agent._turn_state(str(run_dir))
+    assert (turn_open, pending) == (False, False)
+
+
+def test_turn_state_still_opens_on_a_completed_jobs_notification(tmp_path):
+    """A finished job's note is the start of the wake that follows it."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text(_rows(
+        RESULT,
+        {"type": "system", "subtype": "task_notification", "task_id": "t1",
+         "status": "completed", "summary": "Build finished"}))
+    turn_open, _pending = agent._turn_state(str(run_dir))
+    assert turn_open is True

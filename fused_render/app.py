@@ -2,10 +2,8 @@
 
 Wraps the existing `create_app()` server with a `rumps` NSStatusItem whose
 surface is the menu-bar Dock (menubar_dock.py: a tray of the user's apps —
-bots under Fused Bot — in a floating panel) or, with `menubar_pin_enabled`
-on, the pinned-view popover (menubar_pin.py, SPEC §25 D98):
-header row of app actions + a WKWebView of the pinned file. The rumps menu is
-only a fallback if the popover controller fails (PV-8). The CLI (`cli.py`,
+bots under Fused Bot — in a floating panel). The rumps menu is only a fallback
+if the Dock controller fails (PV-8). The CLI (`cli.py`,
 `fused-render`) is unaffected and remains the dev entry point.
 
 `rumps` is macOS-only and is not a core dependency (see the `app` extra in
@@ -508,9 +506,12 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.bots import browser as bots_browser
         from fused_render.server import engine_host
 
+        from fused_render import canvases
+
         engine_host.refuse_new_children()
         supervisor.refuse_new_workers()
         bots_browser.refuse_launches()
+        canvases.refuse_new_managers()
 
     def engines():
         from fused_render.server import engine_host
@@ -546,6 +547,17 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
 
         bots_registry.shutdown(budget_s=budget_s)
 
+    def canvas_sync():
+        # Every canvas sync manager: a push CLI in flight terminated (not
+        # waited for — so it does not outlive the app as an orphan, and its
+        # fold never runs on a half state; the sync point stays unrotated, so
+        # the next launch may read its own push as "server changed", which is
+        # accepted), watcher + fs threads stopped with bounded joins, the
+        # clone's writer lock (an flock on an open fd) released.
+        from fused_render import canvases
+
+        canvases.shutdown()
+
     def discovery():
         from fused_render.server.app import remove_server_json
 
@@ -558,7 +570,8 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
     threads = []
     for name, step in (("engines", engines), ("ai", ai_workers),
                        ("terminals", terminals), ("index", index_runs),
-                       ("bots", bots), ("discovery", discovery)):
+                       ("bots", bots), ("canvas-sync", canvas_sync),
+                       ("discovery", discovery)):
         def _run(step=step, name=name):
             try:
                 step()
@@ -1525,7 +1538,7 @@ def save_diagnostics_async() -> threading.Thread:
     """Build the diagnostics bundle (SPEC §50) off the calling thread and reveal
     it in Finder. Off-thread because `build_bundle` shells out to `log show`
     and can take up to a minute — every caller is a menu click on the AppKit
-    main thread. Shared by the status-item menu, the popover (menubar_pin) and
+    main thread. Shared by the status-item menu, the menu-bar Dock and
     the Help menu (mac_window), which imports it lazily: importing this module
     is safe anywhere since `rumps` is only imported inside `main()`."""
     t = threading.Thread(target=_save_diagnostics_sync, daemon=True, name="save-diagnostics")
@@ -1626,7 +1639,6 @@ def main() -> None:
         "server_thread": None,  # its thread, so quit can drain it (bounded)
         "quitting": False,   # a teardown is in flight; later Quits join it
         "quit_ready": threading.Event(),  # teardown done/deadline hit: die now
-        "pin": None,         # menubar_pin.PinController, built when the pin pref is on
         "dock": None,        # menubar_dock.DockController, the default status-item surface
         "windows": None,     # mac_window.WindowManager, built after run loop start
         "launcher": None,    # launcher_panel.LauncherController, after the windows
@@ -1930,14 +1942,12 @@ def main() -> None:
             mac_update.start()
         except Exception:
             logger.exception("update manager failed to start")
-        for surface in (state["pin"], state["dock"]):
-            if surface is not None:
-                # AppKit is main-thread-only; this bootstrap runs on a worker.
-                # Both menu-bar surfaces may exist (the preference swaps them
-                # live); each loads its page off the live server now.
-                from PyObjCTools import AppHelper
+        if state["dock"] is not None:
+            # AppKit is main-thread-only; this bootstrap runs on a worker. The
+            # Dock loads its page off the live server now.
+            from PyObjCTools import AppHelper
 
-                AppHelper.callAfter(surface.server_ready)
+            AppHelper.callAfter(state["dock"].server_ready)
         if state["launcher"] is not None:
             # The panel loads its page off the live server, and the global
             # shortcuts bind now — Carbon and the page live on the main thread.
@@ -2132,7 +2142,7 @@ def main() -> None:
         window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(_apply_windows, on)
 
         def _open_window(target: str) -> None:
-            # The popover's `window.open` / target=_blank (menubar_pin), main
+            # A menu-bar surface's `window.open` / target=_blank, main
             # thread already. Classified FIRST, like a window's own policy:
             # only this server's pages get a window of ours; an external link
             # goes to the default browser, which is what the new window's
@@ -2294,14 +2304,12 @@ def main() -> None:
             logger.exception("recording pill unavailable")
             state["pill"] = None
 
-        # ---- the status item's surface: Dock (default) or pinned-file popover ----
-        # Both controllers take the status item over the same way
-        # (`_take_over_status_item`: rumps' menu off, button → their target),
-        # so the preference swaps them LIVE by re-pointing the button: the
-        # other surface is closed and kept (its page stays loaded; the next
-        # swap back is instant). `menubar_pin_enabled` (shell/prefs.py,
-        # default off → the Dock) is read here at launch and applied again
-        # through `window_policy.native_hooks["menubar_apply"]` on a PUT.
+        # ---- the status item's surface: the menu-bar Dock ----
+        # The pinned-file popover (menubar_pin.py) used to be the alternative,
+        # swapped live behind a `menubar_pin_enabled` preference; that and its
+        # Preferences control are retired (the Dock has been the default since
+        # 2026-10-08). menubar_pin.py stays for its native file pickers, which
+        # server/dirpicker.py uses.
         # Lazy + guarded, like the windows: pyobjc-framework-WebKit may be
         # missing in an older [app] env; on failure the rumps menu stays
         # attached and the app runs menu-only (PV-8).
@@ -2340,12 +2348,6 @@ def main() -> None:
             NSApp.activateIgnoringOtherApps_(True)
             manager.show_tasks()
 
-        def _build_pin():
-            from fused_render.menubar_pin import PinController
-
-            return PinController(status_app._nsapp.nsstatusitem, port, APP_SUPPORT_DIR,
-                                 actions=menubar_actions)
-
         def _build_dock():
             from fused_render.menubar_dock import DockController
 
@@ -2355,34 +2357,19 @@ def main() -> None:
                 "show_tasks": _show_tasks_native,
             })
 
-        def _apply_menubar(pin: bool) -> None:
-            # Main thread. Build the wanted surface if it does not exist yet,
-            # close the other, hand the status item to the wanted one.
-            want, other = ("pin", "dock") if pin else ("dock", "pin")
-            builders = {"pin": _build_pin, "dock": _build_dock}
-            if state[want] is None:
-                try:
-                    state[want] = builders[want]()
-                    if state["ready"]:
-                        state[want].server_ready()
-                except Exception:
-                    logger.exception("%s surface unavailable", want)
-                    if state[other] is None:
-                        logger.warning("falling back to the status-item menu")
-                        return
-                    # Keep whatever surface already owns the status item.
-                    state[other]._take_over_status_item()
-                    return
-            if state[other] is not None:
-                try:
-                    if other == "pin":
-                        state[other]._popover.close()
-                    else:
-                        state[other].close()
-                except Exception:
-                    logger.debug("closing the %s surface failed", other, exc_info=True)
-            state[want]._take_over_status_item()
-            logger.info("status item surface: %s", want)
+        def _install_dock() -> None:
+            # Main thread. Build the Dock and hand it the status item; if it
+            # cannot be built, the rumps menu stays attached (PV-8).
+            try:
+                state["dock"] = _build_dock()
+                if state["ready"]:
+                    state["dock"].server_ready()
+            except Exception:
+                logger.exception("dock surface unavailable")
+                logger.warning("falling back to the status-item menu")
+                return
+            state["dock"]._take_over_status_item()
+            logger.info("status item surface: dock")
 
         def _dock_open(kind: str, key: str) -> None:
             # A tile clicked in the Dock (its own menu or POST /api/dock/open),
@@ -2411,8 +2398,7 @@ def main() -> None:
 
             AppHelper.callAfter(run)
 
-        _apply_menubar(prefs_mod.menubar_pin_enabled())
-        window_policy.native_hooks["menubar_apply"] = lambda pin: AppHelper.callAfter(_apply_menubar, pin)
+        _install_dock()
         window_policy.native_hooks["dock_open"] = _dock_open
         window_policy.native_hooks["show_home"] = _dock_home
         if os.environ.get("FUSED_RENDER_DOCK_SHOW"):

@@ -2742,6 +2742,12 @@ input.schedule-when-field {
 }
 .schedule-ring--in_progress { color: var(--status-progress); }
 .schedule-ring--done { color: var(--status-done); }
+/* A FINISHED TURN WHOSE CHAT STILL HOLDS A LIVE BACKGROUND JOB, drawn in the In
+   Progress lane (tasks-lib.liveJobRow / boardLane, Akshil 2026-10-18). Its own
+   blue, solid like the running ring: a job is going, but no turn is, and the
+   folder is free for the next message. Doubled so it outranks the Done green
+   and the failed red at any source order (StatusIcon also drops `--failed`). */
+.schedule-ring.schedule-ring--background { color: var(--status-background); }
 .schedule-ring--archived { color: var(--status-archived); }
 
 /* Blocked is a COLUMN of its own since 2026-08-17 (it was called Failed until
@@ -4626,7 +4632,7 @@ input.schedule-when-field {
    The switcher's door sits right after the row it edits and takes over the
    row's auto margin, so the filters and + New task stay where they are. While
    the editor is up it IS the toolbar: chips for every tab, each with its own
-   remove, a + that offers what is not on the row, Cancel / Done at the end. */
+   remove, a + that offers what is not on the row, Cancel / Done beside it. */
 .schedule-toolbar .schedule-view-seg:has(+ .schedule-view-edit) {
   margin-right: 0;
 }
@@ -4654,22 +4660,9 @@ input.schedule-when-field {
   border: 0;
   background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
-/* HOVER-ONLY (Akshil, 2026-10-16): the cog is furniture, not a view, so it
-   keeps its slot (opacity, never display — the row must not shift) and shows
-   while the pointer is on the toolbar or the key reaches it. Only where
-   there IS a hover: a touch screen has none, so there it stays visible
-   (CodeRabbit, #1704). */
-@media (hover: hover) {
-  .schedule-toolbar .schedule-view-edit {
-    opacity: 0;
-    transition: opacity 120ms ease;
-  }
-}
-.schedule-toolbar:hover .schedule-view-edit,
-.schedule-toolbar:focus-within .schedule-view-edit,
-.schedule-toolbar .schedule-view-edit:focus-visible {
-  opacity: 1;
-}
+/* ALWAYS VISIBLE (Akshil, 2026-10-19: "show setting cog always regardless of
+   hover"). It was hover-only for three days (#1704) and read as a control
+   that was not there. */
 
 .schedule-view-editor {
   display: flex;
@@ -4838,6 +4831,5 @@ input.schedule-when-field {
 .schedule-view-editor-end {
   display: flex;
   gap: 8px;
-  margin-left: auto;
   flex: 0 0 auto;
 }

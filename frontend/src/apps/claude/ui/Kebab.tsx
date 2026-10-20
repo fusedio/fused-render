@@ -43,10 +43,11 @@ import { forgetSessionSeed } from "./useRecentTasks";
 import { useAgent } from "./agent-context";
 import { agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 
-/** Live by the listing's own clock (T:13166-13169). */
+/** Live by the listing's own clock (T:13166-13169). `needs_attention` is NOT
+ *  here (Akshil, 2026-10-19): a run parked on a permission card is one the
+ *  server stops itself on delete, and archive never minded a run at all. */
 const RUNNING_STATES = new Set<Task["status"]>([
   "in_progress",
-  "needs_attention",
 ]);
 
 /** Page-level, like T's `archiveStates` / `taskIds` / `taskRunning`: the answer
@@ -247,6 +248,13 @@ export interface KebabProps {
   /** This page's own turn: `body.running`'s replacement. Live by EITHER clock
    *  — the listing's word or ours (T:13166). */
   running: boolean;
+  /** A permission or question card is OPEN on this chat (`openCardIds`). The
+   *  page's own `running` stays true while the turn waits on it, and that is
+   *  not the kind of live Archive and Delete step back from: the run is going
+   *  nowhere until someone answers, and deleting is an answer (the server
+   *  denies the card and ends the run). So an open card lifts `running`'s
+   *  hold on the two items; the listing's `in_progress` still holds. */
+  asking?: boolean;
   /** The session is GONE. Every cache keyed by it is dropped here (this menu
    *  owns them), so the caller only has to leave the transcript — "Back to
    *  chats" IS the way out (T:13352-13366). */
@@ -310,6 +318,7 @@ export function Kebab({
   lockedReason,
   queued = false,
   fullScreen,
+  asking = false,
 }: KebabProps) {
   const [open, setOpen] = useState(false);
   const [erasing, setErasing] = useState(false);
@@ -361,7 +370,7 @@ export function Kebab({
 
   const filed = sessionId ? archiveStates.get(sessionId) : undefined;
   const hasTask = !!sessionId && filed !== undefined && filed !== null;
-  const live = (!!sessionId && !!taskRunning.get(sessionId)) || running;
+  const live = (!!sessionId && !!taskRunning.get(sessionId)) || (running && !asking);
 
   /** Re-read the listing and correct the item. FAILS CLOSED, unlike the task
    *  number read: an item offered on a listing we could not read is an item

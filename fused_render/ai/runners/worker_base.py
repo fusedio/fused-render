@@ -1699,7 +1699,7 @@ def _note_throttle(seconds, hub):
         detail = f"Hugging Face is limiting this download — {waiting}"
     else:
         detail = ("Hugging Face is limiting this download — sign in to Hugging "
-                  "Face in Preferences → AI for a higher limit")
+                  "Face in Preferences → Accounts for a higher limit")
     with _THROTTLE_LOCK:
         _THROTTLE_DETAIL = detail
 

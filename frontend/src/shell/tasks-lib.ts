@@ -36,7 +36,7 @@
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
 import { EMBED_PREFIX, IS_QUERY_EMBED, VIEW_PREFIX } from "@platform/lib/router";
-import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import type { Task, TaskBackgroundJobs, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import { labelForSource } from "@platform/lib/format";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
@@ -705,6 +705,77 @@ export function draftRing(task: Task): boolean {
   if (column === "draft") return true;
   const lane = laneOf(column);
   return (lane === "done" || lane === "archived" || lane === "blocked") && hasDraft(task);
+}
+
+// ---- a finished turn whose chat still holds a live background job ---------
+//
+// Akshil, 2026-10-18. A turn that ended with a `run_in_background` Bash (a dev
+// server, a `sleep 900`), a background Agent or a Monitor still going is STILL
+// IN PROGRESS to the reader, not Done. So the row:
+//
+//   * wears a BLUE ring (`--status-background`, `schedule-ring--background`)
+//     whose word is "background" (`BACKGROUND_LABEL`);
+//   * sits in the IN PROGRESS lane/group (`boardLane`), among the running rows,
+//     ordered by that lane's own rule (`LANE_SORTS.in_progress`);
+//   * keeps the "1 job running" badge (job names on hover) and Stop job.
+//
+// THE API STATUS STAYS `done`, and so does `taskColumn`. Only PLACEMENT and
+// TONE move: Bots' build watch waits on `done`, the project queue reads the
+// folder as free (the turn is over — `inFlight` stays false), the status toasts
+// read `taskColumn` (no second "finished" when the job ends), and the drag /
+// archive / erase rules keep reading a finished task. ONE PREDICATE gates the
+// look and the placement: `liveJobRow`.
+
+/** The jobs the server says a live session host is holding for this chat, or
+ *  null — no field (an older server), null, or an empty list. */
+export function liveJobs(
+  task: Pick<Task, "background_jobs">,
+): TaskBackgroundJobs | null {
+  const held = task.background_jobs;
+  return held && held.count > 0 && held.jobs.length > 0 ? held : null;
+}
+
+/** THE ONE RULE: a row the server calls Done whose chat still holds a live
+ *  background job. The blue ring, the In Progress placement (`boardLane`), the
+ *  badge and Stop job all ask this and nothing else. */
+export function liveJobRow(task: Task): boolean {
+  return liveJobs(task) !== null && laneOf(taskColumn(task)) === "done";
+}
+
+/** "1 job running" / "2 jobs running". */
+export function jobCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "job" : "jobs"} running`;
+}
+
+/** The ring's word for such a row — its tooltip and accessible name. */
+export const BACKGROUND_LABEL = "Background";
+
+/**
+ * THE LANE A ROW IS DRAWN IN — the Board's column, the List's group, Recent
+ * chats' order, and the Status filter's lane. `laneOf(taskColumn(task))`,
+ * except a `liveJobRow`, which is drawn In Progress. A DRAWING fact only:
+ * every rule about what the task IS (its status, `inFlight`, the drag matrix,
+ * the toasts) keeps asking `taskColumn`.
+ */
+export function boardLane(task: Task): BoardLane {
+  return liveJobRow(task) ? "in_progress" : laneOf(taskColumn(task));
+}
+
+/** The badge a row draws, or null on every row `liveJobRow` turns down.
+ *  `hint` names each job by the CLI's own description (its id when it sent
+ *  none), one per line. */
+export function jobBadge(
+  task: Task,
+): { text: string; hint: string; runId: string; jobIds: string[] } | null {
+  if (!liveJobRow(task)) return null;
+  const held = liveJobs(task)!;
+  const names = held.jobs.map((j) => j.title.trim() || j.id);
+  return {
+    text: jobCountLabel(held.count),
+    hint: `Still running in the background:\n${names.join("\n")}`,
+    runId: held.run_id,
+    jobIds: held.jobs.map((j) => j.id),
+  };
 }
 
 /**
@@ -1506,7 +1577,7 @@ export const VIEW_LABELS: Record<TaskView, string> = {
   board: "Board",
   cards: "Cards",
   calendar: "Calendar",
-  time: "Time",
+  time: "Recent",
   project: "Project",
   pr: "PR",
 };
@@ -2083,10 +2154,14 @@ const LANE_EXITS: Record<BoardColumn, BoardLane[]> = {
   // keyed by column cannot express — it is a fact about the row. See `rowExits`
   // immediately below, which adds it, here and on Archive alike.
   done: ["archived"],
-  // Locked, for In Progress's reason and one more: a run waiting on an answer
-  // is still Claude's output, and the way out is answering the card in the
-  // chat — a drag cannot say yes on somebody's behalf.
-  needs_attention: [],
+  // ARCHIVE, AND ONLY ARCHIVE (Akshil, 2026-10-19: "even if the task is in
+  // needs attention i should be able to archive it, delete it"). A run waiting
+  // on an answer is Claude's output, so In Progress stays locked — a drag
+  // cannot say yes on somebody's behalf — but putting the task away is a
+  // different answer: the server stops the parked run (the card is denied, the
+  // tree ended) and files it, the same way delete does. The one in-flight
+  // lane that never ends on its own is the one the reader most needs out of.
+  needs_attention: ["archived"],
   // Retry, or file it away. The retry is a RE-RUN (Akshil, 2026-09-11: "allow
   // moving from blocked to in progress and trigger a rerun"): laneAction picks
   // what is sent again — see `rerunAction`.
@@ -2322,6 +2397,53 @@ export function isFailedTask(task: Task): boolean {
  */
 export function needsAttention(task: Pick<Task, "status">): boolean {
   return taskColumn(task) === "needs_attention";
+}
+
+/**
+ * WHAT A WAITING ROW IS WAITING ON, in words (Akshil, 2026-10-18: "Task shows
+ * me blocked but not what it is blocked on") — "Waiting on your approval ·
+ * Bash: List live Claude registry rows" for a permission card, "Waiting on your
+ * answer · Which branch?" for a question card.
+ *
+ * The usage limit's caption, for the other kind of stop: the ring and the lane
+ * already say SOMEBODY has to look, and this names what they will find. Read off
+ * `blocked_reason` and `attention`, the two fields the server writes together
+ * (tasks.py `_attention_of`), and only on a row whose STATUS is waiting —
+ * needsAttention's rule: the extras are what the row says, never what decides
+ * it, so a ring that is not drawing "!" never gets this sentence either.
+ *
+ * "" on every other row, and on an older server that sends no `attention`:
+ * nothing is drawn rather than a sentence with its object missing. "failed" and
+ * "usage_limit" are not asked here — a row has one reason, so it never wears
+ * this caption and the limit's at once.
+ */
+const ATTENTION_SUMMARY_MAX = 80;
+/** Whitespace collapsed, trimmed, and cut with an ellipsis past `max`. */
+function oneLine(text: string, max = Infinity): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? flat.slice(0, max - 1).trimEnd() + "…" : flat;
+}
+
+export function attentionCaption(
+  task: Pick<Task, "status" | "blocked_reason" | "attention">,
+): string {
+  if (!needsAttention(task) || !task.attention) return "";
+  // ONE LINE, and a short one: this goes into a row caption, a hint and an
+  // aria-label, and a Bash command can be a pasted script. The server's own
+  // cap is 80 for a question; a tool line gets the same treatment here.
+  const tool = oneLine(task.attention.tool || "");
+  const summary = oneLine(task.attention.summary || "", ATTENTION_SUMMARY_MAX);
+  if (task.blocked_reason === "permission") {
+    // "Bash: rm -rf build", either half alone when the other is empty.
+    const what = tool && summary ? `${tool}: ${summary}` : tool || summary;
+    return "Waiting on your approval" + (what ? ` · ${what}` : "");
+  }
+  if (task.blocked_reason === "question") {
+    // The question itself is the summary; the tool is always AskUserQuestion,
+    // which names the machinery rather than the ask, so it is never printed.
+    return "Waiting on your answer" + (summary ? ` · ${summary}` : "");
+  }
+  return "";
 }
 
 // ---- the project queue -------------------------------------------------------
@@ -2923,20 +3045,22 @@ export const ERASE_BLOCKED_HINT = "Stop the run first";
  * Whether deleting this task for good must be REFUSED — the client half of the
  * server's 409.
  *
- * `inFlight` and nothing else, so the trash and the endpoint cannot disagree
- * about what "running" means: both lanes count (`in_progress` and the
- * `needs_attention` run parked on a permission card, which is every bit as
- * live), and a control that only checked `in_progress` would offer to erase the
- * transcript a waiting `claude --resume` still has open.
+ * ONE lane, `in_progress`: a turn that is streaming cannot have its transcript
+ * pulled out from under it. The other in-flight lane, `needs_attention`, is NOT
+ * here (Akshil, 2026-10-19: "even if the task is in needs attention i should be
+ * able to archive it, delete it"): that run is parked on a permission card,
+ * and the server's delete/erase stop it themselves (`_stop_parked_run` denies
+ * the card and ends the tree) before taking the row — so the trash stays live
+ * and the dialog opens.
  *
  * NOT a version of `filingIntent`: archiving a mid-run task is refused because
  * filing work that is still happening is dishonest, and it is offered again the
- * moment the run ends. This is refused because the file is in use. Same lanes
- * today, two different reasons, and folding them together would tie an
- * irreversible verb's guard to a reversible one's rules.
+ * moment the run ends. This is refused because the file is in use. Two
+ * different reasons, and folding them together would tie an irreversible
+ * verb's guard to a reversible one's rules.
  */
 export function eraseBlocked(task: Pick<Task, "status">): boolean {
-  return inFlight(taskColumn(task));
+  return taskColumn(task) === "in_progress";
 }
 
 /**
@@ -3082,12 +3206,12 @@ export interface TaskFilters {
   /**
    * Project FOLDERS, full paths — the value `Task.project` carries.
    *
-   * A LIST THAT HOLDS AT MOST ONE (design.md, 2026-09-14). The menu is radio-
-   * style — pick a folder, or All — and the row chips write the same shape
-   * (Scheduled's folder chip), so nothing in the app ever stores two. The TYPE
-   * stays a list because that is the one thing worth not churning: `taskMatches`
-   * asks it with `includes`, which is the right question for either shape, and a
-   * stored filter written by an older build still reads correctly.
+   * ANY NUMBER OF THEM (Akshil, 2026-10-19: "make it multi-select"). It held at
+   * most one from 2026-09-14 — a radio menu, and the row chips wrote the same
+   * shape — and the list type is why the widening cost nothing: `taskMatches`
+   * always asked it with `includes`. The menu now ticks folders like Status
+   * ticks lanes, a row chip toggles its folder in and out of the set, and the
+   * trigger names the one folder or counts the several.
    */
   projects: string[];
   /**
@@ -3115,6 +3239,53 @@ export const EMPTY_FILTERS: TaskFilters = {
   projects: [],
   draft: false,
 };
+
+// ---- the status and folder facets, remembered PER VIEW TAB ------------------
+// (Akshil, 2026-10-19: "remember the status and dir filter per tab and persist
+// them, till the window is open".) Search and the Draft chip stay one control
+// across the views, as before — a word typed is how you read the page this
+// minute. Status and Project are the facets a tab is FOR (the Board narrowed
+// to In progress, the Project view on one folder), so each tab keeps its own
+// and gets them back when you return. sessionStorage: this window, this
+// sitting; a closed window starts clean.
+
+/** The two facets a view tab keeps. */
+export type ViewFacets = Pick<TaskFilters, "statuses" | "projects">;
+
+/** Where the per-tab facets live: a JSON object, view name → facets. */
+export const VIEW_FILTERS_KEY = "fused-render:tasks-view-filters";
+
+/** The per-tab facets out of an untrusted store: every status checked against
+ *  the Board's columns, every project a string, every view a known view; an
+ *  unreadable row is "nothing remembered" rather than a throw mid-render. */
+export function parseViewFilters(raw: string | null | undefined): Partial<Record<TaskView, ViewFacets>> {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const lanes = new Set<string>([...BOARD_COLUMNS.map((c) => c.key), "draft"]);
+  const out: Partial<Record<TaskView, ViewFacets>> = {};
+  for (const [view, v] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!(TASK_VIEWS as string[]).includes(view)) continue;
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    const row = v as { statuses?: unknown; projects?: unknown };
+    const statuses = Array.isArray(row.statuses)
+      ? row.statuses.filter((k): k is BoardColumn => typeof k === "string" && lanes.has(k))
+      : [];
+    const projects = Array.isArray(row.projects)
+      ? row.projects.filter((k): k is string => typeof k === "string" && k !== "")
+      : [];
+    // An EMPTY pair is kept: on a grouped view it is the reader's own
+    // "everything, Archive included", and dropping it would hand back the
+    // default ticks on the next reload (review).
+    out[view as TaskView] = { statuses, projects };
+  }
+  return out;
+}
 
 export function hasActiveFilters(f: TaskFilters): boolean {
   return (
@@ -3156,6 +3327,30 @@ export function hasActiveFilters(f: TaskFilters): boolean {
 // unsent words, and that chip is now the same pressable tag the List and the
 // Board draw (TaskCards → DraftChip). So the wall has a control, the facet has
 // something to keep, and the one view left dropping it is the calendar.
+//
+// THE GROUPED LISTS HIDE ARCHIVE BY DEFAULT (Akshil, 2026-10-17: "in group by
+// time, project and pr can we not show archived tasks, unless selected in
+// status") — AND THE STATUS MENU SAYS SO (Akshil, 2026-10-19: "status filter
+// and what we show should be synced"). Time, Project and PR are the List cut
+// into sections about live work, and a task filed away answers none of them;
+// so a grouped tab's status facet STARTS as every lane but Archive, ticked
+// where the reader can see it, rather than an empty list the query quietly
+// rewrote. From there the menu means exactly what it shows: untick Done and
+// Done goes, tick Archive and the archive comes back. The plain List and the
+// Board start unfiltered, as they always did. Per tab, in sessionStorage
+// (Scheduled.tsx facets / defaultViewFacets), so the Board narrowed to one
+// lane and the Project view on its default never fight over one value.
+/** Every Board lane except Archive — what a grouped tab starts ticked with. */
+export const LANES_BUT_ARCHIVE: BoardColumn[] = BOARD_LANES.map((l) => l.key).filter(
+  (k) => k !== "archived",
+);
+
+/** The status + folder facets a tab starts with before the reader touches
+ *  them: every lane but Archive on a grouped view, nothing elsewhere. */
+export function defaultViewFacets(view: TaskView): ViewFacets {
+  return { statuses: groupOfView(view) ? [...LANES_BUT_ARCHIVE] : [], projects: [] };
+}
+
 export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
   const draft = view === "calendar" && f.draft;
   const archived = view === "calendar" && f.statuses.includes("archived");
@@ -3165,6 +3360,41 @@ export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
     ...(draft ? { draft: false } : {}),
     ...(archived ? { statuses: f.statuses.filter((s) => s !== "archived") } : {}),
   };
+}
+
+/**
+ * The sentence a view shows when it has NOTHING to draw. The page's call, not a
+ * view's: only the page knows whether the set is empty because the machine has
+ * no tasks, this app (`scoped`) has none, or the filters matched none — and,
+ * since 2026-10-17, whether a grouped view is hiding an all-archived scope on
+ * its starting facets (defaultViewFacets). That last one must not read
+ * "Nothing matches these filters": the reader set no filter, so it names the
+ * lane that is hidden and where to lift it instead.
+ */
+export function emptyTasksLabel(
+  view: TaskView,
+  filters: TaskFilters,
+  inScope: number,
+  scoped: boolean,
+): string {
+  if (inScope === 0) {
+    return scoped
+      ? "No tasks for this app yet."
+      : "No tasks yet. Everything Claude runs for you shows up here.";
+  }
+  // A grouped view on its starting facets (every lane but Archive ticked,
+  // nothing else on): the reader set no filter, so name the lane that hides.
+  const onDefault =
+    groupOfView(view) !== null
+    && filters.projects.length === 0
+    && !filters.draft
+    && filters.search.trim() === ""
+    && filters.statuses.length === LANES_BUT_ARCHIVE.length
+    && LANES_BUT_ARCHIVE.every((k) => filters.statuses.includes(k));
+  if (onDefault) {
+    return "Only archived tasks here. Tick Archive under Status to see them.";
+  }
+  return "Nothing matches these filters.";
 }
 
 /**
@@ -3248,7 +3478,9 @@ export function taskMatches(task: Task, filters: TaskFilters): boolean {
   // sides, so a `needs_attention` in `statuses` — nothing writes one today, the
   // type still admits it — means the same lane the menu would have ticked.
   if (filters.statuses.length) {
-    const lane = laneOf(taskColumn(task));
+    // `boardLane`: a row drawn In Progress (a live background job) answers the
+    // In Progress tick, so the filter keeps what the lane shows.
+    const lane = boardLane(task);
     if (!filters.statuses.some((s) => laneOf(s) === lane)) return false;
   }
   if (filters.projects.length && !filters.projects.includes(task.project)) return false;
@@ -3764,7 +3996,9 @@ export function groupByColumn(
   );
   // By LANE, not by status: `needs_attention` is drawn in Blocked (laneOf), so
   // the bucket a card lands in is the column the reader will look for it under.
-  for (const task of tasks) map.get(laneOf(taskColumn(task)))?.push(task);
+  // …and a Done row still holding a live background job is drawn In Progress
+  // (`boardLane`, Akshil 2026-10-18), sorted there by that lane's own rule.
+  for (const task of tasks) map.get(boardLane(task))?.push(task);
   for (const col of BOARD_LANES) {
     // …then DRAFTS FIRST inside the lane (`hoistDrafts`) — and it is a BUG FIX,
     // not a preference (Akshil, 2026-09-12: a Done card with a chat draft showed
@@ -3864,7 +4098,11 @@ export function laneCountLabel(lane: BoardLane, tasks: readonly Task[]): string 
   if (lane !== "in_progress") return String(tasks.length);
   const waiting = tasks.filter((t) => isQueued(t)).length;
   if (!waiting) return String(tasks.length);
-  return runningWaitingLabel(tasks.length - waiting, waiting);
+  // A finished turn holding a live background job is drawn here (`boardLane`)
+  // but is not RUNNING — no turn is in flight — so it is counted apart.
+  const background = tasks.filter((t) => liveJobRow(t)).length;
+  const label = runningWaitingLabel(tasks.length - waiting - background, waiting);
+  return background ? `${label} · ${background} background` : label;
 }
 
 /**
@@ -5707,10 +5945,21 @@ export interface TaskGroup {
   label: string;
   /** This section's own rows — empty on a section that only holds `groups`. */
   rows: Task[];
+  /** The newest activity under this heading, epoch seconds (`activityAt` of
+   *  its rows, nested sections included) — what the Project and PR views
+   *  order by and what a first visit opens on. 0 on a section whose rows have
+   *  no clock at all. */
+  recentAt: number;
   /** Where the heading links (the PR view: the pull request on GitHub). */
   href?: string;
   /** Nested sections (the PR view: a repository's pull requests). */
   groups?: TaskGroup[];
+  /** The Project view: the folder this section IS, full path — what a task
+   *  made from the section's + runs in. Absent on "No folder" and elsewhere. */
+  folder?: string;
+  /** The Project view: the folder's path under ~, for the heading's tooltip
+   *  (the heading itself prints the folder's name, like the row chip). */
+  hint?: string;
 }
 
 /** Every row under a list of sections, depth-first, in drawing order — the
@@ -5787,11 +6036,39 @@ function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
   return "Earlier";
 }
 
+/** When a task was last INTERACTED with, epoch seconds: the row's own stamp
+ *  (`taskWhen`) — a run behind it, a live session, a draft's last keystroke —
+ *  except that a run still AHEAD is not an interaction, so a row whose stamp
+ *  is its next run answers its last activity instead. A cron due next week
+ *  must not pin its folder to the top of the Project view for a week. 0 when
+ *  the task has no clock of any kind. */
+export function activityAt(task: Task, now: number = Date.now()): number {
+  const w = taskWhen(task, now);
+  const nowSec = Math.floor(now / 1000);
+  // A STAMP STILL AHEAD IS NO ACTIVITY AT ALL (CodeRabbit, #1756): the server
+  // keeps a pending run's DUE time in `last_active` (routers/tasks.py, "the
+  // row's last_active keeps the due time"), and the row's own stamp can be
+  // that same value — neither is an interaction, and clamping one to now
+  // would make a folder with nothing but a run next week read as live.
+  const past = (t: number | null | undefined) => (t && t <= nowSec ? t : 0);
+  const active = past(task.last_active);
+  if (w.kind === "next") return active;
+  // THE NEWER OF THE TWO (CodeRabbit, #1756): the row's stamp can be its last
+  // RUN while `last_active` records a message since, and the section must
+  // sort and open by the later one.
+  return Math.max(past(w.at), active);
+}
+
+/** Sections with activity inside the last day (Akshil, 2026-10-19): what the
+ *  Project and PR views open on a first visit. */
+export const RECENT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Cut `rows` (already in list order) into sections. Rows never re-sort inside a
  * section; sections order by what the cut means — the last hour, then days
- * newest first; folders
- * A→Z with the folderless last, pull requests highest number first with the
+ * newest first; folders by their newest activity (Akshil, 2026-10-19: "the
+ * project that I just was working on should be on top") with the folderless
+ * last; repositories and their pull requests likewise newest first, with the
  * PR-less rows last.
  */
 export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number = Date.now()): TaskGroup[] {
@@ -5799,10 +6076,11 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
   const put = (key: string, label: string, task: Task) => {
     let g = groups.get(key);
     if (!g) {
-      g = { key, label, rows: [] };
+      g = { key, label, rows: [], recentAt: 0 };
       groups.set(key, g);
     }
     g.rows.push(task);
+    g.recentAt = Math.max(g.recentAt, activityAt(task, now));
   };
   if (by === "time") {
     for (const task of rows) {
@@ -5811,22 +6089,38 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
     }
     return TIME_BUCKETS.map((b) => groups.get(b)).filter((g): g is TaskGroup => !!g);
   }
+  // Newest activity first; the label breaks a tie so the order is stable.
+  const byRecency = (a: TaskGroup, b: TaskGroup) =>
+    b.recentAt - a.recentAt || a.label.localeCompare(b.label);
   if (by === "project") {
+    // THE FOLDER'S NAME, as the row chip prints it (Akshil, 2026-10-19: "not
+    // the full path"); the path under ~ is the heading's tooltip.
+    // THE HOME FOLDER IS THE USER'S NAME, not "~" (Akshil, 2026-10-19): a task
+    // filed under $HOME arrives as "~" or as the full path, and "~" is a
+    // spelling, not a name.
+    const homeName = basename(home) || "~";
+    const nameOf = (p: string) => (p === "~" || (home && p === home) ? homeName : basename(p));
     for (const task of rows) {
       const p = (task.project || "").trim();
-      put(p || "\u0000none", p ? tildePath(p, home) : "No folder", task);
+      put(p || "\u0000none", p ? nameOf(p) : "No folder", task);
+      if (p) {
+        const g = groups.get(p)!;
+        g.folder = p;
+        g.hint = tildePath(p, home);
+      }
     }
     return [...groups.values()].sort((a, b) => {
       if (a.key === "\u0000none") return 1;
       if (b.key === "\u0000none") return -1;
-      return a.label.localeCompare(b.label);
+      return byRecency(a, b) || (a.hint ?? "").localeCompare(b.hint ?? "");
     });
   }
   // PR: REPOSITORY, then pull request (Akshil, 2026-10-16) — a section per
-  // repo, A→Z, each holding one section per PR, highest number first, with
-  // the heading linking to the PR on GitHub. Rows naming a PR in a folder with
-  // no known GitHub remote sit under "Unknown repository" (no links); rows
-  // naming no PR at all come last, under "No PR".
+  // repo, each holding one section per PR, with the heading linking to the PR
+  // on GitHub. Both levels newest activity first (Akshil, 2026-10-19), the PR
+  // number breaking a tie. Rows naming a PR in a folder with no known GitHub
+  // remote sit under "Unknown repository" (no links); rows naming no PR at all
+  // come last, under "No PR".
   const NONE = "\u0000none";
   const UNKNOWN = "\u0000unknown";
   const repos = new Map<string, Map<number, Task[]>>();
@@ -5846,26 +6140,106 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
     if (list) list.push(task);
     else prs.set(ref.number, [task]);
   }
+  const recentOf = (list: Task[]) => list.reduce((m, t) => Math.max(m, activityAt(t, now)), 0);
   const out: TaskGroup[] = [...repos.keys()]
-    .sort((a, b) => {
-      if (a === UNKNOWN) return 1;
-      if (b === UNKNOWN) return -1;
-      return a.localeCompare(b);
-    })
-    .map((repo) => ({
-      key: `repo:${repo === UNKNOWN ? "?" : repo}`,
-      label: repo === UNKNOWN ? "Unknown repository" : repo,
-      rows: [],
-      groups: [...repos.get(repo)!.entries()]
-        .sort((a, b) => b[0] - a[0])
+    .map((repo) => {
+      const prs = [...repos.get(repo)!.entries()]
         .map(([n, list]) => ({
           key: `pr:${repo === UNKNOWN ? "?" : repo}#${n}`,
           label: `#${n}`,
           rows: list,
+          recentAt: recentOf(list),
+          number: n,
           ...(repo === UNKNOWN ? {} : { href: `https://github.com/${repo}/pull/${n}` }),
-        })),
-    }));
+        }))
+        .sort((a, b) => b.recentAt - a.recentAt || b.number - a.number)
+        .map(({ number: _n, ...g }) => g);
+      return {
+        key: `repo:${repo === UNKNOWN ? "?" : repo}`,
+        label: repo === UNKNOWN ? "Unknown repository" : repo,
+        rows: [],
+        recentAt: prs.reduce((m, g) => Math.max(m, g.recentAt), 0),
+        groups: prs,
+        unknown: repo === UNKNOWN,
+      };
+    })
+    .sort((a, b) => {
+      if (a.unknown !== b.unknown) return a.unknown ? 1 : -1;
+      return byRecency(a, b);
+    })
+    .map(({ unknown: _u, ...g }) => g);
   const none = groups.get(NONE);
   if (none) out.push(none);
   return out;
+}
+
+// ---- what a grouped view opens on, the first time ----------------------------
+// (Akshil, 2026-10-19: "it should be collapsed when first opening it".) Every
+// section starts folded except the ones about NOW: on Time, Later / Last hour /
+// Today; on Project and PR, the sections with a task interacted with inside
+// the last day — which, ordered as above, are the ones at the top. Seeded ONCE
+// per view and then remembered like any fold the reader makes themselves —
+// FOR THIS TAB (Akshil, 2026-10-19: "it should be like in-page memory"): the
+// folds and the seed marks live in sessionStorage beside the per-tab facets,
+// so a closed tab forgets them and a fresh one is seeded again.
+
+/** The views whose folds have been seeded, as a JSON array of view names. */
+export const GROUPS_SEEDED_KEY = "fused-render:tasks-groups-seeded";
+
+/** Time buckets a first visit leaves open: everything from today on. */
+const OPEN_TIME_BUCKETS: ReadonlySet<string> = new Set(["Later", "Last hour", "Today"]);
+
+/** Every section key, every depth, in `<view>:<group>` form — the same keys
+ *  the fold store holds (ScheduleTaskViews groupFrames.keyOf). */
+export function groupFoldKeys(groups: TaskGroup[], by: TaskGroupBy): string[] {
+  const out: string[] = [];
+  const walk = (g: TaskGroup) => {
+    out.push(`${by}:${g.key}`);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  for (const g of groups) walk(g);
+  return out;
+}
+
+/** The fold keys a first visit to `by` leaves OPEN. A repository whose newest
+ *  pull request is recent is open along with it; its older PRs are not. */
+export function openOnFirstVisit(groups: TaskGroup[], by: TaskGroupBy, now: number = Date.now()): Set<string> {
+  const open = new Set<string>();
+  const since = (now - RECENT_GROUP_WINDOW_MS) / 1000;
+  const walk = (g: TaskGroup) => {
+    const recent = by === "time" ? OPEN_TIME_BUCKETS.has(g.key) : g.recentAt > 0 && g.recentAt >= since;
+    if (recent) open.add(`${by}:${g.key}`);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  for (const g of groups) walk(g);
+  return open;
+}
+
+/** `collapsed` with every section of `by` folded but the ones a first visit
+ *  opens — a new Set, the old untouched. Folds already in the set stay. */
+export function seedCollapsedGroups(
+  collapsed: ReadonlySet<string>,
+  groups: TaskGroup[],
+  by: TaskGroupBy,
+  now: number = Date.now(),
+): Set<string> {
+  const next = new Set(collapsed);
+  const open = openOnFirstVisit(groups, by, now);
+  for (const k of groupFoldKeys(groups, by)) {
+    if (open.has(k)) next.delete(k);
+    else next.add(k);
+  }
+  return next;
+}
+
+/** The views already seeded, out of an untrusted store. */
+export function parseSeededViews(raw: string | null | undefined): Set<TaskGroupBy> {
+  if (!raw) return new Set();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((v): v is TaskGroupBy => typeof v === "string" && (GROUP_VIEWS as string[]).includes(v)));
+  } catch {
+    return new Set();
+  }
 }

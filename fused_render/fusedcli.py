@@ -195,15 +195,47 @@ def log_cli_provenance() -> str | None:
     return None
 
 
+# The env var that pins the workbench environment for the whole process. When
+# set it wins over the preference and the Preferences row shows as locked.
+WORKBENCH_ENV_VAR = "FUSED_RENDER_WORKBENCH_ENV"
+# The environments the PREFERENCE may name (Preferences page radio). The env
+# var still accepts the CLI's full table (stg, dev, a PR number) for developers.
+WORKBENCH_ENV_CHOICES = ("unstable", "prod")
+# Owner, 2026-10-17: unstable while embed v3 lands on the unstable workbench
+# first; flip to prod once it is live there.
+DEFAULT_WORKBENCH_ENV = "unstable"
+
+
 def workbench_env() -> str:
-    """The Fused environment the workbench features target — ONE knob
-    (FUSED_RENDER_WORKBENCH_ENV, default prod) shared by canvases.py's
-    iframe URL + CLI runs AND the `fused` wrapper handed to Claude sessions
-    (export_fused_cli_env), so what Claude pushes lands in the same
-    environment the canvases iframe shows. Lives here rather than in
-    canvases.py because canvases imports this module, not the other way
-    around. Set FUSED_RENDER_WORKBENCH_ENV=unstable to switch back."""
-    return os.environ.get("FUSED_RENDER_WORKBENCH_ENV", "prod")
+    """The Fused environment the workbench features target — ONE knob shared
+    by canvases.py's iframe URL + CLI runs, the `fused` wrapper handed to
+    Claude sessions (export_fused_cli_env), and file / app SHARING uploads
+    (share_file.py, share_app.py), so what Claude pushes lands in the same
+    environment the canvases iframe shows.
+
+    Resolved at CALL time, never cached by a caller: the env var
+    (FUSED_RENDER_WORKBENCH_ENV, a process-level pin) wins; else the
+    `workbench_env` preference in prefs.json, written only by
+    `POST /api/canvases/env` because a switch has to stop the sync managers
+    first (canvases.py `api_canvases_env`; clones live per environment under
+    `~/Fused/canvas/<env>/` and are kept); else DEFAULT_WORKBENCH_ENV.
+    Lives here rather than in canvases.py because canvases imports this
+    module, not the other way around."""
+    pinned = os.environ.get(WORKBENCH_ENV_VAR)
+    if pinned:
+        return pinned
+    from fused_render.shell import prefs
+
+    stored = prefs.read_prefs().get("workbench_env")
+    if stored in WORKBENCH_ENV_CHOICES:
+        return stored
+    return DEFAULT_WORKBENCH_ENV
+
+
+def workbench_env_locked() -> bool:
+    """Whether the env var pins the environment (the preference is ignored
+    and the Preferences row says so)."""
+    return bool(os.environ.get(WORKBENCH_ENV_VAR))
 
 
 # The env var that carries the wrapper dir to the templates (SPEC PY-15):
@@ -331,10 +363,16 @@ def export_fused_cli_env() -> str | None:
     wrapper = os.path.join(bin_dir, "fused")
     try:
         os.makedirs(bin_dir, exist_ok=True)
-        with open(wrapper, "w", encoding="utf-8", newline="") as fh:
+        # Written beside and renamed over: the wrapper is also REWRITTEN while
+        # the server runs (an environment switch, canvases.api_canvases_env),
+        # and a Claude session exec'ing `fused` in that instant must see the
+        # old file or the new one, never a truncated one.
+        tmp = wrapper + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
             fh.write(_wrapper_text(cli))
-        os.chmod(wrapper, os.stat(wrapper).st_mode
+        os.chmod(tmp, os.stat(tmp).st_mode
                  | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        os.replace(tmp, wrapper)
     except OSError as exc:
         logger.warning("could not write the fused CLI wrapper at %s: %s",
                        wrapper, exc)

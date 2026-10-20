@@ -15,7 +15,12 @@ server frames are typed by their WebSocket frame kind rather than by a field
 inside one shape:
   * client -> server: a BINARY frame is keystrokes/paste, written straight to
     the pty; a TEXT frame is a JSON control message, today only
-    `{"resize": [rows, cols]}`.
+    `{"resize": [rows, cols]}`, `{"pause": true}` or `{"resume": true}`.
+    Pause/resume are flow control: a client whose terminal is behind on
+    rendering asks the server to stop reading the pty (the kernel buffer then
+    fills and a flooding program blocks), so Ctrl-C and keystrokes are not
+    queued behind megabytes of output. A pause expires on the server after a
+    few seconds, and a disconnect clears it.
   * server -> client: a BINARY frame is the shell's output; a TEXT frame is
     JSON, today only `{"exit": code}` sent once, when the child dies (or
     `{"exit": null}` immediately, for an id the registry no longer knows).
@@ -32,14 +37,22 @@ from __future__ import annotations
 
 import asyncio
 import json
-from queue import Empty
+import time
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 
+from fused_render import netlog
 from fused_render import claude_cmd_log, pty_session
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
+
+#: Most output bytes `pump_output` merges into one WS frame.
+_MERGE_CAP = 256 * 1024
+#: Output arriving closer together than this counts as a flood, and
+#: `pump_output` then waits `_FLOOD_TICK_S` for more before sending.
+_FLOOD_GAP_S = 0.01
+_FLOOD_TICK_S = 0.004
 
 @router.post("/api/terminal")
 def api_terminal_create(body: dict = Body(default={}),
@@ -223,6 +236,7 @@ async def _stream_claude(ws: WebSocket, chat: str) -> None:
 
 
 @router.websocket("/api/terminal/{sid}/stream")
+@netlog.tracked_ws("terminal")
 async def api_terminal_stream(ws: WebSocket, sid: str):
     chat = claude_cmd_log.chat_of(sid)
     if chat is not None:
@@ -250,7 +264,7 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
     # with awaits between them, would lose output the reader thread produces
     # in that window — and, worse, could miss the child's exit entirely if
     # it died during the gap).
-    scrollback, alive, exit_code, out_queue = session.attach()
+    scrollback, alive, exit_code, out_queue = session.attach(asyncio.get_running_loop())
     # Replay scrollback first so a reattach repaints the screen before any
     # new output arrives; a plain empty bytes frame for a session with none
     # yet is harmless (xterm.js writes zero bytes and moves on).
@@ -259,27 +273,60 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
         await ws.send_text(json.dumps({"exit": exit_code}))
 
     async def pump_output():
-        # A plain `await asyncio.to_thread(out_queue.get)` would block a
-        # thread-pool worker on the underlying blocking call forever whenever
-        # nothing more ever arrives (a disconnect with the shell still
-        # alive). Cancelling THIS task then does not stop that worker
-        # thread — `Future.cancel()` is a no-op once a work item is already
-        # running — so on cleanup asyncio's default-executor shutdown
-        # (`loop.shutdown_default_executor`, run whenever the loop backing
-        # this test/portal closes) blocks forever waiting for a worker that
-        # will never return, hanging the whole process. Polling with a short
-        # timeout instead means a cancelled task's current `to_thread` call
-        # returns (Empty) well within one tick, so cancellation actually
-        # takes effect and no thread outlives this task.
+        # `out_queue` is an asyncio.Queue the reader thread feeds through
+        # `loop.call_soon_threadsafe` (see `PtySession.attach`), so this is a
+        # plain `await` on the event loop. It used to be `await
+        # asyncio.to_thread(out_queue.get, timeout=0.2)` on a blocking
+        # SimpleQueue: that parked one default-executor worker per attached
+        # terminal for the terminal's whole life (the rest of the server
+        # shares that pool), and the 0.2 s timeout existed only because a
+        # worker blocked in an un-timed `get` can never be cancelled —
+        # `Future.cancel()` is a no-op once the work item runs, so the
+        # default-executor shutdown at loop close would hang forever on it.
+        # An asyncio queue `get` is natively cancellable, so that hazard is
+        # gone and so is the poll.
+        last_send = 0.0
         while True:
-            try:
-                kind, payload = await asyncio.to_thread(out_queue.get, timeout=0.2)
-            except Empty:
-                continue
-            if kind == "data":
-                await ws.send_bytes(payload)
-            else:  # "exit"
+            kind, payload = await out_queue.get()
+            if kind != "data":  # "exit"
                 await ws.send_text(json.dumps({"exit": payload}))
+                return
+            # Merge whatever else is already queued into this one frame. A
+            # flooding program makes the reader enqueue ~one item per read
+            # (a pty read returns 1-4 KB on macOS however big the buffer);
+            # a WS frame per item costs a send, a JS message event and an
+            # xterm `write` each. Capped so one frame stays a sane size and
+            # the loop still yields to the receive side between sends.
+            # Order is never changed: an "exit" met while draining is held
+            # until the merged data has been sent.
+            chunks = [payload]
+            size = len(payload)
+            exited = False
+            code = None
+            # A consumer that keeps up finds the queue empty every time and
+            # merges nothing, so while output is arriving back to back (the
+            # previous frame went out < _FLOOD_GAP_S ago) wait one tick for
+            # the reader to get ahead. A lone keystroke echo has no recent
+            # frame, skips the wait and pays no latency.
+            waited = time.monotonic() - last_send >= _FLOOD_GAP_S
+            while size < _MERGE_CAP:
+                try:
+                    kind, payload = out_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    if waited:
+                        break
+                    waited = True
+                    await asyncio.sleep(_FLOOD_TICK_S)
+                    continue
+                if kind != "data":
+                    exited, code = True, payload
+                    break
+                chunks.append(payload)
+                size += len(payload)
+            await ws.send_bytes(b"".join(chunks) if len(chunks) > 1 else chunks[0])
+            last_send = time.monotonic()
+            if exited:
+                await ws.send_text(json.dumps({"exit": code}))
                 return
 
     pumper = asyncio.create_task(pump_output())
@@ -304,6 +351,14 @@ async def api_terminal_stream(ws: WebSocket, sid: str):
             # tearing down the socket with an AttributeError the same way the
             # JSONDecodeError guard above it is.
             if not isinstance(control, dict):
+                continue
+            # Flow control: the client's xterm is behind on rendering
+            # (`pause`) or has caught up (`resume`); see PtySession.pause.
+            if control.get("pause") is True:
+                session.pause(out_queue)
+                continue
+            if control.get("resume") is True:
+                session.resume(out_queue)
                 continue
             resize = control.get("resize")
             if isinstance(resize, list) and len(resize) == 2:

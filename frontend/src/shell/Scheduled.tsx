@@ -115,6 +115,7 @@ import {
   VIEW_LABELS,
   VIEW_TABS_KEY,
   applyQueueOverrides,
+  emptyTasksLabel,
   groupOfView,
   parseViewTabs,
   expireQueueOverrides,
@@ -124,8 +125,11 @@ import {
   skipLine,
   viewFromSearch,
   viewUrl,
+  defaultViewFacets,
+  parseViewFilters,
+  VIEW_FILTERS_KEY,
 } from "./tasks-lib";
-import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
+import type { QueueOverride, QueueOverrides, TaskView, ViewFacets } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { missingFolders } from "./useMissingFolders";
@@ -212,7 +216,7 @@ const VIEW_ICONS: Record<TaskView, React.ReactNode> = {
 };
 /** What the `+` menu says a grouped view does, under its name. */
 const VIEW_HINTS: Partial<Record<TaskView, string>> = {
-  time: "List grouped by day",
+  time: "List grouped by when it last moved",
   project: "List grouped by folder",
   pr: "List grouped by pull request",
 };
@@ -221,7 +225,7 @@ const VIEW_HINTS: Partial<Record<TaskView, string>> = {
  * THE TAB EDITOR (Akshil, 2026-10-16): the switcher's row, taken over. Every
  * current tab as a chip with its own remove, a `+` that offers every view not
  * yet on the row (the three grouped lists, and any of the four a person took
- * off), and Cancel / Done at the right end. Edits land in `tabs` (the page's
+ * off), and Cancel / Done right after the +. Edits land in `tabs` (the page's
  * draft) and only Done writes them anywhere.
  */
 function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
@@ -412,10 +416,12 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
             </div>
           )}
         </div>
-      </div>
-      <div className="schedule-view-editor-end">
-        <button type="button" className="btn btn-secondary" onClick={onCancel}>Cancel</button>
-        <button type="button" className="btn btn-primary" onClick={onDone}>Done</button>
+        {/* Right after the +, not at the far end (Akshil, 2026-10-19): the
+            three controls that finish the edit sit together. */}
+        <div className="schedule-view-editor-end">
+          <button type="button" className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+          <button type="button" className="btn btn-primary" onClick={onDone}>Done</button>
+        </div>
       </div>
     </div>
   );
@@ -729,7 +735,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     entry: ScheduledMessage | null,
     seed: ChatHop = NO_HOP,
     draft: DraftSeed | null = null,
+    // The folder a Project section's + names (Akshil, 2026-10-19): the card
+    // opens with it as the target. Null on every other door.
+    target: string | null = null,
   ) => {
+    setFolderSeed(target);
     // Every opening ABANDONS any chat-draft fetch still in flight (Bugbot on
     // PR #1126, 2026-09-12): a press that lands here through any door — New
     // task, a calendar slot, an Edit, a draft row, or a resolved hop — is the
@@ -754,6 +764,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // and the effect below looks it up by session before opening (Akshil,
   // 2026-09-12).
   const [draftSeed, setDraftSeed] = useState<DraftSeed | null>(null);
+  /** The folder a Project section's + handed the card, or null. */
+  const [folderSeed, setFolderSeed] = useState<string | null>(null);
   /** THE GENERATION OF THE PRESS THAT OWNS THE MODAL. Two openings still fetch
    *  before they can seed — the `?new=1&draft=` hop and the Draft chip's press —
    *  and an answer whose number is no longer current is dropped rather than
@@ -852,9 +864,48 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     if (!session) return;
     openChatRecord(session, draftChatUrl(task), task.project || task.file || "");
   };
-  // Search, status and project, client-side only — nothing here is worth a URL
+  // Search and the Draft chip, client-side only — nothing here is worth a URL
   // or a localStorage row: a filter is how you read the page this minute.
-  const [filters, setFilters] = useState<TaskFilters>(EMPTY_FILTERS);
+  const [shared, setShared] = useState<TaskFilters>(EMPTY_FILTERS);
+  // STATUS AND PROJECT ARE EACH TAB'S OWN (Akshil, 2026-10-19) — remembered
+  // per view for as long as the window is open (tasks-lib.parseViewFilters).
+  // Read once; a blocked store just means every tab starts unfiltered.
+  const [facets, setFacets] = useState<Partial<Record<TaskView, ViewFacets>>>(() => {
+    try {
+      return parseViewFilters(sessionStorage.getItem(VIEW_FILTERS_KEY));
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(VIEW_FILTERS_KEY, JSON.stringify(facets));
+    } catch {
+      // A blocked store forgets the facets on reload; they still apply now.
+    }
+  }, [facets]);
+  // The one `TaskFilters` every control below reads and writes: the shared
+  // facets plus the current tab's own. A write splits the same way, so the
+  // controls never learn there are two stores.
+  const filters = useMemo<TaskFilters>(
+    () => ({ ...shared, ...(facets[view] ?? defaultViewFacets(view)) }),
+    [shared, facets, view],
+  );
+  const setFilters = useCallback(
+    (update: TaskFilters | ((f: TaskFilters) => TaskFilters)) => {
+      const next = typeof update === "function" ? update(filtersRef.current) : update;
+      // Written back at once, so two updates in one tick compose instead of
+      // the second reading the snapshot the first already replaced (review).
+      filtersRef.current = next;
+      setShared({ ...next, statuses: [], projects: [] });
+      setFacets((cur) => ({ ...cur, [viewRef.current]: { statuses: next.statuses, projects: next.projects } }));
+    },
+    [],
+  );
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
+  const viewRef = useRef(view);
+  viewRef.current = view;
   // Only so a folder chip's tooltip can say "~/Desktop/fused" rather than the
   // full /Users/... path. Missing home just means untouched paths.
   const [home, setHome] = useState("");
@@ -1170,7 +1221,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const pickProject = (project: string) =>
     setFilters((f) => ({
       ...f,
-      projects: f.projects.length === 1 && f.projects[0] === project ? [] : [project],
+      // IN OR OUT OF THE SET (Akshil, 2026-10-19: the facet is multi-select):
+      // a chip press adds its folder, a press on a pinned one lets it go.
+      projects: f.projects.includes(project)
+        ? f.projects.filter((p) => p !== project)
+        : [...f.projects, project],
     }));
 
   // The Draft chip pressed on a row or a card: keep only the rows carrying
@@ -1275,18 +1330,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // and the pane scrolls sideways. Floored is a subset of tight (500 < any
   // baseline), so nothing the floor did is lost.
   const scrolls = peek.open && peek.tight;
-  // ONE sentence for "there is nothing here", handed to all four views, so a
+  // ONE sentence for "there is nothing here", handed to every view, so a
   // reader flipping List → Board → Cards → Calendar over the same empty set
   // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
-  // is the page's call, not a view's: only the page knows whether the set is
-  // empty because the machine has no tasks, this app has none, or the filters
-  // matched none.
-  const emptyLabel =
-    inScope.length === 0
-      ? scope
-        ? "No tasks for this app yet."
-        : "No tasks yet. Everything Claude runs for you shows up here."
-      : "Nothing matches these filters.";
+  // is the page's call, not a view's — tasks-lib.emptyTasksLabel knows whether
+  // the set is empty because the machine has no tasks, this app has none, the
+  // filters matched none, or a grouped view is hiding an all-archived scope.
+  const emptyLabel = emptyTasksLabel(view, filters, inScope.length, scope != null);
 
   // PUT THE CARD AWAY — the modal's ✕, and the source chip's press, which opens
   // the task it names and cannot do that under an open card. One function, so
@@ -1582,6 +1632,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               // Time / Project / PR are this List cut into sections.
               groupBy={groupOfView(view)}
+              onNewTaskIn={(folder) => openForm("blank", null, NO_HOP, null, folder)}
               home={home}
               missing={missing}
               // The rows NEVER fold their marks while the panel is up
@@ -1672,7 +1723,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // Prefill only — the field shows exactly what will be saved, and
           // deleting the filename back to the folder is the user's to make. A
           // deep link's own target still wins: it named a path on purpose.
-          initialTarget={scope?.entry ?? scope?.project ?? null}
+          // A SECTION'S + NAMES ITS FOLDER ON PURPOSE, so it outranks the
+          // scope's own prefill (Bugbot, #1756): on an app-scoped tab the
+          // Project view's folder is the app's anyway, and the card must open
+          // on the folder the reader pressed, not the app's entry page.
+          initialTarget={folderSeed ?? scope?.entry ?? scope?.project ?? null}
           // The stored record, handed back whole — a task draft's own form, or
           // a chat record turned into one by `chatHopSeed`. Null on every
           // opening that had nothing stored behind it.
