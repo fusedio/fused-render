@@ -6,7 +6,7 @@
 // Authentication is a fire-and-forget hand-off: the CLI opens a browser and
 // blocks well past any request timeout, so the module spawns it detached and the
 // UI says so, then re-lists when the user confirms they're done.
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import type { CliResult, McpKind, McpServer, McpStatus } from "../api";
@@ -68,21 +68,26 @@ export default function McpSection() {
   const [fresh, setFresh] = useState<typeof cached>(null);
   const data = fresh ?? cached;
   const checking = !!(cached?.ok && cached.stale && !fresh);
+  // Each live check is tagged; `reload` bumps the counter so a check begun
+  // before it cannot land afterwards and overwrite the reloaded list.
+  const freshSeq = useRef(0);
   const reload = useCallback(() => {
+    freshSeq.current += 1;
     setFresh(null);
     reloadCached();
   }, [reloadCached]);
   useEffect(() => {
     if (!cached?.ok || !cached.stale) return;
     let alive = true;
+    const seq = freshSeq.current;
     cc.mcp.list({ fresh: true }).then(
       (res) => {
         // A failed live check keeps the cached list rather than replacing it
         // with an error; the status simply stops reading as "checking".
-        if (alive) setFresh(res.ok ? res : { ...cached, stale: false });
+        if (alive && seq === freshSeq.current) setFresh(res.ok ? res : { ...cached, stale: false });
       },
       () => {
-        if (alive) setFresh({ ...cached, stale: false });
+        if (alive && seq === freshSeq.current) setFresh({ ...cached, stale: false });
       },
     );
     return () => {
