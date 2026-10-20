@@ -23,7 +23,7 @@
 # huggingface_hub downloads, psutil answers "how much memory is this costing".
 #
 # **`jinja2` is declared here for a reason that only shows up at RUNTIME, not at
-# install.** mlx-vlm 0.6.15 does not declare jinja2 as a dependency of its own —
+# install.** mlx-vlm (0.6.15 when this was found; 0.7.9 was re-checked) does not declare jinja2 as a dependency of its own —
 # unlike mlx-lm, which does — so a clean `uv sync` of this manifest installs
 # without incident and the failure lands on the first generation instead, as
 # `ImportError: apply_chat_template requires jinja2` out of transformers'
@@ -35,8 +35,12 @@
 # at length: no lockfile is committed beside these manifests and `uv sync` runs
 # bare, so an unbounded line re-resolves from PyPI on every new venv key — which
 # is how an mlx minor bump once reached users' machines with no commit behind
-# it. `>=0.6.15,<0.7` because mlx-vlm is pre-1.0, where a minor is the breaking
-# one, and because it is the package that pins `mlx` for this runner.
+# it. `>=0.7.9,<0.8` because mlx-vlm is pre-1.0, where a minor is the breaking
+# one, and because it is the package that pins `mlx` for this runner. The floor
+# moved from 0.6.15 once every import `worker.py` makes was probed on 0.7.9
+# (`load`, `utils.get_model_and_args`/`load_config`, `stream_generate`,
+# `sample_utils.make_sampler`, `prompt_utils.apply_chat_template`,
+# `PromptCacheState`); `mlx_embed` carries the same floor.
 #
 # tqdm used to be here, for a `tqdm_class` shim that reported hf's progress bars
 # to the download manager. It is gone with the shim (AI-5b): that hook only
@@ -47,7 +51,9 @@ name = "fused-render-runner-mlx-text"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "mlx-vlm>=0.6.15,<0.7",
+    "mlx-vlm>=0.7.9,<0.8",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
     "jinja2",
     "huggingface_hub",
     "psutil",

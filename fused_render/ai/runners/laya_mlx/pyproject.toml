@@ -2,8 +2,10 @@
 #
 # This folder exists so that `laya-mlx` is named in exactly one place and lives
 # in exactly one interpreter — not fused-render's, and not `mlx_text`'s or
-# `mlx_embed`'s. It pins its own `mlx` line (`>=0.32.2,<0.33` at 0.2.0), which
-# is a narrower window than `mlx-vlm` or `mlx-embeddings` ask for, so sharing a
+# `mlx_embed`'s. It pins its own `mlx` line: laya-mlx 0.5.0 requires
+# `mlx>=0.32.2,<0.33` (darwin arm64; METADATA of the 0.5.0 wheel), where
+# `mlx_audio_tts` is held to `mlx==0.32.4` by mlx-audio 0.6.0. That is a
+# narrower window than `mlx-vlm` or `mlx-embeddings` ask for, so sharing a
 # folder with either would tie an unrelated bump in one to a forced rebuild —
 # or an unresolvable sync — of the other.
 #
@@ -13,9 +15,11 @@
 # **The engine line carries a CEILING**, for the reason `mflux_image/
 # pyproject.toml` states at length: no lockfile is committed beside these
 # manifests and `uv sync` runs bare, so an unbounded requirement re-resolves
-# from PyPI on every new venv key. `laya-mlx` is pre-1.0 (0.2.0, six commits,
-# first release 2026-09-19), where a minor is the breaking one, hence
-# `>=0.2,<0.3` rather than a looser `<1`.
+# from PyPI on every new venv key. `laya-mlx` is pre-1.0 (first release
+# 2026-09-19; 0.2.0 when this manifest was written, 0.5.0 when the pin moved),
+# where a minor is the breaking one, hence `>=0.5,<0.6` rather than a looser
+# `<1`. 0.5.0 was probed: `laya_mlx.load(path, dtype=...)` still takes `dtype`
+# (keyword-only on `Agent`), and `Agent.predict`/`prepare`/`cfg` are intact.
 #
 # What each earns:
 #   laya-mlx        loads a Laya checkpoint (`laya_mlx.load`) and runs its
@@ -36,7 +40,7 @@ version = "0.1.0"
 # resolve on a machine the package refuses.
 requires-python = ">=3.11"
 dependencies = [
-    "laya-mlx>=0.2,<0.3",
+    "laya-mlx>=0.5,<0.6",
     "huggingface_hub",
     "psutil",
 ]

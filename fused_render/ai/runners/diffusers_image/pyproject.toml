@@ -51,8 +51,8 @@
 # `mflux_image/pyproject.toml` states at length: no lockfile is committed beside
 # these manifests and `uv sync` runs bare, so an unbounded requirement is
 # re-resolved from PyPI on every new venv key and a major bump lands on users
-# with no commit behind it. The FLOORS are left where they were — `diffusers`
-# keeps `>=0.39` rather than gaining the installed patch, and `transformers`
+# with no commit behind it. The FLOORS are the installed MINOR rather than the
+# installed patch — `diffusers` is `>=0.41`, not `>=0.41.0` — and `transformers`
 # carries a ceiling with NO floor added, because this runner has never declared one
 # and inventing one here would forbid versions that are currently allowed. It
 # also used to disagree with a sibling: `transformers_text/pyproject.toml`
@@ -66,12 +66,21 @@
 # What each earns:
 #   torch          the tensors and the device (CUDA / MPS / CPU). `<3` — the
 #                  major is the whole ABI and every wheel behind it.
-#   diffusers      the pipelines. `>=0.39` because that is the first RELEASE
-#                  carrying Flux2KleinPipeline — this used to track
+#   diffusers      the pipelines. Flux2KleinPipeline has been in releases since
+#                  0.39 (this used to track
 #                  git+https://github.com/huggingface/diffusers.git for exactly
-#                  that class, back when it existed only on main (D266). `<0.40`
-#                  because a pre-1.0 minor is where this library moves pipeline
-#                  signatures, and `torch_image.py` drives one directly.
+#                  that class, back when it existed only on main, D266); the
+#                  floor is `>=0.41` because that is the release every symbol
+#                  `torch_image.py` touches was last probed against (0.41.0:
+#                  `AutoPipelineForText2Image`, `GGUFQuantizationConfig`,
+#                  `PipelineQuantizationConfig`, `Flux2KleinPipeline`,
+#                  `Flux2Transformer2DModel.from_single_file`, and every
+#                  keyword `pipe()` passes) and the one that lets a newer
+#                  model repo's config load. `<0.42` because a pre-1.0 minor is
+#                  where this library moves pipeline signatures, and
+#                  `torch_image.py` drives one directly. 0.41 carries the
+#                  `sdnq` quantizer natively (see below); it has no FLUX 3
+#                  pipeline class of its own.
 #   transformers   the text encoder every text-to-image pipeline puts in front
 #   accelerate     device placement / offload for models bigger than the GPU
 #   sentencepiece  the tokenizer format those text encoders use
@@ -160,16 +169,19 @@
 #   sdnq           reads the THIRD quantized repo in `catalog.py` —
 #                  `Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic`, whose every
 #                  component config carries `"quant_method": "sdnq"`. Unlike
-#                  `torchao` and `bitsandbytes` above, diffusers 0.39 has NO
-#                  built-in quantizer for this: its
-#                  `quantizers/auto.py` mapping knows autoround, bitsandbytes,
-#                  gguf, modelopt, quanto and torchao, and nothing else. **The
-#                  package registers itself by MUTATING that mapping at import**
-#                  — `diffusers.quantizers.auto.AUTO_QUANTIZER_MAPPING["sdnq"]
+#                  `torchao` and `bitsandbytes` above, diffusers 0.39 had NO
+#                  built-in quantizer for this (its `quantizers/auto.py` mapping
+#                  stopped at autoround, bitsandbytes, gguf, modelopt, quanto
+#                  and torchao); 0.41 ships an `SDNQQuantizer` entry of its own
+#                  (`diffusers.quantizers.sdnq`, present before `import sdnq`
+#                  and unchanged by it, probed on 0.41.0 + sdnq 0.2.x). The
+#                  package's own mechanism is a MUTATION of that mapping at
+#                  import — `diffusers.quantizers.auto.AUTO_QUANTIZER_MAPPING["sdnq"]
 #                  = SDNQQuantizer` plus the matching config entry, and the
-#                  same pair on `transformers.quantizers.auto` — which is why
-#                  `torch_image._register_extra_quantizers()` imports it for
-#                  its side effect and not for a name.
+#                  same pair on `transformers.quantizers.auto` — and
+#                  `torch_image._register_extra_quantizers()` still imports it
+#                  for its side effect and not for a name (the transformers
+#                  half is still registered by the import).
 #                  **That import is the risk this ceiling is for.** Those
 #                  mappings are not diffusers' public API; a rename inside
 #                  `quantizers/auto.py` would break the registration silently,
@@ -194,7 +206,8 @@
 #                  and enables its triton matmuls there), which is what makes
 #                  the speed number in `catalog.py` a fact about this app's
 #                  hardware rather than about CUDA.
-#   pillow         writes the PNG
+#   pillow         writes the PNG; CEILING <13 (see mflux_image: 13.0.0 does
+#                  not import on Python 3.12)
 #   huggingface_hub downloads
 #   psutil         answers "how much memory is this costing"
 [project]
@@ -203,7 +216,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "torch>=2.13,<3",
-    "diffusers>=0.39,<0.40",
+    "diffusers>=0.41,<0.42",
     "transformers<6",
     "accelerate>=1.14,<2",
     "sentencepiece",
@@ -212,7 +225,8 @@ dependencies = [
     "torchao>=0.15,<0.18",
     "bitsandbytes>=0.46.1,<1",
     "sdnq>=0.2.6,<0.3",
-    "pillow",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
     "huggingface_hub",
     "psutil",
 ]

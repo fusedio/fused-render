@@ -42,14 +42,20 @@
 #   psutil          the RSS half of "how much memory is this costing" — the
 #                   MLX half comes from mlx's own allocator (see `memory()`),
 #                   exactly `mlx_text/pyproject.toml`'s reasoning.
+#
+# mlx-vlm comes from PyPI as a wheel at `>=0.7.9,<0.8`, the floor `mlx_text`
+# carries too. This folder used to pin a GitHub source archive with
+# `allow_build = true` because `embedding_gemma2` was not in a release yet;
+# 0.7.9 ships it, so the archive and the setuptools build it forced are gone.
 [project]
 name = "fused-render-runner-mlx-embed"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "mlx-embeddings>=0.1,<0.2",
-    "mlx-vlm>=0.7.7,<0.8",
-    "pillow",
+    "mlx-vlm>=0.7.9,<0.8",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
     # HEIC/HEIF and AVIF, which plain Pillow cannot open. iPhones have shot
     # HEIC by default since iOS 11, so without this the `paths` half of an
     # embed request works on screenshots and fails on the photographs.
@@ -61,9 +67,3 @@ dependencies = [
 # Not a distribution — a folder of scripts, not something to build and install.
 [tool.uv]
 package = false
-
-[tool.uv.sources]
-mlx-vlm = { url = "https://github.com/Blaizzy/mlx-vlm/archive/fec3f50379bb2cb0760ef3c8a68ebce9585e4d97.tar.gz" }
-
-[tool.fused-render.runner]
-allow_build = true

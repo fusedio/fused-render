@@ -690,7 +690,7 @@ def test_the_diffusers_image_manifests_ceiling_torchao_below_the_broken_release(
 def test_the_diffusers_image_manifests_declare_sdnq_and_ceiling_it_below_0_3():
     """`Disty0/FLUX.2-klein-4B-SDNQ-4bit-dynamic` is a `diffusers-image`
     suggestion whose every component config carries `"quant_method": "sdnq"`,
-    and diffusers 0.39 has no quantizer for that name — its
+    and diffusers 0.39 had no quantizer for that name (0.41 ships one natively) — its
     `quantizers/auto.py` mapping knows autoround, bitsandbytes, gguf, modelopt,
     quanto and torchao. The package supplies one by MUTATING that mapping at
     import (`AUTO_QUANTIZER_MAPPING["sdnq"] = SDNQQuantizer`, plus the
