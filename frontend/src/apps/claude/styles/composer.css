@@ -555,12 +555,14 @@
 }
 /* The switched-off agent's line under a closed box (D17): `.c-queued`'s quiet
    line, with its link in the ordinary ink so it reads as the way out. */
-.c-blocked-note a {
+.c-blocked-note a,
+.c-blocked-note button {
   color: var(--c-dim);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.c-blocked-note a:hover {
+.c-blocked-note a:hover,
+.c-blocked-note button:hover {
   color: var(--c-fg);
 }
 .c-blocked-note button {
@@ -568,13 +570,7 @@
   border: 0;
   padding: 0;
   font: inherit;
-  color: var(--c-dim);
-  text-decoration: underline;
-  text-underline-offset: 2px;
   cursor: pointer;
-}
-.c-blocked-note button:hover {
-  color: var(--c-fg);
 }
 
 /* The Agent pill once the session has a turn (AgentSelect `fixed`): the same

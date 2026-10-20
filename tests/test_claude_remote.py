@@ -69,8 +69,7 @@ def _run(env, name, session=SID):
 def env(monkeypatch, tmp_path):
     reg = pty_session.PtySessionRegistry()
     monkeypatch.setattr(pty_session, "REGISTRY", reg)
-    monkeypatch.setattr(claude_remote, "_held", {})
-    monkeypatch.setattr(claude_remote, "_session_locks", {})
+    monkeypatch.setattr(claude_remote, "_remotes", {})
     runs = tmp_path / "runs"
     runs.mkdir()
     state = {"bin": "", "turn": (False, False), "backend": "claude", "killed": [],
@@ -141,21 +140,21 @@ def test_start_trust_prompt_url_hold_and_stop(env, tmp_path):
                        json={"action": "status", "session_id": SID})
     assert resp.json()["url"] == URL
 
-    term = claude_remote._held[SID]["term"]
+    term = claude_remote._remotes[SID].term
     assert claude_remote.stop(SID) == {"state": "off"}
     assert not claude_remote.holds(SID)
     assert claude_remote.status(SID) == {"state": "off"}
-    assert claude_remote._session_locks == {}
     deadline = time.time() + 5
     while term.alive and time.time() < deadline:
         time.sleep(0.05)
     assert not term.alive
 
 
-@pytest.mark.parametrize("body,said", [(DEAD_CLI, "boom: no remote control here"),
-                                       (SILENT_CLI, claude_remote.NO_LINK)])
-def test_cli_that_never_connects_reports_ended_once(env, tmp_path, monkeypatch, body, said):
-    monkeypatch.setattr(claude_remote, "_CONNECT_TIMEOUT_S", 0.5)
+@pytest.mark.parametrize("body,said,give_up", [(DEAD_CLI, "boom: no remote control here", 60),
+                                               (SILENT_CLI, claude_remote.NO_LINK, 0.5)])
+def test_cli_that_never_connects_reports_ended_once(env, tmp_path, monkeypatch, body, said,
+                                                    give_up):
+    monkeypatch.setattr(claude_remote, "_CONNECT_TIMEOUT_S", give_up)
     env["bin"] = _cli(tmp_path, body)
     claude_remote.start(env["file"], SID)
     out = _poll(lambda s: s["state"] == "ended")
@@ -200,6 +199,6 @@ def test_refusals_spawn_nothing(env, tmp_path, monkeypatch, case):
     if case == "host_stuck":
         assert out["error"] == claude_remote.STILL_EXITING
         assert env["killed"] == ["run1"]
-    assert not claude_remote._held
+    assert not claude_remote._remotes
     assert not env["reg"].list()
     assert not os.path.exists(env["bin"] + ".argv")

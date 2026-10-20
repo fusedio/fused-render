@@ -4663,14 +4663,10 @@ function ChatBody(props: ChatBodyProps) {
       blocked: sched.blocked || agentOff || rcOn,
       blockedPlaceholder: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : rcOn
-          ? REMOTE_CONTROL_BLOCKED
-          : sched.placeholder,
+        : rcOn ? REMOTE_CONTROL_BLOCKED : sched.placeholder,
       blockedReason: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : rcOn
-          ? REMOTE_CONTROL_BLOCKED
-          : sched.reason,
+        : rcOn ? REMOTE_CONTROL_BLOCKED : sched.reason,
       blockedNote: agentOff ? (
         <>
           {agentLabel(state.backend)} is turned off in Preferences.{" "}
@@ -4698,7 +4694,6 @@ function ChatBody(props: ChatBodyProps) {
       state.sessionId,
       state.backend,
       agentOff,
-      rcOn,
       rc.view,
       rc.stop,
       state.status,
