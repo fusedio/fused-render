@@ -375,6 +375,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [live, setLive] = useState(false);
   // The sync log drawer and its buffer (newest first).
   const [drawerOpen, setDrawerOpen] = useState(false);
+  // The drawer is gated on (sync || owned). A drawer opened under `owned`
+  // whose ownership then clears before the first sync state would otherwise
+  // stay armed and pop open by itself when that state lands.
+  useEffect(() => {
+    if (!sync && !owned) setDrawerOpen(false);
+  }, [sync, owned]);
   const [logEvents, setLogEvents] = useState<SyncLogEvent[]>([]);
   const wsLogAtRef = useRef(0);
   // Bumped to make SyncFramePoster re-post the state (frame (re)loaded).
