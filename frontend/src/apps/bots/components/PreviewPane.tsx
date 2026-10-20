@@ -2,7 +2,7 @@
 // the side app strip, the screenshot (click → live view), the status toast, the caption and the info sections
 // (model download, task, Inbox, attached files, routines, usage). In Stage (root .stage) all of that but the header steps
 // aside and the live view (#full, always mounted here) fills the column.
-import { useEffect, useMemo, type MouseEvent } from "react";
+import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { appOpenUrl } from "../apps/apps";
 import { botTasks, openBuilds, useBuildRows } from "../builds/builds";
 import { SideApp } from "../apps/SideApp";
@@ -12,8 +12,9 @@ import { mirrorThumb, openFull } from "../lib/cdp";
 import { fmtAgo, fmtBytes, fmtIn, fmtWhen, fmtWhenShort } from "../lib/format";
 import { closePreview } from "../lib/layout";
 import { LiveView } from "./LiveView";
-import { act, closeMenu, getState, openDialog, openMenu, useBotsSelector } from "../state/store";
+import { act, closeMenu, eventsOf, getState, openDialog, openMenu, useBotsSelector } from "../state/store";
 import { Toast } from "./Toast";
+import TerminalView from "@platform/ui/TerminalView";
 
 const KIND_LABEL: Record<string, string> = { save: "saved", download: "download", build: "app" };
 const ext = (n: string) => (/\.([a-z0-9]{1,5})$/i.exec(n)?.[1] || "").toUpperCase();
@@ -198,8 +199,23 @@ function Info({ b }: { b: Bot }) {
   );
 }
 
+// The terminal tools label their steps "$ <command>", "read the terminal" and "press Ctrl-C in the terminal" (tools.describe).
+const isTerminalStep = (t: string) => t.startsWith("$ ") || t === "read the terminal" || t === "press Ctrl-C in the terminal";
+
 export function PreviewPane() {
   const b = useBotsSelector((s) => s.bots.find((x) => x.id === s.sel));
+  // Browser | Terminal: the Terminal side exists while the bot has a live terminal session (docs §16), and a new
+  // terminal step brings it forward.
+  const termId = b?.terminal_id || null;
+  const lastTermSeq = useBotsSelector((s) => {
+    const evs = eventsOf(s.sel);
+    for (let i = evs.length - 1; i >= 0 && i >= evs.length - 8; i--) if (evs[i].role === "action" && isTerminalStep(evs[i].text)) return evs[i].seq;
+    return 0;
+  });
+  const [view, setView] = useState<"browser" | "terminal">("browser");
+  useEffect(() => { setView("browser"); }, [b?.id]);
+  useEffect(() => { if (lastTermSeq) setView("terminal"); }, [b?.id, lastTermSeq]);
+  const showTerm = !!termId && view === "terminal";
   const u = b ? shotUrl(b) : "";
   // Until frames arrive the live view shows the latest thumbnail too.
   useEffect(() => { mirrorThumb(u); }, [u]);
@@ -229,7 +245,14 @@ export function PreviewPane() {
       </header>
       {/* Side app: a built app running in this column instead of the browser view. The strip switches between the two; × unloads the app. */}
       <SideApp />
-      <div className={`shotwrap${asleep ? " asleep" : ""}`} id="shotwrap" onClick={() => openFull()}
+      {termId ? (
+        <div className="viewsw" id="viewsw">
+          <button className={`satab${showTerm ? "" : " on"}`} id="vswb" onClick={() => setView("browser")}>Browser</button>
+          <button className={`satab${showTerm ? " on" : ""}`} id="vswt" title="The bot's own terminal, live" onClick={() => setView("terminal")}>Terminal</button>
+        </div>
+      ) : null}
+      {showTerm ? <div className="termwrap" id="termwrap"><TerminalView key={termId} id={termId} /></div> : null}
+      <div className={`shotwrap${asleep ? " asleep" : ""}${showTerm ? " termup" : ""}`} id="shotwrap" onClick={() => openFull()}
         title={asleep ? "Browser is asleep to save memory. Click to wake it." : "Click to watch this bot's browser"}>
         {/* One shared <img> whose src follows the selected bot's shot URL, so switching bots never leaves the old page up. */}
         <img id="shot" alt="" src={u || undefined} />

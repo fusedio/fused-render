@@ -165,6 +165,14 @@ export interface Bot {
   /** Steps (tool calls) one task may take before the bot is stopped; absent = the default (200, Super Bot 1000). */
   max_steps?: number;
   build_access?: "scoped" | "full";
+  /** The bot's own Terminal opt-in (docs §16; user-only, default off). */
+  terminal?: boolean;
+  /** Both switches are on and the engine is the agent: the bot may drive a terminal now. */
+  terminal_available?: boolean;
+  /** Id of the bot's live pty session (the Terminal side of the preview), else null. */
+  terminal_id?: string | null;
+  /** Terminal is off for this bot only because its engine is not a Claude model. */
+  terminal_needs_claude?: boolean;
   /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. */
   trusted_apps?: string[];
   /** Calls the user approved forever from a card; revoked under Settings › Permissions. */
@@ -365,7 +373,7 @@ export interface SettingsBody {
   name?: string; model?: string; effort?: string; instructions?: string; memory?: string; approval?: string;
   /** 0 clears the per-bot override (back to the default). */
   max_steps?: number;
-  build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
+  build_access?: string; terminal?: boolean; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
   imessage_approvals?: boolean;
   super_access?: string; trusted_apps?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */

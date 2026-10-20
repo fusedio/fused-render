@@ -32,6 +32,7 @@ import type { BotDialogValue } from "./actions";
 import { askConfirm } from "./ask";
 import { FacePopover } from "./FacePopover";
 import { PhoneSection } from "./PhoneSection";
+import { useBotTerminalsFeature } from "@platform/lib/bot-terminals-flag";
 import { RoutinesSection } from "./RoutinesSection";
 import { Row, Rows } from "./SettingsRow";
 import { DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
@@ -55,7 +56,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   // What the dialog opened with (OpenBot's botDialog arguments).
   const [init] = useState(() => ({
     name: bot.name, model: bot.model || "sonnet", effort: bot.effort || "low", instructions: bot.instructions || "", memory: bot.memory || "",
-    approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", encrypt: !!bot.encrypt,
+    approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", terminal: bot.terminal === true, encrypt: !!bot.encrypt,
     maxSteps: bot.max_steps ? String(bot.max_steps) : "",
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
     superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], allowRules: bot.allow_rules || [],
@@ -70,6 +71,9 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [memory, setMemory] = useState(init.memory);
   const [approval, setApproval] = useState<string>(init.approval);
   const [buildAccess, setBuildAccess] = useState<string>(init.buildAccess);
+  // The Terminal row shows only while the global "Bot terminals" preference is on (and never for Super Bot, which has Bash).
+  const terminalFeature = useBotTerminalsFeature() === true && !isSuper;
+  const [terminal, setTerminal] = useState(init.terminal);
   const [superAccess, setSuperAccess] = useState<string>(init.superAccess);
   const [encrypt, setEncrypt] = useState(init.encrypt);
   // Page-wide prefs (localStorage, every bot): they apply at once, not on Save.
@@ -103,7 +107,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const holdFor = (open: boolean) => { if (open) busy.current = true; else window.setTimeout(() => { busy.current = false; }, 0); };
 
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
-  const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile, maxSteps,
+  const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, ...(terminalFeature ? { terminal } : {}), encrypt, profile, maxSteps,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
     kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, folders,
     allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
@@ -245,6 +249,17 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                     <NativeSelect className="w-full" id="bmbuild" value={buildAccess} onChange={(e) => setBuildAccess(e.target.value)}>
                       <NativeSelectOption value="scoped">Ask before risky steps</NativeSelectOption>
                       <NativeSelectOption value="full">Run unattended</NativeSelectOption>
+                    </NativeSelect>
+                  </Row>
+                ) : null}
+                {terminalFeature ? (
+                  <Row title="Terminal"
+                    text={bot.terminal_needs_claude ? "Needs a Claude model: the steps engine cannot use a terminal." : "Lets it run commands in its own terminal (you watch it live beside the browser). Every command asks unless you approved it forever."}
+                    htmlFor="bmterminal">
+                    <NativeSelect className="w-full" id="bmterminal" value={terminal ? "on" : "off"} disabled={!!bot.terminal_needs_claude}
+                      onChange={(e) => setTerminal(e.target.value === "on")}>
+                      <NativeSelectOption value="off">Off</NativeSelectOption>
+                      <NativeSelectOption value="on">On</NativeSelectOption>
                     </NativeSelect>
                   </Row>
                 ) : null}
