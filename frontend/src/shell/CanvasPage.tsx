@@ -261,7 +261,7 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
               read-only view is a window onto. In-app, same tab. */}
           <Button
             size="sm"
-            variant="outline"
+            variant="default"
             className="app-page-open"
             nativeButton={false}
             render={
