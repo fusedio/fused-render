@@ -1445,12 +1445,21 @@ export default function CanvasWorkspace({
   // project page's Sync tab (`syncSlot`) — the log pinned open, since the
   // tab IS the log — and nothing of it over the Overview.
   const pinned = embedded;
-  const chrome = (
+  // The page's own errors (no handle, sync/start failing) stay with the
+  // frame on EVERY tab, embedded or not: a frame stuck on "Loading
+  // workbench…" must say why where the reader is looking, not on the Sync
+  // tab (CodeRabbit on #1795).
+  const banners = (
     <>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {startError && !error && (
         <ErrorBanner>{`Could not start syncing this canvas (retrying): ${startError}`}</ErrorBanner>
       )}
+    </>
+  );
+  const chrome = (
+    <>
+      {!embedded && banners}
       {/* Always up ("Connecting…" before the first state): it carries the
           way back to the listing, which must not wait on sync. */}
       <SyncStrip
@@ -1557,7 +1566,14 @@ export default function CanvasWorkspace({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
-      {embedded ? (syncSlot ? createPortal(chrome, syncSlot) : null) : chrome}
+      {embedded ? (
+        <>
+          {banners}
+          {syncSlot ? createPortal(chrome, syncSlot) : null}
+        </>
+      ) : (
+        chrome
+      )}
       {frameSrc && (
         <SyncFramePoster
           name={name}

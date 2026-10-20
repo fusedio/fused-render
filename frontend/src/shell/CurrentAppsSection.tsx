@@ -427,6 +427,13 @@ function CurrentAppRow({
         href={href}
         draggable={false}
         aria-current={active ? "page" : undefined}
+        // Two environments can hold a clone of one name: the visible tag is
+        // aria-hidden, so the link's own name says which (CodeRabbit).
+        aria-label={
+          showEnv && app.canvas && isWorkbenchEnv(app.canvas.env)
+            ? `${app.name} (${ENV_LABELS[app.canvas.env]})`
+            : undefined
+        }
         onClick={onOpen}
       >
         {app.name}
@@ -980,7 +987,18 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             (collapsed ? " collapsed" : "")
           }
           title={(collapsed ? "Show " : "Hide ") + (canvases ? "canvases" : "projects")}
+          // A fold the keyboard can work too (CodeRabbit): focusable, a
+          // button to assistive tech, Enter / Space toggle it.
+          role="button"
+          tabIndex={0}
+          aria-expanded={!collapsed}
           onClick={toggleCollapsed}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              toggleCollapsed();
+            }
+          }}
         >
           {canvases ? "Canvases" : "Projects"}
           <span className="sidebar-heading-chevron" aria-hidden="true" />
