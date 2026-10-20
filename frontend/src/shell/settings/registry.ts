@@ -350,6 +350,14 @@ const ENTRIES = [
     renderOnly: true,
   },
   {
+    id: "bot-terminals",
+    group: "features",
+    section: "Bots",
+    label: "Bot terminals",
+    description: "Let bots you opt in run commands in their own terminal, with approval cards for anything not already allowed. Turning this off closes every bot terminal.",
+    keywords: "bot terminal shell command gh cli agent",
+  },
+  {
     id: "monitor",
     group: "features",
     section: "Status bar",

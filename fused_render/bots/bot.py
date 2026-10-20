@@ -514,6 +514,16 @@ def is_super(meta) -> bool:
     return (meta or {}).get("kind") == "super"
 
 
+def close_all_terminals() -> None:
+    """Close every bot-owned pty (the "Bot terminals" preference's kill
+    switch). Bots recreate a session lazily if the pref is later back on."""
+    from fused_render import pty_session
+
+    for sess in pty_session.REGISTRY.list():
+        if (sess.owner or "").startswith(pty_session.BOT_OWNER_PREFIX):
+            sess.kill()
+
+
 def super_id():
     """Super Bot's id when one exists, else None (one per install)."""
     for o in _list_ids():
