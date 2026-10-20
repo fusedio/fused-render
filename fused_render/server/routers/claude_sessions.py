@@ -1366,13 +1366,14 @@ def api_claude_session_headsup(run_id: str = ""):
 class _HeadsupDismiss(BaseModel):
     run_id: str
     id: str
+    answer: str = "dismiss"
 
 
 @router.post("/api/claude-sessions/headsup/dismiss")
 def api_claude_session_headsup_dismiss(body: _HeadsupDismiss):
     from fused_render.claude_agent import headsup
 
-    headsup.dismiss(body.run_id, body.id)
+    headsup.dismiss(body.run_id, body.id, body.answer)
     return {"ok": True}
 
 

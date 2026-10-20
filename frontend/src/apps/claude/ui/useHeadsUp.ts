@@ -25,6 +25,9 @@ export interface HeadsUpNote {
   bullets: string[];
 }
 
+/** How the user answered a card; the server's later checks learn from it. */
+export type HeadsUpAnswer = "got_it" | "dismiss" | "chat";
+
 export type HeadsUpState = "disabled" | "idle" | "checking" | "note";
 
 export interface HeadsUpResponse {
@@ -143,13 +146,13 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
       ? shown
       : null;
 
-  const hide = useCallback(async () => {
+  const hide = useCallback(async (answer: HeadsUpAnswer) => {
     const cur = visible;
     if (!cur) return;
     dismissed.current.add(cur.id);
     setShown(null);
     try {
-      await postJson("/api/claude-sessions/headsup/dismiss", { run_id: runId, id: cur.id });
+      await postJson("/api/claude-sessions/headsup/dismiss", { run_id: runId, id: cur.id, answer });
     } catch {
       // Hidden locally either way; the server note just lingers unseen.
     }
@@ -167,8 +170,8 @@ export function useHeadsUp({ runId, running, enabled, userTurns, controller, tim
       console.warn("heads-up: could not send the follow-up", err);
       return;
     }
-    await hide();
+    await hide("chat");
   }, [visible, running, controller, hide]);
 
-  return { note: visible?.note ?? null, id: visible?.id ?? "", dismiss: hide, gotIt: hide, askInChat };
+  return { note: visible?.note ?? null, id: visible?.id ?? "", dismiss: () => hide("dismiss"), gotIt: () => hide("got_it"), askInChat };
 }

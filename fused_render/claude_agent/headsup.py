@@ -15,6 +15,7 @@ tab means no checks.
 from __future__ import annotations
 
 import collections
+import glob
 import json
 import logging
 import os
@@ -288,16 +289,30 @@ def _spawn_argv(argv: list, cwd: str) -> tuple:
             None)
 
 
+def _build_prompt(seen: list, known: list) -> str:
+    prompt = HEADSUP_PROMPT
+    if seen:
+        prompt += ("\nThese notes were already shown to the user recently. "
+                   "Do not offer them again:\n"
+                   + "".join(f"- {x}\n" for x in seen))
+    if known:
+        prompt += ("\nThe user said they already understood these topics. "
+                   "Do not offer them:\n"
+                   + "".join(f"- {x}\n" for x in known))
+    return prompt
+
+
 def generate(agent, run_dir: str) -> dict | None:
     """Run the fork once and return the parsed note, or None."""
     built = build_fork_argv(agent, run_dir)
     if built is None:
         return None
     argv, cwd, fork_dir, session = built
+    seen, known = _merged(_mem_read(agent.RUNS))
     try:
         message = json.dumps({"type": "user", "message": {
             "role": "user",
-            "content": [{"type": "text", "text": HEADSUP_PROMPT}]}})
+            "content": [{"type": "text", "text": _build_prompt(seen, known)}]}})
         spawn, kw_cwd = _spawn_argv(argv, cwd)
         kwargs = {"cwd": kw_cwd} if kw_cwd else {}
         proc = subprocess.Popen(
@@ -317,9 +332,120 @@ def generate(agent, run_dir: str) -> dict | None:
             return None
         if proc.returncode != 0:
             return None
-        return parse_note(_result_text(stdout))
+        note = parse_note(_result_text(stdout))
+        if note and _norm(note["learn"]) in {
+                _norm(x) for x in seen + known}:
+            return None
+        return note
     finally:
         shutil.rmtree(fork_dir, ignore_errors=True)
+
+
+# --------------------------------------------------------- feedback memory
+
+_MEM_FILE = "headsup_memory.json"
+_MEM_KEEP = 50
+_MAX_SKIP = 16
+
+
+def _norm(line) -> str:
+    return str(line).strip().lower().rstrip(".!")
+
+
+def _mem_path(root: str | None) -> str | None:
+    """One memory file for every run, next to the runs directory."""
+    return os.path.join(os.path.dirname(root), _MEM_FILE) if root else None
+
+
+def _mem_read(root: str | None) -> dict:
+    """The feedback memory, or empty defaults for a missing/corrupt file."""
+    mem: dict = {"seen": [], "known": [], "ignored_in_a_row": 0, "skip_checks": 0}
+    path = _mem_path(root)
+    if not path:
+        return mem
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return mem
+    if not isinstance(data, dict):
+        return mem
+    for key in ("seen", "known"):
+        if isinstance(data.get(key), list):
+            mem[key] = [x for x in data[key] if isinstance(x, str)][-_MEM_KEEP:]
+    for key in ("ignored_in_a_row", "skip_checks"):
+        v = data.get(key)
+        if isinstance(v, int) and not isinstance(v, bool) and v >= 0:
+            mem[key] = v
+    return mem
+
+
+def _mem_save(root: str | None, mem: dict) -> None:
+    """Atomic write. Callers hold `_lock`. A failed write loses only learning."""
+    path = _mem_path(root)
+    if not path:
+        return
+    tmp = f"{path}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(mem, fh)
+        os.replace(tmp, path)
+    except OSError:
+        logger.warning("could not save %s", path, exc_info=True)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _claude_store_glob() -> str:
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude")
+    return os.path.join(base, "plugins", "store",
+                        "cc-plugin-you-should-know_builtin-*.json")
+
+
+def _claude_lists() -> tuple:
+    """`(seen, known)` from Claude Code's own heads-up plugin store, unioned
+    over every matching file. READ-ONLY: Claude Code rewrites these itself.
+    Any error means empty lists."""
+    seen: list = []
+    known: list = []
+    try:
+        for path in sorted(glob.glob(_claude_store_glob())):
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            for key, out in (("seen", seen), ("known", known)):
+                if isinstance(data.get(key), list):
+                    out.extend(x for x in data[key] if isinstance(x, str))
+    except Exception:  # noqa: BLE001 — a hint source, never a fault
+        return [], []
+    return seen, known
+
+
+def _merged(mem: dict) -> tuple:
+    """Our lists plus Claude Code's, `_norm`-deduped, last 50 of each."""
+    cs, ck = _claude_lists()
+    out = []
+    for ours, theirs in ((mem["seen"], cs), (mem["known"], ck)):
+        by: dict = {}
+        for x in ours + theirs:
+            by.pop(_norm(x), None)
+            by[_norm(x)] = x
+        out.append(list(by.values())[-_MEM_KEEP:])
+    return out[0], out[1]
+
+
+def _remember(mem: dict, key: str, line: str) -> None:
+    """Append `line` to a list, case-insensitively deduped, last 50 kept."""
+    n = _norm(line)
+    mem[key] = [x for x in mem[key] if _norm(x) != n] + [line]
+    mem[key] = mem[key][-_MEM_KEEP:]
 
 
 # -------------------------------------------------------------- scheduler
@@ -422,6 +548,9 @@ def _worker(agent, run_id: str, run_dir: str, turn_index: int) -> None:
             st["note_id"] = uuid.uuid4().hex[:12]
             st["offered_turn"] = turn_index
             _save(st)
+            mem = _mem_read(_runs_root)
+            _remember(mem, "seen", note["learn"])
+            _mem_save(_runs_root, mem)
         st["inflight"] = False
 
 
@@ -450,6 +579,13 @@ def _poll(agent, run_id: str) -> dict:
         with _lock:
             st = _run_state(run_id)
             if st["offered_turn"] == offered and st["note"] is not None:
+                if st["note_id"] not in st["dismissed"]:
+                    # Expired unanswered: back off the checks.
+                    mem = _mem_read(_runs_root)
+                    n = mem["ignored_in_a_row"] + 1
+                    mem["ignored_in_a_row"] = n
+                    mem["skip_checks"] = 0 if n <= 2 else min(_MAX_SKIP, 2 ** (n - 3))
+                    _mem_save(_runs_root, mem)
                 st["note"] = None
                 _save(st)
     with _lock:
@@ -477,6 +613,12 @@ def _poll(agent, run_id: str) -> dict:
             if any(t == turn_index for t, _ in st["checked"]):
                 return {"state": "idle"}
             key = (turn_index, -1)
+        mem = _mem_read(_runs_root)
+        if mem["skip_checks"] > 0:
+            mem["skip_checks"] -= 1
+            _mem_save(_runs_root, mem)
+            st["checked"].add(key)
+            return {"state": "idle"}
         st["checked"].add(key)
         st["inflight"] = True
     threading.Thread(target=_worker, args=(agent, run_id, run_dir, turn_index),
@@ -484,7 +626,10 @@ def _poll(agent, run_id: str) -> dict:
     return {"state": "checking"}
 
 
-def dismiss(run_id: str, note_id: str) -> None:
+_ANSWERS = ("got_it", "dismiss", "chat")
+
+
+def dismiss(run_id: str, note_id: str, answer: str = "dismiss") -> None:
     if not run_id or run_id.startswith(".") or any(c in run_id for c in "/\\:"):
         return
     with _lock:
@@ -492,6 +637,14 @@ def dismiss(run_id: str, note_id: str) -> None:
         if st is None and not (_runs_root and os.path.isdir(os.path.join(_runs_root, run_id))):
             return
         st = _run_state(run_id)
+        if answer not in _ANSWERS:
+            answer = "dismiss"
+        mem = _mem_read(_runs_root)
+        if answer == "got_it" and st["note_id"] == note_id and st["note"]:
+            _remember(mem, "known", st["note"].get("learn") or "")
+        mem["ignored_in_a_row"] = 0
+        mem["skip_checks"] = 0
+        _mem_save(_runs_root, mem)
         st["dismissed"].add(note_id)
         if st["note_id"] == note_id:
             st["note"] = None

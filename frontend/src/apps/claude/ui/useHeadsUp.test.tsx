@@ -109,7 +109,7 @@ test("stopped but still checking keeps polling until it settles", async () => {
 });
 
 test("dismiss and gotIt post to the dismiss endpoint and hide the card", async () => {
-  for (const name of ["dismiss", "gotIt"] as const) {
+  for (const [name, answer] of [["dismiss", "dismiss"], ["gotIt", "got_it"]] as const) {
     posts = [];
     answers = [{ state: "note", id: "n1", note: NOTE }];
     const r = mount({ runId: "r1", running: true, enabled: true, userTurns: 0 });
@@ -118,7 +118,7 @@ test("dismiss and gotIt post to the dismiss endpoint and hide the card", async (
     await act(async () => {
       await api[name]();
     });
-    expect(posts).toEqual([{ run_id: "r1", id: "n1" }]);
+    expect(posts).toEqual([{ run_id: "r1", id: "n1", answer }]);
     expect(api.note).toBeNull();
     act(() => r.unmount());
     mounted.pop();
@@ -216,7 +216,7 @@ test("askInChat on success hides the card and posts the dismiss after the send",
     await api.askInChat();
   });
   expect(order).toEqual(["send"]);
-  expect(posts).toEqual([{ run_id: "r1", id: "n1" }]);
+  expect(posts).toEqual([{ run_id: "r1", id: "n1", answer: "chat" }]);
   expect(api.note).toBeNull();
 });
 

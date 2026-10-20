@@ -7,6 +7,7 @@ a stub CLI, the route, the launch.json that `_start` leaves, and the pref.
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -182,6 +183,16 @@ class FakeAgent:
     @staticmethod
     def _not_a_turn_row(row):
         return row.get("type") in ("rate_limit_event", "stream_event")
+
+
+@pytest.fixture(autouse=True)
+def fake_claude_store(tmp_path, monkeypatch):
+    """Never read the real ~/.claude: point Claude Code's store at tmp_path."""
+    store = tmp_path / "claude-store"
+    store.mkdir()
+    monkeypatch.setattr(headsup, "_claude_store_glob",
+                        lambda: str(store / "cc-plugin-you-should-know_builtin-*.json"))
+    return store
 
 
 @pytest.fixture(autouse=True)
@@ -591,3 +602,215 @@ def test_expiry_after_restart_clears_and_persists(runs, gen):
     assert saved["note"] is None
     headsup._state.clear()
     assert headsup.poll(FakeAgent(runs), "r1")["state"] == "idle"
+
+
+# ------------------------------------------------------- feedback memory
+
+def _mem_file(runs):
+    return runs.parent / "headsup_memory.json"
+
+
+def _mem(runs):
+    return json.loads(_mem_file(runs).read_text())
+
+
+def _hold_note(runs, learn="Tests are skipped", nid="n1", offered=0):
+    """Put a shown note into r1's state (after one poll registered the root)."""
+    headsup.poll(FakeAgent(runs), "r1")
+    with headsup._lock:
+        st = headsup._run_state("r1")
+        st["note"] = dict(NOTE_FIXTURE, learn=learn)
+        st["note_id"] = nid
+        st["offered_turn"] = offered
+
+
+def _expire_once(runs, nid="n1"):
+    _hold_note(runs, nid=nid)
+    _rows(runs, _asst(1), RESULT, _asst(1), RESULT, _asst(1))
+    assert headsup.poll(FakeAgent(runs), "r1") == {"state": "idle"}
+
+
+def test_stored_note_lands_in_seen(runs, gen):
+    _, answer = gen
+    answer["note"] = dict(NOTE_FIXTURE, learn="Costs real money.")
+    _rows(runs, _asst(7))
+    assert _wait(FakeAgent(runs), 0)["state"] == "note"
+    assert _mem(runs)["seen"] == ["Costs real money."]
+
+
+def test_got_it_lands_in_known_and_dismiss_does_not(runs):
+    _hold_note(runs, learn="Alpha thing", nid="a")
+    headsup.dismiss("r1", "a", "dismiss")
+    assert _mem(runs)["known"] == []
+    _hold_note(runs, learn="Beta thing", nid="b")
+    headsup.dismiss("r1", "b", "got_it")
+    assert _mem(runs)["known"] == ["Beta thing"]
+    _hold_note(runs, learn="Gamma thing", nid="c")
+    headsup.dismiss("r1", "c", "bogus")          # unknown answer == dismiss
+    assert _mem(runs)["known"] == ["Beta thing"]
+
+
+def test_memory_lists_dedupe_and_cap(runs):
+    _hold_note(runs, learn="Same line.", nid="a")
+    headsup.dismiss("r1", "a", "got_it")
+    _hold_note(runs, learn="same line", nid="b")
+    headsup.dismiss("r1", "b", "got_it")
+    assert len(_mem(runs)["known"]) == 1
+    for i in range(60):
+        _hold_note(runs, learn=f"line {i}", nid=f"x{i}")
+        headsup.dismiss("r1", f"x{i}", "got_it")
+    known = _mem(runs)["known"]
+    assert len(known) == 50 and known[-1] == "line 59"
+
+
+def _generate_prompt(agent, tmp_path, monkeypatch, out=FULL):
+    log = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("HU_CALLS", str(log))
+    monkeypatch.setenv("HU_OUT", out)
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", write_stub_cli(
+        tmp_path / "bin", _STUB.format(python=sys.executable)))
+    run_dir = _launch_run(agent, tmp_path)
+    note = headsup.generate(agent, run_dir)
+    call = json.loads(log.read_text().splitlines()[0])
+    text = json.loads(call["stdin"].strip())["message"]["content"][0]["text"]
+    return note, text
+
+
+def _write_mem(agent, **mem):
+    base = {"seen": [], "known": [], "ignored_in_a_row": 0, "skip_checks": 0}
+    base.update(mem)
+    path = os.path.join(os.path.dirname(agent.RUNS), "headsup_memory.json")
+    with open(path, "w") as fh:
+        json.dump(base, fh)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX spawn path")
+def test_prompt_includes_seen_and_known_sections_only_when_non_empty(
+        agent, tmp_path, monkeypatch):
+    _, text = _generate_prompt(agent, tmp_path, monkeypatch)
+    assert text == headsup.HEADSUP_PROMPT
+    _write_mem(agent, seen=["Seen one"], known=["Known one"])
+    (tmp_path / "calls.jsonl").unlink()
+    shutil.rmtree(os.path.join(agent.RUNS, "r1"))
+    shutil.rmtree(tmp_path / "bin")
+    _, text = _generate_prompt(agent, tmp_path, monkeypatch)
+    assert text.startswith(headsup.HEADSUP_PROMPT)
+    assert ("\nThese notes were already shown to the user recently. "
+            "Do not offer them again:\n- Seen one") in text
+    assert ("\nThe user said they already understood these topics. "
+            "Do not offer them:\n- Known one") in text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX spawn path")
+@pytest.mark.parametrize("field", ["seen", "known"])
+def test_reply_matching_seen_or_known_is_dropped(agent, tmp_path, monkeypatch, field):
+    _write_mem(agent, **{field: ["THE build quietly skips the tests!"]})
+    note, _ = _generate_prompt(agent, tmp_path, monkeypatch)
+    assert note is None
+
+
+@pytest.mark.parametrize("n,skip", [(1, 0), (2, 0), (3, 1), (4, 2), (5, 4),
+                                    (6, 8), (7, 16), (8, 16), (9, 16)])
+def test_ignored_expiries_back_off(runs, n, skip):
+    for i in range(n):
+        _expire_once(runs, nid=f"n{i}")
+        # next offer is a fresh note in a fresh turn count
+        _rows(runs)
+        headsup._steps_cache.clear()
+    mem = _mem(runs)
+    assert mem["ignored_in_a_row"] == n and mem["skip_checks"] == skip
+
+
+def test_dismissed_then_expired_note_is_not_ignored(runs):
+    _hold_note(runs)
+    headsup.dismiss("r1", "n1", "dismiss")
+    _rows(runs, _asst(1), RESULT, _asst(1), RESULT, _asst(1))
+    headsup.poll(FakeAgent(runs), "r1")
+    assert _mem(runs)["ignored_in_a_row"] == 0
+    # even if a dismissed id is still held as the note, expiry must not count
+    _hold_note(runs, nid="n2")
+    with headsup._lock:
+        headsup._run_state("r1")["dismissed"].add("n2")
+    headsup.poll(FakeAgent(runs), "r1")
+    assert _mem(runs)["ignored_in_a_row"] == 0
+
+
+def test_any_answer_resets_both_counters(runs):
+    for i in range(3):
+        _expire_once(runs, nid=f"n{i}")
+        headsup._steps_cache.clear()
+    assert _mem(runs)["skip_checks"] == 1
+    for answer in ("got_it", "dismiss", "chat"):
+        _mem_file(runs).write_text(json.dumps(
+            {"seen": [], "known": [], "ignored_in_a_row": 5, "skip_checks": 4}))
+        _hold_note(runs, nid=answer)
+        headsup.dismiss("r1", answer, answer)
+        mem = _mem(runs)
+        assert mem["ignored_in_a_row"] == 0 and mem["skip_checks"] == 0
+
+
+def test_skip_checks_skips_a_due_check_and_decrements(runs, gen):
+    calls, _ = gen
+    agent = FakeAgent(runs)
+    headsup.poll(agent, "r1")
+    _mem_file(runs).write_text(json.dumps(
+        {"seen": [], "known": [], "ignored_in_a_row": 3, "skip_checks": 1}))
+    _rows(runs, _asst(6))
+    assert headsup.poll(agent, "r1") == {"state": "idle"}
+    assert calls == []
+    assert _mem(runs)["skip_checks"] == 0
+    # the skipped bucket is not retried; the next bucket checks again
+    assert headsup.poll(agent, "r1") == {"state": "idle"}
+    assert calls == []
+    _rows(runs, _asst(12))
+    assert headsup.poll(agent, "r1")["state"] == "checking"
+    _wait(agent, None)
+    assert len(calls) == 1
+
+
+def test_corrupt_memory_file_is_empty(runs, gen):
+    _mem_file(runs).write_text("{not json")
+    assert headsup._mem_read(str(runs)) == {
+        "seen": [], "known": [], "ignored_in_a_row": 0, "skip_checks": 0}
+    _mem_file(runs).write_text("[1]")
+    assert headsup._mem_read(str(runs))["seen"] == []
+    # and it recovers on the next write
+    _, answer = gen
+    answer["note"] = dict(NOTE_FIXTURE, learn="After corruption")
+    _rows(runs, _asst(7))
+    assert _wait(FakeAgent(runs), 0)["state"] == "note"
+    assert _mem(runs)["seen"] == ["After corruption"]
+
+
+def test_route_passes_answer_through(home, monkeypatch):
+    seen = []
+    monkeypatch.setattr(headsup, "dismiss", lambda *a: seen.append(a))
+    c = TestClient(create_app(start_dir=str(home)))
+    c.post("/api/claude-sessions/headsup/dismiss",
+           json={"run_id": "r1", "id": "abc", "answer": "got_it"}, headers=FUSED)
+    c.post("/api/claude-sessions/headsup/dismiss",
+           json={"run_id": "r1", "id": "abc"}, headers=FUSED)
+    assert seen == [("r1", "abc", "got_it"), ("r1", "abc", "dismiss")]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX spawn path")
+def test_claude_code_known_list_feeds_prompt_and_dedupe(
+        agent, tmp_path, monkeypatch, fake_claude_store):
+    (fake_claude_store / "cc-plugin-you-should-know_builtin-abc.json").write_text(
+        json.dumps({"seen": [], "known": ["The build quietly skips the tests"],
+                    "typedPastInARow": 9, "looksToSkip": 9}))
+    note, text = _generate_prompt(agent, tmp_path, monkeypatch)
+    assert note is None
+    assert "- The build quietly skips the tests" in text
+    # read-only: nothing of ours was written into Claude's file
+    assert "skip_checks" not in (fake_claude_store / "cc-plugin-you-should-know_builtin-abc.json").read_text()
+
+
+def test_claude_lists_union_and_corrupt_ignored(fake_claude_store):
+    assert headsup._claude_lists() == ([], [])
+    (fake_claude_store / "cc-plugin-you-should-know_builtin-1.json").write_text(
+        json.dumps({"seen": ["a", 5], "known": ["k1"]}))
+    (fake_claude_store / "cc-plugin-you-should-know_builtin-2.json").write_text("{bad")
+    (fake_claude_store / "cc-plugin-you-should-know_builtin-3.json").write_text(
+        json.dumps({"seen": "oops", "known": ["k2"]}))
+    assert headsup._claude_lists() == (["a"], ["k1", "k2"])
