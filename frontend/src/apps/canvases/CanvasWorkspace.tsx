@@ -1271,29 +1271,30 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       {startError && !error && (
         <ErrorBanner>{`Could not start syncing this canvas (retrying): ${startError}`}</ErrorBanner>
       )}
-      {(sync || owned) && (
-        <SyncStrip
-          name={name}
-          server={sync}
-          queue={relayQueue}
-          failure={relayFailure}
-          owned={owned}
-          live={live}
-          open={drawerOpen}
-          onToggle={() => setDrawerOpen((o) => !o)}
-          workbenchUrl={
-            baseUrl && handle
-              ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
-              : null
-          }
-          pull={{
-            busy: pullBusy,
-            error: pullError,
-            disabled: pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
-            onPull: () => void onPull(),
-          }}
-        />
-      )}
+      {/* Always up ("Connecting…" before the first state): it carries the
+          way back to the listing, which must not wait on sync. */}
+      <SyncStrip
+        name={name}
+        server={sync}
+        queue={relayQueue}
+        failure={relayFailure}
+        owned={owned}
+        live={live}
+        open={drawerOpen}
+        onToggle={() => setDrawerOpen((o) => !o)}
+        onBack={() => navigateUrl("/canvases")}
+        workbenchUrl={
+          baseUrl && handle
+            ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+            : null
+        }
+        pull={{
+          busy: pullBusy,
+          error: pullError,
+          disabled: pullBusy || s2dState === "pulling" || pushLeg?.state === "pushing",
+          onPull: () => void onPull(),
+        }}
+      />
       {drawerOpen && (sync || owned) && (
         <SyncDrawer
           name={name}

@@ -82,6 +82,7 @@ export function SyncStrip({
   pull,
   open,
   onToggle,
+  onBack,
   workbenchUrl,
 }: {
   name: string;
@@ -95,6 +96,9 @@ export function SyncStrip({
   pull: PullControl;
   open: boolean;
   onToggle: () => void;
+  /** Back to the canvases listing (/canvases). The strip is the page's only
+   *  top chrome, so the way out lives at its left end. */
+  onBack: () => void;
   /** The hosted workbench editor for this canvas (no embed flags); null
    *  until the base URL and handle are known. Shown as "Open in workbench"
    *  while every leg is green. */
@@ -145,6 +149,20 @@ export function SyncStrip({
         userSelect: "none",
       }}
     >
+      <button
+        type="button"
+        className="btn"
+        style={{ padding: "1px 10px", fontSize: 12, flex: "none" }}
+        aria-label="Back to canvases"
+        title="Back to canvases"
+        onClick={(e) => {
+          e.stopPropagation();
+          onBack();
+        }}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        ← Canvases
+      </button>
       <Dot level={level} />
       <span
         style={{
