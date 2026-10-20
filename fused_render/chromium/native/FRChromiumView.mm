@@ -100,7 +100,7 @@ enum FRMenuCommand {
 - (void)addressChanged:(const CefString &)url;
 - (CefRefPtr<CefClient>)client;
 - (FRChromiumEngine *)engine;
-- (CefColor)backgroundCefColor;
+- (cef_color_t)backgroundCefColor;
 @end
 
 // A DevTools window CEF opens for Inspect Element: its own top-level window,
@@ -407,21 +407,23 @@ class FRClient : public CefClient,
     NSString *defaultText = FRString(default_prompt_text);
     FRChromiumView *view = view_;
     switch (dialog_type) {
-      case JSDIALOGTYPE_ALERT:
+      case JSDIALOGTYPE_ALERT: {
         if (![d respondsToSelector:@selector(chromiumView:runJavaScriptAlert:)]) return false;
         dispatch_async(dispatch_get_main_queue(), ^{
           [view.delegate chromiumView:view runJavaScriptAlert:message];
           callback->Continue(true, CefString());
         });
         return true;
-      case JSDIALOGTYPE_CONFIRM:
+      }
+      case JSDIALOGTYPE_CONFIRM: {
         if (![d respondsToSelector:@selector(chromiumView:runJavaScriptConfirm:)]) return false;
         dispatch_async(dispatch_get_main_queue(), ^{
           BOOL ok = [view.delegate chromiumView:view runJavaScriptConfirm:message];
           callback->Continue(ok, CefString());
         });
         return true;
-      case JSDIALOGTYPE_PROMPT:
+      }
+      case JSDIALOGTYPE_PROMPT: {
         if (![d respondsToSelector:@selector(chromiumView:runJavaScriptPrompt:defaultText:)]) {
           return false;
         }
@@ -432,6 +434,7 @@ class FRClient : public CefClient,
           callback->Continue(answer != nil, answer ? CefString(answer.UTF8String) : CefString());
         });
         return true;
+      }
       default:
         break;
     }
@@ -797,7 +800,7 @@ class FRClient : public CefClient,
   self.layer.backgroundColor = draws ? NSColor.windowBackgroundColor.CGColor : NSColor.clearColor.CGColor;
 }
 
-- (CefColor)backgroundCefColor {
+- (cef_color_t)backgroundCefColor {
   NSColor *c = self.window.backgroundColor ?: NSColor.windowBackgroundColor;
   c = [c colorUsingColorSpace:NSColorSpace.sRGBColorSpace] ?: c;
   CGFloat r = 0, g = 0, b = 0, a = 1;
