@@ -165,7 +165,16 @@ static const int64_t kMaxTimerDelayMs = 1000 / 30;
   // none of it is a Chromium switch.
   settings.command_line_args_disabled = true;
   CefString(&settings.framework_dir_path) = framework.fileSystemRepresentation;
-  CefString(&settings.main_bundle_path) = [[NSBundle mainBundle] bundlePath].fileSystemRepresentation;
+  // `main_bundle_path` travels to every helper as --main-bundle-path and
+  // becomes its outer bundle; Chromium's AmIBundled() is "outer bundle ends
+  // in .app", and a non-bundled host (python -m fused_render.app: the
+  // "bundle" is .venv/bin) makes the GPU helper look for libGLESv2.dylib
+  // beside its own executable instead of in the framework's Libraries, and
+  // exit. Left empty, each helper's own .app is its bundle, which is right.
+  NSString *mainBundle = [[NSBundle mainBundle] bundlePath];
+  if ([mainBundle hasSuffix:@".app"]) {
+    CefString(&settings.main_bundle_path) = mainBundle.fileSystemRepresentation;
+  }
   CefString(&settings.browser_subprocess_path) = helper.fileSystemRepresentation;
   CefString(&settings.root_cache_path) = cachePath.fileSystemRepresentation;
   CefString(&settings.cache_path) = cachePath.fileSystemRepresentation;
