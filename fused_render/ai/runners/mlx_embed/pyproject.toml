@@ -24,11 +24,7 @@
 #                   transformers' `AutoProcessor` even on this engine — see
 #                   `worker.py`'s module docstring); named here rather than
 #                   assumed because both are load-bearing.
-#   mlx-vlm         (`>=0.7.9,<0.8`, the floor `mlx_text` carries too, from PyPI
-#                   as a wheel: this folder used to pin a GitHub source archive
-#                   with `allow_build = true` because `embedding_gemma2` was not
-#                   in a release yet; 0.7.9 ships it, so the archive and the
-#                   setuptools build it forced are gone) loads EmbeddingGemma 2 (`embedding_gemma2`), which
+#   mlx-vlm         loads EmbeddingGemma 2 (`embedding_gemma2`), which
 #                   mlx-embeddings has no module for: one language model with
 #                   a vision tower and an audio tower, read through
 #                   `embedding_loader.load_embedding_model` and its own
@@ -46,6 +42,11 @@
 #   psutil          the RSS half of "how much memory is this costing" — the
 #                   MLX half comes from mlx's own allocator (see `memory()`),
 #                   exactly `mlx_text/pyproject.toml`'s reasoning.
+#
+# mlx-vlm comes from PyPI as a wheel at `>=0.7.9,<0.8`, the floor `mlx_text`
+# carries too. This folder used to pin a GitHub source archive with
+# `allow_build = true` because `embedding_gemma2` was not in a release yet;
+# 0.7.9 ships it, so the archive and the setuptools build it forced are gone.
 [project]
 name = "fused-render-runner-mlx-embed"
 version = "0.1.0"
