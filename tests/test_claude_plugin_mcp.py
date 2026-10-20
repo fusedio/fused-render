@@ -107,3 +107,49 @@ def test_our_server_wins_a_key_collision(agent, home, tmp_path, monkeypatch):
     (run / "perm").mkdir(parents=True)
     cfg = json.load(open(agent._write_mcp_config(str(run), False, strict=True)))["mcpServers"]
     assert cfg[agent.PERMISSION_SERVER]["command"] != "evil"
+
+
+def _one_plugin(tmp_path, manifest=None, mcp_json=None, files=None):
+    """A single enabled plugin `p@mk`; returns (claude home, install root)."""
+    h = tmp_path / "claude1"
+    root = tmp_path / "proot"
+    if manifest is not None:
+        _w(str(root / ".claude-plugin" / "plugin.json"), manifest)
+    if mcp_json is not None:
+        _w(str(root / ".mcp.json"), mcp_json)
+    for rel, body in (files or {}).items():
+        _w(str(root / rel), body)
+    _w(str(h / "settings.json"), {"enabledPlugins": {"p@mk": True}})
+    _w(str(h / "plugins" / "installed_plugins.json"), {"plugins": {
+        "p@mk": [{"scope": "user", "installPath": str(root)}]}})
+    return h, str(root)
+
+
+def test_a_string_manifest_path_expands_the_plugin_root(agent, tmp_path):
+    h, root = _one_plugin(
+        tmp_path, manifest={"mcpServers": "${CLAUDE_PLUGIN_ROOT}/cfg/servers.json"},
+        files={"cfg/servers.json": {"viaroot": {"command": "c"}}})
+    assert set(agent._plugin_mcp_servers(str(h))) == {"plugin_p_viaroot"}
+
+
+def test_url_cwd_and_headers_expand_the_plugin_root(agent, tmp_path):
+    h, root = _one_plugin(tmp_path, mcp_json={"mcpServers": {
+        "web": {"type": "http", "url": "${CLAUDE_PLUGIN_ROOT}/sock",
+                "headers": {"X-Root": "${CLAUDE_PLUGIN_ROOT}", "X-N": 5}},
+        "proc": {"command": "run", "cwd": "${CLAUDE_PLUGIN_ROOT}/work"}}})
+    got = agent._plugin_mcp_servers(str(h))
+    assert got["plugin_p_web"]["url"] == root + "/sock"
+    assert got["plugin_p_web"]["headers"] == {"X-Root": root, "X-N": 5}
+    assert got["plugin_p_proc"]["cwd"] == root + "/work"
+
+
+def test_http_and_sse_specs_get_no_env_but_stdio_does(agent, tmp_path):
+    h, root = _one_plugin(tmp_path, mcp_json={"mcpServers": {
+        "h": {"type": "http", "url": "https://x.test/mcp"},
+        "u": {"url": "https://y.test/sse"},
+        "s": {"type": "sse", "url": "https://z.test/sse"},
+        "c": {"command": "node"}}})
+    got = agent._plugin_mcp_servers(str(h))
+    for name in ("h", "u", "s"):
+        assert "env" not in got[f"plugin_p_{name}"], name
+    assert got["plugin_p_c"]["env"] == {"CLAUDE_PLUGIN_ROOT": root}

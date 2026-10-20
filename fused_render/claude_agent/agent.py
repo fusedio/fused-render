@@ -670,8 +670,12 @@ def _plugin_mcp_servers(claude_home: str) -> dict:
     `plugins/installed_plugins.json` (the `user`-scope install, else the
     first); definitions from `.claude-plugin/plugin.json` `mcpServers` (a dict,
     or a path to a JSON file) else `.mcp.json`. `${CLAUDE_PLUGIN_ROOT}` is
-    expanded in command, args and env values, and exported as an env var.
-    Anything unreadable skips that plugin: this must never fail a spawn."""
+    expanded in the manifest path, command, args, cwd, url and env/header
+    values, and exported as an env var to stdio servers only (http/sse specs
+    get no `env`). Only user-scope `enabledPlugins` in settings.json count:
+    plugins enabled per project or locally (`settings.local.json`) are not
+    supported. Anything unreadable skips that plugin: this must never fail a
+    spawn."""
     def load(path):
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
@@ -703,7 +707,7 @@ def _plugin_mcp_servers(claude_home: str) -> dict:
                 manifest = {}
             declared = manifest.get("mcpServers") if isinstance(manifest, dict) else None
             if isinstance(declared, str):
-                declared = load(os.path.join(root, declared))
+                declared = load(os.path.join(root, expand(declared, root)))
                 if isinstance(declared, dict) and isinstance(declared.get("mcpServers"), dict):
                     declared = declared["mcpServers"]
             if isinstance(declared, dict):
@@ -721,9 +725,16 @@ def _plugin_mcp_servers(claude_home: str) -> dict:
                     spec["command"] = expand(spec["command"], root)
                 if isinstance(spec.get("args"), list):
                     spec["args"] = [expand(a, root) for a in spec["args"]]
-                env = {k: expand(v, root) for k, v in (spec.get("env") or {}).items()}
-                env["CLAUDE_PLUGIN_ROOT"] = root
-                spec["env"] = env
+                for field in ("url", "cwd"):
+                    if field in spec:
+                        spec[field] = expand(spec[field], root)
+                if isinstance(spec.get("headers"), dict):
+                    spec["headers"] = {k: expand(v, root) for k, v in spec["headers"].items()}
+                remote = "url" in spec or spec.get("type") in ("http", "sse")
+                if isinstance(spec.get("env"), dict):
+                    spec["env"] = {k: expand(v, root) for k, v in spec["env"].items()}
+                if "command" in spec and not remote:
+                    spec["env"] = {**(spec.get("env") or {}), "CLAUDE_PLUGIN_ROOT": root}
                 found[f"plugin_{plugin}_{name}"] = spec
             out.update(found)
         except Exception:  # noqa: BLE001 — one bad plugin must not cost the spawn
