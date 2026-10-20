@@ -114,6 +114,12 @@ export function CallParamsControl({ prefs, onChange }: PrefControlProps) {
 export function ClaudeMaxSessionsControl({ prefs, onChange }: PrefControlProps) {
   const { busy, error, run } = usePrefWrite(onChange);
   const current = prefs.claude_sessions?.max_concurrent ?? 10;
+  const choices = [4, 6, 8, 10, 12, 16];
+  // A value set by hand in prefs.json is still the truth: show it, ordered in.
+  if (current > 0 && !choices.includes(current)) {
+    choices.push(current);
+    choices.sort((a, b) => a - b);
+  }
   return (
     <SettingRow
       id="claude-max-sessions"
@@ -122,12 +128,7 @@ export function ClaudeMaxSessionsControl({ prefs, onChange }: PrefControlProps) 
           id="claude-max-sessions"
           value={String(current)}
           options={[
-            { key: "4", label: "4" },
-            { key: "6", label: "6" },
-            { key: "8", label: "8" },
-            { key: "10", label: "10" },
-            { key: "12", label: "12" },
-            { key: "16", label: "16" },
+            ...choices.map((n) => ({ key: String(n), label: String(n) })),
             { key: "0", label: "Unlimited" },
           ]}
           disabled={busy}
