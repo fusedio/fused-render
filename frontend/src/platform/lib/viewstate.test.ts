@@ -1,14 +1,15 @@
 // The viewstate map's one non-trivial operation: dropping a param that the app
 // no longer honours from every entry at once. Split out as a pure function over
-// the map because there is no localStorage in a bun test (and no DOM at all) —
-// the storage wrapper around it is two lines that cannot be got wrong, the
-// rewriting of every folder's query string is not.
+// the map because there is no server in a bun test (and no DOM at all) — the
+// store wrapper around it (the layout document, platform/lib/ui-layout.ts,
+// D1386) is a few lines that cannot be got wrong, the rewriting of every
+// folder's query string is not.
 import { describe, expect, test } from "bun:test";
 import { parseViewStateMap, stripParam } from "@platform/lib/viewstate";
 
-// What comes back out of localStorage is a STRING WRITTEN BY SOMEONE ELSE —
-// an older build, a foreign build, a hand-edited devtools value, a half-written
-// key. The store's whole type contract (Record<string, string>) rests on this
+// What comes back out of the store was WRITTEN BY SOMEONE ELSE — an older
+// build, the one-shot import of an old localStorage string, a hand-edited
+// file. The store's whole type contract (Record<string, string>) rests on this
 // one function, and it used to be a bare `JSON.parse(raw) as Record<...>`: a
 // cast, which checks nothing.
 //
@@ -21,6 +22,12 @@ import { parseViewStateMap, stripParam } from "@platform/lib/viewstate";
 describe("parseViewStateMap", () => {
   test("reads a stored map", () => {
     expect(parseViewStateMap('{"/a":"?sort=size"}')).toEqual({ "/a": "?sort=size" });
+  });
+
+  test("reads the layout document's object the same way it reads the old string", () => {
+    expect(parseViewStateMap({ "/a": "?sort=size", "/b": 42 })).toEqual({ "/a": "?sort=size" });
+    expect(parseViewStateMap(undefined)).toEqual({});
+    expect(parseViewStateMap(["?sort=size"])).toEqual({});
   });
 
   test("nothing stored", () => {

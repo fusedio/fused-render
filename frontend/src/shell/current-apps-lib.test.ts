@@ -135,6 +135,13 @@ describe("CurrentAppsSection's half of the order", () => {
     expect(SECTION).toContain("return y.at - x.at || x.i - y.i;");
   });
 
+  it("keeps the fold in the ui-layout doc, not in localStorage", () => {
+    expect(SECTION).toContain("getUiLayout().currentAppsCollapsed ?? false");
+    expect(SECTION).toContain("patchUiLayout((d) => ({ ...d, currentAppsCollapsed: next }))");
+    // The old key's import is ui-layout.ts's, with the rest of the layout.
+    expect(SECTION).not.toContain("fused-render:current-apps-collapsed");
+  });
+
   it("reads the desk from its own endpoint, not from the pulse", () => {
     expect(SECTION).toContain("getCurrentApps()");
     expect(SECTION).toContain("removeCurrentApp(app.path)");
