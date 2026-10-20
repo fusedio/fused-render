@@ -237,7 +237,7 @@ test("lists render without expanding", async () => {
   // one Errors list: the tile toggles the inline panel, the lists grid has no duplicate
   const lists = byClass(r, "monitor-lists")[0];
   expect(text(lists)).not.toContain("Errors and outages");
-  expect(lists.findAll((n) => n.props.className === "monitor-list-card")).toHaveLength(2);
+  expect(lists.findAll((n) => n.props.className === "monitor-list-card")).toHaveLength(3);
   // slowest targets: basename shown, full path in the title, short timing text
   const li = lists.find((n) => n.type === "li" && n.props.title === "/x/slow.py");
   expect(text(li)).toContain("slow.py");
