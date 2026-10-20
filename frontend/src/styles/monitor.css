@@ -1187,7 +1187,7 @@ th[aria-sort="descending"] .monitor-sort {
   background: var(--fg-faint);
 }
 
-.monitor-reasons li:first-child {
+.monitor-reasons li.is-ok {
   font-size: 14px;
   font-weight: 600;
 }
@@ -1318,9 +1318,17 @@ th[aria-sort="descending"] .monitor-sort {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.monitor-tile-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .monitor-tile-dot {
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border-radius: 50%;

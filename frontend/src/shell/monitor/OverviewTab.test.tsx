@@ -106,6 +106,23 @@ test("an ok verdict is still a headline row: All good plus the headline figures;
   expect(text(row)).toContain("Copy report");
 });
 
+test("an ok verdict drops a headline figure that is unavailable (no bare CPU dash)", async () => {
+  const dash = {
+    ...DASH,
+    verdict: { level: "ok", headline: "Nothing looks wrong", reasons: [] },
+    cpu: { error: "boom" },
+    timeline: {
+      events: [],
+      points: [1, 2, 3].map((i) => ({ t: 990 + i, rps: i, in_flight: i, pool: 1, lag_ms: 1, cpu: null, swap: GB })),
+    },
+  } as unknown as Dashboard;
+  const r = await mount(() => {}, { load: async () => dash });
+  const li = byClass(r, "monitor-reasons")[0].findAll((n) => n.type === "li")[0];
+  expect(text(li)).toContain("requests");
+  expect(text(li)).not.toContain("CPU");
+  expect(text(li)).not.toContain("–");
+});
+
 test("the errors tile toggles an inline panel of recent errors", async () => {
   const dash = {
     ...DASH,

@@ -6,10 +6,11 @@
 // figures); any non-headline
 // tile that is warn/bad; four chart cards (Requests, Connections, Server, CPU,
 // the Processes tab's card form) over the since-restart window; and
-// behind "Show all checks": the remaining tiles, the errors tail, stalled jobs,
-// the slowest .py targets and the disk footer. Record 60s / Copy report sit
+// behind "Show all checks": the remaining tiles, stalled jobs, the slowest .py
+// targets and the disk footer. Record 60s / Copy report sit
 // right-aligned on the window heading's row. The errors tile toggles an inline
-// panel of the recent errors instead of linking anywhere.
+// panel of the recent errors instead of linking anywhere (the errors list is
+// reached only through that tile).
 //
 // DATA: `GET /api/system/dashboard` every 2 s while mounted and the document
 // visible. Every section is computed independently on the server, so one that
@@ -214,8 +215,13 @@ export default function OverviewTab({
   ];
 
   const okSummary = cards
-    .map((c) => (c.key === "requests" ? `${c.figure} requests` : c.key === "server" ? c.figure : c.key === "cpu" ? `CPU ${c.figure}` : ""))
-    .filter((t) => t && !t.startsWith("–"))
+    .flatMap((c) => {
+      if (c.figure === "–" || !c.figure) return [];
+      if (c.key === "requests") return [`${c.figure} requests`];
+      if (c.key === "server") return [c.figure];
+      if (c.key === "cpu") return [`CPU ${c.figure}`];
+      return [];
+    })
     .join(" · ");
 
   const errorsInTop = tiles.some((t) => t.key === "errors");
@@ -239,7 +245,7 @@ export default function OverviewTab({
         >
           <span className="monitor-tile-title">
             <span className="monitor-tile-dot" aria-hidden="true" />
-            {t.title}
+            <span className="monitor-tile-title-text">{t.title}</span>
           </span>
           <span className="monitor-tile-value">{t.primary}</span>
           <span className="monitor-tile-base">{t.caption || " "}</span>
@@ -258,7 +264,7 @@ export default function OverviewTab({
       >
         <span className="monitor-tile-title">
           <span className="monitor-tile-dot" aria-hidden="true" />
-          {t.title}
+          <span className="monitor-tile-title-text">{t.title}</span>
         </span>
         <span className="monitor-tile-value">{t.primary}</span>
         <span className="monitor-tile-base">{t.caption || " "}</span>
@@ -275,7 +281,12 @@ export default function OverviewTab({
           <li className="is-ok">
             <span className="monitor-reason-dot" aria-hidden="true" />
             <span className="monitor-verdict-ok">All good</span>
-            {okSummary && <span className="monitor-verdict-summary">· {okSummary}</span>}
+            {okSummary && (
+              <>
+                <span className="monitor-verdict-summary" aria-hidden="true">·</span>
+                <span className="monitor-verdict-summary">{okSummary}</span>
+              </>
+            )}
           </li>
         </ul>
       )}
