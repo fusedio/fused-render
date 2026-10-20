@@ -136,7 +136,7 @@ getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }).then(
     // (The app builder's parallel (tag, name) store went with its route.)
     void hydrateRecents();
     // The Notifications panel's memory (seen rows, first-seen clock, repo and
-    // waiting-task dismissals) is server-held since D1383; one GET fills its
+    // waiting-task dismissals) is server-held since D1384; one GET fills its
     // cache and runs the one-shot import of the old localStorage keys. Not
     // awaited: the panel is not first paint, and the store answers "nothing
     // seen" until it lands, which is one dot too many rather than a blank.
