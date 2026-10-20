@@ -8,11 +8,9 @@
 import {
   putAppSharingEnabled,
   putCanvasesEnabled,
-  putChatHeadsupEnabled,
   putGitAutoSyncEnabled,
   putGithubLinkEnabled,
   putLivePreviewsEnabled,
-  putBotTerminalsEnabled,
   putMarketplaceEnabled,
   putMonitorEnabled,
   putProjectQueueEnabled,
@@ -26,11 +24,9 @@ import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
-import { publishBotTerminalsEnabled } from "@platform/lib/bot-terminals-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import {
-  publishChatHeadsupEnabled,
   publishProjectQueueEnabled,
   publishTaskRecapTitlesEnabled,
 } from "@apps/claude/feature-flag";
@@ -94,21 +90,6 @@ export function ClaudeStrictMcpControl({ prefs, onChange }: PrefControlProps) {
       id="claude-strict-mcp"
       checked={prefs.claude_strict_mcp?.enabled !== false}
       put={putClaudeStrictMcpEnabled}
-      onChange={onChange}
-    />
-  );
-}
-
-// Heads-up notes: a side check may put one short note above the message box
-// while Claude works. Opt-in: every check spends tokens from the user's plan.
-// `=== true` because a server that predates the field has no notes.
-export function ChatHeadsupControl({ prefs, onChange }: PrefControlProps) {
-  return (
-    <PrefToggleRow
-      id="chat-headsup"
-      checked={prefs.chat_headsup?.enabled === true}
-      put={putChatHeadsupEnabled}
-      after={(next) => publishChatHeadsupEnabled(next.chat_headsup?.enabled === true)}
       onChange={onChange}
     />
   );
@@ -215,18 +196,6 @@ export function MarketplaceControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.marketplace?.enabled === true}
       put={putMarketplaceEnabled}
       after={(next) => publishMarketplaceEnabled(next.marketplace?.enabled === true)}
-      onChange={onChange}
-    />
-  );
-}
-
-export function BotTerminalsControl({ prefs, onChange }: PrefControlProps) {
-  return (
-    <PrefToggleRow
-      id="bot-terminals"
-      checked={prefs.bot_terminals?.enabled === true}
-      put={putBotTerminalsEnabled}
-      after={(next) => publishBotTerminalsEnabled(next.bot_terminals?.enabled === true)}
       onChange={onChange}
     />
   );

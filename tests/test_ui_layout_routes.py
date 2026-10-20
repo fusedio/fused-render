@@ -21,6 +21,7 @@ def _doc():
         "sidebar": {"width": 240, "collapsed": False},
         "bookmarksCollapsed": True,
         "currentAppsCollapsed": False,
+        "canvasesCollapsed": True,
         "explorerSide": {"hidden": False, "width": None, "maximized": True},
         "viewState": {"/Users/me/Fused": "?view=grid", "/tmp": ""},
         "tasks": {"view": "board", "calRange": "week"},

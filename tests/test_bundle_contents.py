@@ -374,7 +374,7 @@ def test_all_is_every_feature_extra_and_every_build_takes_it():
     from fused_render import extras as fr_extras
 
     table = _pyproject()["project"]["optional-dependencies"]
-    (all_req,) = table["all"]
+    (all_req,) = [r for r in table["all"] if Requirement(r).name == "fused-render"]
     assert set(Requirement(all_req).extras) == set(fr_extras.EXTRAS), (
         f"`[all]` names {sorted(Requirement(all_req).extras)} but extras.EXTRAS "
         f"guards {sorted(fr_extras.EXTRAS)}"
@@ -853,3 +853,43 @@ def test_the_build_verifies_the_stdlib_in_a_venv_not_just_in_the_app():
         "the stdlib check must also run through a venv built on the bundled "
         "interpreter — that is the path PY-18 uses and the one that failed")
     assert 'for STDLIB_WHO in bundled venv' in text
+
+
+def test_cli_extra_is_exactly_what_serve_requires():
+    """`[cli]` is the middle tier: it must install every extra `serve` gates on
+    (extras.SERVE_EXTRAS) and no more, and those are all guarded extras."""
+    from packaging.requirements import Requirement
+
+    from fused_render import extras as fr_extras
+
+    table = _pyproject()["project"]["optional-dependencies"]
+    self_refs = [
+        Requirement(r) for r in table["cli"] if Requirement(r).name == "fused-render"
+    ]
+    assert len(self_refs) == 1
+    assert set(self_refs[0].extras) == set(fr_extras.SERVE_EXTRAS)
+    assert set(fr_extras.SERVE_EXTRAS) <= set(fr_extras.EXTRAS)
+    assert any(Requirement(r).name == "pillow" for r in table["cli"])
+
+
+def test_all_covers_everything_cli_installs():
+    """`[all]` must be a superset of `[cli]`: pillow is unconditional in `[cli]`
+    but `[desktop]` only brings it on Linux, so `[all]` has to name it too."""
+    from packaging.requirements import Requirement
+
+    table = _pyproject()["project"]["optional-dependencies"]
+
+    def flatten(extra):
+        direct, extras = set(), set()
+        for r in table[extra]:
+            req = Requirement(r)
+            if req.name == "fused-render":
+                extras |= set(req.extras)
+            else:
+                direct.add(req.name)
+        return direct, extras
+
+    cli_direct, cli_extras = flatten("cli")
+    all_direct, all_extras = flatten("all")
+    assert cli_direct <= all_direct, f"`[all]` lacks {sorted(cli_direct - all_direct)} from `[cli]`"
+    assert cli_extras <= all_extras

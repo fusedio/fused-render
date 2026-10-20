@@ -161,7 +161,6 @@ import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
   queueFlagReady,
-  useChatHeadsupEnabled,
   useProjectQueueEnabled,
   useTaskRecapTitlesEnabled,
 } from "./feature-flag";
@@ -4810,7 +4809,6 @@ function ChatBody(props: ChatBodyProps) {
   // Heads-up notes (server: claude_agent/headsup.py): a side check polled while
   // a turn runs. Claude chats only. The card clears itself after the reader's
   // next two messages, counted off the transcript's own user rows.
-  const headsupOn = useChatHeadsupEnabled();
   const userTurnCount = useMemo(() => countUserTurns(state.turns), [state.turns]);
   // The heads-up's "Ask in chat" goes through the page's own send path, so the
   // send latch, outbox parking, queue admission and optimistic bubble all apply.
@@ -4825,7 +4823,7 @@ function ChatBody(props: ChatBodyProps) {
   const headsup = useHeadsUp({
     runId: state.runId || state.lastRunId || "",
     running,
-    enabled: headsupOn && inChat && chatBackend === "claude",
+    enabled: inChat && chatBackend === "claude",
     userTurns: userTurnCount,
     controller: headsupSend,
   });

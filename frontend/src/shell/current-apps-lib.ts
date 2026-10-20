@@ -42,6 +42,11 @@ export interface CurrentApp {
   entry: string | null;
   /** `linked` for a registry folder outside the workspace, else `workspace`. */
   kind: "workspace" | "linked";
+  /** The canvas this row is a clone of, or null for an app folder — the
+   *  sidebar splits the desk on it (Projects / Canvases) and a canvas row
+   *  opens the canvas's project page. The server's answer (current_apps
+   *  `_canvas_of`), never derived from the path here. */
+  canvas: { env: string; name: string } | null;
   /** The folder is still on disk. A missing one still lists — removing it is
    *  the user's gesture, not the table's. */
   exists: boolean;
@@ -109,6 +114,7 @@ export function currentApps(
     name: e.name,
     entry: e.entry,
     kind: e.kind,
+    canvas: e.canvas ?? null,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
     // COUNTED, not `some`: the row prints the number, and two tasks waiting on

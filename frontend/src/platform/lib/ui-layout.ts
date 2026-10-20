@@ -109,6 +109,7 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
   }
   if (typeof src.bookmarksCollapsed === "boolean") out.bookmarksCollapsed = src.bookmarksCollapsed;
   if (typeof src.currentAppsCollapsed === "boolean") out.currentAppsCollapsed = src.currentAppsCollapsed;
+  if (typeof src.canvasesCollapsed === "boolean") out.canvasesCollapsed = src.canvasesCollapsed;
 
   const es = src.explorerSide;
   if (isObj(es)) {

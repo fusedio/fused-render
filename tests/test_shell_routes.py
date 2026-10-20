@@ -131,7 +131,10 @@ def test_the_canvas_workspace_survives_a_refresh(client):
     one-segment form must serve the shell too: the owner wants it to land on
     the client's "Unrecognized URL" page, which needs the shell loaded, rather
     than a bare 404."""
-    for path in ("/canvases/prod/alpha", "/canvases/unstable/canvas_1", "/canvases/alpha"):
+    for path in (
+        "/canvases/prod/alpha", "/canvases/unstable/canvas_1", "/canvases/alpha",
+        "/canvases-project/prod/alpha", "/canvases-project/unstable/canvas_1?_tab=tasks",
+    ):
         res = client.get(path)
         assert res.status_code == 200, (path, res.status_code)
         assert res.headers["content-type"].startswith("text/html")

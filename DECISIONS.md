@@ -7190,7 +7190,21 @@ Each sent user message in a Claude chat has a hover-revealed back-arrow. Clickin
 - **mlx_text prompt cache re-read against 0.7.9, worker left alone.** `PromptCacheState.find_prefix_length` / `update` (`generate/common.py`) are byte-for-byte what 0.6.15 had, so the `tests/test_ai_mlx_worker.py` fake still matches. `prompt_utils.apply_chat_template` still defaults `enable_thinking` to `False` when the template accepts the kwarg, and `apc.multimodal_token_ids_from_config` still keys on `image_token_id` / `image_token_index` / `video_token_id` / `video_token_index` (it adds a `deepseek_v4` special case), so the "image turns stay off the cache" rule stands. **One behaviour changed:** `dispatch.py` no longer trims blindly. `_prefix_cache_trim_amount(kv_cache, prefix_len)` returns `None` (cold prefill) when any entry is not `is_trimmable()` or fails `_cache_fully_retained` (a `start_position != 0` or a wrapped `max_size` window), and `ArraysCache` (hybrid / Qwen3.5) now defines `is_trimmable()` in `mlx_vlm/models/cache.py`. So the "'ArraysCache' object has no attribute 'trim'" crash that `worker.py`'s `_cache_trimmable` reset guards against is now caught inside mlx-vlm, and the worker comment saying mlx-vlm's guard "treats every non-rotating cache as safe to trim" (and the 0.6.15 / `<0.7` wording around it) is stale. The worker's reset is redundant but harmless (same outcome, a fresh state), so no code or comment in `worker.py` was changed here: deleting the guard is a decision for a person with a hybrid-model run behind it.
 - **Pillow ceiling, review round.** `mlx_text` (via mlx-vlm) and `ltx_video` (via ltx-core-mlx) pull pillow unbounded, so both gained `pillow>=12.3,<13`; found by resolving every manifest with `uv pip compile --python-version 3.12`. `laya_mlx`, `mlx_audio_tts`, `mlx_whisper`, `faster_whisper`, `llamacpp_text` and `llamacpp_text_vulkan` do not pull pillow.
 
-## D1390: Claude sessions start lean (`--strict-mcp-config`) by default; enabled plugins' MCP servers are kept (2026-10-20, claude-session-memory)
+## D1390: A `[cli]` install tier runs `serve` without `[desktop]` (2026-10-20, cli-extra)
+
+- **Problem.** The only options were the base install (`open` only) or `[all]` (~325 MB), and `serve` refused to start without `[all]`. Nothing on the serve startup path imports a `[desktop]` package at module top level; LAN/zeroconf, capture, pasteboard and LAN TLS already degrade.
+- **Decision.** `[cli]` = `pillow` + `fused-render[index,data,hf,fused]` (base ~59 MB, `[cli]` ~290 MB, `[all]` ~325 MB). `[fused]` is included by user decision so cli users can deploy and share. `extras.SERVE_EXTRAS` is now `("index","data","hf","fused")`, so `serve` gates on `[cli]`; `optional_missing_for_serve()` drives one stderr line at startup naming the absent `[desktop]` (the only extra `[cli]` leaves out). `[all]` is unchanged.
+- **pillow is in `[cli]`** because the thumbnail route (`routers/fs_read.py`) does an unguarded `from PIL import Image`, and `[desktop]` installs pillow on Linux only.
+- **Canvases are not gated.** Whether canvas list/pull works on plain `fused` is unverified, so no guard was added on `canvases.py`.
+
+## Bot terminals and chat heads-up notes: global prefs removed (2026-10-20)
+
+The `bot_terminals_enabled` and `chat_headsup_enabled` preferences are gone (pref key, getter, GET payload field,
+PUT handling, Preferences rows, frontend readers). Both features are now always on. The per-bot `terminal` setting
+remains the only bot-terminal switch (user-only, off by default per bot). `useHeadsUp` still tolerates a
+`disabled` state from an older server. `bot.close_all_terminals` is kept but no longer called by prefs.
+
+## D1391: Claude sessions start lean (`--strict-mcp-config`) by default; enabled plugins' MCP servers are kept (2026-10-20, claude-session-memory)
 
 - **Problem.** A chat/task session cost ~640 MB (host 65-69, claude ~375, fused permission MCP 27, the user's own MCP servers ~85); nine or ten at once exhausted the Mac. The user's global MCP servers and claude.ai connectors are launched per session whether or not the session needs them.
 - **Measured.** `claude -p ... --strict-mcp-config --mcp-config '{"mcpServers":{}}'`: 518 MB / 3 processes -> 299 MB / 1 process. Plugins and skills still load; every user MCP, plugin MCP and claude.ai connector drops.
@@ -7199,9 +7213,9 @@ Each sent user message in a Claude chat has a hover-revealed back-arrow. Clickin
 - **Heads-up forks follow the parent.** The prompt-cache prefix includes the MCP tool roster, so a fork whose roster differs from its parent's would re-bill the whole context. The fork reads the parent's recorded `strict_mcp` from launch.json (absent = not strict, which is what a host started by an older server ran).
 - **Not done.** Chat started from the composer is lean by the pref only; there is no per-chat override.
 
-## D1391: Global cap on concurrent Claude sessions, default 10; tasks queue, chat never waits (2026-10-20, claude-session-memory)
+## D1392: Global cap on concurrent Claude sessions, default 10; tasks queue, chat never waits (2026-10-20, claude-session-memory)
 
-- **Problem.** Even lean (D1390), ~300 MB per session means a dozen scheduled or queued tasks starting together can still exhaust the Mac. Nothing bounded how many hosts ran at once.
+- **Problem.** Even lean (D1391), ~300 MB per session means a dozen scheduled or queued tasks starting together can still exhaust the Mac. Nothing bounded how many hosts ran at once.
 - **Decision.** Pref `claude_max_concurrent_sessions` (default 10, 0 = unlimited, 0-64, bools rejected), shown as "Concurrent Claude sessions" under Tasks. `fused_render/session_cap.py` counts live hosts; `schedule.dispatch_entry` and the flag-off `tick` loop refuse to spawn a NEW session at the cap (`SpawnBusy` / left `pending`, the existing deferred-never-dropped path). A message into a conversation that already has a live host adds no process and is never held.
 - **Chat is counted but never held.** A person typing in the composer (or a canvas spawn) is not told to wait; blocking the thing the user is looking at to protect background work is the wrong trade. Those sessions still occupy slots, so tasks yield to them. Heads-up, recap, the bots engine and fused.ai are not counted (a heads-up host is not distinguishable from a chat host on disk, so it may count; over-counting only makes the cap more conservative).
 - **Counted from disk, not a counter.** A host outlives the server that spawned it, so an in-process counter restarts at zero and over-admits. `host.json` with a live pid, plus run dirs under 20 s old with a live `pid` and no `host.json` yet (closes the same-tick double-spawn gap), over the newest `agent._LIVE_SCAN_LIMIT` run dirs. Deviation from the spec: liveness uses the agent module's own `_host_alive` / `_pid_alive` through `session_cap._agent()` rather than `procutil`, because `fused_render` does not import the template-side `procutil`.
@@ -7209,7 +7223,7 @@ Each sent user message in a Claude chat has a hover-revealed back-arrow. Clickin
 - **Shown as Queued.** `tasks._queue_lines` adds the cap-held tasks (due, pending, no live host), ordered by due time, with the same position / `ahead_key` fields, even with the project queue off.
 - **Test isolation.** `tests/conftest.py` stubs `session_cap._agent` to None so no test counts the developer's real running sessions.
 
-## D1392: Preferences MCP tab lists from a cache and refreshes in the background (2026-10-20, claude-session-memory)
+## D1393: Preferences MCP tab lists from a cache and refreshes in the background (2026-10-20, claude-session-memory)
 
 - **Problem.** `claude mcp list` health-checks every server and connector before printing (11.3 s measured), and the tab showed nothing until it returned.
 - **Decision.** `claude_config/mcp.py` keeps the last good list in `<home>/claude_config/mcp_list_cache.json` (`{servers, checkedAt}`). `list` with a cache returns it at once with `stale: true` and starts one background refresh; with no cache it blocks as before. `fresh` joins or runs the single in-flight refresh. add/remove/logout success deletes the cache; a generation counter stops a refresh that started before the change from writing its outdated answer back. A failed refresh never touches the cache.

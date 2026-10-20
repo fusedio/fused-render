@@ -91,6 +91,9 @@
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
+import { createPortal } from "react-dom";
+import { addCurrentApp } from "@platform/lib/api";
+import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
@@ -102,6 +105,7 @@ import {
   applyRename,
   applySnapshot,
   catalogPath,
+  canvasProjectPath,
   fixWithClaude,
   getDelta,
   getAccessToken,
@@ -356,7 +360,40 @@ function seedNodeSessionFromUrl(env: WorkbenchEnv, canvas: string, node: NodeSel
   return sid;
 }
 
-export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name: string }) {
+export default function CanvasWorkspace({
+  env,
+  name,
+  embedded = false,
+  onWorkbenchUrl,
+  syncSlot = null,
+}: {
+  env: WorkbenchEnv;
+  name: string;
+  /** FRAMED BY THE PROJECT PAGE (shell/CanvasPage.tsx, /canvases-project/…)
+   *  as its read-only Overview: the workbench is loaded as a VIEWER
+   *  (`fused_embed_readonly=1` — no drag, connect, add, rename, delete, no
+   *  autosave; the host's deltas still patch it in place, so a Claude task
+   *  editing the clone shows live), there is no right pane at all (no canvas
+   *  chat, no node pane — a selection is ignored), and the sync strip drops
+   *  the back arrow, env chip and workbench link, which the page's own
+   *  header carries. The sync loops run as they do in the editor: the
+   *  watcher is still this process's. Off (the default) this is the editor
+   *  at /canvases/<env>/<name>: two panes, canvas + Claude. */
+  embedded?: boolean;
+  /** The hosted workbench editor's URL for this canvas (no embed flags), once
+   *  the base URL and handle are known; null until then. The project page's
+   *  header draws it as "Open in Workbench". */
+  onWorkbenchUrl?: (url: string | null) => void;
+  /** `embedded` only: the project page's SYNC TAB panel. The sync chrome —
+   *  the strip, the log (pinned open, no Close), Pull / Hard pull, a failed
+   *  push's detail with Fix with Claude — is portalled INTO it instead of
+   *  drawn over the canvas (owner, 2026-10-20: "remove the sync row from the
+   *  overview. Add a sync tab with all the sync panel details"). The state
+   *  stays here, with the sync loops, which the Overview keeps running
+   *  behind every tab; the panel is only where it is shown. Null while the
+   *  Sync tab is not the one on screen: nothing is drawn, nothing stops. */
+  syncSlot?: HTMLElement | null;
+}) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
@@ -592,6 +629,16 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
         const base = status.envs[env].base_url;
         setBaseUrl(base);
         baseOriginRef.current = new URL(base).origin;
+        // The clone onto the sidebar's desk (its Canvases section, the
+        // Projects store): opening a canvas is what puts it there, as a task
+        // under it does. From STATUS, not sync/start's answer — a clone
+        // another process owns answers 409 there and would never register
+        // (CodeRabbit on #1795). Idempotent on the server; the section
+        // refetches on the window event (it cannot see this POST's answer).
+        const cloneDir = status.envs[env].canvases_dir.replace(/\/+$/, "") + "/" + name;
+        void addCurrentApp(cloneDir)
+          .then(() => window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT)))
+          .catch(() => undefined);
         const who = await getWhoami(env);
         if (cancelled) return;
         if (!who.handle) {
@@ -1080,6 +1127,9 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
         }
       }
       if (type === "fused-embed-selection") {
+        // The viewer has no pane to follow a selection into (see `embedded`);
+        // ignoring it here also keeps `?node=` off the project page's URL.
+        if (embedded) return;
         const name = event.data?.udfName;
         if (typeof name === "string" && name) {
           const kind = event.data?.kind === "widget" ? "widget" : "udf";
@@ -1102,7 +1152,16 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, env, name]);
+  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded]);
+
+  // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
+  const workbenchUrl =
+    baseUrl && handle
+      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+      : null;
+  useEffect(() => {
+    onWorkbenchUrl?.(workbenchUrl);
+  }, [workbenchUrl, onWorkbenchUrl]);
 
   // Mirror the node onto this page's URL so a reload lands on it, and drop the
   // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
@@ -1346,6 +1405,18 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
     setFixError(null);
     try {
       const { run_id } = await fixWithClaude(env, name);
+      // Don't wait for the next sync state to reflect that a fix is now
+      // running: the gap would let a double-click through to a second POST
+      // (the server answers it 409, a confusing thing to show right after a
+      // successful click).
+      setFixActive(true);
+      if (embedded) {
+        // The project page has no chat to hand the run to: the fix is a
+        // task on the clone, so the Tasks tab is where it shows. No `run=`
+        // on this page's URL — nothing here reads it (CodeRabbit on #1795).
+        navigateUrl(canvasProjectPath(env, name, { tab: "tasks" }));
+        return;
+      }
       // The fix runs on the CLONE (canvases.py spawns on the dir), so it is
       // the canvas chat's to show: leave the node, on both sides.
       if (nodeRef.current) {
@@ -1353,11 +1424,6 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
         setNode(null);
       }
       setFixRunId(run_id);
-      // Don't wait for the next sync state to reflect that a fix is now
-      // running: the gap would let a double-click through to a second POST
-      // (the server answers it 409, a confusing thing to show right after a
-      // successful click).
-      setFixActive(true);
     } catch (e) {
       setFixError((e as Error).message);
     } finally {
@@ -1371,7 +1437,11 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   // relay's busy loop — the relay running in all but name.
   const frameSrc =
     baseUrl && handle && dir && !owned
-      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=3`
+      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=3` +
+        // The viewer flag rides the flagged URL only; a flagged URL without
+        // it is the editor, and the workbench records that per load
+        // (application embed-auth.ts), so the editor never inherits it.
+        (embedded ? "&fused_embed_readonly=1" : "")
       : null;
 
   // No header bar (owner call): the workspace is the two panes, full height,
@@ -1381,12 +1451,26 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   const s2dState = sync?.legs.server_to_disk.state;
   const pushLeg = sync?.legs.disk_to_server;
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
+  // The sync chrome. In the editor it sits above the panes (the strip, the
+  // drawer on click, the failed-push banner). Embedded, it goes to the
+  // project page's Sync tab (`syncSlot`) — the log pinned open, since the
+  // tab IS the log — and nothing of it over the Overview.
+  const pinned = embedded;
+  // The page's own errors (no handle, sync/start failing) stay with the
+  // frame on EVERY tab, embedded or not: a frame stuck on "Loading
+  // workbench…" must say why where the reader is looking, not on the Sync
+  // tab (CodeRabbit on #1795).
+  const banners = (
+    <>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {startError && !error && (
         <ErrorBanner>{`Could not start syncing this canvas (retrying): ${startError}`}</ErrorBanner>
       )}
+    </>
+  );
+  const chrome = (
+    <>
+      {!embedded && banners}
       {/* Always up ("Connecting…" before the first state): it carries the
           way back to the listing, which must not wait on sync. */}
       <SyncStrip
@@ -1397,19 +1481,17 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
         failure={relayFailure}
         owned={owned}
         live={live}
-        open={drawerOpen}
+        open={pinned || drawerOpen}
         // No drawer to open before the first state: arming it now would pop
-        // it unprompted when that state lands.
+        // it unprompted when that state lands. Pinned, there is nothing to
+        // toggle.
         onToggle={() => {
-          if (sync || owned) setDrawerOpen((o) => !o);
+          if (!pinned && (sync || owned)) setDrawerOpen((o) => !o);
         }}
         // Back to the environment this canvas lives in, not the default.
         onBack={() => navigateUrl(catalogPath(env))}
-        workbenchUrl={
-          baseUrl && handle
-            ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
-            : null
-        }
+        workbenchUrl={workbenchUrl}
+        embedded={embedded}
         pull={{
           busy: pullBusy,
           error: pullError,
@@ -1417,7 +1499,7 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
           onPull: () => void onPull(),
         }}
       />
-      {drawerOpen && (sync || owned) && (
+      {(pinned || drawerOpen) && (sync || owned) && (
         <SyncDrawer
           env={env}
           name={name}
@@ -1440,17 +1522,7 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
               pushLeg?.state === "pushing",
             onPull: () => void onPull(true),
           }}
-          onClose={() => setDrawerOpen(false)}
-        />
-      )}
-      {frameSrc && (
-        <SyncFramePoster
-          name={name}
-          server={sync}
-          queue={relayQueue}
-          failure={relayFailure}
-          repost={repostSeq}
-          post={postSyncState}
+          {...(pinned ? {} : { onClose: () => setDrawerOpen(false) })}
         />
       )}
       {pushError && pushLeg && sync && (
@@ -1477,7 +1549,9 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
               title="Start a Claude session on the local clone, primed with these errors"
             >
               {fixActive
-                ? "Claude is on it — see chat →"
+                ? embedded
+                  ? "Claude is on it — see Tasks →"
+                  : "Claude is on it — see chat →"
                 : fixBusy
                   ? "Starting…"
                   : "Fix with Claude"}
@@ -1500,6 +1574,29 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
           )}
         </div>
       )}
+    </>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
+      {embedded ? (
+        <>
+          {banners}
+          {syncSlot ? createPortal(chrome, syncSlot) : null}
+        </>
+      ) : (
+        chrome
+      )}
+      {frameSrc && (
+        <SyncFramePoster
+          name={name}
+          server={sync}
+          queue={relayQueue}
+          failure={relayFailure}
+          repost={repostSeq}
+          post={postSyncState}
+        />
+      )}
       <div
         ref={rowRef}
         style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row" }}
@@ -1509,7 +1606,8 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
           // the wrapper's mouseenter still fires as the pointer crosses in.
           onMouseEnter={focusCanvasOnEnter}
           style={{
-            flex: `0 0 ${leftFrac * 100}%`,
+            // The viewer has no right pane: the canvas takes the row.
+            flex: embedded ? "1 1 auto" : `0 0 ${leftFrac * 100}%`,
             minWidth: 0,
             position: "relative",
             pointerEvents: dragging ? "none" : "auto",
@@ -1540,6 +1638,8 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
             ))
           )}
         </div>
+        {!embedded && (
+          <>
         <div
           onMouseDown={(e) => {
             e.preventDefault();
@@ -1666,6 +1766,8 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
             !error && <p style={{ padding: 16 }}>Loading editor…</p>
           )}
         </div>
+          </>
+        )}
       </div>
     </div>
   );

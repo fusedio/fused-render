@@ -10,6 +10,7 @@ const app = (n: number): CurrentApp => ({
   name: `app${n}`,
   entry: null,
   kind: "workspace",
+  canvas: null,
   exists: true,
   running: false,
   queued: 0,

@@ -382,15 +382,6 @@ const ENTRIES = [
     keywords: "concurrent sessions limit cap memory queue parallel",
   },
   {
-    id: "chat-headsup",
-    group: "tasks",
-    section: "Chat",
-    label: "Heads-up notes in chat",
-    description:
-      "While Claude works, a side check looks for something important you might miss and shows a short note above the message box. Uses extra usage from your Claude plan.",
-    keywords: "heads-up headsup note chat warning side check",
-  },
-  {
     id: "notify-terminal",
     group: "tasks",
     section: "Notifications",
@@ -503,14 +494,6 @@ const ENTRIES = [
     description: "Browse, install and update community apps from the sidebar.",
     keywords: "store community apps gallery install",
     renderOnly: true,
-  },
-  {
-    id: "bot-terminals",
-    group: "features",
-    section: "Bots",
-    label: "Bot terminals",
-    description: "Let bots you opt in run commands in their own terminal, with approval cards for anything not already allowed. Turning this off closes every bot terminal.",
-    keywords: "bot terminal shell command gh cli agent",
   },
   {
     id: "monitor",

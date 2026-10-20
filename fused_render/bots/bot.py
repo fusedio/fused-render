@@ -521,11 +521,11 @@ TERMINAL_ENV = {"PAGER": "cat", "GH_PAGER": "cat", "GIT_PAGER": "cat"}
 
 
 def close_all_terminals() -> None:
-    """Close every bot-owned pty (the "Bot terminals" preference's kill
-    switch). Bots recreate a session lazily if the pref is later back on."""
+    """Close every bot-owned pty. Bots recreate a session lazily on their
+    next terminal tool call."""
     from fused_render import pty_session
 
-    with _TERMINAL_LOCK:  # a creation holding the lock finishes first (and is killed here) or sees the pref off
+    with _TERMINAL_LOCK:  # a creation holding the lock finishes first (and is killed here)
         for sess in pty_session.REGISTRY.list():
             if (sess.owner or "").startswith(pty_session.BOT_OWNER_PREFIX):
                 sess.kill()

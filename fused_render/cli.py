@@ -167,11 +167,11 @@ def _check_port_free(port: int) -> None:
 def _require_serve_extras() -> None:
     """Exit with the install line when this install lacks what `serve` needs.
 
-    `serve` is the whole desktop file explorer, and nearly every panel of it
-    stands on some extra (search and Repos on `[index]`, Preferences' Hugging
-    Face login on `[hf]`, deploy/share/MCP on
-    `[fused]`). Booting it on the base install would open a shell that errors
-    in half its tabs, so it refuses up front and says what to install.
+    `serve` is the file explorer, and its panels stand on `[index]` (search,
+    Repos), `[data]`, `[hf]` (Preferences' Hugging Face login) and `[fused]`
+    (deploy/share/MCP), which is what `[cli]` installs. Booting it on the base
+    install would open a shell that errors in half its tabs, so it refuses up
+    front and says what to install. `[desktop]` is optional.
     `fused-render open` is the command the base install is for.
     """
     from fused_render import extras
@@ -179,15 +179,26 @@ def _require_serve_extras() -> None:
     missing = extras.missing_for_serve()
     if missing:
         raise SystemExit(
-            "fused-render serve needs the full install; this one is missing "
+            "fused-render serve needs at least `[cli]`; this install is missing "
             f"{', '.join(f'[{m}]' for m in missing)}.\n"
-            f"  {extras.install_hint('all')}\n"
+            f"  {extras.install_hint('cli')}\n"
+            "or [all] for native desktop integrations\n"
             "The base install runs one app: fused-render open <github-url or path>"
         )
 
 
 def _run_serve(args: argparse.Namespace) -> None:
     _require_serve_extras()
+    from fused_render import extras
+
+    optional = extras.optional_missing_for_serve()
+    if optional:
+        print(
+            f"fused-render: running without {', '.join(f'[{m}]' for m in optional)}"
+            " — native desktop integrations (LAN discovery, screen capture,"
+            f" pasteboard) are off ({extras.install_hint('all')})",
+            file=sys.stderr,
+        )
     import uvicorn
 
     from fused_render.server import create_app

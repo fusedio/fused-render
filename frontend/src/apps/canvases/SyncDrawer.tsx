@@ -52,7 +52,10 @@ export function SyncDrawer({
   onEvents: (events: SyncLogEvent[]) => void;
   /** The "Hard pull" door: discard the clone and take the server's copy. */
   hardPull: PullControl;
-  onClose: () => void;
+  /** Absent on the project page's Sync TAB, where the log is the panel
+   *  itself: no Close button, and the log takes the panel's height instead
+   *  of a drawer's 40vh. */
+  onClose?: () => void;
 }) {
   const nextRef = useRef(0);
   const onEventsRef = useRef(onEvents);
@@ -107,7 +110,7 @@ export function SyncDrawer({
   return (
     <div
       style={{
-        maxHeight: "40vh",
+        ...(onClose ? { maxHeight: "40vh" } : { flex: "1 1 auto", minHeight: 0 }),
         overflowY: "auto",
         overflowX: "hidden",
         borderBottom: "1px solid var(--border)",
@@ -174,9 +177,11 @@ export function SyncDrawer({
               >
                 {hardPull.busy ? "Pulling…" : "Hard pull"}
               </button>
-              <button className="btn" style={{ padding: "0 8px", fontSize: 12, flex: "none" }} onClick={onClose}>
-                Close
-              </button>
+              {onClose && (
+                <button className="btn" style={{ padding: "0 8px", fontSize: 12, flex: "none" }} onClick={onClose}>
+                  Close
+                </button>
+              )}
             </>
           )}
         </span>

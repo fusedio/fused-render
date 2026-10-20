@@ -1453,10 +1453,6 @@ export interface Prefs {
   // older server answers without it, and the reader (live-previews-flag.ts)
   // treats absence as off.
   live_previews?: { enabled: boolean };
-  // Whether a running Claude chat gets heads-up notes above the composer
-  // (opt-in, default off — shell/prefs.py `chat_headsup_enabled`). OPTIONAL: an
-  // older server answers without it, and absence means off.
-  chat_headsup?: { enabled: boolean };
   // Whether the process Monitor is OFFERED (opt-in, default off —
   // shell/prefs.py `monitor_enabled`): the status bar's System chip and the
   // /monitor page. Gates the entry points, not /api/system/activity. OPTIONAL:
@@ -1469,12 +1465,6 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it, and the reader
   // (marketplace-flag.ts) treats absence as off.
   marketplace?: { enabled: boolean };
-  // Whether bots may drive their own terminal (opt-in, default off —
-  // shell/prefs.py `bot_terminals_enabled`). The global half of two switches;
-  // turning it off closes every bot terminal. OPTIONAL: an older server
-  // answers without it, and the reader (bot-terminals-flag.ts) treats absence
-  // as off.
-  bot_terminals?: { enabled: boolean };
   // Whether the Share sheet offers its GitHub install-link card (opt-in,
   // default off — shell/prefs.py `github_link_enabled`). Gates the card, not
   // /api/share/github. OPTIONAL: an older server answers without it, and the
@@ -1861,20 +1851,12 @@ export function putLivePreviewsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { live_previews_enabled: enabled });
 }
 
-export function putChatHeadsupEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { chat_headsup_enabled: enabled });
-}
-
 export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { monitor_enabled: enabled });
 }
 
 export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
-}
-
-export function putBotTerminalsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { bot_terminals_enabled: enabled });
 }
 
 export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
@@ -1934,6 +1916,8 @@ export interface UiLayoutDoc {
   sidebar?: { width: number; collapsed: boolean };
   bookmarksCollapsed?: boolean;
   currentAppsCollapsed?: boolean;
+  /** The sidebar's Canvases section fold (the desk's canvas half). */
+  canvasesCollapsed?: boolean;
   explorerSide?: { hidden?: boolean; width?: number | null; maximized?: boolean };
   /** canonical fs path → "?sort=..&order=.." (platform/lib/viewstate.ts). */
   viewState?: Record<string, string>;
@@ -3276,6 +3260,10 @@ export interface CurrentAppEntry {
    *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
    *  and by nothing done to the tasks. */
   unread?: boolean;
+  /** This row is a canvas CLONE (`~/Fused/canvas/<env>/<name>`): the sidebar
+   *  lists it in its Canvases section, not Projects, and the row opens the
+   *  canvas's project page. Null / absent for an app folder. */
+  canvas?: { env: string; name: string } | null;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
