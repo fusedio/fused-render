@@ -1045,8 +1045,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
     const turn = state.turns[at];
     if (at < 0 || !turn || turn.role !== "user" || !turn.uuid || turn.pending) return null;
     // A second fork while one is parked re-forks from what is still visible;
-    // keep the earlier hidden turns ahead of the newly hidden ones.
-    const hidden = [...(state.fork?.hidden || []), ...state.turns.slice(at)];
+    // the newly hidden turns come earlier in the transcript than the ones
+    // already parked, so they go first and cancelFork restores transcript order.
+    const hidden = [...state.turns.slice(at), ...(state.fork?.hidden || [])];
     const text = turn.text;
     emit({
       turns: state.turns.slice(0, at),

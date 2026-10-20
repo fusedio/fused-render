@@ -81,6 +81,16 @@ describe("beginFork / cancelFork", () => {
     expect(s.fork).toBe(null);
   });
 
+  test("a second, earlier fork then cancel restores the original order", async () => {
+    const r = await opened();
+    const before = r.controller.getState().turns.map((t) => t.key);
+    r.controller.beginFork(keyOf(r, "second"));
+    r.controller.beginFork(keyOf(r, "first"));
+    expect(r.controller.getState().turns.length).toBe(0);
+    r.controller.cancelFork();
+    expect(r.controller.getState().turns.map((t) => t.key)).toEqual(before);
+  });
+
   test("refused for a Copilot chat, an unknown key, and a turn with no uuid", async () => {
     const cp = await opened({}, "copilot");
     expect(cp.controller.beginFork(keyOf(cp, "second"))).toBe(null);
