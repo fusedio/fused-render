@@ -34,6 +34,7 @@ from fused_render.shell.home_layout import router as home_layout_router
 from fused_render.shell.notifications import router as notifications_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
+from fused_render.shell.ui_layout import router as ui_layout_router
 
 from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
 from fused_render.server.common import (
@@ -904,8 +905,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # prefs, recents), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
     app.include_router(home_layout_router)
-    # The Notifications panel's memory (D1386): moved off localStorage, which
-    # the desktop app's port walk resets.
+    # The shell's durable layout and the Notifications panel's memory (D1386):
+    # moved off localStorage, which the desktop app's port walk resets.
+    app.include_router(ui_layout_router)
     app.include_router(notifications_router)
     app.include_router(prefs_router)
     # Local-network sharing (lan.py): the desktop's pairing + device routes.

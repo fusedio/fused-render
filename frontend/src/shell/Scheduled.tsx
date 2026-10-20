@@ -66,6 +66,7 @@ import {
   getScheduleQueue,
   putTasksViewTabs,
 } from "@platform/lib/api";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import type {
   ScheduledMessage,
   ScheduleResult,
@@ -175,16 +176,20 @@ const POLL_MS = 20000;
 // not "when", and the calendar is the drill-down for the scheduled subset.
 //
 // SECOND to the URL, since 2026-08-18. `?view=` (tasks-lib.viewFromSearch) is
-// what a link carries and therefore what wins; this key is the fallback for a
-// bare `/tasks`, which is how the page is opened from the sidebar. Both are
-// kept in step, so switching the view in one tab still greets the next visit
-// the same way.
+// what a link carries and therefore what wins; the remembered view is the
+// fallback for a bare `/tasks`, which is how the page is opened from the
+// sidebar. Both are kept in step, so switching the view in one tab still greets
+// the next visit the same way.
+//
+// Remembered in the layout document's `tasks.view` (platform/lib/ui-layout.ts,
+// D1386). It was the localStorage key `fused-render:scheduled-view` until the
+// desktop app's port walk (a new origin, so empty storage, on most relaunches)
+// was found resetting it; ui-layout.ts imports that key once.
 //
 // Shared with the app page's Tasks tab (AppPage.tsx, D488), which mounts this
 // same component scoped to one folder: picking Board there is remembered here
 // too. One page, one memory — a per-app key would make the same control forget
 // on every other app.
-const VIEW_KEY = "fused-render:scheduled-view";
 
 // THE SWITCHER'S TABS are a PREFERENCE, prefs.py `tasks_view_tabs` (D1386),
 // not layout: which views a reader keeps a click away is a choice about how
@@ -223,9 +228,9 @@ function enqueueViewTabsWrite(tabs: TaskView[]): Promise<void> {
 /**
  * The tabs, from prefs — and, once, the old per-browser localStorage row
  * (`VIEW_TABS_KEY`): pushed to prefs when prefs have none yet, then removed
- * either way. Only an EMPTY preference is filled: a second origin (yesterday's
- * port) still holding an old row must not overwrite the one the reader has
- * saved since. A failed push
+ * either way. Only an EMPTY preference is filled, the same rule ui-layout.ts
+ * applies to its imports: a second origin (yesterday's port) still holding an
+ * old row must not overwrite the one the reader has saved since. A failed push
  * keeps the old key for the next visit.
  */
 async function readViewTabs(): Promise<TaskView[]> {
@@ -694,21 +699,15 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // localStorage can THROW (private mode, locked-down webviews), and this read
-  // runs during first render — unguarded it took the whole page down for a
-  // preference. Storage failing costs the memory, never the page.
   const [view, setView] = useState<TaskView>(() => {
     let saved: TaskView = "list";
-    try {
-      const stored = localStorage.getItem(VIEW_KEY);
-      // Against TASK_VIEWS rather than a hand-written list of the non-default
-      // ones: this store is untrusted input (an older build wrote it, a person
-      // edited it), and the one place that decides what a view NAME is has to be
-      // the same place `?view=` reads (tasks-lib.TASK_VIEWS).
-      if (stored && (TASK_VIEWS as string[]).includes(stored)) saved = stored as TaskView;
-    } catch {
-      // A blocked store just means no remembered view; the URL may still say.
-    }
+    const stored = getUiLayout().tasks?.view;
+    // Against TASK_VIEWS rather than a hand-written list of the non-default
+    // ones: this store is untrusted input (an older build wrote it, the one-shot
+    // import of an old localStorage value, a hand-edited file), and the one
+    // place that decides what a view NAME is has to be the same place `?view=`
+    // reads (tasks-lib.TASK_VIEWS).
+    if (stored && (TASK_VIEWS as string[]).includes(stored)) saved = stored as TaskView;
     // The URL outranks the memory, and the memory is what a bare `/tasks`
     // falls back to. Read once, in the initialiser: the page remounts on every
     // navigation (App.tsx keys it on the nav epoch), so a back button onto
@@ -1337,11 +1336,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     } catch {
       // Some embeddings refuse history writes; the switch itself still happens.
     }
-    try {
-      localStorage.setItem(VIEW_KEY, v);
-    } catch {
-      // A blocked store forgets the choice; the switch itself still happens.
-    }
+    patchUiLayout((d) => (d.tasks?.view === v ? d : { ...d, tasks: { ...d.tasks, view: v } }));
   };
 
   const entries = state?.entries ?? [];
@@ -1855,7 +1850,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           planning={view === "calendar" || creating instanceof Date || !!editing}
           permissionModes={state.permission_modes}
           // Newest-first fallback recents: past entries arrive newest first,
-          // and the modal dedupes against what localStorage already knows.
+          // and the modal dedupes against the folders it already remembers.
           recentTargets={entries.map((e) => e.target)}
           // THE SAME FOLDERS THE PROJECT FILTER OFFERS (Akshil, 2026-09-19:
           // "when I clear the path and search, it should search from projects —

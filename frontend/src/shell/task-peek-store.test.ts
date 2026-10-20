@@ -1374,7 +1374,7 @@ describe("the sidebar, and the only thing that moves it", () => {
       // Ours to hand back when the reader leaves /tasks, and NOT a preference:
       // the layout got out of the way, the reader did not ask for a rail.
       expect(getPeekState().autoCollapsed).toBe(true);
-      expect(localStorage.getItem("fused-render:sidebar")).toBeNull();
+      expect(sidebar.loadSidebarState().collapsed).toBe(false);
     });
 
     it("is refused, and says so, when the window cannot hold both", () => {
