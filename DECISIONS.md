@@ -7229,3 +7229,11 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **Decision.** `claude_config/mcp.py` keeps the last good list in `<home>/claude_config/mcp_list_cache.json` (`{servers, checkedAt}`). `list` with a cache returns it at once with `stale: true` and starts one background refresh; with no cache it blocks as before. `fresh` joins or runs the single in-flight refresh. add/remove/logout success deletes the cache; a generation counter stops a refresh that started before the change from writing its outdated answer back. A failed refresh never touches the cache.
 - **UI.** `McpSection` renders the cached list, shows "Checking status..." in the toolbar summary and dims the status pills until `list({fresh: true})` returns; a failed live check keeps the cached list instead of replacing it with an error.
 - **Deviation.** No frontend test: there is no existing McpSection test and the swap is a few lines of state; the backend contract is covered in `tests/test_claude_config_api.py`.
+
+## D1394: Review round on the session-memory branch (2026-10-20, claude-session-memory)
+
+- **Cap and followers.** `session_cap.held` / `has_live_host` / `waiting` take the RESOLVED conversation (`schedule._follow_session`), because a queued follow-up has an empty `session_id` and its send into a live host adds no process.
+- **Live count is memoized for 1 s** (`session_cap.live_count`); only the Tasks listing reads the memo. `dispatch_entry` and `tick` pass `fresh=True`, so a spawn decision never uses a count older than the call.
+- **MCP list single-flight is per generation.** A refresh started before an add/remove/logout is not joined by a later `fresh` caller (its answer is outdated); a failed thread start releases the waiter with an error.
+- **Plugin MCP specs.** `${CLAUDE_PLUGIN_ROOT}` is expanded in a string manifest path, `url`, `cwd` and `headers`; http/sse specs get no `env`. Plugins enabled only per project/locally stay unsupported.
+- **Merge note.** main took D1390 (`[cli]` tier), so this branch's entries were renumbered D1391-D1393.
