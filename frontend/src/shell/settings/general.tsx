@@ -1,6 +1,20 @@
 // General: appearance, windows, the launcher's shortcuts, updates.
-import { useCallback, useEffect, useState } from "react";
-import { getConfig, getPrefs, postLauncherSuspend, putAutoDownloadUpdates, putLauncherHotkey, putLauncherRowModifier, putNativeWindowsEnabled } from "@platform/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  getChromiumEngine,
+  getConfig,
+  getPrefs,
+  installChromiumEngine,
+  postLauncherSuspend,
+  putAutoDownloadUpdates,
+  putChromiumWindowsEnabled,
+  putLauncherHotkey,
+  putLauncherRowModifier,
+  putNativeWindowsEnabled,
+  removeChromiumEngine,
+  type ChromiumEngineStatus,
+  type ChromiumWindowsState,
+} from "@platform/lib/api";
 import { THEME_PRESETS, useThemePref, useThemePreset } from "@platform/lib/theme";
 import { updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/update-status";
 import { isBot } from "@platform/lib/flavor";
@@ -74,6 +88,124 @@ export function NativeWindowsControl({ prefs, onChange }: PrefControlProps) {
       put={putNativeWindowsEnabled}
       onChange={onChange}
     />
+  );
+}
+
+// Chromium (CEF) engine for app windows: experimental, off by default, lives
+// under Optional features. Turning it on makes the server download the engine
+// (~150 MB) once; while that runs this row polls the cheap
+// GET /api/prefs/chromium every second and merges the slice into the page's
+// Prefs, stopping as soon as the state leaves "downloading". Only drawn where
+// the running app can honour it (`chromium_windows.available`).
+const CHROMIUM_POLL_MS = 1000;
+
+function chromiumStatusLine(engine: ChromiumEngineStatus | undefined, enabled: boolean): string | null {
+  if (!engine) return null;
+  switch (engine.state) {
+    case "unpublished":
+      return "Engine not published for this build yet.";
+    case "missing":
+      return enabled ? null : "Turning this on downloads the engine.";
+    case "downloading":
+      if (engine.phase === "verify") return "Verifying…";
+      if (engine.phase === "unpack") return "Unpacking…";
+      return `Downloading engine… ${Math.round(Math.max(0, Math.min(1, engine.progress || 0)) * 100)}%`;
+    case "ready":
+      return `Engine ready${engine.cef_version ? ` (CEF ${engine.cef_version})` : ""}. New windows use Chromium; open windows keep their engine.`;
+    case "failed":
+      return engine.error || "The engine download failed.";
+    default:
+      return null;
+  }
+}
+
+export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
+  const cw = prefs.chromium_windows;
+  const engine = cw?.engine;
+  const state = engine?.state;
+  const enabled = !!cw?.enabled;
+
+  // The poll merges into the LATEST prefs, not the ones it started with.
+  const latest = useRef({ prefs, onChange });
+  latest.current = { prefs, onChange };
+  const merge = useCallback((next: ChromiumWindowsState) => {
+    const { prefs: p, onChange: publish } = latest.current;
+    publish({ ...p, chromium_windows: next });
+  }, []);
+
+  useEffect(() => {
+    if (state !== "downloading") return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      try {
+        const next = await getChromiumEngine();
+        if (stopped) return;
+        merge(next);
+        if (next.engine.state !== "downloading") return;
+      } catch {
+        if (stopped) return;
+      }
+      timer = setTimeout(() => void tick(), CHROMIUM_POLL_MS);
+    };
+    timer = setTimeout(() => void tick(), CHROMIUM_POLL_MS);
+    return () => {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [state, merge]);
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const act = async (what: () => Promise<ChromiumWindowsState>) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      merge(await what());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const line = chromiumStatusLine(engine, enabled);
+  const status =
+    line || state === "ready" || state === "failed" ? (
+      <span className="inline-flex flex-wrap items-center gap-x-2">
+        {line && <span>{line}</span>}
+        {state === "ready" && (
+          <Button
+            variant="link"
+            size="xs"
+            className="h-auto p-0"
+            disabled={busy}
+            title="Delete the downloaded engine and turn this off"
+            onClick={() => void act(removeChromiumEngine)}
+          >
+            Remove engine
+          </Button>
+        )}
+        {state === "failed" && (
+          <Button variant="outline" size="xs" disabled={busy} onClick={() => void act(installChromiumEngine)}>
+            Retry download
+          </Button>
+        )}
+      </span>
+    ) : undefined;
+
+  return (
+    <PrefToggleRow
+      id="chromium-windows"
+      checked={enabled}
+      put={putChromiumWindowsEnabled}
+      disabled={state === "unpublished" || state === "unsupported"}
+      status={status}
+      onChange={onChange}
+    >
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </PrefToggleRow>
   );
 }
 

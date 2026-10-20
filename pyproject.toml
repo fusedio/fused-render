@@ -440,6 +440,10 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["fused_render"]
+# The Chromium engine's native sources (ObjC++, CMake) are built by
+# fused_render/chromium/native/build.sh from a checkout into a separately
+# downloaded artifact; the wheel and the app ship only manifest.json.
+exclude = ["fused_render/chromium/native/**"]
 # The Vite-built shell is gitignored (D54) but must ship in the wheel;
 # `artifacts` overrides hatchling's VCS-based exclusion for it. The starter
 # kit's authoring skills are copied in at build time from skills/ (D106) — also

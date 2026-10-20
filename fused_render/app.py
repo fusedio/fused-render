@@ -1837,6 +1837,7 @@ def main() -> None:
 
             if NSThread.isMainThread():
                 manager.close_all()
+                manager.shutdown_engines()
         except Exception:
             logger.debug("closing windows on quit failed", exc_info=True)
 
