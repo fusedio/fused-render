@@ -22,7 +22,7 @@
 //     looking at some other block. A commit rewrites state no block could have
 //     predicted, so each remounts on the commit epoch and refetches.
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Clock, Info, RefreshCw, Undo2 } from "lucide-react";
+import { Clock, RefreshCw, Undo2 } from "lucide-react";
 import * as cc from "@apps/claude_config/api";
 import type { PrefEntry, PreferencesGet } from "@apps/claude_config/api";
 import { toastErr, toastOk, useGitStatus, type GitStatusState } from "@apps/claude_config/bits";
@@ -241,6 +241,26 @@ function boolDefault(d: PrefEntry): boolean | null {
   return typeof d.default === "boolean" ? d.default : null;
 }
 
+function hasDefault(d: PrefEntry): boolean {
+  return !!d.unsetLabel || (d.default !== null && d.default !== undefined);
+}
+
+/** The status line of an unset row: Claude's documented default, in words.
+ *  A select or a field with no documented default already says "Claude
+ *  default" in its own placeholder, so it gets no line. */
+function defaultLine(d: PrefEntry): string {
+  if (d.unsetLabel) return d.unsetLabel;
+  if (d.control === "toggle") {
+    const b = boolDefault(d);
+    return b === null ? "Claude's default" : `Claude's default: ${b ? "on" : "off"}`;
+  }
+  if (d.default !== null && d.default !== undefined) {
+    const v = d.control === "select" ? optionLabel(d, String(d.default)) : JSON.stringify(d.default);
+    return `Claude's default: ${v}`;
+  }
+  return "Claude's default";
+}
+
 function ScalarControl({
   entry,
   value,
@@ -304,14 +324,17 @@ export function ClaudePrefRow({ entry }: { entry: ClaudePrefEntry }) {
   const val = store.catalog.prefs[d.key];
   const isSet = val !== null && val !== undefined;
   const patch = (next: unknown) => void store.patch(d.key, next);
-  const hint = d.control === "toggle" && !d.unsetLabel ? "Claude default" : unsetLabel(d);
   return (
     <SettingRow
       id={entry.id}
       entry={entry}
+      // Unset: what Claude does instead, said under the description — a line
+      // of words, not an icon (the ⓘ "looked disabled and said nothing",
+      // Akshil 2026-10-20). Set: the reset beside the control says the rest.
+      status={isSet || (d.control !== "toggle" && !hasDefault(d)) ? undefined : defaultLine(d)}
       control={
         <span className="settings-claude-control">
-          {isSet ? (
+          {isSet && (
             <Button
               variant="ghost"
               size="icon-sm"
@@ -321,10 +344,6 @@ export function ClaudePrefRow({ entry }: { entry: ClaudePrefEntry }) {
             >
               <Undo2 />
             </Button>
-          ) : (
-            <span className="settings-claude-hint" title={hint} aria-label={hint}>
-              <Info aria-hidden="true" />
-            </span>
           )}
           {d.control === "toggle" && (
             // Unset draws Claude's documented default, dimmed: the position is

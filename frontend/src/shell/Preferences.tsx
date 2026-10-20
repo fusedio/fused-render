@@ -311,9 +311,13 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     },
   };
 
-  // Pointer rows count: they are rows a reader can find and follow, and the
-  // counts must mean the same thing with and without a search.
-  const navCount = (g: GroupId) => (searching ? hits : entries).filter((e) => e.group === g).length;
+  // Pointer rows count: they are rows a reader can find and follow. Outside a
+  // search the count is the registry's rows only — the Claude Code group's
+  // settings.json rows arrive with their catalog, and a number that read 7
+  // and then 83 was a number nobody could trust (Akshil, 2026-10-20). A
+  // search counts every hit, catalog rows included: that is what it found.
+  const navCount = (g: GroupId) =>
+    (searching ? hits : entries.filter((e) => !isClaudePref(e))).filter((e) => e.group === g).length;
 
   const head = searching
     ? hits.length
@@ -407,7 +411,14 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
           <main className="settings-main">
             <div className="settings-head">
               <div className="settings-head-row">
-                <h2>{head}</h2>
+                <h2>
+                  {head}
+                  {!searching && groupOf(current).badge && (
+                    <Badge variant="outline" className="settings-badge-beta">
+                      {groupOf(current).badge}
+                    </Badge>
+                  )}
+                </h2>
                 {!searching && current === "claude" && (
                   <ClaudeGitChip onOpen={() => claudeLayout.ensureOpen("History")} />
                 )}

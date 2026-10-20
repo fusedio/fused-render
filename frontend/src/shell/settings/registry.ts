@@ -62,6 +62,8 @@ export interface SettingsGroup {
   label: string;
   blurb: string;
   nav: NavSectionId;
+  /** Worn beside the group's title on its page. */
+  badge?: "Beta";
 }
 
 // In nav order: the sections above, and the groups inside each.
@@ -71,6 +73,7 @@ export const GROUPS: readonly SettingsGroup[] = [
     id: "features",
     nav: "general",
     label: "Experimental features",
+    badge: "Beta",
     blurb: "Off by default and still settling. Each one adds a sidebar row or a page when you turn it on.",
   },
   { id: "ai", nav: "bots", label: "AI & agents", blurb: "Which coding agents run your chats and tasks." },
