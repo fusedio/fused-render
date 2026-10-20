@@ -88,11 +88,18 @@ test("no banner box; a non-ok verdict lists its reasons as plain links that navi
   expect(seen).toEqual([]);
 });
 
-test("an ok verdict renders nothing, and Record/Copy sit on the window heading's row", async () => {
+test("an ok verdict is still a headline row: All good plus the headline figures; Record/Copy sit on the window heading's row", async () => {
   const dash = { ...DASH, verdict: { level: "ok", headline: "Nothing looks wrong", reasons: [] } } as unknown as Dashboard;
   const r = await mount(() => {}, { load: async () => dash });
-  expect(byClass(r, "monitor-reasons")).toHaveLength(0);
-  expect(text(r.root)).not.toContain("Nothing looks wrong");
+  const list = byClass(r, "monitor-reasons")[0];
+  const items = list.findAll((n) => n.type === "li");
+  expect(items).toHaveLength(1);
+  expect(items[0].props.className).toContain("is-ok");
+  expect(text(items[0])).toStartWith("All good");
+  expect(text(items[0])).toContain("4/s requests");
+  expect(text(items[0])).toContain("4 ms lag");
+  expect(text(items[0])).toContain("CPU 20%");
+  expect(items[0].findAll((n) => n.type === "a")).toHaveLength(0);
   const row = byClass(r, "monitor-overview-window")[0];
   expect(text(row)).toContain("Last 1 min");
   expect(text(row)).toContain("Record 60s");
@@ -214,8 +221,24 @@ test("lists fill once expanded", async () => {
   const r = await mount();
   await act(async () => btnOf(r, "Show all checks").props.onClick());
   expect(text(r.root)).toContain("Stuck export");
-  expect(text(r.root)).toContain("/x/slow.py");
-  expect(text(r.root)).toContain("bad thing");
+  // one Errors list: the tile toggles the inline panel, the lists grid has no duplicate
+  const lists = byClass(r, "monitor-lists")[0];
+  expect(text(lists)).not.toContain("Errors and outages");
+  expect(lists.findAll((n) => n.props.className === "monitor-list-card")).toHaveLength(2);
+  // slowest targets: basename shown, full path in the title, short timing text
+  const li = lists.find((n) => n.type === "li" && n.props.title === "/x/slow.py");
+  expect(text(li)).toContain("slow.py");
+  expect(text(li)).not.toContain("/x/");
+  expect(text(li)).toContain("800 ms / 50 ms run");
+});
+
+test("the Python calls tile shows the basename with the full path as its title", async () => {
+  const r = await mount();
+  await act(async () => btnOf(r, "Show all checks").props.onClick());
+  const tile = byClass(r, "monitor-tile").find((t) => t.props["data-tile"] === "calls")!;
+  expect(tile.props.title).toBe("/x/slow.py");
+  expect(text(tile)).toContain("slow.py: 800 ms overhead");
+  expect(text(tile)).not.toContain("/x/");
 });
 
 test("collapseRuns merges identical consecutive labels", () => {
@@ -226,15 +249,35 @@ test("collapseRuns merges identical consecutive labels", () => {
   ]);
 });
 
-test("Record 60s counts down, Copy report copies the dashboard JSON, the saved file is linked", async () => {
+test("a recording already on disk is not advertised on mount", async () => {
+  const r = await mount();
+  expect(text(r.root)).not.toContain("Saved:");
+  expect(byClass(r, "monitor-recording-link")).toHaveLength(0);
+});
+
+test("Record 60s counts down, Copy report copies the dashboard JSON, the recording this session made is linked", async () => {
   let copied = "";
-  const r = await mount(() => {}, { copy: (t: string) => void (copied = t) });
+  let running = false;
+  const recordApi = {
+    start: async () => {
+      running = true;
+      return { recording: true, seconds_left: 60, recordings: [] };
+    },
+    status: async () =>
+      running
+        ? { recording: false, seconds_left: 0, dir: "/logs/perf-recordings", recordings: [{ name: "b.json", bytes: 1 }] }
+        : { recording: false, seconds_left: 0, dir: "/logs/perf-recordings", recordings: [{ name: "a.json", bytes: 1 }] },
+  };
+  const r = await mount(() => {}, { copy: (t: string) => void (copied = t), recordApi });
   const btn = (label: string) => r.root.find((n) => n.type === "button" && text(n).startsWith(label));
-  expect(text(r.root)).toContain("Saved: a.json");
-  const link = r.root.find((n) => n.props.className === "monitor-recording-link");
-  expect(link.props.href).toContain("perf-recordings");
   await act(async () => btn("Record 60s").props.onClick());
   expect(text(btn("Recording")).includes("60s")).toBe(true);
+  await act(async () => {
+    await new Promise((res) => setTimeout(res, 1200));
+  });
+  expect(text(r.root)).toContain("Saved: b.json");
+  const link = r.root.find((n) => n.props.className === "monitor-recording-link");
+  expect(link.props.href).toContain("perf-recordings");
   await act(async () => btn("Copy report").props.onClick());
   expect(JSON.parse(copied).verdict.level).toBe("bad");
 });

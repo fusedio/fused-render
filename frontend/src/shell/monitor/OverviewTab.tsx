@@ -1,8 +1,9 @@
 // /monitor, Overview tab — "why does fused-render feel slow?" at a glance.
 //
-// Top to bottom: the verdict's reasons as a plain list when something is off
-// (each is a link that switches to the tab and filters that show it; nothing
-// is drawn when all is well); any non-headline
+// Top to bottom: the verdict line, always present (when something is off its
+// reasons as a plain list, each a link that switches to the tab and filters
+// that show it; when all is well one "All good" row with the headline
+// figures); any non-headline
 // tile that is warn/bad; four chart cards (Requests, Connections, Server, CPU,
 // the Processes tab's card form) over the since-restart window; and
 // behind "Show all checks": the remaining tiles, the errors tail, stalled jobs,
@@ -20,6 +21,7 @@ import { formatBytes } from "@platform/lib/sysmon";
 import { getDashboard, sectionOk, type Dashboard } from "./monitor-api";
 import { AreaChart, PCT_TICKS, type Tick } from "./Charts";
 import {
+  basename,
   monitorUrl,
   niceCeil,
   overviewTiles,
@@ -82,6 +84,12 @@ export default function OverviewTab({
     [],
   );
   const record = useRecord(recordApi);
+  // The saved-recording link is for a recording finished during THIS page
+  // session; one already on disk at mount is not advertised.
+  const [recordedHere, setRecordedHere] = useState(false);
+  useEffect(() => {
+    if (record.recording) setRecordedHere(true);
+  }, [record.recording]);
 
   usePolled(
     async () => {
@@ -181,6 +189,7 @@ export default function OverviewTab({
         { v: 3, label: "3" },
         { v: 6, label: "6 limit" },
       ] as Tick[],
+      step: true,
     },
     {
       key: "server",
@@ -203,6 +212,11 @@ export default function OverviewTab({
       ticks: PCT_TICKS,
     },
   ];
+
+  const okSummary = cards
+    .map((c) => (c.key === "requests" ? `${c.figure} requests` : c.key === "server" ? c.figure : c.key === "cpu" ? `CPU ${c.figure}` : ""))
+    .filter((t) => t && !t.startsWith("–"))
+    .join(" · ");
 
   const errorsInTop = tiles.some((t) => t.key === "errors");
   const errorsPanel = errorsOpen && (
@@ -234,7 +248,14 @@ export default function OverviewTab({
     }
     const link = monitorUrl({ tab: t.tab as Tab });
     return (
-      <a key={t.key} className={`monitor-tile is-${t.level}`} data-tile={t.key} href={link} onClick={go(link)}>
+      <a
+        key={t.key}
+        className={`monitor-tile is-${t.level}`}
+        data-tile={t.key}
+        title={t.hint}
+        href={link}
+        onClick={go(link)}
+      >
         <span className="monitor-tile-title">
           <span className="monitor-tile-dot" aria-hidden="true" />
           {t.title}
@@ -249,6 +270,15 @@ export default function OverviewTab({
     <div className="monitor-tab monitor-tab-scroll monitor-overview">
       {error && <p className="monitor-denied">Can't read the dashboard: {error}</p>}
 
+      {v && v.level === "ok" && (
+        <ul className="monitor-reasons" aria-label="Verdict">
+          <li className="is-ok">
+            <span className="monitor-reason-dot" aria-hidden="true" />
+            <span className="monitor-verdict-ok">All good</span>
+            {okSummary && <span className="monitor-verdict-summary">· {okSummary}</span>}
+          </li>
+        </ul>
+      )}
       {reasons.length > 0 && (
         <ul className="monitor-reasons" aria-label="What looks wrong">
           {reasons.map((r) => (
@@ -283,7 +313,7 @@ export default function OverviewTab({
           >
             {copied === "ok" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy report"}
           </button>
-          {!record.recording && record.latest && record.dir && (
+          {recordedHere && !record.recording && record.latest && record.dir && (
             <a className="monitor-recording-link" {...spaLinkProps(`${record.dir}/${record.latest.name}`)}>
               Saved: {record.latest.name}
             </a>
@@ -317,6 +347,7 @@ export default function OverviewTab({
                 ticks={c.ticks}
                 windowS={windowS}
                 label={`${c.title}, ${title}`}
+                step={c.step}
               />
             </a>
           );
@@ -332,15 +363,6 @@ export default function OverviewTab({
           {hiddenTiles.length > 0 && <div className="monitor-tiles">{hiddenTiles.map(renderTile)}</div>}
           {!errorsInTop && errorsPanel}
           <div className="monitor-lists">
-            <section className="monitor-list-card">
-              <h2 className="monitor-sec-title">Errors and outages</h2>
-              {errors ? (
-                <ErrorsList errors={errors} />
-              ) : (
-                <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
-              )}
-            </section>
-
             <section className="monitor-list-card">
               <h2 className="monitor-sec-title">Stalled jobs</h2>
               {jobs ? (
@@ -360,10 +382,10 @@ export default function OverviewTab({
               {calls ? (
                 <ul className="monitor-list">
                   {calls.top_overhead.map((c) => (
-                    <li key={c.entrypoint} title={c.entrypoint}>
-                      <span className="monitor-list-mono">{c.entrypoint}</span>
+                    <li key={c.entrypoint} className="monitor-list-target" title={c.entrypoint}>
+                      <span className="monitor-list-mono monitor-list-text">{basename(c.entrypoint)}</span>
                       <span className="monitor-list-num">
-                        {ms(c.overhead_p95_ms)} over a {ms(c.run_p95_ms)} run
+                        {ms(c.overhead_p95_ms)} / {ms(c.run_p95_ms)} run
                       </span>
                     </li>
                   ))}
