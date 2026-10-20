@@ -311,12 +311,15 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     browser = body.get("browser_id") or ""
     if not isinstance(browser, str):
         raise ValueError("browser_id must be a browser id")
+    terminal = _check_terminal(bm, body, kind == "super")  # before the bot exists: a 400 leaves nothing behind
     b = registry.create(body.get("name") or "", body.get("model") or "", body.get("effort") or "", body.get("instructions") or "",
                         preset=preset, kind=kind, browser=browser)
     if body.get("approval") in ("ask", "auto"):
         b.meta["approval"] = body["approval"]
     if body.get("build_access") in bm.BUILD_MODES:
         b.meta["build_access"] = body["build_access"]
+    if terminal is not None:
+        b.meta["terminal"] = terminal
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
     if isinstance(body.get("allow_rules"), list):
@@ -329,6 +332,19 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     if body.get("encrypt"):
         b.set_encrypt(True)
     return {"ok": True, "id": b.id}
+
+
+def _check_terminal(bm, body, is_super_bot):
+    """The `terminal` opt-in from a create/settings body: None when absent, else a bool. A non-bool, or turning
+    it ON for Super Bot (which already has Bash), is a 400 (ValueError)."""
+    if "terminal" not in body:
+        return None
+    value = body["terminal"]
+    if not isinstance(value, bool):
+        raise ValueError("terminal must be true or false")
+    if value and is_super_bot:
+        raise ValueError("Super Bot already has Bash; it has no terminal setting")
+    return value
 
 
 @router.get("/api/bots/browsers")
@@ -657,6 +673,7 @@ def _settings(bid, body):
     # Validate before any key lands on the live meta: a ValueError past this line would leave half the dialog's
     # edits in memory for the next save() to persist.
     folders = bm.clean_folders(body["folders"]) if isinstance(body.get("folders"), list) else None  # ValueError -> 400
+    terminal = _check_terminal(bm, body, bm.is_super(b.meta))
     if name and name != b.meta.get("name") and b.meta.get("artifacts_dir") and not os.path.isdir(b.meta["artifacts_dir"]):
         b.meta.pop("artifacts_dir", None)  # never used on disk: let the new name pick the folder
     b.meta["name"] = name or b.meta.get("name")
@@ -677,6 +694,11 @@ def _settings(bid, body):
             b.meta["imessage_approvals"] = bool(body["imessage_approvals"])  # "Approve by text" (docs §10)
     if body.get("build_access") in bm.BUILD_MODES:
         b.meta["build_access"] = body["build_access"]
+    if terminal is not None:
+        # User-only (never in MANAGE_FIELDS): a bot cannot give itself a shell. Turning it off ends the session.
+        b.meta["terminal"] = terminal
+        if not terminal:
+            b.close_terminal()
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
     if folders is not None:

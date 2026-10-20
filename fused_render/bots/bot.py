@@ -514,6 +514,12 @@ def is_super(meta) -> bool:
     return (meta or {}).get("kind") == "super"
 
 
+#: Guards a bot's lazy terminal creation (two tools racing must share one shell).
+_TERMINAL_LOCK = threading.Lock()
+#: Pagers would block a bot's `gh`/`git` on a "(END)" prompt it cannot see.
+TERMINAL_ENV = {"PAGER": "cat", "GH_PAGER": "cat", "GIT_PAGER": "cat"}
+
+
 def close_all_terminals() -> None:
     """Close every bot-owned pty (the "Bot terminals" preference's kill
     switch). Bots recreate a session lazily if the pref is later back on."""
@@ -539,6 +545,7 @@ MEMORY_LINES_HINT = 200  # Bot.MEMORY_LINES, visible to the class-body prompt st
 
 
 class Bot:
+    _terminal_id = None  # id of this bot's live pty (terminal_session); class default for __new__-built test bots
     deleted = False  # class default: a Bot built with __new__ (tests) still has it; delete() sets the instance flag
 
     def __init__(self, bid):
@@ -1885,6 +1892,8 @@ class Bot:
         return {**meta, "id": self.id, "seq": self.seq, "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
+                "terminal_id": self.terminal_id(), "terminal_available": _tools_mod().terminal_enabled(self),
+                "terminal_needs_claude": not is_super(meta) and _engine_for(meta) != "agent",
                 "memory": self.memory() if detail else None,
                 "skills": self.skills() if detail else None, "learning": self.learning,
                 "shot": f"/api/bots/{self.id}/shot" if shot_ts else None,
@@ -2759,12 +2768,47 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             self.emit("error", f"Could not put the browser to sleep: {e}")
 
+    # -- terminal (docs §16) ----------------------------------------------------
+    def terminal_id(self):
+        """Id of this bot's live terminal session, else None."""
+        from fused_render import pty_session
+
+        sid = self._terminal_id
+        sess = pty_session.REGISTRY.get(sid) if sid else None
+        return sid if sess is not None and sess.alive else None
+
+    def terminal_session(self):
+        """This bot's pty session: created on first use in the bot's own folder,
+        reused across tasks, recreated if the shell died. Owned `bot:<id>`, so
+        the user's drawer never lists it. Raises SessionLimitError at the bot cap."""
+        from fused_render import pty_session
+
+        with _TERMINAL_LOCK:
+            sid = self._terminal_id
+            sess = pty_session.REGISTRY.get(sid) if sid else None
+            if sess is None or not sess.alive:
+                sess = pty_session.REGISTRY.create(cwd=self.dir, owner=f"{pty_session.BOT_OWNER_PREFIX}{self.id}",
+                                                   env=dict(TERMINAL_ENV))
+                self._terminal_id = sess.id
+            return sess
+
+    def close_terminal(self):
+        """Kill this bot's terminal, if it has one (shutdown, delete, opt-out)."""
+        from fused_render import pty_session
+
+        with _TERMINAL_LOCK:
+            sid, self._terminal_id = self._terminal_id, None
+        sess = pty_session.REGISTRY.get(sid) if sid else None
+        if sess is not None:
+            sess.kill()
+
     def shutdown(self, browser=True, seal=None):
         """Stop the task and (by default) the whole browser process. `delete()` and
         `set_browser` pass browser=False: this bot leaves (its windows close, Chrome
         quits only if that left it empty) and the other bots keep theirs. `seal=False`
         when the profile folder is removed next (nothing to seal)."""
         self.stop()
+        self.close_terminal()
         if self.thread:
             self.thread.join(5)
         if browser:
@@ -4306,6 +4350,7 @@ def clone(src_id, name="", share=True):
     meta = {"id": bid, "browser_id": src.browser_id if share else bid, "name": name or f"{src.meta.get('name', 'Bot')} copy", "model": src.meta.get("model", DEFAULT_MODEL),
             "effort": src.meta.get("effort", DEFAULT_EFFORT), "instructions": src.meta.get("instructions", ""),
             "approval": src.meta.get("approval", "ask"), "build_access": src.meta.get("build_access", "scoped"),
+            "terminal": src.meta.get("terminal") is True,
             "trusted_apps": apptools.clean_trusted_apps(src.meta.get("trusted_apps")),
             "allow_rules": _tools_mod().clean_allow_rules(src.meta.get("allow_rules")),
             "folders": clean_folders(src.meta.get("folders")),

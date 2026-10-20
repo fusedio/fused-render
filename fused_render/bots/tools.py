@@ -369,6 +369,25 @@ def effective_build_access(bot) -> str:
     return (getattr(bot, "meta", None) or {}).get("build_access") or "scoped"
 
 
+def terminal_enabled(bot) -> bool:
+    """Whether this bot may drive its own terminal right now. All of: not
+    Windows (the pty is POSIX-only), the global "Bot terminals" preference is
+    on, the bot's own `terminal` setting is on, it is not Super Bot (which
+    already has Bash), and its engine resolves to `agent` (the steps engine,
+    local models, never gets terminal tools)."""
+    if os.name == "nt":
+        return False
+    from fused_render.shell import prefs
+
+    if not prefs.bot_terminals_enabled():
+        return False
+    if (getattr(bot, "meta", None) or {}).get("terminal") is not True or is_super(bot):
+        return False
+    from fused_render.bots import bot as bot_mod
+
+    return bot_mod._engine_for(bot.meta) == "agent"
+
+
 # ---- "Approve forever": per-bot rules that skip the card ---------------------------
 # bot.json `allow_rules`: [{kind, key, label}], written when the user answers an
 # approval card with its third button. The card's identity for a rule is NOT the
