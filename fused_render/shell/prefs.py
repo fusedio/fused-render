@@ -16,7 +16,7 @@ similar the word is: it says which local-model backend serves a capability when
 more than one can, and `"auto"` (the default, and the absence of a key) means
 the registry's own ordering decides. See ``inference_engines``; the resolution,
 including what happens to a preference this machine cannot honour, belongs to
-``ai/registry.py``. Since D1388 that preference is the TIE-BREAKER among the
+``ai/registry.py``. Since D1391 that preference is the TIE-BREAKER among the
 runners that can read a given model, no longer the sole selector, and a model
 can carry its own pin (**model_engines**, ``model_engines()``) that outranks it.
 
@@ -584,7 +584,7 @@ def engine_for_capability(capability: str) -> str:
 
 
 def model_engines() -> dict:
-    """The per-MODEL engine pins, as stored (D1388): `{repo_id: runner code}`.
+    """The per-MODEL engine pins, as stored (D1391): `{repo_id: runner code}`.
 
     The sibling of `inference_engines()` and read under the same rule — returned
     raw, validated at the point of USE, non-strings dropped — because a pin
