@@ -8,7 +8,7 @@
 // (routes.ts: the selection IS the path), the UI request slots (dialog / context menu) the panes open each other
 // with, and the Builds chip. The Tasks / Apps / Preferences pages are routes too (App.tsx reads them), not a slot.
 import { useSyncExternalStore } from "react";
-import { api, apiHooks, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary } from "../lib/api";
+import { api, apiHooks, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
 import { getPrefsShared, putBotsPref } from "@platform/lib/api";
 import { sentByYou } from "../lib/derive";
@@ -165,7 +165,7 @@ let hydrated: Promise<void> | null = null;
  *
  *  The seen map needs no gate: `/seen` only ever RAISES a bot's seen_seq (bots/routes.py `_seen`, under the bot lock),
  *  so a stale origin's lower mark is a no-op server-side, and the local max-merge never lowers either. Its key goes
- *  once every POST settled (a bot deleted since 404s, and that is final). */
+ *  once every POST landed or 404'd (a bot deleted since: final); any other failure keeps it for the next load. */
 export function hydrateBotsPrefs(): Promise<void> {
   return hydrated || (hydrated = hydrateOnce());
 }
@@ -177,7 +177,12 @@ async function hydrateOnce(): Promise<void> {
       // Shown at once: the first render must not paint every bot as never opened while the POSTs travel; pollOnce's
       // max-merge keeps these until the server echoes them (or a higher mark of its own wins).
       commit({ seen: maxMerge(S.seen, imported) });
-      void Promise.allSettled(Object.entries(imported).map(([id, seq]) => markBotSeen(id, seq))).then(() => dropKey(SEEN_KEY));
+      void Promise.allSettled(Object.entries(imported).map(([id, seq]) => markBotSeen(id, seq))).then((rs) => {
+        // The key goes only when the server HAS the marks: every POST landed, or 404'd (a bot deleted since —
+        // nothing to mark, final). A network error or 5xx keeps the key so the next load imports again.
+        const landed = rs.every((r) => r.status === "fulfilled" || (r.reason instanceof ApiError && r.reason.status === 404));
+        if (landed) dropKey(SEEN_KEY);
+      });
     }
   } catch { /* storage blocked: nothing to import */ }
   let server: { autostage?: unknown; sounds?: unknown; clear_enabled?: unknown } | undefined;
