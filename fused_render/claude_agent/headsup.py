@@ -255,6 +255,11 @@ def build_fork_argv(agent, run_dir: str):
             model = host["model"]
         if isinstance(host.get("effort"), str) and host["effort"]:
             effort = host["effort"]
+    # `--resume` resolves the session from the cwd's project: with no real cwd
+    # the fork could not resume, so there is no check (no tempdir fallback).
+    cwd = launch.get("cwd") or ""
+    if not isinstance(cwd, str) or not os.path.isdir(cwd):
+        return None
     fork_dir = tempfile.mkdtemp(prefix="headsup-")
     try:
         argv = agent._claude_argv(
@@ -269,9 +274,6 @@ def build_fork_argv(agent, run_dir: str):
     argv += ["--fork-session", "--no-session-persistence",
              "--permission-mode", "dontAsk", "--max-turns", "1",
              "--settings", '{"disableAllHooks": true}']
-    cwd = launch.get("cwd") or ""
-    if not os.path.isdir(cwd):
-        cwd = tempfile.gettempdir()
     return Fork(argv, cwd, fork_dir, session_id)
 
 

@@ -458,12 +458,11 @@ def test_build_fork_argv_none_cases(agent, tmp_path):
     assert headsup.build_fork_argv(agent, run_dir) is None
 
 
-def test_build_fork_argv_cwd_falls_back(agent, tmp_path):
-    run_dir = _launch_run(agent, tmp_path, cwd=str(tmp_path / "gone"))
-    fork = headsup.build_fork_argv(agent, run_dir)
-    import shutil, tempfile
-    shutil.rmtree(fork.dir, ignore_errors=True)
-    assert fork.cwd == tempfile.gettempdir()
+@pytest.mark.parametrize("cwd", ["gone", ""])
+def test_build_fork_argv_none_without_a_real_cwd(agent, tmp_path, cwd):
+    # --resume resolves the session from the cwd's project: no tempdir fallback.
+    run_dir = _launch_run(agent, tmp_path, cwd=str(tmp_path / cwd) if cwd else "")
+    assert headsup.build_fork_argv(agent, run_dir) is None
 
 
 _STUB = """#!{python}
