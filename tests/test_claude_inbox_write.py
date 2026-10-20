@@ -704,3 +704,21 @@ def test_concurrent_readers_at_lock_capacity_agree(agent, tmp_path):
     assert state["offset"] == os.path.getsize(run_dir / "out.jsonl")
     assert [uid for uid, _k in state["echoes"]] == [ua, ub]
     assert not agent._echo_locks[str(run_dir)].locked()
+
+
+def test_a_stamped_entry_behind_a_fold_lands_on_its_own_receipt(agent, tmp_path):
+    """CodeRabbit, PR #1778: should a fold ever carry the FIRST line's uuid,
+    the stamped lines behind it get no echo of their own — and they still
+    must not be settled by the fold's words (a line said twice would vanish,
+    see `test_a_stamped_entry_is_never_settled_by_somebody_elses_words`).
+    What settles them is the CLI's own `command_lifecycle` receipt, written
+    for every stamped line whatever the fold looks like."""
+    run_dir = _run_dir(tmp_path)
+    (x, ux), (y, uy), (z, uz) = _entries(agent, run_dir, "first", "second", "third")
+    _echo_uuid(run_dir, ux, "first")
+    _echo_uuid(run_dir, uy, "second", "third")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [z]
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "command_lifecycle", "command_uuid": uz,
+                             "state": "started"}) + "\n")
+    assert agent._poll("run")["inbox"] == []
