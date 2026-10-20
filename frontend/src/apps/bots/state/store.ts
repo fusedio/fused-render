@@ -15,6 +15,7 @@ import { sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
 import type { NewBotPick } from "../lib/presets";
 import { botsMounted } from "../lib/root";
+import { publishBots } from "@platform/lib/botsPulse";
 import { BOTS_PREFIX, botHref, isBotsPath, parseBotsPath, searchSansTask } from "../routes";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 
@@ -502,6 +503,11 @@ export async function pollOnce(): Promise<void> {
         bots: r.bots, events, cursors, seen,
         ...(r.usage ? { usage: r.usage } : {}), ...(r.imessage ? { imessage: r.imessage } : {}),
       });
+      // The sidebar's Bots entry reads these same rows (platform/lib/botsPulse): while this page polls, it is the
+      // one source, and the rail moves on the same tick the list does. With the MERGED mark, not the server's raw
+      // `seen_seq`: a bot you just opened is read here at once (markSeen), and the chip must not count it for the
+      // poll or two until the server echoes the POST.
+      publishBots(r.bots.map((b) => ({ id: b.id, status: b.status, seq: b.seq, seen_seq: seen[b.id], hidden: b.hidden })));
       if (toast) showToast(toast);
       // Hand-overs: the bot asked for you in its browser (control_by flipped to "bot"; a take-over of yours is "user" and
       // stays quiet). The selected bot opens Stage, any other one gets a toast; chime + OS notification either way. On
