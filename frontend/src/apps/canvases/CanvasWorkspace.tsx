@@ -420,10 +420,17 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   // already have. Kept after the push recovers — the session may still be
   // finishing its final message.
   const [fixRunId, setFixRunId] = useState<string | null>(null);
-  // Bumped when a hop lands on the CANVAS chat with a session the mounted
-  // chat is not on (another root task of the same canvas, from the Tasks
-  // page): the chat reads `session_id` at boot only, so it is remounted.
+  // Bumped when a hop lands on the CANVAS chat with a `session_id` other
+  // than the one it mounted on — another root task of the same canvas from
+  // the Tasks page, or Back to the bare canvas from one (none) — the chat
+  // reads `session_id` at boot only, so it is remounted. `canvasChatSidRef`
+  // is what the mounted chat was keyed on; the chat moving on by itself
+  // (replaceState, no event here) can leave it behind, which costs at most
+  // one needless remount onto the session the URL names.
   const [canvasChatSeq, setCanvasChatSeq] = useState(0);
+  const canvasChatSidRef = useRef<string | null>(
+    new URLSearchParams(window.location.search).get("session_id"),
+  );
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
@@ -944,14 +951,17 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
       const cur = nodeRef.current;
       if (!next) {
         if (!cur) {
-          // Already on the canvas chat: a hop naming a session it is not on
-          // (another root task of this canvas) remounts it; the mount reads
-          // `session_id` off the URL, which this push has just set.
-          if (new URLSearchParams(window.location.search).has("session_id")) {
+          // Already on the canvas chat: a URL naming a session it did not
+          // mount on — another one, or none after Back — remounts it; the
+          // mount reads `session_id` off the URL as it is now.
+          const want = new URLSearchParams(window.location.search).get("session_id");
+          if (want !== canvasChatSidRef.current) {
+            canvasChatSidRef.current = want;
             setCanvasChatSeq((n) => n + 1);
           }
           return;
         }
+        canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
         navHopRef.current = true;
         sendSelect(null);
         setNode(null);

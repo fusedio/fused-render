@@ -2877,7 +2877,12 @@ def _canvas_roots(canvases) -> dict[str, set[str]]:
 
 
 def _is_canvas_node_file(file: str) -> bool:
-    return not file.startswith(".") and file.endswith((".py", ".json"))
+    """A node's source at the clone's top level — the same suffixes the
+    snapshot reads as node sources (canvas_snapshot `_SOURCE_SUFFIXES`: UDF
+    `.py`, widget `.json`, note `.md`, html `.html`), never a dotfile."""
+    from fused_render.canvas_snapshot import _SOURCE_SUFFIXES
+
+    return not file.startswith(".") and file.endswith(_SOURCE_SUFFIXES)
 
 
 def _task_canvas(target: str) -> dict | None:
@@ -2893,9 +2898,9 @@ def _task_canvas(target: str) -> dict | None:
     the clone itself (the canvas chat) and the node's file name otherwise.
 
     Anything deeper than one level — a `.sync/` internal, a nested file — or
-    a top-level entry that is not a `.py` / `.json` node (`.sync` itself,
-    `canvas.toml`) is not a node the canvas page can show, so it answers None
-    and keeps the explorer door. Compared through `realpath` as well as
+    a top-level entry that is not a node source (`.sync` itself,
+    `canvas.toml`; `_is_canvas_node_file`) is not a node the canvas page can
+    show, so it answers None and keeps the explorer door. Compared through `realpath` as well as
     the plain path because the CLI wrapper reaches a clone through `pwd -P`,
     and a task made from inside one may name it either way. No existence
     check: a task on a deleted clone still names the door that was its own.
@@ -2916,10 +2921,10 @@ def _task_canvas(target: str) -> dict | None:
                 if not canvases._NAME_RE.match(name) or len(rest) > 2:
                     continue
                 file = rest[1] if len(rest) == 2 else ""
-                # A NODE is a UDF (`.py`) or a widget (`.json`), nothing else
-                # at the top level: `.sync/` itself, `canvas.toml`, a stray
-                # notes file are not nodes the workbench can select, and a
-                # task on one keeps the explorer door.
+                # A NODE is a source file the snapshot knows (`.py`, `.json`,
+                # `.md`, `.html`), nothing else at the top level: `.sync/`
+                # itself or `canvas.toml` is not a node the workbench can
+                # select, and a task on one keeps the explorer door.
                 if file and not _is_canvas_node_file(file):
                     continue
                 return {"env": env, "name": name, "file": file}
