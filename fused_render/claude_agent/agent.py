@@ -880,6 +880,53 @@ def _origin_note() -> str:
     )
 
 
+def _blocked_note(backend: str = "") -> str:
+    """The prompt paragraph that keeps a blocked turn from reading as Done.
+
+    The Tasks row derives its status from what the run DID, not from what it
+    said (routers/tasks.py `_status`): a turn that ends is `done`, and the
+    only thing above `done` is a run PARKED on a card — an `AskUserQuestion`
+    or a permission prompt nobody has answered — which reads `needs_attention`.
+    A model that needs something from the user and asks for it in plain text
+    therefore ends its turn, and the row says Done over a question (Akshil,
+    2026-10-20: "done means done with task"). Nothing in the status model can
+    tell a closing question from a closing answer, so the rule lives where the
+    choice is made: the model must park on a card when it is blocked.
+
+    Appended to EVERY target's prompt, like `_origin_note`: this is a fact
+    about how the app reads the run, not about the target. `backend="copilot"`
+    drops the tool name — Copilot has no `AskUserQuestion` — and keeps the
+    rule that a text question is never the way to end a blocked turn."""
+    if backend == "copilot":
+        # Copilot has no question tool (D12: AskUserQuestion -> none), so the
+        # only card that parks its run is a permission prompt. A question it
+        # cannot avoid is asked in the open, ONCE, flagged as the reason the
+        # turn stopped — the row still reads Done, but the reply says why.
+        return (
+            " When your turn ends, the app marks this task Done. Done means "
+            "the work is finished; when it is, just end the turn, with no "
+            "closing question. If you cannot finish without something only "
+            "the user can give — a choice, missing information, a decision "
+            "— and the next step is an action that needs their approval, "
+            "call the tool and let the permission prompt stop the turn for "
+            "you. Otherwise start your reply with one line that says you are "
+            "blocked and what you need, and ask once."
+        )
+    return (
+        " When your turn ends, the app marks this task Done. Done means the "
+        "work is finished; when it is, just end the turn — no closing "
+        "question, no offer of more work. If you cannot finish without "
+        "something only the user can give — a choice, missing information, "
+        f"a decision — call `{ANSWERABLE_TOOL}` with the choices instead of "
+        "asking in plain text: a question typed as text ends the turn and the "
+        "task reads as finished, while the tool holds the task as waiting on "
+        "them. If the thing you need is approval for an action, call the "
+        "tool that takes the action and let the permission prompt stop the "
+        f"turn. Use `{ANSWERABLE_TOOL}` only when you truly cannot proceed "
+        "without the answer."
+    )
+
+
 def _bad_id(value: str) -> bool:
     """Whether an id from the page is unsafe to join into a filesystem path.
 
@@ -3172,7 +3219,7 @@ def _appended_prompt(file: str, pane: bool, backend: str = "") -> str:
         shape = _canvas_node_prompt(file)
     else:
         shape = _system_prompt(file)
-    return shape + _fused_cli_note(backend) + _origin_note()
+    return shape + _fused_cli_note(backend) + _origin_note() + _blocked_note(backend)
 
 
 # The plugin root a Copilot session is handed (D8): its manifest, the one

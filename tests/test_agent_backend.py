@@ -238,7 +238,49 @@ def test_the_copilot_agent_file_never_speaks_claude(agent, home, tmp_path, monke
     assert note.endswith(" See that folder's CLAUDE.md for the details.")
     assert agent._fused_cli_note("copilot") == note[:-len(agent._CANVAS_CLAUDE_MD)]
     assert agent._appended_prompt(str(clone), True).endswith(
-        note + agent._origin_note())
+        note + agent._origin_note() + agent._blocked_note())
+
+
+def test_every_prompt_shape_says_a_blocked_turn_must_park_on_a_card(
+        agent, home, tmp_path, monkeypatch):
+    """A turn that ends reads Done on the Tasks row; only a run parked on an
+    AskUserQuestion or permission card reads Needs attention (routers/tasks.py
+    `_status`). So every target shape — file, app folder, plain folder, canvas
+    node — tells the model not to end a blocked turn on a text question, and
+    names the tool that parks it. Copilot gets the same rule without the
+    Claude-only tool name (`_CLAUDE_ONLY` above guards that file too)."""
+    canvases = tmp_path / "canvases"
+    clone = canvases / "c1"
+    clone.mkdir(parents=True)
+    (clone / "index.html").write_text("<html></html>")
+    (clone / "canvas.toml").write_text("")
+    node = clone / "udf.py"
+    node.write_text("")
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
+    monkeypatch.setattr(agent, "_custom_env", lambda origin, file: None)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    page = tmp_path / "page.html"
+    page.write_text("<html></html>")
+    rule = "the app marks this task Done"
+    for target, pane in ((str(page), True), (str(clone), True),
+                         (str(plain), False), (str(node), True)):
+        claude = agent._appended_prompt(target, pane)
+        assert rule in claude and "`AskUserQuestion`" in claude, target
+        # ... and the tool is for a BLOCKED turn only, never a closing flourish.
+        assert "only when you truly cannot proceed" in claude, target
+        assert claude.endswith(agent._blocked_note()), target
+        # Copilot has no question tool (D12): the same Done rule, a permission
+        # prompt as the one card that parks it, and a flagged question otherwise.
+        copilot = agent._appended_prompt(target, pane, "copilot")
+        assert rule in copilot and copilot.endswith(agent._blocked_note("copilot")), target
+        assert not _CLAUDE_ONLY.search(agent._blocked_note("copilot"))
+        assert "says you are blocked" in copilot, target
+    # The rule is the last thing said, so a shape-specific sentence can never
+    # bury it, and it rides on every machine-wide note being on or off.
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    monkeypatch.delenv("FUSED_RENDER_FUSED_CLI_DIR", raising=False)
+    assert agent._appended_prompt(str(plain), False).endswith(agent._blocked_note())
 
 
 def test_the_command_menu_is_per_backend(agent, target, tmp_path, monkeypatch):
