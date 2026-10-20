@@ -1113,9 +1113,11 @@ def test_post_creates_one_task_for_the_named_row_invoking_the_skill(
     d = _app(workspace)
     (d / "README.md").unlink()
     seen = []
+    kws = []
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda entry, prompt, *rest:
-                        seen.append((entry, prompt)) or ({"id": "t1", "run_id": "r1"}, None))
+                        lambda entry, prompt, *rest, **kw:
+                        seen.append((entry, prompt)) or kws.append(kw)
+                        or ({"id": "t1", "run_id": "r1"}, None))
     r = client.post("/api/apps/doctor", json={"path": str(d), "check": "readme"},
                     headers=HDRS)
     assert r.status_code == 200
@@ -1129,6 +1131,7 @@ def test_post_creates_one_task_for_the_named_row_invoking_the_skill(
     # and points at this row's own section.
     (entry, prompt), = seen
     assert entry == str(d / "index.html")
+    assert kws[0].get("strict_mcp") is True      # App Doctor runs MCP-free
     assert app_doctor.is_doctor_prompt(prompt)
     assert app_doctor.doctor_task_check_id(prompt) == "readme"
     assert app_doctor.SKILL_QUALIFIED in prompt
@@ -1153,15 +1156,18 @@ def test_post_check_all_covers_every_failing_row_in_one_task(
     d = _app(workspace, readme=False)
     (d / "app.py").write_text('DATA = "/Users/alice/data.csv"\n')
     seen = []
+    kws = []
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda entry, prompt, *rest:
-                        seen.append(prompt) or ({"id": "t1", "run_id": "r1"}, None))
+                        lambda entry, prompt, *rest, **kw:
+                        seen.append(prompt) or kws.append(kw)
+                        or ({"id": "t1", "run_id": "r1"}, None))
     r = client.post("/api/apps/doctor", json={"path": str(d), "check": "all"},
                     headers=HDRS)
     assert r.status_code == 200
     body = r.json()
     assert body["check"] == "all"
     (prompt,), = [seen]
+    assert kws[0].get("strict_mcp") is True      # App Doctor runs MCP-free
     assert app_doctor.is_doctor_prompt(prompt)
     assert app_doctor.doctor_task_check_id(prompt) == "all"
     assert "readme" in prompt

@@ -547,7 +547,9 @@ def test_start_leaves_launch_json_for_the_headsup_fork(agent, target, tmp_path,
 
 def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
                                                           tmp_path, monkeypatch):
-    """What copilot_host.py codes against: session_host's keys + argv + backend."""
+    """What copilot_host.py codes against: session_host's keys + argv + backend.
+
+(`strict_mcp` is one of session_host's own keys: it reads req.get("strict_mcp").)"""
     file, _workdir = target
     _prefs(home, copilot_enabled=True)
     _copilot_bin(tmp_path, monkeypatch)
@@ -556,7 +558,7 @@ def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
     req, _ = _req_of(agent, res)
     assert set(req) == {"agent", "run_dir", "file", "cwd", "pane", "cli_mode",
                         "session_id", "model", "effort", "extra_read_dirs",
-                        "new_session_id", "argv", "backend"}
+                        "new_session_id", "strict_mcp", "argv", "backend"}
 
 
 # ------------------------------------------------------- the gate (D17, #10)
