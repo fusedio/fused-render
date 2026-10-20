@@ -1337,10 +1337,16 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     # the capability's preference. `resolve_for_loaders`, not `resolve_for_model`,
     # because `meta.loaders` is the evidence being handed in — asking the cache
     # for it again from here would recurse.
-    pin = _ai_registry.AUTO
+    pin = _ai_registry.model_pin(repo_id) if repo_id else _ai_registry.AUTO
+    if pin == _ai_registry.AUTO and not candidates:
+        # The trap this whole field exists for: the task is one this app serves
+        # and the FORMAT is one no runner of that capability reads. That is
+        # `openai/whisper-large-v3` — a speech model, and unloadable by both
+        # speech runners that ship. Answered BEFORE resolving: with no pin
+        # there is nothing a resolution could add.
+        return None, capability
     pin_serves = False
     if repo_id:
-        pin = _ai_registry.model_pin(repo_id)
         resolution = _ai_registry.resolve_for_loaders(
             capability, repo_id, tuple(meta.loaders), pin)
         serving = resolution.runner
@@ -1523,6 +1529,25 @@ def embed_media(repo_id: str) -> tuple[str, ...] | None:
     return tuple(embed_common.EMBED_MEDIA.get(family, ()))
 
 
+def repo_dir_for(repo_id: str) -> str | None:
+    """`repo_id`'s cache folder, or None when the id is not one path segment.
+
+    The one derivation of `models--<owner>--<name>` and its path-segment guard: a
+    repo id reaches here out of a request body and is not a place to go looking
+    for `..` or a path separator.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return None
+    return os.path.join(hub_cache_dir(), dirname)
+
+
+def repo_signature(repo_id: str) -> tuple | None:
+    """Public `_repo_signature` for a repo id (None for an unusable id)."""
+    repo_dir = repo_dir_for(repo_id)
+    return None if repo_dir is None else _repo_signature(repo_dir)
+
+
 def _embed_snapshot_dir(repo_id: str) -> str | None:
     """`repo_id`'s default cached snapshot directory, or None.
 
@@ -1531,10 +1556,10 @@ def _embed_snapshot_dir(repo_id: str) -> str | None:
     a repo id reaches both of these out of a request body and is not a place to
     go looking for `..` or a path separator.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+    repo_dir = repo_dir_for(repo_id)
+    if repo_dir is None:
         return None
-    return _default_snapshot(os.path.join(hub_cache_dir(), dirname))
+    return _default_snapshot(repo_dir)
 
 
 def has_vision_tower(repo_id: str) -> bool:
@@ -1623,13 +1648,11 @@ def cached_capability(repo_id: str) -> CacheReading:
     on disk is `cached=False` — an interrupted download leaves a folder behind,
     and a folder is not evidence.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    # Built from a request body, so it is checked to be one path segment, the
-    # same way `_segment` checks a delete target. Anything else reads as "not
-    # cached" rather than as a path to go looking at.
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+    # Built from a request body: `repo_dir_for` checks it is one path segment.
+    # Anything else reads as "not cached" rather than as a path to look at.
+    repo_dir = repo_dir_for(repo_id)
+    if repo_dir is None:
         return CacheReading(False, None, None)
-    repo_dir = os.path.join(hub_cache_dir(), dirname)
     if not os.path.isdir(repo_dir) or _default_snapshot(repo_dir) is None:
         return CacheReading(False, None, None)
 
@@ -2180,10 +2203,9 @@ def discard_empty_shell(repo_id: str) -> bool:
     thread's way out, and a cache folder it could not tidy is not a reason to
     turn a cancelled download into an error.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+    repo_dir = repo_dir_for(repo_id)
+    if repo_dir is None:
         return False
-    repo_dir = os.path.join(hub_cache_dir(), dirname)
     try:
         if not os.path.isdir(repo_dir) or os.path.islink(repo_dir):
             return False

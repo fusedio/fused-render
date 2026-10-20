@@ -411,32 +411,51 @@ class Worker:
     #: thread checks it at every step so an evicted load stops downloading
     #: instead of finishing into a table it no longer belongs to.
     stopping: bool = False
-    #: Memo for `_resolved_code`: the (prefs.json stat, repo signature) key the
+    #: Memo for `_resolved_code`: the (prefs.json stat + write generation, repo signature, availability epoch) key the
     #: last resolution was computed under, and what it answered. A request path
     #: re-resolves only when one of those inputs moved.
     resolution_key: tuple | None = field(default=None, repr=False)
     resolved_code: str | None = field(default=None, repr=False)
+    #: `time.monotonic()` after which the memo is stale whatever its key says.
+    resolution_expiry: float = field(default=0.0, repr=False)
 
 
 _lock = threading.RLock()
 
 
+#: Bumped when a runner becomes available in THIS process (a venv build
+#: finishing). Part of every `_resolution_key`, so a worker memoised while its
+#: pin pointed at a not-yet-runnable engine re-resolves once that engine lands.
+_RESOLUTION_EPOCH = 0
+
+#: How long a memoised resolution is trusted regardless of its key: the backstop
+#: for availability flips this process cannot see (a venv built by another
+#: process, a device appearing, a mount coming back).
+_RESOLUTION_TTL = 30.0
+
+
+def _bump_resolution_epoch() -> None:
+    global _RESOLUTION_EPOCH
+    _RESOLUTION_EPOCH += 1
+
+
 def _resolution_key(worker: "Worker") -> tuple | None:
-    """What `resolve_for_model` reads, as two cheap stat results: prefs.json
-    (preference and pins) and the model's cache folder signature (format
-    evidence). None when it cannot be taken, which never matches a memo."""
+    """What `resolve_for_model` reads, as cheap public probes: prefs.json (stat
+    plus the in-process write generation, which sees same-size writes inside one
+    mtime tick), the model's cache folder signature (format evidence) and the
+    runner-availability epoch. None when it cannot be taken, which never matches
+    a memo."""
     try:
         from fused_render.ai import hub_cache
         from fused_render.shell import prefs
 
         try:
-            st = os.stat(prefs._path())
+            st = os.stat(prefs.path())
             prefs_key = (st.st_mtime_ns, st.st_size)
         except FileNotFoundError:
             prefs_key = None
-        repo_dir = os.path.join(
-            hub_cache.hub_cache_dir(), "models--" + worker.model.replace("/", "--"))
-        return (prefs_key, hub_cache._repo_signature(repo_dir))
+        return (prefs_key, prefs.write_generation(),
+                hub_cache.repo_signature(worker.model), _RESOLUTION_EPOCH)
     except Exception:  # noqa: BLE001 - no key means no memo, never a failure
         return None
 
@@ -445,11 +464,14 @@ def _resolved_code(worker: "Worker") -> str | None:
     """The runner code `resolve_for_model` gives this worker's model, memoised
     on the worker under `_resolution_key`. Call OUTSIDE `_lock`."""
     key = _resolution_key(worker)
-    if key is not None and key == worker.resolution_key:
+    now = time.monotonic()
+    if (key is not None and key == worker.resolution_key
+            and now < worker.resolution_expiry):
         return worker.resolved_code
     runner = registry.resolve_for_model(worker.capability, worker.model).runner
     code = runner.code if runner is not None else None
     worker.resolution_key = key
+    worker.resolution_expiry = now + _RESOLUTION_TTL
     worker.resolved_code = code
     return code
 #: capability -> the one Worker resident for it.
@@ -1440,6 +1462,9 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
             # "3.4 GB / 3.4 GB" bar sitting under that sentence until the
             # runner's own first weight tick overwrote it.
             _report(job, done=None, total=None, unit="")
+            # A runner that could not run a moment ago can now: every memoised
+            # resolution made while it was unavailable is stale.
+            _bump_resolution_epoch()
             return envinstall.venv_python_for(runner.folder)
     raise SupervisorError(f"the environment for {runner.short} did not build")
 

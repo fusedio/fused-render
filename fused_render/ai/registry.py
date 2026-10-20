@@ -76,7 +76,7 @@ import os
 import platform
 import re
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Sequence
 
 # One capability per runner for now. The constants are the vocabulary the whole
 # feature speaks — the API's `capability` parameter, the catalog's grouping, and
@@ -1980,11 +1980,15 @@ def resolve_for_model(capability: str, model_id: str,
 
 def resolve_for_loaders(capability: str, model_id: str,
                         loaders: tuple[str, ...],
-                        pinned: str | None = None) -> Resolution:
+                        pinned: str | None = None,
+                        base: Resolution | None = None,
+                        available: Sequence[Runner] | None = None) -> Resolution:
     """`resolve_for_model` with the format evidence handed in.
 
     `pinned` is the model's pin when the caller has already read it (one
-    prefs.json read for a whole listing); None reads it here.
+    prefs.json read for a whole listing); None reads it here. `base` (the
+    capability's `resolve`) and `available` (its `available_runners`) are
+    likewise optional, for a listing that computed them once per capability.
 
     **Pins are scoped to the model's CACHED capability** (the one the PUT
     validated against). A route asking for the model under another capability
@@ -2011,9 +2015,12 @@ def resolve_for_loaders(capability: str, model_id: str,
                 return Resolution(runner, pinned)
             pin_reason = status.reason or f"{runner.short} cannot run here"
 
-    base = resolve(capability)
+    if base is None:
+        base = resolve(capability)
+    if available is None:
+        available = available_runners(capability)
     requested = pinned if pin_reason else base.requested
-    candidates = [r for r in available_runners(capability) if r.code in loaders]
+    candidates = [r for r in available if r.code in loaders]
     if not candidates or (base.runner is not None and base.runner in candidates):
         return Resolution(base.runner, requested,
                           _join_reasons(pin_reason, base.ignored_reason))
@@ -2041,17 +2048,31 @@ def describe_model_engines() -> list[dict]:
         pins = {}
     known = capabilities()
     choices_by_cap: dict[str, list[dict]] = {}
+    base_by_cap: dict[str, Resolution] = {}
+    available_by_cap: dict[str, tuple[Runner, ...]] = {}
     rows = []
     for model in hub_cache.cached_models():
         capability = model.capability
         if not capability or capability not in known:
             continue
         pinned = pins.get(model.repo_id) or AUTO
-        resolution = resolve_for_loaders(
-            capability, model.repo_id, tuple(model.loaders), pinned)
         if capability not in choices_by_cap:
             choices_by_cap[capability] = [
                 _choice(r) for r in _RUNNERS if r.capability == capability]
+            base_by_cap[capability] = resolve(capability)
+            available_by_cap[capability] = available_runners(capability)
+        base = base_by_cap[capability]
+        resolution = resolve_for_loaders(
+            capability, model.repo_id, tuple(model.loaders), pinned,
+            base, available_by_cap[capability])
+        # Only what is specific to THIS model: the capability preference's own
+        # ignored reason belongs to the capability row, not repeated on every
+        # model beneath it.
+        reason = resolution.ignored_reason or ""
+        if base.ignored_reason:
+            reason = "; ".join(
+                part for part in reason.replace(base.ignored_reason, "\0").split("; ")
+                if part and part != "\0")
         rows.append({
             "id": model.repo_id,
             "capability": capability,
@@ -2059,7 +2080,7 @@ def describe_model_engines() -> list[dict]:
             "effective": resolution.runner.code if resolution.runner else None,
             "effectiveLabel": resolution.runner.label if resolution.runner else None,
             "effectiveShortLabel": resolution.runner.short if resolution.runner else None,
-            "ignoredReason": resolution.ignored_reason or None,
+            "ignoredReason": reason or None,
             "strandedLabel": _stranded_label(capability, pinned),
             "choices": choices_by_cap[capability],
         })

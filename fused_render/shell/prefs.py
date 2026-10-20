@@ -133,6 +133,28 @@ def _path() -> str:
     return os.path.join(storage.home_dir(), "prefs.json")
 
 
+def path() -> str:
+    """Public accessor for the prefs.json path (stat-based change detection)."""
+    return _path()
+
+
+#: Bumped on EVERY in-process write of prefs.json. A same-size rewrite inside one
+#: mtime tick is invisible to a stat; this counter is not.
+_WRITE_GENERATION = 0
+
+
+def write_generation() -> int:
+    return _WRITE_GENERATION
+
+
+def _store(prefs: dict) -> None:
+    global _WRITE_GENERATION
+    try:
+        storage.write_json(_path(), prefs)
+    finally:
+        _WRITE_GENERATION += 1
+
+
 def read_prefs() -> dict:
     data = storage.read_json(_path())
     return data if isinstance(data, dict) else {}
@@ -153,7 +175,7 @@ def write_pref(key: str, value) -> dict:
     with _PREFS_LOCK:
         prefs = read_prefs()
         prefs[key] = value
-        storage.write_json(_path(), prefs)
+        _store(prefs)
         return prefs
 
 
@@ -1222,7 +1244,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             had_previous = "native_windows_enabled" in prefs
             previous = prefs.get("native_windows_enabled")
             prefs["native_windows_enabled"] = value
-            storage.write_json(_path(), prefs)
+            _store(prefs)
 
             from fused_render import window_policy
 
@@ -1232,7 +1254,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     prefs["native_windows_enabled"] = previous
                 else:
                     del prefs["native_windows_enabled"]
-                storage.write_json(_path(), prefs)
+                _store(prefs)
                 return JSONResponse(
                     {"error": "the window host refused the native-windows preference; try again"},
                     status_code=409,
@@ -1531,7 +1553,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'launcher_row_modifier')"},
                 status_code=400,
             )
-        storage.write_json(_path(), prefs)
+        _store(prefs)
     if "workbench_env" in body:
         # AFTER the write: the wrapper bakes workbench_env() in as the
         # FUSED_ENV a session's `fused` defaults to outside a clone, and it
