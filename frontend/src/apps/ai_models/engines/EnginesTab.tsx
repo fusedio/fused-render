@@ -94,7 +94,7 @@ function CapabilityEngineRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [changed, setChanged] = useState<"switched" | "unloaded" | null>(null);
-  const warning = ignoredWarning(row);
+  const warning = ignoredWarning(row, auto);
   const note = engineNote(row);
   const stranded = strandedSelection(row, auto);
   const label = capabilityLabel(row.capability);
@@ -228,7 +228,7 @@ function ModelEngineRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const warning = ignoredWarning(row);
+  const warning = ignoredWarning(row, auto);
   const stranded = strandedSelection(row, auto);
   const labelId = `engine-model-${row.id}-label`;
 
