@@ -63,7 +63,7 @@ Model it on the recap code in `fused_render/server/routers/claude_sessions.py` (
 - Accepts the format `learn: <line>` / `tag: <You should know | Heads up>` / `explain:` followed by a `**Title**` line and `* ` bullets.
 - Returns `None` for any of these: `learn: none` (case-insensitive; allow trailing punctuation), a missing learn line, a missing title, or zero bullets.
 - Otherwise returns `{"learn": str, "tag": "You should know" | "Heads up", "title": str, "bullets": [str, ...]}`.
-  - Cap at 6 bullets, the title at 120 chars and each bullet at 400 chars.
+  - Cap at 3 bullets (extras dropped silently; 1 bullet is valid), the title at 120 chars and each bullet at 400 chars.
   - Strip `**` around the title.
   - Keep `**bold**` inside bullets; the card renders it.
   - Default the tag to "You should know".
@@ -88,7 +88,7 @@ Write this in our own words. Do not paste Claude Code's text. It must say all of
   * <bullet>
   ```
 
-  Use 2 to 5 bullets. The last bullet may be one concrete thing to check or do.
+  Use 1 to 3 short bullets (capped at 3 by the parser), each one sentence of at most 20 words, no recap of what the agent did, no file paths unless the path is the point. The last bullet may be one concrete thing to check or do.
 - Write in the user's language, but keep the labels `learn:`, `tag:` and `explain:` and the two tag texts in English.
 
 **Scheduler and state.** Keep module-level state behind a `threading.Lock`, keyed by `run_id`: `{turn_index_checked: set of (turn_index, steps_bucket), offered_turn: int|None, inflight: bool, note: dict|None, note_id: str, dismissed_ids: set}`.
@@ -223,3 +223,4 @@ Style it after `ui/PermCard.tsx` and `PlanCard.tsx`, using existing classes and 
 
 - **Merge of origin/main (task A).** main split Preferences into a settings registry (`shell/settings/{registry,controls,toggles}`); our section became the `chat-headsup` registry row (Tasks group, "Chat") + `ChatHeadsupControl` in toggles.tsx. Row copy avoids the word "tokens" (registry.test pins `token` -> huggingface only). Merge 7ce625300, copy fix f3ee05490.
 - **Fix round 5 (task B).** `countUserTurns` also skips rows with a truthy `pending` (queued/unsent optimistic rows; the run controller drops `pending` on adoption), so they cannot age the card. Test failed first; HeadsUp + useHeadsUp suites 18 pass.
+- **Brevity round.** Notes were too verbose: prompt now asks for 1-3 short bullets (<=20 words, no recap, "read in five seconds"); `parse_note` caps at 3 bullets and accepts 1. Tests added first and failed; test_chat_headsup passes.

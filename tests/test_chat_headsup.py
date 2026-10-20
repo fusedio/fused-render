@@ -63,9 +63,24 @@ def test_parse_caps():
     text = ("learn: x\nexplain:\n**" + "t" * 300 + "**\n"
             + "".join("* " + "b" * 900 + "\n" for _ in range(9)))
     note = headsup.parse_note(text)
-    assert len(note["bullets"]) == 6
+    assert len(note["bullets"]) == 3
     assert len(note["title"]) == 120
     assert all(len(b) == 400 for b in note["bullets"])
+
+
+def test_parse_one_bullet_is_valid():
+    note = headsup.parse_note("learn: x\ntag: Heads up\nexplain:\n**T**\n* Only one.\n")
+    assert note["bullets"] == ["Only one."]
+
+
+def test_parse_five_bullets_keeps_first_three():
+    text = "learn: x\nexplain:\n**T**\n" + "".join("* b%d\n" % i for i in range(5))
+    assert headsup.parse_note(text)["bullets"] == ["b0", "b1", "b2"]
+
+
+def test_prompt_asks_for_one_to_three_bullets():
+    assert "1 to 3 bullets" in headsup.HEADSUP_PROMPT
+    assert "2 to 5" not in headsup.HEADSUP_PROMPT
 
 
 # ------------------------------------------------------------ main_steps

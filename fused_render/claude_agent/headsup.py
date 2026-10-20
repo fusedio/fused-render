@@ -31,7 +31,7 @@ HEADSUP_TIMEOUT = 120.0
 #: A check fires every this many main-thread tool calls within one turn.
 STEPS_PER_CHECK = 6
 _MAX_RUNS = 64
-_MAX_BULLETS = 6
+_MAX_BULLETS = 3
 _MAX_TITLE = 120
 _MAX_BULLET = 400
 _TAGS = ("You should know", "Heads up")
@@ -43,7 +43,7 @@ Look for at most ONE thing the user should really know about this session and ve
 
 Interesting is not the same as important. If the best reason you can give is that their understanding would be more complete, answer `learn: none`. Skip anything the user has already shown they understand, anything the agent has already explained clearly, and anything you are not confident is true. Default to `learn: none`. The bar is very high, and most checks should find nothing.
 
-Write for a tired reader who switched away and forgot the details. Use plain words, name the real thing instead of saying "this" or "it", define any technical term, and do not end with a question.
+Write for a tired reader who switched away and forgot the details. Use plain words, name the real thing instead of saying "this" or "it", define any technical term, and do not end with a question. Be brief: the whole note should read in five seconds.
 
 Pick the tag "Heads up" for a risk or a problem with the work, and "You should know" for understanding that matters.
 
@@ -56,7 +56,7 @@ explain:
 * <bullet>
 * <bullet>
 
-Use 2 to 5 bullets. The last bullet may be one concrete thing to check or do. Write in the user's language, but keep the labels `learn:`, `tag:` and `explain:` and the two tag texts in English.
+Use 1 to 3 bullets. Each bullet is one short sentence of at most 20 words. Do not recap what the agent did, and do not list file paths unless the path is the point. The last bullet may be one concrete thing to check or do. Write in the user's language, but keep the labels `learn:`, `tag:` and `explain:` and the two tag texts in English.
 """
 
 
