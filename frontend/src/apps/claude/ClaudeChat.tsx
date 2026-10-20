@@ -4797,12 +4797,22 @@ function ChatBody(props: ChatBodyProps) {
   // next two messages, counted off the transcript's own user rows.
   const headsupOn = useChatHeadsupEnabled();
   const userTurnCount = useMemo(() => countUserTurns(state.turns), [state.turns]);
+  // The heads-up's "Ask in chat" goes through the page's own send path, so the
+  // send latch, outbox parking, queue admission and optimistic bubble all apply.
+  const headsupSend = useMemo(
+    () => ({
+      sendFollowUp: async (t: string) => onFollowUp(t),
+      sendMessage: async (t: string) =>
+        onSend(t, { model: defaults.model, effort: defaults.effort, permission: defaults.permission }),
+    }),
+    [onFollowUp, onSend, defaults.model, defaults.effort, defaults.permission],
+  );
   const headsup = useHeadsUp({
     runId: state.runId || state.lastRunId || "",
     running,
     enabled: headsupOn && inChat && chatBackend === "claude",
     userTurns: userTurnCount,
-    controller,
+    controller: headsupSend,
   });
   // The task number this session is (`#session`, T:12696 showSession). Read here
   // rather than inside the topbar so the landing's kebab and the erase dialog

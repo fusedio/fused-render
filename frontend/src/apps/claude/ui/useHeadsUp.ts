@@ -8,7 +8,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { getJson, postJson } from "@platform/lib/api";
 
-import type { ChatController } from "../protocol/controller-api";
 import { isInterruptMark } from "../protocol/wire";
 
 export const RUNNING_MS = 10_000;
@@ -62,7 +61,8 @@ export interface UseHeadsUpArgs {
   enabled: boolean;
   /** How many messages the user has sent in this conversation so far. */
   userTurns: number;
-  controller: Pick<ChatController, "sendFollowUp" | "sendMessage">;
+  /** The page's own send path (latch, outbox, queue, optimistic bubble). */
+  controller: { sendFollowUp(t: string): Promise<void>; sendMessage(t: string): Promise<void> };
   /** Test seam: shorter intervals. */
   timing?: HeadsUpTiming;
 }
