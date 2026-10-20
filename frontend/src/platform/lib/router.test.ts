@@ -13,6 +13,8 @@ installDomShim();
 
 const {
   navigate,
+  navigateUrl,
+  NAV_EVENT,
   navigateToJobPage,
   isJobPageRoute,
   rewriteLegacyUrl,
@@ -594,5 +596,63 @@ describe("pushHistory in a foreign embed", () => {
     }
     expect(mod.IS_FOREIGN_EMBED).toBe(false);
     expect(calls(mod)).toEqual(["replace /x"]);
+  });
+});
+
+describe("navigateUrl replace keeps entry state", () => {
+  test("replace:true without isDir passes the current history.state through", () => {
+    const hist = globalThis.history as unknown as {
+      state: unknown;
+      replaceState: (...a: unknown[]) => void;
+    };
+    const prevReplace = hist.replaceState;
+    const prevState = hist.state;
+    const seen: unknown[] = [];
+    hist.state = { fusedActiveTab: "x", fsDir: true };
+    hist.replaceState = (s) => void seen.push(s);
+    const prevDispatch = window.dispatchEvent;
+    window.dispatchEvent = (() => true) as typeof window.dispatchEvent;
+    try {
+      navigateUrl("/preferences?tab=ai", { replace: true });
+      expect(seen).toEqual([{ fusedActiveTab: "x", fsDir: true }]);
+      navigateUrl("/preferences?tab=ai", { replace: true, isDir: false });
+      expect(seen[1]).toEqual({ fsDir: false });
+    } finally {
+      window.dispatchEvent = prevDispatch;
+      hist.replaceState = prevReplace;
+      hist.state = prevState;
+    }
+  });
+});
+
+describe("navigateUrl replace option", () => {
+  test("replace:true calls replaceState, never pushState, and still fires the nav event", () => {
+    const hist = globalThis.history as unknown as {
+      pushState: (...a: unknown[]) => void;
+      replaceState: (...a: unknown[]) => void;
+    };
+    const prevPush = hist.pushState;
+    const prevReplace = hist.replaceState;
+    const calls: string[] = [];
+    hist.pushState = (_s, _t, u) => void calls.push("push:" + u);
+    hist.replaceState = (_s, _t, u) => void calls.push("replace:" + u);
+    // The shim's addEventListener is a no-op, so observe dispatchEvent itself.
+    let navEvents = 0;
+    const prevDispatch = window.dispatchEvent;
+    window.dispatchEvent = ((e: Event) => {
+      if (e.type === NAV_EVENT) navEvents++;
+      return true;
+    }) as typeof window.dispatchEvent;
+    try {
+      navigateUrl("/preferences?tab=ai", { replace: true });
+      expect(calls).toEqual(["replace:/preferences?tab=ai"]);
+      expect(navEvents).toBe(1);
+      navigateUrl("/preferences?tab=lan");
+      expect(calls).toEqual(["replace:/preferences?tab=ai", "push:/preferences?tab=lan"]);
+    } finally {
+      window.dispatchEvent = prevDispatch;
+      hist.pushState = prevPush;
+      hist.replaceState = prevReplace;
+    }
   });
 });

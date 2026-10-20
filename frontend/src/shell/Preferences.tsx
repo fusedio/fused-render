@@ -19,7 +19,9 @@
 //
 // THE URL: `?tab=<group>` picks the group (absent = General). The four ids an
 // old tab used — ai, indexing, lan, account — kept their names so existing
-// links land; `?tab=render` reads as General. `?s=<setting id>` opens that
+// links land; `?tab=render` reads as General. Switching group REPLACES the
+// history entry (not pushes), so Back leaves Preferences instead of walking
+// back through every tab visited. `?s=<setting id>` opens that
 // setting's group and highlights it; `?q=` is the search, kept in the URL with
 // replaceState so a reload or a copied link keeps it without each keystroke
 // becoming a history entry.
@@ -178,6 +180,7 @@ export default function Preferences() {
         if (group === "general") p.delete("tab");
         else p.set("tab", group);
       }),
+      { replace: true },
     );
   };
 
