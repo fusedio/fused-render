@@ -201,6 +201,19 @@ let knownViewTabs: TaskView[] | null = null;
  *  the literal sits beside its `removeItem` (tests/test_browser_storage_allowlist.py). */
 const VIEW_TABS_KEY = "fused-render:scheduled-view-tabs";
 
+// ONE WRITER AT A TIME for the tab row. `/api/prefs` serialises its own
+// read-modify-write but takes whatever value arrives last, and two writes can
+// be in flight here: the one-shot import above and an edit the reader saves
+// before that import's PUT has landed. Unqueued, the older imported row could
+// land AFTER the edit and overwrite it. Every write goes through this chain, so
+// the edit is always persisted last; a failed link never blocks the next.
+let viewTabsWrite: Promise<void> = Promise.resolve();
+function enqueueViewTabsWrite(tabs: TaskView[]): Promise<void> {
+  const write = viewTabsWrite.then(() => putTasksViewTabs(tabs).then(() => undefined));
+  viewTabsWrite = write.catch(() => {});
+  return write;
+}
+
 /**
  * The tabs, from prefs — and, once, the old per-browser localStorage row
  * (`VIEW_TABS_KEY`): pushed to prefs when prefs have none yet, then removed
@@ -223,7 +236,7 @@ async function readViewTabs(): Promise<TaskView[]> {
     // value first too); the push is not awaited, so a failed PUT cannot cost
     // this visit its tabs — the key stays and the next visit re-decides.
     const tabs = parseViewTabs(legacy);
-    void putTasksViewTabs(tabs).then(
+    void enqueueViewTabsWrite(tabs).then(
       () => {
         try {
           localStorage.removeItem(VIEW_TABS_KEY);
@@ -745,7 +758,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     tabsEdited.current = true;
     knownViewTabs = tabsDraft;
     // A failed write forgets the row; the edit itself still lands.
-    putTasksViewTabs(tabsDraft).catch((e) => console.warn("[fused] could not save the Tasks view tabs:", e));
+    enqueueViewTabsWrite(tabsDraft).catch((e) => console.warn("[fused] could not save the Tasks view tabs:", e));
     setTabsDraft(null);
     // The view that was up was just taken OFF the row: land on the first tab
     // left rather than keep showing a view no button names. Only when it was
