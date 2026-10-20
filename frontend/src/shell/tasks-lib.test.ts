@@ -6646,6 +6646,12 @@ describe("the grouped lists start with every lane but Archive ticked (2026-10-17
     expect(emptyTasksLabel("cards", { ...f, search: "x" }, 3, false)).toBe("Nothing matches these filters.");
     expect(emptyTasksLabel("cards", EMPTY_FILTERS, 3, false)).toBe("Nothing matches these filters.");
     expect(emptyTasksLabel("cards", f, 0, false)).toBe("No tasks yet. Everything Claude runs for you shows up here.");
+    // A stale Upcoming tick beside the starting lanes is ignored by the query
+    // (filtersForView), so the sentence is judged on the query that ran.
+    const stale = { ...f, statuses: [...f.statuses, "upcoming" as const] };
+    expect(emptyTasksLabel("cards", stale, 3, false)).toBe(
+      "Nothing has run yet. Cards show conversations; upcoming tasks are on the List.",
+    );
   });
 
   it("the query is what is ticked — an emptied list means everything, Archive included", () => {

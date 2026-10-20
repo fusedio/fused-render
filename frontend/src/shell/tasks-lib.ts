@@ -3402,10 +3402,16 @@ export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
  */
 export function emptyTasksLabel(
   view: TaskView,
-  filters: TaskFilters,
+  stored: TaskFilters,
   inScope: number,
   scoped: boolean,
 ): string {
+  // THE EFFECTIVE QUERY, not the stored one (CodeRabbit, #1797): a Cards tab
+  // carrying a stale `upcoming` tick beside its four starting lanes ran the
+  // default query (filtersForView drops the tick) and drew nothing — and read
+  // "Nothing matches these filters" for a filter it had just ignored. Judged
+  // on what the view actually asked, the sentence matches the screen.
+  const filters = filtersForView(stored, view);
   if (inScope === 0) {
     return scoped
       ? "No tasks for this app yet."
