@@ -32,6 +32,7 @@ import {
   setCurrentAppsOrder,
   type CurrentAppEntry,
 } from "@platform/lib/api";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -91,23 +92,6 @@ function inSection(app: { canvas: unknown }, section: DeskSection): boolean {
 // this only says "look again").
 export const DESK_CHANGED_KEY = "fused-render:current-apps-changed";
 
-// The section fold, "1" when hidden — the Bookmarks section's own key pattern.
-// One key per section: the two folds are two layout facts.
-export const COLLAPSED_KEY = "fused-render:current-apps-collapsed";
-export const CANVASES_COLLAPSED_KEY = "fused-render:canvases-collapsed";
-
-function collapsedKey(section: DeskSection): string {
-  return section === "canvases" ? CANVASES_COLLAPSED_KEY : COLLAPSED_KEY;
-}
-
-function readCollapsed(section: DeskSection): boolean {
-  try {
-    return localStorage.getItem(collapsedKey(section)) === "1";
-  } catch {
-    return false;
-  }
-}
-
 // The last table this document fetched, kept at module level so the rows do not
 // blink empty on every per-navigation remount of the sidebar while the fetch
 // round-trips.
@@ -129,7 +113,8 @@ function announceDeskChanged(stamp: number): void {
 // desktop app walks ports 1777..1787 then an ephemeral one, so a relaunch on a
 // new port started from an empty store and lost it. The old key is read ONCE
 // on the first load of this build and, if it still has something to say,
-// pushed through the normal write path.
+// pushed through the normal write path. (The section fold's old key is
+// imported with the rest of the layout, by platform/lib/ui-layout.)
 //
 // "If it still has something to say" is the whole gate. The port walk leaves
 // a key behind on EVERY origin the user ever ran on, each frozen at whatever
@@ -956,17 +941,20 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
   // what an empty desk wants.
   const [composing, setComposing] = useState(false);
-  // Whole-section fold, the Bookmarks heading's pattern: local to this machine
-  // (localStorage) — sidebar layout, not desk data. The count chip carries the
-  // collapsed signal, no chevron.
-  const [collapsed, setCollapsed] = useState(() => readCollapsed(section));
+  // Whole-section fold, the Bookmarks heading's pattern: sidebar layout, not
+  // desk data, so it lives in the ui-layout doc (`ui_layout.json`, D1386) —
+  // read synchronously off the cache filled at boot, written by the click and
+  // only by the click. One key per section: the two folds are two layout
+  // facts. The count chip carries the collapsed signal, no chevron.
+  const [collapsed, setCollapsed] = useState(() =>
+    canvases
+      ? getUiLayout().canvasesCollapsed ?? false
+      : getUiLayout().currentAppsCollapsed ?? false,
+  );
   const toggleCollapsed = () => {
     const next = !collapsed;
-    try {
-      localStorage.setItem(collapsedKey(section), next ? "1" : "0");
-    } catch {
-      // No store: the fold lasts as long as the page does.
-    }
+    if (canvases) patchUiLayout((d) => ({ ...d, canvasesCollapsed: next }));
+    else patchUiLayout((d) => ({ ...d, currentAppsCollapsed: next }));
     setCollapsed(next);
   };
   // This section and Bookmarks share the sidebar's free height (equal halves,

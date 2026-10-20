@@ -4186,8 +4186,9 @@ export const LANE_SPLIT_LABEL = "queued";
 //
 // So the two states are stored in two different places, on purpose:
 //
-//   * `choices` — the reader's answer for a lane WITH CARDS IN IT. localStorage,
-//     survives reloads, and is what `laneCollapsed` below reads.
+//   * `choices` — the reader's answer for a lane WITH CARDS IN IT.
+//     sessionStorage (this tab, this sitting — forgotten when the window
+//     closes), and is what `laneCollapsed` below reads.
 //   * the peek — a lane opened while empty. Component state in TaskBoard,
 //     survives nothing: not a reload, not a remount, and not the lane filling up
 //     and draining again. `laneRolledUp` is where the two meet.
@@ -4210,23 +4211,25 @@ export const LANE_SPLIT_LABEL = "queued";
 // 2026-08-18) — an Archive with cards in it is a column like the others, and an
 // Archive with none rolls up like the others.
 
-/** The key the board's lane choices live under. Distinct from the array-shaped
- * key an earlier build wrote: that one recorded "collapsed now", defaults
- * included, which cannot be told apart from "the reader chose this". */
-export const LANE_CHOICE_KEY = "fused-render:scheduled-board-lanes";
-
 /** Lane → the reader's own answer to "collapsed?". Absent ⇒ never chosen. */
 export type LaneChoices = Partial<Record<BoardColumn, boolean>>;
 
-/** Same contract as parseListMemory: a stored string is untrusted input, and an
- * unreadable one means "no choices yet", never a thrown render. */
-export function parseLaneChoices(raw: string | null): LaneChoices {
+/** Same contract as parseListMemory: a stored value is untrusted input, and an
+ * unreadable one means "no choices yet", never a thrown render. Takes an
+ * object or a JSON string alike — only a choice per KNOWN lane survives.
+ * Stores choices,
+ * not the board: distinct from the array-shaped key an earlier build wrote,
+ * which recorded "collapsed now", defaults included, and so could not be told
+ * apart from "the reader chose this". */
+export function parseLaneChoices(raw: unknown): LaneChoices {
   if (!raw) return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return {};
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const row = parsed as Record<string, unknown>;

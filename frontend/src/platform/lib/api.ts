@@ -1907,6 +1907,39 @@ export function putTasksViewTabs(tabs: string[]): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { tasks_view_tabs: tabs });
 }
 
+// ---- UI layout (shell/ui_layout.py, ~/.fused-render/ui_layout.json) ---------
+// The per-machine layout the shell used to keep in a dozen localStorage keys
+// (D1386): sidebar width and fold, the two sidebar section folds, the explorer
+// companion pane's shut/width/full-screen, per-folder listing sort, the Tasks
+// page's view / calendar range / board lanes / group folds, and the New task
+// form's recent folders. Whole-document, last-write-wins (home_layout.py's
+// posture). `exists` false = never written: the client then seeds from its
+// defaults (and, once, from whatever the old localStorage keys still hold).
+export interface UiLayoutDoc {
+  v: 1;
+  sidebar?: { width: number; collapsed: boolean };
+  bookmarksCollapsed?: boolean;
+  currentAppsCollapsed?: boolean;
+  /** The sidebar's Canvases section fold (the desk's canvas half). */
+  canvasesCollapsed?: boolean;
+  explorerSide?: { hidden?: boolean; width?: number | null; maximized?: boolean };
+  /** canonical fs path → "?sort=..&order=.." (platform/lib/viewstate.ts). */
+  viewState?: Record<string, string>;
+  tasks?: {
+    view?: string;
+    calRange?: string;
+  };
+  recentPaths?: string[];
+}
+
+export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
+  return getJson<{ exists: boolean; layout: UiLayoutDoc | null }>("/api/ui-layout");
+}
+
+export function putUiLayout(layout: UiLayoutDoc): Promise<{ ok: boolean }> {
+  return putJson<{ ok: boolean }>("/api/ui-layout", layout);
+}
+
 // ---- Notifications panel state (shell/notifications.py) ---------------------
 // Seen keys + first-seen clock (shell/notifications-seen-store.ts) and the two
 // dismissal maps (repo rows, waiting-task rows) that RepoUpdatesDock kept in

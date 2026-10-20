@@ -12351,16 +12351,18 @@ and not a sync nicety.
   `seen_seq` on the bot (`POST /api/bots/{id}/seen`). Bots page switches and the
   Tasks tab row = `prefs.json` keys (`bots_autostage`, `bots_sounds`,
   `bots_clear_enabled`, `tasks_view_tabs`). Marketplace Python ack =
-  `marketplace/acks.json`. The durable per-viewer layout subset (sidebar
-  width/fold, section folds, explorer companion, folder sort, Tasks view /
-  range / lanes, New-task recents) follows in a stacked change as one
-  `ui_layout.json` document.
-- **BS-3 Boot.** Each store hydrates once per document from its GET (the
-  notifications record at boot, the tasks seen map with the first pulse, bot
-  marks with the bot list, the Projects order with the rows themselves), reads
-  synchronously from the cache afterwards and writes through to the server.
-  A failed write keeps the cache; nothing persists from an effect keyed on
-  polled data — only from the user's gesture.
+  `marketplace/acks.json`. Durable layout = `ui_layout.json`
+  (`GET`/`PUT /api/ui-layout`, whole-document, last write wins): sidebar
+  width/fold, both sidebar section folds, explorer companion shut/width/
+  full-screen, per-folder listing sort, Tasks view / calendar range,
+  New-task recent folders. Board lanes and group folds stay per-tab
+  sessionStorage (in-page memory).
+- **BS-3 Boot.** `main.tsx` hydrates the layout document and the notifications
+  record in parallel with `/api/config`, bounded at 2 s, BEFORE the first
+  render; stores read synchronously from the cache afterwards and write through
+  to the server (debounced whole-document PUT for the layout; immediate POSTs
+  elsewhere). A failed write keeps the cache; nothing persists from an effect
+  keyed on polled data — only from the user's gesture.
 - **BS-4 Import.** On first load of this build, each old key still present is
   pushed through its new write path once and removed. No server marker.
 - **BS-5 Out of scope.** Template-side keys written by page HTML (photos
