@@ -6,9 +6,8 @@
 // state to the workbench frame (`fused-embed-sync-state`). Both own their own
 // clock tick so the ageing embed_to_disk leg and "Published 12 s ago" never
 // re-render the whole workspace (and its two iframes' parents) every second.
-import { ArrowLeftIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { ENV_LABELS, type WorkbenchEnv } from "./api";
+import type { WorkbenchEnv } from "./api";
 import {
   LEG_LABEL,
   legVerdicts,
@@ -75,7 +74,6 @@ export interface PullControl {
 }
 
 export function SyncStrip({
-  env,
   name,
   server,
   queue,
@@ -85,8 +83,6 @@ export function SyncStrip({
   pull,
   open,
   onToggle,
-  onBack,
-  workbenchUrl,
 }: {
   /** The canvas's environment, shown as a chip beside the way back: with a
    *  prod and an unstable canvas open at once, the strip is the one place on
@@ -103,14 +99,6 @@ export function SyncStrip({
   pull: PullControl;
   open: boolean;
   onToggle: () => void;
-  /** Back to the canvases listing, on this canvas's environment
-   *  (/canvases?env=<env>). The strip is the page's only top chrome, so the
-   *  way out lives at its left end. */
-  onBack: () => void;
-  /** The hosted workbench editor for this canvas (no embed flags); null
-   *  until the base URL and handle are known. Shown as "Open in workbench"
-   *  while every leg is green. */
-  workbenchUrl: string | null;
 }) {
   const now = useNow(tickFor(queue, server, true));
   const merged: MergedSyncState = mergeEmbedLeg(server, name, queue, failure, now);
@@ -121,9 +109,6 @@ export function SyncStrip({
   const verdicts = legVerdicts(merged);
   const pulling = pull.busy || s2d.state === "pulling";
   const pullFailed = s2d.state === "error" && s2d.changed.length > 0;
-  const pushState = merged.legs.disk_to_server.state;
-  const inFlight =
-    pushState === "pending" || pushState === "pushing" || s2d.state === "pulling" || queue.length > 0;
   const showPull = s2d.state === "stale" || s2d.state === "pulling" || pullFailed || pull.busy;
   // This page's own pull error first (it is the click the user just made),
   // else the server's reason for the failed pull leg.
@@ -161,33 +146,6 @@ export function SyncStrip({
         userSelect: "none",
       }}
     >
-      <button
-        type="button"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          flex: "none",
-          padding: 0,
-          margin: 0,
-          border: "none",
-          background: "none",
-          color: "inherit",
-          cursor: "pointer",
-          opacity: 0.7,
-        }}
-        aria-label="Back to canvases"
-        title="Back to canvases"
-        onClick={(e) => {
-          e.stopPropagation();
-          onBack();
-        }}
-        onKeyDown={(e) => e.stopPropagation()}
-      >
-        <ArrowLeftIcon size={14} />
-      </button>
-      <span className="canvases-env-chip" title={`${name} syncs with ${ENV_LABELS[env]}`}>
-        {ENV_LABELS[env]}
-      </span>
       <Dot level={level} />
       <span
         style={{
@@ -241,24 +199,6 @@ export function SyncStrip({
             {pulling ? "Pulling…" : "Pull"}
           </button>
         </span>
-      )}
-      {!owned && server && level === "ok" && !inFlight && workbenchUrl && (
-        // All green and nothing moving: the canvas on the server is what
-        // this folder holds, so the hosted editor is worth a look. A plain
-        // link in a new tab. (A pending/pushing push is "ok" to worstLeg but
-        // reads "Publishing…", so it is held out here.)
-        <a
-          href={workbenchUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="btn"
-          style={{ padding: "1px 10px", fontSize: 12, flex: "none", textDecoration: "none" }}
-          onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => e.stopPropagation()}
-          title="Open this canvas in the Fused workbench, in a new tab"
-        >
-          Open in workbench
-        </a>
       )}
       {!owned && server && (
         // The four legs, local first, as bare dots (each names itself in its

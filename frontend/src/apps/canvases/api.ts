@@ -75,6 +75,28 @@ export function canvasNameFromPath(
  *  environment the canvas came from. */
 export const catalogPath = (env: WorkbenchEnv) => `/canvases?env=${env}`;
 
+/** The canvas page's tabs, strip order; the first is the default. THE list:
+ *  the type is derived from it and CanvasPage.tsx's `TAB_DEFS` is a Record
+ *  over that type, so a tab added here and forgotten there is a type error
+ *  (the app page's APP_PAGE_TABS pattern, current-apps-lib.ts). Overview is
+ *  the embedded workbench, Tasks the Tasks page scoped to the clone, Files the
+ *  clone's files in their templates. No API or Doctor tab: a canvas is not an
+ *  app folder with endpoints to call or a share-readiness to check. */
+export const CANVAS_PAGE_TABS = ["overview", "tasks", "files"] as const;
+export type CanvasPageTab = (typeof CANVAS_PAGE_TABS)[number];
+export const DEFAULT_CANVAS_PAGE_TAB: CanvasPageTab = CANVAS_PAGE_TABS[0];
+/** The query param naming the tab; absent = the default (the app page's `_tab`). */
+export const CANVAS_PAGE_TAB_PARAM = "_tab";
+
+/** The tab a query names. Missing or unknown falls back to the default
+ *  silently: a stale link opens the page, not an error. */
+export function canvasPageTabFromSearch(search: string): CanvasPageTab {
+  const tab = new URLSearchParams(search).get(CANVAS_PAGE_TAB_PARAM);
+  return tab !== null && (CANVAS_PAGE_TABS as readonly string[]).includes(tab)
+    ? (tab as CanvasPageTab)
+    : DEFAULT_CANVAS_PAGE_TAB;
+}
+
 /** The canvas page, optionally on one NODE with one CHAT open: `?node=` +
  *  `node_file=` select the node (what CanvasWorkspace's `nodeFromUrl` reads;
  *  the stem is the UDF name, exactly as its `nodeHopFromUrl` derives it) and
@@ -85,9 +107,17 @@ export const catalogPath = (env: WorkbenchEnv) => `/canvases?env=${env}`;
 export function canvasPagePath(
   env: WorkbenchEnv,
   name: string,
-  opts?: { file?: string; sessionId?: string },
+  opts?: { file?: string; sessionId?: string; tab?: CanvasPageTab; search?: string },
 ): string {
-  const q = new URLSearchParams();
+  // `search`: the current query to carry across a TAB hop (a tab's own
+  // params — `?node=` on Overview, `?view=` on Tasks, `?file=` on Files —
+  // ride along untouched, the app page's rule); only `_tab` is rewritten,
+  // and dropped for the default so the default tab has one address.
+  const q = new URLSearchParams(opts?.search ?? "");
+  if (opts?.tab !== undefined) {
+    if (opts.tab === DEFAULT_CANVAS_PAGE_TAB) q.delete(CANVAS_PAGE_TAB_PARAM);
+    else q.set(CANVAS_PAGE_TAB_PARAM, opts.tab);
+  }
   const file = opts?.file || "";
   if (file) {
     const dot = file.lastIndexOf(".");
@@ -141,6 +171,22 @@ export interface SyncStatus {
 }
 
 export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
+
+/** A clone on this machine, as GET /api/canvases/cloned lists it. */
+export interface ClonedCanvas {
+  env: WorkbenchEnv;
+  name: string;
+  /** The clone folder, absolute. */
+  dir: string;
+  /** Newest mtime among the clone dir and its files (epoch seconds). */
+  mtime: number;
+}
+
+/** Every clone under ~/Fused/canvas/<env>/, both environments, newest first.
+ *  A local listdir on the server: no CLI, no login, no guard — the sidebar's
+ *  Canvases section reads it as the sidebar mounts. */
+export const listClonedCanvases = () =>
+  getJson<{ canvases: ClonedCanvas[] }>("/api/canvases/cloned").then((r) => r.canvases);
 
 /** The account handle. Handles are per environment: the canvas workspace
  *  names its canvas's env (the handle goes into the workbench URL); a caller

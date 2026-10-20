@@ -158,9 +158,9 @@ const Apps = lazy(() => import("@apps/builder/Apps"));
 const Canvases = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.Canvases })),
 );
-const CanvasWorkspace = lazy(() =>
-  import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
-);
+// The canvas page (shell/CanvasPage.tsx) frames the sub-app's workspace in an
+// Overview tab beside the shell's Tasks and Files pages.
+const CanvasPage = lazy(() => import("@shell/CanvasPage"));
 // Bots (ported from FusedBot): browser bots, each driving its own Chrome
 // window. The page carries its own scoped stylesheet in the lazy chunk.
 const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
@@ -1028,13 +1028,16 @@ export default function App({ config }: { config: Config }) {
       </div>
     );
   } else if (canvasWorkspace !== null) {
-    // Canvas workspace: the embedded workbench + sync strip. Keyed on the
-    // canvas's identity, (env, name) (not epoch): the page holds a live iframe
-    // and a token handshake, and its only same-route churn is its own sync poll.
+    // The canvas page (apps/canvases/CanvasPage.tsx): the embedded workbench
+    // in an Overview tab, its tasks in a Tasks tab, the clone's files in a
+    // Files tab. Keyed on the canvas's identity, (env, name) (not epoch): the
+    // tab is a query param, so switching it is a navigation, and a remount
+    // would reload the workbench frame — seconds of boot — to change tabs.
+    // A different canvas still mounts fresh.
     main = (
       <div id="content">
         <Suspense fallback={<RouteFallback />}>
-          <CanvasWorkspace
+          <CanvasPage
             key={`${canvasWorkspace.env}/${canvasWorkspace.name}`}
             env={canvasWorkspace.env}
             name={canvasWorkspace.name}

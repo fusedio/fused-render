@@ -1,5 +1,10 @@
-// Canvas workspace (/canvases/<env>/<name>): the embedded live workbench
-// beside a sync status strip for the local clone.
+// Canvas workspace: the embedded live workbench under a sync status strip
+// for the local clone — the canvas page's OVERVIEW tab (shell/CanvasPage.tsx,
+// which owns the route /canvases/<env>/<name> and keeps this panel mounted
+// behind its other tabs, so the frame below boots once per visit). Full
+// width; a selected node opens its Claude / Code peek on the right. The
+// canvas chat that used to fill the right pane is gone (owner, 2026-10-20:
+// the Overview is read only; a Claude task on the clone is the Tasks tab's).
 //
 // A canvas is (env, name): its clone is ~/Fused/canvas/<env>/<name>, and
 // every call below, the workbench origin and the whoami handle are that
@@ -23,8 +28,8 @@
 // WORKBENCH simply never sends a selection):
 //   iframe → { type: "fused-embed-selection", udfName, backendId, kind }
 //            on every change and once after ready; a null name (pane click,
-//            folder node, multi-select) returns this pane to the canvas chat
-//            (owner call: the right pane follows the canvas)
+//            folder node, multi-select) closes the node peek, the canvas
+//            takes the width back (owner call: the pane follows the canvas)
 //   parent → { type: "fused-embed-select", udfName }  (restore ?node= on
 //            load; null from the sidebar's close button, so both sides agree)
 //   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
@@ -91,9 +96,8 @@
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
-import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { NAV_EVENT, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
@@ -101,7 +105,7 @@ import {
   ackDelta,
   applyRename,
   applySnapshot,
-  catalogPath,
+  canvasPagePath,
   fixWithClaude,
   getDelta,
   getAccessToken,
@@ -295,41 +299,6 @@ function recordNodeSession(win: Window, key: string, pathname: string): void {
   else nodeSessions.delete(key);
 }
 
-/** The clone file a chat hop names, when it is one of this canvas's nodes.
- *  A Recent row on the canvas chat that is a FILE chat navigates to the
- *  explorer's view of that file (`paneChatUrl`: `/explorer/view/<path>?_side=
- *  claude&session_id=…`); here that file is a node, so the hop becomes
- *  "select the node, open that chat". Null for anything else — a folder chat,
- *  a file outside the clone, a nested path — which navigates as it always did. */
-function nodeHopFromUrl(url: string, dir: string): { node: NodeSel; sessionId: string | null } | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url, window.location.origin);
-  } catch {
-    return null;
-  }
-  const prefix = [VIEW_PREFIX, EMBED_PREFIX].find((p) => parsed.pathname.startsWith(p));
-  if (!prefix) return null;
-  const fsPath =
-    "/" +
-    parsed.pathname
-      .slice(prefix.length)
-      .split("/")
-      .filter((seg) => seg.length > 0)
-      .map(decodeURIComponent)
-      .join("/");
-  const base = dir.replace(/\/+$/, "") + "/";
-  if (!fsPath.startsWith(base)) return null;
-  const file = fsPath.slice(base.length);
-  if (!file || file.includes("/")) return null;
-  const dot = file.lastIndexOf(".");
-  const udfName = dot > 0 ? file.slice(0, dot) : file;
-  return {
-    node: { udfName, kind: file.endsWith(".py") ? "udf" : "widget", file },
-    sessionId: parsed.searchParams.get("session_id"),
-  };
-}
-
 /** The node restored from this page's own URL (`?node=` + `node_file=`), or
  *  null. An older URL with `node=` alone is read as a UDF (`<name>.py`). */
 function nodeFromUrl(): NodeSel | null {
@@ -356,16 +325,22 @@ function seedNodeSessionFromUrl(env: WorkbenchEnv, canvas: string, node: NodeSel
   return sid;
 }
 
-export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name: string }) {
+export default function CanvasWorkspace({
+  env,
+  name,
+  onWorkbenchUrl,
+}: {
+  env: WorkbenchEnv;
+  name: string;
+  /** The hosted workbench editor's URL for this canvas (no embed flags), once
+   *  the base URL and handle are known — the canvas page's header draws it as
+   *  "Open in Workbench". Null until then. */
+  onWorkbenchUrl?: (url: string | null) => void;
+}) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
-  // The claude template's path, from the clone dir's own stat — the same
-  // resolution the explorer's sidebar uses, so a user override (§16) wins here
-  // too. Needed because the chat is framed DIRECTLY via /render (below), not
-  // through /explorer/embed.
-  const [chatTpl, setChatTpl] = useState<string | null>(null);
-  // The selected node (null = the canvas chat). Seeded from `?node=` so a
+  // The selected node (null = the canvas alone, full width). Seeded from `?node=` so a
   // reload keeps the node; written back below.
   const [node, setNode] = useState<NodeSel | null>(() => {
     const seeded = nodeFromUrl();
@@ -415,22 +390,7 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   const [dragging, setDragging] = useState(false);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // A "Fix with Claude" run in flight: the editor iframe attaches to it via
-  // its ?run= param, so the user watches the fix happen in the chat they
-  // already have. Kept after the push recovers — the session may still be
-  // finishing its final message.
-  const [fixRunId, setFixRunId] = useState<string | null>(null);
-  // Bumped when a hop lands on the CANVAS chat with a `session_id` other
-  // than the one it mounted on — another root task of the same canvas from
-  // the Tasks page, or Back to the bare canvas from one (none) — the chat
-  // reads `session_id` at boot only, so it is remounted. `canvasChatSidRef`
-  // is what the mounted chat was keyed on; the chat moving on by itself
-  // (replaceState, no event here) can leave it behind, which costs at most
-  // one needless remount onto the session the URL names.
-  const [canvasChatSeq, setCanvasChatSeq] = useState(0);
-  const canvasChatSidRef = useRef<string | null>(
-    new URLSearchParams(window.location.search).get("session_id"),
-  );
+  // A "Fix with Claude" click in flight (the run itself shows on the Tasks tab).
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
@@ -608,22 +568,14 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
     };
   }, [env, name, ensureSync]);
 
-  // The claude template's path for the clone (see `chatTpl`), once the clone
-  // dir is known — at boot, or when an owned canvas is finally released.
+  // The hosted editor's URL, for the page header (see `onWorkbenchUrl`).
   useEffect(() => {
-    if (!dir) return;
-    let cancelled = false;
-    void statPath(dir)
-      .then((st) => {
-        if (!cancelled) setChatTpl(st.templates?.find((t) => t.mode === "claude")?.path ?? null);
-      })
-      .catch((e) => {
-        if (!cancelled) setError((e as Error).message);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [dir]);
+    onWorkbenchUrl?.(
+      baseUrl && handle
+        ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+        : null,
+    );
+  }, [baseUrl, handle, name, onWorkbenchUrl]);
 
   // Owned by another process, or sync/start failed: ask again every
   // OWNED_RETRY_MS so the page recovers on its own when that process quits
@@ -932,9 +884,10 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   // NAV_EVENT (the node effect's own replaceState writes never do), so re-read
   // them there: select the node in the workbench, remember the session under
   // it and reboot the pane; the same node with a new session reboots alone.
-  // A hop to the bare canvas page deselects, and `navHopRef` keeps the node
-  // effect from clearing the `session_id` that hop carries for the canvas
-  // chat, which reads it off the URL as it mounts.
+  // A hop to the bare canvas page deselects. `navHopRef` marks a hop so the
+  // node effect below leaves the `session_id` the link carries on the URL
+  // (the pane boots off the seeded map; the address should still restore
+  // the task's session on reload).
   const navHopRef = useRef(false);
   useEffect(() => {
     const onNav = () => {
@@ -950,18 +903,10 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
       const cur = nodeRef.current;
       if (!next) {
-        if (!cur) {
-          // Already on the canvas chat: a URL naming a session it did not
-          // mount on — another one, or none after Back — remounts it; the
-          // mount reads `session_id` off the URL as it is now.
-          const want = new URLSearchParams(window.location.search).get("session_id");
-          if (want !== canvasChatSidRef.current) {
-            canvasChatSidRef.current = want;
-            setCanvasChatSeq((n) => n + 1);
-          }
-          return;
-        }
-        canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
+        // No node named: nothing to select (a hop onto the bare canvas page
+        // with a session used to remount the canvas chat; that chat is gone,
+        // and a root task of the canvas is the Tasks tab's).
+        if (!cur) return;
         navHopRef.current = true;
         sendSelect(null);
         setNode(null);
@@ -1093,9 +1038,9 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
           );
         } else {
           // The canvas deselected (pane click, folder node, multi-select, or
-          // the node is gone after a re-hydrate): follow it back to the
-          // canvas chat. Owner call — the canvas is the one source of truth
-          // for what the right pane is about.
+          // the node is gone after a re-hydrate): close the node peek. Owner
+          // call — the canvas is the one source of truth for what the right
+          // pane is about.
           setNode(null);
         }
       }
@@ -1106,16 +1051,17 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
 
   // Mirror the node onto this page's URL so a reload lands on it, and drop the
   // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
-  // chat the URL names (one ChatMount at a time, both on "url" params), and
-  // canvas → node, node → canvas and node → node are all a different chat.
-  // The previous chat's session is one click away in its own Recent list.
+  // node chat the URL names, and node → none and node → node are a different
+  // chat. The previous chat's session is one click away in its own Recent list.
   //
-  // Every transition clears, not only node → node: with canvas → node left
-  // alone, the node sidebar's fresh ChatMount read the canvas chat's
-  // `session_id` off the URL and RESUMED it — a folder session shown under a
+  // Every transition clears, not only node → node (this page used to carry a
+  // canvas chat beside the node pane, 2026-10-17..20, and a canvas → node hop
+  // left alone made the node pane's fresh chat read the canvas chat's
+  // `session_id` off the URL and RESUME it — a folder session shown under a
   // node, which the node's Recent list (filed by the transcript's leading
   // app-state `entry`, which a folder chat never has) could not find again
-  // after the next remount. The mount itself is exempt: a reload lands on
+  // after the next remount; the rule stays, a Tasks-page door can still name
+  // a session for one node). The mount itself is exempt: a reload lands on
   // `?node=` + `session_id` together and must resume that node's chat.
   const prevNodeKeyRef = useRef<string | null>(null);
   const nodeEffectRanRef = useRef(false);
@@ -1323,41 +1269,22 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
     };
   }, [dragging]);
 
-  // Right pane: the Claude chat over the local clone, chat-only — the chat's
-  // own left preview would be a second canvas beside the live workbench. Shown
-  // once the clone exists and the registry says a chat serves it.
-  const chatHere = !!(dir && chatTpl);
-
-  // Hand a fresh fix run to the chat: `run` goes on this page's own URL (the
-  // chat's "url" params store reads it — the chat adopts the session and then
-  // clears the param itself), and the key remount below makes the chat boot
-  // and see it.
-  useEffect(() => {
-    if (!fixRunId) return;
-    const url = new URL(window.location.href);
-    url.searchParams.set("run", fixRunId);
-    window.history.replaceState(window.history.state, "", url);
-  }, [fixRunId]);
-
   useAgentBackends();
   const claudeOff = isBackendOff("claude");
   const onFix = async () => {
     setFixBusy(true);
     setFixError(null);
     try {
-      const { run_id } = await fixWithClaude(env, name);
-      // The fix runs on the CLONE (canvases.py spawns on the dir), so it is
-      // the canvas chat's to show: leave the node, on both sides.
-      if (nodeRef.current) {
-        sendSelect(null);
-        setNode(null);
-      }
-      setFixRunId(run_id);
+      await fixWithClaude(env, name);
       // Don't wait for the next sync state to reflect that a fix is now
       // running: the gap would let a double-click through to a second POST
       // (the server answers it 409, a confusing thing to show right after a
       // successful click).
       setFixActive(true);
+      // The fix is a Claude session on the CLONE (canvases.py spawns on the
+      // dir), and the page has no canvas chat of its own any more: it is a
+      // task under the clone, so the Tasks tab is where to watch it.
+      navigateUrl(canvasPagePath(env, name, { tab: "tasks", search: window.location.search }));
     } catch (e) {
       setFixError((e as Error).message);
     } finally {
@@ -1403,13 +1330,6 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
         onToggle={() => {
           if (sync || owned) setDrawerOpen((o) => !o);
         }}
-        // Back to the environment this canvas lives in, not the default.
-        onBack={() => navigateUrl(catalogPath(env))}
-        workbenchUrl={
-          baseUrl && handle
-            ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
-            : null
-        }
         pull={{
           busy: pullBusy,
           error: pullError,
@@ -1477,7 +1397,7 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
               title="Start a Claude session on the local clone, primed with these errors"
             >
               {fixActive
-                ? "Claude is on it — see chat →"
+                ? "Claude is on it — see Tasks →"
                 : fixBusy
                   ? "Starting…"
                   : "Fix with Claude"}
@@ -1509,7 +1429,10 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
           // the wrapper's mouseenter still fires as the pointer crosses in.
           onMouseEnter={focusCanvasOnEnter}
           style={{
-            flex: `0 0 ${leftFrac * 100}%`,
+            // Full width until a node is selected; then the node peek takes
+            // the rest of the row (the Tasks tab's own side-peek posture: a
+            // shrinking frame beside a panel).
+            flex: node && dir ? `0 0 ${leftFrac * 100}%` : "1 1 auto",
             minWidth: 0,
             position: "relative",
             pointerEvents: dragging ? "none" : "auto",
@@ -1540,6 +1463,12 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
             ))
           )}
         </div>
+        {node && dir && (
+          // THE NODE PEEK (owner, 2026-10-20: the Overview is the canvas, read
+          // only; the one editing surface it keeps is a node's own pane, and
+          // only while a node is selected). No canvas chat lives here any
+          // more — a Claude task on the clone is the Tasks tab's job.
+          <>
         <div
           onMouseDown={(e) => {
             e.preventDefault();
@@ -1563,11 +1492,10 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
             pointerEvents: dragging ? "none" : "auto",
           }}
         >
-          {chatHere && dir && node ? (
-            // A node is selected: the explorer, open on the node's file —
-            // its preview (the code template, writable) and its Claude / Git
-            // sidebar, per-file sessions and all. Keyed per file so a node
-            // switch is a fresh open.
+          {/* A node is selected: the explorer, open on the node's file —
+              its preview (the code template, writable) and its Claude / Git
+              sidebar, per-file sessions and all. Keyed per file so a node
+              switch is a fresh open. */}
             <div
               key={nodeFile(dir, node)}
               className="canvas-node-file"
@@ -1575,7 +1503,10 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
             >
               {/* The framed embed's content mode, as two tabs — the same shadcn
                   line strip the explorer's own sidebar uses (SideChrome). The
-                  strip is this page's; everything under it is the explorer's. */}
+                  strip is this page's; everything under it is the explorer's.
+                  The ✕ closes the peek: it deselects on BOTH sides (the
+                  workbench answers with a null selection, which is what keeps
+                  the two in step), so the canvas takes the width back. */}
               <div className="preview-side-header">
                 <span className="canvas-node-side-name" title={nodeFile(dir, node)}>
                   {node.udfName}
@@ -1601,6 +1532,18 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
                       </TabsTrigger>
                     </TabsList>
                   </Tabs>
+                  <button
+                    type="button"
+                    className="icon-btn canvas-node-close"
+                    title="Close the node panel"
+                    aria-label="Close the node panel"
+                    onClick={() => {
+                      sendSelect(null);
+                      setNode(null);
+                    }}
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
               {nodeFileReady === nodeFile(dir, node) ? (
@@ -1620,52 +1563,9 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
                 <p style={{ padding: 16, opacity: 0.7 }}>Saving {node.file}…</p>
               )}
             </div>
-          ) : chatHere && dir && !node ? (
-            // key forces a REMOUNT when a fix run starts: the run id is read at
-            // BOOT (the chat adopts the session and clears the param), so an
-            // already-running chat has to be rebooted to see it — the "have to
-            // reload the page to see the fix session" bug.
-            //
-            // `run` and `session_id` live on the `/canvases/<env>/<name>` URL, which is
-            // why `paramsSource` is "url" and why the effect above writes `run`
-            // there. It is also handed over directly as `runId`, so the mount
-            // does not depend on that write having landed first.
-            //
-            // The annotate target is the SIBLING workbench iframe; the host
-            // hands the element over. The mark stays on that iframe for PR3 to
-            // read (below).
-            <ChatMount
-              key={(fixRunId ?? "chat") + ":" + canvasChatSeq}
-              file={dir}
-              chatOnly
-              paramsSource="url"
-              {...(fixRunId ? { runId: fixRunId } : {})}
-              annotateTarget={() => frameRef.current}
-              // A Recent row that is a FILE chat on one of this canvas's nodes
-              // does not leave for the explorer: it selects the node in the
-              // workbench and opens that chat in the node pane. Everything
-              // else hops as the chat always did.
-              onNavigate={(url) => {
-                const hop = nodeHopFromUrl(url, dir);
-                if (!hop) {
-                  navigateUrl(url);
-                  return;
-                }
-                sendSelect(hop.node.udfName);
-                setNodeTab("claude");
-                // The hop's session is what the node pane boots on — the same
-                // memory the frame's own moves feed, so one source of truth.
-                const key = nodeSessionKey(env, name, hop.node.file);
-                if (hop.sessionId) nodeSessions.set(key, hop.sessionId);
-                else nodeSessions.delete(key);
-                setNodeBootSeq((n) => n + 1);
-                setNode(hop.node);
-              }}
-            />
-          ) : (
-            !error && <p style={{ padding: 16 }}>Loading editor…</p>
-          )}
         </div>
+          </>
+        )}
       </div>
     </div>
   );
