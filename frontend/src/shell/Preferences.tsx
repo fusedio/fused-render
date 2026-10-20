@@ -2,11 +2,17 @@
 // Settings menu. Framed inside the Bots page under Fused Bot (`?embed=1`,
 // apps/bots/components/PrefsPanel.tsx).
 //
-// A LEFT NAV OF GROUPS, A SEARCH BOX OVER ALL OF THEM, AND ONE ROW PER SETTING.
-// What the groups are, which row is in which, and the words search finds each
-// by all live in `settings/registry.ts`; the control behind each row is in the
-// `settings/` file named for its group, mapped by `settings/controls.tsx`.
-// This file only lays them out.
+// A LEFT NAV OF GROUPS UNDER THE SIDEBAR'S OWN HEADINGS, A SEARCH BOX OVER
+// ALL OF THEM, AND ONE ROW PER SETTING. What the sections and groups are,
+// which row is in which, and the words search finds each by all live in
+// `settings/registry.ts`; the control behind each row is in the `settings/`
+// file named for its group, mapped by `settings/controls.tsx`. This file only
+// lays them out.
+//
+// The Claude Code group (settings/claude.tsx) is the former Claude Config
+// panel: its sections are BLOCKS — a card each, not a row — and the rows of
+// settings.json come from a catalog fetched at mount, spliced in after the
+// registry's catalog row so the nav count, the search and the page agree.
 //
 // It replaced five tabs, the first of which ("Render preferences") had grown
 // to twenty sections in the order their flags shipped, with no way to search.
@@ -25,21 +31,23 @@
 // setting's group and highlights it; `?q=` is the search, kept in the URL with
 // replaceState so a reload or a copied link keeps it without each keystroke
 // becoming a history entry.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   SlidersHorizontal,
   Sparkles,
+  SquareTerminal,
   ListChecks,
   LayoutGrid,
   FolderSearch,
   ToggleRight,
   Wifi,
-  UserRound,
+  Plug,
   Wrench,
   X,
   type LucideIcon,
 } from "lucide-react";
+import { useClaudeConfigStatus } from "@apps/claude_config/available";
 import { getPrefs, type Prefs } from "@platform/lib/api";
 import { IS_QUERY_EMBED, navigateUrl } from "@platform/lib/router";
 import { isBot } from "@platform/lib/flavor";
@@ -47,19 +55,20 @@ import { isMac } from "@platform/lib/platform";
 import { cn } from "@platform/lib/utils";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Badge } from "@platform/shadcn/ui/badge";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import {
   groupOf,
+  navSections,
   resolveGroup,
   sectionsOf,
-  settingById,
   visibleGroups,
   visibleSettings,
   type GroupId,
   type SettingEntry,
-  type SettingId,
 } from "./settings/registry";
+import { ClaudeConfigProvider, ClaudeGitChip, ClaudePrefRow, isClaudePref, useClaudePrefEntries } from "./settings/claude";
 import { searchSettings, tokenize } from "./settings/search";
 import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
@@ -67,13 +76,14 @@ import { IndexStateProvider } from "./settings/indexing";
 
 const GROUP_ICONS: Record<GroupId, LucideIcon> = {
   general: SlidersHorizontal,
+  features: ToggleRight,
   ai: Sparkles,
+  claude: SquareTerminal,
   tasks: ListChecks,
   apps: LayoutGrid,
   indexing: FolderSearch,
-  features: ToggleRight,
   lan: Wifi,
-  account: UserRound,
+  integrations: Plug,
   advanced: Wrench,
 };
 
@@ -93,16 +103,28 @@ function Section({
   onChange,
 }: {
   title: string;
-  entries: readonly (SettingEntry & { id: SettingId })[];
+  entries: readonly SettingEntry[];
   prefs: Prefs;
   onChange: (p: Prefs) => void;
 }) {
+  // A block is its section's only entry: the card is the block, captioned
+  // with the file it edits. In search results (SettingsViewContext.tokens)
+  // the block's control is a pointer row and the card is an ordinary one.
+  const block = entries.find((e) => e.block) ?? null;
+  const searching = useContext(SettingsViewContext).tokens !== null;
   return (
     <section className="settings-section" aria-label={title}>
       <h3 className="settings-section-title">{title}</h3>
-      <div className="settings-card">
+      <div className={cn("settings-card", block && !searching && "settings-card-block")}>
+        {block && !searching && (
+          <div className="settings-block-caption">
+            <code>{block.description}</code>
+            {block.readOnly && <Badge variant="secondary">read-only</Badge>}
+          </div>
+        )}
         {entries.map((e) => {
-          const Control = CONTROLS[e.id];
+          if (isClaudePref(e)) return <ClaudePrefRow key={e.id} entry={e} />;
+          const Control = CONTROLS[e.id as keyof typeof CONTROLS];
           return <Control key={e.id} prefs={prefs} onChange={onChange} />;
         })}
       </div>
@@ -121,6 +143,22 @@ let lastPrefs: Prefs | null = null;
 let writeGen = 0;
 
 export default function Preferences() {
+  // The Claude Code group's store wraps the page: the catalog rows it holds
+  // are part of the entry list (search included), and the git chip in the
+  // group's head reads the same epoch its blocks bump.
+  // null until the probe answers: the page waits for it (with the prefs GET
+  // it waits for anyway) rather than resolve `?tab=claude` to General for a
+  // moment and then flip — every job and notification link into the group
+  // lands on a cold cache.
+  const claudeConfig = useClaudeConfigStatus();
+  return (
+    <ClaudeConfigProvider available={claudeConfig === true}>
+      <PreferencesPage claudeConfig={claudeConfig} />
+    </ClaudeConfigProvider>
+  );
+}
+
+function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const [prefs, setPrefsState] = useState<Prefs | null>(lastPrefs);
   // STABLE: it is every control's `onChange`, and an effect that depends on it
   // (the hotkey recorder suspends the global shortcuts for as long as it runs)
@@ -152,16 +190,35 @@ export default function Preferences() {
     };
   }, []);
 
-  // Scroll a jumped-to row into view, light it briefly, then let it go.
+  const tokens = useMemo(() => tokenize(query), [query]);
+  const searching = tokens.length > 0;
+  const wantsClaude = params.get("tab") === "claude" || (params.get("s") ?? "").startsWith("claude-");
+  const claudeRows = useClaudePrefEntries(claudeConfig === true && (searching || wantsClaude));
+  const entries = useMemo(() => {
+    if (!prefs || claudeConfig === null) return [];
+    const base: SettingEntry[] = visibleSettings({ prefs, bot, mac: isMac, claudeConfig });
+    // The settings.json rows follow the catalog row that introduces them.
+    const at = base.findIndex((e) => e.id === "claude-catalog");
+    return at === -1 ? base : [...base.slice(0, at + 1), ...claudeRows, ...base.slice(at + 1)];
+  }, [prefs, bot, claudeConfig, claudeRows]);
+  const groups = useMemo(() => visibleGroups(entries), [entries]);
+  const sections = useMemo(() => navSections(groups), [groups]);
+  const byId = (id: string) => entries.find((e) => e.id === id);
+
+  // Scroll a jumped-to row into view, light it briefly, then let it go — once
+  // the row IS on the page: a settings.json row is not until its catalog has
+  // loaded, and a timer started at mount would have cleared the highlight
+  // before then. Re-run as the entry list grows for the same reason. (The
+  // blocks above a row fetch their own lists and grow after this scroll; a
+  // deep link into a late row can land a little short. Accepted.)
   useEffect(() => {
     if (!flash || !prefs) return;
-    document.getElementById(rowId(flash))?.scrollIntoView({ block: "center" });
+    const el = document.getElementById(rowId(flash));
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
     const t = window.setTimeout(() => setFlash(null), FLASH_MS);
     return () => window.clearTimeout(t);
-  }, [flash, prefs !== null]);
-
-  const entries = useMemo(() => (prefs ? visibleSettings({ prefs, bot, mac: isMac }) : []), [prefs, bot]);
-  const groups = useMemo(() => visibleGroups(entries), [entries]);
+  }, [flash, prefs !== null, entries.length]);
 
   const setQuery = (q: string) => {
     setQueryState(q);
@@ -171,7 +228,7 @@ export default function Preferences() {
   // A navigation, so App.tsx remounts this page (it is keyed on the nav
   // epoch): what the next mount should highlight travels in `?s=`, not in
   // state that is about to be thrown away.
-  const showGroup = (group: GroupId, highlight: SettingId | null = null) => {
+  const showGroup = (group: GroupId, highlight: string | null = null) => {
     navigateUrl(
       urlWith((p) => {
         p.delete("q");
@@ -184,18 +241,23 @@ export default function Preferences() {
     );
   };
 
-  // `?s=` names a setting: its group wins over `?tab=`.
-  const deep = settingById(params.get("s"));
-  const current: GroupId =
-    deep && entries.some((e) => e.id === deep.id) ? deep.group : resolveGroup(params.get("tab"), groups);
+  // `?s=` names a setting: its group wins over `?tab=`. A settings.json row
+  // (`claude-pref:…`) is in `entries` only once its catalog has loaded; until
+  // then `?tab=claude` — which every link to one of them also carries — is
+  // what decides.
+  const deep = byId(params.get("s") ?? "");
+  const current: GroupId = deep ? deep.group : resolveGroup(params.get("tab"), groups);
 
-  const tokens = useMemo(() => tokenize(query), [query]);
   const hits = useMemo(() => searchSettings(entries, tokens), [entries, tokens]);
-  const searching = tokens.length > 0;
   const view: SettingsView = {
     tokens: searching ? tokens : null,
     flashId: flash,
-    jump: (id) => showGroup(settingById(id)!.group, id),
+    jump: (id) => {
+      // A settings.json row not on the page yet (its catalog still loading)
+      // lands on the catalog row that introduces them instead of nowhere.
+      const e = byId(id) ?? (isClaudePref({ id } as SettingEntry) ? byId("claude-catalog") : undefined);
+      if (e) showGroup(e.group, e.id);
+    },
   };
 
   // Pointer rows count: they are rows a reader can find and follow, and the
@@ -261,32 +323,42 @@ export default function Preferences() {
         )}
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!prefs && !error && <SkeletonLines rows={4} label="Loading preferences" />}
-      {prefs && (
+      {!(prefs && claudeConfig !== null) && !error && <SkeletonLines rows={4} label="Loading preferences" />}
+      {prefs && claudeConfig !== null && (
         <div className="settings-body">
           <nav className="settings-nav" aria-label="Preference groups">
-            {groups.map((g) => {
-              const Icon = GROUP_ICONS[g.id];
-              const active = !searching && g.id === current;
-              const n = navCount(g.id);
-              return (
-                <Button
-                  key={g.id}
-                  variant="ghost"
-                  aria-current={active ? "page" : undefined}
-                  className={cn("settings-nav-item", active && "is-active", searching && n === 0 && "is-dim")}
-                  onClick={() => showGroup(g.id)}
-                >
-                  <Icon data-icon="inline-start" aria-hidden="true" />
-                  <span className="settings-nav-label">{g.label}</span>
-                  {(searching || n > 0) && <span className="settings-nav-count">{n}</span>}
-                </Button>
-              );
-            })}
+            {sections.map(({ section, groups: inSection }) => (
+              <div key={section.id} className="settings-nav-section" role="group" aria-label={section.label}>
+                <div className="settings-nav-heading" aria-hidden="true">
+                  {section.label}
+                </div>
+                {inSection.map((g) => {
+                  const Icon = GROUP_ICONS[g.id];
+                  const active = !searching && g.id === current;
+                  const n = navCount(g.id);
+                  return (
+                    <Button
+                      key={g.id}
+                      variant="ghost"
+                      aria-current={active ? "page" : undefined}
+                      className={cn("settings-nav-item", active && "is-active", searching && n === 0 && "is-dim")}
+                      onClick={() => showGroup(g.id)}
+                    >
+                      <Icon data-icon="inline-start" aria-hidden="true" />
+                      <span className="settings-nav-label">{g.label}</span>
+                      {(searching || n > 0) && <span className="settings-nav-count">{n}</span>}
+                    </Button>
+                  );
+                })}
+              </div>
+            ))}
           </nav>
           <main className="settings-main">
             <div className="settings-head">
-              <h2>{head}</h2>
+              <div className="settings-head-row">
+                <h2>{head}</h2>
+                {!searching && current === "claude" && <ClaudeGitChip />}
+              </div>
               <p>{blurb}</p>
             </div>
             <SettingsViewContext.Provider value={view}>

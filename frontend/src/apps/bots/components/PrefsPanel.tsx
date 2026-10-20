@@ -4,8 +4,8 @@
 // this with a door. `embed=1` makes the framed shell render the page bare (no sidebar, status bar or notifier of its
 // own — platform/lib/router IS_EMBED).
 //
-// THE FRAME IS LOADED FRESH ON EVERY OPEN and dropped on close (Bugbot, #1504; now simply the route's mount): Preferences links out (Claude
-// Config, AI Models › Engines…), and a frame kept across opens would reopen on whatever page the
+// THE FRAME IS LOADED FRESH ON EVERY OPEN and dropped on close (Bugbot, #1504; now simply the route's mount): Preferences links out (AI
+// Models › Engines…), and a frame kept across opens would reopen on whatever page the
 // reader last navigated to, inside a panel titled Preferences. Esc is listened for on the frame's own document
 // too (same origin), since a key pressed in a focused field inside the page never reaches the parent document.
 import { ArrowLeftIcon } from "lucide-react";

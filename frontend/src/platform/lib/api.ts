@@ -61,9 +61,10 @@ export interface Config {
   /** "Fused Render" / "Fused Bot" — the brand as copy shows it. */
   display_name?: string;
   // No claude_config gate here any more: the Claude Config app stopped being a
-  // mounted html+py app and became native React over its own server bridge, so
-  // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
-  // in apps/claude_config), not a mount record.
+  // mounted html+py app and became native React over its own server bridge
+  // (the Claude Code group of Preferences), so its availability is
+  // GET /api/claude-config/status (useClaudeConfigStatus in
+  // apps/claude_config), not a mount record.
 }
 
 export interface FsEntry {

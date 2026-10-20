@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import type { Prefs } from "@platform/lib/api";
 import {
   GROUPS,
+  NAV_SECTIONS,
   SETTINGS,
+  navSections,
   resolveGroup,
   sectionsOf,
   visibleGroups,
@@ -17,6 +19,7 @@ function ctx(over: Partial<SettingsContext> = {}, prefs: Partial<Prefs> = {}): S
   return {
     bot: false,
     mac: true,
+    claudeConfig: false,
     prefs: {
       native_windows: { available: true, enabled: true },
       launcher: { available: true },
@@ -35,10 +38,26 @@ describe("the registry", () => {
     for (const s of SETTINGS) expect(groupIds.has(s.group)).toBe(true);
   });
 
-  test("the four old tab ids still name a group, so old links land", () => {
-    for (const tab of ["ai", "indexing", "lan", "account"]) {
+  test("the three old tab ids still name a group, so old links land", () => {
+    for (const tab of ["ai", "indexing", "lan"]) {
       expect(GROUPS.some((g) => g.id === tab)).toBe(true);
     }
+  });
+
+  test("every group sits under a nav section, in the sidebar's order", () => {
+    const order = NAV_SECTIONS.map((s) => s.id);
+    expect(order).toEqual(["general", "bots", "tasks", "apps", "other"]);
+    for (const g of GROUPS) expect(order).toContain(g.nav);
+    // Groups are listed section by section — the nav never splits a section.
+    const seen = GROUPS.map((g) => order.indexOf(g.nav));
+    expect([...seen].sort((a, b) => a - b)).toEqual(seen);
+    expect(navSections(GROUPS).map((s) => [s.section.id, s.groups.map((g) => g.id)])).toEqual([
+      ["general", ["general", "features"]],
+      ["bots", ["ai", "claude"]],
+      ["tasks", ["tasks"]],
+      ["apps", ["apps", "indexing", "lan"]],
+      ["other", ["integrations", "advanced"]],
+    ]);
   });
 
   test("the retired settings are gone", () => {
@@ -58,11 +77,34 @@ describe("the registry", () => {
 });
 
 describe("visibility", () => {
-  test("Fused Bot drops the Render-only groups and rows", () => {
+  test("Claude Code is a group only where ~/.claude is", () => {
+    const without = visibleGroups(visibleSettings(ctx())).map((g) => g.id);
+    expect(without).not.toContain("claude");
+    expect(navSections(visibleGroups(visibleSettings(ctx()))).map((s) => s.section.id)).toContain("bots");
+    const rows = visibleSettings(ctx({ claudeConfig: true }));
+    expect(visibleGroups(rows).map((g) => g.id)).toContain("claude");
+    const claude = rows.filter((r) => r.group === "claude").map((r) => r.id);
+    expect(claude).toEqual([
+      "claude-plugins",
+      "claude-memory",
+      "claude-skills",
+      "claude-statusline",
+      "claude-mcp",
+      "claude-catalog",
+      "claude-history",
+    ]);
+    // Blocks are one per section: the card is the block.
+    for (const r of rows.filter((r) => r.group === "claude" && r.block)) {
+      expect(rows.filter((x) => x.group === "claude" && x.section === r.section)).toHaveLength(1);
+    }
+  });
+
+  test("Fused Bot drops the Render-only groups and rows, and its nav drops Apps & files", () => {
     const bot = visibleSettings(ctx({ bot: true }));
     const groups = visibleGroups(bot).map((g) => g.id);
     expect(groups).not.toContain("apps");
     expect(groups).not.toContain("indexing");
+    expect(navSections(visibleGroups(bot)).map((s) => s.section.id)).toEqual(["general", "bots", "tasks", "other"]);
     expect(bot.map((s) => s.id)).not.toContain("canvases");
     expect(bot.map((s) => s.id)).not.toContain("fused-account");
     // Tasks and the monitor exist under Bot too.
@@ -110,7 +152,10 @@ describe("resolveGroup", () => {
   });
   test("a known tab is kept", () => {
     expect(resolveGroup("indexing", groups)).toBe("indexing");
-    expect(resolveGroup("account", groups)).toBe("account");
+    expect(resolveGroup("integrations", groups)).toBe("integrations");
+  });
+  test("the old Accounts tab reads as Integrations", () => {
+    expect(resolveGroup("account", groups)).toBe("integrations");
   });
   test("a tab hidden on this flavor falls back", () => {
     const botGroups = visibleGroups(visibleSettings(ctx({ bot: true })));
@@ -148,7 +193,16 @@ describe("search", () => {
   });
 
   test("pointers to other pages are findable", () => {
-    expect(searchSettings(all, "opus").map((h) => h.id)).toEqual(["claude-model"]);
+    // The model pointer leads into the Claude Code group, so it needs ~/.claude.
+    const rows = visibleSettings(ctx({ claudeConfig: true }));
+    expect(searchSettings(rows, "opus").map((h) => h.id)).toEqual(["claude-model"]);
+    expect(searchSettings(all, "opus")).toEqual([]);
+  });
+
+  test("the Claude blocks are findable by what they hold", () => {
+    const rows = visibleSettings(ctx({ claudeConfig: true }));
+    expect(searchSettings(rows, "mcp").map((h) => h.id)).toEqual(["claude-mcp"]);
+    expect(searchSettings(rows, "marketplace").map((h) => h.id).sort()).toEqual(["claude-plugins", "marketplace"]);
   });
 
   test("results keep page order", () => {

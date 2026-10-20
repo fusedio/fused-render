@@ -1,32 +1,16 @@
-// Whether the Claude Config bridge is installed on this machine.
-//
-// Split out of index.ts on purpose: index.ts also re-exports the heavy
-// `ClaudeConfig` panel (ClaudeConfig.tsx + its sections/bits/ansi
-// dependencies), and shell/GlobalSidebar.tsx needs this probe on every route to
-// decide whether to show the CLAUDE sidebar entries at all — eagerly, not
-// behind the `/claude-config` route. If that eager check imported the hook
-// through the barrel, the barrel's static re-export of `ClaudeConfig` would
-// pull the whole settings panel into the shell's main bundle even though it
-// only renders once the user actually opens `/claude-config` (shell/App.tsx
-// lazy-loads it). Importing straight from this module keeps the probe eager
-// and the panel itself lazy.
+// Whether the Claude Config bridge is installed on this machine (~/.claude
+// exists): the gate on the Claude Code group of Preferences
+// (shell/settings/claude.tsx, registry.ts). Its own module, light: the probe
+// is asked on every Preferences mount, and must not drag the sections it
+// gates (plugins, MCP, …) into the bundle that asks.
 import { useEffect, useState } from "react";
 import { getStatus } from "./api";
 
-// Module-level cache of a CONFIRMED answer, shared by every mount of the hook.
-// The shell remounts every route on each navigation (App.tsx keys them on the
-// nav epoch) and the sidebar re-renders with them, so without this the two
-// CLAUDE entries would blink out and back on every trip through the app.
-//
-// Deliberately simpler than @platform/lib/hooks' useBuiltinMountReady: that one
-// polls, because a mount becomes ready asynchronously minutes into a session.
-// Availability here is a property of the server's own installation — the
-// bridge's modules import or they don't — so it cannot flip mid-session and one
-// fetch is the whole story.
 let cached: boolean | null = null;
 
-export function useClaudeConfigAvailable(): boolean {
-  const [available, setAvailable] = useState(cached ?? false);
+/** null until the first probe of the session answers; then cached. */
+export function useClaudeConfigStatus(): boolean | null {
+  const [available, setAvailable] = useState<boolean | null>(cached);
   useEffect(() => {
     if (cached !== null) return;
     let alive = true;
@@ -37,7 +21,7 @@ export function useClaudeConfigAvailable(): boolean {
       },
       () => {
         // A failed probe is not a cached "no": a transient fetch failure would
-        // otherwise hide the sidebar entries for the rest of the session.
+        // otherwise hide the group for the rest of the session.
         if (alive) setAvailable(false);
       },
     );
@@ -46,4 +30,8 @@ export function useClaudeConfigAvailable(): boolean {
     };
   }, []);
   return available;
+}
+
+export function useClaudeConfigAvailable(): boolean {
+  return useClaudeConfigStatus() === true;
 }

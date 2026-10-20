@@ -255,6 +255,26 @@ test("legacy view/embed prefixes gain the /explorer namespace", () => {
   );
 });
 
+test("the Claude Config panel is the Claude Code group of Preferences", () => {
+  expect(rewriteLegacyUrl("/claude-config")).toBe("/preferences?tab=claude");
+  expect(rewriteLegacyUrl("/claude-md")).toBe("/preferences?tab=claude");
+  // A section becomes the row to open and highlight; the rest of the query rides along.
+  const row = (tab: string) => rewriteLegacyUrl(`/claude-config?cctab=${tab}`);
+  expect(row("plugins")).toBe("/preferences?tab=claude&s=claude-plugins");
+  expect(row("marketplaces")).toBe("/preferences?tab=claude&s=claude-plugins");
+  expect(row("memory")).toBe("/preferences?tab=claude&s=claude-memory");
+  expect(row("skills")).toBe("/preferences?tab=claude&s=claude-skills");
+  expect(row("statusline")).toBe("/preferences?tab=claude&s=claude-statusline");
+  expect(row("mcp")).toBe("/preferences?tab=claude&s=claude-mcp");
+  expect(row("preferences")).toBe("/preferences?tab=claude&s=claude-catalog");
+  expect(row("history")).toBe("/preferences?tab=claude&s=claude-history");
+  expect(row("profiles")).toBe("/preferences?tab=claude&s=claude-history");
+  expect(row("claudemd")).toBe("/preferences?tab=claude");
+  expect(rewriteLegacyUrl("/claude-config?cctab=profiles&embed=1")).toBe("/preferences?embed=1&tab=claude&s=claude-history");
+  expect(rewriteLegacyUrl("/claude-md?cctab=mcp")).toBe("/preferences?tab=claude&s=claude-mcp");
+  expect(rewriteLegacyUrl("/preferences?tab=claude")).toBe("/preferences?tab=claude");
+});
+
 test("legacy settings sentinels map to their plain routes", () => {
   expect(rewriteLegacyUrl("/view/_home")).toBe("/apps");
   expect(rewriteLegacyUrl("/view/_prefs")).toBe("/preferences");
@@ -332,7 +352,8 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
   test("a known shell route goes through navigateUrl untouched", () => {
     expect(pushedJobPage("/ai-models/local").url).toBe("/ai-models/local");
     expect(pushedJobPage("/ai-models/benchmark").url).toBe("/ai-models/benchmark");
-    expect(pushedJobPage("/claude-config").url).toBe("/claude-config");
+    // The panel's route is a legacy one now: it lands on its Preferences group.
+    expect(pushedJobPage("/claude-config").url).toBe("/preferences?tab=claude");
     expect(pushedJobPage("/preferences").url).toBe("/preferences");
     expect(pushedJobPage("/preferences?tab=indexing").url).toBe("/preferences?tab=indexing");
   });

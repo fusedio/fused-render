@@ -11,7 +11,7 @@ import { cn } from "@platform/lib/utils";
 import type { Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { isBot } from "@platform/lib/flavor";
-import { forFlavor, groupOf, settingById, type SettingId } from "./registry";
+import { forFlavor, groupOf, settingById, type SettingEntry, type SettingId } from "./registry";
 import { matchedVia, splitLabel } from "./search";
 
 export interface SettingsView {
@@ -19,8 +19,9 @@ export interface SettingsView {
   tokens: string[] | null;
   /** The row to highlight after a jump or a `?s=` link. */
   flashId: string | null;
-  /** Leave the search and show this row in its group. */
-  jump: (id: SettingId) => void;
+  /** Leave the search and show this row in its group. Any row id — the
+   *  registry's or one built at runtime (settings/claude.tsx). */
+  jump: (id: string) => void;
 }
 
 export const SettingsViewContext = createContext<SettingsView>({
@@ -34,12 +35,16 @@ export const rowId = (id: string) => `setting-${id}`;
 
 export function SettingRow({
   id,
+  entry: given,
   control,
   status,
   children,
   off,
 }: {
-  id: SettingId;
+  id: SettingId | string;
+  /** A row the registry does not list — built at runtime from a catalog
+   *  (settings/claude.tsx). A registry id is looked up instead. */
+  entry?: SettingEntry;
   control?: ReactNode;
   /** One muted line under the description: live state ("Ready · signed in"). */
   status?: ReactNode;
@@ -48,7 +53,7 @@ export function SettingRow({
   off?: boolean;
 }) {
   const view = useContext(SettingsViewContext);
-  const entry = forFlavor(settingById(id)!, isBot());
+  const entry = given ?? forFlavor(settingById(id)!, isBot());
   const tokens = view.tokens;
   const label = tokens ? splitLabel(entry.label, tokens) : { pre: entry.label, hit: "", post: "" };
   const via = tokens ? matchedVia(entry, tokens) : [];
@@ -101,7 +106,7 @@ export function RowSwitch({
   onChange,
   title,
 }: {
-  id: SettingId;
+  id: SettingId | string;
   checked: boolean;
   disabled?: boolean;
   onChange: (next: boolean) => void;
