@@ -19,6 +19,7 @@ import {
   putReaderEnabled,
   putTaskNotifyTerminalSessionsEnabled,
   putTaskRecapTitlesEnabled,
+  putTaskSummaryTitlesEnabled,
 } from "@platform/lib/api";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
@@ -66,6 +67,19 @@ export function TaskRecapsControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.task_recap?.enabled === true}
       put={putTaskRecapTitlesEnabled}
       after={(next) => publishTaskRecapTitlesEnabled(next.task_recap?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// Tasks rows titled only by the stable summary `title`. The row key
+// (`title_mode`) arrives from the server on the next poll, so no publish.
+export function TaskSummaryTitlesControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="task-summary-titles"
+      checked={prefs.task_summary_titles?.enabled === true}
+      put={putTaskSummaryTitlesEnabled}
       onChange={onChange}
     />
   );

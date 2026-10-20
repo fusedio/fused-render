@@ -32,6 +32,7 @@ import {
   ReaderControl,
   ShareSheetControl,
   TaskRecapsControl,
+  TaskSummaryTitlesControl,
   ChatHeadsupControl,
 } from "./toggles";
 import {
@@ -81,6 +82,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "claude-history": ClaudeHistoryBlock,
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,
+  "task-summary-titles": TaskSummaryTitlesControl,
   "chat-headsup": ChatHeadsupControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
