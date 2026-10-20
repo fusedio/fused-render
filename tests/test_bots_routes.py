@@ -360,3 +360,94 @@ def test_last_user_ts_tracks_only_user_messages(client, ws):
     cold = botmod.Bot(bid)  # a fresh instance: the value comes from events.jsonl
     assert cold.last_user_ts() == ev["ts"]
     assert cold.summary(light=True)["last_user_ts"] == ev["ts"]
+
+
+# ---- per-bot Terminal opt-in and the owned session lifecycle (docs §16) --------
+
+@pytest.fixture
+def terminals_on(monkeypatch):
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: True)
+
+
+def test_terminal_setting_round_trips_and_defaults_off(client, ws, terminals_on):
+    bid = make(client, engine="agent")
+    s = one(status(client), bid)
+    assert not s.get("terminal")
+    assert s["terminal_available"] is False and s["terminal_id"] is None
+    assert j(client.post(f"/api/bots/{bid}/settings", {"terminal": True}))[0] == 200
+    s = one(status(client), bid)
+    assert s["terminal"] is True and s["terminal_available"] is True and s["terminal_id"] is None
+    assert j(client.post(f"/api/bots/{bid}/settings", {"terminal": "yes"}))[0] == 400
+    bid2 = make(client, engine="agent", terminal=True)
+    assert one(status(client), bid2)["terminal"] is True
+    assert j(client.post("/api/bots", {"name": "X", "terminal": 1}))[0] == 400
+
+
+def test_terminal_is_unavailable_with_the_pref_off_or_on_steps(client, ws, monkeypatch):
+    bid = make(client, engine="agent", terminal=True)
+    assert one(status(client), bid)["terminal_available"] is False  # global pref off
+    from fused_render.shell import prefs
+    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: True)
+    assert one(status(client), bid)["terminal_available"] is True
+    j(client.post(f"/api/bots/{bid}/settings", {"engine": "steps"}))
+    s = one(status(client), bid)
+    assert s["terminal_available"] is False and s["terminal_needs_claude"] is True
+
+
+def test_super_bot_refuses_terminal(client, ws, terminals_on):
+    assert j(client.post("/api/bots", {"name": "S", "kind": "super", "terminal": True}))[0] == 400
+    sid = make(client, kind="super")
+    st, out = j(client.post(f"/api/bots/{sid}/settings", {"terminal": True}))
+    assert st == 400
+    assert one(status(client), sid)["terminal_available"] is False
+
+
+def _live(sid):
+    from fused_render import pty_session
+    s = pty_session.REGISTRY.get(sid)
+    return s is not None and s.alive
+
+
+def test_terminal_session_is_owned_reused_and_closed_on_opt_out(client, ws, terminals_on):
+    from fused_render import pty_session
+    bid = make(client, engine="agent", terminal=True)
+    b = registry.get(bid)
+    sess = b.terminal_session()
+    try:
+        assert sess.owner == f"bot:{bid}" and sess.profile.cwd == bpaths.bot_dir(bid)
+        assert b.terminal_session() is sess  # reused across tasks
+        assert one(status(client), bid)["terminal_id"] == sess.id
+        assert j(client.post(f"/api/bots/{bid}/settings", {"terminal": False}))[0] == 200
+        assert not _live(sess.id) and one(status(client), bid)["terminal_id"] is None
+        assert b.terminal_session() is None  # opted out: nothing is recreated
+        assert j(client.post(f"/api/bots/{bid}/settings", {"terminal": True}))[0] == 200
+        again = b.terminal_session()  # a closed session is recreated lazily once opted back in
+        assert again.id != sess.id and again.alive
+    finally:
+        b.close_terminal()
+
+
+def test_terminal_session_dies_with_delete(client, ws, terminals_on):
+    bid = make(client, engine="agent", terminal=True)
+    sess = registry.get(bid).terminal_session()
+    assert _live(sess.id)
+    assert j(delete(client, f"/api/bots/{bid}"))[0] == 200
+    assert not _live(sess.id)
+
+
+def test_close_all_terminals_kills_every_bot_session_only(client, ws, terminals_on):
+    from fused_render import pty_session
+    a = registry.get(make(client, engine="agent", terminal=True)).terminal_session()
+    mine = pty_session.REGISTRY.create()
+    try:
+        botmod.close_all_terminals()
+        assert not _live(a.id) and _live(mine.id)
+    finally:
+        mine.kill()
+
+
+def test_clone_copies_terminal_opt_in(client, ws, terminals_on):
+    bid = make(client, engine="agent", terminal=True)
+    st, out = j(client.post(f"/api/bots/{bid}/clone", {"name": "Copy"}))
+    assert one(status(client), out["id"])["terminal"] is True

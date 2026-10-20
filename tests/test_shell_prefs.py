@@ -235,6 +235,35 @@ def test_marketplace_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
     )
 
 
+def test_bot_terminals_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["bot_terminals"]["enabled"] is False
+    assert prefs_mod.bot_terminals_enabled() is False
+    body = client.put("/api/prefs", json={"bot_terminals_enabled": True}, headers=FUSED).json()
+    assert body["bot_terminals"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["bot_terminals_enabled"] is True
+    assert prefs_mod.bot_terminals_enabled() is True
+    (home / "prefs.json").write_text(json.dumps({"bot_terminals_enabled": "yes"}), encoding="utf-8")
+    assert prefs_mod.bot_terminals_enabled() is False
+    assert (
+        client.put("/api/prefs", json={"bot_terminals_enabled": "yes"}, headers=FUSED).status_code
+        == 400
+    )
+
+
+def test_turning_bot_terminals_off_closes_bot_terminals(tmp_path, monkeypatch):
+    from fused_render.bots import bot as bots_bot
+
+    client, _home = _client(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(bots_bot, "close_all_terminals", lambda: calls.append(1))
+    client.put("/api/prefs", json={"bot_terminals_enabled": True}, headers=FUSED)
+    assert calls == []
+    client.put("/api/prefs", json={"bot_terminals_enabled": False}, headers=FUSED)
+    assert calls == [1]
+
+
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # A PUT naming no known preference is rejected without a write.

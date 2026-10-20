@@ -56,13 +56,13 @@ class TerminalProfile:
     cwd: str
 
 
-def resolve_profile(cwd: Optional[str] = None) -> Optional[TerminalProfile]:
+def resolve_profile(cwd: Optional[str] = None, shells: Optional[tuple] = None) -> Optional[TerminalProfile]:
     """The resolved profile, or None when no usable shell is found."""
     # `$SHELL` can be SET but stale (a shell that was uninstalled, a path
     # that never existed on this machine) — that is not "the user asked for
     # no terminal," so this falls through to /bin/bash and then /bin/sh
     # instead of refusing on a machine that plainly has a POSIX shell.
-    for shell in (os.environ.get("SHELL"), "/bin/bash", "/bin/sh"):
+    for shell in (shells if shells is not None else (os.environ.get("SHELL"), "/bin/bash", "/bin/sh")):
         if shell and executable(shell):
             break
     else:

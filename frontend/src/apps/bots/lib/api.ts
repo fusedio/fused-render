@@ -13,8 +13,9 @@ export type Effort = "low" | "medium" | "high" | "xhigh";
 export interface Offer { kind: "use" | "build"; name: string; dir: string; spec: string }
 export interface AppRef { name: string; dir: string; params?: Record<string, string> | string; tools?: unknown }
 export interface ReplyRef { seq: number; role: Role; text: string }
-/** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it. */
-export interface AllowRule { kind: "browser" | "tool" | "py" | "builtin" | "text" | "upload" | "build" | (string & {}); key: string; label: string }
+/** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it.
+ *  `source` is set when a preset pre-approved it rather than a card. */
+export interface AllowRule { kind: "browser" | "tool" | "py" | "builtin" | "text" | "upload" | "build" | (string & {}); key: string; label: string; source?: string }
 
 /** A channel address (docs §10): "imessage" + the sender's handle, "routine", "botsend", "handoff" + the Super Bot's id
  *  (a task Super Bot delegated, docs §11); the web is never stamped. */
@@ -165,6 +166,14 @@ export interface Bot {
   /** Steps (tool calls) one task may take before the bot is stopped; absent = the default (200, Super Bot 1000). */
   max_steps?: number;
   build_access?: "scoped" | "full";
+  /** The bot's own Terminal opt-in (docs §16; user-only, default off). */
+  terminal?: boolean;
+  /** Both switches are on and the engine is the agent: the bot may drive a terminal now. */
+  terminal_available?: boolean;
+  /** Id of the bot's live pty session (the Terminal side of the preview), else null. */
+  terminal_id?: string | null;
+  /** Terminal is off for this bot only because its engine is not a Claude model. */
+  terminal_needs_claude?: boolean;
   /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. */
   trusted_apps?: string[];
   /** Calls the user approved forever from a card; revoked under Settings › Permissions. */
@@ -365,7 +374,7 @@ export interface SettingsBody {
   name?: string; model?: string; effort?: string; instructions?: string; memory?: string; approval?: string;
   /** 0 clears the per-bot override (back to the default). */
   max_steps?: number;
-  build_access?: string; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
+  build_access?: string; terminal?: boolean; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
   imessage_approvals?: boolean;
   super_access?: string; trusted_apps?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */

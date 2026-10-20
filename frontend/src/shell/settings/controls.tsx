@@ -20,6 +20,7 @@ import {
   EnginesPointer,
 } from "./ai";
 import {
+  BotTerminalsControl,
   CanvasesControl,
   GithubLinkControl,
   GitSyncControl,
@@ -77,6 +78,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "rebuild-index": RebuildIndexControl,
   canvases: CanvasesControl,
   marketplace: MarketplaceControl,
+  "bot-terminals": BotTerminalsControl,
   monitor: MonitorControl,
   reader: ReaderControl,
   lan: LanControl,

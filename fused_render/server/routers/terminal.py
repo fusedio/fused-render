@@ -82,7 +82,10 @@ def api_terminal_list():
     reg = pty_session.REGISTRY
     focused = reg.focused_id
     return {"sessions": [{**s.snapshot(), "focused": s.id == focused}
-                         for s in reg.list()] + _claude_entries(focused)}
+                         for s in reg.list()
+                         # A bot's own shell shows in that bot's screen, not here.
+                         if not (s.owner or "").startswith(pty_session.BOT_OWNER_PREFIX)]
+                        + _claude_entries(focused)}
 
 
 def _claude_entries(focused) -> list:
