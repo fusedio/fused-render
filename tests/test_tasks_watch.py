@@ -336,6 +336,36 @@ def test_changes_endpoint_returns_only_the_moved_rows(claude_home):
         assert r == empty
 
 
+def test_the_listing_reads_in_progress_again_when_the_cli_reopens_a_turn(
+        claude_home):
+    """T329, end to end on the server side: the host's `turn_ended` turns a
+    busy-row session Done; the CLI then wakes itself for a hand-back and the
+    row is never rewritten; the host's `turn_started` is what puts the task
+    back In Progress, and the next end makes it Done again."""
+    tasks_watch.reset()
+    _transcript(claude_home, SID)
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    with TestClient(create_app(str(claude_home))) as client:
+        def status():
+            rows = client.get("/api/tasks").json()["tasks"]
+            return {t["key"]: t for t in rows}[SID]["status"]
+
+        def event(kind, at):
+            r = client.post("/api/tasks/queue/event", headers={"X-Fused": "1"},
+                            json={"kind": kind, "run_id": "r1", "session_id": SID,
+                                  "at": at, "pid": os.getpid()})
+            assert r.status_code == 200, r.text
+
+        assert status() == "in_progress"
+        event("turn_ended", _later(5))
+        assert status() == "done"
+        event("turn_started", _later(6))
+        assert status() == "in_progress"
+        event("turn_ended", _later(7))
+        assert status() == "done"
+
+
 def test_changes_endpoint_reports_a_deleted_task_as_gone(claude_home):
     _transcript(claude_home, SID)
     with TestClient(create_app(str(claude_home))) as client:
@@ -794,6 +824,150 @@ def test_an_ended_event_from_a_pid_the_registry_never_showed_stays_unscoped(
     tasks_watch.mark_turn_ended(SID, "run-1", at=_later(5), pid=2 ** 22 + 777)
     assert tasks_watch.is_turn_ended(SID)
     assert not tasks_watch.is_marked_running(SID)
+
+
+# ------------------------------------ the turn the CLI reopens by itself (T329)
+
+def test_a_turn_the_cli_reopens_by_itself_reads_running_again(claude_home):
+    """T329 (Akshil, 2026-10-20): a subagent hand-back lands after the
+    `result` row and the CLI opens another turn on its own — no page send (so
+    no mark), and with background jobs still going no rewrite of its `busy`
+    registry row either. The host's `turn_ended` went on outranking that row
+    for the whole of the next turn, and the listing read Done while the chat
+    said Brewing. The host's `turn_started` is the matching fact."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(5), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+    # The CLI wakes itself: turn rows after the result row, nothing else moves.
+    tasks_watch.mark_turn_started(SID, "run-1", at=_later(6), pid=os.getpid())
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+    # …and that turn's own end ends it again.
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(7), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+
+@pytest.mark.parametrize("status", ["idle", "waiting"])
+def test_a_turn_started_never_outranks_a_row_the_cli_itself_calls_not_running(
+        claude_home, status):
+    """A counterweight to an end, never a verdict of its own: the host's
+    reopen rule has misread stray rows before, and a start that could outrank
+    an `idle` row would pin the session In Progress with nothing left to
+    clear it. The registry has to say busy; this only stops an older end from
+    overruling it."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, status=status)
+    tasks_watch.tick()
+    assert tasks_watch.live_from_registry(SID)[0] is False
+    tasks_watch.mark_turn_started(SID, "run-1", at=_later(5), pid=os.getpid())
+    assert tasks_watch.live_from_registry(SID)[0] is False
+    assert not tasks_watch.is_turn_ended(SID)   # nothing ended, nothing to say
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(6), pid=os.getpid())
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+
+def test_a_false_reopen_on_a_busy_row_heals_when_the_cli_writes_idle(
+        claude_home):
+    """The worst a stray-row start can do: keep a busy row In Progress past
+    its end. The CLI's own idle rewrite ends that, start stamp or no."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(5), pid=os.getpid())
+    tasks_watch.mark_turn_started(SID, "run-1", at=_later(6), pid=os.getpid())
+    assert tasks_watch.live_from_registry(SID)[0] is True
+    _registry(claude_home, SID, status="idle")
+    tasks_watch.tick()
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+
+def test_a_busy_rewrite_after_a_start_keeps_the_next_end_in_charge(claude_home):
+    """The tick drops an end stamp a later busy rewrite has overtaken; the
+    start stamp it leaves behind must not stop the NEXT end from ending the
+    turn."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(5), pid=os.getpid())
+    tasks_watch.mark_turn_started(SID, "run-1", at=_later(6), pid=os.getpid())
+    _registry(claude_home, SID, status="busy")   # rewritten after both
+    tasks_watch.tick()
+    assert not tasks_watch.is_turn_ended(SID)
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(30), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+    tasks_watch.reset()
+    assert tasks_watch._reopened == {} and tasks_watch._reopened_by_pid == {}
+
+
+def test_an_older_or_duplicate_turn_started_never_reopens_a_newer_end(
+        claude_home):
+    """Ordered by `at` like the ended stamps, and never backwards: the one
+    retry a post can produce, or a start that lost the race to its own turn's
+    end, cannot put a finished turn back In Progress."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_started(SID, "run-1", at=_later(5), pid=os.getpid())
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(6), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+    tasks_watch.mark_turn_started(SID, "run-1", at=_later(5), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+    tasks_watch.mark_turn_started(SID, "run-1", at=_later(4), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+
+
+def test_a_turn_started_speaks_for_its_own_process(claude_home):
+    """Scoped like the ended stamps: each process's start is weighed against
+    that process's own end, and an unscoped start (a pid no registry file
+    showed) speaks for the whole session, as an unscoped end does."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(5), pid=os.getppid())
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(6), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+    # The old process picks a turn back up: the session is at work again…
+    tasks_watch.mark_turn_started(SID, "run-old", at=_later(7), pid=os.getppid())
+    assert not tasks_watch.is_turn_ended(SID)
+    # …and its end alone ends it, the new process's end already standing.
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(8), pid=os.getppid())
+    assert tasks_watch.is_turn_ended(SID)
+    # An unscoped start speaks for every process on the session.
+    tasks_watch.mark_turn_started(SID, "run-?", at=_later(9), pid=2 ** 22 + 777)
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+
+
+def test_a_scoped_start_survives_the_sessions_last_row_departing(claude_home):
+    """When the only process's file goes, its per-pid stamps collapse into the
+    session's own — both of them, keeping their order — so the departed
+    session's row-less read (`_running_now`'s transcript tail) still knows
+    which came last."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    path = _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(5), pid=os.getpid())
+    tasks_watch.mark_turn_started(SID, "run-1", at=_later(6), pid=os.getpid())
+    assert not tasks_watch.is_turn_ended(SID)
+    path.unlink()
+    tasks_watch.tick()
+    assert not tasks_watch.is_turn_ended(SID)
+    tasks_watch.mark_turn_ended(SID, "run-1", at=_later(7))
+    assert tasks_watch.is_turn_ended(SID)
 
 
 def _two_busy_processes(claude_home):
