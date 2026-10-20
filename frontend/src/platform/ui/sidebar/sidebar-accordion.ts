@@ -15,7 +15,7 @@
 // own listener set and fires it after each write. A section that is not
 // mounted (Canvases, when the Canvases nav is off) cannot be the open one: the
 // hook registers the keys on screen, and the read skips the rest.
-import { useEffect, useSyncExternalStore } from "react";
+import { useLayoutEffect, useSyncExternalStore } from "react";
 import { getUiLayout, patchUiLayout, subscribeUiLayout, type UiLayoutDoc } from "@platform/lib/ui-layout";
 
 export type SidebarSectionKey = "projects" | "canvases" | "favourites";
@@ -68,9 +68,12 @@ function subscribe(fn: () => void): () => void {
 }
 
 /** Whether `key` is the open section. Re-renders when any section's click
- *  changes the answer, or a late hydrate replaces the document. */
+ *  changes the answer, or a late hydrate replaces the document. The mount
+ *  registration is a layout effect: with Canvases off and a document that
+ *  folds Projects, the first render would otherwise pick the unmounted
+ *  Canvases and paint Favourites folded for a frame (CodeRabbit). */
 export function useSidebarSectionOpen(key: SidebarSectionKey): boolean {
-  useEffect(() => {
+  useLayoutEffect(() => {
     mounted.add(key);
     notify();
     return () => {
