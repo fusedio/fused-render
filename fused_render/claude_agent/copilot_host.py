@@ -720,12 +720,17 @@ class _Host:
 
     # ------------------------------------------------------------- the turn
 
-    def send_prompt(self, text: str) -> None:
+    def send_prompt(self, text: str, msg_uuid: str = "") -> None:
         """Echo first, then `session/prompt` (invariant 3). The state and the
         echo go under the lock, so the reader thread cannot see a reply before
         the turn reads open; the pipe write goes OUTSIDE it — a prompt larger
         than the pipe buffer, written while the reader is blocked on this
-        same lock with Copilot's stdout full, would deadlock both."""
+        same lock with Copilot's stdout full, would deadlock both.
+
+        `msg_uuid` is the stamp `agent._write_inbox_entry` put on the inbox
+        row, carried onto the echo the way Claude Code's `--replay-user-messages`
+        carries it, so `agent._drained_unechoed` settles the entry by identity
+        rather than by its words (PR #1778)."""
         with self.lock:
             self.turn_open = True
             self.turn_started = time.monotonic()
@@ -737,8 +742,10 @@ class _Host:
             if self.commands_dirty:
                 # Ahead of the echo, where Claude Code writes its own init.
                 self.write_init()
-            self._emit_out({"type": "user", "message": {
-                "role": "user", "content": [{"type": "text", "text": text}]}})
+            self._emit_out({"type": "user",
+                            **({"uuid": msg_uuid} if msg_uuid else {}),
+                            "message": {"role": "user", "content": [
+                                {"type": "text", "text": text}]}})
             if self.notice_pending:
                 # D18 LIVE: the same row into out.jsonl, so the first poll
                 # draws it (`_segments_from_rows` makes a `system/
@@ -1365,7 +1372,7 @@ class _Host:
                 if hold:
                     held += 1
                     continue
-                self.send_prompt(self._user_text(row))
+                self.send_prompt(self._user_text(row), str(row.get("uuid") or ""))
             elif row.get("type") == "control_request":
                 self._handle_control(row)
             if not os.path.isdir(done):

@@ -1519,3 +1519,24 @@ def test_no_approve_drops_the_approval_tool(tmp_path):
         assert names == ["approve", "app_state"], "without the flag nothing changes"
     finally:
         s.close()
+
+
+def test_the_echo_carries_the_inbox_rows_uuid(start, agent):
+    """PR #1778: `agent._write_inbox_entry` stamps every entry with a uuid and
+    `agent._drained_unechoed` settles an entry by that id on its echo, the way
+    Claude Code's own replay does. This host's echo carries it too, so a
+    Copilot follow-up lands by identity and never by its words alone."""
+    s = start()
+    assert _wait_for(lambda: len(s.out()) >= 1)
+    s.say("hi")
+    assert _wait_for(lambda: s.prompts_seen())
+    done = os.path.join(s.run_dir, "inbox", "done")
+    assert _wait_for(lambda: os.path.isdir(done) and os.listdir(done))
+    entries = [json.load(open(os.path.join(done, n), encoding="utf-8"))
+               for n in sorted(os.listdir(done)) if n.endswith(".json")]
+    stamped = [e["uuid"] for e in entries if e.get("type") == "user"]
+    assert len(stamped) == 1 and len(stamped[0]) == 36
+    echo = [r for r in s.out() if agent._starts_new_turn(r)]
+    assert [r.get("uuid") for r in echo] == stamped
+    s.wait_results(1)
+    assert agent._inbox_waiting(s.run_dir) == []

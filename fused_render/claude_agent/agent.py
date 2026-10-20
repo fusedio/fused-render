@@ -74,6 +74,7 @@ Actions:
 import datetime
 import fcntl
 import io
+import hashlib
 import json
 import os
 import re
@@ -3561,8 +3562,16 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
 def _write_inbox_entry(run_dir: str, message: str) -> None:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
-    `_send` (every follow-up) write from."""
-    _write_inbox_row(run_dir, {"type": "user", "message": {
+    `_send` (every follow-up) write from.
+
+    STAMPED WITH A `uuid` OF OUR OWN. The CLI (2.1.274+, measured) carries a
+    client uuid on a stdin user row back on that row's `--replay-user-messages`
+    echo, so the echo of THIS entry can be told apart from the echo of any
+    other by identity, not by words — two "go on"s are two entries with two
+    ids, and a folded N-block echo row that repeats a uuid is still that one
+    entry (`_drained_unechoed`). A CLI that ignores the key loses nothing: the
+    text match stands behind it."""
+    _write_inbox_row(run_dir, {"type": "user", "uuid": str(uuid.uuid4()), "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
 
@@ -4114,10 +4123,17 @@ def _alive(run_dir: str) -> bool:
 #: its answer to a control request of ours (the STOP button's `interrupt`,
 #: which lands AFTER the `result` when the reader presses stop on a turn that
 #: just ended — Akshil, 2026-09-23: "why is it in progress when it already
-#: completed"), and `rate_limit_event` is plan bookkeeping. Neither reopens a
-#: turn; treating them as if they did left a finished run reading live for as
-#: long as the session host kept the process alive.
-_NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
+#: completed"), `rate_limit_event` is plan bookkeeping, and
+#: `command_lifecycle` is the CLI's receipt for a stdin line that carried a
+#: `uuid` (`_write_inbox_entry` stamps one): `queued` / `started` /
+#: `completed` frames, the last of which lands right AFTER the `result` of
+#: the turn that answered the line. None reopens a turn; treating them as if
+#: they did left a finished run reading live for as long as the session host
+#: kept the process alive — and a reload then re-attached to a "live" turn
+#: and drew its prompt a second time (seen 2026-10-20, the day the uuid went
+#: on the wire).
+_NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event",
+                             "command_lifecycle"})
 
 #: `system` rows that are bookkeeping ABOUT a turn rather than a turn
 #: speaking: the CLI writes `task_summary` right AFTER the `result` of a turn
@@ -4881,16 +4897,13 @@ def _inbox_at(name: str) -> float:
         return 0.0
 
 
-# How much of the tail of `out.jsonl` is read looking for a follow-up's own
-# echo, and how many drained entries are walked back looking for one that has
-# not echoed yet. Both are ceilings on a per-poll cost, not guesses about
-# content: the echo being hunted lands at most one reply after the previous
-# one, and more than a handful of un-echoed follow-ups in one session is not a
-# thing a person does. A window that turns out to hold no echo at all is read
-# as "everything drained has echoed" — the conservative answer, and the one
-# that degrades to exactly the behaviour this rule replaced.
-_ECHO_TAIL_BYTES = 1 << 20
+# How many drained entries are walked back looking for one that has not echoed
+# yet, and how many echoes the per-run index keeps behind them. Ceilings on a
+# per-poll cost, not guesses about content: more than a handful of un-echoed
+# follow-ups in one session is not a thing a person does, and an echo older
+# than the oldest entry still walked can never be asked about again.
 _DRAINED_WALK_MAX = 16
+_ECHO_INDEX_MAX = 4096
 
 # THE TWO MEMOS THAT KEEP THIS OFF THE DISK ON EVERY POLL (🟡 review,
 # 2026-09-12). `_poll` runs every 400 ms for the life of a run and both of these
@@ -4924,11 +4937,10 @@ def _remember_capped(cache: dict, key: str, value) -> None:
 def _echo_texts(run_dir: str) -> tuple:
     """`_read_echo_texts`, memoized on the FILE — its size and its mtime.
 
-    Read on every `_poll` (400 ms) and every history refresh, this decoded and
-    scanned up to a megabyte of `out.jsonl` each time for an answer that can only
-    change when the file does. The stamp is the whole invalidation rule: a byte
-    appended moves both halves of it, and a file that has not been written to
-    hands back the list that was already built.
+    Read on every `_poll` (400 ms) and every history refresh, for an answer
+    that can only change when the file does. The stamp is the whole
+    invalidation rule: a byte appended moves both halves of it, and a file that
+    has not been written to hands back the list that was already built.
 
     An unreadable file caches nothing and answers what the read answers."""
     path = os.path.join(run_dir, "out.jsonl")
@@ -4945,10 +4957,24 @@ def _echo_texts(run_dir: str) -> tuple:
     return value
 
 
+# run_dir -> {"ident": (dev, ino), "offset": bytes already indexed,
+#             "echoes": [(uuid, key), ...]} — the index behind
+# `_read_echo_texts`: every echo the file has carried, read ONCE, with each
+# later read picking up only the bytes appended since. Insertion order is the
+# eviction order (oldest-visited run first). `_echo_locks` serialises the
+# readers of one run.
+_echo_index: dict = {}
+_echo_locks: dict = {}
+
+
 def _read_echo_texts(run_dir: str) -> tuple:
-    """`(texts, whole)` — the trimmed text of every user turn `out.jsonl` has
-    echoed back, in file order, over the tail of the file, and whether that
-    tail was the WHOLE file.
+    """`(echoes, whole)` — every user turn `out.jsonl` has echoed back, in file
+    order, each as `(uuid, key)` per text block (the uuid is `""` on an echo
+    that carries none; `key` is `_echo_key` of the words), plus the CLI's
+    `command_lifecycle` receipts as `(uuid, "")`, and whether the WHOLE file
+    was read (always, once it
+    is readable at all — the second half is kept for the one caller that
+    tells "no echo yet" from "could not look").
 
     `--replay-user-messages` makes the CLI write each message it takes off its
     own queue back into the stream the moment it OPENS that turn, and
@@ -4958,50 +4984,177 @@ def _read_echo_texts(run_dir: str) -> tuple:
     there is: nothing else on disk distinguishes a follow-up the CLI is holding
     from one it has answered.
 
-    The tail only, and a partial first line is dropped: this is read on every
-    poll, and a session's whole `out.jsonl` grows without bound. `whole` is what
-    lets the caller tell "this session has echoed nothing yet" (its first
-    message is still in the CLI's hands) from "the echo is behind the window" (a
-    reply longer than `_ECHO_TAIL_BYTES`) — opposite answers about one empty
-    list."""
+    THE WHOLE FILE, INDEXED INCREMENTALLY — never a tail window. This used to
+    read the last megabyte only, and a session whose first turn had streamed
+    more than that pushed its earliest echoes out of the window for good. The
+    position walk in `_drained_unechoed` then matched nothing, listed EVERY
+    drained entry as still waiting, and the one entry the page could not
+    dedupe against a transcript row — a line steered into a running tool call
+    — came back as a ghost bubble under every later follow-up (Akshil,
+    2026-10-19). So the file is read from where the previous read stopped:
+    the first look at a long-running session costs one pass over it, every
+    look after costs the bytes written since. A half-written last line is left
+    for the next read, and a file that SHRANK (a run dir reused, a test
+    rewriting the fixture) is re-indexed from byte 0.
+
+    ONE ECHO ROW CAN BE SEVERAL MESSAGES (measured 2026-09-21, CLI 2.1.2xx):
+    lines typed while the model is streaming are queued and dequeued together
+    at the turn's end as ONE user row with N `text` blocks, one per send.
+    `_write_inbox_entry` writes exactly one block per entry, so the blocks ARE
+    the entries — one `(uuid, key)` each. Joined into one string (the old
+    reading) the merged row matched nothing and a ghost of the reader's own
+    words sat under the reply that had already answered them (Akshil,
+    2026-10-04)."""
     path = os.path.join(run_dir, "out.jsonl")
-    whole = True
+    # ONE READER PER RUN AT A TIME. Two windows on one run poll on two pool
+    # threads; both reading from the same stored offset and both storing is a
+    # slower thread writing an OLDER offset back over a newer one, and the
+    # next read re-indexing a stretch it had already counted — duplicate
+    # echoes, which the position walk cannot tell from a line said twice.
+    while True:
+        with _ECHO_LOCK:
+            lock = _echo_locks.get(run_dir)
+            if lock is None:
+                if len(_echo_locks) >= _ECHO_CACHE_MAX:
+                    # Only a lock nobody holds may go (Bugbot, PR #1778):
+                    # dropping a held one would let a second window on the
+                    # same run mint another and read beside the first.
+                    for key in [k for k, l in _echo_locks.items()
+                                if not l.locked()]:
+                        if len(_echo_locks) < _ECHO_CACHE_MAX:
+                            break
+                        del _echo_locks[key]
+                lock = _echo_locks[run_dir] = threading.Lock()
+        lock.acquire()
+        # STILL THE RUN'S LOCK once held (CodeRabbit, PR #1778): between the
+        # lookup and the acquire another reader at capacity can have evicted
+        # this idle lock and minted a replacement; holding the orphan would
+        # be holding nothing.
+        with _ECHO_LOCK:
+            if _echo_locks.get(run_dir) is lock:
+                break
+        lock.release()
     try:
-        size = os.path.getsize(path)
-        with open(path, "rb") as fh:
-            if size > _ECHO_TAIL_BYTES:
-                whole = False
-                fh.seek(size - _ECHO_TAIL_BYTES)
-                fh.readline()   # the line the window cut in half is not a row
-            chunk = fh.read()
-    except OSError:
-        return [], False
-    texts = []
-    for line in chunk.decode("utf-8", "replace").splitlines():
-        # The cheap screen, before any parse, and the second half of it is the
-        # one that matters: a tool result is a `type: "user"` row too and there
-        # are far more of them than there are turns, so screening them out here
-        # is what keeps this off `json.loads` for most of the window.
-        if '"user"' not in line or '"tool_result"' in line:
-            continue
+        with _ECHO_LOCK:
+            state = _echo_index.get(run_dir)
         try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict) or not _starts_new_turn(row):
-            continue
-        # ONE ECHO ROW CAN BE SEVERAL MESSAGES (measured 2026-09-21, CLI
-        # 2.1.2xx): lines typed while the model is streaming are queued and
-        # dequeued together at the turn's end as ONE user row with N `text`
-        # blocks, one per send. `_write_inbox_entry` writes exactly one block
-        # per entry, so the blocks ARE the entries — appended one by one, the
-        # suffix/prefix walk in `_drained_unechoed` sees N echoes for N drains.
-        # Joined into one string (the old reading) the merged row matched
-        # nothing, every entry stayed "waiting" for the life of the run, and a
-        # ghost of the reader's own words sat under the reply that had already
-        # answered them (Akshil, 2026-10-04).
-        texts.extend(t for t in _inbox_blocks(row) if t)
-    return texts, whole
+            fh = open(path, "rb")
+        except OSError:
+            return [], False
+        with fh:
+            # THE FILE THAT IS OPEN, not the one a separate `stat` saw a moment
+            # earlier: a truncate-and-rewrite between the two would keep the
+            # inode and could regrow past the stored offset (CodeRabbit).
+            st = os.fstat(fh.fileno())
+            ident = (st.st_dev, st.st_ino)
+            if state and state["ident"] == ident and state["offset"] <= st.st_size:
+                offset, echoes = state["offset"], list(state["echoes"])
+            else:
+                offset, echoes = 0, []   # a different file, or one that shrank
+            fresh = not offset
+            try:
+                if offset:
+                    # THE BYTE BEFORE THE INDEXED EDGE IS A NEWLINE on the file
+                    # this index was built from; a file rewritten in place to
+                    # the same size or longer is caught here when it is not.
+                    fh.seek(offset - 1)
+                    if fh.read(1) != b"\n":
+                        offset, echoes, fresh = 0, [], True
+                fh.seek(offset)
+                # LINE BY LINE, never the whole remainder in one buffer: the
+                # first look at a long session is the whole file.
+                for raw in fh:
+                    if not raw.endswith(b"\n"):
+                        break   # a line still being written: next time, whole
+                    offset += len(raw)
+                    # The cheap screen, before any parse. A tool result is a
+                    # `type: "user"` row too and there are far more of them
+                    # than there are turns, so screening them out here is what
+                    # keeps this off `json.loads` for most of the file.
+                    if b'"command_lifecycle"' in raw:
+                        # THE CLI'S OWN RECEIPT for a stdin line that carried a
+                        # uuid: `started` is written as the turn opens on it,
+                        # `completed` when the turn that answered it ends. An
+                        # exact, per-entry proof of landing — no words needed.
+                        try:
+                            row = json.loads(raw.decode("utf-8", "replace"))
+                        except ValueError:
+                            continue
+                        if isinstance(row, dict) \
+                                and row.get("type") == "command_lifecycle" \
+                                and row.get("state") in ("started", "completed") \
+                                and row.get("command_uuid"):
+                            echoes.append((str(row["command_uuid"]), ""))
+                        continue
+                    if b'"user"' not in raw or b'"tool_result"' in raw:
+                        continue
+                    try:
+                        row = json.loads(raw.decode("utf-8", "replace"))
+                    except ValueError:
+                        continue
+                    if not isinstance(row, dict) or not _starts_new_turn(row):
+                        continue
+                    uid = str(row.get("uuid") or "")
+                    echoes.extend((uid, _echo_key(t))
+                                  for t in _inbox_blocks(row) if t)
+            except OSError:
+                return [], False
+        if len(echoes) > _ECHO_INDEX_MAX:
+            del echoes[:-_ECHO_INDEX_MAX]
+        return _echo_store(run_dir, ident, offset, echoes, fresh), True
+    finally:
+        lock.release()
+
+
+def _echo_store(run_dir: str, ident: tuple, offset: int, echoes: list,
+                fresh: bool = False) -> list:
+    """Put one reader's result into `_echo_index` and hand back the list that
+    is current afterwards.
+
+    THE OFFSET ONLY EVER MOVES FORWARD. Should two readers of one run ever
+    overlap (the per-run lock is best effort: a lock evicted between being
+    looked up and taken), the one that read further wins, and the slower one
+    is answered with the further list rather than writing its shorter one
+    back — which would make the next read re-index a stretch already counted
+    and append duplicate echoes, the one thing the position walk cannot tell
+    from a line said twice. Every reader's list is the stored base plus the
+    bytes after it, so the further list is always a superset in order.
+    `fresh` is a reader that re-indexed from byte 0 because the file it
+    opened was not the one the index was built from (a new inode, a shorter
+    file, no newline at the indexed edge), and its answer replaces whatever
+    is stored."""
+    with _ECHO_LOCK:
+        cur = _echo_index.get(run_dir)
+        if not fresh and cur and cur["ident"] == ident and cur["offset"] > offset:
+            return cur["echoes"]   # never mutated in place: safe to share
+        if cur is None and len(_echo_index) >= _ECHO_CACHE_MAX:
+            # The run polled longest ago goes, not the whole index: a shell
+            # visiting many live runs must not re-read every file.
+            del _echo_index[next(iter(_echo_index))]
+        _echo_index.pop(run_dir, None)   # re-insert as the newest
+        _echo_index[run_dir] = {"ident": ident, "offset": offset,
+                                "echoes": echoes}
+        return echoes
+
+
+def _echo_key(text: str) -> str:
+    """What an echo and an entry are compared by — a digest of the trimmed
+    words, so the index holds a fixed few dozen bytes per echo rather than a
+    pasted prompt, and `_ECHO_INDEX_MAX` of them is a bounded cost."""
+    return hashlib.sha1(text.strip().encode("utf-8", "replace")).hexdigest()
+
+
+def _text_blocks(content) -> list:
+    """The `text` of every text block in a message's `content`, in order —
+    the one extraction `_inbox_blocks`, `_inbox_text` and `_steered_prompt`
+    share, so the words the page dedupes on are joined the same way wherever
+    they were read. A bare string is one block; anything else is none."""
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    return [str(b.get("text") or "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text"]
 
 
 def _inbox_blocks(row) -> list:
@@ -5014,8 +5167,7 @@ def _inbox_blocks(row) -> list:
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, list):
         return []
-    return [str(b.get("text") or "").strip() for b in content
-            if isinstance(b, dict) and b.get("type") == "text"]
+    return [t.strip() for t in _text_blocks(content)]
 
 
 def _inbox_text(row) -> str:
@@ -5028,15 +5180,15 @@ def _inbox_text(row) -> str:
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, list):
         return ""
-    texts = [str(b.get("text") or "") for b in content
-             if isinstance(b, dict) and b.get("type") == "text"]
-    return "\n\n".join(t for t in texts if t)
+    return "\n\n".join(t for t in _text_blocks(content) if t)
 
 
 def _inbox_entry(path: str, name: str) -> dict | None:
-    """One inbox entry file as `{"id", "text", "at"}`, or None when it is not a
-    user turn with words in it — a `control_request`, a half-written file, or
-    one drained out from under us."""
+    """One inbox entry file as `{"id", "text", "at", "uuid"}`, or None when it
+    is not a user turn with words in it — a `control_request`, a half-written
+    file, or one drained out from under us. `uuid` is the stamp
+    `_write_inbox_entry` put on the wire (`""` on an entry an older server
+    wrote without one)."""
     try:
         with open(path, encoding="utf-8") as fh:
             row = json.load(fh)
@@ -5045,7 +5197,8 @@ def _inbox_entry(path: str, name: str) -> dict | None:
     text = _inbox_text(row)
     if not text:
         return None
-    return {"id": name, "text": text, "at": _inbox_at(name)}
+    return {"id": name, "text": text, "at": _inbox_at(name),
+            "uuid": str(row.get("uuid") or "")}
 
 
 def _drained_unechoed(run_dir: str) -> list:
@@ -5067,16 +5220,23 @@ def _drained_unechoed(run_dir: str) -> list:
     drained, so the newest done entry is the last to echo and everything behind
     the first echoed one has echoed too. The walk stops there.
 
-    Matched by POSITION and not by membership, so a message sent twice is not
-    read as its own echo: the echoed entries are a PREFIX of the drained ones, so
-    the last `p` echoes in the file are the texts of the first `p` entries here,
-    and the largest `p` that holds is how many have landed. Everything after it
-    is waiting. (Comparing each entry against the newest echo instead read two
-    identical follow-ups with one echo as two answered messages and drew
-    neither.) A TRUNCATED window holding no echo at all (a reply longer than
-    `_ECHO_TAIL_BYTES`) answers "all echoed", which is the reading this had
-    before the field existed; an empty WHOLE file means the CLI has not opened a
-    turn yet, and everything drained really is waiting."""
+    MATCHED BY IDENTITY FIRST. Every entry `_write_inbox_entry` has stamped
+    carries a `uuid`, and the CLI hands that uuid back on the entry's echo
+    (`_read_echo_texts`), so "has this one landed" is a set lookup — a message
+    sent twice is two entries with two ids, and a folded echo row that names
+    one id twice is still one entry. Both sides are FIFO (the host drains in
+    name order, the CLI echoes in that order), so everything OLDER than the
+    newest entry found echoed has echoed too, whatever its own row says; that
+    is also what covers an entry whose echo has aged out of the index.
+
+    MATCHED BY POSITION BEHIND THAT, for an entry with no uuid to match on (an
+    older server's, or a CLI whose echoes carry none): the echoed entries are a
+    PREFIX of the drained ones, so the last `p` echoes in the file are the
+    texts of the first `p` entries here, and the largest `p` that holds is how
+    many have landed. Never by bare text membership: two "go on"s with one echo
+    read that way as two answered messages and drew neither (🔴 review,
+    2026-09-12). An empty echo list over a readable file means the CLI has not
+    opened a turn yet, and everything drained really is waiting."""
     done = os.path.join(_inbox_dir(run_dir), "done")
     try:
         names = sorted(n for n in os.listdir(done) if n.endswith(".json"))
@@ -5092,31 +5252,71 @@ def _drained_unechoed(run_dir: str) -> list:
         return []
     echoes, whole = _echo_texts(run_dir)
     if not echoes and not whole:
-        return []
+        return []          # the file could not be read: nothing to say
     recent = []
     for name in names[-_DRAINED_WALK_MAX:]:
         entry = _inbox_entry(os.path.join(done, name), name)
         if entry is None:
             continue       # a control request: it is not a turn on either side
         recent.append(entry)
-    texts = [entry["text"].strip() for entry in recent]
-    # HOW MANY OF THESE HAVE ECHOED — a POSITION, counted from the oldest, and
-    # not a search for the newest text that happens to match (🔴 review,
-    # 2026-09-12). Both sides are FIFO: the host drains in name order and the CLI
-    # echoes in the order it drained, so if the first `p` of these have been
-    # answered then the LAST `p` echoes in the file are exactly their texts, in
-    # that order. The largest `p` that holds is the count.
-    #
-    # Comparing the newest entry against the newest echo alone could not tell
-    # "answered" from "said twice": two "go on"s with one echo matched on the
-    # second one and dropped BOTH bubbles, which is the reader's own words going
-    # missing while the CLI still held them.
-    matched = 0
-    for size in range(min(len(texts), len(echoes)), 0, -1):
-        if echoes[len(echoes) - size:] == texts[:size]:
-            matched = size
-            break
-    waiting = recent[matched:]
+    # THE NEWEST ENTRY PROVEN LANDED BY ITS ID: it and everything before it
+    # have echoed (FIFO). Only the entries after it are still in question, and
+    # only the echoes after ITS echo can say anything about them.
+    last_echo = {uid: i for i, (uid, _key) in enumerate(echoes) if uid}
+    matched, after = 0, 0
+    for i in range(len(recent) - 1, -1, -1):
+        uid = recent[i]["uuid"]
+        at = last_echo.get(uid) if uid else None
+        if at is None:
+            continue
+        matched = i + 1
+        # ITS OWN ECHO IS THE BLOCK THAT SAYS ITS WORDS under its id — the
+        # first such block, not the last block carrying the id: a folded row
+        # can repeat the id over the lines queued behind it, and those blocks
+        # are the only echo THOSE lines will get.
+        key = _echo_key(recent[i]["text"])
+        after = next((j + 1 for j, (u, k) in enumerate(echoes)
+                      if u == uid and k == key), at + 1)
+        break
+    rest = recent[matched:]
+    if rest:
+        # WHAT THE IDS COULD NOT SETTLE goes by position, exactly as it
+        # always has — but ONLY for an entry that has no id to be settled by:
+        # one an older server wrote, or any entry while the CLI echoes no ids
+        # at all. A STAMPED entry the ids did not match is WAITING, full stop
+        # (🔴 review, 2026-10-20): matching its words against a block that
+        # belongs to another entry — the second half of a folded row, a line
+        # said twice, a subagent's hand-back saying the same thing — dropped
+        # the reader's bubble while the CLI still held the line. And FIFO
+        # holds here too: once one entry is waiting, everything behind it is.
+        #
+        # IN ORDER, EACH ECHO SPENT ONCE: the oldest unsettled entry takes the
+        # first echo that says its words, the next entry looks only past that
+        # one, and the first entry that finds none stops the walk — so a line
+        # said twice with one echo lands once (🔴 review, 2026-09-12), and a
+        # `user` row that is not an entry at all (a hand-back, a peer's note,
+        # injected as a turn by the CLI) is stepped over rather than read as
+        # "the newest echo is not ours, nothing landed".
+        ids_in_play = bool(last_echo)
+        # …AND ONLY OVER ECHOES THAT CAN BE THEIRS: a block with no id, or a
+        # block under the id of the entry the id pass just matched — the
+        # fold that repeats its lines. A block under any other id belongs to
+        # that other entry, whatever it says (CodeRabbit, PR #1778).
+        fold_uid = recent[matched - 1]["uuid"] if matched else ""
+        words = [key for uid, key in echoes[after:]
+                 if key and (not uid or uid == fold_uid)]
+        landed, j = 0, 0
+        for entry in rest:
+            if ids_in_play and entry["uuid"]:
+                break
+            key = _echo_key(entry["text"])
+            while j < len(words) and words[j] != key:
+                j += 1
+            if j >= len(words):
+                break
+            landed, j = landed + 1, j + 1
+        rest = rest[landed:]
+    waiting = rest
     if not waiting:
         # Proven, so the walk above is skipped until the host drains again.
         _remember_capped(_echoed_done, run_dir, names[-1])
@@ -5282,7 +5482,7 @@ def _inbox_waiting(run_dir: str) -> list:
 
     One `listdir`, and on a chat that has never drained anything that is the
     whole cost: nothing is opened. Once something HAS been drained the price is
-    the bounded tail of `out.jsonl` (`_ECHO_TAIL_BYTES`) plus one file per
+    the bytes of `out.jsonl` written since the last look plus one file per
     un-echoed follow-up — the same order of work the poll already does over the
     same file.
     """
@@ -9439,6 +9639,47 @@ def _is_turn_row(row: dict) -> bool:
     return row.get("type") in _TURN_ROW_TYPES
 
 
+def _steered_prompt(row: dict) -> tuple | None:
+    """`(text, uuid)` for a transcript record that is a message the reader
+    typed INTO A RUNNING TURN, or None for any other record.
+
+    Claude Code (2.1.29x–2.1.30x, measured 2026-10-20) does not open a turn
+    for a line that arrives while a tool call is running: it injects the words
+    into the turn in flight, beside the next tool result, and writes them to
+    the session JSONL as `{"type": "attachment", "attachment": {"type":
+    "queued_command", "prompt": [{"type": "text", "text": ...}],
+    "source_uuid": <the stdin row's uuid>}}`. On the live stream the same
+    line had been an ordinary `user` echo row carrying that uuid, so
+    `source_uuid` is the identity the page already drew the bubble under.
+
+    ONLY WHAT A PERSON TYPED. The same record carries the CLI's own
+    machinery: a `<task-notification>` (`commandMode: "task-notification"`),
+    a subagent's hand-back or a cross-session note (`origin.kind: "peer"`,
+    `isMeta: true`), a coordinator's instruction (`origin.kind:
+    "coordinator"`, `isMeta: true`) — measured over 2,590 local rows,
+    2026-10-20. A human line is `commandMode: "prompt"` with `origin` absent
+    or `origin.kind: "human"` and no `isMeta`. Everything else is nobody's
+    words and stays bookkeeping, as it was.
+
+    The same strip the ordinary user branch applies: the transcript holds
+    what the CLI was SENT, app-state block and terminal hint included."""
+    if row.get("type") != "attachment":
+        return None
+    att = row.get("attachment")
+    if not isinstance(att, dict) or att.get("type") != "queued_command":
+        return None
+    if att.get("isMeta") or att.get("commandMode") == "task-notification":
+        return None
+    origin = att.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
+        return None
+    prompt = att.get("prompt")
+    if not isinstance(prompt, (list, str)):
+        return None
+    text = _strip_terminal_hint(_strip_app_state("\n".join(_text_blocks(prompt))))
+    return text, str(att.get("source_uuid") or row.get("uuid") or "")
+
+
 def _history(file: str, session_id: str, app_reads: bool = False,
              inbox: bool = True, transcript: str = "") -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
@@ -9581,6 +9822,31 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         except json.JSONDecodeError:
             continue
         if row.get("isMeta") or row.get("isSidechain"):
+            continue
+        steered = _steered_prompt(row)
+        if steered is not None:
+            # A MESSAGE THE READER TYPED INTO A RUNNING TOOL CALL (Akshil,
+            # 2026-10-19: "I wrote a msg and got an answer while the
+            # background job was running, then it disappeared after
+            # refreshing"). The CLI does not open a turn for it: it injects
+            # the words into the turn already running, beside the next tool
+            # result, and PERSISTS them as an `attachment` of type
+            # `queued_command` — never as a `user` row. The live stream had
+            # echoed it as an ordinary user row, so the page drew the bubble;
+            # this walk skipped the attachment, so the first transcript
+            # refresh took the bubble away and every later follow-up listed
+            # it as a ghost (`_drained_unechoed` could not dedupe it against a
+            # row that was never here). It is the reader's own line, in its
+            # place in the conversation: a user turn, keyed by the uuid the
+            # live echo carried (`source_uuid`), stamped with the row's time.
+            text, msg_uuid = steered
+            if text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
+                close_stretch()  # the tool rows so far belong to the reply above
+                turn = {"role": "user", "text": text, "uuid": msg_uuid}
+                ts = _row_ts(row)
+                if ts is not None:
+                    turn["ts"] = ts
+                turns.append(turn)
             continue
         # A TURN IS A `type: "user"` OR `type: "assistant"` RECORD, and nothing
         # else that happens to carry a `message`. Claude Code 2.1.300 began
