@@ -253,10 +253,12 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     tokens: searching ? tokens : null,
     flashId: flash,
     jump: (id) => {
-      // A settings.json row not on the page yet (its catalog still loading)
-      // lands on the catalog row that introduces them instead of nowhere.
-      const e = byId(id) ?? (isClaudePref({ id } as SettingEntry) ? byId("claude-catalog") : undefined);
-      if (e) showGroup(e.group, e.id);
+      // A settings.json row is not in `entries` until its catalog has loaded —
+      // from AI & agents the store is still asleep — but its group is known,
+      // and the mount that follows highlights the row once it exists (the
+      // flash effect waits for it).
+      const group = byId(id)?.group ?? (isClaudePref({ id } as SettingEntry) ? "claude" : undefined);
+      if (group) showGroup(group, id);
     },
   };
 

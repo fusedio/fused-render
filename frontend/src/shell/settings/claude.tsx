@@ -438,10 +438,14 @@ export function ClaudeMcpBlock() {
 }
 
 export function ClaudeHistoryBlock() {
-  const { onChanged, onCommitted } = useContext(ClaudeContext);
+  const { onChanged, onCommitted, badgeEpoch } = useContext(ClaudeContext);
+  // Keyed on EVERY edit, not only on a commit: the card reads its own git
+  // status and log, and a plugin toggle or a settings.json write above it is
+  // drift it must show beside the chip that already counts it. (The panel had
+  // the same freshness by remounting History on every tab switch.)
   return (
     <Block id="claude-history">
-      <HistorySection onChanged={onChanged} onCommitted={onCommitted} />
+      <HistorySection key={badgeEpoch} onChanged={onChanged} onCommitted={onCommitted} />
     </Block>
   );
 }
