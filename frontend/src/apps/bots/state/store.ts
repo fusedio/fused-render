@@ -292,6 +292,15 @@ export function markSeen(id: string | null | undefined, seq: number): void {
   if (!id || S.seen[id] >= seq) return;
   pushSeen(id, seq);
   commit({ seen: { ...S.seen, [id]: seq } });
+  // The sidebar's chip counts this bot until it hears the mark moved; the next poll is up to 3 s away (CodeRabbit, #1796).
+  publishPulse();
+}
+
+/** The sidebar's Bots entry reads this page's rows (platform/lib/botsPulse) with the store's MERGED read mark, not
+ *  the server's raw `seen_seq`: a bot you just opened is read here at once, and the chip must not count it for the
+ *  poll or two until the server echoes the POST. Called on every poll and on every local mark. */
+function publishPulse(): void {
+  publishBots(S.bots.map((b) => ({ id: b.id, status: b.status, seq: b.seq, seen_seq: S.seen[b.id], hidden: b.hidden })));
 }
 export const unreadCount = (b: Bot): number => unreadOf(S.seen[b.id], eventsOf(b.id), b);
 /** The "new" rule sits at the seen mark as of opening this bot and stays put until you switch bots; set only when something is past it, else cleared. */
@@ -503,11 +512,9 @@ export async function pollOnce(): Promise<void> {
         bots: r.bots, events, cursors, seen,
         ...(r.usage ? { usage: r.usage } : {}), ...(r.imessage ? { imessage: r.imessage } : {}),
       });
-      // The sidebar's Bots entry reads these same rows (platform/lib/botsPulse): while this page polls, it is the
-      // one source, and the rail moves on the same tick the list does. With the MERGED mark, not the server's raw
-      // `seen_seq`: a bot you just opened is read here at once (markSeen), and the chip must not count it for the
-      // poll or two until the server echoes the POST.
-      publishBots(r.bots.map((b) => ({ id: b.id, status: b.status, seq: b.seq, seen_seq: seen[b.id], hidden: b.hidden })));
+      // The sidebar's Bots entry: while this page polls, it is the one source, and the rail moves on the same tick
+      // the list does (publishPulse).
+      publishPulse();
       if (toast) showToast(toast);
       // Hand-overs: the bot asked for you in its browser (control_by flipped to "bot"; a take-over of yours is "user" and
       // stays quiet). The selected bot opens Stage, any other one gets a toast; chime + OS notification either way. On

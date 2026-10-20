@@ -125,8 +125,14 @@ function recompute(rows: BotPulseRow[]) {
   for (const l of listeners) l(next);
 }
 
+/** Bounded: a request that never settles would leave `inFlight` true and the
+ *  timer unarmed for the life of the document — stale counts until a reload
+ *  (CodeRabbit, #1796). The owner answers in milliseconds; a forwarded call
+ *  to a wedged owner is what the bound is for. */
+const REQUEST_MS = 15_000;
+
 export function getBotsPulse(): Promise<{ bots: BotPulseRow[] }> {
-  return getJson<{ bots: BotPulseRow[] }>("/api/bots/pulse");
+  return getJson<{ bots: BotPulseRow[] }>("/api/bots/pulse", { signal: AbortSignal.timeout(REQUEST_MS) });
 }
 
 async function poll() {

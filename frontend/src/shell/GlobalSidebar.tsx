@@ -977,6 +977,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             active={botsActive}
             extra={botsDot}
             trailing={botsTrailing}
+            // Errors have no dot and no words, so the row itself carries the
+            // sentence; the rail says it through its label either way.
+            title={botsTip}
           />
           {/* Tasks took Inbox's place as well as its job: the two pages showed
               the same pile of work from two ends, and the one that survives is

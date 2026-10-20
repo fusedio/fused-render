@@ -107,13 +107,18 @@ describe("wiring", () => {
   it("both widths show it: the rail badge + tooltip, the expanded extra + trailing", () => {
     expect(SIDEBAR).toContain("label: botsTip ? `Bots — ${botsTip}` : \"Bots\"");
     expect(SIDEBAR).toContain("badge: botsDot,");
-    expect(SIDEBAR).toMatch(/id="bots-link"[\s\S]*?extra=\{botsDot\}[\s\S]*?trailing=\{botsTrailing\}/);
+    expect(SIDEBAR).toMatch(/id="bots-link"[\s\S]*?extra=\{botsDot\}[\s\S]*?trailing=\{botsTrailing\}[\s\S]*?title=\{botsTip\}/);
   });
 
   it("one poll, two readers: the Bots page feeds the store and the store stands down", () => {
     expect(BOTS_APP).toContain("useBotsFeeder();");
     // The page publishes its MERGED read mark, not the server's raw one.
-    expect(BOTS_STORE).toContain("seen_seq: seen[b.id]");
+    expect(BOTS_STORE).toContain("seen_seq: S.seen[b.id]");
+    // ...and republishes on every local mark, not only on a poll.
+    const markSeen = BOTS_STORE.slice(BOTS_STORE.indexOf("export function markSeen"), BOTS_STORE.indexOf("function publishPulse"));
+    expect(markSeen).toContain("publishPulse();");
+    // A request that never settles is bounded, or the timer would never re-arm.
+    expect(STORE).toContain("AbortSignal.timeout(REQUEST_MS)");
     // A feeder held and released leaves the store free to poll again (a
     // duplicated increment here froze the rail for the life of the document
     // once — reviewer, 2026-10-20).
