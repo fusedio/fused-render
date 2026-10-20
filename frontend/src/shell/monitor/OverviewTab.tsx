@@ -7,7 +7,8 @@
 // tile that is warn/bad; four chart cards (Requests, Connections, Server, CPU,
 // the Processes tab's card form) over the since-restart window; and
 // below them, always shown: the remaining tiles, stalled jobs, the slowest .py
-// targets and the disk footer. Record 60s / Copy report sit
+// targets, a Recordings card (last 5 saved perf recordings + Open folder) and
+// the disk footer. Record 60s / Copy report sit
 // right-aligned on the window heading's row. The errors tile toggles an inline
 // panel of the recent errors instead of linking anywhere (the errors list is
 // reached only through that tile).
@@ -397,6 +398,36 @@ export default function OverviewTab({
             </ul>
           ) : (
             <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
+          )}
+        </section>
+
+        <section className="monitor-list-card">
+          <h2 className="monitor-sec-title">Recordings</h2>
+          {record.status ? (
+            <ul className="monitor-list">
+              {(record.status.recordings ?? []).slice(0, 5).map((r) => (
+                <li key={r.name} className="monitor-list-target">
+                  {record.dir ? (
+                    <a className="monitor-list-mono monitor-list-text" {...spaLinkProps(`${record.dir}/${r.name}`)}>
+                      {r.name}
+                    </a>
+                  ) : (
+                    <span className="monitor-list-mono monitor-list-text">{r.name}</span>
+                  )}
+                  <span className="monitor-list-num">{formatBytes(r.bytes, true)}</span>
+                </li>
+              ))}
+              {!(record.status.recordings ?? []).length && (
+                <li className="monitor-list-empty">None yet. Record 60s saves one here.</li>
+              )}
+            </ul>
+          ) : (
+            <p className="monitor-net-note">Reading…</p>
+          )}
+          {record.dir && (
+            <a className="monitor-net-note monitor-recordings-folder" {...spaLinkProps(record.dir)} title={record.dir}>
+              Open folder
+            </a>
           )}
         </section>
       </div>

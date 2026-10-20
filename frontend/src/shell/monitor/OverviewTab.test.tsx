@@ -294,6 +294,36 @@ test("Record 60s counts down, Copy report copies the dashboard JSON, the recordi
   expect(JSON.parse(copied).verdict.level).toBe("bad");
 });
 
+const recApi = (recordings: { name: string; bytes: number }[]) => ({
+  start: async () => ({ recording: true, seconds_left: 60, recordings: [] }),
+  status: async () => ({ recording: false, seconds_left: 0, dir: "/logs/perf-recordings", recordings }),
+});
+
+test("Recordings card lists saved recordings as links with no click needed", async () => {
+  const r = await mount(() => {}, { recordApi: recApi([{ name: "a.json", bytes: 1 }, { name: "b.json", bytes: 2 }]) });
+  const card = r.root.find((n) => n.type === "section" && text(n).startsWith("Recordings"));
+  const hrefs = card.findAll((n) => n.type === "a").map((n) => String(n.props.href));
+  expect(text(card)).toContain("a.json");
+  expect(text(card)).toContain("b.json");
+  expect(hrefs.some((h) => h.includes("/logs/perf-recordings/a.json"))).toBe(true);
+  expect(hrefs.some((h) => h.includes("/logs/perf-recordings/b.json"))).toBe(true);
+});
+
+test("Recordings card says None yet when there are none", async () => {
+  const r = await mount(() => {}, { recordApi: recApi([]) });
+  const card = r.root.find((n) => n.type === "section" && text(n).startsWith("Recordings"));
+  expect(text(card)).toContain("None yet.");
+});
+
+test("Recordings card shows only the newest 5 of 7", async () => {
+  const many = Array.from({ length: 7 }, (_, i) => ({ name: `r${i}.json`, bytes: i }));
+  const r = await mount(() => {}, { recordApi: recApi(many) });
+  const card = r.root.find((n) => n.type === "section" && text(n).startsWith("Recordings"));
+  expect(card.findAll((n) => n.type === "li")).toHaveLength(5);
+  expect(text(card)).toContain("r4.json");
+  expect(text(card)).not.toContain("r5.json");
+});
+
 test("Copy report says 'Copy failed' when the clipboard write rejects", async () => {
   const r = await mount(() => {}, { copy: () => Promise.reject(new Error("denied")) });
   await act(async () => btnOf(r, "Copy report").props.onClick());

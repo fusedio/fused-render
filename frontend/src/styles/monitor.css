@@ -1274,6 +1274,24 @@ th[aria-sort="descending"] .monitor-sort {
   text-decoration: underline;
 }
 
+.monitor-list a.monitor-list-text:link,
+.monitor-list a.monitor-list-text:visited,
+.monitor-recordings-folder:link,
+.monitor-recordings-folder:visited {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.monitor-list a.monitor-list-text:hover,
+.monitor-recordings-folder:hover {
+  text-decoration: underline;
+}
+
+.monitor-recordings-folder {
+  display: inline-block;
+  margin-top: 8px;
+}
+
 .monitor-tiles {
   flex: 0 0 auto;
   display: grid;

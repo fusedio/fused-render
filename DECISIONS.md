@@ -7135,3 +7135,4 @@ A 6-column table in a bot reply wrapped short cells ("fused-render", "#1641") on
 - **Follow-up.** Ok-row summary filters unavailable figures before prefixing (no "CPU –"); the 14px/600 rule is scoped to the ok row only; status tile titles are single-line with an ellipsizing text span so the dot stays fixed.
 - Follow-up: Overview/Network scroll at page level (`.monitor-page.is-page-scroll`); Processes keeps the fixed page with the table scroller.
 - Follow-up: the Overview's Show/Hide checks toggle is gone; the remaining tiles, stalled jobs, slowest targets and disk note always render below the charts.
+- Follow-up: a Recordings card (last 5 + Open folder) lists saved perf recordings from `/api/system/record`; the Saved link alone was missed when the page was left mid-recording.
