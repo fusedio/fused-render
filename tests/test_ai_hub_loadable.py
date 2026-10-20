@@ -4,6 +4,8 @@ facts behind item 2 (scope-corrected, see DECISIONS.md D1274/D1275) and item
 search row, only to flag one that EVERY runner AVAILABLE for its capability
 would refuse once downloaded.
 """
+import os
+
 import pytest
 
 from fused_render.ai import hub_loadable
@@ -419,26 +421,22 @@ def test_genuine_diffusers_repo_with_model_index_stays_loadable():
     assert runs_on == "Diffusers"
 
 
-def test_modular_diffusers_repo_with_only_the_modular_index_stays_loadable():
-    """A modular Diffusers pipeline ships `modular_model_index.json` with NO
-    flat `model_index.json` — must still admit via `diffusers-image`."""
+def test_modular_diffusers_repo_with_only_the_modular_index_is_not_admitted():
+    """No ModularPipeline adapter yet (D1386): not admitted, not loadable."""
     names = frozenset({formats.DIFFUSERS_MODULAR_INDEX})
-    loadable, reason, runs_on = hub_loadable.admission(
+    loadable, _reason, _runs_on = hub_loadable.admission(
         runner_codes=("diffusers-image",),
         model_id="OzzyGT/MiniMax_H3_sdnq_4bit_pruned", model_type=None,
         names=names)
-    assert (loadable, reason, runs_on) == (True, None, None)
+    assert loadable is False
 
 
-def test_library_name_diffusers_with_no_index_file_stays_loadable():
-    """`library_name: "diffusers"` alone (no `names` at all, or a `names`
-    set with no index file) is a real, independent Diffusers signal —
-    `is_diffusers_repo` honors it even without a manifest sibling."""
-    loadable, reason, runs_on = hub_loadable.admission(
+def test_library_name_diffusers_with_no_index_file_is_not_admitted():
+    loadable, _reason, _runs_on = hub_loadable.admission(
         runner_codes=("diffusers-image",),
         model_id="some-org/diffusers-lib-repo", model_type=None,
-        names=frozenset(), library_name="diffusers")
-    assert (loadable, reason, runs_on) == (True, None, None)
+        names=frozenset({"x"}), library_name="diffusers")
+    assert loadable is False
 
 
 def test_caller_with_neither_names_nor_library_name_never_flags_a_diffusers_row():
@@ -619,21 +617,21 @@ def test_mlx_vlm_model_types_caches_by_venv_dir(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-@pytest.mark.parametrize("names,config", [
-    (frozenset({formats.DIFFUSERS_INDEX}), {}),
-    (frozenset({formats.DIFFUSERS_MODULAR_INDEX}), {}),
-    (frozenset(), {"library_name": "diffusers"}),
+@pytest.mark.parametrize("names,config,expected", [
+    (frozenset({formats.DIFFUSERS_INDEX}), {}, True),
+    (frozenset({formats.DIFFUSERS_MODULAR_INDEX}), {}, False),
+    (frozenset(), {"library_name": "diffusers"}, False),
+    (frozenset({"x"}), {"library_name": "diffusers"}, False),
 ])
-def test_admission_is_wider_than_loading_for_diffusers(names, config):
-    """Admission is the wide net: it admits modular-only and `library_name`
-    repos. Loading is narrow: only a flat index has a loader (D1386 fix 1)."""
+def test_a_repo_admitted_on_the_diffusers_signal_is_one_loaders_loads(names, config, expected):
     admitted, _ = hub_loadable._admits(
         "diffusers", None, model_id="org/m", model_type=None, names=names,
         library_name=config.get("library_name"))
-    assert admitted is True
-    assert bool(formats.loaders(
+    loads = bool(formats.loaders(
         repo_id="org/m", names=names, dirnames=set(), config=config,
-        torch_weights=False)) == (formats.DIFFUSERS_INDEX in names)
+        torch_weights=False))
+    assert admitted is expected
+    assert loads is expected
 
 
 def test_mflux_available_models_sees_a_venv_installed_after_a_none(tmp_path, monkeypatch):
@@ -676,3 +674,68 @@ AVAILABLE_MODELS = {
         "org/alias": "flux3-image-klein"}
     assert frozenset(formats.parse_mflux_available_models(source)) == frozenset({
         "black-forest-labs/flux-3-image-klein", "org/alias"})
+
+
+def _fake_venv(tmp_path, monkeypatch, name="venv"):
+    import types as _types
+
+    from fused_render import envinstall
+    from fused_render.ai import registry
+
+    venv_dir = tmp_path / name
+    runner = _types.SimpleNamespace(folder=str(tmp_path / "project"))
+    monkeypatch.setattr(registry, "by_code", lambda code: runner)
+    monkeypatch.setattr(envinstall, "venv_dir_for", lambda folder: str(venv_dir))
+    return venv_dir
+
+
+_REGISTRY_SRC = '''
+AVAILABLE_MODELS = {
+    "flux3-image-klein": ModelConfig(
+        priority=11, aliases=["flux3"],
+        model_name="black-forest-labs/flux-3-image-klein", base_model=None),
+}
+'''
+
+
+def _write_registry(venv_dir, pyver):
+    cfg = (venv_dir / "lib" / pyver / "site-packages" / "mflux"
+           / "models" / "common" / "config")
+    cfg.mkdir(parents=True)
+    path = cfg / "model_config.py"
+    path.write_text(_REGISTRY_SRC)
+    return path
+
+
+def test_registry_path_cache_recovers_when_the_file_moves_to_another_python_dir(
+        tmp_path, monkeypatch):
+    venv_dir = _fake_venv(tmp_path, monkeypatch)
+    old = _write_registry(venv_dir, "python3.11")
+    clock = {"t": 100.0}
+    monkeypatch.setattr(hub_loadable.time, "monotonic", lambda: clock["t"])
+    assert hub_loadable.mflux_registry_stamp() is not None
+    old.unlink()
+    new = _write_registry(venv_dir, "python3.12")
+    clock["t"] += 5  # past the stamp memo window
+    stamp = hub_loadable.mflux_registry_stamp()
+    assert stamp == new.stat().st_mtime_ns
+    assert hub_loadable.mflux_available_models() == {
+        "black-forest-labs/flux-3-image-klein": "flux3-image-klein"}
+
+
+def test_registry_stamp_memo_stats_once_per_window(tmp_path, monkeypatch):
+    venv_dir = _fake_venv(tmp_path, monkeypatch)
+    _write_registry(venv_dir, "python3.12")
+    real_stat = os.stat
+    calls = []
+
+    def counting_stat(path, *a, **kw):
+        if str(path).endswith("model_config.py"):
+            calls.append(path)
+        return real_stat(path, *a, **kw)
+
+    monkeypatch.setattr(hub_loadable.os, "stat", counting_stat)
+    for _ in range(40):
+        hub_loadable.mflux_registry_stamp()
+        hub_loadable.mflux_available_models()
+    assert len(calls) == 1

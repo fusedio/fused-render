@@ -334,7 +334,11 @@ def _installed_mflux_registry() -> dict[str, str]:
     purpose: nothing has to have imported `hub_loadable` first."""
     try:
         from fused_render.ai import hub_loadable
-    except ImportError:
+    except ModuleNotFoundError as exc:
+        # Only "the fused_render package is not here" (the mflux worker venv)
+        # falls back; any other import failure is a real bug and surfaces.
+        if exc.name != "fused_render" and not (exc.name or "").startswith("fused_render."):
+            raise
         return _in_process_mflux_registry()
     return hub_loadable.mflux_available_models() or {}
 
@@ -2294,28 +2298,18 @@ LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
 ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm")
 
 
-def is_diffusers_snapshot(names, library_name: str | None) -> bool:
-    """The ADMISSION predicate for "this repo is a Diffusers pipeline": a flat
-    `model_index.json`, a modular `modular_model_index.json`, or
-    `library_name == "diffusers"`. Only `hub_architecture.is_diffusers_repo`
-    calls it.
+def is_diffusers_snapshot(names) -> bool:
+    """The ONE "this repo is a Diffusers pipeline" predicate: a flat
+    `model_index.json` is present. Admission (`hub_architecture.
+    is_diffusers_repo`, `hub_loadable._admits('diffusers')`,
+    `_resolve_engine`) and loading (`loaders()`) all call it, so a repo
+    admitted on the diffusers signal is one `loaders()` loads.
 
-    Admission is the wide net, loading is the narrow one. Admission asks "is
-    this worth listing and downloading", and a modular-only or
-    `library_name`-only repo is. Loading asks "would the diffusers worker open
-    it", which is `is_diffusers_loadable`: the worker only knows
-    `AutoPipelineForText2Image.from_pretrained`, which needs the flat index
-    (the `ModularPipeline` adapter is not built, D1386), and `library_name` is
-    set on every LoRA repo, none of which load standalone. Do not use this for
-    `loaders()`."""
-    return (DIFFUSERS_INDEX in names
-            or DIFFUSERS_MODULAR_INDEX in names
-            or library_name == "diffusers")
-
-
-def is_diffusers_loadable(names) -> bool:
-    """The LOADING predicate: a flat `model_index.json` is present. See
-    `is_diffusers_snapshot` for why this is narrower than admission."""
+    Deliberately narrow. The worker only knows `AutoPipelineForText2Image.
+    from_pretrained`, which needs the flat index; a modular-only
+    (`modular_model_index.json`) repo has no loader until a `ModularPipeline`
+    adapter exists (D1386), and `library_name: diffusers` is set on every LoRA
+    repo, none of which load standalone. Neither is admitted either."""
     return DIFFUSERS_INDEX in names
 
 
@@ -2407,7 +2401,7 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     # the two must not disagree about which repos are mflux's.
     if mflux_native_mode(repo_id) and has_mflux_components(dirnames):
         found.append("mflux-image")
-    if is_diffusers_loadable(names):
+    if is_diffusers_snapshot(names):
         found.extend(DIFFUSERS_RUNNERS)
     if is_parakeet_checkpoint(config) and PARAKEET_WEIGHTS in names:
         # D406 withdrew the `parakeet-mlx` runner (maintenance cost not

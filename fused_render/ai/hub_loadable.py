@@ -79,6 +79,7 @@ from __future__ import annotations
 
 import glob
 import os
+import time
 
 from fused_render.ai.hub_architecture import Architecture, is_diffusers_repo
 from fused_render.ai.runners import formats
@@ -105,6 +106,8 @@ def reset_cache() -> None:
     _MLX_VLM_TYPES_CACHE.clear()
     _MFLUX_REPOS_CACHE.clear()
     _MFLUX_PATH_CACHE.clear()
+    global _STAMP_MEMO
+    _STAMP_MEMO = None
 
 
 def mlx_vlm_model_types() -> frozenset | None:
@@ -152,27 +155,60 @@ def mlx_vlm_model_types() -> frozenset | None:
     return result
 
 
-def _mflux_registry_path() -> str | None:
-    """The installed mflux venv's `model_config.py`, or `None` when the venv
-    is not installed (the glob runs again next call, so an install made while
-    the server runs is seen)."""
-    from fused_render import envinstall
-    from fused_render.ai import registry
-
-    runner = registry.by_code("mflux-image")
-    if runner is None:
-        return None
-    venv_dir = envinstall.venv_dir_for(runner.folder)
-    path = _MFLUX_PATH_CACHE.get(venv_dir)
-    if path is not None:
-        return path
+def _find_mflux_registry(venv_dir: str) -> str | None:
     pattern = os.path.join(venv_dir, "lib", "python3.*", "site-packages", "mflux",
                             "models", "common", "config", "model_config.py")
     matches = glob.glob(pattern)
-    if not matches:
-        return None
-    _MFLUX_PATH_CACHE[venv_dir] = matches[0]
-    return matches[0]
+    return matches[0] if matches else None
+
+
+#: `(expires_at, path, stamp)` — one short-lived reading of the registry file's
+#: identity, shared by `mflux_registry_stamp` and `mflux_available_models`, so
+#: one listing pass (a `_repo_meta` per cached repo) pays one registry lookup
+#: and one stat rather than one per repo. Monotonic clock, 1 s window.
+_STAMP_MEMO: tuple[float, str | None, int | None] | None = None
+_STAMP_WINDOW = 1.0
+
+
+def _mflux_registry_reading() -> tuple[str | None, int | None]:
+    """`(path, st_mtime_ns)` of the installed mflux's `model_config.py`, or
+    `(None, None)` when the venv is not installed. A cached path whose stat
+    fails is dropped and re-globbed once in the same call (a venv rebuilt
+    under a different `python3.X` dir moves the file)."""
+    global _STAMP_MEMO
+    now = time.monotonic()
+    memo = _STAMP_MEMO
+    if memo is not None and now < memo[0]:
+        return memo[1], memo[2]
+    from fused_render import envinstall
+    from fused_render.ai import registry
+
+    path: str | None = None
+    stamp: int | None = None
+    runner = registry.by_code("mflux-image")
+    if runner is not None:
+        venv_dir = envinstall.venv_dir_for(runner.folder)
+        path = _MFLUX_PATH_CACHE.get(venv_dir)
+        if path is not None:
+            try:
+                stamp = os.stat(path).st_mtime_ns
+            except OSError:
+                _MFLUX_PATH_CACHE.pop(venv_dir, None)
+                path = None
+        if path is None:
+            path = _find_mflux_registry(venv_dir)
+            if path is not None:
+                try:
+                    stamp = os.stat(path).st_mtime_ns
+                except OSError:
+                    path = None
+        if path is not None:
+            _MFLUX_PATH_CACHE[venv_dir] = path
+    if path is not None:
+        # Only an installed registry is memoised: "not installed" stays a
+        # live answer so an install made while the server runs is seen.
+        _STAMP_MEMO = (now + _STAMP_WINDOW, path, stamp)
+    return path, stamp
 
 
 def mflux_registry_stamp() -> int | None:
@@ -180,13 +216,7 @@ def mflux_registry_stamp() -> int | None:
     `model_config.py`), `None` when not installed. `hub_cache` folds it into
     its per-snapshot memo so installing or upgrading mflux re-derives the
     loaders of repos already cached."""
-    path = _mflux_registry_path()
-    if path is None:
-        return None
-    try:
-        return os.stat(path).st_mtime_ns
-    except OSError:
-        return None
+    return _mflux_registry_reading()[1]
 
 
 def mflux_available_models() -> dict[str, str] | None:
@@ -197,10 +227,9 @@ def mflux_available_models() -> dict[str, str] | None:
     `formats.loaders()` / `mflux_variant_recipe` derive the same variants the
     admission rule admits. Only a parsed dict is cached (keyed by path and
     mtime); `None` is not, so a later install is picked up."""
-    path = _mflux_registry_path()
+    path, stamp = _mflux_registry_reading()
     if path is None:
         return None
-    stamp = mflux_registry_stamp()
     cached = _MFLUX_REPOS_CACHE.get(path)
     if cached is not None and cached[0] == stamp:
         return cached[1]
@@ -298,20 +327,18 @@ def _admits(kind: str, data, *, model_id: str, model_type: str | None,
             return True, None
         return False, None
     if kind == "diffusers":
-        # A Diffusers runner admits a repo the SAME way `hub_architecture.
-        # _resolve_engine` recognises one — `model_index.json`,
-        # `modular_model_index.json`, or `library_name == "diffusers"`
-        # (`is_diffusers_repo`, shared with that module so the two can
-        # never drift). The catch: `names`/`library_name` being absent must
+        # A Diffusers runner admits a repo by the ONE predicate `formats.
+        # loaders()` loads by — a flat `model_index.json`
+        # (`is_diffusers_repo`), so an admitted repo is always loadable
+        # (D1386). The catch: `names`/`library_name` being absent must
         # NEVER read as "therefore not Diffusers" — that would flag every
         # row a caller has not yet read siblings/library for, exactly the
         # module docstring's "never drops a row" guarantee this would
-        # otherwise break. Only refuse when at least one of the two signals
-        # was actually supplied; both absent (the empty-`names`-default
-        # PLUS no `library_name`) stays loadable instead.
+        # otherwise break. Only refuse when at least one of the two inputs
+        # was actually supplied; both absent stays loadable instead.
         if not names and library_name is None:
             return True, None
-        if is_diffusers_repo(names, library_name):
+        if is_diffusers_repo(names):
             return True, None
         return False, None
     return True, None

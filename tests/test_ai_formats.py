@@ -1392,7 +1392,7 @@ def test_a_flat_index_snapshot_has_the_diffusers_loaders():
     assert formats.loaders(
         repo_id="org/m", names={"model_index.json"}, dirnames=set(), config={},
         torch_weights=False) == tuple(formats.DIFFUSERS_RUNNERS)
-    assert formats.is_diffusers_loadable({"model_index.json"})
+    assert formats.is_diffusers_snapshot({"model_index.json"})
 
 
 @pytest.mark.parametrize("names,config", [
@@ -1401,32 +1401,42 @@ def test_a_flat_index_snapshot_has_the_diffusers_loaders():
     ({"modular_model_index.json"}, {"library_name": "diffusers"}),
 ])
 def test_modular_only_and_library_name_snapshots_have_no_diffusers_loader(names, config):
-    """Loading is narrower than admission: the worker has no ModularPipeline
-    path (D1386) and `library_name` is on every LoRA repo."""
+    """The worker has no ModularPipeline path (D1386) and `library_name` is
+    on every LoRA repo."""
     assert formats.loaders(
         repo_id="org/m", names=names, dirnames=set(), config=config,
         torch_weights=False) == ()
-    assert not formats.is_diffusers_loadable(names)
-
-
-@pytest.mark.parametrize("names,lib", [
-    (frozenset({"modular_model_index.json"}), None),
-    (frozenset(), "diffusers"),
-    (frozenset({"model_index.json"}), None),
-])
-def test_is_diffusers_snapshot_still_admits_all_three_signals(names, lib):
-    assert formats.is_diffusers_snapshot(names, lib)
-    assert not formats.is_diffusers_snapshot(frozenset({"x"}), "transformers")
+    assert not formats.is_diffusers_snapshot(names)
 
 
 def test_is_diffusers_repo_delegates_to_the_formats_predicate():
     from fused_render.ai import hub_architecture
-    for names, lib in [(frozenset({"modular_model_index.json"}), None),
-                       (frozenset(), "diffusers"),
-                       (frozenset({"model_index.json"}), None),
-                       (frozenset({"x"}), "transformers")]:
-        assert (hub_architecture.is_diffusers_repo(names, lib)
-                == formats.is_diffusers_snapshot(names, lib))
+    for names in [frozenset({"modular_model_index.json"}),
+                  frozenset({"model_index.json"}), frozenset({"x"})]:
+        assert (hub_architecture.is_diffusers_repo(names)
+                == formats.is_diffusers_snapshot(names))
+
+
+def test_installed_registry_reader_only_swallows_a_missing_fused_render(monkeypatch):
+    import builtins
+    import sys
+
+    monkeypatch.setitem(sys.modules, "fused_render.ai.hub_loadable", None)
+    monkeypatch.delitem(sys.modules, "fused_render.ai.hub_loadable")
+    real_import = builtins.__import__
+    state = {"exc": ImportError("boom")}
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "fused_render.ai" and "hub_loadable" in (fromlist or ()):
+            raise state["exc"]
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ImportError, match="boom"):
+        formats._installed_mflux_registry()
+    state["exc"] = ModuleNotFoundError("no fused_render", name="fused_render")
+    monkeypatch.setattr(formats, "_in_process_mflux_registry", lambda: {"a/b": "k"})
+    assert formats._installed_mflux_registry() == {"a/b": "k"}
 
 
 # -- mflux variants derived from the installed AVAILABLE_MODELS ------------------
