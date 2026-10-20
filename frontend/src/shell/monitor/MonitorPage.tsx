@@ -63,7 +63,7 @@ export default function MonitorPage({
   }, []);
 
   return (
-    <div className="monitor-page">
+    <div className={`monitor-page${params.tab === "processes" ? "" : " is-page-scroll"}`}>
       <header className="monitor-head monitor-head-tabs">
         <h1 className="monitor-title">Monitor</h1>
         <nav className="monitor-tabs" role="tablist" aria-label="Monitor sections">

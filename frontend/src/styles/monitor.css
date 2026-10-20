@@ -1,8 +1,9 @@
 /* ---- /monitor — whole-machine process monitor (shell/monitor) -----------
    The settings pages' density (13px body, 12px secondary, --border hairlines,
-   --bg-alt cards) on a page that fills #content top to bottom: meters and
+   --bg-alt cards) on a page that fills #content top to bottom. On Processes, meters and
    toolbar stay put, the TABLE scrolls on its own, and the selection dock sits
-   under it so choosing rows never moves the rows under the pointer. Every
+   under it so choosing rows never moves the rows under the pointer; Overview
+   and Network instead scroll as one page. Every
    colour is a token (tests/test_theme.py), so light and dark both repaint. */
 .monitor-page {
   flex: 1 1 auto;
@@ -915,8 +916,17 @@ th[aria-sort="descending"] .monitor-sort {
   overflow: hidden;
 }
 
+/* Overview and Network scroll as a whole page (header included), so the
+   scrollbar sits at the pane edge, not at the 1280px column's edge.
+   Processes keeps the fixed page where only its table scrolls. */
+.monitor-page.is-page-scroll {
+  overflow-y: auto;
+  padding-bottom: 24px;
+}
+
 .monitor-tab-scroll {
-  overflow: auto;
+  flex: 0 0 auto;
+  overflow: visible;
 }
 
 .monitor-tab-sub {
@@ -1026,7 +1036,7 @@ th[aria-sort="descending"] .monitor-sort {
 .monitor-overview,
 .monitor-net {
   width: 100%;
-  max-width: 1080px;
+  max-width: 1280px;
 }
 
 /* Overview: the flex gap alone spaces blocks (24px); blocks add no margins of their own. */
@@ -1044,13 +1054,17 @@ th[aria-sort="descending"] .monitor-sort {
 }
 
 .monitor-overview .monitor-tiles,
-.monitor-overview .monitor-lists,
-.monitor-overview .monitor-more {
+.monitor-overview .monitor-lists {
   margin-top: 0;
 }
 
 .monitor-net .monitor-net-strip {
   margin-top: 24px;
+}
+
+.monitor-overview > .monitor-net-note {
+  margin: 0;
+  color: var(--fg-faint);
 }
 
 .monitor-net-note {
@@ -1182,6 +1196,20 @@ th[aria-sort="descending"] .monitor-sort {
   background: var(--fg-faint);
 }
 
+.monitor-reasons li.is-ok {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.monitor-reasons li.is-ok .monitor-reason-dot {
+  background: var(--success);
+}
+
+.monitor-verdict-summary {
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
 .monitor-reasons li.is-warn .monitor-reason-dot {
   background: var(--warning);
 }
@@ -1190,8 +1218,7 @@ th[aria-sort="descending"] .monitor-sort {
   background: var(--error);
 }
 
-.monitor-reasons a,
-.monitor-recording-link {
+.monitor-reasons a {
   color: var(--accent);
 }
 
@@ -1234,34 +1261,68 @@ th[aria-sort="descending"] .monitor-sort {
 }
 
 .monitor-verdict-actions .monitor-btn {
-  padding: 2px 10px;
-  font-size: 12px;
+  height: 26px;
 }
 
 .monitor-recording-link {
   font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+.monitor-recording-link:hover {
+  text-decoration: underline;
+}
+
+.monitor-list a.monitor-list-text:link,
+.monitor-list a.monitor-list-text:visited,
+.monitor-recordings-folder:link,
+.monitor-recordings-folder:visited {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.monitor-list a.monitor-list-text:hover,
+.monitor-recordings-folder:hover {
+  text-decoration: underline;
+}
+
+.monitor-recordings-folder {
+  display: inline-block;
+  margin-top: 8px;
 }
 
 .monitor-tiles {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
 }
 
 .monitor-tile {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 0;
+  min-width: 0;
+  padding: 10px 12px;
   color: var(--fg);
   text-decoration: none;
+  background: var(--monitor-glass);
+  border: 1px solid var(--monitor-hairline);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 1px 2px var(--shadow-sm);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+}
+
+.monitor-tile:hover {
+  border-color: var(--fg-muted);
 }
 
 .monitor-tile-button {
   appearance: none;
-  background: none;
-  border: 0;
   font: inherit;
   text-align: left;
   cursor: pointer;
@@ -1284,9 +1345,17 @@ th[aria-sort="descending"] .monitor-sort {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.monitor-tile-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .monitor-tile-dot {
+  flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -1339,14 +1408,34 @@ th[aria-sort="descending"] .monitor-sort {
   flex: 0 0 auto;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 
 .monitor-list-card {
   padding: 10px 12px;
+  background: var(--monitor-glass);
   border: 1px solid var(--monitor-hairline);
   border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 1px 2px var(--shadow-sm);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
   min-width: 0;
+}
+
+.monitor-list-card .monitor-sec-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.monitor-list li.monitor-list-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .monitor-list {

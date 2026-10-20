@@ -98,6 +98,8 @@ export interface Tile {
    *  consumers fall back on this, never on the placeholder text in `primary`. */
   available: boolean;
   caption: string;
+  /** Full text for a hover title when `primary` shows an abbreviation (a path's basename). */
+  hint?: string;
   baseline?: string;
   tab: Tab;
 }
@@ -118,6 +120,13 @@ const RECENT_OUTAGE_S = 600;
 
 const ms = (n: number | null | undefined) => (n == null ? "-" : `${Math.round(n)} ms`);
 
+/** Last segment of a filesystem path (either separator); a bare name is returned as is. */
+export function basename(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const i = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return i >= 0 ? trimmed.slice(i + 1) : trimmed;
+}
+
 export function overviewTiles(d: Dashboard): Tile[] {
   const tiles: Tile[] = [];
   const add = (
@@ -125,7 +134,7 @@ export function overviewTiles(d: Dashboard): Tile[] {
     title: string,
     tab: Tab,
     section: unknown,
-    fn: () => { level: Level; value: string; baseline?: string; primary?: string; caption?: string; available?: boolean },
+    fn: () => { level: Level; value: string; baseline?: string; primary?: string; caption?: string; hint?: string; available?: boolean },
   ) => {
     const off = {
       key, title, tab, level: "unavailable" as const, value: UNAVAILABLE, primary: UNAVAILABLE,
@@ -221,7 +230,8 @@ export function overviewTiles(d: Dashboard): Tile[] {
     const top = c.top_overhead[0];
     return {
       level: "ok",
-      value: top ? `${top.entrypoint}: ${ms(top.overhead_p95_ms)} overhead` : "no calls",
+      value: top ? `${basename(top.entrypoint)}: ${ms(top.overhead_p95_ms)} overhead` : "no calls",
+      hint: top?.entrypoint,
     };
   });
   add("index", "Index", "overview", d.index, () => {

@@ -1,14 +1,17 @@
 // /monitor, Overview tab — "why does fused-render feel slow?" at a glance.
 //
-// Top to bottom: the verdict's reasons as a plain list when something is off
-// (each is a link that switches to the tab and filters that show it; nothing
-// is drawn when all is well); any non-headline
+// Top to bottom: the verdict line, always present (when something is off its
+// reasons as a plain list, each a link that switches to the tab and filters
+// that show it; when all is well one "All good" row with the headline
+// figures); any non-headline
 // tile that is warn/bad; four chart cards (Requests, Connections, Server, CPU,
 // the Processes tab's card form) over the since-restart window; and
-// behind "Show all checks": the remaining tiles, the errors tail, stalled jobs,
-// the slowest .py targets and the disk footer. Record 60s / Copy report sit
+// below them, always shown: the remaining tiles, stalled jobs, the slowest .py
+// targets, a Recordings card (last 5 saved perf recordings + Open folder) and
+// the disk footer. Record 60s / Copy report sit
 // right-aligned on the window heading's row. The errors tile toggles an inline
-// panel of the recent errors instead of linking anywhere.
+// panel of the recent errors instead of linking anywhere (the errors list is
+// reached only through that tile).
 //
 // DATA: `GET /api/system/dashboard` every 2 s while mounted and the document
 // visible. Every section is computed independently on the server, so one that
@@ -20,6 +23,7 @@ import { formatBytes } from "@platform/lib/sysmon";
 import { getDashboard, sectionOk, type Dashboard } from "./monitor-api";
 import { AreaChart, PCT_TICKS, type Tick } from "./Charts";
 import {
+  basename,
   monitorUrl,
   niceCeil,
   overviewTiles,
@@ -71,7 +75,6 @@ export default function OverviewTab({
 }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
   const [errorsOpen, setErrorsOpen] = useState(false);
   const [copied, setCopied] = useState<"ok" | "failed" | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,6 +85,12 @@ export default function OverviewTab({
     [],
   );
   const record = useRecord(recordApi);
+  // The saved-recording link is for a recording finished during THIS page
+  // session; one already on disk at mount is not advertised.
+  const [recordedHere, setRecordedHere] = useState(false);
+  useEffect(() => {
+    if (record.recording) setRecordedHere(true);
+  }, [record.recording]);
 
   usePolled(
     async () => {
@@ -181,6 +190,7 @@ export default function OverviewTab({
         { v: 3, label: "3" },
         { v: 6, label: "6 limit" },
       ] as Tick[],
+      step: true,
     },
     {
       key: "server",
@@ -204,6 +214,16 @@ export default function OverviewTab({
     },
   ];
 
+  const okSummary = cards
+    .flatMap((c) => {
+      if (c.figure === "–" || !c.figure) return [];
+      if (c.key === "requests") return [`${c.figure} requests`];
+      if (c.key === "server") return [c.figure];
+      if (c.key === "cpu") return [`CPU ${c.figure}`];
+      return [];
+    })
+    .join(" · ");
+
   const errorsInTop = tiles.some((t) => t.key === "errors");
   const errorsPanel = errorsOpen && (
     <section className="monitor-list-card monitor-errors-panel" aria-label="Recent errors">
@@ -225,7 +245,7 @@ export default function OverviewTab({
         >
           <span className="monitor-tile-title">
             <span className="monitor-tile-dot" aria-hidden="true" />
-            {t.title}
+            <span className="monitor-tile-title-text">{t.title}</span>
           </span>
           <span className="monitor-tile-value">{t.primary}</span>
           <span className="monitor-tile-base">{t.caption || " "}</span>
@@ -234,10 +254,17 @@ export default function OverviewTab({
     }
     const link = monitorUrl({ tab: t.tab as Tab });
     return (
-      <a key={t.key} className={`monitor-tile is-${t.level}`} data-tile={t.key} href={link} onClick={go(link)}>
+      <a
+        key={t.key}
+        className={`monitor-tile is-${t.level}`}
+        data-tile={t.key}
+        title={t.hint}
+        href={link}
+        onClick={go(link)}
+      >
         <span className="monitor-tile-title">
           <span className="monitor-tile-dot" aria-hidden="true" />
-          {t.title}
+          <span className="monitor-tile-title-text">{t.title}</span>
         </span>
         <span className="monitor-tile-value">{t.primary}</span>
         <span className="monitor-tile-base">{t.caption || " "}</span>
@@ -249,6 +276,20 @@ export default function OverviewTab({
     <div className="monitor-tab monitor-tab-scroll monitor-overview">
       {error && <p className="monitor-denied">Can't read the dashboard: {error}</p>}
 
+      {v && v.level === "ok" && (
+        <ul className="monitor-reasons" aria-label="Verdict">
+          <li className="is-ok">
+            <span className="monitor-reason-dot" aria-hidden="true" />
+            <span className="monitor-verdict-ok">All good</span>
+            {okSummary && (
+              <>
+                <span className="monitor-verdict-summary" aria-hidden="true">·</span>
+                <span className="monitor-verdict-summary">{okSummary}</span>
+              </>
+            )}
+          </li>
+        </ul>
+      )}
       {reasons.length > 0 && (
         <ul className="monitor-reasons" aria-label="What looks wrong">
           {reasons.map((r) => (
@@ -283,7 +324,7 @@ export default function OverviewTab({
           >
             {copied === "ok" ? "Copied" : copied === "failed" ? "Copy failed" : "Copy report"}
           </button>
-          {!record.recording && record.latest && record.dir && (
+          {recordedHere && !record.recording && record.latest && record.dir && (
             <a className="monitor-recording-link" {...spaLinkProps(`${record.dir}/${record.latest.name}`)}>
               Saved: {record.latest.name}
             </a>
@@ -317,70 +358,84 @@ export default function OverviewTab({
                 ticks={c.ticks}
                 windowS={windowS}
                 label={`${c.title}, ${title}`}
+                step={c.step}
               />
             </a>
           );
         })}
       </div>
 
-      <button type="button" className="monitor-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
-        {showAll ? "Hide checks" : `Show all checks (${hiddenTiles.length})`}
-      </button>
-
-      {showAll && (
-        <>
-          {hiddenTiles.length > 0 && <div className="monitor-tiles">{hiddenTiles.map(renderTile)}</div>}
-          {!errorsInTop && errorsPanel}
-          <div className="monitor-lists">
-            <section className="monitor-list-card">
-              <h2 className="monitor-sec-title">Errors and outages</h2>
-              {errors ? (
-                <ErrorsList errors={errors} />
-              ) : (
-                <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
-              )}
-            </section>
-
-            <section className="monitor-list-card">
-              <h2 className="monitor-sec-title">Stalled jobs</h2>
-              {jobs ? (
-                <ul className="monitor-list">
-                  {jobs.stalled_list.map((j, i) => (
-                    <li key={j.id ?? i}>{j.title ?? j.id ?? "job"}</li>
-                  ))}
-                  {!jobs.stalled_list.length && <li className="monitor-list-empty">None.</li>}
-                </ul>
-              ) : (
-                <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
-              )}
-            </section>
-
-            <section className="monitor-list-card">
-              <h2 className="monitor-sec-title">Slowest .py targets (overhead)</h2>
-              {calls ? (
-                <ul className="monitor-list">
-                  {calls.top_overhead.map((c) => (
-                    <li key={c.entrypoint} title={c.entrypoint}>
-                      <span className="monitor-list-mono">{c.entrypoint}</span>
-                      <span className="monitor-list-num">
-                        {ms(c.overhead_p95_ms)} over a {ms(c.run_p95_ms)} run
-                      </span>
-                    </li>
-                  ))}
-                  {!calls.top_overhead.length && <li className="monitor-list-empty">No calls in the last 10 min.</li>}
-                </ul>
-              ) : (
-                <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
-              )}
-            </section>
-          </div>
-          {data && sectionOk(data.disk) && data.disk.log_home != null && (
-            <p className="monitor-net-note">
-              Disk use: logs {formatBytes(data.disk.log_home, true)} · calls {formatBytes(data.disk.call_store, true)} ·
-              index {formatBytes(data.disk.index_db, true)}
-            </p>
+      {hiddenTiles.length > 0 && <div className="monitor-tiles">{hiddenTiles.map(renderTile)}</div>}
+      {!errorsInTop && errorsPanel}
+      <div className="monitor-lists">
+        <section className="monitor-list-card">
+          <h2 className="monitor-sec-title">Stalled jobs</h2>
+          {jobs ? (
+            <ul className="monitor-list">
+              {jobs.stalled_list.map((j, i) => (
+                <li key={j.id ?? i}>{j.title ?? j.id ?? "job"}</li>
+              ))}
+              {!jobs.stalled_list.length && <li className="monitor-list-empty">None.</li>}
+            </ul>
+          ) : (
+            <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
           )}
-        </>
+        </section>
+
+        <section className="monitor-list-card">
+          <h2 className="monitor-sec-title">Slowest .py targets (overhead)</h2>
+          {calls ? (
+            <ul className="monitor-list">
+              {calls.top_overhead.map((c) => (
+                <li key={c.entrypoint} className="monitor-list-target" title={c.entrypoint}>
+                  <span className="monitor-list-mono monitor-list-text">{basename(c.entrypoint)}</span>
+                  <span className="monitor-list-num">
+                    {ms(c.overhead_p95_ms)} / {ms(c.run_p95_ms)} run
+                  </span>
+                </li>
+              ))}
+              {!calls.top_overhead.length && <li className="monitor-list-empty">No calls in the last 10 min.</li>}
+            </ul>
+          ) : (
+            <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
+          )}
+        </section>
+
+        <section className="monitor-list-card">
+          <h2 className="monitor-sec-title">Recordings</h2>
+          {record.status ? (
+            <ul className="monitor-list">
+              {(record.status.recordings ?? []).slice(0, 5).map((r) => (
+                <li key={r.name} className="monitor-list-target">
+                  {record.dir ? (
+                    <a className="monitor-list-mono monitor-list-text" {...spaLinkProps(`${record.dir}/${r.name}`)}>
+                      {r.name}
+                    </a>
+                  ) : (
+                    <span className="monitor-list-mono monitor-list-text">{r.name}</span>
+                  )}
+                  <span className="monitor-list-num">{formatBytes(r.bytes, true)}</span>
+                </li>
+              ))}
+              {!(record.status.recordings ?? []).length && (
+                <li className="monitor-list-empty">None yet. Record 60s saves one here.</li>
+              )}
+            </ul>
+          ) : (
+            <p className="monitor-net-note">Reading…</p>
+          )}
+          {record.dir && (
+            <a className="monitor-net-note monitor-recordings-folder" {...spaLinkProps(record.dir)} title={record.dir}>
+              Open folder
+            </a>
+          )}
+        </section>
+      </div>
+      {data && sectionOk(data.disk) && data.disk.log_home != null && (
+        <p className="monitor-net-note">
+          Disk use: logs {formatBytes(data.disk.log_home, true)} · calls {formatBytes(data.disk.call_store, true)} ·
+          index {formatBytes(data.disk.index_db, true)}
+        </p>
       )}
     </div>
   );

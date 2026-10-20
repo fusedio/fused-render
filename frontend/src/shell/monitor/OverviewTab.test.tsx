@@ -88,15 +88,39 @@ test("no banner box; a non-ok verdict lists its reasons as plain links that navi
   expect(seen).toEqual([]);
 });
 
-test("an ok verdict renders nothing, and Record/Copy sit on the window heading's row", async () => {
+test("an ok verdict is still a headline row: All good plus the headline figures; Record/Copy sit on the window heading's row", async () => {
   const dash = { ...DASH, verdict: { level: "ok", headline: "Nothing looks wrong", reasons: [] } } as unknown as Dashboard;
   const r = await mount(() => {}, { load: async () => dash });
-  expect(byClass(r, "monitor-reasons")).toHaveLength(0);
-  expect(text(r.root)).not.toContain("Nothing looks wrong");
+  const list = byClass(r, "monitor-reasons")[0];
+  const items = list.findAll((n) => n.type === "li");
+  expect(items).toHaveLength(1);
+  expect(items[0].props.className).toContain("is-ok");
+  expect(text(items[0])).toStartWith("All good");
+  expect(text(items[0])).toContain("4/s requests");
+  expect(text(items[0])).toContain("4 ms lag");
+  expect(text(items[0])).toContain("CPU 20%");
+  expect(items[0].findAll((n) => n.type === "a")).toHaveLength(0);
   const row = byClass(r, "monitor-overview-window")[0];
   expect(text(row)).toContain("Last 1 min");
   expect(text(row)).toContain("Record 60s");
   expect(text(row)).toContain("Copy report");
+});
+
+test("an ok verdict drops a headline figure that is unavailable (no bare CPU dash)", async () => {
+  const dash = {
+    ...DASH,
+    verdict: { level: "ok", headline: "Nothing looks wrong", reasons: [] },
+    cpu: { error: "boom" },
+    timeline: {
+      events: [],
+      points: [1, 2, 3].map((i) => ({ t: 990 + i, rps: i, in_flight: i, pool: 1, lag_ms: 1, cpu: null, swap: GB })),
+    },
+  } as unknown as Dashboard;
+  const r = await mount(() => {}, { load: async () => dash });
+  const li = byClass(r, "monitor-reasons")[0].findAll((n) => n.type === "li")[0];
+  expect(text(li)).toContain("requests");
+  expect(text(li)).not.toContain("CPU");
+  expect(text(li)).not.toContain("–");
 });
 
 test("the errors tile toggles an inline panel of recent errors", async () => {
@@ -148,13 +172,12 @@ test("errors panel: hangs, crashes and crash links shown, restarts only counted"
 test("errors panel is empty-stated when nothing is wrong", async () => {
   const dash = { ...DASH, errors: { ...DASH.errors, server_log_errors: [] } } as unknown as Dashboard;
   const r = await mount(() => {}, { load: async () => dash });
-  await act(async () => btnOf(r, "Show all checks").props.onClick());
   const tile = r.root.find((n) => n.type === "button" && n.props["data-tile"] === "errors");
   await act(async () => tile.props.onClick());
   expect(text(byClass(r, "monitor-errors-panel")[0])).toContain("Nothing to report");
 });
 
-test("four chart cards with figures; alerting tiles sit above them; the rest behind Show all checks", async () => {
+test("four chart cards with figures; alerting tiles sit above them; the rest always render below, no toggle", async () => {
   const r = await mount();
   const cards = byClass(r, "monitor-overview-card");
   expect(cards.map((c) => c.props["data-card"])).toEqual(["requests", "queue", "server", "cpu"]);
@@ -175,17 +198,16 @@ test("four chart cards with figures; alerting tiles sit above them; the rest beh
   expect(cards.every((c) => c.findAll((n) => n.props.className === "monitor-chart").length === 1)).toBe(true);
   // The fixture's claude, jobs and errors tiles are warn: the borderless stat row.
   const keys = () => byClass(r, "monitor-tile").map((t) => t.props["data-tile"]);
-  expect(keys()).toEqual(["claude", "jobs", "errors"]);
-  expect(byClass(r, "monitor-lists")).toHaveLength(0);
-  expect(text(r.root)).not.toContain("Stuck export");
-  await act(async () => btnOf(r, "Show all checks (4)").props.onClick());
+  expect(keys().slice(0, 3)).toEqual(["claude", "jobs", "errors"]);
   expect(keys()).toHaveLength(7);
+  expect(byClass(r, "monitor-lists")).toHaveLength(1);
+  expect(text(r.root)).toContain("Stuck export");
+  expect(text(r.root)).toContain("Slowest .py targets");
+  expect(r.root.findAll((n) => n.type === "button" && /Show all checks|Hide checks/.test(text(n)))).toHaveLength(0);
   const tiles = byClass(r, "monitor-tile");
   const disk = tiles.find((t) => t.props["data-tile"] === "disk")!;
   expect(disk.props.className).toContain("is-unavailable");
   expect(text(disk)).toContain("unavailable");
-  await act(async () => btnOf(r, "Hide checks").props.onClick());
-  expect(keys()).toHaveLength(3);
 });
 
 test("a warn/bad card is tinted and a plain click on it navigates", async () => {
@@ -202,20 +224,33 @@ test("a warn/bad card is tinted and a plain click on it navigates", async () => 
   expect(seen).toEqual([]);
 });
 
-test("a warn/bad tile outside the headline cards shows without expanding", async () => {
+test("a warn/bad tile outside the headline cards shows in the top row", async () => {
   const r = await mount(() => {}, {
     load: async () => ({ ...DASH, index: { waiting: 2, abandoned: 0, scans: { running: 0, limit: 2 } } }) as Dashboard,
   });
-  expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual(["claude", "index", "jobs", "errors"]);
-  expect(btnOf(r, "Show all checks")).toBeTruthy();
+  expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual(["claude", "index", "jobs", "errors", "calls", "ai", "disk"]);
 });
 
-test("lists fill once expanded", async () => {
+test("lists render without expanding", async () => {
   const r = await mount();
-  await act(async () => btnOf(r, "Show all checks").props.onClick());
   expect(text(r.root)).toContain("Stuck export");
-  expect(text(r.root)).toContain("/x/slow.py");
-  expect(text(r.root)).toContain("bad thing");
+  // one Errors list: the tile toggles the inline panel, the lists grid has no duplicate
+  const lists = byClass(r, "monitor-lists")[0];
+  expect(text(lists)).not.toContain("Errors and outages");
+  expect(lists.findAll((n) => n.props.className === "monitor-list-card")).toHaveLength(3);
+  // slowest targets: basename shown, full path in the title, short timing text
+  const li = lists.find((n) => n.type === "li" && n.props.title === "/x/slow.py");
+  expect(text(li)).toContain("slow.py");
+  expect(text(li)).not.toContain("/x/");
+  expect(text(li)).toContain("800 ms / 50 ms run");
+});
+
+test("the Python calls tile shows the basename with the full path as its title", async () => {
+  const r = await mount();
+  const tile = byClass(r, "monitor-tile").find((t) => t.props["data-tile"] === "calls")!;
+  expect(tile.props.title).toBe("/x/slow.py");
+  expect(text(tile)).toContain("slow.py: 800 ms overhead");
+  expect(text(tile)).not.toContain("/x/");
 });
 
 test("collapseRuns merges identical consecutive labels", () => {
@@ -226,17 +261,67 @@ test("collapseRuns merges identical consecutive labels", () => {
   ]);
 });
 
-test("Record 60s counts down, Copy report copies the dashboard JSON, the saved file is linked", async () => {
+test("a recording already on disk is not advertised on mount", async () => {
+  const r = await mount();
+  expect(text(r.root)).not.toContain("Saved:");
+  expect(byClass(r, "monitor-recording-link")).toHaveLength(0);
+});
+
+test("Record 60s counts down, Copy report copies the dashboard JSON, the recording this session made is linked", async () => {
   let copied = "";
-  const r = await mount(() => {}, { copy: (t: string) => void (copied = t) });
+  let running = false;
+  const recordApi = {
+    start: async () => {
+      running = true;
+      return { recording: true, seconds_left: 60, recordings: [] };
+    },
+    status: async () =>
+      running
+        ? { recording: false, seconds_left: 0, dir: "/logs/perf-recordings", recordings: [{ name: "b.json", bytes: 1 }] }
+        : { recording: false, seconds_left: 0, dir: "/logs/perf-recordings", recordings: [{ name: "a.json", bytes: 1 }] },
+  };
+  const r = await mount(() => {}, { copy: (t: string) => void (copied = t), recordApi });
   const btn = (label: string) => r.root.find((n) => n.type === "button" && text(n).startsWith(label));
-  expect(text(r.root)).toContain("Saved: a.json");
-  const link = r.root.find((n) => n.props.className === "monitor-recording-link");
-  expect(link.props.href).toContain("perf-recordings");
   await act(async () => btn("Record 60s").props.onClick());
   expect(text(btn("Recording")).includes("60s")).toBe(true);
+  await act(async () => {
+    await new Promise((res) => setTimeout(res, 1200));
+  });
+  expect(text(r.root)).toContain("Saved: b.json");
+  const link = r.root.find((n) => n.props.className === "monitor-recording-link");
+  expect(link.props.href).toContain("perf-recordings");
   await act(async () => btn("Copy report").props.onClick());
   expect(JSON.parse(copied).verdict.level).toBe("bad");
+});
+
+const recApi = (recordings: { name: string; bytes: number }[]) => ({
+  start: async () => ({ recording: true, seconds_left: 60, recordings: [] }),
+  status: async () => ({ recording: false, seconds_left: 0, dir: "/logs/perf-recordings", recordings }),
+});
+
+test("Recordings card lists saved recordings as links with no click needed", async () => {
+  const r = await mount(() => {}, { recordApi: recApi([{ name: "a.json", bytes: 1 }, { name: "b.json", bytes: 2 }]) });
+  const card = r.root.find((n) => n.type === "section" && text(n).startsWith("Recordings"));
+  const hrefs = card.findAll((n) => n.type === "a").map((n) => String(n.props.href));
+  expect(text(card)).toContain("a.json");
+  expect(text(card)).toContain("b.json");
+  expect(hrefs.some((h) => h.includes("/logs/perf-recordings/a.json"))).toBe(true);
+  expect(hrefs.some((h) => h.includes("/logs/perf-recordings/b.json"))).toBe(true);
+});
+
+test("Recordings card says None yet when there are none", async () => {
+  const r = await mount(() => {}, { recordApi: recApi([]) });
+  const card = r.root.find((n) => n.type === "section" && text(n).startsWith("Recordings"));
+  expect(text(card)).toContain("None yet.");
+});
+
+test("Recordings card shows only the newest 5 of 7", async () => {
+  const many = Array.from({ length: 7 }, (_, i) => ({ name: `r${i}.json`, bytes: i }));
+  const r = await mount(() => {}, { recordApi: recApi(many) });
+  const card = r.root.find((n) => n.type === "section" && text(n).startsWith("Recordings"));
+  expect(card.findAll((n) => n.type === "li")).toHaveLength(5);
+  expect(text(card)).toContain("r4.json");
+  expect(text(card)).not.toContain("r5.json");
 });
 
 test("Copy report says 'Copy failed' when the clipboard write rejects", async () => {

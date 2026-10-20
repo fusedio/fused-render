@@ -5,6 +5,7 @@ import type { Dashboard, NetRow } from "@shell/monitor/monitor-api";
 import { netRequestsUrl } from "@shell/monitor/monitor-api";
 import {
   appendRows,
+  basename,
   claudeLine,
   monitorUrl,
   overviewTiles,
@@ -199,4 +200,18 @@ test("paramsFromLink reads a verdict reason's deep link", () => {
   });
   expect(paramsFromLink("/monitor?tab=processes&pid=7").pid).toBe(7);
   expect(paramsFromLink("/monitor").tab).toBe("overview");
+});
+
+test("basename keeps the last path segment", () => {
+  expect(basename("/a/b/slow.py")).toBe("slow.py");
+  expect(basename("C:\\a\\slow.py")).toBe("slow.py");
+  expect(basename("slow.py")).toBe("slow.py");
+  expect(basename("/a/b/")).toBe("b");
+});
+
+test("the Python calls tile shows the basename and keeps the full path as a hint", () => {
+  const d = dash({ calls: { window_s: 600, top_overhead: [{ entrypoint: "/x/y/slow.py", count: 1, run_p95_ms: 5, overhead_p50_ms: 1, overhead_p95_ms: 80 }] } });
+  const t = overviewTiles(d).find((x) => x.key === "calls");
+  expect(t?.primary).toBe("slow.py: 80 ms overhead");
+  expect(t?.hint).toBe("/x/y/slow.py");
 });
