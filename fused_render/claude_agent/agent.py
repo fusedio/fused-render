@@ -4353,31 +4353,71 @@ def _turn_state(run_dir: str) -> tuple:
     and "a turn is open" stopped being the same fact the day the host shipped.
     A caller that still wants the raw process check has `_alive`.
     """
-    try:
-        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
-                  errors="replace") as fh:
-            lines = fh.read().splitlines()
-    except FileNotFoundError:
-        lines = []
+    return _turn_state_fold(run_dir, {}, partial=True)
 
-    idle = False
-    tasks = {}
-    for line in lines:
+
+def _turn_state_row(row: dict, state: dict) -> None:
+    """Fold one parsed `out.jsonl` row into `state` (`{"idle": bool, "tasks":
+    dict}`, mutated in place) — the per-row rules `_turn_state` documents."""
+    if row.get("parent_tool_use_id"):
+        return  # a subagent's own row, not the main turn's (see _poll)
+    t = row.get("type")
+    if t == "system" and row.get("subtype") == "background_tasks_changed":
+        arr = row.get("tasks")
+        if isinstance(arr, list):
+            state["tasks"] = {str(x.get("task_id")): True
+                              for x in arr if isinstance(x, dict) and x.get("task_id")}
+    if _not_a_turn_row(row):
+        return
+    state["idle"] = t == "result"
+
+
+def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple:
+    """`_turn_state`, resumable: `cursor` (`{"offset", "idle", "tasks"}`, a dict
+    the caller owns and this mutates) remembers how far into `out.jsonl` the
+    fold has read, so each call parses only the bytes appended since the last
+    one. The session host calls `_turn_state` every 0.2s whenever the file
+    grew; re-reading and re-parsing a multi-megabyte transcript each time put
+    ~50 MB of garbage into a process that should cost ~65.
+
+    Only newline-terminated lines are consumed (the offset moves past each), so
+    a row still being written is picked up whole on a later call, exactly as if
+    it had not arrived yet. `partial=True` additionally parses a trailing
+    unterminated line WITHOUT consuming it — what the one-shot `_turn_state`
+    has always done. A file shorter than the offset was replaced or truncated:
+    the cursor resets and the fold restarts at byte 0."""
+    cursor.setdefault("offset", 0)
+    cursor.setdefault("idle", False)
+    cursor.setdefault("tasks", {})
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            if os.fstat(fh.fileno()).st_size < cursor["offset"]:
+                cursor.update(offset=0, idle=False, tasks={})
+            fh.seek(cursor["offset"])
+            trailing = b""
+            for raw in fh:
+                if not raw.endswith(b"\n"):
+                    trailing = raw
+                    break
+                cursor["offset"] += len(raw)
+                try:
+                    row = json.loads(raw.decode("utf-8", errors="replace"))
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    _turn_state_row(row, cursor)
+    except FileNotFoundError:
+        trailing = b""
+    idle, tasks = cursor["idle"], cursor["tasks"]
+    if partial and trailing.strip():
         try:
-            row = json.loads(line)
+            row = json.loads(trailing.decode("utf-8", errors="replace"))
         except ValueError:
-            continue  # half-written last line; next read gets it
-        if row.get("parent_tool_use_id"):
-            continue  # a subagent's own row, not the main turn's (see _poll)
-        t = row.get("type")
-        if t == "system" and row.get("subtype") == "background_tasks_changed":
-            arr = row.get("tasks")
-            if isinstance(arr, list):
-                tasks = {str(x.get("task_id")): True
-                         for x in arr if isinstance(x, dict) and x.get("task_id")}
-        if _not_a_turn_row(row):
-            continue
-        idle = t == "result"
+            row = None
+        if isinstance(row, dict):
+            scratch = {"idle": idle, "tasks": tasks}
+            _turn_state_row(row, scratch)
+            idle, tasks = scratch["idle"], scratch["tasks"]
     return not idle, bool(tasks)
 
 
