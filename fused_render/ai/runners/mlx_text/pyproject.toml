@@ -52,6 +52,8 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "mlx-vlm>=0.7.9,<0.8",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
     "jinja2",
     "huggingface_hub",
     "psutil",
