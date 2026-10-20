@@ -238,7 +238,7 @@ async function readViewTabs(): Promise<TaskView[]> {
   const stored = (await getPrefsShared()).tasks_view_tabs;
   if (legacy === null) return parseViewTabs(stored);
   if (!stored?.length && !viewTabsEditedHere) {
-    // The old row shows at once (the other D1384 importers apply the local
+    // The old row shows at once (the other D1386 importers apply the local
     // value first too); the push is not awaited, so a failed PUT cannot cost
     // this visit its tabs — the key stays and the next visit re-decides.
     const tabs = parseViewTabs(legacy);

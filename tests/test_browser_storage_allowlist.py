@@ -52,6 +52,7 @@ ALLOWED = {
     "shell/TerminalDrawer.tsx": "cache",            # pty ids re-checked against GET /api/terminal
     "shell/UpdateCard.tsx": "tab",
     "shell/notifications-seen-store.ts": "import",
+    "shell/settings/claude.tsx": "display",         # accordion open/order habits (Akshil 2026-10-20)
     "shell/task-peek-store.ts": "display",          # peek width + per-tab autocollapse marker
     "shell/tasksPulse.ts": "signal",                # chat-activity listener (+ seen import)
     # ---- apps -------------------------------------------------------------
