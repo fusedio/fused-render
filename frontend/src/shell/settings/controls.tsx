@@ -32,6 +32,7 @@ import {
   ShareSheetControl,
   TaskRecapsControl,
   TaskSummaryTitlesControl,
+  ClaudeStrictMcpControl,
 } from "./toggles";
 import {
   IndexingControl,
@@ -55,6 +56,7 @@ import {
   CallLogControl,
   CallParamsControl,
   CallRetentionControl,
+  ClaudeMaxSessionsControl,
   DiagnosticsControl,
   IndexQueryControl,
 } from "./advanced";
@@ -81,6 +83,8 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,
   "task-summary-titles": TaskSummaryTitlesControl,
+  "claude-strict-mcp": ClaudeStrictMcpControl,
+  "claude-max-sessions": ClaudeMaxSessionsControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
   "share-sheet": ShareSheetControl,

@@ -1572,6 +1572,26 @@ def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, mon
     assert prefs_mod.task_summary_titles_enabled() is False
 
 
+def test_claude_strict_mcp_defaults_on_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Lean sessions are the default: only a stored `false` turns them off."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["claude_strict_mcp"] == {"enabled": True}
+    assert prefs_mod.claude_strict_mcp_enabled() is True
+    body = client.put("/api/prefs", json={"claude_strict_mcp_enabled": False},
+                      headers=FUSED).json()
+    assert body["claude_strict_mcp"]["enabled"] is False
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["claude_strict_mcp_enabled"] is False
+    assert prefs_mod.claude_strict_mcp_enabled() is False
+    bad = client.put("/api/prefs", json={"claude_strict_mcp_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "claude_strict_mcp_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}),
+                                     encoding="utf-8")
+    assert prefs_mod.claude_strict_mcp_enabled() is True
+
+
 def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert (

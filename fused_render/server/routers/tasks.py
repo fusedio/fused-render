@@ -144,6 +144,7 @@ from fused_render import (
     project_queue,
     queue_manager,
     schedule,
+    session_cap,
     session_liveness,
     skill_plugin,
     tasks_index,
@@ -1983,18 +1984,42 @@ def _queue_lines(tasks: dict[str, dict], now: float,
     they stay in the signature because every caller already holds them and the
     flag-off road (which answers `{}` above) is untouched until PR 3.
     """
-    if not project_queue.enabled():
-        return {}
-    # `peek`, NEVER `get`: a listing must not be the thing that builds the
-    # manager. The build reconciles, and reconciling pumps — so the first GET in
-    # a fresh process would claim the head of every line and rekey the very rows
-    # it was asked to draw. Nothing has queued anything yet in that process, and
-    # `{}` is the true answer (see `queue_manager.peek`).
-    manager = queue_manager.peek()
-    if manager is None:
-        return {}
-    return {task_key: _queue_row(place)
-            for task_key, place in manager.positions().items()}
+    lines: dict[str, dict] = {}
+    if project_queue.enabled():
+        # `peek`, NEVER `get`: a listing must not be the thing that builds the
+        # manager. The build reconciles, and reconciling pumps — so the first GET
+        # in a fresh process would claim the head of every line and rekey the very
+        # rows it was asked to draw. Nothing has queued anything yet in that
+        # process, and `{}` is the true answer (see `queue_manager.peek`).
+        manager = queue_manager.peek()
+        if manager is not None:
+            lines = {task_key: _queue_row(place)
+                     for task_key, place in manager.positions().items()}
+    return _with_cap_waiters(lines, by_id)
+
+
+def _with_cap_waiters(lines: dict[str, dict], by_id: dict | None) -> dict[str, dict]:
+    """Add the tasks the session cap (`session_cap`) is holding back, filed
+    behind each other by due time, in the same shape the manager's rows have.
+    Independent of the project-queue flag; a key already in `lines` keeps the
+    manager's answer. Costs one directory scan, and only when a cap is set."""
+    if not by_id or session_cap.cap() <= 0:
+        return lines
+    from datetime import datetime, timezone
+
+    waiting = session_cap.waiting(list(by_id.values()),
+                                  datetime.now(timezone.utc))
+    ahead = ""
+    out = dict(lines)
+    position = 0
+    for key in waiting:
+        if key in lines:
+            continue
+        position += 1
+        out[key] = _queue_row({"key": key, "position": position,
+                               "ahead_key": ahead, "ahead_names": [ahead] if ahead else []})
+        ahead = key
+    return out
 
 
 def _queue_row(place: dict) -> dict:

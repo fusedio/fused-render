@@ -366,6 +366,22 @@ const ENTRIES = [
     keywords: "summary title name fixed stable rename",
   },
   {
+    id: "claude-strict-mcp",
+    group: "tasks",
+    section: "Running",
+    label: "Lean Claude sessions",
+    description: "Chat and tasks start without the MCP servers from your global Claude config and your claude.ai connectors, so many sessions can run at once (about 200 MB less each). MCP servers from your enabled plugins still load. Scheduled runs, canvas agents and App Doctor are always lean.",
+    keywords: "mcp memory connectors strict lean",
+  },
+  {
+    id: "claude-max-sessions",
+    group: "tasks",
+    section: "Running",
+    label: "Concurrent Claude sessions",
+    description: "Tasks past this many running Claude sessions wait in the queue. Chat you start yourself is never held.",
+    keywords: "concurrent sessions limit cap memory queue parallel",
+  },
+  {
     id: "notify-terminal",
     group: "tasks",
     section: "Notifications",

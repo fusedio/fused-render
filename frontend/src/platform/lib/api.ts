@@ -1488,6 +1488,12 @@ export interface Prefs {
   // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
+  // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
+  // default). Optional: absent (older server) reads as on.
+  claude_strict_mcp?: { enabled: boolean };
+  // Concurrent Claude session cap (`claude_max_concurrent_sessions`; default
+  // 10, 0 = unlimited). Optional: absent (older server) reads as 10.
+  claude_sessions?: { max_concurrent: number };
   /** Page-wide Bots switches (shell/prefs.py `bots_autostage`, `bots_sounds`,
    *  `bots_clear_enabled`). Server-side since 2026-10-18 (D1386): they used to
    *  be per-browser localStorage flags, which the desktop app's port walk
@@ -1870,6 +1876,14 @@ export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskSummaryTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_summary_titles_enabled: enabled });
+}
+
+export function putClaudeStrictMcpEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { claude_strict_mcp_enabled: enabled });
+}
+
+export function putClaudeMaxConcurrentSessions(max: number): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { claude_max_concurrent_sessions: max });
 }
 
 export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {

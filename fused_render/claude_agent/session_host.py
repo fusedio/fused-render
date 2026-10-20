@@ -127,7 +127,7 @@ def _turn_state_if_grown(agent, run_dir: str, cache: dict) -> tuple:
     single byte since the previous tick. The turn/task state cannot have
     changed if no new bytes landed, so a cheap `os.path.getsize` stands in
     for the real read on every tick that would have been wasted work; `cache`
-    (a plain dict the caller owns, `{"size": ..., "state": ...}`) is mutated
+    (a plain dict the caller owns, `{"size": ..., "state": ..., "cursor": ...}`) is mutated
     in place so this needs no state of its own between calls."""
     try:
         size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
@@ -135,7 +135,13 @@ def _turn_state_if_grown(agent, run_dir: str, cache: dict) -> tuple:
         size = 0
     if size != cache.get("size") or "state" not in cache:
         cache["size"] = size
-        cache["state"] = agent._turn_state(run_dir)
+        fold = getattr(agent, "_turn_state_fold", None)
+        if fold is None:
+            cache["state"] = agent._turn_state(run_dir)
+        else:
+            # Resume from where the last call stopped instead of re-reading the
+            # whole transcript; `cursor` lives in `cache` beside size/state.
+            cache["state"] = fold(run_dir, cache.setdefault("cursor", {}))
     return cache["state"]
 
 
@@ -328,7 +334,8 @@ def main() -> None:
         # started by an older one (a run adopted across an upgrade) simply has
         # no minted id — which is the pre-`--session-id` behaviour, not an
         # error.
-        req.get("new_session_id", ""), req.get("resume_at", ""))
+        req.get("new_session_id", ""), req.get("resume_at", ""),
+        strict_mcp=bool(req.get("strict_mcp", False)))
     # The session this run's turn is IN: a fork resumes the old id but runs in
     # the NEW one, so there the minted id wins.
     own_sid = (req.get("new_session_id", "") if req.get("resume_at")
