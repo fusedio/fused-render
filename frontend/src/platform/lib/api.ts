@@ -1494,6 +1494,9 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
+  // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
+  // shell/prefs.py; off by default). Optional: absent reads as off.
+  task_summary_titles?: { enabled: boolean };
   /** Whether a task on the Tasks page opens in a side panel beside the list
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
    *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
@@ -1862,6 +1865,10 @@ export function putTaskNotifyTerminalSessionsEnabled(enabled: boolean): Promise<
 
 export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { project_queue_enabled: enabled });
+}
+
+export function putTaskSummaryTitlesEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_summary_titles_enabled: enabled });
 }
 
 export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
@@ -3694,6 +3701,9 @@ export interface Task {
    *  `task_recap.enabled` is on — the client reads the key's presence as
    *  the flag, so flag-off rows title exactly as before. */
   recap?: { text: string; for_uuid: string } | null;
+  /** "summary" when prefs `task_summary_titles.enabled` is on: the row is
+   *  titled by `title` alone. ABSENT otherwise. */
+  title_mode?: "summary";
   /**
    * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
    * (or absent, on an older server) when there is none.
