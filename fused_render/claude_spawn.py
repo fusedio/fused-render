@@ -123,15 +123,14 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
     thing they can act on instead. Everything else propagates as it did from
     the helper's stderr tail — as an `{"error": ...}` dict, never a raise, so
     a scheduler tick or an apps-API request keeps its own error path."""
-    if session_id and claude_remote.holds(session_id):
-        return {"error": claude_remote.HELD}
     agent = load_agent()
     try:
-        return agent._start(target, prompt, session_id, model, effort,
-                            permission_mode=permission_mode,
-                            extra_read_dirs=list(extra_read_dirs or []) or None,
-                            backend=backend or "", bot=bot or "",
-                            **({"isolate_mcp": True} if isolate_mcp else {}))
+        return claude_remote.admit([session_id], agent._start, target, prompt,
+                                   session_id, model, effort,
+                                   permission_mode=permission_mode,
+                                   extra_read_dirs=list(extra_read_dirs or []) or None,
+                                   backend=backend or "", bot=bot or "",
+                                   **({"isolate_mcp": True} if isolate_mcp else {}))
     except FileNotFoundError as exc:
         if "claude CLI not found" in str(exc):
             return {"error":

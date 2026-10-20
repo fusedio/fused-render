@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import re
 import sys
@@ -25,9 +27,51 @@ _TAIL_LINES = 12
 BUSY = ("Claude is still working in this chat. Wait for the turn to finish "
         "or stop it, then turn on Remote Control.")
 HELD = "Remote Control is driving this chat. Stop it to type here."
+STILL_EXITING = ("The chat's previous Claude process is still shutting down. "
+                 "Try Remote Control again in a moment.")
 
 _lock = threading.RLock()
 _held: dict[str, dict] = {}
+_session_locks: dict[str, threading.RLock] = {}
+
+
+def _session_lock(session_id: str) -> threading.RLock:
+    with _lock:
+        return _session_locks.setdefault(session_id, threading.RLock())
+
+
+def run_sessions(run_id: str) -> list:
+    agent = claude_agent.agent_module()
+    runs = getattr(agent, "RUNS", None)
+    bad_id = getattr(agent, "_bad_id", None)
+    own_session = getattr(agent, "_run_own_session", None)
+    if not (run_id and runs and bad_id and own_session) or bad_id(run_id):
+        return []
+    run_dir = os.path.join(runs, run_id)
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(meta, dict):
+        return []
+    found = (own_session(run_dir, meta), str(meta.get("resumed_from") or ""))
+    return sorted({sid for sid in found if sid})
+
+
+def admit_call(main, /, **kwargs):
+    ids = [str(kwargs.get("session_id") or ""), *run_sessions(str(kwargs.get("run_id") or ""))]
+    return admit(ids, main, **kwargs)
+
+
+def admit(session_ids, fn, /, *args, **kwargs):
+    ids = sorted({sid for sid in session_ids if sid})
+    with contextlib.ExitStack() as stack:
+        for sid in ids:
+            stack.enter_context(_session_lock(sid))
+        if any(holds(sid) for sid in ids):
+            return {"error": HELD}
+        return fn(*args, **kwargs)
 
 
 def _env(agent) -> dict:
@@ -65,6 +109,8 @@ def _busy(agent, run_dir: str) -> bool:
 
 
 def _end_idle_host(agent, file: str, session_id: str) -> str:
+    if agent._live_run(file, session_id).get("run_id"):
+        return BUSY
     run_id = agent._live_host(file, session_id).get("run_id") or ""
     if not run_id:
         return ""
@@ -75,7 +121,7 @@ def _end_idle_host(agent, file: str, session_id: str) -> str:
     deadline = time.monotonic() + _HOST_EXIT_WAIT_S
     while agent._host_alive(run_dir) and time.monotonic() < deadline:
         time.sleep(0.05)
-    return ""
+    return STILL_EXITING if agent._host_alive(run_dir) else ""
 
 
 def _watch(rec: dict) -> None:
@@ -103,7 +149,7 @@ def _watch(rec: dict) -> None:
 
 def holds(session_id: str) -> bool:
     rec = _held.get(session_id or "")
-    return rec is not None and (rec["term"] is None or rec["term"].alive)
+    return rec is not None and rec["term"].alive
 
 
 def status(session_id: str) -> dict:
@@ -112,8 +158,6 @@ def status(session_id: str) -> dict:
         if rec is None:
             return {"state": "off"}
         term = rec["term"]
-        if term is None:
-            return {"state": "starting", "url": "", "terminal_id": ""}
         if not term.alive:
             _held.pop(session_id, None)
             return {"state": "ended", "exit_code": term.exit_code,
@@ -145,34 +189,34 @@ def start(file: str, session_id: str, name: str = "") -> dict:
     refused = _login_refusal(binary)
     if refused:
         return {"error": refused}
-    with _lock:
+    with _session_lock(session_id):
         if holds(session_id):
             return status(session_id)
-        rec = {"term": None, "url": "", "trusted": False}
-        _held[session_id] = rec
         try:
             refused = _end_idle_host(agent, file, session_id)
-            if not refused:
-                argv = [binary, *agent._plugin_argv(file), "--resume", session_id,
-                        "--remote-control", *([name] if name else [])]
-                profile = TerminalProfile(shell=binary, argv=argv, env=_env(agent), cwd=workdir)
-                rec["term"] = pty_session.REGISTRY.spawn(profile, rows=_ROWS, cols=_COLS)
+            if refused:
+                return {"error": refused}
+            argv = [binary, *agent._plugin_argv(file), "--resume", session_id,
+                    "--remote-control", *([name] if name else [])]
+            profile = TerminalProfile(shell=binary, argv=argv, env=_env(agent), cwd=workdir)
+            term = pty_session.REGISTRY.spawn(profile, rows=_ROWS, cols=_COLS)
         except (pty_session.SessionLimitError, RuntimeError, OSError) as exc:
-            refused = str(exc)
-        finally:
-            if rec["term"] is None:
-                _held.pop(session_id, None)
-        if refused:
-            return {"error": refused}
+            return {"error": str(exc)}
+        rec = {"term": term, "url": "", "trusted": False}
+        with _lock:
+            _held[session_id] = rec
     threading.Thread(target=_watch, args=(rec,), daemon=True,
                      name="claude-remote-watch").start()
     return status(session_id)
 
 
 def stop(session_id: str) -> dict:
-    with _lock:
-        rec = _held.get(session_id or "")
-        if rec is not None and rec["term"] is not None:
+    if not session_id:
+        return {"state": "off"}
+    with _session_lock(session_id):
+        rec = _held.get(session_id)
+        if rec is not None:
             rec["term"].kill()
-        _held.pop(session_id or "", None)
+        with _lock:
+            _held.pop(session_id, None)
     return {"state": "off"}

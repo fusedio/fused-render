@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import time
@@ -55,10 +56,12 @@ def env(monkeypatch, tmp_path):
     reg = pty_session.PtySessionRegistry()
     monkeypatch.setattr(pty_session, "REGISTRY", reg)
     monkeypatch.setattr(claude_remote, "_held", {})
-    state = {"bin": "", "live": {}, "turn": (False, False), "backend": "claude",
-             "killed": []}
+    monkeypatch.setattr(claude_remote, "_session_locks", {})
+    state = {"bin": "", "live": {}, "running": {}, "turn": (False, False),
+             "backend": "claude", "killed": [], "stuck": False}
     agent = types.SimpleNamespace(
-        main=lambda action="", session_id="", file="": {"ok": True},
+        main=lambda action="", session_id="", file="", run_id="": {"ok": True},
+        _start=lambda *a, **k: {"ok": True},
         RUNS=str(tmp_path),
         _bad_id=lambda sid: "/" in sid or ".." in sid,
         _workdir=lambda file: str(tmp_path),
@@ -69,9 +72,11 @@ def env(monkeypatch, tmp_path):
         _spawn_env=lambda *a: dict(os.environ),
         _fused_cli_dir=lambda: "",
         _live_host=lambda file, sid: state["live"],
+        _live_run=lambda file, sid: state["running"],
+        _run_own_session=lambda run_dir, meta: meta.get("session", ""),
         _turn_state=lambda path: state["turn"],
         _kill_tree=lambda run_dir: state["killed"].append(os.path.basename(run_dir)),
-        _host_alive=lambda run_dir: False,
+        _host_alive=lambda run_dir: state["stuck"],
         _inbox_dir=lambda run_dir: os.path.join(run_dir, "inbox"),
     )
     monkeypatch.setattr(claude_agent, "agent_module", lambda: agent)
@@ -108,6 +113,11 @@ def test_start_trust_prompt_url_hold_and_stop(env, tmp_path):
     resp = client.post("/api/claude/agent", headers={"X-Fused": "1"},
                        json={"action": "start", "session_id": SID, "file": env["file"]})
     assert resp.json() == {"error": claude_remote.HELD}
+    (tmp_path / "run9").mkdir()
+    (tmp_path / "run9" / "meta.json").write_text(json.dumps({"session": SID}))
+    resp = client.post("/api/claude/agent", headers={"X-Fused": "1"},
+                       json={"action": "send", "run_id": "run9", "message": "hi"})
+    assert resp.json() == {"error": claude_remote.HELD}
     resp = client.post("/api/claude/remote-control", headers={"X-Fused": "1"},
                        json={"action": "status", "session_id": SID})
     assert resp.json()["url"] == URL
@@ -132,7 +142,8 @@ def test_cli_exit_reports_ended_once(env, tmp_path):
     assert not claude_remote.holds(SID)
 
 
-@pytest.mark.parametrize("case", ["logged_out", "api_key", "copilot", "bad_id", "busy", "inbox"])
+@pytest.mark.parametrize("case", ["logged_out", "api_key", "copilot", "bad_id", "busy",
+                                  "inbox", "starting_run", "host_stuck"])
 def test_refusals_spawn_nothing(env, tmp_path, monkeypatch, case):
     env["bin"] = _cli(tmp_path, OK_CLI)
     sid = SID
@@ -149,15 +160,24 @@ def test_refusals_spawn_nothing(env, tmp_path, monkeypatch, case):
     elif case == "busy":
         env["live"] = {"run_id": "run1"}
         env["turn"] = (True, False)
+    elif case == "starting_run":
+        env["running"] = {"run_id": "run2"}
+    elif case == "host_stuck":
+        env["live"] = {"run_id": "run1"}
+        env["stuck"] = True
+        monkeypatch.setattr(claude_remote, "_HOST_EXIT_WAIT_S", 0.1)
     else:
         env["live"] = {"run_id": "run1"}
         (tmp_path / "run1" / "inbox").mkdir(parents=True)
         (tmp_path / "run1" / "inbox" / "1.json").write_text("{}")
     out = claude_remote.start(env["file"], sid)
     assert set(out) == {"error"} and out["error"]
-    if case in ("busy", "inbox"):
+    if case in ("busy", "inbox", "starting_run"):
         assert out["error"] == claude_remote.BUSY
         assert env["killed"] == []
+    if case == "host_stuck":
+        assert out["error"] == claude_remote.STILL_EXITING
+        assert env["killed"] == ["run1"]
     assert not claude_remote._held
     assert not env["reg"].list()
     assert not os.path.exists(env["bin"] + ".argv")

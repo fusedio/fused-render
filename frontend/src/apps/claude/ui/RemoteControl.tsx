@@ -24,17 +24,17 @@ export const REMOTE_CONTROL_BLOCKED = "Remote Control is driving this chat";
 
 export type RemoteControlView = { state: "off" } | { state: "starting" } | { state: "active"; url: string };
 
+const POLL_MS = { off: 15000, starting: 1000, active: 4000 } as const;
+
 export function useRemoteControl(sessionId: string, file: string) {
   const [view, setView] = useState<RemoteControlView>({ state: "off" });
   const [asking, setAsking] = useState<{ name: string } | null>(null);
-  const live = useRef(sessionId);
-  live.current = sessionId;
+  const gen = useRef(0);
 
-  const apply = useCallback((sid: string, r: RemoteControlReply): boolean => {
-    if (live.current !== sid) return false;
+  const apply = useCallback((r: RemoteControlReply) => {
     if ("error" in r) {
       notify({ title: r.error, tone: "info" });
-      return false;
+      return;
     }
     if (r.state === "ended") {
       const failed = r.exit_code !== 0 && r.exit_code !== null;
@@ -44,53 +44,63 @@ export function useRemoteControl(sessionId: string, file: string) {
         tone: failed ? "error" : "info",
       });
       setView({ state: "off" });
-      return true;
-    }
-    if (r.state === "active") setView({ state: "active", url: r.url });
+    } else if (r.state === "active") setView({ state: "active", url: r.url });
     else if (r.state === "starting") setView({ state: "starting" });
     else setView({ state: "off" });
-    return true;
   }, []);
 
-  useEffect(() => {
-    setView({ state: "off" });
+  const refresh = useCallback(() => {
     if (!sessionId) return;
-    let gone = false;
-    remoteControlStatus(sessionId).then((r) => { if (!gone) apply(sessionId, r); }, () => {});
-    return () => { gone = true; };
+    const g = gen.current;
+    remoteControlStatus(sessionId).then((r) => { if (g === gen.current) apply(r); }, () => {});
   }, [sessionId, apply]);
+
+  useEffect(() => {
+    gen.current += 1;
+    setView({ state: "off" });
+    refresh();
+    return () => { gen.current += 1; };
+  }, [refresh]);
 
   const polling = view.state;
   useEffect(() => {
-    if (!sessionId || polling === "off") return;
-    let gone = false;
-    const tick = pauseWhileHidden(() => {
-      remoteControlStatus(sessionId).then((r) => { if (!gone) apply(sessionId, r); }, () => {});
-    });
-    const id = window.setInterval(tick, polling === "starting" ? 1000 : 4000);
-    return () => { gone = true; window.clearInterval(id); tick.cancel(); };
-  }, [sessionId, polling, apply]);
+    if (!sessionId) return;
+    const tick = pauseWhileHidden(refresh);
+    const id = window.setInterval(tick, POLL_MS[polling]);
+    return () => { window.clearInterval(id); tick.cancel(); };
+  }, [sessionId, polling, refresh]);
+
+  const act = useCallback((call: () => Promise<RemoteControlReply>, failure: string) => {
+    const g = ++gen.current;
+    call().then(
+      (r) => {
+        if (g !== gen.current) return;
+        gen.current += 1;
+        apply(r);
+      },
+      (e: unknown) => {
+        if (g !== gen.current) return;
+        gen.current += 1;
+        notify({ title: e instanceof Error ? e.message : failure, tone: "error" });
+      },
+    );
+  }, [apply]);
 
   const ask = useCallback((name: string) => setAsking({ name }), []);
+  const cancel = useCallback(() => setAsking(null), []);
 
   const start = useCallback(() => {
     const name = asking?.name ?? "";
     setAsking(null);
-    const sid = sessionId;
-    startRemoteControl(file, sid, name || undefined).then(
-      (r) => { apply(sid, r); },
-      (e: unknown) => notify({ title: e instanceof Error ? e.message : "Remote Control did not start", tone: "error" }),
-    );
-  }, [asking, file, sessionId, apply]);
+    act(() => startRemoteControl(file, sessionId, name || undefined), "Remote Control did not start");
+  }, [act, asking, file, sessionId]);
 
-  const stop = useCallback(() => {
-    const sid = sessionId;
-    stopRemoteControl(sid).then(() => {}, () => {}).finally(() => {
-      if (live.current === sid) setView({ state: "off" });
-    });
-  }, [sessionId]);
+  const stop = useCallback(
+    () => act(() => stopRemoteControl(sessionId), "Remote Control did not stop"),
+    [act, sessionId],
+  );
 
-  return { view, asking: asking !== null, ask, start, cancel: () => setAsking(null), stop };
+  return { view, asking: asking !== null, ask, start, cancel, stop };
 }
 
 export function RemoteControlConfirm({ open, onGo, onCancel }: { open: boolean; onGo(): void; onCancel(): void }) {

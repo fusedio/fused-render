@@ -41,6 +41,7 @@ gate minted (see `gate._file_owner`).
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib.util
 import json
 import logging
@@ -339,9 +340,6 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
     refused = _backend_refusal(action, bound, agent)
     if refused is not None:
         return JSONResponse(refused, status_code=400)
-    if action in _SPAWN_ACTIONS and claude_remote.holds(str(bound.get("session_id") or "")):
-        return Response(content=dumps_result({"error": claude_remote.HELD}),
-                        media_type="application/json")
 
     # THE QUEUE'S GATE, ON THE SERVER TOO (Akshil's QA, 2026-09-16). The chat
     # asks `/api/tasks/queue/admit` before it spawns, but a page whose copy of
@@ -376,8 +374,10 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
     def _on_cancel(fut):
         fut.add_done_callback(_late)
 
+    handler = (functools.partial(claude_remote.admit_call, agent.main)
+               if action in _SPAWN_ACTIONS else agent.main)
     envelope, status, cfut = await _run(
-        action, pool.budget(action), agent.main, bound,
+        action, pool.budget(action), handler, bound,
         executor=pool.pool_for(action),
         on_cancel=_on_cancel if action in ("start", "send") else None)
     timed_out = status == 504 and envelope["error"].get("type") == "Timeout"
