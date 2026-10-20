@@ -1018,6 +1018,29 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
             <span className="bookmark-name">New app</span>
           </div>
         )}
+        {/* The Canvases half's door: "+ Canvas" opens the catalog (/canvases),
+            where create and clone live — the one way in now that the
+            primary nav has no Canvases row (owner, 2026-10-20). */}
+        {!collapsed && canvases && (
+          <div
+            className="bookmark-row current-app-row current-app-new"
+            role="button"
+            tabIndex={0}
+            title="Open or create a canvas"
+            onClick={() => navigateUrl("/canvases")}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                navigateUrl("/canvases");
+              }
+            }}
+          >
+            <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
+              +
+            </span>
+            <span className="bookmark-name">Canvas</span>
+          </div>
+        )}
         {!collapsed && apps.map(render)}
       </div>
       {menu && (

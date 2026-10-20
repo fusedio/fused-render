@@ -52,7 +52,6 @@
 import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
 import {
   AppWindow,
-  ExternalLink,
   Files,
   ListTodo,
   PencilLine,
@@ -61,7 +60,7 @@ import {
 } from "lucide-react";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, spaLinkProps } from "@platform/lib/router";
+import { navigateUrl } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { Button } from "@platform/shadcn/ui/button";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -279,12 +278,28 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
                 {ENV_LABELS[env]}
               </span>
             </h1>
-            {/* Reads as the clone folder and IS the folder: its listing in
-                the explorer, for the operations this page does not offer. */}
-            {dir && (
-              <a className="app-page-folder" title={dir} {...spaLinkProps(dir, { isDir: true })}>
-                {dir}
+            {/* The hosted workbench editor's URL, as the caption under the
+                name (owner, 2026-10-20: the workbench link here, not the
+                folder; the clone folder is the Files tab's and the sidebar
+                menu's). A real anchor in a new tab: the native shell routes
+                target=_blank to the system browser. Until the URL is known,
+                the clone folder stands in, plain. */}
+            {workbenchUrl ? (
+              <a
+                className="app-page-folder"
+                href={workbenchUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open this canvas in the Fused workbench, in a new tab"
+              >
+                {workbenchUrl}
               </a>
+            ) : (
+              dir && (
+                <span className="app-page-folder" title={dir}>
+                  {dir}
+                </span>
+              )
             )}
           </div>
         </div>
@@ -312,34 +327,8 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
             <PencilLine data-icon="inline-start" />
             <span className={APP_PAGE_FIT_LABEL}>Open in canvas editor</span>
           </Button>
-          {/* The hosted workbench editor, in a new tab. */}
-          {workbenchUrl ? (
-            // A real anchor under the button (base-ui `render`), as the strip's
-            // link was: the native shell routes a target=_blank link to the
-            // system browser, which a window.open from a click need not get.
-            <Button
-              size="sm"
-              variant="default"
-              className="app-page-open"
-              nativeButton={false}
-              render={<a href={workbenchUrl} target="_blank" rel="noopener noreferrer" />}
-              title="Open this canvas in the Fused workbench, in a new tab"
-            >
-              <span className={APP_PAGE_FIT_LABEL}>Open in Workbench</span>
-              <ExternalLink data-icon="inline-end" />
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              variant="default"
-              className="app-page-open"
-              disabled
-              title="Waiting for the workbench to answer"
-            >
-              <span className={APP_PAGE_FIT_LABEL}>Open in Workbench</span>
-              <ExternalLink data-icon="inline-end" />
-            </Button>
-          )}
+          {/* No "Open in Workbench" button: the caption under the name IS
+              the workbench link (owner, 2026-10-20). */}
         </div>
       </header>
       {/* THE APP PAGE'S BODY, as is (`.app-page-body`, app-page.css): the same
