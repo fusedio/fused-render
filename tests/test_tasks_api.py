@@ -4967,6 +4967,25 @@ def test_ensure_duties_does_not_block_a_request_behind_a_held_lease(
     assert elapsed < 1.0
 
 
+# ------------------------------------- summary-only titles (task_summary_titles_enabled)
+
+
+def test_title_mode_absent_when_summary_titles_off(client, projects_dir, tmp_path):
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("fix the login bug", T9), _assistant("Fixed it.", T10)])
+    assert "title_mode" not in _tasks(client)[0]
+
+
+def test_title_mode_summary_when_summary_titles_on(client, projects_dir, tmp_path,
+                                                   monkeypatch):
+    monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("fix the login bug", T9), _assistant("Fixed it.", T10)])
+    row = _tasks(client)[0]
+    assert row["title_mode"] == "summary"
+    assert row["title"]
+
+
 # ------------------------------------- task recap titles (task_recap_titles_enabled)
 
 

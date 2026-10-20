@@ -407,6 +407,15 @@ def task_recap_titles_enabled() -> bool:
     return read_prefs().get("task_recap_titles_enabled") is True
 
 
+def task_summary_titles_enabled() -> bool:
+    """Whether Tasks rows are titled ONLY by the server's stable `title` (a
+    user-set title, else Claude Code's `ai-title` summary, else the first
+    line of the first message) — never by the newest message, the haiku
+    recap or Claude's reply (default off; only a stored `true` is on).
+    Rows then carry `title_mode: "summary"`; the key is absent when off."""
+    return read_prefs().get("task_summary_titles_enabled") is True
+
+
 def lan_enabled() -> bool:
     """Whether the user's apps (everything under ~/Fused plus linked folders)
     are shared with the local network (default off — opt-in). The switch
@@ -853,6 +862,8 @@ def _prefs_response() -> dict:
         # Whether finished turns are recapped by haiku and the Tasks rows
         # titled by it (opt-in beta, `task_recap_titles_enabled`).
         "task_recap": {"enabled": task_recap_titles_enabled()},
+        # Summary-only Tasks titles (`task_summary_titles_enabled`).
+        "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -1161,6 +1172,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["task_recap_titles_enabled"] = value
             changed = True
+        if "task_summary_titles_enabled" in body:
+            value = body.get("task_summary_titles_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'task_summary_titles_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["task_summary_titles_enabled"] = value
+            changed = True
         if "lan_enabled" in body:
             value = body.get("lan_enabled")
             if not isinstance(value, bool):
@@ -1346,6 +1364,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
+                          "'task_summary_titles_enabled', "
                           "'lan_enabled', "
                           "'claude_enabled', 'copilot_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "

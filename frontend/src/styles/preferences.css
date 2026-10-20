@@ -1451,6 +1451,27 @@
   top: 0;
 }
 
+/* The nav's headings are the sidebar's (.sidebar-heading, styles/sidebar.css):
+   the same word for the same destination, in the same type. */
+.settings-nav-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-section + .settings-nav-section {
+  margin-top: 8px;
+}
+
+.settings-nav-heading {
+  padding: 4px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
 .settings-nav .settings-nav-item {
   justify-content: flex-start;
   height: 34px;
@@ -1490,11 +1511,164 @@
   min-width: 0;
 }
 
+.settings-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .settings-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin: 4px 0 4px;
   font-size: 18px;
   font-weight: 600;
 }
+
+.settings-head h2 .settings-badge-beta {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+/* -- blocks: a card that IS a panel section (Claude Code) ------------------ */
+/* The section's own toolbar, groups, lists and rows (styles/claude-config.css)
+   inside the page's card: the card's surface under the sticky toolbar, the
+   card's padding around the whole, and a list inside it on the page's base
+   surface so card-in-card still reads as two levels. */
+.settings-block-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.settings-block-caption code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-block {
+  padding: 2px 16px 14px;
+}
+
+.settings-block .cc-toolbar {
+  background: var(--bg-alt);
+  margin-bottom: 10px;
+}
+
+.settings-block .cc-group:last-child {
+  margin-bottom: 0;
+}
+
+.settings-block .cc-list,
+.settings-block .cc-card {
+  background: var(--bg);
+}
+
+.settings-block .cc-row:last-child {
+  border-bottom: 0;
+}
+
+/* The row's list control is the app's own dropdown (shell/Dropdown): a chip
+   as wide as the longest choice would need, never the OS select. */
+.settings-row-control .settings-select .schedule-when-field {
+  min-width: 170px;
+}
+
+/* The segmented choice (Appearance: System / Light / Dark) says which one is
+   on in the accent, not a shade of grey (Akshil, 2026-10-20: "better
+   highlight which is selected"). */
+.settings-row [data-slot="toggle-group-item"][data-state="on"],
+.settings-row [data-slot="toggle-group-item"][aria-pressed="true"] {
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--accent);
+  position: relative;
+  z-index: 1;
+}
+
+/* An unset Claude toggle: Claude's own default, drawn dimmed. */
+.settings-switch-inherited {
+  opacity: 0.5;
+}
+
+/* -- accordions (the Claude Code group) ------------------------------------- */
+.settings-section-collapsible .settings-section-title {
+  margin-left: 0;
+}
+
+.settings-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.settings-section-toggle:hover {
+  color: var(--fg);
+}
+
+.settings-section-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-section-chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s ease;
+}
+
+.settings-section-toggle[aria-expanded="true"] .settings-section-chevron,
+.settings-section-toggle[data-panel-open] .settings-section-chevron {
+  transform: rotate(90deg);
+}
+
+.settings-section-count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.settings-section-collapsible:not(:has([data-panel-open])) {
+  margin-bottom: 12px;
+}
+
+/* The settings.json rows: the reset (or the default hint) then the control,
+   right-aligned like every other row's control on this page. */
+.settings-claude-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-claude-control [data-slot="native-select"],
+.settings-claude-control select {
+  min-width: 170px;
+}
+
+.settings-claude-control input {
+  width: 170px;
+}
+
 
 .settings-head p {
   margin: 0 0 20px;
@@ -1751,6 +1925,20 @@
   .settings-nav-count {
     display: none;
   }
+
+  .settings-nav-section {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .settings-nav-section + .settings-nav-section {
+    margin: 0 0 0 10px;
+  }
+
+  .settings-nav-heading {
+    padding: 0 6px 0 0;
+  }
+
 
   .settings-row-child {
     padding-left: 28px;

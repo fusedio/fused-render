@@ -3576,7 +3576,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          settings: dict | None = None,
          last_message: bool = False,
          recaps: list | None = None,
-         pending: dict | None = None) -> dict:
+         pending: dict | None = None,
+         summary_titles: bool = False) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
@@ -4080,6 +4081,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # off, and the client reads its presence as "the flag is on".
         row["recap"] = _recap_candidate(task, rec, status, row["last_reply"],
                                         settings, recaps)
+    if summary_titles:
+        # `task_summary_titles_enabled` only: the key is ABSENT with the flag
+        # off. The client then titles the row by `title` alone.
+        row["title_mode"] = "summary"
     return row
 
 
@@ -5556,13 +5561,15 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     recap_wants: list | None = [] if shell_prefs.task_recap_titles_enabled() else None
     if recap_wants is None:
         _recap_drop_queue()
+    # Read once per listing, not per row.
+    summary_titles = shell_prefs.task_summary_titles_enabled()
     t2 = time.monotonic()
     for task in listed.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
                        busy, revived, parked, queue, queue_on,
                        chat_drafts, bound_chips, settings, last_message,
-                       recap_wants, pending)
+                       recap_wants, pending, summary_titles)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)

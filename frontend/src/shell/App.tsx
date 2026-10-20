@@ -4,8 +4,8 @@
 //   "/explorer"              -> file-explorer homepage (FilesHome)
 //   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
 //   "/explorer/embed/<path>" -> chrome-free embed variant
-//   "/claude-config"         -> Claude config panel (native, no mount)
-//   "/claude-md"             -> legacy; redirects into the Claude config panel
+//   "/claude-config"         -> legacy; the Claude Code group of Preferences
+//   "/claude-md"             -> legacy; same (platform/lib/router rewrites both)
 //   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
 //                             bare "/ai-models" redirects to the default tab
 //   "/preferences|/templates" -> settings pages
@@ -96,7 +96,6 @@ import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
 import Home from "@shell/Home";
-import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import {
   AI_MODELS_PREFIX,
   DEFAULT_TAB,
@@ -112,7 +111,7 @@ let autoShowDecided = false;
 // Route-gated surfaces, lazy-loaded: none of these render on the front door
 // (the explorer route above stays eager), only once a route nobody may ever
 // visit this session is actually opened — the settings pages, the AI Models
-// page, the app-builder hub, the Claude Config panel, and the bookmark-open
+// page, the app-builder hub, and the bookmark-open
 // redirector. Splitting them out of the main chunk is what fixes vite's
 // "chunks larger than 500 kB" build warning without just raising the limit.
 const Preferences = lazy(() => import("@shell/Preferences"));
@@ -151,9 +150,6 @@ function tasksScopeFromUrl(): TasksScope | undefined {
 }
 const AppPage = lazy(() => import("@shell/AppPage"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
-const ClaudeConfig = lazy(() =>
-  import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
-);
 // Canvases (legacy-workbench local development): the listing and the
 // per-canvas workspace with the embedded live workbench.
 const Canvases = lazy(() =>
@@ -485,28 +481,6 @@ function FusedFileView({ fsPath }: { fsPath: string }) {
   );
 }
 
-// /claude-config: the native Claude Config panel — no mount, no StatView; the
-// availability gate mirrors the sidebar entry's, so a direct URL hit while
-// ~/.claude is absent shows an honest empty state instead of a dead panel.
-function ClaudeConfigView() {
-  const available = useClaudeConfigAvailable();
-  return (
-    <div id="content">
-      <div className="cc-page">
-        {available ? (
-          <Suspense fallback={<RouteFallback />}>
-            <ClaudeConfig />
-          </Suspense>
-        ) : (
-          <div className="preview-resolving">
-            No Claude Code configuration found (~/.claude).
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function App({ config }: { config: Config }) {
   // …and only while the feature is on (shell/task-peek-flag.ts): off, the epoch
   // is judged on the whole URL, which is what it did before any of this.
@@ -714,13 +688,6 @@ export default function App({ config }: { config: Config }) {
     history.replaceState(null, "", onboardingUrl(config.onboarding?.stages));
   }
   autoShowDecided = true;
-  // Legacy: the CLAUDE.md explorer ("MD Files") was deleted from the Config
-  // panel in round 2, so the old page URL folds into the panel's default tab
-  // (same render-time rewrite as "/" above) rather than 404ing on someone's
-  // bookmark.
-  if (location.pathname === "/claude-md") {
-    history.replaceState(null, "", "/claude-config");
-  }
   // The AI Models page names each of its five tabs in the path now, and the
   // default is a name like the rest rather than the absence of one — so the
   // bare prefix redirects to it (same render-time rewrite as "/" above). The
@@ -782,7 +749,6 @@ export default function App({ config }: { config: Config }) {
   useEffect(() => {
     if (isHome || isExplorerHome) setSideTab(null);
   }, [isHome, isExplorerHome]);
-  const isClaudeConfig = pathname === "/claude-config";
   // Canvases: the listing plus the parameterized workspace route. The name is
   // constrained to the CLI's own canvas-name alphabet, so the match below is
   // also the validation.
@@ -824,7 +790,6 @@ export default function App({ config }: { config: Config }) {
     appPagePath !== null ||
     isExplorerHome ||
     isHome ||
-    isClaudeConfig ||
     isCanvases ||
     isBots ||
     canvasWorkspaceName !== null;
@@ -862,9 +827,7 @@ export default function App({ config }: { config: Config }) {
                         ? "Home"
                         : isExplorerHome
                           ? "File Explorer"
-                          : isClaudeConfig
-                            ? "Claude Config"
-                            : isCanvases
+                          : isCanvases
                               ? "Workbench Canvases"
                               : isBots
                                 ? "Bots"
@@ -1141,9 +1104,6 @@ export default function App({ config }: { config: Config }) {
         <FilesHome key={epoch} config={config} />
       </div>
     );
-  } else if (isClaudeConfig) {
-    // Claude Config panel — native, no mount (see ClaudeConfigView).
-    main = <ClaudeConfigView key={epoch} />;
   } else if (!fsPath) {
     main = (
       <>
