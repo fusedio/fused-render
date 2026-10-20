@@ -356,7 +356,30 @@ function seedNodeSessionFromUrl(env: WorkbenchEnv, canvas: string, node: NodeSel
   return sid;
 }
 
-export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name: string }) {
+export default function CanvasWorkspace({
+  env,
+  name,
+  embedded = false,
+  onWorkbenchUrl,
+}: {
+  env: WorkbenchEnv;
+  name: string;
+  /** FRAMED BY THE PROJECT PAGE (shell/CanvasPage.tsx, /canvases-project/…)
+   *  as its read-only Overview: the workbench is loaded as a VIEWER
+   *  (`fused_embed_readonly=1` — no drag, connect, add, rename, delete, no
+   *  autosave; the host's deltas still patch it in place, so a Claude task
+   *  editing the clone shows live), there is no right pane at all (no canvas
+   *  chat, no node pane — a selection is ignored), and the sync strip drops
+   *  the back arrow, env chip and workbench link, which the page's own
+   *  header carries. The sync loops run as they do in the editor: the
+   *  watcher is still this process's. Off (the default) this is the editor
+   *  at /canvases/<env>/<name>: two panes, canvas + Claude. */
+  embedded?: boolean;
+  /** The hosted workbench editor's URL for this canvas (no embed flags), once
+   *  the base URL and handle are known; null until then. The project page's
+   *  header draws it as "Open in Workbench". */
+  onWorkbenchUrl?: (url: string | null) => void;
+}) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
@@ -1080,6 +1103,9 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
         }
       }
       if (type === "fused-embed-selection") {
+        // The viewer has no pane to follow a selection into (see `embedded`);
+        // ignoring it here also keeps `?node=` off the project page's URL.
+        if (embedded) return;
         const name = event.data?.udfName;
         if (typeof name === "string" && name) {
           const kind = event.data?.kind === "widget" ? "widget" : "udf";
@@ -1102,7 +1128,16 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, env, name]);
+  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded]);
+
+  // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
+  const workbenchUrl =
+    baseUrl && handle
+      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+      : null;
+  useEffect(() => {
+    onWorkbenchUrl?.(workbenchUrl);
+  }, [workbenchUrl, onWorkbenchUrl]);
 
   // Mirror the node onto this page's URL so a reload lands on it, and drop the
   // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
@@ -1371,7 +1406,11 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   // relay's busy loop — the relay running in all but name.
   const frameSrc =
     baseUrl && handle && dir && !owned
-      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=3`
+      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}?fused_embed_auth=1&fused_embed_v=3` +
+        // The viewer flag rides the flagged URL only; a flagged URL without
+        // it is the editor, and the workbench records that per load
+        // (application embed-auth.ts), so the editor never inherits it.
+        (embedded ? "&fused_embed_readonly=1" : "")
       : null;
 
   // No header bar (owner call): the workspace is the two panes, full height,
@@ -1405,11 +1444,8 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
         }}
         // Back to the environment this canvas lives in, not the default.
         onBack={() => navigateUrl(catalogPath(env))}
-        workbenchUrl={
-          baseUrl && handle
-            ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
-            : null
-        }
+        workbenchUrl={workbenchUrl}
+        embedded={embedded}
         pull={{
           busy: pullBusy,
           error: pullError,
@@ -1509,7 +1545,8 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
           // the wrapper's mouseenter still fires as the pointer crosses in.
           onMouseEnter={focusCanvasOnEnter}
           style={{
-            flex: `0 0 ${leftFrac * 100}%`,
+            // The viewer has no right pane: the canvas takes the row.
+            flex: embedded ? "1 1 auto" : `0 0 ${leftFrac * 100}%`,
             minWidth: 0,
             position: "relative",
             pointerEvents: dragging ? "none" : "auto",
@@ -1540,6 +1577,8 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
             ))
           )}
         </div>
+        {!embedded && (
+          <>
         <div
           onMouseDown={(e) => {
             e.preventDefault();
@@ -1666,6 +1705,8 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
             !error && <p style={{ padding: 16 }}>Loading editor…</p>
           )}
         </div>
+          </>
+        )}
       </div>
     </div>
   );

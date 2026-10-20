@@ -33,7 +33,7 @@ import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
 // sidebar's sign-in probe imports it); the barrel would pull the sub-app in.
-import { ENV_LABELS, canvasNameFromPath } from "@apps/canvases/api";
+import { ENV_LABELS, canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
 import {
   appIconUrl,
   getAppIcon,
@@ -161,6 +161,10 @@ const Canvases = lazy(() =>
 const CanvasWorkspace = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
 );
+// The canvas PROJECT page (shell/CanvasPage.tsx, /canvases-project/…): the
+// workbench framed read-only in an Overview tab beside the shell's Tasks and
+// Files pages. The editor above is a separate route (owner, 2026-10-20).
+const CanvasPage = lazy(() => import("@shell/CanvasPage"));
 // Bots (ported from FusedBot): browser bots, each driving its own Chrome
 // window. The page carries its own scoped stylesheet in the lazy chunk.
 const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
@@ -765,6 +769,8 @@ export default function App({ config }: { config: Config }) {
   // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
   // branch below, deliberately unredirected.
   const canvasWorkspace = canvasNameFromPath(pathname);
+  // `/canvases-project/<env>/<name>`: the tabbed, read-only project page.
+  const canvasProject = canvasProjectFromPath(pathname);
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
   // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
   // folders live anywhere on disk — through GET /api/apps/linked-path, one async
@@ -797,7 +803,8 @@ export default function App({ config }: { config: Config }) {
     isHome ||
     isCanvases ||
     isBots ||
-    canvasWorkspace !== null;
+    canvasWorkspace !== null ||
+    canvasProject !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Behind the Marketplace flag (see isFusedInstallView). While the flag is
   // still unknown (`null`, one prefs read) the route HOLDS rather than paint
@@ -838,6 +845,8 @@ export default function App({ config }: { config: Config }) {
                                 ? "Bots"
                               : canvasWorkspace
                                 ? `Canvas: ${canvasWorkspace.name} · ${ENV_LABELS[canvasWorkspace.env]}`
+                              : canvasProject
+                                ? `Canvas: ${canvasProject.name} · ${ENV_LABELS[canvasProject.env]}`
                                 : fsPath
                                   ? undefined
                                   : null,
@@ -1028,9 +1037,10 @@ export default function App({ config }: { config: Config }) {
       </div>
     );
   } else if (canvasWorkspace !== null) {
-    // Canvas workspace: the embedded workbench + sync strip. Keyed on the
-    // canvas's identity, (env, name) (not epoch): the page holds a live iframe
-    // and a token handshake, and its only same-route churn is its own sync poll.
+    // Canvas editor: the embedded workbench beside the Claude chat, under the
+    // sync strip. Keyed on the canvas's identity, (env, name) (not epoch): the
+    // page holds a live iframe and a token handshake, and its only same-route
+    // churn is its own sync poll.
     main = (
       <div id="content">
         <Suspense fallback={<RouteFallback />}>
@@ -1038,6 +1048,24 @@ export default function App({ config }: { config: Config }) {
             key={`${canvasWorkspace.env}/${canvasWorkspace.name}`}
             env={canvasWorkspace.env}
             name={canvasWorkspace.name}
+          />
+        </Suspense>
+      </div>
+    );
+  } else if (canvasProject !== null) {
+    // The canvas project page (shell/CanvasPage.tsx): the workbench framed
+    // read-only in an Overview tab, its tasks in a Tasks tab, the clone's
+    // files in a Files tab. Keyed on (env, name) (not epoch): the tab is a
+    // query param, so switching it is a navigation, and a remount would
+    // reload the workbench frame — seconds of boot — to change tabs. A
+    // different canvas still mounts fresh.
+    main = (
+      <div id="content">
+        <Suspense fallback={<RouteFallback />}>
+          <CanvasPage
+            key={`${canvasProject.env}/${canvasProject.name}`}
+            env={canvasProject.env}
+            name={canvasProject.name}
           />
         </Suspense>
       </div>

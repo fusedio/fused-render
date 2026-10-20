@@ -230,3 +230,112 @@
   white-space: nowrap;
   color: var(--fg);
 }
+
+/* The peek's close: the ✕ after the Claude / Code strip (CanvasWorkspace). */
+.canvas-node-close {
+  flex: none;
+  margin-left: 6px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--fg-muted);
+}
+.canvas-node-close:hover {
+  color: var(--fg);
+}
+
+/* ---- The canvas project page (/canvases-project/<env>/<name>, CanvasPage.tsx) */
+/* The app page's header and tab strip (app-page.css) over a BODY of its own:
+   full width, no 1050px column — the canvas wants the room. `.app-page-body`
+   is not reused on purpose (its frame is fixed, by the owner). */
+/* The header takes the body's width, not the app page's 1050px column —
+   scoped to THIS page, so .app-page-head's own rule stands. */
+.canvas-page > .app-page-head {
+  width: calc(100% - 48px);
+}
+.canvas-page-icon {
+  cursor: default;
+  color: var(--fg-muted);
+}
+.canvas-page .app-page-name h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.canvas-page-env {
+  font-weight: 400;
+}
+.canvas-page-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: calc(100% - 48px);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 0 16px;
+}
+.canvas-page-body > .error-banner {
+  flex: none;
+}
+/* Panels are stacked in one grid cell so a HIDDEN one keeps its box: the
+   Overview's workbench frame (React Flow + deck.gl) must not see a resize to
+   0 and back on a tab switch — a fit-to-view would move the camera the
+   reader left. `visibility` instead of `display` for exactly that; pointer
+   events off so the hidden frame cannot catch a hover or a click. */
+.canvas-page-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.canvas-page-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* THE OVERVIEW STAYS IN FLOW, shown or hidden: it is the panel that sizes the
+   stage (the stage is the body's remaining height either way), so its box is
+   the same on every tab. The OTHER panels are the ones laid over it, so a
+   tall Tasks list never stretches the stage and so the frame under it. */
+.canvas-page-panel.canvas-page-overview.is-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+.canvas-page-panel:not(.canvas-page-overview) {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+}
+/* The Overview frames the workbench edge to edge in a rounded plate, like the
+   app page's frame. */
+.canvas-page-overview {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg);
+}
+/* The nested Tasks page brings its own page padding (schedule.css); inside
+   this gutter it would be a second one — the app page's rule. */
+.canvas-page-tasks .schedule-page {
+  padding-inline: 0;
+}
+
+/* The sidebar's Canvases section (shell/CanvasesSection.tsx): Projects' rows
+   with a canvas glyph, and the environment after the name when both hold
+   clones. */
+.canvas-row-glyph {
+  cursor: default;
+}
+.canvas-row-env {
+  flex: none;
+  margin-left: 6px;
+  font-size: 10px;
+  line-height: 14px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+}

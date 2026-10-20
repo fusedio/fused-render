@@ -566,6 +566,38 @@ def _cloned_names(env: str) -> set[str]:
     return {d for d in entries if os.path.isfile(os.path.join(root, d, "canvas.toml"))}
 
 
+@router.get("/api/canvases/cloned")
+def api_canvases_cloned():
+    """The clones on this machine, every environment at once: the sidebar's
+    Canvases section (shell/CanvasesSection.tsx). A local listdir, no CLI
+    and no login — the section paints with the sidebar, signed in or not.
+    Env-less on purpose: it IS the listing of environments, so each row
+    carries its own `env`. Newest first: the newest mtime among the clone
+    dir and its top-level entries (a clone is flat), so an edit to an
+    existing file counts — a directory's own mtime moves only when an entry
+    is added or removed."""
+    rows = []
+    for env in WORKBENCH_ENV_CHOICES:
+        root = canvases_root(env)
+        for name in _cloned_names(env):
+            path = os.path.join(root, name)
+            mtime = 0.0
+            try:
+                mtime = os.path.getmtime(path)
+                for entry in os.listdir(path):
+                    if entry.startswith("."):
+                        continue
+                    try:
+                        mtime = max(mtime, os.path.getmtime(os.path.join(path, entry)))
+                    except OSError:
+                        continue
+            except OSError:
+                pass
+            rows.append({"env": env, "name": name, "dir": path, "mtime": mtime})
+    rows.sort(key=lambda r: (-r["mtime"], r["env"], r["name"]))
+    return {"canvases": rows}
+
+
 @router.get("/api/canvases/whoami")
 def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None)):
     # EXECUTES a control-plane call — D36 guard, like account's probe=1.

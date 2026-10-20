@@ -87,6 +87,7 @@ export function SyncStrip({
   onToggle,
   onBack,
   workbenchUrl,
+  embedded = false,
 }: {
   /** The canvas's environment, shown as a chip beside the way back: with a
    *  prod and an unstable canvas open at once, the strip is the one place on
@@ -111,6 +112,10 @@ export function SyncStrip({
    *  until the base URL and handle are known. Shown as "Open in workbench"
    *  while every leg is green. */
   workbenchUrl: string | null;
+  /** Inside the project page's Overview (CanvasWorkspace `embedded`): the
+   *  page header owns the way back, the env chip and the workbench link, so
+   *  the strip draws none of them. */
+  embedded?: boolean;
 }) {
   const now = useNow(tickFor(queue, server, true));
   const merged: MergedSyncState = mergeEmbedLeg(server, name, queue, failure, now);
@@ -161,6 +166,8 @@ export function SyncStrip({
         userSelect: "none",
       }}
     >
+      {!embedded && (
+        <>
       <button
         type="button"
         style={{
@@ -188,6 +195,8 @@ export function SyncStrip({
       <span className="canvases-env-chip" title={`${name} syncs with ${ENV_LABELS[env]}`}>
         {ENV_LABELS[env]}
       </span>
+        </>
+      )}
       <Dot level={level} />
       <span
         style={{
@@ -242,7 +251,7 @@ export function SyncStrip({
           </button>
         </span>
       )}
-      {!owned && server && level === "ok" && !inFlight && workbenchUrl && (
+      {!embedded && !owned && server && level === "ok" && !inFlight && workbenchUrl && (
         // All green and nothing moving: the canvas on the server is what
         // this folder holds, so the hosted editor is worth a look. A plain
         // link in a new tab. (A pending/pushing push is "ok" to worstLeg but
