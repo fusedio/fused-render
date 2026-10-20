@@ -1054,8 +1054,7 @@ th[aria-sort="descending"] .monitor-sort {
 }
 
 .monitor-overview .monitor-tiles,
-.monitor-overview .monitor-lists,
-.monitor-overview .monitor-more {
+.monitor-overview .monitor-lists {
   margin-top: 0;
 }
 

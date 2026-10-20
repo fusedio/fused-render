@@ -6,7 +6,7 @@
 // figures); any non-headline
 // tile that is warn/bad; four chart cards (Requests, Connections, Server, CPU,
 // the Processes tab's card form) over the since-restart window; and
-// behind "Show all checks": the remaining tiles, stalled jobs, the slowest .py
+// below them, always shown: the remaining tiles, stalled jobs, the slowest .py
 // targets and the disk footer. Record 60s / Copy report sit
 // right-aligned on the window heading's row. The errors tile toggles an inline
 // panel of the recent errors instead of linking anywhere (the errors list is
@@ -74,7 +74,6 @@ export default function OverviewTab({
 }) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showAll, setShowAll] = useState(false);
   const [errorsOpen, setErrorsOpen] = useState(false);
   const [copied, setCopied] = useState<"ok" | "failed" | null>(null);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -365,55 +364,47 @@ export default function OverviewTab({
         })}
       </div>
 
-      <button type="button" className="monitor-more" aria-expanded={showAll} onClick={() => setShowAll((v) => !v)}>
-        {showAll ? "Hide checks" : `Show all checks (${hiddenTiles.length})`}
-      </button>
-
-      {showAll && (
-        <>
-          {hiddenTiles.length > 0 && <div className="monitor-tiles">{hiddenTiles.map(renderTile)}</div>}
-          {!errorsInTop && errorsPanel}
-          <div className="monitor-lists">
-            <section className="monitor-list-card">
-              <h2 className="monitor-sec-title">Stalled jobs</h2>
-              {jobs ? (
-                <ul className="monitor-list">
-                  {jobs.stalled_list.map((j, i) => (
-                    <li key={j.id ?? i}>{j.title ?? j.id ?? "job"}</li>
-                  ))}
-                  {!jobs.stalled_list.length && <li className="monitor-list-empty">None.</li>}
-                </ul>
-              ) : (
-                <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
-              )}
-            </section>
-
-            <section className="monitor-list-card">
-              <h2 className="monitor-sec-title">Slowest .py targets (overhead)</h2>
-              {calls ? (
-                <ul className="monitor-list">
-                  {calls.top_overhead.map((c) => (
-                    <li key={c.entrypoint} className="monitor-list-target" title={c.entrypoint}>
-                      <span className="monitor-list-mono monitor-list-text">{basename(c.entrypoint)}</span>
-                      <span className="monitor-list-num">
-                        {ms(c.overhead_p95_ms)} / {ms(c.run_p95_ms)} run
-                      </span>
-                    </li>
-                  ))}
-                  {!calls.top_overhead.length && <li className="monitor-list-empty">No calls in the last 10 min.</li>}
-                </ul>
-              ) : (
-                <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
-              )}
-            </section>
-          </div>
-          {data && sectionOk(data.disk) && data.disk.log_home != null && (
-            <p className="monitor-net-note">
-              Disk use: logs {formatBytes(data.disk.log_home, true)} · calls {formatBytes(data.disk.call_store, true)} ·
-              index {formatBytes(data.disk.index_db, true)}
-            </p>
+      {hiddenTiles.length > 0 && <div className="monitor-tiles">{hiddenTiles.map(renderTile)}</div>}
+      {!errorsInTop && errorsPanel}
+      <div className="monitor-lists">
+        <section className="monitor-list-card">
+          <h2 className="monitor-sec-title">Stalled jobs</h2>
+          {jobs ? (
+            <ul className="monitor-list">
+              {jobs.stalled_list.map((j, i) => (
+                <li key={j.id ?? i}>{j.title ?? j.id ?? "job"}</li>
+              ))}
+              {!jobs.stalled_list.length && <li className="monitor-list-empty">None.</li>}
+            </ul>
+          ) : (
+            <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
           )}
-        </>
+        </section>
+
+        <section className="monitor-list-card">
+          <h2 className="monitor-sec-title">Slowest .py targets (overhead)</h2>
+          {calls ? (
+            <ul className="monitor-list">
+              {calls.top_overhead.map((c) => (
+                <li key={c.entrypoint} className="monitor-list-target" title={c.entrypoint}>
+                  <span className="monitor-list-mono monitor-list-text">{basename(c.entrypoint)}</span>
+                  <span className="monitor-list-num">
+                    {ms(c.overhead_p95_ms)} / {ms(c.run_p95_ms)} run
+                  </span>
+                </li>
+              ))}
+              {!calls.top_overhead.length && <li className="monitor-list-empty">No calls in the last 10 min.</li>}
+            </ul>
+          ) : (
+            <p className="monitor-net-note">{data ? "unavailable" : "Reading…"}</p>
+          )}
+        </section>
+      </div>
+      {data && sectionOk(data.disk) && data.disk.log_home != null && (
+        <p className="monitor-net-note">
+          Disk use: logs {formatBytes(data.disk.log_home, true)} · calls {formatBytes(data.disk.call_store, true)} ·
+          index {formatBytes(data.disk.index_db, true)}
+        </p>
       )}
     </div>
   );

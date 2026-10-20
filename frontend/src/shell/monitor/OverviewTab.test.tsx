@@ -172,13 +172,12 @@ test("errors panel: hangs, crashes and crash links shown, restarts only counted"
 test("errors panel is empty-stated when nothing is wrong", async () => {
   const dash = { ...DASH, errors: { ...DASH.errors, server_log_errors: [] } } as unknown as Dashboard;
   const r = await mount(() => {}, { load: async () => dash });
-  await act(async () => btnOf(r, "Show all checks").props.onClick());
   const tile = r.root.find((n) => n.type === "button" && n.props["data-tile"] === "errors");
   await act(async () => tile.props.onClick());
   expect(text(byClass(r, "monitor-errors-panel")[0])).toContain("Nothing to report");
 });
 
-test("four chart cards with figures; alerting tiles sit above them; the rest behind Show all checks", async () => {
+test("four chart cards with figures; alerting tiles sit above them; the rest always render below, no toggle", async () => {
   const r = await mount();
   const cards = byClass(r, "monitor-overview-card");
   expect(cards.map((c) => c.props["data-card"])).toEqual(["requests", "queue", "server", "cpu"]);
@@ -199,17 +198,16 @@ test("four chart cards with figures; alerting tiles sit above them; the rest beh
   expect(cards.every((c) => c.findAll((n) => n.props.className === "monitor-chart").length === 1)).toBe(true);
   // The fixture's claude, jobs and errors tiles are warn: the borderless stat row.
   const keys = () => byClass(r, "monitor-tile").map((t) => t.props["data-tile"]);
-  expect(keys()).toEqual(["claude", "jobs", "errors"]);
-  expect(byClass(r, "monitor-lists")).toHaveLength(0);
-  expect(text(r.root)).not.toContain("Stuck export");
-  await act(async () => btnOf(r, "Show all checks (4)").props.onClick());
+  expect(keys().slice(0, 3)).toEqual(["claude", "jobs", "errors"]);
   expect(keys()).toHaveLength(7);
+  expect(byClass(r, "monitor-lists")).toHaveLength(1);
+  expect(text(r.root)).toContain("Stuck export");
+  expect(text(r.root)).toContain("Slowest .py targets");
+  expect(r.root.findAll((n) => n.type === "button" && /Show all checks|Hide checks/.test(text(n)))).toHaveLength(0);
   const tiles = byClass(r, "monitor-tile");
   const disk = tiles.find((t) => t.props["data-tile"] === "disk")!;
   expect(disk.props.className).toContain("is-unavailable");
   expect(text(disk)).toContain("unavailable");
-  await act(async () => btnOf(r, "Hide checks").props.onClick());
-  expect(keys()).toHaveLength(3);
 });
 
 test("a warn/bad card is tinted and a plain click on it navigates", async () => {
@@ -226,17 +224,15 @@ test("a warn/bad card is tinted and a plain click on it navigates", async () => 
   expect(seen).toEqual([]);
 });
 
-test("a warn/bad tile outside the headline cards shows without expanding", async () => {
+test("a warn/bad tile outside the headline cards shows in the top row", async () => {
   const r = await mount(() => {}, {
     load: async () => ({ ...DASH, index: { waiting: 2, abandoned: 0, scans: { running: 0, limit: 2 } } }) as Dashboard,
   });
   expect(byClass(r, "monitor-tile").map((t) => t.props["data-tile"])).toEqual(["claude", "index", "jobs", "errors"]);
-  expect(btnOf(r, "Show all checks")).toBeTruthy();
 });
 
-test("lists fill once expanded", async () => {
+test("lists render without expanding", async () => {
   const r = await mount();
-  await act(async () => btnOf(r, "Show all checks").props.onClick());
   expect(text(r.root)).toContain("Stuck export");
   // one Errors list: the tile toggles the inline panel, the lists grid has no duplicate
   const lists = byClass(r, "monitor-lists")[0];
@@ -251,7 +247,6 @@ test("lists fill once expanded", async () => {
 
 test("the Python calls tile shows the basename with the full path as its title", async () => {
   const r = await mount();
-  await act(async () => btnOf(r, "Show all checks").props.onClick());
   const tile = byClass(r, "monitor-tile").find((t) => t.props["data-tile"] === "calls")!;
   expect(tile.props.title).toBe("/x/slow.py");
   expect(text(tile)).toContain("slow.py: 800 ms overhead");
