@@ -5,14 +5,26 @@
 // Preferences page manages), list the account's canvases as a card gallery
 // (search, create, sign out), and open one — which clones it under
 // ~/Fused/canvas/<env>/<name> and lands on the workspace page
-// (/canvases/<name>: Claude-editable local files, watch-and-push sync,
+// (/canvases/<env>/<name>: Claude-editable local files, watch-and-push sync,
 // embedded live workbench). Styling lives in styles/canvases.css.
+//
+// The Environment dropdown picks WHICH environment's canvases are listed; a
+// prod canvas and an unstable one can be open and syncing at once, so this is
+// a view filter, not a switch. Its state is the `?env=` query (browser storage
+// holds no facts, D1386), defaulting to the `workbench_env` preference — the
+// preference is only that default now. FUSED_RENDER_WORKBENCH_ENV pins it
+// (`status.locked`): the dropdown is disabled and the query ignored, since the
+// server 423s any other env.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import previewTile from "@assets/canvas-preview-tile.png";
-import { navigateUrl } from "@platform/lib/router";
+import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   CanvasOwnedError,
+  ENV_LABELS,
+  WORKBENCH_ENVS,
+  canvasWorkspacePath,
+  catalogPath,
   cloneCanvas,
   createCanvas,
   getCanvasesStatus,
@@ -21,21 +33,36 @@ import {
   logout,
   startLogin,
   startSync,
+  isWorkbenchEnv,
   type CanvasEntry,
   type CanvasesStatus,
+  type WorkbenchEnv,
 } from "./api";
 import { publishLoggedIn } from "./logged-in";
 
 /** sync/start before opening a canvas. Another process owning the clone
  *  (409 `owned`) is not a reason to stay on the list: the workspace shows
  *  who owns it and picks the canvas up when that process quits. */
-async function startSyncForOpen(name: string): Promise<void> {
+async function startSyncForOpen(env: WorkbenchEnv, name: string): Promise<void> {
   try {
-    await startSync(name);
+    await startSync(env, name);
   } catch (e) {
     if (e instanceof CanvasOwnedError) return;
     throw e;
   }
+}
+
+/** The `?env=` the URL carries, if it names an environment; anything else
+ *  falls back to the default rather than erroring. */
+function envFromQuery(): WorkbenchEnv | null {
+  const v = new URLSearchParams(location.search).get("env");
+  return isWorkbenchEnv(v) ? v : null;
+}
+
+/** The environment the page lists: the pin when one is set (the server
+ *  refuses every other env), else the URL's pick, else the default. */
+function effectiveEnv(s: CanvasesStatus, picked: WorkbenchEnv | null): WorkbenchEnv {
+  return s.locked ? s.workbench_env : (picked ?? s.workbench_env);
 }
 
 // `fused login`'s own browser callback times out server-side; polling any
@@ -105,6 +132,14 @@ export default function Canvases() {
   // creds_stamp at the moment login started: a re-login over a stale-but-
   // present store never flips logged_in, so completion = the stamp changing.
   const loginStampRef = useRef<number | null | undefined>(undefined);
+  // The dropdown's pick (null = none, use the default). Mirrored in a ref so
+  // `refresh` reads the current pick without re-creating itself on a change.
+  const [picked, setPicked] = useState<WorkbenchEnv | null>(envFromQuery);
+  const pickedRef = useRef(picked);
+  // Bumped on every environment change: a listing or preview batch that
+  // departed under the old env must not land in the new env's page.
+  const envGenRef = useRef(0);
+  const env = status ? effectiveEnv(status, picked) : null;
 
   // Presigned preview URLs, keyed by collection id — the second, slower half
   // of the listing (D364). Kept beside `canvases` rather than merged into it so
@@ -120,7 +155,8 @@ export default function Canvases() {
   // Failures are silent by design: a card without a thumb shows its monogram,
   // which is exactly what a canvas with no preview shows anyway — not worth
   // an error banner over the listing that did load.
-  const fillPreviews = useCallback(async (entries: CanvasEntry[]) => {
+  const fillPreviews = useCallback(async (env: WorkbenchEnv, entries: CanvasEntry[]) => {
+    const gen = envGenRef.current;
     const ids = entries
       .filter((c) => c.preview_pending && c.id)
       .map((c) => c.id as string)
@@ -128,7 +164,8 @@ export default function Canvases() {
     if (ids.length === 0) return;
     for (const id of ids) previewsAskedRef.current.add(id);
     try {
-      const { previews: signed } = await getCanvasPreviews(ids);
+      const { previews: signed } = await getCanvasPreviews(env, ids);
+      if (gen !== envGenRef.current) return;
       const resolved: Record<string, string> = {};
       for (const [id, url] of Object.entries(signed)) {
         if (typeof url === "string" && url) resolved[id] = url;
@@ -144,16 +181,19 @@ export default function Canvases() {
   }, []);
 
   const refresh = useCallback(async () => {
+    const gen = envGenRef.current;
     try {
       const s = await getCanvasesStatus();
       setStatus(s);
       if (s.logged_in) {
         setLoggingIn(false);
-        const { canvases } = await listCanvases();
+        const env = effectiveEnv(s, pickedRef.current);
+        const { canvases } = await listCanvases(env);
+        if (gen !== envGenRef.current) return;
         setCanvases(canvases);
         // Deliberately NOT awaited: the cards render on the line above, and
         // the thumbs pop in when the signing batch lands.
-        void fillPreviews(canvases);
+        void fillPreviews(env, canvases);
       }
       setError(null);
     } catch (e) {
@@ -165,9 +205,27 @@ export default function Canvases() {
         setError(`Your Fused sign-in expired — sign in again. (${err.message})`);
         return;
       }
+      if (gen !== envGenRef.current) return;
       setError(err.message);
     }
   }, [fillPreviews]);
+
+  // The dropdown: rewrite the query in place (no history entry — Back leaves
+  // the catalog, it doesn't step through environments), drop everything the
+  // old environment's listing held, and list the new one.
+  const onPickEnv = (next: WorkbenchEnv) => {
+    if (next === env) return;
+    envGenRef.current += 1;
+    pickedRef.current = next;
+    setPicked(next);
+    replaceSearch(catalogPath(next));
+    setCanvases(null);
+    // Collection ids and signed URLs belong to the environment they came from.
+    setPreviews({});
+    previewsAskedRef.current = new Set();
+    setError(null);
+    void refresh();
+  };
 
   useEffect(() => {
     void refresh();
@@ -247,15 +305,16 @@ export default function Canvases() {
   };
 
   const onOpen = async (canvas: CanvasEntry) => {
+    if (!env) return;
     setBusy(canvas.name);
     setError(null);
     try {
       // Clone only the first time: `pull --force` resets the folder to the
       // remote state, and an already-cloned canvas may hold local edits the
       // watcher hasn't pushed yet (e.g. after a server restart).
-      if (!canvas.cloned) await cloneCanvas(canvas.name);
-      await startSyncForOpen(canvas.name);
-      navigateUrl(`/canvases/${encodeURIComponent(canvas.name)}`);
+      if (!canvas.cloned) await cloneCanvas(env, canvas.name);
+      await startSyncForOpen(env, canvas.name);
+      navigateUrl(canvasWorkspacePath(env, canvas.name));
     } catch (e) {
       setError((e as Error).message);
       setBusy(null);
@@ -264,6 +323,7 @@ export default function Canvases() {
 
   const onCreate = async () => {
     const name = newName.trim();
+    if (!env) return;
     if (!NAME_RE.test(name)) {
       setError("Canvas names may only use letters, digits, and underscores.");
       return;
@@ -271,10 +331,10 @@ export default function Canvases() {
     setCreateBusy(true);
     setError(null);
     try {
-      await createCanvas(name);
-      await cloneCanvas(name);
-      await startSyncForOpen(name);
-      navigateUrl(`/canvases/${encodeURIComponent(name)}`);
+      await createCanvas(env, name);
+      await cloneCanvas(env, name);
+      await startSyncForOpen(env, name);
+      navigateUrl(canvasWorkspacePath(env, name));
     } catch (e) {
       setError((e as Error).message);
       setCreateBusy(false);
@@ -306,8 +366,31 @@ export default function Canvases() {
       <div className="canvases-inner">
         <div className="canvases-head">
           <h1 className="canvases-title">Workbench Canvases</h1>
-          {status?.logged_in && (
+          {status?.logged_in && env && (
             <div className="canvases-head-actions">
+              <label
+                className="canvases-env"
+                htmlFor="canvases-env"
+                title={status.locked ? "Pinned by FUSED_RENDER_WORKBENCH_ENV" : undefined}
+              >
+                <span className="canvases-env-label">Environment</span>
+                <select
+                  id="canvases-env"
+                  className="field-control"
+                  value={env}
+                  disabled={status.locked || busy !== null || createBusy}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (isWorkbenchEnv(v)) onPickEnv(v);
+                  }}
+                >
+                  {WORKBENCH_ENVS.map((e) => (
+                    <option key={e} value={e}>
+                      {ENV_LABELS[e]}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <input
                 className="field-control canvases-search"
                 type="search"

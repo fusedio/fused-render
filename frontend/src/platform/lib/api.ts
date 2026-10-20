@@ -1590,12 +1590,12 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
-  // Which Fused environment the canvases, the `fused` wrapper and the share
-  // uploads target (fusedcli.workbench_env). READ-ONLY through PUT /api/prefs:
-  // the writer is POST /api/canvases/env, which stops the canvas sync
-  // watchers first (clones are kept, one folder per environment). `locked` =
-  // FUSED_RENDER_WORKBENCH_ENV pins it. OPTIONAL: an older
-  // server answers without it.
+  // The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
+  // catalog's initial pick, the `fused` wrapper's env outside a canvas clone,
+  // share uploads' target. Canvases carry their own env, so this is a plain
+  // pref: written by PUT /api/prefs `{workbench_env}` (putWorkbenchEnv).
+  // `locked` = FUSED_RENDER_WORKBENCH_ENV pins it (the PUT answers 423).
+  // OPTIONAL: an older server answers without it.
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
@@ -1815,6 +1815,13 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+/** The default Fused environment (`prefs.workbench.env`). 400 outside
+ *  `unstable` / `prod`, 423 while FUSED_RENDER_WORKBENCH_ENV pins it. The
+ *  server re-exports the `fused` wrapper so its default follows. */
+export function putWorkbenchEnv(env: "unstable" | "prod"): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { workbench_env: env });
 }
 
 /** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,

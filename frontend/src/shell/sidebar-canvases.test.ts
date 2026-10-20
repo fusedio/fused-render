@@ -53,7 +53,7 @@ describe("the sidebar's Canvases entry", () => {
 
   it("hides BOTH entry points when the feature is off, without touching the routes", () => {
     // The preference is over the entry points, not the pages: /canvases and
-    // /canvases/<name> keep answering a deep link or a bookmark exactly as they
+    // /canvases/<env>/<name> keep answering a deep link or a bookmark exactly as they
     // do signed out, so the flag never strands an open workspace. Nothing in
     // App.tsx's routing consults it.
     expect(APP).not.toMatch(/canvasesEnabled|useCanvasesFeature/);
@@ -88,7 +88,7 @@ describe("the sidebar's Canvases entry", () => {
   });
 
   it("lights on the list page only, not inside a canvas", () => {
-    // /canvases/<name> is a workspace you opened, not the list page — Home's
+    // /canvases/<env>/<name> is a workspace you opened, not the list page — Home's
     // reasoning, and the reason this is equality rather than a prefix test.
     expect(SIDEBAR).toMatch(/const canvasesActive = pathname === "\/canvases"/);
     expect(SIDEBAR).not.toMatch(/pathname\.startsWith\("\/canvases/);
@@ -146,10 +146,12 @@ function status(over: Partial<CanvasesStatus>): CanvasesStatus {
     logged_in: true,
     creds_stamp: null,
     login_in_flight: false,
-    workbench_base_url: "https://www.fused.io",
     workbench_env: "prod",
-    canvases_dir: "/Users/x/Fused/canvas/prod",
-    cloned_count: 0,
+    locked: false,
+    envs: {
+      unstable: { base_url: "https://unstable.fused.io", canvases_dir: "/Users/x/Fused/canvas/unstable", cloned_count: 0 },
+      prod: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/prod", cloned_count: 0 },
+    },
     ...over,
   };
 }

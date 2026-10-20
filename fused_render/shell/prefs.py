@@ -873,12 +873,11 @@ def _prefs_response() -> dict:
         # Whether the Share sheet offers the GitHub install-link card (opt-in,
         # default off). Not an API guard; see `github_link_enabled`.
         "github_link": {"enabled": github_link_enabled()},
-        # Which Fused environment the canvases, the `fused` wrapper and the
-        # share uploads target (fusedcli.workbench_env). READ-ONLY HERE: the
-        # one writer is `POST /api/canvases/env`, which stops the canvas sync
-        # managers first — a watcher left running would push one environment's
-        # clone into the other's same-named canvas.
-        # `locked` means FUSED_RENDER_WORKBENCH_ENV pins it for the process.
+        # The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
+        # catalog's initial pick, the `fused` wrapper outside a clone, share
+        # uploads. Canvases carry their own env, so writing it (PUT below)
+        # touches no sync manager. `locked` means FUSED_RENDER_WORKBENCH_ENV
+        # pins it for the process.
         "workbench": _workbench_state(),
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (default ON, opt-out). `available` says whether THIS
@@ -1092,13 +1091,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     # — would otherwise each write the record they read, and the slower one
     # erases the faster one's change. The lock covers the pair, not just the
     # write `storage.write_json` already makes atomic.
-    if "workbench_env" in body:
-        # The one preference this door refuses: switching environments has to
-        # delete the cloned canvases first, and only canvases.py can do that.
-        return JSONResponse(
-            {"error": "'workbench_env' is set through POST /api/canvases/env"},
-            status_code=400,
-        )
     with _PREFS_LOCK:
         prefs = read_prefs()
         changed = False
@@ -1361,6 +1353,25 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 )
             prefs["ai_idle_unload_minutes"] = value
             changed = True
+        if "workbench_env" in body:
+            # Only the DEFAULT environment (see `_workbench_state`): no canvas
+            # follows it, so there is nothing to stop first. Refused while
+            # the env var pins it, since the write would change nothing.
+            from fused_render import fusedcli
+
+            value = body.get("workbench_env")
+            if value not in fusedcli.WORKBENCH_ENV_CHOICES:
+                return JSONResponse(
+                    {"error": "'workbench_env' must be one of: "
+                              + ", ".join(fusedcli.WORKBENCH_ENV_CHOICES)},
+                    status_code=400)
+            if fusedcli.workbench_env_locked():
+                return JSONResponse(
+                    {"error": f"the environment is pinned by {fusedcli.WORKBENCH_ENV_VAR}; "
+                              "unset it to use the preference"},
+                    status_code=423)
+            prefs["workbench_env"] = value
+            changed = True
         launcher_rebind: str | None = None
         launcher_changed = False
         if "launcher_hotkey" in body:
@@ -1444,11 +1455,18 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "
                           "'calls_params', 'calls_retention_days', "
-                          "'ai_idle_unload_minutes', 'launcher_hotkey' and/or "
+                          "'ai_idle_unload_minutes', 'workbench_env', 'launcher_hotkey' and/or "
                           "'launcher_row_modifier')"},
                 status_code=400,
             )
         storage.write_json(_path(), prefs)
+    if "workbench_env" in body:
+        # AFTER the write: the wrapper bakes workbench_env() in as the
+        # FUSED_ENV a session's `fused` defaults to outside a clone, and it
+        # reads the stored preference.
+        from fused_render import fusedcli
+
+        fusedcli.export_fused_cli_env()
     if bot_terminals_off:
         # The kill switch: after the write, so a bot that races a new
         # session sees the pref already off.

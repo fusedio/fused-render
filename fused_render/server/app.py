@@ -172,10 +172,10 @@ def export_app_env() -> None:
     # does — re-deriving it there would drift the instant either side changes,
     # and a wrong answer silently withholds the workbench skills from the one
     # session shape that needs them. The env-independent BASE
-    # (`~/Fused/canvas`), never `canvases_root()`: that one carries the
-    # current environment, and `canvases_root()` reads this very var first —
-    # exporting it would freeze the environment at startup for the whole
-    # process, and every lookup after a switch would land in the old folder.
+    # (`~/Fused/canvas`), never one `canvases_root(env)`: clones of BOTH
+    # environments sync at once and a session in either needs the skills,
+    # and `canvases_base()` reads this very var first — exporting one env's
+    # folder would nest every root under it (`<env>/<env>/<name>`).
     os.environ["FUSED_RENDER_CANVASES_DIR"] = canvases.canvases_base()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
     # script under home_dir()/fused-bin goes on PATH and its dir is published

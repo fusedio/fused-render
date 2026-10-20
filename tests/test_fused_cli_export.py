@@ -6,9 +6,9 @@ Three parties have to agree, and each half is pinned here:
   prepends that dir to PATH and publishes it as FUSED_RENDER_FUSED_CLI_DIR —
   or unpublishes everything when there is no CLI to wrap.
 * the wrapper itself bakes in the same env-targeting canvases.py sets for its
-  own runs (FUSED_ENV defaults to workbench_env(); external CLIs get the
-  PYTHONHOME/PYTHONPATH scrub) so a bare `fused` from a chat hits the same
-  environment the canvases iframe shows.
+  own runs (FUSED_ENV from the canvas clone the session runs in, else the
+  default workbench_env(); external CLIs get the PYTHONHOME/PYTHONPATH scrub)
+  so a bare `fused` from a chat in a clone hits that clone's environment.
 * the claude template pre-allows `Bash(fused:*)` and discloses the CLI in its
   prompt exactly when the var is set — a machine without the CLI must never
   get a prompt promising a command that would fail.
@@ -17,6 +17,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 
 import pytest
@@ -202,23 +203,61 @@ def test_app_serve_python_is_the_engines_resolution_not_a_second_one(monkeypatch
     assert "python_executable=envinstall.script_python()" in src
 
 
-def test_wrapper_default_matches_the_canvases_default(monkeypatch, tmp_path):
-    """canvases.py and the wrapper share one knob through
-    fusedcli.workbench_env — this pins that the canvases module actually
-    reads it rather than keeping a default of its own (D146: a duplicated
-    rule needs a test)."""
+def _wrapper_env(wrapper: str, cwd: str, fused_env: str | None = None) -> str:
+    """Run the wrapper from `cwd` and return the FUSED_ENV its command sees."""
+    env = {k: v for k, v in os.environ.items() if k not in ("FUSED_ENV", "PWD")}
+    if fused_env is not None:
+        env["FUSED_ENV"] = fused_env
+    proc = subprocess.run(["/bin/sh", "-c", 'cd "$1" && exec "$2"', "sh", cwd, wrapper],
+                          capture_output=True, text=True, env=env, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh wrapper")
+def test_wrapper_takes_fused_env_from_the_clone_it_runs_in(monkeypatch, tmp_path):
+    """A canvas carries its environment in its path (`<base>/<env>/<name>`):
+    a session's bare `fused` inside a prod clone must reach prod even when
+    the default is unstable, while outside any clone it gets the default and
+    an explicit FUSED_ENV still wins. Matched through a symlink too (macOS
+    tmp and homes are behind /private, so $PWD and the realpath differ)."""
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
-    # Own home: the resolver now also reads the `workbench_env` preference.
+    real_base = tmp_path / "real" / "canvas"
+    (real_base / "prod" / "alpha" / "sub").mkdir(parents=True)
+    (real_base / "unstable" / "alpha").mkdir(parents=True)
+    link = tmp_path / "linked"
+    link.symlink_to(tmp_path / "real")
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(link / "canvas"))
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    probe = fusedcli.FusedCli(command=["/bin/sh", "-c", 'printf %s "$FUSED_ENV"', "probe"],
+                              external=True)
+    monkeypatch.setattr(fusedcli, "fused_cli", lambda: probe)
+    wrapper = os.path.join(fusedcli.export_fused_cli_env(), "fused")
     assert fusedcli.workbench_env() == "unstable"
+    assert _wrapper_env(wrapper, str(real_base / "prod" / "alpha")) == "prod"
+    assert _wrapper_env(wrapper, str(link / "canvas" / "prod" / "alpha" / "sub")) == "prod"
+    assert _wrapper_env(wrapper, str(real_base / "unstable" / "alpha")) == "unstable"
+    assert _wrapper_env(wrapper, str(tmp_path)) == "unstable"
+    assert _wrapper_env(wrapper, str(real_base / "prod" / "alpha"), "unstable") == "unstable"
+
+
+def test_canvases_never_default_a_cli_run_to_the_preference(monkeypatch, tmp_path):
+    """The preference is only the DEFAULT now: a CLI run names the canvas's
+    own env, and the dev URL override applies to the default env alone —
+    otherwise a prod canvas would load the local (unstable) workbench."""
+    monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_RENDER_WORKBENCH_URL", "http://localhost:3000")
     import fused_render.canvases as canvases
+
+    assert fusedcli.workbench_env() == "unstable"
+    cli = fusedcli.FusedCli(command=["fused"], external=False)
+    assert canvases._cli_env(cli, "prod")["FUSED_ENV"] == "prod"
+    assert canvases.workbench_base_url("unstable") == "http://localhost:3000"
+    assert canvases.workbench_base_url("prod") == "https://www.fused.io"
     src = open(canvases.__file__, encoding="utf-8").read()
-    # Read at call time, never frozen into a constant: the preference flips
-    # at runtime (POST /api/canvases/env) and the iframe URL and every CLI
-    # child have to follow without a restart.
+    # Never frozen into a module constant: the default moves at runtime.
     assert "WORKBENCH_ENV = " not in src
-    assert 'env["FUSED_ENV"] = workbench_env()' in src
-    assert "_ENV_WEB_URLS.get(\n        workbench_env()" in src
 
 
 # --------------------------------------------------- the template's half

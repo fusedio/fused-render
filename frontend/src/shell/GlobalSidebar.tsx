@@ -494,7 +494,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // through a different door, not a second destination (apps/bots/routes.ts).
   const botsActive = isBotsPath(pathname);
   const tasksActive = pathname === "/tasks";
-  // Exact, for the reason Home is: /canvases/<name> is a workspace you opened,
+  // Exact, for the reason Home is: /canvases/<env>/<name> is a workspace you opened,
   // not the list page, and lighting the row while you are inside a canvas reads
   // as two selections.
   const canvasesActive = pathname === "/canvases";

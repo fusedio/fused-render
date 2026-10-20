@@ -631,7 +631,7 @@ def _manager(tmp_path, monkeypatch, local_toml: bytes, files: dict[str, bytes]):
     from fused_render import canvases as canvases_mod
 
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(tmp_path))
-    manager = canvases_mod._SyncManager("folders-merge-unit")
+    manager = canvases_mod._SyncManager("unstable", "folders-merge-unit")
     # The constructor starts the watcher; these tests drive `_merge_remote`
     # by hand, and a live watcher would push into the NEXT test's env.
     manager.stop()
@@ -753,7 +753,7 @@ def test_force_pull_normalises_the_pulled_toml_and_goes_dirty(tmp_path, monkeypa
             return subprocess.CompletedProcess(cmd, 0, "", "")
         return subprocess.CompletedProcess(cmd, 0, "already up to date", "")
     monkeypatch.setattr(canvases_mod.subprocess, "run", fake_run)
-    monkeypatch.setattr(canvases_mod, "_cli_env", lambda cli: {})
+    monkeypatch.setattr(canvases_mod, "_cli_env", lambda cli, env: {})
     monkeypatch.setattr(canvases_mod, "_seed_clone_claude_files", lambda *a: None)
     probe = {"udfs": {}}
     assert manager._force_pull(probe, types.SimpleNamespace(command=["fused"])) is None
