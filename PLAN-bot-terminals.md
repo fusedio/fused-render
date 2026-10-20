@@ -151,3 +151,15 @@ TDD throughout: write the failing test first in the named file, following the pa
 4. Text the same request from the phone. Even `gh pr list` asks.
 5. Turn the pref off mid-session. The bot's terminal closes and the pane disappears.
 6. Your own terminal drawer never lists the bot's session.
+
+## Builder notes
+
+Deviations from the plan, and why:
+
+- Task 1/4: `ShellEventParser` got a `done_count` (commands finished) so `terminal_run` can wait for "its" command's 133;D rather than polling `running`. It was added with the Task 4 commit.
+- Task 2/3: `bot.close_all_terminals` is defined in Task 2 (the pref kill switch needs it); the per-bot session logic stays in Task 3's `Bot` methods.
+- Task 4: terminal allow rules match by WORD PREFIX (a stored `gh search` covers `gh search prs`), not exact key equality, so the preset's `gh search` rule is useful. `risk()` returns "" for a covered command and `_act` forces a card for every other `terminal_run`, including under "Never ask".
+- Task 4: the live-pty tests rely on the real shell integration emitting 133;C/133;D under `$SHELL` in a test pty; they passed locally.
+- Task 5: the Terminal row in Bot settings is a On/Off select (like its neighbours), and the pane switch lives in PreviewPane with local state. Stage (full live view) and side-app modes hide the switch and terminal. Not browser-verified by the builder.
+- Task 6: the preset test lives in `tests/test_bots_presets.py` (it owns the `bot` fixture) rather than `test_bots_terminal.py`. Preset `terminal_allow` is read by `presets.presets()` and hidden from `GET /api/bots/presets`. The GitHub instructions were rewritten tighter to stay under the 700-char preset rule.
+- DECISIONS.md entry is D1384 (origin/main's last was D1383 when written; renumber if main has moved).

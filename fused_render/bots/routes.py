@@ -405,7 +405,7 @@ def bots_profiles():
 @_handled
 def bots_presets():
     """The "+" chooser's catalog (OpenBot `presets`): playbooks as titles only."""
-    return {"ok": True, "presets": [{**{k: v for k, v in p.items() if k != "skills"}, "skills": [s["title"] for s in p["skills"]]}
+    return {"ok": True, "presets": [{**{k: v for k, v in p.items() if k not in ("skills", "terminal_allow")}, "skills": [s["title"] for s in p["skills"]]}
                                     for p in _presets().presets()]}
 
 

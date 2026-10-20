@@ -241,3 +241,22 @@ def test_flag_keeps_a_brand_icon(client, ws):
     st, status = j(client.get("/api/bots"))
     s = next(b for b in status["bots"] if b["id"] == bid)
     assert s["face"] == {"shape": "", "color": "#0a66c2", "icon": "linkedin"}
+
+
+# ---- the GitHub preset and the bot terminal (docs §16) ------------------------------
+GH_READS = ["gh pr view", "gh pr list", "gh pr diff", "gh pr checks", "gh issue view", "gh issue list",
+            "gh run view", "gh run list", "gh repo view", "gh search"]
+
+
+def test_github_preset_seeds_read_only_terminal_rules_and_never_turns_terminal_on(bot):
+    presets_mod.apply_preset(bot, "github")
+    rules = [r for r in bot.meta["allow_rules"] if r["kind"] == "terminal"]
+    assert [r["key"] for r in rules] == GH_READS          # never `gh api`
+    assert not bot.meta.get("terminal")                    # the user turns the bot's Terminal on, never a preset
+    assert "terminal_run" in bot.meta["instructions"]
+    assert store.read_meta(bot.id)["allow_rules"] == rules
+
+
+def test_presets_without_terminal_allow_seed_no_rules(bot):
+    presets_mod.apply_preset(bot, "linkedin")
+    assert not bot.meta.get("allow_rules")

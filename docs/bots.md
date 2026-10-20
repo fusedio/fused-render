@@ -170,11 +170,13 @@ reply:  {seq, role, text}   (quoted message the user replied to)
 
 Bot summary (`Bot.summary(light, detail)`): every key of `bot.json`
 (`id, name, model, effort, status, instructions, created, task, step, url,
-title, note, updated, approval, build_access, trusted_apps, allow_rules, folders, face, routines, pinned, hidden,
+title, note, updated, approval, build_access, terminal, trusted_apps, allow_rules, folders, face, routines, pinned, hidden,
 reactions, encrypt, chrome_profile, browser_id, imessage, imessage_to, builds,
 pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
 `seq`, `browser: {running, url, title, headed, sealed, encrypt, shared, tabs?[{i,id,title,url,active,ws}], files?, artifacts?, artifacts_dir?}`,
 `browser_name`, `shared_with: [{id, name}]` (the other bots on this bot's browser),
+`terminal_id` (the bot's live pty session id, else null), `terminal_available` (every condition of §16 holds now),
+`terminal_needs_claude` (the only blocker is the steps engine),
 `memory` (detail only), `skills` (detail only), `learning` (a learn-from-last
 worker is running; a second `learn` is refused meanwhile), `shot` (the shot URL,
 `/api/bots/<id>/shot`, or null), `shot_ts`, `viewport: [1280, 800]`, `events`
@@ -670,6 +672,10 @@ as true/false, or null with a reason when the tool could not run. Add a
 folder to add a starter.
 
 ## 6. The agent engine (harness) — `agent_engine.py`, `tools.py`, `botmcp.py`
+
+Roster note: `terminal_run`, `terminal_read` and `terminal_interrupt` are on the roster only while
+`tools.terminal_enabled(bot)` (§16). `terminal_run` always shows an approval card unless an allow rule covers
+the command, and "Never ask" does not change that.
 
 Verified on claude 2.1.287 (scratch spike, 2026-10-02):
 
@@ -2072,3 +2078,44 @@ to rebuild.
 Chips: `marketplace_search` → "N apps found"; `marketplace_install` → the
 first sentence ("Installed Name v1.2 at …"). Both are `_NO_THUMB` in the
 steps engine (the browser did not move).
+
+## 16. Bot terminals — `terminal_run` / `terminal_read` / `terminal_interrupt` (`tools.TERMINAL_TOOLS`, 2026-10-20)
+
+A bot can run a command in its own terminal (a pty session, `pty_session.py`) and read what came back, so a
+site with a CLI (GitHub's `gh`) is driven by commands instead of the browser. The user watches the same session
+live beside the browser (Browser | Terminal switch in the preview column).
+
+**Two switches, both off by default.** Preferences > Optional features > "Bot terminals"
+(`shell.prefs.bot_terminals_enabled`) is the global one; turning it off kills every bot-owned terminal
+(`bot.close_all_terminals`). The per-bot `terminal` setting (Settings > Permissions > Terminal) is user-only: it is
+not in `MANAGE_FIELDS`, so a bot cannot give itself a shell, and presets never set it. The tools are on the roster
+only while `tools.terminal_enabled(bot)`: not Windows (the pty is POSIX-only), the pref is on, the bot's `terminal`
+is true, it is not Super Bot (which has Bash) and its engine resolves to `agent` (never the steps engine, so never
+a local model). The Settings row shows `terminal_needs_claude` when the engine is the only blocker.
+
+**Tools.** `terminal_run {command, wait_s?}` types one command and waits (default 30 s, max 120 s) for its end
+mark (OSC 133;D from `shell_integration.py`; `ShellEventParser.done_count` moves). It returns `exit code`, `cwd` and
+only that command's output (the scrollback slice between the 133;C and 133;D byte offsets, last 200 lines). A
+command still running at the deadline returns "still running" with the screen. `terminal_read {lines?}` is the
+current screen text (default 50, max 500), `terminal_interrupt` presses Ctrl-C. A new `terminal_run` while a
+program holds the terminal returns "terminal is busy". The shell outlives calls, so `cd` and exports persist.
+Pagers are disabled (`PAGER`/`GH_PAGER`/`GIT_PAGER=cat`).
+
+**Approval.** `terminal_run` always cards, with the command as the preview, unless a stored `terminal` allow rule
+covers it. "Never ask" never covers it: command output (issue and PR text) is untrusted, so only an explicit rule
+skips the card (`agent_engine._act`). A command holding a shell metacharacter (`; | & \` < > $`, backslash,
+newline) always cards and is never offered "Approve forever", because rules match the typed text. A task that
+came from outside the Mac (phone, iMessage) always cards and gets no forever offer. The rule key is the
+executable plus up to two following plain words, stopping at a flag, path or number (`gh pr view 12` -> `gh pr
+view`); a rule covers any command whose key starts with the rule's words (`gh search` covers `gh search prs`).
+`terminal_read` and `terminal_interrupt` never card.
+
+**Lifecycle.** One session per bot, created lazily on the first `terminal_run` in the bot's own folder, owned
+`bot:<id>` (`pty_session.BOT_OWNER_PREFIX`): hidden from the user's terminal drawer and counted against its own cap
+(`MAX_BOT_SESSIONS`), not the user's. It is reused across tasks and closed on stop-the-bot shutdown, delete, the
+per-bot opt-out and the global pref going off.
+
+**GitHub preset.** Its instructions prefer `gh` through `terminal_run` and fall back to the browser. It seeds
+`terminal` allow rules (`preset.json` `terminal_allow`) for the read-only commands `gh pr view|list|diff|checks`,
+`gh issue view|list`, `gh run view|list`, `gh repo view` and `gh search`; never `gh api`. The rules are inert until
+the user turns the bot's Terminal on.

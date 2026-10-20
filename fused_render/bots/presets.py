@@ -2,14 +2,16 @@
 `apply_preset`, docs/bots.md §5).
 
 `bots/presets/<key>/preset.json` (name, color, order, model, instructions,
-optional `apps`, optional `setup`) plus any number of playbook `.md` files in the Skills format
+optional `apps`, optional `setup`, optional `terminal_allow`) plus any number of playbook `.md` files in the Skills format
 (`# title`, a `trigger:` line, numbered steps). The key doubles as the brand
 icon the page draws on the avatar. `apps` names starter apps
 (`bots/starters/<key>`, see starters.py) installed when a bot is made from the
 preset, so its APP TOOLS are there on the first task. `setup` is a task the new
 bot runs by itself right after its greeting (bot.create): the site presets use it
 to open the sign-in page and pop the login window, so the user is asked to log in
-the moment the bot exists instead of on its first real task.
+the moment the bot exists instead of on its first real task. `terminal_allow` lists
+command keys (`gh pr view`) seeded as "approved forever" terminal rules (docs §16);
+they are inert until the user turns the bot's Terminal on, which a preset never does.
 """
 from __future__ import annotations
 
@@ -58,6 +60,8 @@ def presets():
                     "order": order, "model": p.get("model") if p.get("model") in MODELS else DEFAULT_MODEL,
                     "instructions": str(p.get("instructions") or ""), "setup": str(p.get("setup") or "").strip(),
                     "skills": skills,
+                    "terminal_allow": [str(k).strip() for k in (p.get("terminal_allow") if isinstance(p.get("terminal_allow"), list) else [])
+                                       if str(k).strip()],
                     "apps": [str(a) for a in apps if a]})
     out.sort(key=lambda p: (p["order"], p["name"]))
     return out
@@ -84,6 +88,10 @@ def apply_preset(b, key, apps_root=None):
     b.meta["face"] = {"icon": key, "color": p["color"], "shape": ""}
     if not (b.meta.get("instructions") or "").strip():
         b.meta["instructions"] = p["instructions"].strip()
+    if p["terminal_allow"]:
+        from fused_render.bots import tools
+        rules = [{"kind": "terminal", "key": k, "label": f"runs `{k} …` in its terminal"} for k in p["terminal_allow"]]
+        b.meta["allow_rules"] = tools.clean_allow_rules(list(b.meta.get("allow_rules") or []) + rules)
     b.save()
     if p["apps"]:
         from fused_render.bots import starters
