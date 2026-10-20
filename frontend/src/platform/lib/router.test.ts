@@ -599,6 +599,32 @@ describe("pushHistory in a foreign embed", () => {
   });
 });
 
+describe("navigateUrl replace keeps entry state", () => {
+  test("replace:true without isDir passes the current history.state through", () => {
+    const hist = globalThis.history as unknown as {
+      state: unknown;
+      replaceState: (...a: unknown[]) => void;
+    };
+    const prevReplace = hist.replaceState;
+    const prevState = hist.state;
+    const seen: unknown[] = [];
+    hist.state = { fusedActiveTab: "x", fsDir: true };
+    hist.replaceState = (s) => void seen.push(s);
+    const prevDispatch = window.dispatchEvent;
+    window.dispatchEvent = (() => true) as typeof window.dispatchEvent;
+    try {
+      navigateUrl("/preferences?tab=ai", { replace: true });
+      expect(seen).toEqual([{ fusedActiveTab: "x", fsDir: true }]);
+      navigateUrl("/preferences?tab=ai", { replace: true, isDir: false });
+      expect(seen[1]).toEqual({ fsDir: false });
+    } finally {
+      window.dispatchEvent = prevDispatch;
+      hist.replaceState = prevReplace;
+      hist.state = prevState;
+    }
+  });
+});
+
 describe("navigateUrl replace option", () => {
   test("replace:true calls replaceState, never pushState, and still fires the nav event", () => {
     const hist = globalThis.history as unknown as {

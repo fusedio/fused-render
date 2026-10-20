@@ -757,7 +757,7 @@ export function navigateUrl(url: string, opts?: { isDir?: boolean; replace?: boo
   // map here or the dispatcher won't recognize the path.
   const href = rewriteLegacyUrl(url);
   guarded(() => {
-    if (opts?.replace) history.replaceState(state, "", href);
+    if (opts?.replace) history.replaceState(state ?? history.state, "", href);
     else pushHistory(state, href);
     notifyNavigate();
   });
