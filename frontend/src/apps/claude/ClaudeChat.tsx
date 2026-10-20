@@ -34,6 +34,7 @@ import { createPortal } from "react-dom";
 
 import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
+import { CHAT_ACTIVITY_KEY } from "@platform/lib/tasksChanged";
 import {
   chatDraftKey,
   newTaskDraftId,
@@ -219,11 +220,11 @@ export type ChatParamsSource = "url" | ParamsStore;
  *  wonders whether anything happened. */
 export const ASK_DETECTION_TIMEOUT_MS = 1500;
 
-/** T:16435 — the cross-document poke. `storage` fires only on a CHANGED value
- *  and never in the writing document, which is exactly the shape needed; the
- *  clock plus a nonce means two panes stamping in the same millisecond cannot
- *  swallow each other's poke. */
-export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
+// T:16435 — the cross-document poke, CHAT_ACTIVITY_KEY (one home:
+// @platform/lib/tasksChanged, D1386). `storage` fires only on a CHANGED value
+// and never in the writing document, which is exactly the shape needed; the
+// clock plus a nonce (stampChatActivity) means two panes stamping in the same
+// millisecond cannot swallow each other's poke.
 
 /** How often the HOST's app-state frame is looked up again (`annotateTarget`).
  *  The mark moves with the host's own mode switcher and goes when it shows a
@@ -3349,6 +3350,20 @@ function ChatBody(props: ChatBodyProps) {
     [pullOutbox],
   );
 
+  /** "Fork from here" (Transcript `onFork`): the controller parks that turn and
+   *  everything after it, and the words go back through the same restore seat a
+   *  pulled bubble uses. Nothing happens when the controller refuses (a run is
+   *  active, not a Claude chat). */
+  const onFork = useCallback(
+    (turnKey: string) => {
+      const text = controller.beginFork(turnKey);
+      if (text === null) return;
+      strandSeq.current += 1;
+      setStranded({ text, seq: strandSeq.current });
+    },
+    [controller],
+  );
+
   /**
    * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the turn, then
    * the typed line goes FIRST, ahead of anything parked, and the outbox drains
@@ -5189,6 +5204,7 @@ function ChatBody(props: ChatBodyProps) {
               onAnchorSpent={onAnchorSpent}
               {...(debugSent ? { onShowSent: setSent } : {})}
               onPullPending={onPullPending}
+              {...(chatBackend === "claude" && !running ? { onFork } : {})}
               onOpenShot={setViewing}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
@@ -5316,6 +5332,16 @@ function ChatBody(props: ChatBodyProps) {
               onStop={sched.onStop}
               cardRef={sched.cardRef}
             />
+            {/* FORK NOTICE: the next send starts a NEW session from the message
+                above; Cancel puts the hidden turns back. */}
+            {state.fork ? (
+              <div className="fork-notice" role="status">
+                <span>Forking from an earlier message</span>
+                <button type="button" className="fork-notice-cancel" onClick={() => controller.cancelFork()}>
+                  Cancel
+                </button>
+              </div>
+            ) : null}
             {/* A card is READ, not typed into: compact is the one cut that takes
                 the composer away, which is the whole difference from peek
                 (T:1412-1422). The strip rides INSIDE the composer's own block

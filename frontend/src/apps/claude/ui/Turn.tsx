@@ -4,7 +4,7 @@
 // avatar", the shape claude.ai / v0 / ChatGPT all settled on).
 import { memo, useId, useMemo } from "react";
 
-import { SquareTerminal } from "lucide-react";
+import { SquareTerminal, Undo2 } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { parseTerminalAsk } from "@platform/lib/terminalFocus";
 
@@ -95,6 +95,10 @@ export interface TurnProps {
    *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
    *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
   onPullPending?: (key: string) => void;
+  /** "Fork from here" on a sent user turn: park it and everything after it and
+   *  re-ask it in the composer. Passed only for a Claude chat that is idle;
+   *  absent, no button is drawn. One callback for the log, keyed by the turn. */
+  onFork?: (key: string) => void;
   /** The chat's working directory, threaded down to `SegmentView`/`ToolChip`/
    *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first. */
@@ -119,6 +123,7 @@ export const Turn = memo(function Turn({
   onToggleCollapse,
   pendingCard,
   onPullPending,
+  onFork,
   cwd,
 }: TurnProps) {
   const agent = useAgent();
@@ -191,6 +196,20 @@ export const Turn = memo(function Turn({
             <span className="turn-stamp" {...(stampTitle(ts) ? { "data-hint": stampTitle(ts)! } : {})}>
               {stamp}
             </span>
+          ) : null}
+          {/* FORK FROM HERE — a SIBLING before the bubble, never inside it: the
+              re-attach probe matches `.user .bubble`'s text. Only a message the
+              transcript knows (uuid) and this page has really sent. */}
+          {turn.uuid && !pending && onFork ? (
+            <button
+              type="button"
+              className="turn-fork"
+              aria-label="Fork from here"
+              data-hint="Fork from here"
+              onClick={() => onFork(turn.key)}
+            >
+              <Undo2 size={13} aria-hidden="true" />
+            </button>
           ) : null}
         {/* WHAT THE BUBBLE SAYS. An annotated send reads as the comments the
             reader wrote on the picture: the typed words first when there are

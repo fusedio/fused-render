@@ -18,6 +18,7 @@
 // One `role="status"` wrapper carries the label; the bars inside are decoration
 // and are hidden from the accessibility tree.
 import type React from "react";
+import { getUiLayout } from "@platform/lib/ui-layout";
 import { BOARD_LANES, initialRange } from "./schedule-lib";
 import type { TaskView } from "./tasks-lib";
 
@@ -34,20 +35,13 @@ const LIST_ROWS = 8;
 const LANE_CARDS = [2, 3, 0, 3, 2];
 const CARD_TILES = 6;
 const CAL_ROWS = 8;
-/** The calendar's own memory of its range (ScheduleCalendar RANGE_KEY), read
- *  the same way it reads it — through schedule-lib.initialRange, which is also
+/** The calendar's own memory of its range (the layout document's
+ *  `tasks.calRange`, platform/lib/ui-layout.ts), read the same way
+ *  ScheduleCalendar reads it — through schedule-lib.initialRange, which is also
  *  what decides the default for a reader who never chose — so the ghost has the
  *  day count the grid will. */
-const CAL_RANGE_KEY = "fused-render:scheduled-cal-range";
-
 function calendarDays(): number {
-  let stored: string | null = null;
-  try {
-    stored = localStorage.getItem(CAL_RANGE_KEY);
-  } catch {
-    stored = null;
-  }
-  return initialRange(stored) === "4day" ? 4 : 7;
+  return initialRange(getUiLayout().tasks?.calRange) === "4day" ? 4 : 7;
 }
 /** Where a chip ghost sits per day column: [row offset, rows tall]; a day
  *  with none is a quiet day. Index = day column. */

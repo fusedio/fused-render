@@ -56,7 +56,7 @@ class ImessageChannel(Channel):
     def acquire(self) -> bool:
         lp = im.lock_path()
         os.makedirs(os.path.dirname(lp), exist_ok=True)
-        fh = open(lp, "a+")
+        fh = open(lp, "a+", encoding="utf-8")
         try:
             fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
@@ -212,7 +212,7 @@ class ImessageChannel(Channel):
         try:
             sp = im.state_path()
             tmp = sp + ".tmp"
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump({**self.state, "pid": os.getpid(), "ts": time.time()}, f)
             os.replace(tmp, sp)
         except OSError:

@@ -12,14 +12,16 @@ action, ms, ok, detail}` — each also written as one `logger.info` line, so a
 diag bundle and the page's drawer tell the same story. `seq` only grows; the
 page pages with `after=<last seq it saw>`.
 
-THE NOTIFIER: one registry keyed by canvas NAME, not by manager. A
+THE NOTIFIER: one registry keyed by CANVAS, not by manager — the key is
+canvases.py's `_sync_key(env, name)` (`"<env>/<name>"`: prod's and unstable's
+same-named canvases sync at once and must not wake each other's sockets). A
 stop/start (or a server-side self-heal) replaces the manager under the same
-name; a socket subscribed by name keeps receiving without re-subscribing,
-and reads the new manager's epoch on its next wake. A wake is
+key; a socket subscribed by key keeps receiving without re-subscribing, and
+reads the new manager's epoch on its next wake. A wake is
 `loop.call_soon_threadsafe(event.set)` — the sync threads never touch the
 event loop, and the socket handler never parks a thread.
 
-THE WRITER LOCK: `<canvases_root>/.sync/<name>.lock`. Two fused-render
+THE WRITER LOCK: `<canvases_root(env)>/.sync/<name>.lock`. Two fused-render
 servers (the desktop app and a dev server, two branches) watching the same
 clone each push its own view of the folder over the other's and each answer
 the embed — one writer per clone. On POSIX the lock is an `flock` held on an
@@ -54,7 +56,8 @@ LOG_RING_MAX = 200
 
 
 class SyncLog:
-    """Bounded, thread-safe event ring for one canvas."""
+    """Bounded, thread-safe event ring for one canvas. `name` is the label its
+    log lines carry (canvases.py passes the `<env>/<name>` key)."""
 
     def __init__(self, name: str, notify) -> None:
         self.name = name
@@ -104,29 +107,29 @@ _LISTENERS_LOCK = threading.Lock()
 _LISTENERS: dict[str, set] = {}
 
 
-def subscribe(name: str) -> tuple:
-    """Register the CALLING event loop for wakes on `name`. Returns the token
-    `unsubscribe` takes; `token[1]` is the asyncio.Event to await (clear it
-    after each wake)."""
+def subscribe(key: str) -> tuple:
+    """Register the CALLING event loop for wakes on canvas `key`. Returns the
+    token `unsubscribe` takes; `token[1]` is the asyncio.Event to await (clear
+    it after each wake)."""
     token = (asyncio.get_running_loop(), asyncio.Event())
     with _LISTENERS_LOCK:
-        _LISTENERS.setdefault(name, set()).add(token)
+        _LISTENERS.setdefault(key, set()).add(token)
     return token
 
 
-def unsubscribe(name: str, token) -> None:
+def unsubscribe(key: str, token) -> None:
     with _LISTENERS_LOCK:
-        subs = _LISTENERS.get(name)
+        subs = _LISTENERS.get(key)
         if subs is not None:
             subs.discard(token)
             if not subs:
-                del _LISTENERS[name]
+                del _LISTENERS[key]
 
 
-def notify(name: str) -> None:
-    """Wake every socket watching `name`. Safe from any thread."""
+def notify(key: str) -> None:
+    """Wake every socket watching canvas `key`. Safe from any thread."""
     with _LISTENERS_LOCK:
-        subs = list(_LISTENERS.get(name, ()))
+        subs = list(_LISTENERS.get(key, ()))
     for loop, event in subs:
         try:
             loop.call_soon_threadsafe(event.set)

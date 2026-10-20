@@ -135,7 +135,7 @@ def super_meta():
         return None, {}
     for bid in ids:
         try:
-            with open(os.path.join(bots, bid, "bot.json")) as f:
+            with open(os.path.join(bots, bid, "bot.json"), encoding="utf-8") as f:
                 m = json.load(f)
         except (OSError, ValueError):
             continue
@@ -199,7 +199,7 @@ def decode_attributed_body(blob):
 
 def load_cursor():
     try:
-        with open(cursor_path()) as f:
+        with open(cursor_path(), encoding="utf-8") as f:
             c = json.load(f)
             c.pop("seq", None)   # the first version's cursor
             c.pop("line", None)  # the second's per-bot transcript cursor; the router delivers live now
@@ -213,7 +213,7 @@ def save_cursor(c):
     p = cursor_path()
     os.makedirs(os.path.dirname(p), exist_ok=True)
     tmp = p + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(c, f)
     os.replace(tmp, p)
 
@@ -360,7 +360,7 @@ def main(argv):
         print(f"chat.db: {e}")
     print(f"cursor: {load_cursor()}")
     try:
-        with open(state_path()) as f:
+        with open(state_path(), encoding="utf-8") as f:
             print(f"bridge state: {f.read().strip()}")
     except OSError:
         print("bridge state: none written yet (server not running, or Super Bot has no handle)")

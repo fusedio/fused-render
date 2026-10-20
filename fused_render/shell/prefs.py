@@ -73,6 +73,7 @@ X-Fused guard and the small env-var effective-engine mirror are duplicated
 locally like shell/bookmarks.py's guard is.
 """
 import os
+import re
 import threading
 
 from fastapi import APIRouter, Body, Header
@@ -192,7 +193,7 @@ def canvases_enabled() -> bool:
     entry.
 
     A SWITCH OVER THE ENTRY POINTS, NOT A ROUTE GUARD: `/canvases` and
-    `/canvases/<name>` keep answering while this is off, the same way the
+    `/canvases/<env>/<name>` keep answering while this is off, the same way the
     signed-out state has always left them reachable and let the page explain
     itself. A deep link, a bookmark, or a workspace someone still has open is
     not what a reader turning this off asked to lose; the nav entries for a
@@ -414,6 +415,51 @@ def task_summary_titles_enabled() -> bool:
     recap or Claude's reply (default off; only a stored `true` is on).
     Rows then carry `title_mode: "summary"`; the key is absent when off."""
     return read_prefs().get("task_summary_titles_enabled") is True
+# ---- moved off localStorage (D1386) -----------------------------------------
+#
+# The four below were browser localStorage keys until D1386. localStorage is
+# per ORIGIN, and the desktop app walks ports 1777..1787 then an ephemeral one
+# (shell/onboarding.py) — so a relaunch on another port is a new origin with
+# empty storage and every one of these silently fell back to its default. The
+# client imports its old key once (push here, then remove it) and reads them
+# off `/api/prefs` from then on.
+
+#: Tasks-page view tab ids: short lower-case identifiers (the client's
+#: `TasksView` names). Unknown-but-well-formed ids are kept — the client drops
+#: what it does not know, so a newer client's tab survives an older server.
+_TASKS_VIEW_TAB_RE = re.compile(r"^[a-z_]{1,24}$")
+MAX_TASKS_VIEW_TABS = 8
+
+
+def bots_autostage() -> bool:
+    """"Open the browser when a bot needs me": a bot-initiated hand-over on
+    the selected bot opens the Bots page's Stage by itself (default ON — only
+    a stored ``false`` turns it off). Was localStorage
+    ``browser-bot.autostage``."""
+    return read_prefs().get("bots_autostage") is not False
+
+
+def bots_sounds() -> bool:
+    """Whether a hand-over plays the Bots page's chime (default ON — only a
+    stored ``false`` turns it off). Was localStorage ``browser-bot.sounds``."""
+    return read_prefs().get("bots_sounds") is not False
+
+
+def bots_clear_enabled() -> bool:
+    """Whether the bot chat header shows its Clear context button (a feature
+    flag, default OFF — only a stored ``true`` turns it on). Was localStorage
+    ``browser-bot.clear``."""
+    return read_prefs().get("bots_clear_enabled") is True
+
+
+def tasks_view_tabs() -> list[str]:
+    """The Tasks page's chosen view tabs, in order. ``[]`` — unset, empty or
+    unreadable — means "the client's defaults"; never raises."""
+    value = read_prefs().get("tasks_view_tabs")
+    if not isinstance(value, list):
+        return []
+    tabs = [t for t in value if isinstance(t, str) and _TASKS_VIEW_TAB_RE.fullmatch(t)]
+    return list(dict.fromkeys(tabs))[:MAX_TASKS_VIEW_TABS]
 
 
 def lan_enabled() -> bool:
@@ -827,12 +873,11 @@ def _prefs_response() -> dict:
         # Whether the Share sheet offers the GitHub install-link card (opt-in,
         # default off). Not an API guard; see `github_link_enabled`.
         "github_link": {"enabled": github_link_enabled()},
-        # Which Fused environment the canvases, the `fused` wrapper and the
-        # share uploads target (fusedcli.workbench_env). READ-ONLY HERE: the
-        # one writer is `POST /api/canvases/env`, which stops the canvas sync
-        # managers first — a watcher left running would push one environment's
-        # clone into the other's same-named canvas.
-        # `locked` means FUSED_RENDER_WORKBENCH_ENV pins it for the process.
+        # The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
+        # catalog's initial pick, the `fused` wrapper outside a clone, share
+        # uploads. Canvases carry their own env, so writing it (PUT below)
+        # touches no sync manager. `locked` means FUSED_RENDER_WORKBENCH_ENV
+        # pins it for the process.
         "workbench": _workbench_state(),
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (default ON, opt-out). `available` says whether THIS
@@ -864,6 +909,11 @@ def _prefs_response() -> dict:
         "task_recap": {"enabled": task_recap_titles_enabled()},
         # Summary-only Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
+        # The Bots page's three switches and the Tasks page's view tabs —
+        # localStorage until D1386 (see the readers' section comment).
+        "bots": {"autostage": bots_autostage(), "sounds": bots_sounds(),
+                 "clear_enabled": bots_clear_enabled()},
+        "tasks_view_tabs": tasks_view_tabs(),
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -1041,13 +1091,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     # — would otherwise each write the record they read, and the slower one
     # erases the faster one's change. The lock covers the pair, not just the
     # write `storage.write_json` already makes atomic.
-    if "workbench_env" in body:
-        # The one preference this door refuses: switching environments has to
-        # delete the cloned canvases first, and only canvases.py can do that.
-        return JSONResponse(
-            {"error": "'workbench_env' is set through POST /api/canvases/env"},
-            status_code=400,
-        )
     with _PREFS_LOCK:
         prefs = read_prefs()
         changed = False
@@ -1178,6 +1221,25 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'task_summary_titles_enabled' must be a boolean"},
                                     status_code=400)
             prefs["task_summary_titles_enabled"] = value
+        for key in ("bots_autostage", "bots_sounds", "bots_clear_enabled"):
+            if key in body:
+                value = body.get(key)
+                if not isinstance(value, bool):
+                    return JSONResponse({"error": f"'{key}' must be a boolean"},
+                                        status_code=400)
+                prefs[key] = value
+                changed = True
+        if "tasks_view_tabs" in body:
+            value = body.get("tasks_view_tabs")
+            if (not isinstance(value, list) or len(value) > MAX_TASKS_VIEW_TABS
+                    or not all(isinstance(t, str) and _TASKS_VIEW_TAB_RE.fullmatch(t)
+                               for t in value)):
+                return JSONResponse(
+                    {"error": "'tasks_view_tabs' must be a list of at most "
+                              f"{MAX_TASKS_VIEW_TABS} tab ids ([a-z_], 1-24 chars)"},
+                    status_code=400)
+            # Order kept, repeats dropped; [] stores "use the defaults".
+            prefs["tasks_view_tabs"] = list(dict.fromkeys(value))
             changed = True
         if "lan_enabled" in body:
             value = body.get("lan_enabled")
@@ -1291,6 +1353,25 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 )
             prefs["ai_idle_unload_minutes"] = value
             changed = True
+        if "workbench_env" in body:
+            # Only the DEFAULT environment (see `_workbench_state`): no canvas
+            # follows it, so there is nothing to stop first. Refused while
+            # the env var pins it, since the write would change nothing.
+            from fused_render import fusedcli
+
+            value = body.get("workbench_env")
+            if value not in fusedcli.WORKBENCH_ENV_CHOICES:
+                return JSONResponse(
+                    {"error": "'workbench_env' must be one of: "
+                              + ", ".join(fusedcli.WORKBENCH_ENV_CHOICES)},
+                    status_code=400)
+            if fusedcli.workbench_env_locked():
+                return JSONResponse(
+                    {"error": f"the environment is pinned by {fusedcli.WORKBENCH_ENV_VAR}; "
+                              "unset it to use the preference"},
+                    status_code=423)
+            prefs["workbench_env"] = value
+            changed = True
         launcher_rebind: str | None = None
         launcher_changed = False
         if "launcher_hotkey" in body:
@@ -1365,6 +1446,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
                           "'task_summary_titles_enabled', "
+                          "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
+                          "'tasks_view_tabs', "
                           "'lan_enabled', "
                           "'claude_enabled', 'copilot_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
@@ -1372,11 +1455,18 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "
                           "'calls_params', 'calls_retention_days', "
-                          "'ai_idle_unload_minutes', 'launcher_hotkey' and/or "
+                          "'ai_idle_unload_minutes', 'workbench_env', 'launcher_hotkey' and/or "
                           "'launcher_row_modifier')"},
                 status_code=400,
             )
         storage.write_json(_path(), prefs)
+    if "workbench_env" in body:
+        # AFTER the write: the wrapper bakes workbench_env() in as the
+        # FUSED_ENV a session's `fused` defaults to outside a clone, and it
+        # reads the stored preference.
+        from fused_render import fusedcli
+
+        fusedcli.export_fused_cli_env()
     if bot_terminals_off:
         # The kill switch: after the write, so a bot that races a new
         # session sees the pref already off.

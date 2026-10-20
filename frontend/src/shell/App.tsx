@@ -31,6 +31,9 @@ import {
 } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
+// The route parser, not the barrel: api.ts is already in the main bundle (the
+// sidebar's sign-in probe imports it); the barrel would pull the sub-app in.
+import { ENV_LABELS, canvasNameFromPath } from "@apps/canvases/api";
 import {
   appIconUrl,
   getAppIcon,
@@ -758,8 +761,10 @@ export default function App({ config }: { config: Config }) {
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
   const isBots = isBotsPath(pathname);
-  const canvasWorkspaceName =
-    /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname)?.[1] ?? null;
+  // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
+  // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
+  // branch below, deliberately unredirected.
+  const canvasWorkspace = canvasNameFromPath(pathname);
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
   // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
   // folders live anywhere on disk — through GET /api/apps/linked-path, one async
@@ -792,7 +797,7 @@ export default function App({ config }: { config: Config }) {
     isHome ||
     isCanvases ||
     isBots ||
-    canvasWorkspaceName !== null;
+    canvasWorkspace !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Behind the Marketplace flag (see isFusedInstallView). While the flag is
   // still unknown (`null`, one prefs read) the route HOLDS rather than paint
@@ -831,8 +836,8 @@ export default function App({ config }: { config: Config }) {
                               ? "Workbench Canvases"
                               : isBots
                                 ? "Bots"
-                              : canvasWorkspaceName
-                                ? `Canvas: ${canvasWorkspaceName}`
+                              : canvasWorkspace
+                                ? `Canvas: ${canvasWorkspace.name} · ${ENV_LABELS[canvasWorkspace.env]}`
                                 : fsPath
                                   ? undefined
                                   : null,
@@ -1022,16 +1027,17 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
-  } else if (canvasWorkspaceName !== null) {
+  } else if (canvasWorkspace !== null) {
     // Canvas workspace: the embedded workbench + sync strip. Keyed on the
-    // canvas name (not epoch): the page holds a live iframe and a token
-    // handshake, and its only same-route churn is its own sync poll.
+    // canvas's identity, (env, name) (not epoch): the page holds a live iframe
+    // and a token handshake, and its only same-route churn is its own sync poll.
     main = (
       <div id="content">
         <Suspense fallback={<RouteFallback />}>
           <CanvasWorkspace
-            key={canvasWorkspaceName}
-            name={canvasWorkspaceName}
+            key={`${canvasWorkspace.env}/${canvasWorkspace.name}`}
+            env={canvasWorkspace.env}
+            name={canvasWorkspace.name}
           />
         </Suspense>
       </div>

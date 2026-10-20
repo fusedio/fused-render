@@ -48,6 +48,29 @@
   width: 220px;
 }
 
+/* Which environment's canvases are listed (?env=). Label inline so the
+   dropdown reads as a filter on the list, not an account switch. */
+.canvases-env {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* The workspace strip's environment chip: with a prod and an unstable canvas
+   open at once, the one mark on the page that says which this is. */
+.canvases-env-chip {
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
 /* Signed-in identity + sign out, right of the actions. */
 .canvases-account {
   display: flex;

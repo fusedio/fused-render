@@ -203,6 +203,17 @@ export interface Working {
 
 export type RunStatus = "idle" | "starting" | "running" | "stopping";
 
+/** "Fork from here": the user turn being re-asked and everything after it,
+ *  parked out of `turns` until the send starts the new session (or Cancel). */
+export interface ForkState {
+  /** The user prompt's transcript uuid — the server resolves the resume point. */
+  uuid: string;
+  /** The prompt's editable text (what the composer is prefilled with). */
+  text: string;
+  /** That turn and every later one, in order. */
+  hidden: Turn[];
+}
+
 export interface ChatState {
   file: string | null;
   sessionId: string | null;
@@ -352,6 +363,10 @@ export interface ChatState {
    * Starts at 0, so a reader can skip the mount.
    */
   transcriptGen: number;
+  /** Set between "Fork from here" and the send (or Cancel). Optional so a
+   *  hand-built state predating the field still compiles; the controller
+   *  always writes it (`null` when there is no fork). */
+  fork?: ForkState | null;
   /** Monotonic; bumps on every state change so cheap memo keys work. */
   rev: number;
 }
@@ -504,6 +519,16 @@ export interface ChatController {
   /** Queue/send a follow-up into the live run (T:16024). `opts` ADDED: notes
    *  and pictures fold into a follow-up exactly as into a fresh turn. */
   sendFollowUp(text: string, opts?: SendOptions): Promise<void>;
+  /**
+   * "Fork from here": park the user turn `turnKey` and everything after it,
+   * and answer its editable text for the composer. Null — and nothing parked —
+   * while a run is active or a send is in flight, off Claude, or for a turn
+   * with no transcript uuid. The next `sendMessage` starts a NEW session
+   * (`fork_at`); the original is untouched.
+   */
+  beginFork(turnKey: string): string | null;
+  /** Put the parked turns back and clear the fork. */
+  cancelFork(): void;
   /** Stop the live run (T:15870-16023 stopRun). No-op when idle. */
   stopRun(): Promise<void>;
 

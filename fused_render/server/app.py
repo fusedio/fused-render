@@ -31,8 +31,10 @@ from fused_render import health
 from fused_render.canvases import router as canvases_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.home_layout import router as home_layout_router
+from fused_render.shell.notifications import router as notifications_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
+from fused_render.shell.ui_layout import router as ui_layout_router
 
 from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
 from fused_render.server.common import (
@@ -171,11 +173,12 @@ def export_app_env() -> None:
     # does — re-deriving it there would drift the instant either side changes,
     # and a wrong answer silently withholds the workbench skills from the one
     # session shape that needs them. The env-independent BASE
-    # (`~/Fused/canvas`), never `canvases_root()`: that one carries the
-    # current environment, and `canvases_root()` reads this very var first —
-    # exporting it would freeze the environment at startup for the whole
-    # process, and every lookup after a switch would land in the old folder.
+    # (`~/Fused/canvas`), never one `canvases_root(env)`: clones of BOTH
+    # environments sync at once and a session in either needs the skills,
+    # and `canvases_base()` reads this very var first — exporting one env's
+    # folder would nest every root under it (`<env>/<env>/<name>`).
     os.environ["FUSED_RENDER_CANVASES_DIR"] = canvases.canvases_base()
+    canvases.log_url_override_without_pin()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
     # script under home_dir()/fused-bin goes on PATH and its dir is published
     # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
@@ -902,6 +905,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # prefs, recents), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
     app.include_router(home_layout_router)
+    # The shell's durable layout and the Notifications panel's memory (D1386):
+    # moved off localStorage, which the desktop app's port walk resets.
+    app.include_router(ui_layout_router)
+    app.include_router(notifications_router)
     app.include_router(prefs_router)
     # Local-network sharing (lan.py): the desktop's pairing + device routes.
     # Loopback only in effect — the LAN wrapper's allowlist never forwards them.

@@ -76,7 +76,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [terminal, setTerminal] = useState(init.terminal);
   const [superAccess, setSuperAccess] = useState<string>(init.superAccess);
   const [encrypt, setEncrypt] = useState(init.encrypt);
-  // Page-wide prefs (localStorage, every bot): they apply at once, not on Save.
+  // Page-wide prefs (server prefs `bots_*`, every bot; store.ts hydrateBotsPrefs, D1386): they apply at once, not on Save.
   const [autoOpen, setAutoOpen] = useState(autoStage);
   const [sounds, setSoundsState] = useState(soundsOn);
   const [clearBtn, setClearBtn] = useState(clearContextOn);

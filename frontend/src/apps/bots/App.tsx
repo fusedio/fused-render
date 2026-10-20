@@ -33,7 +33,7 @@ import { fitViewport } from "./lib/live-page";
 import { installNotify } from "./lib/notify";
 import { botsRoot, detachPortalHost, portalHost, setBotsRoot } from "./lib/root";
 import { isBot } from "@platform/lib/flavor";
-import { getState, goChat, hideBanner, openDialog, openMenu, poll, startStore, subscribe, useBotsSelector } from "./state/store";
+import { getState, goChat, hideBanner, hydrateBotsPrefs, openDialog, openMenu, poll, startStore, subscribe, useBotsSelector } from "./state/store";
 
 /** Stage follows the store's `fast` (the live view is open). A store listener, not an effect: it runs inside the commit, so
  *  openFull's flushSync(setFast(true)) has #full laid out in the column before it focuses anything there. On entry the
@@ -80,6 +80,9 @@ export function Bots() {
   const { gutter } = useLayout();
   const route = useBotsRoute();
   useEffect(() => { portalHost(); return detachPortalHost; }, []);
+  // The page-wide switches + the one-shot localStorage import (D1386). Once per document (it guards itself), and
+  // before startStore so an imported seen map is in the store when the first poll merges the server's.
+  useEffect(() => { void hydrateBotsPrefs(); }, []);
   useEffect(() => startStore(), []);
   useEffect(() => startBuilds(), []);
   useEffect(() => installStage(), []);

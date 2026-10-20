@@ -13,7 +13,6 @@ import { join } from "node:path";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import {
   EMPTY_TASKS_PULSE,
-  TASKS_SEEN_KEY,
   isDoneUnread,
   isUnseenCompletion,
   parseTasksSeen,
@@ -185,7 +184,7 @@ describe("the sidebar's tasks pulse", () => {
   });
 
   it("prunes the dismissal to the tasks in the answer", () => {
-    // The row is written to localStorage on every visit, so it must not grow by
+    // The map is written to the server on every visit, so it must not grow by
     // one key per task the machine has ever had.
     const seen = seenAfterVisit([task({ key: "b", status: "done" })]);
     expect(Object.keys(seenAfterVisit([task({ key: "z", status: "done" })]))).toEqual(["z"]);
@@ -213,14 +212,13 @@ describe("the sidebar's tasks pulse", () => {
     expect(seenAfterVisit([finished])).toEqual({ b: 250 });
   });
 
-  it("reads a hand-edited or ancient store as 'nothing dismissed'", () => {
-    // One extra dot is the failure mode; a throw inside a render is not.
+  it("reads a hand-edited or ancient pre-D1386 row as 'nothing dismissed'", () => {
+    // The import-only parser: one extra dot is the failure mode; a throw is not.
     for (const raw of [null, "", "not json", "[]", '"x"', "7"]) {
       expect(parseTasksSeen(raw)).toEqual({});
     }
     // Unusable VALUES are dropped one by one rather than costing the whole row.
     expect(parseTasksSeen('{"a": 5, "b": "no", "c": null}')).toEqual({ a: 5 });
-    expect(TASKS_SEEN_KEY.startsWith("fused-render:")).toBe(true);
   });
 
   it("compares pulses and dismissals by value", () => {
@@ -365,12 +363,14 @@ describe("one poll behind both readers", () => {
     // visit on purpose (see the pulse tests above).
     expect(SIDEBAR).toContain("const unseen = tasksActive ? 0 : pulse.unseen;");
     expect(SIDEBAR).not.toContain("tasksActive ? 0 : pulse.doneUnread");
-    // localStorage is only ever touched inside a try — a blocked store costs the
-    // dismissal, never the sidebar (the same rule Scheduled.tsx's view memory
-    // follows).
-    expect(STORE).toContain("localStorage.getItem(TASKS_SEEN_KEY)");
-    expect(STORE).toContain("localStorage.setItem(TASKS_SEEN_KEY");
-    expect((STORE.match(/try \{/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    // The seen map is the SERVER's (D1386): written through POST
+    // /api/tasks/seen, carried back on the pulse, and adopted from it. The old
+    // localStorage row is only ever READ, once, by the import — never written.
+    expect(STORE).toContain("putTasksSeen(next)");
+    expect(STORE).toContain("adoptServerSeen(r.seen, departedSeen)");
+    expect(STORE).toContain('LEGACY_TASKS_SEEN_KEY = "fused-render:tasks-seen"');
+    expect(STORE).toContain("localStorage.removeItem(LEGACY_TASKS_SEEN_KEY)");
+    expect(STORE).not.toContain("localStorage.setItem(");
   });
 
   it("never stamps from a store that has not been filled yet", () => {
@@ -384,6 +384,17 @@ describe("one poll behind both readers", () => {
     expect(STORE).toContain("let loaded = false;");
     expect(STORE).toContain("loaded = true;");
     expect(STORE).toMatch(/export function markTasksSeen\(\) \{\n  if \(!loaded\) return;/);
+    // …nor before the SERVER's seen map is in hand (D1386): the write replaces
+    // that map, so one computed over the boot-time `{}` would drop the carried
+    // stamps of every task that is momentarily not done. The held-back visit
+    // is remembered and run once the map is adopted, or the dots stay lit.
+    expect(STORE).toMatch(/if \(!loaded\) return;\n  if \(!seenFromServer\) \{\n    visitPending = true;\n    return;\n  \}/);
+    const adopt = STORE.slice(
+      STORE.indexOf("function adoptServerSeen"),
+      STORE.indexOf("function writeSeen"),
+    );
+    expect(adopt).toContain("if (visitPending) {");
+    expect(adopt).toContain("markTasksSeen();");
     // Only a real answer sets it: the flag is raised where the rows arrive.
     const publish = STORE.slice(
       STORE.indexOf("export function publishTasks"),
@@ -688,14 +699,18 @@ describe("pokeTasks", () => {
     // unread status does not update"). The chat stamps a localStorage key at
     // turn start and turn end, and every OTHER document — a Tasks page in
     // another window — receives the `storage` event and pokes.
-    expect(STORE).toContain('CHAT_ACTIVITY_KEY = "fused-render:chat-activity"');
+    // The literal has one home (platform/lib/tasksChanged); the store imports it.
+    expect(
+      readFileSync(join(SHELL, "../platform/lib/tasksChanged.ts"), "utf8"),
+    ).toContain('export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity"');
+    expect(STORE).toContain('import { CHAT_ACTIVITY_KEY, TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged"');
     expect(STORE).toMatch(/if \(key === CHAT_ACTIVITY_KEY\) pokeTasks\(\);/);
     expect(APP).toMatch(/pokeOnChatActivity\(e\.key\)/);
     expect(APP).toMatch(/window\.addEventListener\("storage", onStorage\)/);
     expect(APP).toMatch(/window\.removeEventListener\("storage", onStorage\)/);
     // The chat's half: one key, stamped at both ends of the run loop — the one
     // place a turn is ever in flight, which covers re-attached runs for free.
-    expect(CHAT).toContain('CHAT_ACTIVITY_KEY = "fused-render:chat-activity"');
+    expect(CHAT).toContain('import { CHAT_ACTIVITY_KEY } from "@platform/lib/tasksChanged"');
     expect(CHAT).toContain("onActivity: stampChatActivity,");
     expect(CONTROLLER.match(/\n\s*noteChatActivity\(\);/g)?.length).toBe(2);
     // A changed value every time, or the second of two same-millisecond turn

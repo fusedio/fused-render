@@ -328,7 +328,11 @@ def main() -> None:
         # started by an older one (a run adopted across an upgrade) simply has
         # no minted id — which is the pre-`--session-id` behaviour, not an
         # error.
-        req.get("new_session_id", ""))
+        req.get("new_session_id", ""), req.get("resume_at", ""))
+    # The session this run's turn is IN: a fork resumes the old id but runs in
+    # the NEW one, so there the minted id wins.
+    own_sid = (req.get("new_session_id", "") if req.get("resume_at")
+               else req["session_id"] or req.get("new_session_id", ""))
 
     out_fh = _append_private(os.path.join(run_dir, "out.jsonl"))
     err_fh = _append_private(os.path.join(run_dir, "err.log"))
@@ -339,8 +343,7 @@ def main() -> None:
         # own leader, and `_cancel`'s killpg only ever needs the CLI's.
         cli = subprocess.Popen(
             argv, stdin=subprocess.PIPE, stdout=out_fh,
-            stderr=err_fh, cwd=req["cwd"], env=agent._spawn_env(
-                req["session_id"] or req.get("new_session_id", "")),
+            stderr=err_fh, cwd=req["cwd"], env=agent._spawn_env(own_sid),
             **agent._DETACH)
     except Exception as exc:
         # No CLI process ever existed — write the failure where `_poll`'s
@@ -368,14 +371,14 @@ def main() -> None:
             # host.json (which is how a live session is FOUND) used to see
             # nothing at all for every new chat.
             "pid": os.getpid(),
-            "session_id": req["session_id"] or req.get("new_session_id", ""),
+            "session_id": own_sid,
             "file": req["file"], "mode": req["cli_mode"],
             "model": req["model"], "effort": req["effort"],
             "read_dirs": req["extra_read_dirs"],
         }, f)
 
     _reap_loop(agent, run_dir, cli, host_json,
-               chat_id=req["session_id"] or req.get("new_session_id", ""))
+               chat_id=own_sid)
 
 
 def _mark_cmd_log_turn_ended(agent, chat_id: str) -> None:
@@ -447,6 +450,19 @@ def _reap_loop(agent, run_dir: str, cli, host_json: str,
                 _post_event(run_dir, "turn_ended", at=time.time(),
                             pid=getattr(cli, "pid", None))
                 _mark_cmd_log_turn_ended(agent, chat_id)
+            elif turn_open and not was_open:
+                # THE OTHER EDGE: turn rows after a `result` row — the CLI
+                # picking up another turn on the same held-open stdin. For a
+                # page-sent follow-up this is redundant (the page's mark and
+                # the CLI's busy rewrite already say so) and harmless. For a
+                # turn the CLI wakes ITSELF for — a subagent hand-back, a task
+                # notification — it is the only word there is: no page sent
+                # it, and a registry row kept `busy` by background jobs is
+                # never rewritten for it, so without this the listing went on
+                # reading the previous turn's end for the whole of the next
+                # turn (`tasks_watch.mark_turn_started`, T329, 2026-10-20).
+                _post_event(run_dir, "turn_started", at=time.time(),
+                            pid=getattr(cli, "pid", None))
             was_open = turn_open
             if turn_open or tasks_pending:
                 idle_since = None
