@@ -3451,7 +3451,24 @@ function ChatBody(props: ChatBodyProps) {
   });
   const rcAsk = rc.ask;
   const rcOn = rc.view.state !== "off";
-  const rcSay = rc.view.state === "active" ? rc.say : null;
+  const rcLive = rc.view.state === "active";
+  const rcSayRaw = rc.say;
+  const rcSay = useMemo(
+    () =>
+      rcLive
+        ? (text: string) => {
+            if (attach.items.length > 0 || ann.hasSendable()) {
+              notify({ title: "Pictures and notes can't go through Remote Control yet", tone: "error" });
+              strand(text);
+              return;
+            }
+            void rcSayRaw(text).then((sent) => {
+              if (!sent) strand(text);
+            });
+          }
+        : null,
+    [rcLive, rcSayRaw, attach.items.length, ann, strand],
+  );
   const rcConnecting = rc.view.state === "starting";
   const onSend = useCallback(
     (text: string, opts: SendOptions) => {

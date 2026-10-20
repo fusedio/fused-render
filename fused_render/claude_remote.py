@@ -44,6 +44,7 @@ _STRIPES = [threading.RLock() for _ in range(64)]
 class _Remote:
     def __init__(self, term: pty_session.PtySession):
         self.term, self.url, self.timed_out = term, "", False
+        self.say_lock = threading.Lock()
         threading.Thread(target=self._watch, daemon=True, name="claude-remote-watch").start()
 
     def _watch(self) -> None:
@@ -158,8 +159,10 @@ def _busy(agent, run_dir: str) -> str:
     turn_open, tasks_pending = agent._turn_state(run_dir)
     try:
         queued = any(n.endswith(".json") for n in os.listdir(agent._inbox_dir(run_dir)))
-    except OSError:
+    except FileNotFoundError:
         queued = False
+    except OSError:
+        return BUSY
     return BUSY if turn_open or queued else BUSY_TASKS if tasks_pending else ""
 
 
@@ -230,8 +233,10 @@ def say(session_id: str, text: str) -> dict:
     remote = _remotes.get(session_id or "")
     if remote is None or not remote.term.alive or not remote.url:
         return {"error": NOT_CONNECTED}
-    remote.term.write(_PASTE_START + text.encode() + _PASTE_END)
-    threading.Timer(_SUBMIT_DELAY_S, remote.term.write, args=(_ENTER,)).start()
+    with remote.say_lock:
+        remote.term.write(_PASTE_START + text.encode() + _PASTE_END)
+        time.sleep(_SUBMIT_DELAY_S)
+        remote.term.write(_ENTER)
     return {"sent": True}
 
 

@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import threading
 import time
 import types
 
@@ -207,3 +208,19 @@ def test_refusals_spawn_nothing(env, tmp_path, monkeypatch, case):
     assert not claude_remote._remotes
     assert not env["reg"].list()
     assert not os.path.exists(env["bin"] + ".argv")
+
+
+def test_concurrent_says_submit_one_message_each(env, monkeypatch):
+    monkeypatch.setattr(claude_remote, "_SUBMIT_DELAY_S", 0.05)
+    wrote = []
+    term = types.SimpleNamespace(alive=True, write=wrote.append)
+    remote = types.SimpleNamespace(term=term, url=URL, say_lock=threading.Lock())
+    monkeypatch.setattr(claude_remote, "_remotes", {SID: remote})
+    threads = [threading.Thread(target=claude_remote.say, args=(SID, t)) for t in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert wrote[1] == wrote[3] == claude_remote._ENTER
+    assert sorted(wrote[0::2]) == [claude_remote._PASTE_START + t + claude_remote._PASTE_END
+                                   for t in (b"a", b"b")]

@@ -119,11 +119,18 @@ export function useRemoteControl(sessionId: string, file: string, onLive: () => 
   }, [act, askingName, file]);
   const stop = useCallback(() => act({ action: "stop" }, "Remote Control did not stop"), [act]);
   const cancel = useCallback(() => setAskingName(null), []);
-  const say = useCallback((text: string) => {
-    call({ action: "say", session_id: sessionId, text }).then(viewOf, (e: unknown) =>
-      notify({ title: e instanceof Error ? e.message : "Remote Control did not take the message", tone: "error" }),
-    );
-  }, [sessionId]);
+  const say = useCallback((text: string): Promise<boolean> =>
+    call({ action: "say", session_id: sessionId, text }).then(
+      (r) => {
+        if ("sent" in r) return true;
+        viewOf(r);
+        return false;
+      },
+      (e: unknown) => {
+        notify({ title: e instanceof Error ? e.message : "Remote Control did not take the message", tone: "error" });
+        return false;
+      },
+    ), [sessionId]);
 
   return { view, asking: askingName !== null, ask: setAskingName, start, cancel, stop, say };
 }
