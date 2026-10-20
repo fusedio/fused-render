@@ -3988,6 +3988,7 @@ export type TaskPulseTask = Pick<
   | "next_run_repeats"
   | "entrypoint"
   | "backend"
+  | "canvas"
 >;
 
 /** The model / thinking a NEW task opens on: the global Claude preference

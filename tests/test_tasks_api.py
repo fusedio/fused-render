@@ -502,6 +502,9 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # Which agent ran it (2026-10-16, docs/COPILOT_BACKEND.md D18): the
         # finished-task notice names it.
         "backend",
+        # The canvas a task is on (2026-10-20): the notification's door is the
+        # canvas page for a canvas task, like the Tasks page's.
+        "canvas",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}

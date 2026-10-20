@@ -6174,6 +6174,11 @@ _PULSE_FIELDS = (
     # Which agent ran it, so a "Copilot finished: <title>" notice can say so
     # (D18) without a second fetch.
     "backend",
+    # The canvas the task is on (`_task_canvas`), None otherwise: the
+    # Notifications rows and the finished-task notice open through the same
+    # door as the Tasks page (`taskHref`), and that door is the canvas page
+    # for a canvas task. A small dict per row, not a path walk per click.
+    "canvas",
 )
 
 
