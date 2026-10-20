@@ -463,11 +463,15 @@ def is_turn_ended(session_id: str) -> bool:
         if row is not None:   # normally one of those files; set alone in tests
             rows.append((row, _registry_mtime.get(session_id)))
         for r, mtime in rows:
-            if restarted(r):
-                return False
             status = r.get("status")
-            if (isinstance(status, str) and status in RUNNING_STATUSES
-                    and mtime is not None and mtime > covering(r)):
+            running_row = isinstance(status, str) and status in RUNNING_STATUSES
+            # A start only counts on a row the CLI itself calls busy — the
+            # counterweight rule (`_reopened`): a false reopen on an idle
+            # sibling must not cancel the standing process's own end
+            # (CodeRabbit/Bugbot, PR #1780).
+            if running_row and restarted(r):
+                return False
+            if running_row and mtime is not None and mtime > covering(r):
                 return False
         if not rows and restarted({}):
             return False   # departed: the collapsed, unscoped stamps decide

@@ -951,6 +951,29 @@ def test_a_turn_started_speaks_for_its_own_process(claude_home):
     assert tasks_watch.live_from_registry(SID)[0] is True
 
 
+def test_a_start_on_an_idle_sibling_does_not_cancel_the_standing_processes_end(
+        claude_home):
+    """CodeRabbit/Bugbot, PR #1780: two processes on one session, the old one
+    idle, the new one busy with its end already recorded. A (false) start
+    for the idle pid is not proof the session is open — the counterweight
+    rule needs the row it lands on to be busy — so the new process's end
+    stands and the row reads done."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    _registry(claude_home, SID, pid=os.getppid(), status="idle", name="old")
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+    tasks_watch.mark_turn_started(SID, "run-old", at=_later(6), pid=os.getppid())
+    assert tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is False
+    # The busy process's own start is the one that counts.
+    tasks_watch.mark_turn_started(SID, "run-new", at=_later(7), pid=os.getpid())
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+
+
 def test_a_scoped_start_survives_the_sessions_last_row_departing(claude_home):
     """When the only process's file goes, its per-pid stamps collapse into the
     session's own — both of them, keeping their order — so the departed
