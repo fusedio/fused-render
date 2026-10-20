@@ -1,7 +1,9 @@
-/* ---- Claude config app (apps/claude_config) ------------------------------- */
-/* One route: /claude-config (the settings panel, CLAUDE.md explorer included
-   as its MD Files section). /claude-artifacts used to share this stylesheet;
-   that page is gone (#492), and what it owned went with it.
+/* ---- Claude config sections (apps/claude_config/sections) ----------------- */
+/* The Claude Code group of Preferences (shell/settings/claude.tsx) since
+   2026-10-20; before that one route, /claude-config, with a header band and
+   a tab strip of its own — those rules are gone with the page, the sections'
+   own vocabulary (toolbar, lists, rows, cards, the git chip) stays.
+   /claude-artifacts used to share this stylesheet; that page is gone (#492).
  *
  * The panel is ONE pattern repeated nine times, because it used to be four:
  * caption row, then .cc-toolbar (summary · controls · refresh), then a list of
@@ -83,56 +85,6 @@
   font-size: 13px;
 }
 
-/* No longer its own bounded, clipped box: .cc-root is the scroll container
-   now, so this just lays .cc-main out and lets it grow to whatever height its
-   content needs — min-height:0/overflow:hidden here would do the opposite,
-   clipping content at exactly the viewport instead of letting the page
-   beneath it scroll to reach the rest. */
-.cc-body {
-  display: flex;
-  flex: 1 1 auto;
-}
-
-/* -- header band ------------------------------------------------------------- */
-/* The page name on the left, the git chip — the signature element — on the
-   right. 49px is not a look, it is an ALIGNMENT: this bar's bottom border and
-   the global sidebar's brand-row border are two halves of one line across the
-   window, and at 44px against 49px they read as two rules a few pixels apart.
- *
- * 49px is .sidebar-brand's box (styles/sidebar.css): 14px padding top and
- * bottom around a 20px logo, plus its 1px bottom border — content-box, so the
- * border is on top of the 48. This file tracks that number; if the brand row's
- * padding or logo size changes, this has to follow.
- *
- * Deliberately NOT var(--topbar-h) (48px, styles/explorer.css). That token is
- * the line #breadcrumb stands on, and the shell's two top bars do not agree
- * with each other today — measured live, .sidebar-brand is 49px and #breadcrumb
- * is 48px, so on the Explorer page they are already a pixel apart. The bar this
- * one has to meet is the sidebar's, so it matches the sidebar's, and raising
- * the shared token to paper over it is a shell decision this page doesn't get
- * to make. box-sizing so the border is inside the 49 rather than a 50th pixel. */
-.cc-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex: 0 0 auto;
-  gap: 12px;
-  height: 49px;
-  box-sizing: border-box;
-  padding: 0 14px 0 16px;
-  background: var(--bg-alt);
-  border-bottom: 1px solid var(--border);
-}
-
-.cc-header-title {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 15px;
-  font-weight: 600;
-}
-
 /* -- the git chip (signature element) ---------------------------------------- */
 /* The one thing this page always states: Clean, or N uncommitted. It is the
    page's ONE loud element besides the active tab marker — tinted --warning
@@ -201,82 +153,6 @@
   font-style: italic;
 }
 
-/* -- section tab strip ----------------------------------------------------- */
-/* A quiet underline strip, not a bar of its own surface — it sits directly on
-   the page background under the header. The tabs scroll sideways rather than
-   wrapping when the window is narrow: a wrapped strip changes the page's
-   content height as you resize, which moves the content under the pointer.
-   A fade mask at the trailing edge is the "there is more here" affordance a
-   plain overflow:auto can't give — nothing is EVER clipped or hidden under
-   another control, which is the defect this replaces. */
-.cc-tabbar {
-  flex: 0 0 auto;
-  min-width: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
-}
-
-.cc-tablist {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  gap: 4px;
-  padding: 0 16px;
-  overflow-x: auto;
-  scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
-  mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
-}
-
-/* Scrolled all the way to its own end: nothing left to hint at, so the mask
-   releases and the last tab's label renders fully opaque instead of sitting
-   semi-transparent inside a fade that no longer means anything — the exact
-   failure this fade exists to prevent. .at-end is set by ClaudeConfig.tsx
-   from the tablist's own scrollLeft/scrollWidth. */
-.cc-tablist.at-end {
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-
-.cc-tablist::-webkit-scrollbar {
-  display: none;
-}
-
-.cc-tab {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  font: inherit;
-  font-size: 12.5px;
-  white-space: nowrap;
-  padding: 9px 10px 8px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.cc-tab:hover {
-  color: var(--fg);
-}
-
-/* The lime accent's other spend (with the primary form action): the active
-   tab's underline, and nothing else about an inactive or hovered tab. */
-.cc-tab.active {
-  color: var(--fg);
-  font-weight: 600;
-  border-bottom-color: var(--accent);
-}
-
-.cc-tab:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-  border-radius: 4px;
-}
-
 /* -- content column -------------------------------------------------------- */
 
 /* Single column, left-aligned, full-bleed to whatever width .cc-body gives it.
@@ -333,28 +209,6 @@
   font-size: 12px;
   color: var(--fg-muted);
   overflow-wrap: anywhere;
-}
-
-/* The config panel's caption line: the file this tab edits on the left, and the
-   standing "what happens when you edit anything here" note on the right (the
-   sentence the section nav's tagline used to carry — one fact about the whole
-   app, so it does not deserve a column, and its full wording is the title=). */
-.cc-caption-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 22px;
-}
-
-.cc-caption-row .cc-caption {
-  margin-bottom: 0;
-}
-
-.cc-caption-note {
-  flex: 0 0 auto;
-  white-space: nowrap;
-  cursor: help;
 }
 
 /* A title row: heading and caption on the left, actions on the right. Nothing

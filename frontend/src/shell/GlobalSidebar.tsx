@@ -36,7 +36,6 @@ import { appPageUrl, appPathFromPath, type CurrentApp } from "@shell/current-app
 import { railExtras } from "@shell/sidebar-rail-lib";
 import { displayName, isBot } from "@platform/lib/flavor";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
-import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
@@ -72,21 +71,6 @@ const BOTS_ICON = (
     <path d="M20 14h2" />
     <path d="M15 13v2" />
     <path d="M9 13v2" />
-  </svg>
-);
-
-// Sliders — the Claude Config app is a settings panel over ~/.claude.
-const CLAUDE_CONFIG_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <line x1="4" y1="21" x2="4" y2="14" />
-    <line x1="4" y1="10" x2="4" y2="3" />
-    <line x1="12" y1="21" x2="12" y2="12" />
-    <line x1="12" y1="8" x2="12" y2="3" />
-    <line x1="20" y1="21" x2="20" y2="16" />
-    <line x1="20" y1="12" x2="20" y2="3" />
-    <line x1="1" y1="14" x2="7" y2="14" />
-    <line x1="9" y1="8" x2="15" y2="8" />
-    <line x1="17" y1="16" x2="23" y2="16" />
   </svg>
 );
 
@@ -467,11 +451,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // Up/Down step through the Projects + Bookmarks rows (sidebarArrowNav.ts).
   useSidebarArrowNav();
 
-  // No builtin-mount gate any more: the entries they guarded (Inbox, App
-  // Basics) are gone from the sidebar — the learn content ships as a community
-  // app now. The sessions route and its mount are untouched.
-  const claudeConfigAvailable = useClaudeConfigAvailable();
-
   // A model resident in memory is the one piece of app state that costs
   // something while you are not looking at it — surfaced as a dot on the
   // AI Models row itself now that it is primary nav.
@@ -664,15 +643,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       </>
     ) : undefined;
 
-  // Everything that is not primary nav lives in the bottom menu for now:
-  // the former sidebar entries (Config), then the settings
-  // pages. Same gates as before — an entry a machine can't use stays hidden.
-  const menuEntries: (PrefsMenuEntry | "separator")[] = [
-    ...(claudeConfigAvailable
-      ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
-      : []),
-  ];
-  if (claudeConfigAvailable) menuEntries.push("separator");
+  // Everything that is not primary nav lives in the bottom menu for now: the
+  // settings pages. Same gates as before — an entry a machine can't use stays
+  // hidden. Claude Config is no longer an entry: it is the Claude Code group
+  // of Preferences (2026-10-20), reached through that row.
+  const menuEntries: (PrefsMenuEntry | "separator")[] = [];
   // Templates are the Render app's own concern; Fused Bot's menu skips
   // straight to Preferences (Canvases is already off above).
   if (!bot) {

@@ -44,6 +44,15 @@ import {
 import { LanControl } from "./lan";
 import { FusedAccountControl, HuggingFaceControl, WorkbenchEnvControl } from "./accounts";
 import {
+  ClaudeCatalogControl,
+  ClaudeHistoryBlock,
+  ClaudeMcpBlock,
+  ClaudeMemoryBlock,
+  ClaudePluginsBlock,
+  ClaudeSkillsBlock,
+  ClaudeStatuslineBlock,
+} from "./claude";
+import {
   CallLogControl,
   CallParamsControl,
   CallRetentionControl,
@@ -63,6 +72,13 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "agent-default": DefaultAgentControl,
   "claude-model": ClaudeModelPointer,
   engines: EnginesPointer,
+  "claude-plugins": ClaudePluginsBlock,
+  "claude-memory": ClaudeMemoryBlock,
+  "claude-skills": ClaudeSkillsBlock,
+  "claude-statusline": ClaudeStatuslineBlock,
+  "claude-mcp": ClaudeMcpBlock,
+  "claude-catalog": ClaudeCatalogControl,
+  "claude-history": ClaudeHistoryBlock,
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,
   "chat-headsup": ChatHeadsupControl,
