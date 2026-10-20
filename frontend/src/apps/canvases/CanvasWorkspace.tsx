@@ -113,6 +113,7 @@ import {
   startSync,
   syncEventsUrl,
   type WorkbenchEnv,
+  canvasNameFromPath,
 } from "./api";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
@@ -926,6 +927,13 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   const navHopRef = useRef(false);
   useEffect(() => {
     const onNav = () => {
+      // Every push announces here, including the ones that LEAVE: the hop
+      // to another canvas, or to /tasks, reaches this still-mounted instance
+      // first. Only this canvas's own URL is ours to read — otherwise B's
+      // session would be filed under A's node of the same name, and the old
+      // frame told to deselect on the way out.
+      const here = canvasNameFromPath(window.location.pathname);
+      if (!here || here.env !== env || here.name !== name) return;
       const next = nodeFromUrl();
       const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;

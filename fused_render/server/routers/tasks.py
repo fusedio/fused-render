@@ -2856,6 +2856,26 @@ def _workdir(target: str) -> str:
     return target if os.path.isdir(target) else os.path.dirname(target)
 
 
+# `_task_canvas`'s roots: canvases base -> {env: {normpath, realpath}}. `_row`
+# runs per task per poll, and a realpath walks every segment; the roots do
+# not move while the server runs (only the test override changes the base).
+_CANVAS_ROOTS_MEMO: dict[str, dict[str, set[str]]] = {}
+
+
+def _canvas_roots(canvases) -> dict[str, set[str]]:
+    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
+
+    base = canvases.canvases_base()
+    roots = _CANVAS_ROOTS_MEMO.get(base)
+    if roots is None:
+        roots = {}
+        for env in WORKBENCH_ENV_CHOICES:
+            root = canvases.canvases_root(env)
+            roots[env] = {os.path.normpath(root), os.path.realpath(root)}
+        _CANVAS_ROOTS_MEMO[base] = roots
+    return roots
+
+
 def _task_canvas(target: str) -> dict | None:
     """The canvas a task is on — `{env, name, file}` — or None.
 
@@ -2880,12 +2900,11 @@ def _task_canvas(target: str) -> dict | None:
     if not target:
         return None
     from fused_render import canvases
-    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
 
-    for env in WORKBENCH_ENV_CHOICES:
-        root = canvases.canvases_root(env)
-        for base in {os.path.normpath(root), os.path.realpath(root)}:
-            for cand in {os.path.normpath(target), os.path.realpath(target)}:
+    cands = {os.path.normpath(target), os.path.realpath(target)}
+    for env, bases in _canvas_roots(canvases).items():
+        for base in bases:
+            for cand in cands:
                 if cand == base or not cand.startswith(base + os.sep):
                     continue
                 rest = cand[len(base) + 1:].split(os.sep)
