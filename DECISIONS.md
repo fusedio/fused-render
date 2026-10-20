@@ -7208,3 +7208,10 @@ Each sent user message in a Claude chat has a hover-revealed back-arrow. Clickin
 - **Free slot.** `exited` queue events call `schedule.wake()` before the project-queue flag gate, so a held task starts within about a second instead of at the 30 s poll. With the project queue ON, a held entry waits inside the manager and is retried when its folder pumps, not on the free slot itself.
 - **Shown as Queued.** `tasks._queue_lines` adds the cap-held tasks (due, pending, no live host), ordered by due time, with the same position / `ahead_key` fields, even with the project queue off.
 - **Test isolation.** `tests/conftest.py` stubs `session_cap._agent` to None so no test counts the developer's real running sessions.
+
+## D1392: Preferences MCP tab lists from a cache and refreshes in the background (2026-10-20, claude-session-memory)
+
+- **Problem.** `claude mcp list` health-checks every server and connector before printing (11.3 s measured), and the tab showed nothing until it returned.
+- **Decision.** `claude_config/mcp.py` keeps the last good list in `<home>/claude_config/mcp_list_cache.json` (`{servers, checkedAt}`). `list` with a cache returns it at once with `stale: true` and starts one background refresh; with no cache it blocks as before. `fresh` joins or runs the single in-flight refresh. add/remove/logout success deletes the cache; a generation counter stops a refresh that started before the change from writing its outdated answer back. A failed refresh never touches the cache.
+- **UI.** `McpSection` renders the cached list, shows "Checking status..." in the toolbar summary and dims the status pills until `list({fresh: true})` returns; a failed live check keeps the cached list instead of replacing it with an error.
+- **Deviation.** No frontend test: there is no existing McpSection test and the swap is a few lines of state; the backend contract is covered in `tests/test_claude_config_api.py`.

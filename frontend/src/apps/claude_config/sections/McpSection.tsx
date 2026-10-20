@@ -6,7 +6,7 @@
 // Authentication is a fire-and-forget hand-off: the CLI opens a browser and
 // blocks well past any request timeout, so the module spawns it detached and the
 // UI says so, then re-lists when the user confirms they're done.
-import { useCallback, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import type { CliResult, McpKind, McpServer, McpStatus } from "../api";
@@ -62,7 +62,33 @@ function cliError(res: CliResult, fallback: string): string {
 
 export default function McpSection() {
   const load = useCallback(() => cc.mcp.list(), []);
-  const { data, error, reload } = useModuleData(load);
+  const { data: cached, error, reload: reloadCached } = useModuleData(load);
+  // The server answers from its cache at once (`stale`) because the real
+  // `claude mcp list` takes ~10 s; the live answer replaces it when it lands.
+  const [fresh, setFresh] = useState<typeof cached>(null);
+  const data = fresh ?? cached;
+  const checking = !!(cached?.ok && cached.stale && !fresh);
+  const reload = useCallback(() => {
+    setFresh(null);
+    reloadCached();
+  }, [reloadCached]);
+  useEffect(() => {
+    if (!cached?.ok || !cached.stale) return;
+    let alive = true;
+    cc.mcp.list({ fresh: true }).then(
+      (res) => {
+        // A failed live check keeps the cached list rather than replacing it
+        // with an error; the status simply stops reading as "checking".
+        if (alive) setFresh(res.ok ? res : { ...cached, stale: false });
+      },
+      () => {
+        if (alive) setFresh({ ...cached, stale: false });
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [cached]);
   const { node: modal, ask } = useChangePreview();
   const [name, setName] = useState("");
   const [json, setJson] = useState("");
@@ -150,7 +176,14 @@ export default function McpSection() {
       {modal}
       <SectionToolbar
         summary={
-          data?.ok ? `${servers.length} server(s) · ${connected} connected` : "…"
+          data?.ok ? (
+            <>
+              {`${servers.length} server(s) · ${connected} connected`}
+              {checking && <span style={{ opacity: 0.6 }}> · Checking status…</span>}
+            </>
+          ) : (
+            "…"
+          )
         }
         onRefresh={reload}
       >
@@ -234,7 +267,11 @@ export default function McpSection() {
                     <ListRow
                       key={s.name}
                       name={s.name}
-                      pills={<Pill tone={st.tone}>{st.label}</Pill>}
+                      pills={
+                        <span style={checking ? { opacity: 0.55 } : undefined}>
+                          <Pill tone={st.tone}>{st.label}</Pill>
+                        </span>
+                      }
                       secondary={s.endpoint}
                       secondaryTitle={s.endpoint}
                       secondaryMono
