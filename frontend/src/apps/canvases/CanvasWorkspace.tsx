@@ -601,13 +601,6 @@ export default function CanvasWorkspace({
       setOwned(null);
       setStartError(null);
       setDir(started.dir);
-      // The clone onto the sidebar's desk (its Canvases section, the
-      // Projects store): opening a canvas is what puts it there, as a task
-      // under it does. Idempotent on the server; the section refetches on
-      // the window event (it cannot see this POST's answer).
-      void addCurrentApp(started.dir)
-        .then(() => window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT)))
-        .catch(() => undefined);
     } catch (e) {
       if (e instanceof CanvasOwnedError) {
         setOwned(e.owner);
@@ -636,6 +629,16 @@ export default function CanvasWorkspace({
         const base = status.envs[env].base_url;
         setBaseUrl(base);
         baseOriginRef.current = new URL(base).origin;
+        // The clone onto the sidebar's desk (its Canvases section, the
+        // Projects store): opening a canvas is what puts it there, as a task
+        // under it does. From STATUS, not sync/start's answer — a clone
+        // another process owns answers 409 there and would never register
+        // (CodeRabbit on #1795). Idempotent on the server; the section
+        // refetches on the window event (it cannot see this POST's answer).
+        const cloneDir = status.envs[env].canvases_dir.replace(/\/+$/, "") + "/" + name;
+        void addCurrentApp(cloneDir)
+          .then(() => window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT)))
+          .catch(() => undefined);
         const who = await getWhoami(env);
         if (cancelled) return;
         if (!who.handle) {
