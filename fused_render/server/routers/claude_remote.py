@@ -18,6 +18,8 @@ def api_claude_remote_control(body: dict = Body(default={}),
     session_id = str(body.get("session_id") or "")
     if action == "start":
         return claude_remote.start(str(body.get("file") or ""), session_id, str(body.get("name") or ""))
+    if action == "say":
+        return claude_remote.say(session_id, str(body.get("text") or ""))
     if action in ("status", "stop"):
         return getattr(claude_remote, action)(session_id)
     return _error(f"unknown remote control action: {action!r}")

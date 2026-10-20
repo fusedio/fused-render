@@ -151,7 +151,7 @@ import { takenAskBackend } from "@platform/lib/pending-claude-ask";
 import type { ClassifiedCommand } from "./protocol/commands";
 import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
-import { REMOTE_CONTROL_BLOCKED, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
+import { REMOTE_CONTROL_CONNECTING, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
 import { notify } from "@platform/lib/notifications";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
@@ -3446,8 +3446,14 @@ function ChatBody(props: ChatBodyProps) {
     ],
   );
 
+  const rc = useRemoteControl(state.sessionId ?? "", file ?? "");
+  const rcAsk = rc.ask;
+  const rcOn = rc.view.state !== "off";
+  const rcSay = rc.view.state === "active" ? rc.say : null;
+  const rcConnecting = rc.view.state === "starting";
   const onSend = useCallback(
     (text: string, opts: SendOptions) => {
+      if (rcSay) return rcSay(text);
       // OPTIMISTIC, and synchronously BEFORE the dispatch — exactly where T puts
       // it (`enterChat()` in the landing form's own `onsubmit`, T:17935, one line
       // ahead of its `sendMessage(message)`). `inChat` is `entered ||
@@ -3463,10 +3469,11 @@ function ChatBody(props: ChatBodyProps) {
       setEntered(true);
       dispatchSend(text, opts, false);
     },
-    [dispatchSend],
+    [dispatchSend, rcSay],
   );
   const onFollowUp = useCallback(
     (text: string) => {
+      if (rcSay) return rcSay(text);
       dispatchSend(
         text,
         {
@@ -3477,7 +3484,7 @@ function ChatBody(props: ChatBodyProps) {
         true,
       );
     },
-    [dispatchSend, defaults.model, defaults.effort, defaults.permission],
+    [dispatchSend, defaults.model, defaults.effort, defaults.permission, rcSay],
   );
   /**
    * STOP MEANS STOP, THE OUTBOX INCLUDED (Akshil's R2-12 rule, kept over Claude
@@ -3679,9 +3686,6 @@ function ChatBody(props: ChatBodyProps) {
   }, [toggleTasksPanel, hostToggleTasks]);
   const setModelPick = defaults.setModel;
   const setEffortPick = defaults.setEffort;
-  const rc = useRemoteControl(state.sessionId ?? "", file ?? "");
-  const rcAsk = rc.ask;
-  const rcOn = rc.view.state !== "off";
   /** A local command from the composer. `false` = refused (bad argument), and
    *  the composer puts the words back. `/help` never arrives: it is the
    *  composer's own menu. */
@@ -4660,13 +4664,13 @@ function ChatBody(props: ChatBodyProps) {
       // worse state than the one this feature prevents.
       // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
       // its own sentence, and the link to the switch under it.
-      blocked: sched.blocked || agentOff || rcOn,
+      blocked: sched.blocked || agentOff || rcConnecting,
       blockedPlaceholder: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : rcOn ? REMOTE_CONTROL_BLOCKED : sched.placeholder,
+        : rcConnecting ? REMOTE_CONTROL_CONNECTING : sched.placeholder,
       blockedReason: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : rcOn ? REMOTE_CONTROL_BLOCKED : sched.reason,
+        : rcConnecting ? REMOTE_CONTROL_CONNECTING : sched.reason,
       blockedNote: agentOff ? (
         <>
           {agentLabel(state.backend)} is turned off in Preferences.{" "}

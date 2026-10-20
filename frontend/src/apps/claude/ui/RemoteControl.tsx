@@ -15,10 +15,14 @@ import {
 } from "@platform/shadcn/ui/alert-dialog";
 import { post } from "../protocol/agent";
 
-export const REMOTE_CONTROL_BLOCKED = "Remote Control is driving this chat";
+export const REMOTE_CONTROL_CONNECTING = "Connecting Remote Control…";
 
 export type RemoteControlView = { state: "off" } | { state: "starting" } | { state: "active"; url: string };
-type Reply = RemoteControlView | { state: "ended"; exit_code: number | null; tail: string } | { error: string };
+type Reply =
+  | RemoteControlView
+  | { state: "ended"; exit_code: number | null; tail: string }
+  | { sent: true }
+  | { error: string };
 
 const POLL_MS = { off: 15000, starting: 1000, active: 4000 } as const;
 
@@ -26,9 +30,10 @@ const call = (body: Record<string, string>) => post<Reply>("/api/claude/remote-c
 
 function viewOf(r: Reply): RemoteControlView | null {
   if ("error" in r) {
-    notify({ title: r.error, tone: "info" });
+    notify({ title: r.error, tone: "error" });
     return null;
   }
+  if (!("state" in r)) return null;
   if (r.state === "active") return { state: "active", url: r.url };
   if (r.state === "starting") return { state: "starting" };
   if (r.state === "ended") {
@@ -94,8 +99,13 @@ export function useRemoteControl(sessionId: string, file: string) {
   }, [act, askingName, file]);
   const stop = useCallback(() => act({ action: "stop" }, "Remote Control did not stop"), [act]);
   const cancel = useCallback(() => setAskingName(null), []);
+  const say = useCallback((text: string) => {
+    call({ action: "say", session_id: sessionId, text }).then(viewOf, (e: unknown) =>
+      notify({ title: e instanceof Error ? e.message : "Remote Control did not take the message", tone: "error" }),
+    );
+  }, [sessionId]);
 
-  return { view, asking: askingName !== null, ask: setAskingName, start, cancel, stop };
+  return { view, asking: askingName !== null, ask: setAskingName, start, cancel, stop, say };
 }
 
 export function RemoteControlConfirm({ open, onGo, onCancel }: { open: boolean; onGo(): void; onCancel(): void }) {
@@ -127,6 +137,7 @@ export function RemoteControlNote({ view, onStop }: { view: RemoteControlView; o
     void copyToClipboard(view.url).then((ok) => notify({ title: ok ? "Link copied" : "Could not copy the link", tone: "info" }));
   return (
     <>
+      Remote Control is on ·{" "}
       <a href={view.url} target="_blank" rel="noreferrer">Open on claude.ai</a>{" "}
       <button type="button" onClick={copy}>Copy link</button>{" "}
       {stop}

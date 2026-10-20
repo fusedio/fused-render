@@ -121,12 +121,14 @@ def test_start_trust_prompt_url_hold_and_stop(env, tmp_path):
     _run(env, "run1")
     _run(env, "run2", session="someone-else")
     assert claude_remote.start(env["file"], SID, "my chat")["state"] == "starting"
+    assert claude_remote.say(SID, "hi") == {"error": claude_remote.NOT_CONNECTED}
     out = _poll(lambda s: s["state"] == "active")
     assert out["state"] == "active" and out["url"] == URL
     assert env["killed"] == ["run1"]
     argv = open(env["bin"] + ".argv").read().split("\n")[0]
     assert argv == f"--resume {SID} --remote-control my chat"
     assert claude_remote.holds(SID)
+    assert claude_remote.say(SID, "hi") == {"sent": True}
     assert claude_spawn.spawn_helper(env["file"], "hi", "default", session_id=SID) == {"error": claude_remote.HELD}
 
     client = TestClient(create_app(start_dir=str(tmp_path)))
@@ -165,7 +167,7 @@ def test_cli_that_never_connects_reports_ended_once(env, tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize("case", ["logged_out", "api_key", "copilot", "bad_id", "dash_name",
-                                  "busy", "inbox", "host_stuck"])
+                                  "busy", "tasks", "inbox", "host_stuck"])
 def test_refusals_spawn_nothing(env, tmp_path, monkeypatch, case):
     env["bin"] = _cli(tmp_path, OK_CLI)
     sid, name = SID, ""
@@ -184,6 +186,9 @@ def test_refusals_spawn_nothing(env, tmp_path, monkeypatch, case):
     elif case == "busy":
         _run(env, "run1")
         env["turn"] = (True, False)
+    elif case == "tasks":
+        _run(env, "run1")
+        env["turn"] = (False, True)
     elif case == "inbox":
         os.makedirs(os.path.join(_run(env, "run1"), "inbox"))
         open(os.path.join(env["runs"], "run1", "inbox", "1.json"), "w").write("{}")
@@ -193,8 +198,8 @@ def test_refusals_spawn_nothing(env, tmp_path, monkeypatch, case):
         monkeypatch.setattr(claude_remote, "_HOST_EXIT_WAIT_S", 0.1)
     out = claude_remote.start(env["file"], sid, name)
     assert set(out) == {"error"} and out["error"]
-    if case in ("busy", "inbox"):
-        assert out["error"] == claude_remote.BUSY
+    if case in ("busy", "tasks", "inbox"):
+        assert out["error"] == (claude_remote.BUSY_TASKS if case == "tasks" else claude_remote.BUSY)
         assert env["killed"] == []
     if case == "host_stuck":
         assert out["error"] == claude_remote.STILL_EXITING

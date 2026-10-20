@@ -17,6 +17,8 @@ _TRUST_PROMPT = "I trust this folder"
 _TRUST_BYTES = _TRUST_PROMPT.replace(" ", "").encode()
 _SELECTED = "❯"
 _DOWN, _ENTER = b"\x1b[B", b"\r"
+_PASTE_START, _PASTE_END = b"\x1b[200~", b"\x1b[201~"
+_SUBMIT_DELAY_S = 0.3
 _WATCH_TICK_S = 0.4
 _CONNECT_TIMEOUT_S = 120.0
 _HOST_EXIT_WAIT_S = 3.0
@@ -24,9 +26,12 @@ _IDENTITY_ENV = ("CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPO
                  "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_PID")
 _ROWS, _COLS, _TAIL_LINES = 40, 200, 12
 
-BUSY = ("Claude is still working in this chat. Wait for the turn to finish "
-        "or stop it, then turn on Remote Control.")
-HELD = "Remote Control is driving this chat. Stop it to type here."
+BUSY = ("Claude is still replying in this chat. Wait for the reply to finish "
+        "(or press Stop), then run /remote-control again.")
+BUSY_TASKS = ("This chat has background tasks running, and Remote Control would end them. "
+              "Wait for them to finish or stop them, then run /remote-control again.")
+NOT_CONNECTED = "Remote Control is not connected yet."
+HELD = "Remote Control is driving this chat. Send from the chat or claude.ai, or stop Remote Control first."
 NO_LINK = "Remote Control did not connect within two minutes, so it was stopped."
 STILL_EXITING = ("The chat's previous Claude process is still shutting down. "
                  "Try Remote Control again in a moment.")
@@ -149,13 +154,13 @@ def _running(agent, run_dir: str) -> bool:
     return agent._alive(run_dir) or agent._host_alive(run_dir)
 
 
-def _busy(agent, run_dir: str) -> bool:
-    if any(agent._turn_state(run_dir)):
-        return True
+def _busy(agent, run_dir: str) -> str:
+    turn_open, tasks_pending = agent._turn_state(run_dir)
     try:
-        return any(n.endswith(".json") for n in os.listdir(agent._inbox_dir(run_dir)))
+        queued = any(n.endswith(".json") for n in os.listdir(agent._inbox_dir(run_dir)))
     except OSError:
-        return False
+        queued = False
+    return BUSY if turn_open or queued else BUSY_TASKS if tasks_pending else ""
 
 
 def _end_session_runs(agent, session_id: str) -> str:
@@ -165,8 +170,9 @@ def _end_session_runs(agent, session_id: str) -> str:
         names = []
     runs = [os.path.join(agent.RUNS, name) for name in names
             if _running(agent, os.path.join(agent.RUNS, name)) and session_id in run_sessions(name)]
-    if any(_busy(agent, run_dir) for run_dir in runs):
-        return BUSY
+    busy = next((why for why in (_busy(agent, r) for r in runs) if why), "")
+    if busy:
+        return busy
     for run_dir in runs:
         agent._kill_tree(run_dir)
     deadline = time.monotonic() + _HOST_EXIT_WAIT_S
@@ -218,6 +224,15 @@ def start(file: str, session_id: str, name: str = "") -> dict:
             with _lock:
                 _remotes[session_id] = _Remote(term)
     return status(session_id)
+
+
+def say(session_id: str, text: str) -> dict:
+    remote = _remotes.get(session_id or "")
+    if remote is None or not remote.term.alive or not remote.url:
+        return {"error": NOT_CONNECTED}
+    remote.term.write(_PASTE_START + text.encode() + _PASTE_END)
+    threading.Timer(_SUBMIT_DELAY_S, remote.term.write, args=(_ENTER,)).start()
+    return {"sent": True}
 
 
 def stop(session_id: str) -> dict:
