@@ -361,3 +361,221 @@ def test_the_poll_reports_the_inbox_whatever_the_queue_pref_says(agent, tmp_path
     for kwargs in ({"queue": "0"}, {}, {"queue": "1"}):
         out = agent.main(action="poll", run_id="run", **kwargs)
         assert [row["text"] for row in out["inbox"]] == ["still waiting"], kwargs
+
+
+# ============ the echo is matched by IDENTITY, over the WHOLE file (2026-10-20)
+#
+# Akshil, 2026-10-19: "I wrote a msg and got an answer while the background job
+# was running, then it disappeared; now when I ask another follow-up question
+# the message comes back and then goes away." The second half was this walk:
+# it read only the last megabyte of `out.jsonl`, a long first turn pushed the
+# earliest echoes out of that window, the position match found nothing, and
+# EVERY drained entry was reported waiting — the page deduped the ones that had
+# a transcript row and the one that did not (a line steered into a tool call)
+# sat under each later follow-up as a ghost.
+
+
+def _echo_uuid(run_dir, uuid, *texts):
+    """A modern CLI's echo: the stdin row's `uuid` comes back on it."""
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user", "uuid": uuid, "isReplay": True,
+                             "message": {"role": "user", "content": [
+                                 {"type": "text", "text": t} for t in texts]}})
+                 + "\n")
+
+
+def _stream(run_dir, n_bytes):
+    """`n_bytes` of streaming rows — the bulk of any real transcript."""
+    row = json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta",
+        "delta": {"type": "text_delta", "text": "x" * 900}}}) + "\n"
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        for _ in range(n_bytes // len(row) + 1):
+            fh.write(row)
+
+
+def _entries(agent, run_dir, *texts):
+    """Write and drain `texts` in order; returns `[(name, uuid)]`."""
+    out = []
+    for text in texts:
+        agent._write_inbox_entry(str(run_dir), text)
+        name = sorted(n for n in os.listdir(run_dir / "inbox")
+                      if n.endswith(".json"))[-1]
+        with open(run_dir / "inbox" / name, encoding="utf-8") as fh:
+            uid = json.load(fh)["uuid"]
+        _drain(run_dir, name)
+        out.append((name, uid))
+    return out
+
+
+def test_an_entry_carries_a_uuid_the_cli_can_hand_back(agent, tmp_path):
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_entry(str(run_dir), "hi")
+    name = [n for n in os.listdir(run_dir / "inbox") if n.endswith(".json")][0]
+    with open(run_dir / "inbox" / name, encoding="utf-8") as fh:
+        row = json.load(fh)
+    assert len(row["uuid"]) == 36
+    assert row["message"] == {"role": "user",
+                              "content": [{"type": "text", "text": "hi"}]}
+
+
+def test_echoes_older_than_a_megabyte_still_count(agent, tmp_path):
+    """The scenario from the recording: a first turn that streamed megabytes,
+    two answered follow-ups, one of them steered (echoed, answered, but with
+    no transcript row of its own), then a long reply and a fresh follow-up.
+    The newest landed echo is more than a megabyte behind the end of the file
+    when the fresh one is asked about. Only the fresh one is waiting — the old
+    tail window listed all four."""
+    run_dir = _run_dir(tmp_path)
+    (t0, u0), (q1, u1), (q2, u2) = _entries(
+        agent, run_dir, "do the big task", "is there any data from wikipedia?",
+        "so you are getting some data from wikipedia?")
+    _echo_uuid(run_dir, u0, "do the big task")
+    _stream(run_dir, 3_000_000)
+    _echo_uuid(run_dir, u1, "is there any data from wikipedia?")
+    _stream(run_dir, 20_000)
+    _echo_uuid(run_dir, u2, "so you are getting some data from wikipedia?")
+    _stream(run_dir, 1_500_000)
+    assert agent._poll("run")["inbox"] == []
+
+    (s, us), = _entries(agent, run_dir, "shorter")
+    assert [row["id"] for row in agent._poll("run")["inbox"]] == [s]
+    _echo_uuid(run_dir, us, "shorter")
+    _stream(run_dir, 5_000)
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_the_file_is_read_incrementally(agent, tmp_path, monkeypatch):
+    """One pass over the file on the first look, only the new bytes after —
+    `_poll` runs every 400 ms and the transcript grows without bound."""
+    run_dir = _run_dir(tmp_path)
+    (a, ua), (b, ub) = _entries(agent, run_dir, "one", "two")
+    _echo_uuid(run_dir, ua, "one")
+    _stream(run_dir, 2_000_000)
+    sizes = []
+    real_read = agent._read_echo_texts
+
+    def spy(run):
+        before = os.path.getsize(run_dir / "out.jsonl")
+        idx = agent._echo_index.get(run)
+        sizes.append(before - (idx["offset"] if idx else 0))
+        return real_read(run)
+
+    monkeypatch.setattr(agent, "_read_echo_texts", spy)
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [b]
+    _echo_uuid(run_dir, ub, "two")
+    assert agent._poll("run")["inbox"] == []
+    assert sizes[0] > 2_000_000          # the first look reads it all
+    assert 0 < sizes[1] < 1_000          # the second reads the echo alone
+
+
+def test_a_half_written_last_line_waits_for_the_next_read(agent, tmp_path):
+    run_dir = _run_dir(tmp_path)
+    (a, ua), = _entries(agent, run_dir, "one")
+    whole = json.dumps({"type": "user", "uuid": ua, "message": {
+        "role": "user", "content": [{"type": "text", "text": "one"}]}}) + "\n"
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(whole[:40])
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [a]
+    with open(run_dir / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(whole[40:])
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_a_rewritten_file_is_indexed_again_from_the_start(agent, tmp_path):
+    run_dir = _run_dir(tmp_path)
+    (a, ua), = _entries(agent, run_dir, "one")
+    _stream(run_dir, 50_000)
+    _echo_uuid(run_dir, ua, "one")
+    assert agent._poll("run")["inbox"] == []
+    # The file is replaced by a shorter one that holds no echo at all: the
+    # stale index must not vouch for "one" — the walk starts over at byte 0.
+    (run_dir / "out.jsonl").write_text("", encoding="utf-8")
+    (b, ub), = _entries(agent, run_dir, "two")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [a, b]
+
+
+def test_identity_settles_a_fold_that_position_cannot(agent, tmp_path):
+    """The CLI's own fold (measured 2026-09-24): lines queued while it streams
+    each get a one-block echo of their own, then ONE merged row repeats them
+    all under the last line's uuid. Read by position the repeats break the
+    prefix match and every line goes back to "waiting" — the ghost. Read by
+    id, the merged row is just the newest line again."""
+    run_dir = _run_dir(tmp_path)
+    (x, ux), (y, uy), (z, uz) = _entries(agent, run_dir, "first", "second", "third")
+    _echo_uuid(run_dir, ux, "first")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [y, z]
+    _echo_uuid(run_dir, uy, "second")
+    _echo_uuid(run_dir, uz, "third")
+    _echo_uuid(run_dir, uz, "second", "third")
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_a_fold_under_the_first_lines_uuid_still_lands_by_position(agent,
+                                                                   tmp_path):
+    """Should a CLI stamp a merged row with the FIRST line's uuid instead, the
+    other lines have no echo of their own to match — and the position walk
+    behind the id pass still reads them off the fold's blocks."""
+    run_dir = _run_dir(tmp_path)
+    (x, ux), (y, uy), (z, uz) = _entries(agent, run_dir, "first", "second", "third")
+    _echo_uuid(run_dir, ux, "first")
+    _echo_uuid(run_dir, uy, "second", "third")
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_the_position_walk_only_spends_echoes_after_the_last_id_match(
+        agent, tmp_path):
+    """A stamped "go on" that landed, then an unstamped "go on" that has not:
+    the landed one's echo must not be read a second time as the other's."""
+    run_dir = _run_dir(tmp_path)
+    (a, ua), = _entries(agent, run_dir, "go on")
+    agent._write_inbox_row(str(run_dir), {"type": "user", "message": {
+        "role": "user", "content": [{"type": "text", "text": "go on"}]}})
+    b = sorted(n for n in os.listdir(run_dir / "inbox") if n.endswith(".json"))[-1]
+    _drain(run_dir, b)
+    _echo_uuid(run_dir, ua, "go on")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [b]
+    _echo(run_dir, "go on")
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_an_echo_without_a_uuid_still_lands_by_position(agent, tmp_path):
+    """A CLI that ignores the stamp (or an entry an older server wrote without
+    one) keeps the position walk, exactly as before."""
+    run_dir = _run_dir(tmp_path)
+    (a, _ua), (b, _ub) = _entries(agent, run_dir, "first", "second")
+    _echo(run_dir, "first")
+    assert [r["id"] for r in agent._poll("run")["inbox"]] == [b]
+    _echo(run_dir, "second")
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_a_landed_id_proves_everything_older_landed_too(agent, tmp_path):
+    """FIFO: the host drains in order and the CLI echoes in order, so an entry
+    whose own echo is not in the index (a legacy entry, an echo the index has
+    aged out) is settled by any newer entry that has landed."""
+    run_dir = _run_dir(tmp_path)
+    # A legacy entry with no uuid at all, then a stamped one.
+    agent._write_inbox_row(str(run_dir), {"type": "user", "message": {
+        "role": "user", "content": [{"type": "text", "text": "old style"}]}})
+    old = [n for n in os.listdir(run_dir / "inbox") if n.endswith(".json")][0]
+    _drain(run_dir, old)
+    (b, ub), = _entries(agent, run_dir, "new style")
+    _echo_uuid(run_dir, ub, "new style")
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_a_user_row_that_is_not_an_entry_does_not_strand_the_walk(agent, tmp_path):
+    """Seen live 2026-10-20: a subagent's hand-back is injected by the CLI as
+    a `user` row with text blocks — a turn by shape, but no inbox entry ever
+    asked for it. Behind an entry's own echo it made the old suffix match
+    fail and listed the entry (an uuid-less one, an older server's) as still
+    waiting."""
+    run_dir = _run_dir(tmp_path)
+    agent._write_inbox_row(str(run_dir), {"type": "user", "message": {
+        "role": "user", "content": [{"type": "text", "text": "do the thing"}]}})
+    name = [n for n in os.listdir(run_dir / "inbox") if n.endswith(".json")][0]
+    _drain(run_dir, name)
+    _echo(run_dir, "do the thing")
+    _echo(run_dir, "<agent-message from=\"a2973b78602769fc3\"> [Subagent hand-back] …")
+    assert agent._poll("run")["inbox"] == []
