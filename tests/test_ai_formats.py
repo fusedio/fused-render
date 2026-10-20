@@ -1386,3 +1386,27 @@ def test_speech_options_auto_bypasses_the_language_catalog():
     assert formats.speech_options("org/tts", {**PRESET, "languages": ["English"]},
                                   {"language": "AUTO"}) == {
         "voice": "aiden", "language": "auto"}
+
+
+@pytest.mark.parametrize("names,config", [
+    ({"modular_model_index.json"}, {}),
+    (set(), {"library_name": "diffusers"}),
+    ({"model_index.json"}, {}),
+])
+def test_a_diffusers_snapshot_is_any_of_the_three_signals(names, config):
+    """Admission (`hub_architecture.is_diffusers_repo`) and `loaders()` share
+    ONE predicate: a modular-only snapshot and a `library_name: diffusers`
+    config each read as the Diffusers runners, not only a flat index."""
+    assert formats.loaders(
+        repo_id="org/m", names=names, dirnames=set(), config=config,
+        torch_weights=False) == tuple(formats.DIFFUSERS_RUNNERS)
+
+
+def test_is_diffusers_repo_delegates_to_the_formats_predicate():
+    from fused_render.ai import hub_architecture
+    for names, lib in [(frozenset({"modular_model_index.json"}), None),
+                       (frozenset(), "diffusers"),
+                       (frozenset({"model_index.json"}), None),
+                       (frozenset({"x"}), "transformers")]:
+        assert (hub_architecture.is_diffusers_repo(names, lib)
+                == formats.is_diffusers_snapshot(names, lib))

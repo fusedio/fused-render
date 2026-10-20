@@ -2114,6 +2114,18 @@ LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
 ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm")
 
 
+def is_diffusers_snapshot(names, library_name: str | None) -> bool:
+    """The ONE predicate for "this repo is a Diffusers pipeline": a flat
+    `model_index.json`, a modular `modular_model_index.json`, or
+    `library_name == "diffusers"`. `loaders()` (what loads it) and
+    `hub_architecture.is_diffusers_repo` (what admission lets through)
+    both call this, so the two layers cannot drift apart again — they did,
+    and a modular-only FLUX 3 repo was admitted but had no loader."""
+    return (DIFFUSERS_INDEX in names
+            or DIFFUSERS_MODULAR_INDEX in names
+            or library_name == "diffusers")
+
+
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
            onnx_weights: bool = False,
            gguf_architecture: str | None = None) -> tuple[str, ...]:
@@ -2202,7 +2214,7 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     # the two must not disagree about which repos are mflux's.
     if mflux_native_mode(repo_id) and has_mflux_components(dirnames):
         found.append("mflux-image")
-    if DIFFUSERS_INDEX in names:
+    if is_diffusers_snapshot(names, (config or {}).get("library_name")):
         found.extend(DIFFUSERS_RUNNERS)
     if is_parakeet_checkpoint(config) and PARAKEET_WEIGHTS in names:
         # D406 withdrew the `parakeet-mlx` runner (maintenance cost not

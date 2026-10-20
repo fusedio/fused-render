@@ -617,3 +617,21 @@ def test_mlx_vlm_model_types_caches_by_venv_dir(tmp_path, monkeypatch):
     assert first is None
     assert second is None
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("names,config", [
+    (frozenset({formats.DIFFUSERS_INDEX}), {}),
+    (frozenset({formats.DIFFUSERS_MODULAR_INDEX}), {}),
+    (frozenset(), {"library_name": "diffusers"}),
+])
+def test_whatever_admission_admits_as_diffusers_loaders_names_a_runner(names, config):
+    """Cross-layer invariant (the FLUX 3 klein report): the layer that admits
+    a repo and the layer that classifies its loaders must agree. A repo the
+    diffusers kind admits on a real signal must never have empty loaders."""
+    admitted, _ = hub_loadable._admits(
+        "diffusers", None, model_id="org/m", model_type=None, names=names,
+        library_name=config.get("library_name"))
+    assert admitted is True
+    assert formats.loaders(
+        repo_id="org/m", names=names, dirnames=set(), config=config,
+        torch_weights=False)

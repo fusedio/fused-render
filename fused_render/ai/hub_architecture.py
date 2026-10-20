@@ -288,9 +288,7 @@ def is_diffusers_repo(names: frozenset[str], library_name: str | None) -> bool:
     of BOTH signals should mean (this module always treats it as "not
     recognisable as Diffusers", `hub_loadable`'s never-drops-a-row guard is
     what turns that into "stay loadable" for its own admission rule)."""
-    return (formats.DIFFUSERS_INDEX in names
-            or formats.DIFFUSERS_MODULAR_INDEX in names
-            or library_name == "diffusers")
+    return formats.is_diffusers_snapshot(names, library_name)
 
 
 def _resolve_engine(raw: dict, names: frozenset[str]) -> str | None:
