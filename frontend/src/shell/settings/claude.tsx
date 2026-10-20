@@ -112,7 +112,13 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
         setCatalog(d);
         setCatalogError(null);
       },
-      (e) => alive && setCatalogError((e as Error).message),
+      (e) => {
+        if (!alive) return;
+        // A reload that failed after a write must not leave the old values
+        // on screen with live reset buttons (CodeRabbit on #1777).
+        setCatalog(null);
+        setCatalogError((e as Error).message);
+      },
     );
     return () => {
       alive = false;
