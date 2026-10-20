@@ -338,7 +338,7 @@
   flex-direction: column;
 }
 
-/* The sidebar's Canvases section (shell/CanvasesSection.tsx): Projects' rows
+/* The sidebar's Canvases section (shell/CurrentAppsSection.tsx, section="canvases"): Projects' rows
    with a canvas glyph, and the environment after the name when both hold
    clones. */
 .canvas-row-glyph {

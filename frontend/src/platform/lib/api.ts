@@ -3231,6 +3231,10 @@ export interface CurrentAppEntry {
    *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
    *  and by nothing done to the tasks. */
   unread?: boolean;
+  /** This row is a canvas CLONE (`~/Fused/canvas/<env>/<name>`): the sidebar
+   *  lists it in its Canvases section, not Projects, and the row opens the
+   *  canvas's project page. Null / absent for an app folder. */
+  canvas?: { env: string; name: string } | null;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {

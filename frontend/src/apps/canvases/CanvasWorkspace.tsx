@@ -92,6 +92,8 @@ import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
+import { addCurrentApp } from "@platform/lib/api";
+import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
@@ -598,6 +600,13 @@ export default function CanvasWorkspace({
       setOwned(null);
       setStartError(null);
       setDir(started.dir);
+      // The clone onto the sidebar's desk (its Canvases section, the
+      // Projects store): opening a canvas is what puts it there, as a task
+      // under it does. Idempotent on the server; the section refetches on
+      // the window event (it cannot see this POST's answer).
+      void addCurrentApp(started.dir)
+        .then(() => window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT)))
+        .catch(() => undefined);
     } catch (e) {
       if (e instanceof CanvasOwnedError) {
         setOwned(e.owner);

@@ -47,7 +47,6 @@ import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 import CurrentAppsSection, { NewAppModal, useDeskAppsOrdered } from "@shell/CurrentAppsSection";
-import CanvasesSection from "@shell/CanvasesSection";
 import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
 import { useRestartFlow } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
@@ -970,7 +969,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         {/* Canvases (2026-10-20): the clones on this machine, under Projects,
             behind the primary row's own gate — the feature on AND an account
             behind it (a clone with no login has no page that works). */}
-        {canvasesInNav && <CanvasesSection />}
+        {canvasesInNav && <CurrentAppsSection section="canvases" />}
         {!bot && <BookmarksSection />}
         <div className="sidebar-section sidebar-settings">
           <UpdateCard />

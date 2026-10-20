@@ -151,6 +151,15 @@ def app_dir_for(project: str) -> str | None:
         folder = canonical_fs_path(os.path.abspath(e["path"])).rstrip("/")
         if folder and is_under(project, folder):
             return folder
+    # A canvas CLONE (`~/Fused/canvas/<env>/<name>`), or a node file in it:
+    # the clone is the project (the sidebar's Canvases section, 2026-10-20).
+    # Before the workspace climb — a clone declares no page, so the climb
+    # would answer None, and a clone is under the workspace root.
+    from fused_render.canvases import clone_dir_for
+
+    clone = clone_dir_for(project)
+    if clone is not None:
+        return canonical_fs_path(clone[2]).rstrip("/")
     root = _workspace_root()
     if not is_under(project, root) or project == root:
         return None
@@ -402,6 +411,20 @@ def app_icon(folder: str) -> dict | None:
     return {"icon": canonical_fs_path(found["icon"]), "mtime": found["mtime"]}
 
 
+def _canvas_of(path: str) -> dict | None:
+    """`{env, name}` when the desk row IS a canvas clone (the clone dir
+    itself, not a file in it), else None (see canvases.clone_dir_for)."""
+    from fused_render.canvases import clone_dir_for
+
+    clone = clone_dir_for(path)
+    if clone is None:
+        return None
+    env, name, clone_dir = clone
+    if canonical_fs_path(clone_dir).rstrip("/") != path and os.path.realpath(clone_dir) != os.path.realpath(path):
+        return None
+    return {"env": env, "name": name}
+
+
 def list_apps() -> list[dict]:
     """The desk, in stored order — display order, top first (D1386: new apps
     are inserted at the top, a drag rewrites it via `set_order`). Each: ``path`` (canonical), ``name``
@@ -436,6 +459,10 @@ def list_apps() -> list[dict]:
             "path": path,
             "name": os.path.basename(path.rstrip("/")) or path,
             "kind": "linked" if path in linked else "workspace",
+            # Which canvas this row is (`{env, name}`), None for an app
+            # folder: the sidebar splits the desk into Projects and Canvases
+            # on it, and a canvas row opens the canvas's project page.
+            "canvas": _canvas_of(path),
             "entry": canonical_fs_path(entry) if entry else None,
             "exists": exists,
             "icon": icon["icon"] if icon else None,

@@ -202,22 +202,6 @@ export interface SyncStatus {
 
 export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
 
-/** A clone on this machine, as GET /api/canvases/cloned lists it. */
-export interface ClonedCanvas {
-  env: WorkbenchEnv;
-  name: string;
-  /** The clone folder, absolute. */
-  dir: string;
-  /** Newest mtime among the clone dir and its files (epoch seconds). */
-  mtime: number;
-}
-
-/** Every clone under ~/Fused/canvas/<env>/, both environments, newest first.
- *  A local listdir on the server: no CLI, no login, no guard — the sidebar's
- *  Canvases section reads it as the sidebar mounts. */
-export const listClonedCanvases = () =>
-  getJson<{ canvases: ClonedCanvas[] }>("/api/canvases/cloned").then((r) => r.canvases);
-
 /** The account handle. Handles are per environment: the canvas workspace
  *  names its canvas's env (the handle goes into the workbench URL); a caller
  *  that only needs "who is signed in" (Settings, Share) omits it and the

@@ -40,6 +40,7 @@ const app = (path: string, over: Record<string, unknown> = {}) => ({
   name: path.split("/").pop() ?? path,
   entry: `${path}/index.html`,
   kind: "workspace" as const,
+  canvas: null,
   exists: true,
   running: false,
   unread: false,
