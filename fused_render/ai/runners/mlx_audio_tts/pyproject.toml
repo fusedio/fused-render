@@ -4,6 +4,8 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "mlx-audio>=0.6,<0.7",
+    # mlx-audio 0.6.0 itself requires `mlx==0.32.4`, inside this window;
+    # the window keeps the bound visible beside it.
     "mlx>=0.32,<0.33",
     "numpy>=1.26,<3",
     "huggingface_hub",

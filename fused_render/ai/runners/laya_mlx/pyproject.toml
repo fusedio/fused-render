@@ -2,8 +2,10 @@
 #
 # This folder exists so that `laya-mlx` is named in exactly one place and lives
 # in exactly one interpreter — not fused-render's, and not `mlx_text`'s or
-# `mlx_embed`'s. It pins its own `mlx` line (`>=0.32.2,<0.33` at 0.2.0), which
-# is a narrower window than `mlx-vlm` or `mlx-embeddings` ask for, so sharing a
+# `mlx_embed`'s. It pins its own `mlx` line: laya-mlx 0.5.0 requires
+# `mlx>=0.32.2,<0.33` (darwin arm64; METADATA of the 0.5.0 wheel), where
+# `mlx_audio_tts` is held to `mlx==0.32.4` by mlx-audio 0.6.0. That is a
+# narrower window than `mlx-vlm` or `mlx-embeddings` ask for, so sharing a
 # folder with either would tie an unrelated bump in one to a forced rebuild —
 # or an unresolvable sync — of the other.
 #
