@@ -55,6 +55,8 @@ interface ClaudeStore {
   git: GitStatusState;
   catalog: PreferencesGet | null;
   catalogError: string | null;
+  /** The catalog GET has answered (rows or an error): the page can count. */
+  catalogReady: boolean;
   reloadCatalog: () => void;
   patch: (key: string, value: unknown) => Promise<void>;
   refreshCatalog: () => Promise<void>;
@@ -78,6 +80,7 @@ const ClaudeContext = createContext<ClaudeStore>({
   git: IDLE_GIT,
   catalog: null,
   catalogError: null,
+  catalogReady: false,
   reloadCatalog: () => undefined,
   patch: async () => undefined,
   refreshCatalog: async () => undefined,
@@ -174,6 +177,7 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
       git,
       catalog,
       catalogError,
+      catalogReady: !live || catalog !== null || catalogError !== null,
       reloadCatalog,
       patch,
       refreshCatalog,
@@ -183,6 +187,7 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
     }),
     [
       available,
+      live,
       badgeEpoch,
       sectionEpoch,
       onChanged,
@@ -229,12 +234,13 @@ export function claudePrefEntries(schema: readonly PrefEntry[]): ClaudePrefEntry
 
 /** The catalog's rows on this machine, or none until it has loaded. `wanted`
  *  wakes the store: the rows exist once the group is shown or a search runs. */
-export function useClaudePrefEntries(wanted: boolean): ClaudePrefEntry[] {
-  const { catalog, wake } = useContext(ClaudeContext);
+export function useClaudePrefEntries(wanted: boolean): { rows: ClaudePrefEntry[]; ready: boolean } {
+  const { catalog, catalogReady, wake } = useContext(ClaudeContext);
   useEffect(() => {
     if (wanted) wake();
   }, [wanted, wake]);
-  return useMemo(() => (catalog ? claudePrefEntries(catalog.schema) : []), [catalog]);
+  const rows = useMemo(() => (catalog ? claudePrefEntries(catalog.schema) : []), [catalog]);
+  return { rows, ready: !wanted || catalogReady };
 }
 
 function unsetLabel(d: PrefEntry): string {

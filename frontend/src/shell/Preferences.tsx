@@ -234,8 +234,11 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
 
   const tokens = useMemo(() => tokenize(query), [query]);
   const searching = tokens.length > 0;
-  const wantsClaude = params.get("tab") === "claude" || (params.get("s") ?? "").startsWith("claude-");
-  const claudeRows = useClaudePrefEntries(claudeConfig === true && (searching || wantsClaude));
+  // The catalog is read with the page, not when its group opens: the nav's
+  // count for Claude Code is every row (Akshil, 2026-10-20: "keep it as 83"),
+  // so the page waits for the rows the way it waits for the prefs GET.
+  const { rows: claudeRows, ready: claudeReady } = useClaudePrefEntries(claudeConfig === true);
+  const loaded = prefs !== null && claudeConfig !== null && claudeReady;
   const entries = useMemo(() => {
     if (!prefs || claudeConfig === null) return [];
     const base: SettingEntry[] = visibleSettings({ prefs, bot, mac: isMac, claudeConfig });
@@ -311,13 +314,10 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     },
   };
 
-  // Pointer rows count: they are rows a reader can find and follow. Outside a
-  // search the count is the registry's rows only — the Claude Code group's
-  // settings.json rows arrive with their catalog, and a number that read 7
-  // and then 83 was a number nobody could trust (Akshil, 2026-10-20). A
-  // search counts every hit, catalog rows included: that is what it found.
-  const navCount = (g: GroupId) =>
-    (searching ? hits : entries.filter((e) => !isClaudePref(e))).filter((e) => e.group === g).length;
+  // Pointer rows count: they are rows a reader can find and follow, and the
+  // counts must mean the same thing with and without a search — every row,
+  // the Claude Code group's catalog rows included (the page waits for them).
+  const navCount = (g: GroupId) => (searching ? hits : entries).filter((e) => e.group === g).length;
 
   const head = searching
     ? hits.length
@@ -378,8 +378,8 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
         )}
       </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!(prefs && claudeConfig !== null) && !error && <SkeletonLines rows={4} label="Loading preferences" />}
-      {prefs && claudeConfig !== null && (
+      {!loaded && !error && <SkeletonLines rows={4} label="Loading preferences" />}
+      {prefs && loaded && (
         <div className="settings-body">
           <nav className="settings-nav" aria-label="Preference groups">
             {sections.map(({ section, groups: inSection }) => (
