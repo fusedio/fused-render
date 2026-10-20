@@ -250,7 +250,7 @@ export function SyncStrip({
           ))}
         </span>
       )}
-      {!live && (
+      {!live && server && (
         <span style={{ flex: "none", color: "var(--fg-muted)" }} title="Polling every 2 s">
           · polling
         </span>

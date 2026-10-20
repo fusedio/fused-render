@@ -1281,7 +1281,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         owned={owned}
         live={live}
         open={drawerOpen}
-        onToggle={() => setDrawerOpen((o) => !o)}
+        // No drawer to open before the first state: arming it now would pop
+        // it unprompted when that state lands.
+        onToggle={() => {
+          if (sync || owned) setDrawerOpen((o) => !o);
+        }}
         onBack={() => navigateUrl("/canvases")}
         workbenchUrl={
           baseUrl && handle
