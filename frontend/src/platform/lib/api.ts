@@ -1590,12 +1590,12 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
-  // Which Fused environment the canvases, the `fused` wrapper and the share
-  // uploads target (fusedcli.workbench_env). READ-ONLY through PUT /api/prefs:
-  // the writer is POST /api/canvases/env, which stops the canvas sync
-  // watchers first (clones are kept, one folder per environment). `locked` =
-  // FUSED_RENDER_WORKBENCH_ENV pins it. OPTIONAL: an older
-  // server answers without it.
+  // The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
+  // catalog's initial pick, the `fused` wrapper's env outside a canvas clone,
+  // share uploads' target. Canvases carry their own env, so this is a plain
+  // pref: written by PUT /api/prefs `{workbench_env}` (putWorkbenchEnv).
+  // `locked` = FUSED_RENDER_WORKBENCH_ENV pins it (the PUT answers 423).
+  // OPTIONAL: an older server answers without it.
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
   // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
@@ -1817,6 +1817,13 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
+/** The default Fused environment (`prefs.workbench.env`). 400 outside
+ *  `unstable` / `prod`, 423 while FUSED_RENDER_WORKBENCH_ENV pins it. The
+ *  server re-exports the `fused` wrapper so its default follows. */
+export function putWorkbenchEnv(env: "unstable" | "prod"): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { workbench_env: env });
+}
+
 /** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,
  *  `"cmd+shift+KeyK"` — modifiers then a `KeyboardEvent.code`). The server
  *  canonicalises it and rebinds; a spec with no modifier is a 400. */
@@ -1898,6 +1905,37 @@ export function putBotsPref(
 /** The Tasks switcher's tab row (`Prefs.tasks_view_tabs`). */
 export function putTasksViewTabs(tabs: string[]): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { tasks_view_tabs: tabs });
+}
+
+// ---- UI layout (shell/ui_layout.py, ~/.fused-render/ui_layout.json) ---------
+// The per-machine layout the shell used to keep in a dozen localStorage keys
+// (D1386): sidebar width and fold, the two sidebar section folds, the explorer
+// companion pane's shut/width/full-screen, per-folder listing sort, the Tasks
+// page's view / calendar range / board lanes / group folds, and the New task
+// form's recent folders. Whole-document, last-write-wins (home_layout.py's
+// posture). `exists` false = never written: the client then seeds from its
+// defaults (and, once, from whatever the old localStorage keys still hold).
+export interface UiLayoutDoc {
+  v: 1;
+  sidebar?: { width: number; collapsed: boolean };
+  bookmarksCollapsed?: boolean;
+  currentAppsCollapsed?: boolean;
+  explorerSide?: { hidden?: boolean; width?: number | null; maximized?: boolean };
+  /** canonical fs path → "?sort=..&order=.." (platform/lib/viewstate.ts). */
+  viewState?: Record<string, string>;
+  tasks?: {
+    view?: string;
+    calRange?: string;
+  };
+  recentPaths?: string[];
+}
+
+export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
+  return getJson<{ exists: boolean; layout: UiLayoutDoc | null }>("/api/ui-layout");
+}
+
+export function putUiLayout(layout: UiLayoutDoc): Promise<{ ok: boolean }> {
+  return putJson<{ ok: boolean }>("/api/ui-layout", layout);
 }
 
 // ---- Notifications panel state (shell/notifications.py) ---------------------
@@ -3586,6 +3624,13 @@ export interface Task {
   // the tasks page should open app by default"). Optional: pulse rows and older
   // fixtures do not carry it, and a missing value reads as "not an app".
   entry?: string;
+  /** The canvas this task is on — a clone under `~/Fused/canvas/<env>/
+   *  <name>` (`file` "" = the canvas chat) or one of its top-level node
+   *  files — stamped by the server (routers/tasks.py `_task_canvas`), null
+   *  for every other row. The door lands on the canvas page, node selected,
+   *  chat on the task's session, instead of the clone in the explorer.
+   *  Optional: pulse rows and older fixtures do not carry it. */
+  canvas?: { env: "unstable" | "prod"; name: string; file: string } | null;
   session_id: string; // "" until the first run
   // How the transcript's own session ENTERED — "cli" for an interactive
   // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic
@@ -3974,6 +4019,7 @@ export type TaskPulseTask = Pick<
   | "next_run_repeats"
   | "entrypoint"
   | "backend"
+  | "canvas"
 >;
 
 /** The model / thinking a NEW task opens on: the global Claude preference

@@ -1,5 +1,10 @@
-// Canvas workspace (/canvases/<name>): the embedded live workbench beside a
-// sync status strip for the local clone.
+// Canvas workspace (/canvases/<env>/<name>): the embedded live workbench
+// beside a sync status strip for the local clone.
+//
+// A canvas is (env, name): its clone is ~/Fused/canvas/<env>/<name>, and
+// every call below, the workbench origin and the whoami handle are that
+// env's — never the `workbench_env` default — so a prod canvas and an
+// unstable canvas can be open and syncing side by side.
 //
 // The iframe loads the AUTHENTICATED workbench editor
 // (<base>/workbench/<handle>/<name>?fused_embed_auth=1). The Auth0 cookie
@@ -88,7 +93,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { EMBED_PREFIX, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
@@ -96,6 +101,7 @@ import {
   ackDelta,
   applyRename,
   applySnapshot,
+  catalogPath,
   fixWithClaude,
   getDelta,
   getAccessToken,
@@ -106,6 +112,8 @@ import {
   pullCanvas,
   startSync,
   syncEventsUrl,
+  type WorkbenchEnv,
+  canvasNameFromPath,
 } from "./api";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
@@ -247,9 +255,11 @@ function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): str
 }
 
 /**
- * THE SESSION EACH NODE'S CHAT WAS LAST ON, per canvas: `<canvas>\0<file>` →
- * `session_id`. Module-level so it outlives this component, which App.tsx
- * keys on the canvas slug (a hop to another canvas and back must not forget).
+ * THE SESSION EACH NODE'S CHAT WAS LAST ON, per canvas: `<env>\0<canvas>\0
+ * <file>` → `session_id` (env included: a prod and an unstable canvas may
+ * share a name, and their nodes are different files). Module-level so it
+ * outlives this component, which App.tsx keys on (env, name) (a hop to
+ * another canvas and back must not forget).
  * The chat inside the node pane runs on the frame's URL (`paramsSource` "url"
  * in the explorer's embed), so the frame's `location.search` IS the chat's
  * state: `session_id` present = that conversation, absent = the chat's home
@@ -259,8 +269,8 @@ function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): str
  */
 const nodeSessions = new Map<string, string>();
 
-function nodeSessionKey(canvas: string, file: string): string {
-  return canvas + "\0" + file;
+function nodeSessionKey(env: WorkbenchEnv, canvas: string, file: string): string {
+  return env + "\0" + canvas + "\0" + file;
 }
 
 /** Mirror the node frame's current `session_id` into `nodeSessions`. The
@@ -330,12 +340,23 @@ function nodeFromUrl(): NodeSel | null {
   return { udfName: name, kind: file.endsWith(".py") ? "udf" : "widget", file };
 }
 
-export function canvasNameFromPath(pathname: string): string | null {
-  const match = /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname);
-  return match ? decodeURIComponent(match[1]) : null;
+/** The chat this page's URL names for its node — `?node=…&session_id=…`, a
+ *  reload or the Tasks page's door on a canvas task (`canvasPagePath`) —
+ *  remembered under the node so the pane boots on it. The node frame's src
+ *  reads `nodeSessions` alone (`nodeBootSrc`), and that map is empty on a
+ *  fresh mount: without this the URL would select the node and land its
+ *  pane on the chat's home, not the conversation the link named. Must run
+ *  BEFORE the first render that computes the src, hence the state
+ *  initializer below rather than an effect. Answers whether a session was
+ *  named, for the nav listener that reboots the pane on one. */
+function seedNodeSessionFromUrl(env: WorkbenchEnv, canvas: string, node: NodeSel): string | null {
+  const sid = new URLSearchParams(window.location.search).get("session_id");
+  if (!sid) return null;
+  nodeSessions.set(nodeSessionKey(env, canvas, node.file), sid);
+  return sid;
 }
 
-export default function CanvasWorkspace({ name }: { name: string }) {
+export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name: string }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
@@ -346,7 +367,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   const [chatTpl, setChatTpl] = useState<string | null>(null);
   // The selected node (null = the canvas chat). Seeded from `?node=` so a
   // reload keeps the node; written back below.
-  const [node, setNode] = useState<NodeSel | null>(() => nodeFromUrl());
+  const [node, setNode] = useState<NodeSel | null>(() => {
+    const seeded = nodeFromUrl();
+    if (seeded) seedNodeSessionFromUrl(env, name, seeded);
+    return seeded;
+  });
   const [nodeTab, setNodeTab] = useState<NodeTab>(() => nodeTabFromUrl());
   // Bumped when the node pane must REBOOT on a session for the node already
   // shown (a Recent row's hop onto the selected node, below): the frame's src
@@ -395,6 +420,17 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // already have. Kept after the push recovers — the session may still be
   // finishing its final message.
   const [fixRunId, setFixRunId] = useState<string | null>(null);
+  // Bumped when a hop lands on the CANVAS chat with a `session_id` other
+  // than the one it mounted on — another root task of the same canvas from
+  // the Tasks page, or Back to the bare canvas from one (none) — the chat
+  // reads `session_id` at boot only, so it is remounted. `canvasChatSidRef`
+  // is what the mounted chat was keyed on; the chat moving on by itself
+  // (replaceState, no event here) can leave it behind, which costs at most
+  // one needless remount onto the session the URL names.
+  const [canvasChatSeq, setCanvasChatSeq] = useState(0);
+  const canvasChatSidRef = useRef<string | null>(
+    new URLSearchParams(window.location.search).get("session_id"),
+  );
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
@@ -453,15 +489,15 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     try {
       // The answer is the old sync/status shape: read only its verdict. The
       // new state follows on the events socket (or the next poll).
-      const s = await pullCanvas(name, hard);
+      const s = await pullCanvas(env, name, hard);
       if (!s.ok) setPullError(s.pull_error ?? s.error ?? "pull failed");
-      void getSyncState(name).then(applyState, () => undefined);
+      void getSyncState(env, name).then(applyState, () => undefined);
     } catch (e) {
       setPullError((e as Error).message);
     } finally {
       setPullBusy(false);
     }
-  }, [name]);
+  }, [env, name]);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const baseOriginRef = useRef<string | null>(null);
 
@@ -479,7 +515,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         src: nodeEmbedSrc(
           path,
           tab,
-          tab === "claude" ? (nodeSessions.get(nodeSessionKey(name, file)) ?? null) : null,
+          tab === "claude" ? (nodeSessions.get(nodeSessionKey(env, name, file)) ?? null) : null,
         ),
       };
     }
@@ -505,7 +541,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         win = null;
       }
       if (!win) return;
-      const key = nodeSessionKey(name, frame.dataset.file);
+      const key = nodeSessionKey(env, name, frame.dataset.file);
       const pathname = new URL(frame.src, window.location.origin).pathname;
       const record = () => recordNodeSession(win!, key, pathname);
       record();
@@ -513,7 +549,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       win.addEventListener("popstate", record);
       win.addEventListener("pagehide", record);
     },
-    [name],
+    [env, name],
   );
 
   // Make sure THIS process's watcher runs on the clone. The one place
@@ -524,7 +560,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // retry gets the lock. Anything else is thrown to the caller.
   const ensureSync = useCallback(async (): Promise<void> => {
     try {
-      const started = await startSync(name);
+      const started = await startSync(env, name);
       setOwned(null);
       setStartError(null);
       setDir(started.dir);
@@ -535,7 +571,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       }
       throw e;
     }
-  }, [name]);
+  }, [env, name]);
 
   // Boot: base URL + handle + make sure the watcher runs. sync/start goes
   // out at once, IN PARALLEL with status + whoami (it needs neither): the
@@ -551,9 +587,12 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       try {
         const status = await getCanvasesStatus();
         if (cancelled) return;
-        setBaseUrl(status.workbench_base_url);
-        baseOriginRef.current = new URL(status.workbench_base_url).origin;
-        const who = await getWhoami();
+        // THIS canvas's environment's origin and handle, not the default's:
+        // the token is posted only to this exact origin.
+        const base = status.envs[env].base_url;
+        setBaseUrl(base);
+        baseOriginRef.current = new URL(base).origin;
+        const who = await getWhoami(env);
         if (cancelled) return;
         if (!who.handle) {
           setError("could not determine your Fused username (fused whoami)");
@@ -567,7 +606,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     return () => {
       cancelled = true;
     };
-  }, [name, ensureSync]);
+  }, [env, name, ensureSync]);
 
   // The claude template's path for the clone (see `chatTpl`), once the clone
   // dir is known — at boot, or when an owned canvas is finally released.
@@ -664,7 +703,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       const now = Date.now();
       if (now - lastFocusCheckRef.current < FOCUS_CHECK_MIN_MS) return;
       lastFocusCheckRef.current = now;
-      void checkRemote(name).catch(() => undefined);
+      void checkRemote(env, name).catch(() => undefined);
     };
     window.addEventListener("focus", check);
     document.addEventListener("visibilitychange", check);
@@ -672,7 +711,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       window.removeEventListener("focus", check);
       document.removeEventListener("visibilitychange", check);
     };
-  }, [name, owned]);
+  }, [env, name, owned]);
 
   // Pointer enters the canvas pane: give the frame focus, unless the user is
   // mid-drag from elsewhere or typing (header). `preventScroll`: a focus
@@ -761,8 +800,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       for (;;) {
         try {
           const ack = rename
-            ? await applyRename(name, gen, seq, rename)
-            : await applySnapshot(name, gen, seq, body ?? {});
+            ? await applyRename(env, name, gen, seq, rename)
+            : await applySnapshot(env, name, gen, seq, body ?? {});
           settleRelay(qid);
           setRelayFailure(null);
           post({ type: "fused-embed-snapshot-applied", gen, seq, push_seq: ack.push_seq });
@@ -787,7 +826,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         }
       }
     },
-    [name, settleRelay],
+    [env, name, settleRelay],
   );
 
   // The delta leg: disk moved → fetch diff(disk, what the frame holds) → post
@@ -805,7 +844,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         const started = Date.now();
         for (;;) {
           try {
-            const delta = await getDelta(name, full);
+            const delta = await getDelta(env, name, full);
             if (delta.held !== undefined) {
               if (Date.now() - started > DELTA_RETRY_WINDOW_MS) return;
               await new Promise((r) => window.setTimeout(r, DELTA_RETRY_MS));
@@ -849,7 +888,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         }
       });
     },
-    [name],
+    [env, name],
   );
   const watcherEpochRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
@@ -884,6 +923,76 @@ export default function CanvasWorkspace({ name }: { name: string }) {
   // without re-subscribing it on every selection.
   const nodeRef = useRef<NodeSel | null>(node);
   nodeRef.current = node;
+
+  // A HOP ONTO THIS CANVAS WHILE IT IS MOUNTED — the Tasks page's door on
+  // another node of the canvas the reader is already on, a notification —
+  // changes the URL and nothing else: App.tsx keys this component on (env,
+  // name) alone, so `nodeFromUrl` never re-runs and the new `?node=` +
+  // `session_id` would go unread. The router announces every push on
+  // NAV_EVENT (the node effect's own replaceState writes never do), so re-read
+  // them there: select the node in the workbench, remember the session under
+  // it and reboot the pane; the same node with a new session reboots alone.
+  // A hop to the bare canvas page deselects, and `navHopRef` keeps the node
+  // effect from clearing the `session_id` that hop carries for the canvas
+  // chat, which reads it off the URL as it mounts.
+  const navHopRef = useRef(false);
+  useEffect(() => {
+    const onNav = () => {
+      // Every push announces here, including the ones that LEAVE: the hop
+      // to another canvas, or to /tasks, reaches this still-mounted instance
+      // first. Only this canvas's own URL is ours to read — otherwise B's
+      // session would be filed under A's node of the same name, and the old
+      // frame told to deselect on the way out.
+      const here = canvasNameFromPath(window.location.pathname);
+      if (!here || here.env !== env || here.name !== name) return;
+      const next = nodeFromUrl();
+      const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
+      const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
+      const cur = nodeRef.current;
+      if (!next) {
+        if (!cur) {
+          // Already on the canvas chat: a URL naming a session it did not
+          // mount on — another one, or none after Back — remounts it; the
+          // mount reads `session_id` off the URL as it is now.
+          const want = new URLSearchParams(window.location.search).get("session_id");
+          if (want !== canvasChatSidRef.current) {
+            canvasChatSidRef.current = want;
+            setCanvasChatSeq((n) => n + 1);
+          }
+          return;
+        }
+        canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
+        navHopRef.current = true;
+        sendSelect(null);
+        setNode(null);
+        return;
+      }
+      if (cur && cur.file === next.file) {
+        // The same node: the link's tab wins (a Code tab left open would
+        // otherwise hide the chat the task named), and a session the pane
+        // is not on reboots it.
+        setNodeTab(nodeTabFromUrl());
+        if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
+        return;
+      }
+      // Marked as a hop so the node effect leaves the `session_id` the link
+      // carries on the URL: the pane boots off the seeded map either way,
+      // but the address should still restore the task's session on reload.
+      navHopRef.current = true;
+      sendSelect(next.udfName);
+      setNodeTab(nodeTabFromUrl());
+      setNodeBootSeq((n) => n + 1);
+      setNode(next);
+    };
+    // Back / Forward move the URL without a push: `popstate`, which the
+    // router does not re-announce, lands on this same reader.
+    window.addEventListener(NAV_EVENT, onNav);
+    window.addEventListener("popstate", onNav);
+    return () => {
+      window.removeEventListener(NAV_EVENT, onNav);
+      window.removeEventListener("popstate", onNav);
+    };
+  }, [env, name, sendSelect]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -959,7 +1068,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         const booting = reason === "not hydrated yet";
         if (ok) deltaHealRef.current = false;
         relayChainRef.current = relayChainRef.current.then(() =>
-          ackDelta(name, rev, ok, reason).then(() => undefined, () => undefined),
+          ackDelta(env, name, rev, ok, reason).then(() => undefined, () => undefined),
         );
         // A REAL refusal: the server has dropped its picture of the frame
         // and marks the leg red. Send a full state once, right away, so the
@@ -993,7 +1102,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, name]);
+  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, env, name]);
 
   // Mirror the node onto this page's URL so a reload lands on it, and drop the
   // chat ids whenever the chat CHANGES: `session_id`/`run` belong to whichever
@@ -1023,10 +1132,11 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       url.searchParams.delete("node_file");
       url.searchParams.delete("node_tab");
     }
-    if (nodeEffectRanRef.current && prevNodeKeyRef.current !== key) {
+    if (nodeEffectRanRef.current && prevNodeKeyRef.current !== key && !navHopRef.current) {
       url.searchParams.delete("session_id");
       url.searchParams.delete("run");
     }
+    navHopRef.current = false;
     nodeEffectRanRef.current = true;
     prevNodeKeyRef.current = key;
     if (url.href !== window.location.href) {
@@ -1078,7 +1188,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     let retryMs = 0;
     let failures = 0;
     const pollOnce = () => {
-      void getSyncState(name).then(
+      void getSyncState(env, name).then(
         (s) => {
           failures = 0;
           if (!closed) applyState(s);
@@ -1109,7 +1219,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       retryTimer = null;
       let s: WebSocket;
       try {
-        s = new WebSocket(syncEventsUrl(name));
+        s = new WebSocket(syncEventsUrl(env, name));
       } catch {
         startPolling();
         scheduleReconnect();
@@ -1158,7 +1268,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       sock?.close();
       setLive(false);
     };
-  }, [syncLive, name, applyState, heal]);
+  }, [syncLive, env, name, applyState, heal]);
 
   // The log ring restarts with a new watcher (its seqs count from 0 again):
   // drop the drawer's buffer when the epoch moves.
@@ -1235,7 +1345,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
     setFixBusy(true);
     setFixError(null);
     try {
-      const { run_id } = await fixWithClaude(name);
+      const { run_id } = await fixWithClaude(env, name);
       // The fix runs on the CLONE (canvases.py spawns on the dir), so it is
       // the canvas chat's to show: leave the node, on both sides.
       if (nodeRef.current) {
@@ -1281,6 +1391,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
           way back to the listing, which must not wait on sync. */}
       <SyncStrip
         name={name}
+        env={env}
         server={sync}
         queue={relayQueue}
         failure={relayFailure}
@@ -1292,7 +1403,8 @@ export default function CanvasWorkspace({ name }: { name: string }) {
         onToggle={() => {
           if (sync || owned) setDrawerOpen((o) => !o);
         }}
-        onBack={() => navigateUrl("/canvases")}
+        // Back to the environment this canvas lives in, not the default.
+        onBack={() => navigateUrl(catalogPath(env))}
         workbenchUrl={
           baseUrl && handle
             ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
@@ -1307,6 +1419,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
       />
       {drawerOpen && (sync || owned) && (
         <SyncDrawer
+          env={env}
           name={name}
           epoch={sync?.watcher_epoch ?? null}
           events={logEvents}
@@ -1513,7 +1626,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             // already-running chat has to be rebooted to see it — the "have to
             // reload the page to see the fix session" bug.
             //
-            // `run` and `session_id` live on the `/canvases/<name>` URL, which is
+            // `run` and `session_id` live on the `/canvases/<env>/<name>` URL, which is
             // why `paramsSource` is "url" and why the effect above writes `run`
             // there. It is also handed over directly as `runId`, so the mount
             // does not depend on that write having landed first.
@@ -1522,7 +1635,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
             // hands the element over. The mark stays on that iframe for PR3 to
             // read (below).
             <ChatMount
-              key={fixRunId ?? "chat"}
+              key={(fixRunId ?? "chat") + ":" + canvasChatSeq}
               file={dir}
               chatOnly
               paramsSource="url"
@@ -1542,7 +1655,7 @@ export default function CanvasWorkspace({ name }: { name: string }) {
                 setNodeTab("claude");
                 // The hop's session is what the node pane boots on — the same
                 // memory the frame's own moves feed, so one source of truth.
-                const key = nodeSessionKey(name, hop.node.file);
+                const key = nodeSessionKey(env, name, hop.node.file);
                 if (hop.sessionId) nodeSessions.set(key, hop.sessionId);
                 else nodeSessions.delete(key);
                 setNodeBootSeq((n) => n + 1);

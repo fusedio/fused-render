@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { Dropdown, popStyle } from "./Dropdown";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import {
   getClaudeDefaults, readClaudeDefaults, subscribeClaudeDefaults,
 } from "@platform/lib/claude-defaults";
@@ -137,13 +138,16 @@ export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
 // newest first, five shown. It draws on two sources — the app-wide one the home
 // page reads (see the section below) and this form's own memory of folders
 // picked in the browser or saved on a task, which is what the rest of THIS
-// section is. That second half lives in localStorage so "the folder I always
-// schedule against" survives reloads.
-// try/catch throughout: storage can be denied (private mode), and a corrupt
-// value must read as "no recents", never crash the modal (Bugbot, PR #538
-// pattern).
-const RECENTS_KEY = "fused-render:recent-paths";
+// section is. That second half is the layout document's `recentPaths`
+// (platform/lib/ui-layout.ts, D1386) so "the folder I always schedule against"
+// survives reloads AND relaunches — it was the localStorage key
+// `fused-render:recent-paths` until the desktop app's port walk (a new origin,
+// so empty storage, on most relaunches) was found resetting it. A corrupt value
+// must still read as "no recents", never crash the modal (Bugbot, PR #538
+// pattern), hence the filter on read.
 const RECENTS_SHOWN = 5;
+/** The document keeps eight (the server's cap); five are shown. */
+const RECENTS_KEPT = 8;
 
 /** The `projects` prop's default, hoisted so it is the SAME array every render
  *  — a fresh `[]` in the signature would rebuild the rows memo on every
@@ -277,26 +281,24 @@ export function folderFieldRows({
 }
 
 
+function recentsOf(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((p): p is string => typeof p === "string" && p !== "") : [];
+}
+
 function readRecents(): string[] {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(RECENTS_KEY) ?? "[]");
-    return Array.isArray(parsed)
-      ? parsed.filter((p): p is string => typeof p === "string" && p !== "")
-      : [];
-  } catch {
-    return [];
-  }
+  return recentsOf(getUiLayout().recentPaths);
 }
 
 function rememberRecent(path: string) {
   const p = path.trim();
   if (!p) return;
-  try {
-    const next = [p, ...readRecents().filter((r) => r !== p)].slice(0, 8);
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
-  } catch {
-    // Storage denied — recents just don't persist.
-  }
+  // "This folder first, then the rest" — idempotent, so ui-layout's replay onto
+  // the server's copy keeps another window's recents behind it.
+  patchUiLayout((d) => {
+    const prev = recentsOf(d.recentPaths);
+    if (prev[0] === p) return d;
+    return { ...d, recentPaths: [p, ...prev.filter((r) => r !== p)].slice(0, RECENTS_KEPT) };
+  });
 }
 
 // ---- The APP's recents, which are the ones a person means ------------------
@@ -2542,7 +2544,7 @@ export default function NewJobModal({
   permissionModes: string[];
   // Folders existing tasks already point at, newest first — the parent reads
   // them off the schedule it has anyway. They pad the dropdown out on a
-  // machine whose localStorage hasn't seen this form yet (QA 2026-08-15 —
+  // machine whose remembered folders are still empty (QA 2026-08-15 —
   // the first open showed nothing but Browse).
   recentTargets?: string[];
   // IS THIS CARD BEING USED TO PLAN? (Akshil, 2026-08-23.) True on the calendar
@@ -3073,7 +3075,7 @@ export default function NewJobModal({
   //     it is what a person means by "recent": the folders they have actually
   //     been working in.
   //  2. this form's own memory — folders picked through Browse or saved on a
-  //     task (localStorage). Kept, not replaced: a folder deliberately chosen
+  //     task (the layout document). Kept, not replaced: a folder deliberately chosen
   //     here may hold no files anyone has opened, so tier 1 would never learn
   //     it.
   //  3. the folders existing tasks point at, as padding on a fresh machine.
@@ -3082,7 +3084,7 @@ export default function NewJobModal({
   // while the modal is up (Browse writes the folder you pick), so a read-once
   // state showed the list as it was BEFORE you went browsing — "I just went
   // through a bunch of folders but recents didn't update" (Akshil, 2026-08-16).
-  // It is a single localStorage hit on a user gesture, so per-open costs nothing.
+  // It is a single in-memory read on a user gesture, so per-open costs nothing.
   const [recentsOpen, setRecentsOpen] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
   // Tier 1 is a fetch, so it is asked for once on mount and held. Exactly as

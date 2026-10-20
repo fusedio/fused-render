@@ -144,11 +144,6 @@ export const SCHEDULE_POLL_BLOCKED_MS = 3000;
  * over, and being early costs at most eight extra requests.
  */
 export const SCHEDULE_IMMINENT_MS = 120000;
-/** T:17038 — the shell's own remembered-view row, written so the Tasks page
- *  opens on the calendar. `Scheduled.tsx` reads this preference on mount and
- *  has no URL param for it, so writing it is the same gesture as pressing that
- *  page's Calendar button. */
-export const SCHEDULE_VIEW_KEY = "fused-render:scheduled-view";
 /** The route the row lands on. */
 export const SCHEDULE_URL = "/tasks";
 

@@ -128,7 +128,7 @@ def _native_load_app_manifest(app_dir) -> AppManifest:
         raise AppManifestError(f"{app_dir} is not a directory — nothing to serve.")
     manifest_path = app_dir / MANIFEST_NAME
     try:
-        raw_text = manifest_path.read_text()
+        raw_text = manifest_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise AppManifestError(f"No {MANIFEST_NAME} in {app_dir} — curate the app's tools first. [{exc}]") from exc
     try:
@@ -256,7 +256,7 @@ def _native_build_app_tool_spec(manifest: AppManifest, tool: AppTool) -> AppTool
     """The tool's params from a STATIC AST read of its entrypoint (the module is never
     imported here), minus the pinned names."""
     path = tool.target_path(manifest.app_dir)
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:

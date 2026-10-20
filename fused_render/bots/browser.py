@@ -134,7 +134,7 @@ def write_json_atomic(path, obj):
     os.replace failed with FileNotFoundError after the winner had renamed it."""
     tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(obj, f)
         os.replace(tmp, path)
     finally:
@@ -1145,7 +1145,7 @@ class BrowserProcess:
     # -- process -----------------------------------------------------------
     def session(self):
         try:
-            with open(self.session_path) as f:
+            with open(self.session_path, encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return None
@@ -1622,14 +1622,14 @@ class Browser:
     def _read_win(self):
         d = {"pid": None, "windows": [], "tabs": [], "active": 0, "viewport": None, "main": None}
         try:
-            with open(self.win_path) as f:
+            with open(self.win_path, encoding="utf-8") as f:
                 saved = json.load(f)
             d.update({k: saved[k] for k in d if k in saved})
         except Exception:
             # Before windows (tabs.json: own tab ids + the last page) — the page carries over so the first wake
             # after the upgrade still comes back where the bot was.
             try:
-                with open(os.path.join(self.cache_dir, "tabs.json")) as f:
+                with open(os.path.join(self.cache_dir, "tabs.json"), encoding="utf-8") as f:
                     old = json.load(f)
                 if old.get("url"):
                     d["tabs"] = [{"url": old["url"], "title": old.get("title") or ""}]

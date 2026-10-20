@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 import fused_render.canvases as canvases_mod
 from fused_render import canvas_snapshot
 from test_canvases import (  # noqa: F401 — fixtures are used by name
+    ENV,
     GUARD,
     _BASE_FILES,
     _FakeAgent,
@@ -40,7 +41,7 @@ EMPTY_SNAPSHOT = {"dashboard_body": {"studioState": {"nodes": []}}, "udfs": []}
 
 
 def _start(harness):
-    res = harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200, res.text
     return _manager()
 
@@ -90,7 +91,7 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
     t0 = time.time()
     res = harness.client.post(
         "/api/canvases/snapshot",
-        json={"name": "alpha", "gen": 1, "seq": 1, "body": EMPTY_SNAPSHOT}, headers=GUARD)
+        json={"env": ENV, "name": "alpha", "gen": 1, "seq": 1, "body": EMPTY_SNAPSHOT}, headers=GUARD)
     elapsed = time.time() - t0
     # A write the copy cannot contain: lands while the CLI is still running.
     (harness.root / "alpha" / "b.py").write_text("b2-during-push\n")
@@ -114,7 +115,7 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
     assert pushes and pushes[0][3] == copy_dir and pushes[0][4:] == ["--canvas", "alpha"]
     assert not os.path.exists(copy_dir), "the frozen copy outlived its push"
     actions = [e["action"] for e in harness.client.get(
-        "/api/canvases/sync/log?name=alpha").json()["events"]]
+        "/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]]
     assert "push start" in actions and "push end" in actions and "snapshot applied" in actions
 
 
@@ -140,7 +141,7 @@ def test_the_manual_push_waits_its_turn_behind_a_running_push(
     (harness.root / "alpha" / "a.py").write_text("a2\n")
     assert started.wait(5)
     try:
-        res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"},
+        res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
                                   headers=GUARD)
         assert res.status_code == 409, res.text
         assert res.json()["code"] == "busy"
@@ -174,19 +175,19 @@ def test_a_live_foreign_lock_refuses_start_and_a_dead_one_is_taken_over(
                              stdout=subprocess.PIPE, text=True)
     try:
         assert other.stdout.readline().strip() == "ready"
-        res = harness.client.post("/api/canvases/sync/start", json={"name": "alpha"},
+        res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"},
                                   headers=GUARD)
         assert res.status_code == 409, res.text
         body = res.json()
         assert body["code"] == "owned"
         assert body["owner"] == {"pid": other.pid, "port": 4242, "since": 1.5}
-        assert "alpha" not in canvases_mod._syncs
-        state = harness.client.get("/api/canvases/sync/state?name=alpha").json()
+        assert (ENV, "alpha") not in canvases_mod._syncs
+        state = harness.client.get("/api/canvases/sync/state?env=unstable&name=alpha").json()
         assert state["watching"] is False and state["watcher_epoch"] is None
         assert state["owner"] == {"pid": other.pid, "port": 4242}
         assert state["other_watchers"] == [{"pid": other.pid, "port": 4242}]
         # A session's push through the intercept learns WHO owns it.
-        push = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"},
+        push = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
                                    headers=GUARD)
         assert push.status_code == 409 and push.json()["code"] == "owned", push.text
         assert push.json()["owner"]["pid"] == other.pid
@@ -197,11 +198,11 @@ def test_a_live_foreign_lock_refuses_start_and_a_dead_one_is_taken_over(
         other.wait()
 
     # The holder died: the kernel dropped its flock, the file still names it.
-    res = harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200, res.text
     held = json.loads(lock.read_text())
     assert held["pid"] == os.getpid()
-    events = harness.client.get("/api/canvases/sync/log?name=alpha").json()["events"]
+    events = harness.client.get("/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]
     taken = [e for e in events if e["action"] == "lock taken over"]
     assert taken and str(other.pid) in taken[0]["detail"], events
 
@@ -217,7 +218,7 @@ def test_a_stale_file_naming_a_live_pid_does_not_refuse(harness, tmp_path, monke
     lock = harness.root / ".sync" / "alpha.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(json.dumps({"pid": os.getppid(), "port": 9, "since": 3.0}))
-    res = harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200, res.text
     assert json.loads(lock.read_text())["pid"] == os.getpid()
 
@@ -234,7 +235,7 @@ def test_the_quit_rung_stops_every_manager_and_refuses_new_ones(
     assert m.stop_event.is_set() and not m.thread.is_alive() and not m.fs_thread.is_alive()
     assert not lock.exists()
     assert canvases_mod._syncs == {}
-    res = harness.client.post("/api/canvases/sync/start", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 409 and res.json()["code"] == "busy", res.text
     assert not lock.exists()
 
@@ -268,7 +269,7 @@ _LEG_KEYS = {
 
 
 def _state(harness):
-    res = harness.client.get("/api/canvases/sync/state?name=alpha")
+    res = harness.client.get("/api/canvases/sync/state?env=unstable&name=alpha")
     assert res.status_code == 200, res.text
     body = res.json()
     assert {"name", "legs", "disk_rev", "watcher_epoch", "owner", "other_watchers",
@@ -352,32 +353,32 @@ def test_state_reports_every_leg_state(harness, tmp_path, monkeypatch):
 
 
 def test_state_and_log_answer_for_an_unwatched_canvas(harness):
-    s = harness.client.get("/api/canvases/sync/state?name=beta").json()
+    s = harness.client.get("/api/canvases/sync/state?env=unstable&name=beta").json()
     assert s["watching"] is False and s["disk_rev"] == 0 and s["owner"] is None
     assert all(v["state"] == "idle" for v in s["legs"].values())
-    assert harness.client.get("/api/canvases/sync/log?name=beta").json() == {
+    assert harness.client.get("/api/canvases/sync/log?env=unstable&name=beta").json() == {
         "events": [], "next": 0}
-    assert harness.client.get("/api/canvases/sync/state?name=../x").status_code == 400
+    assert harness.client.get("/api/canvases/sync/state?env=unstable&name=../x").status_code == 400
 
 
 def test_a_delta_cut_and_ack_show_on_the_disk_to_embed_leg(harness, tmp_path, monkeypatch):
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     m = _start(harness)
-    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     assert "ops" in cut, cut
     # A cut is no evidence of a frame (the page cuts and drops with none).
     assert m._frame_seen is False
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "idle"
     ack = harness.client.post("/api/canvases/delta/ack",
-                              json={"name": "alpha", "rev": cut["rev"]}, headers=GUARD)
+                              json={"env": ENV, "name": "alpha", "rev": cut["rev"]}, headers=GUARD)
     assert ack.status_code == 200 and ack.json()["ok"], ack.text
     assert m._frame_seen is True and m._view_rev == cut["rev"]
     # The cut persisted synthesized rows (a.py, b.py have none) after its rev
     # was taken: one more cut + ack brings the frame level.
-    cut = harness.client.get("/api/canvases/delta?name=alpha").json()
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha").json()
     harness.client.post("/api/canvases/delta/ack",
-                        json={"name": "alpha", "rev": cut["rev"]}, headers=GUARD)
+                        json={"env": ENV, "name": "alpha", "rev": cut["rev"]}, headers=GUARD)
     m._view_rev = m.disk_rev
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "idle"
     # Disk moves, the frame has not acked it: pending.
@@ -385,7 +386,7 @@ def test_a_delta_cut_and_ack_show_on_the_disk_to_embed_leg(harness, tmp_path, mo
     m._note_disk()
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "pending"
     actions = [e["action"] for e in harness.client.get(
-        "/api/canvases/sync/log?name=alpha").json()["events"]]
+        "/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]]
     assert "delta cut" in actions and "delta acked" in actions, actions
 
 
@@ -410,9 +411,9 @@ def test_a_cut_that_synthesized_rows_persists_them(harness, tmp_path, monkeypatc
     monkeypatch.setattr(canvas_snapshot, "compact_state_from_disk", with_synthesized)
     monkeypatch.setattr(canvas_snapshot, "persist_synthesized", persist)
     m = _start(harness)
-    harness.client.get("/api/canvases/delta?name=alpha&full=1")
+    harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1")
     assert calls == [(m.dir, ["orphan"], True)]
-    events = harness.client.get("/api/canvases/sync/log?name=alpha").json()["events"]
+    events = harness.client.get("/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]
     assert any(e["action"] == "rows synthesized" and "orphan" in e["detail"] for e in events)
 
 
@@ -425,9 +426,9 @@ def test_the_log_ring_keeps_200_and_pages_by_seq(harness, tmp_path, monkeypatch,
     caplog.set_level("INFO", logger="fused_render.canvases")
     for i in range(250):
         m.log_event("watcher", "tick", ms=i, detail=f"n{i}")
-    assert "canvas alpha: watcher tick n249 (249 ms)" in caplog.text
+    assert "canvas unstable/alpha: watcher tick n249 (249 ms)" in caplog.text
 
-    page = harness.client.get("/api/canvases/sync/log?name=alpha&after=0").json()
+    page = harness.client.get("/api/canvases/sync/log?env=unstable&name=alpha&after=0").json()
     events = page["events"]
     assert len(events) == 200
     last = m._log.last_seq
@@ -436,12 +437,12 @@ def test_the_log_ring_keeps_200_and_pages_by_seq(harness, tmp_path, monkeypatch,
     assert set(events[-1]) == {"seq", "t", "leg", "action", "ms", "ok", "detail"}
     assert events[-1]["detail"] == "n249" and events[-1]["ms"] == 249
 
-    page2 = harness.client.get(f"/api/canvases/sync/log?name=alpha&after={last - 3}").json()
+    page2 = harness.client.get(f"/api/canvases/sync/log?env=unstable&name=alpha&after={last - 3}").json()
     assert [e["detail"] for e in page2["events"]] == ["n247", "n248", "n249"]
-    empty = harness.client.get(f"/api/canvases/sync/log?name=alpha&after={last}").json()
+    empty = harness.client.get(f"/api/canvases/sync/log?env=unstable&name=alpha&after={last}").json()
     assert empty == {"events": [], "next": last}
     # An `after` from a previous watcher (beyond this ring) reads as 0.
-    reset = harness.client.get(f"/api/canvases/sync/log?name=alpha&after={last + 500}").json()
+    reset = harness.client.get(f"/api/canvases/sync/log?env=unstable&name=alpha&after={last + 500}").json()
     assert len(reset["events"]) == 200
 
 
@@ -487,7 +488,7 @@ def test_the_events_socket_streams_state_and_log(harness, tmp_path, monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     m = _start(harness)
     client = _ws_client(harness)
-    with client.websocket_connect("ws://127.0.0.1:1777/api/canvases/sync/events?name=alpha",
+    with client.websocket_connect("ws://127.0.0.1:1777/api/canvases/sync/events?env=unstable&name=alpha",
                                   headers={"origin": "http://127.0.0.1:1777"}) as ws:
         first = ws.receive_json()
         assert first["type"] == "state"
@@ -526,8 +527,22 @@ def test_the_events_socket_refuses_a_foreign_origin(harness, tmp_path, monkeypat
 
     client = _ws_client(harness)
     with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect("ws://127.0.0.1:1777/api/canvases/sync/events?name=alpha",
+        with client.websocket_connect("ws://127.0.0.1:1777/api/canvases/sync/events?env=unstable&name=alpha",
                                       headers={"origin": "https://evil.example"}) as ws:
+            ws.receive_json()
+    assert exc.value.code == 1008
+
+
+@pytest.mark.parametrize("query", ["name=alpha", "name=alpha&env=staging"])
+def test_the_events_socket_refuses_a_missing_or_unknown_env(harness, query):
+    """A canvas is (env, name): no env, no channel. The socket has no body for
+    the 400's reason, so it closes 1008 (sync/state carries the reason)."""
+    from starlette.websockets import WebSocketDisconnect
+
+    client = _ws_client(harness)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"ws://127.0.0.1:1777/api/canvases/sync/events?{query}",
+                                      headers={"origin": "http://127.0.0.1:1777"}) as ws:
             ws.receive_json()
     assert exc.value.code == 1008
 
@@ -559,13 +574,13 @@ def test_an_orphan_source_file_is_pushed_with_its_row_without_any_frame(
     _capture_push(monkeypatch, seen)
     _start(harness)
     (harness.root / "alpha" / "orphan_x.py").write_text("print(1)\n")
-    res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
     pushed = seen["tomls"][0]
     assert 'udfName = "orphan_x"' in pushed, pushed
     assert "orphan_x.py" in seen["files"][0]
     assert 'udfName = "orphan_x"' in (harness.root / "alpha" / "canvas.toml").read_text()
-    events = harness.client.get("/api/canvases/sync/log?name=alpha").json()["events"]
+    events = harness.client.get("/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]
     assert any(e["leg"] == "disk_to_server" and e["action"] == "rows synthesized"
                and "orphan_x" in e["detail"] for e in events), events
 
@@ -586,7 +601,7 @@ def test_a_manual_push_that_landed_is_ok_even_if_the_clone_moved_during_it(
     monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", push_with_write)
     m = _start(harness)
     (harness.root / "alpha" / "a.py").write_text("a2\n")
-    res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     body = res.json()
     assert res.status_code == 200, res.text
     assert body["ok"] is True, body
@@ -599,7 +614,7 @@ def test_a_failed_manual_push_is_not_ok(harness, tmp_path, monkeypatch, fake_age
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     _start(harness)
     harness.set_scenario({"pull_files": {}, "push_fail_lines": ["Error: node x has no file"]})
-    res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.json()["ok"] is False and res.json()["push_state"] == "error", res.text
 
 
@@ -615,7 +630,7 @@ def test_fusedignored_files_stay_out_of_the_frozen_copy(
     with open(clone / ".fusedignore", "a") as f:
         f.write("scratch_*.csv\n")
     (clone / "scratch_big.csv").write_text("x,y\n")
-    harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     files = seen["files"][0]
     assert "scratch_big.csv" not in files and "CLAUDE.md" not in files, files
     assert ".fusedignore" in files and "a.py" in files, files
@@ -626,28 +641,28 @@ def test_a_benign_delta_refusal_is_not_an_error_and_a_good_cut_clears_one(
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     m = _start(harness)
-    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     harness.client.post("/api/canvases/delta/ack",
-                        json={"name": "alpha", "rev": cut["rev"], "ok": False,
+                        json={"env": ENV, "name": "alpha", "rev": cut["rev"], "ok": False,
                               "reason": "no frame"}, headers=GUARD)
     assert m._delta_error is None
     assert _state(harness)["legs"]["disk_to_embed"]["state"] != "error"
-    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     harness.client.post("/api/canvases/delta/ack",
-                        json={"name": "alpha", "rev": cut["rev"], "ok": False,
+                        json={"env": ENV, "name": "alpha", "rev": cut["rev"], "ok": False,
                               "reason": "not hydrated yet"}, headers=GUARD)
     assert m._delta_error is None
     # Nothing but benign refusals so far: no frame has shown itself.
     assert m._frame_seen is False
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "idle"
     # A real refusal is an error until the next good cut (the frame's hello).
-    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     harness.client.post("/api/canvases/delta/ack",
-                        json={"name": "alpha", "rev": cut["rev"], "ok": False,
+                        json={"env": ENV, "name": "alpha", "rev": cut["rev"], "ok": False,
                               "reason": "op 3: unknown node"}, headers=GUARD)
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "error"
     assert "unknown node" in _state(harness)["legs"]["disk_to_embed"]["reason"]
-    harness.client.get("/api/canvases/delta?name=alpha&full=1")
+    harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1")
     assert m._delta_error is None
 
 
@@ -667,7 +682,7 @@ def test_the_quit_rung_terminates_a_push_in_flight(harness, tmp_path, monkeypatc
     (harness.root / "alpha" / "a.py").write_text("a2\n")
     results = []
     pusher = threading.Thread(target=lambda: results.append(harness.client.post(
-        "/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)))
+        "/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)))
     pusher.start()
     assert _wait_for(lambda: m._push_proc is not None, timeout=5), "the push CLI never started"
     proc = m._push_proc
@@ -701,7 +716,7 @@ def test_nested_or_slashed_fusedignore_rules_never_drop_a_published_file(
     (clone / "build" / "out.txt").write_text("o\n")
     with open(clone / ".fusedignore", "a") as f:
         f.write("*.csv\nbuild/\n")
-    harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     copy_root = seen["files"][0]
     assert "root.csv" not in copy_root and "build" not in copy_root, copy_root
     assert "sub" in copy_root, copy_root
@@ -711,7 +726,7 @@ def test_nested_or_slashed_fusedignore_rules_never_drop_a_published_file(
     with open(clone / ".fusedignore", "a") as f:
         f.write("src/*.py\n")
     (clone / "a.py").write_text("a3\n")
-    harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     copy_root = seen["files"][1]
     assert "root.csv" in copy_root and "build" in copy_root, copy_root
 
@@ -770,7 +785,7 @@ FRESH_NODE_BODY = {
 
 def _snapshot(harness, seq, body):
     res = harness.client.post("/api/canvases/snapshot",
-                              json={"name": "alpha", "gen": 1, "seq": seq, "body": body},
+                              json={"env": ENV, "name": "alpha", "gen": 1, "seq": seq, "body": body},
                               headers=GUARD)
     assert res.status_code == 200, res.text
     return res.json()
@@ -782,7 +797,7 @@ def _toml(harness):
 
 def _actions(harness):
     return [e["action"] for e in harness.client.get(
-        "/api/canvases/sync/log?name=alpha").json()["events"]]
+        "/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]]
 
 
 def test_a_rowless_file_within_its_grace_gets_no_row_no_op_and_no_push(
@@ -799,11 +814,11 @@ def test_a_rowless_file_within_its_grace_gets_no_row_no_op_and_no_push(
     _snapshot(harness, 1, ROWLESS_BODY)
     assert (harness.root / "alpha" / "fresh.py").read_text() == "print(2)\n"
     assert "fresh" in m._rowless
-    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     assert "ops" in cut, cut
     assert "fresh" not in json.dumps(cut["ops"]), cut["ops"]
     assert 'udfName = "fresh"' not in _toml(harness)
-    res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 409 and res.json()["code"] == "busy", res.text
     assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
     m.push_state = "pending"
@@ -825,12 +840,12 @@ def test_a_rowless_file_past_its_grace_is_synthesized_and_pushed(
     _snapshot(harness, 1, ROWLESS_BODY)
     rev = m.disk_rev
     time.sleep(0.4)
-    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     assert m.disk_rev > rev, "the grace's end never woke the delta leg"
     assert "fresh" in json.dumps(cut["ops"]), cut["ops"]
     assert 'udfName = "fresh"' in _toml(harness)
     assert m._rowless == {}
-    res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
     assert 'udfName = "fresh"' in seen["tomls"][0]
     actions = _actions(harness)
@@ -869,7 +884,7 @@ def test_a_snapshot_naming_the_node_settles_the_rowless_file(
     toml = _toml(harness)
     # The workbench's own row, at the workbench's position — nothing invented.
     assert 'udfName = "fresh"' in toml and "x = 900" in toml, toml
-    res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
 
 
@@ -892,7 +907,7 @@ def test_a_row_written_to_disk_directly_settles_the_rowless_file(
         f.write(canvas_snapshot._dump_toml(doc))
     assert m._rowless_in_grace() == set()
     assert m._rowless == {}
-    res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
 
 
@@ -909,18 +924,18 @@ def test_a_rename_during_the_grace_keeps_the_grace(
     _snapshot(harness, 1, ROWLESS_BODY)
     started = m._rowless["fresh"]
     res = harness.client.post("/api/canvases/snapshot", json={
-        "name": "alpha", "gen": 1, "seq": 2,
+        "env": ENV, "name": "alpha", "gen": 1, "seq": 2,
         "rename": {"from": "fresh", "to": "fresh2",
                    "file_from": "fresh.py", "file_to": "fresh2.py"}}, headers=GUARD)
     assert res.status_code == 200, res.text
     assert m._rowless == {"fresh2": started}
     assert (harness.root / "alpha" / "fresh2.py").exists()
-    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     assert "fresh2" not in json.dumps(cut["ops"]), cut["ops"]
     assert 'udfName = "fresh2"' not in _toml(harness)
     # The grace ends (its start is the original file's): now it is synthesized.
     monkeypatch.setattr(canvases_mod, "ROWLESS_GRACE_S", 0.0)
-    cut = harness.client.get("/api/canvases/delta?name=alpha&full=1").json()
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     assert "fresh2" in json.dumps(cut["ops"]), cut["ops"]
     assert 'udfName = "fresh2"' in _toml(harness)
 
@@ -951,7 +966,7 @@ def test_a_write_after_the_pull_recheck_is_not_baselined_as_synced(
         return out
 
     monkeypatch.setattr(canvases_mod.subprocess, "run", run)
-    res = harness.client.post("/api/canvases/sync/pull", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/pull", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     monkeypatch.setattr(canvases_mod.subprocess, "run", real_run)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
     assert (harness.root / "alpha" / "a.py").read_text() == "written-after-recheck\n"
@@ -991,7 +1006,7 @@ def test_a_wholesale_pull_waits_for_a_live_claude_session(
     assert "pull deferred" in _actions(harness)
 
     fake_agent.live = ""
-    res = harness.client.post("/api/canvases/sync/pull", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/pull", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.json()["ok"] is True, res.text
     assert (harness.root / "alpha" / "remote_udf.py").exists()
 
@@ -1002,7 +1017,7 @@ def test_the_manual_push_refuses_over_a_server_change(harness, tmp_path, monkeyp
     m = _start(harness)
     m.server_stale = {"since": time.time(),
                       "udfs": [{"slug": "a", "kind": "changed"}], "layout": False}
-    res = harness.client.post("/api/canvases/sync/push", json={"name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 409, res.text
     body = res.json()
     assert body["code"] == "server_changed", body

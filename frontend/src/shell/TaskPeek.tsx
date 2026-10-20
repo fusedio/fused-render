@@ -87,6 +87,7 @@ import {
   filingIntent,
   SHOW_PAGE_DOOR,
   taskHref,
+  pageDoorLabel,
 } from "./tasks-lib";
 import { useTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
@@ -964,12 +965,12 @@ export function TaskPeek({
     if (!task) return [];
     const items: MenuEntry[] = [];
     if (SHOW_PAGE_DOOR && page && headFit >= PEEK_HEAD_DROPS.length) {
-      items.push({ label: "Open in Explorer", icon: ICON_OPEN_DOOR, onClick: openAsPage });
+      items.push({ label: pageDoorLabel(task), icon: ICON_OPEN_DOOR, onClick: openAsPage });
       items.push("separator");
     }
     if (SHOW_PAGE_DOOR && gone) {
       items.push({
-        label: "Open in Explorer",
+        label: pageDoorLabel(task),
         icon: ICON_OPEN_DOOR,
         disabled: true,
         onClick: () => notify({ title: MISSING_FOLDER_TOAST, tone: "error" }),
@@ -1178,8 +1179,8 @@ export function TaskPeek({
                 <a
                   className="task-side-peek-open"
                   href={page}
-                  aria-label="Open in Explorer"
-                  data-hint="Open in Explorer"
+                  aria-label={pageDoorLabel(task)}
+                  data-hint={pageDoorLabel(task)}
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();

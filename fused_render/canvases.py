@@ -70,6 +70,12 @@ the `sync/events` socket report every leg with its age and reason, and a
 watchfiles thread turns a file write into a `disk_rev` bump within ~100 ms
 (the 1 s scan stays as the push debounce's backstop).
 
+A canvas is (env, name), never a name alone. Clones live at
+`~/Fused/canvas/<env>/<name>` (D1382), every canvas-scoped endpoint takes a
+required `env`, sync managers are keyed `(env, name)` and pass their own env
+to every CLI run — so a prod canvas and an unstable canvas, even of one name,
+sync side by side (owner, 2026-10-20). See the block above `_ENV_WEB_URLS`.
+
 No import of anything under fused_render.server (server includes this router —
 keep it acyclic); the X-Fused guard is duplicated locally, same as other
 shell/* routers.
@@ -100,12 +106,10 @@ from fused_render.fusedcli import (
     WORKBENCH_ENV_VAR,
     child_env,
     cli_error,
-    export_fused_cli_env,
     fused_cli,
     workbench_env,
     workbench_env_locked,
 )
-from fused_render.shell import prefs
 
 logger = logging.getLogger(__name__)
 
@@ -171,16 +175,19 @@ PUSH_TERMINATE_GRACE_S = 2.0
 # is synthesized as for any orphan.
 ROWLESS_GRACE_S = 5.0
 
-# Fused environment the canvases feature targets. One knob drives BOTH the
-# workspace iframe URL and the CLI runs (`fused --env`, via the FUSED_ENV
-# variable it reads) so the canvas the iframe shows is the same one the local
-# clone syncs against. Resolved in fusedcli.workbench_env — env var, else the
-# `workbench_env` preference, else unstable — because the `fused` wrapper
-# handed to Claude sessions bakes in the same answer (D334): one knob, one
-# reader. READ AT CALL TIME, never frozen into a module constant: the
-# preference flips at runtime (`api_canvases_env` below) and every reader has
-# to follow without a restart. FUSED_RENDER_WORKBENCH_URL still overrides the
-# iframe URL alone.
+# The Fused environment is part of a canvas's IDENTITY, not a process-wide
+# knob. The `<env>` segment of `~/Fused/canvas/<env>/<name>` (D1382) is what
+# binds a clone to the Fused it was pulled from; every canvas-scoped endpoint
+# takes a required, validated `env` (`_require_env`); managers are keyed
+# `(env, name)` and hand THEIR env to every CLI run (`_cli_env(cli, env)`), and
+# the iframe URL is `workbench_base_url(env)`. That is what lets a prod canvas
+# and an unstable canvas be open and syncing at once (owner, 2026-10-20). The
+# `workbench_env` preference (fusedcli.workbench_env) survives only as the
+# DEFAULT — the catalog's initial pick, the `fused` wrapper outside a clone,
+# share uploads — so it is read here in four places only: the status payload,
+# the FUSED_RENDER_WORKBENCH_URL override, the FUSED_RENDER_WORKBENCH_ENV pin
+# (`_require_env`), and the env-less credential calls (`_auth_env`). Never
+# frozen into a module constant: the preference moves at runtime.
 
 # Cap on the per-line push-error transcript kept for the UI and the fix
 # session — enough for any real validation report (one line per problem plus
@@ -197,23 +204,47 @@ _ENV_WEB_URLS = {
 }
 
 
-def workbench_base_url() -> str:
-    return os.environ.get("FUSED_RENDER_WORKBENCH_URL") or _ENV_WEB_URLS.get(
-        workbench_env(), "https://www.fused.io"
-    )
+# The pinned env's workbench origin override (dev recipe: a local workbench).
+_WORKBENCH_URL_VAR = "FUSED_RENDER_WORKBENCH_URL"
 
 
-def _cli_env(cli, env: str | None = None) -> dict[str, str]:
-    """child_env plus the env target, so CLI runs hit the same environment
-    the iframe shows — and the marker that stops a CLI child of OURS from
-    being re-routed back into this server.
+def workbench_base_url(env: str) -> str:
+    """The hosted workbench origin `env`'s canvases embed.
 
-    `env` defaults to the CURRENT environment (module-level runs: list,
-    clone, create). A _SyncManager passes its own `self.env`, pinned when it
-    was built: its `dir` is one environment's folder for life, and a leg of
-    it that outlives an environment switch (a request-thread pull that held
-    the manager across `_syncs.clear()`) must keep talking to THAT Fused, or
-    it would fill the kept clone from the other one.
+    FUSED_RENDER_WORKBENCH_URL replaces it ONLY under a pin, and only for the
+    pinned env (FUSED_RENDER_WORKBENCH_ENV, which `_require_env` makes the one
+    env this process serves). The dev recipe points it at a local workbench
+    (localhost:3000) standing in for unstable. Keyed off the mutable DEFAULT
+    instead, flipping the preference to prod would dress prod canvases in
+    that local frame; without a pin the var is ignored
+    (`log_url_override_without_pin` says so once at startup)."""
+    override = os.environ.get(_WORKBENCH_URL_VAR)
+    if override and workbench_env_locked() and env == workbench_env():
+        return override
+    return _ENV_WEB_URLS.get(env, "https://www.fused.io")
+
+
+def log_url_override_without_pin() -> None:
+    """Startup breadcrumb (server/app.py `export_app_env`): a
+    FUSED_RENDER_WORKBENCH_URL set without FUSED_RENDER_WORKBENCH_ENV is
+    ignored (`workbench_base_url`), and a dev whose local workbench silently
+    stopped loading has no other clue why."""
+    if os.environ.get(_WORKBENCH_URL_VAR) and not workbench_env_locked():
+        logger.warning("%s is ignored without %s: the URL override applies only to "
+                       "the pinned environment", _WORKBENCH_URL_VAR, WORKBENCH_ENV_VAR)
+
+
+def _cli_env(cli, env: str) -> dict[str, str]:
+    """child_env plus the env target, so a CLI run hits the canvas's own
+    Fused — and the marker that stops a CLI child of OURS from being re-routed
+    back into this server.
+
+    `env` is REQUIRED: a request's validated `env`, or a _SyncManager's
+    `self.env` (its `dir` is that env's folder for life). There is no
+    default-to-the-preference any more, because with both environments
+    syncing at once a run that guessed its env from the preference is exactly
+    how one Fused's files would land in the other's same-named canvas. The
+    env-less credential calls pass `_auth_env()`.
 
     Every fused CLI run this module makes goes through here, which is why the
     marker lives here rather than at the push site alone: none of these children
@@ -228,9 +259,20 @@ def _cli_env(cli, env: str | None = None) -> dict[str, str]:
     refusal as a CLI failure: push_state "error" with push_seq stuck at 0.
     """
     child = child_env(cli)
-    child["FUSED_ENV"] = env or workbench_env()
+    child["FUSED_ENV"] = env
     child[_canvas_push_internal_env()] = "1"
     return child
+
+
+def _auth_env() -> str:
+    """FUSED_ENV for the env-less credential calls — login, logout, the token
+    shim. prod and unstable share one Auth0 tenant and one
+    `~/.fused/credentials` (verified: one `fused login` answers `workbench
+    whoami` under both), so between them the choice is moot; the DEFAULT env
+    is used so that a FUSED_RENDER_WORKBENCH_ENV pin to a dev/PR environment
+    (fused's `_dev_auth`: its own tenant and `credentials-dev` store) signs in
+    where that environment reads."""
+    return workbench_env()
 
 
 def _canvas_push_internal_env() -> str:
@@ -255,20 +297,39 @@ def canvases_base() -> str:
     return os.path.join(fused_dir(), "canvas")
 
 
-def canvases_root() -> str:
-    """Where THIS environment's clones live: `~/Fused/canvas/<env>/<name>`
-    (owner, 2026-10-20). The environment is a path segment on purpose: a
-    clone is bound to the Fused it was pulled from, and keeping prod's and
-    unstable's clones in separate folders is what lets an environment switch
-    leave every clone on disk — the old wipe-then-write (#1761/#1764) existed
-    only because one shared folder could not tell them apart. Read at call
-    time, like `workbench_env()` itself: after a switch, every lookup lands in
-    the new environment's folder and the old one simply goes unlisted."""
-    return os.path.join(canvases_base(), workbench_env())
+def canvases_root(env: str) -> str:
+    """Where `env`'s clones live: `~/Fused/canvas/<env>/<name>` (D1382). The
+    environment is a path segment because a clone is bound to the Fused it
+    was pulled from: prod's `alpha` and unstable's `alpha` are two canvases,
+    two folders, two `.sync/` trees (merge base, trash, writer lock), and so
+    two managers that never share a byte."""
+    return os.path.join(canvases_base(), env)
 
 
-def _canvas_dir(name: str) -> str:
-    return os.path.join(canvases_root(), name)
+def _canvas_dir(env: str, name: str) -> str:
+    return os.path.join(canvases_root(env), name)
+
+
+def _require_env(value) -> tuple[str | None, JSONResponse | None]:
+    """`(env, None)` for a usable canvas environment, else `(None, refusal)`.
+
+    The pin is checked FIRST: when FUSED_RENDER_WORKBENCH_ENV pins the process
+    to another env the answer is 423 `env_locked`, even for a valid choice
+    and even when the pin itself is outside the choices (stg, dev, a PR
+    number — which therefore refuses every canvas call as locked, the true
+    reason, rather than as a bad request). The dev recipe points the pinned
+    env's iframe at a local workbench, and a canvas of another env served
+    from that same server would talk to a real Fused the developer did not
+    mean to touch. Unpinned, anything outside WORKBENCH_ENV_CHOICES is 400."""
+    if workbench_env_locked():
+        pinned = workbench_env()
+        if value != pinned:
+            return None, JSONResponse(
+                {"error": f"the environment is pinned to {pinned} by {WORKBENCH_ENV_VAR}",
+                 "code": "env_locked", "env": pinned}, status_code=423)
+    if value not in WORKBENCH_ENV_CHOICES:
+        return None, _error(f"'env' must be one of: {', '.join(WORKBENCH_ENV_CHOICES)}")
+    return value, None
 
 
 # One in-flight workbench-skills fetch per process, ever. A non-blocking acquire
@@ -379,8 +440,9 @@ def _no_cli_error() -> JSONResponse:
     )
 
 
-def _run_cli(args: list[str], timeout: float) -> tuple[subprocess.CompletedProcess | None, JSONResponse | None]:
-    """Run a fused CLI command; (proc, None) or (None, error response)."""
+def _run_cli(args: list[str], timeout: float,
+             env: str) -> tuple[subprocess.CompletedProcess | None, JSONResponse | None]:
+    """Run a fused CLI command against `env`; (proc, None) or (None, error response)."""
     cli = fused_cli()
     if cli is None:
         return None, _no_cli_error()
@@ -397,7 +459,7 @@ def _run_cli(args: list[str], timeout: float) -> tuple[subprocess.CompletedProce
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env=_cli_env(cli),
+            env=_cli_env(cli, env),
         )
     except subprocess.TimeoutExpired:
         return None, _error(f"`{label}` timed out after {int(timeout)}s", 502)
@@ -448,11 +510,15 @@ def _watch_login(login: _ActiveLogin) -> None:
 
 @router.get("/api/canvases/status")
 def api_canvases_status():
-    """Cheap local read: CLI presence, login-file presence, in-flight login.
+    """Cheap local read: CLI presence, login-file presence, in-flight login,
+    and per environment its workbench origin, clone folder and clone count.
 
-    The username needed for the workbench slug URL is NOT here — it costs a
-    control-plane call, so it lives behind the guarded ?probe=1 of
-    /api/canvases/whoami instead.
+    Env-less on purpose: one credentials file serves both environments, and
+    the page needs every env's `base_url` (the workspace's iframe and
+    postMessage origin) and counts (the Preferences row) in one read. The
+    username needed for the workbench slug URL is NOT here — it costs a
+    control-plane call per env, so it lives behind guarded
+    /api/canvases/whoami?env= instead.
     """
     cli = fused_cli()
     try:
@@ -467,24 +533,32 @@ def api_canvases_status():
         # know the browser flow completed.
         "creds_stamp": stamp,
         "login_in_flight": _reap_login() is not None,
-        "workbench_base_url": workbench_base_url(),
+        # The DEFAULT environment (the catalog's initial pick), and whether
+        # FUSED_RENDER_WORKBENCH_ENV pins it — the catalog then disables its
+        # environment picker, since `_require_env` refuses the other env.
         "workbench_env": workbench_env(),
-        "canvases_dir": canvases_root(),
-        # How many canvases of THIS environment are cloned on this machine —
-        # informational on the Preferences row (a switch deletes nothing).
-        # Local listdir, no CLI.
-        "cloned_count": len(_cloned_names()),
+        "locked": workbench_env_locked(),
+        # Clone counts are a local listdir, no CLI — informational on the
+        # Preferences row.
+        "envs": {
+            env: {
+                "base_url": workbench_base_url(env),
+                "canvases_dir": canvases_root(env),
+                "cloned_count": len(_cloned_names(env)),
+            }
+            for env in WORKBENCH_ENV_CHOICES
+        },
     }
 
 
-def _cloned_names() -> set[str]:
-    """The clone dirs under canvases_root(): a dir holding a canvas.toml,
+def _cloned_names(env: str) -> set[str]:
+    """The clone dirs under canvases_root(env): a dir holding a canvas.toml,
     the same rule /api/canvases/list uses to mark a card cloned.
 
     A root that does not exist yet is simply empty, and so is any other
     listing failure (permissions, an unmounted volume): the count is
-    informational only — nothing decides a deletion on it any more."""
-    root = canvases_root()
+    informational only."""
+    root = canvases_root(env)
     try:
         entries = os.listdir(root)
     except OSError:
@@ -492,140 +566,26 @@ def _cloned_names() -> set[str]:
     return {d for d in entries if os.path.isfile(os.path.join(root, d, "canvas.toml"))}
 
 
-@router.post("/api/canvases/env")
-def api_canvases_env(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Switch the Fused environment — THE one writer of the `workbench_env`
-    preference (shell/prefs.py refuses the key).
-
-    Deletes nothing (owner, 2026-10-20 — reverses #1761's wipe). Each
-    environment's clones live under their own `canvases_root()`
-    (`~/Fused/canvas/<env>/`), so the old environment's folders stay on disk,
-    untouched and unlisted, and are back as they were on the next switch; a
-    user who wants them fresh re-clones. What the switch MUST still do is stop
-    every live sync manager: a manager's `dir` is fixed at construction (the
-    old environment's folder) while `_cli_env` reads `workbench_env()` live,
-    so one left running would push the old environment's files into the new
-    environment's same-named canvas. The workspace's poll re-arms a watcher
-    (sync/start) under the new root once the latch clears — same recovery as
-    a dropped watcher. Refused (423) when the env var pins the environment.
-    """
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    env = body.get("env")
-    if env not in WORKBENCH_ENV_CHOICES:
-        return _error(f"'env' must be one of: {', '.join(WORKBENCH_ENV_CHOICES)}", 400)
-    if workbench_env_locked():
-        return _error(
-            f"the environment is pinned by {WORKBENCH_ENV_VAR}; unset it to use the preference",
-            423,
-        )
-    if env == workbench_env():
-        return api_canvases_status()
-    # The latch refuses new managers and new clones for the switch's
-    # duration — a watcher re-armed by an open workspace (sync/start) or a
-    # /clone would otherwise be built against the old root and then sync
-    # against the new environment. The clone gate waits out a /clone already
-    # inside its CLI pull, so that pull finishes into the folder (and
-    # environment) it started in.
-    global _ENV_SWITCHING
-    with _SYNC_LOCK:
-        if _ENV_SWITCHING:
-            return _busy("an environment switch is already running; try again in a moment")
-        _ENV_SWITCHING = True
-    try:
-        if not _CLONE_GATE.acquire(timeout=PULL_TIMEOUT):
-            return _busy("a canvas clone is still running; try again in a moment")
-        try:
-            return _switch_env(env)
-        finally:
-            _CLONE_GATE.release()
-    finally:
-        with _SYNC_LOCK:
-            _ENV_SWITCHING = False
-
-
-def _switch_env(env: str):
-    """Quiesce the managers, then write the preference: see api_canvases_env.
-
-    ORDER IS THE SAFETY HERE. The locks come FIRST, before any manager is
-    touched: a manual pull runs under the manager's `_flight_lock`, a
-    snapshot or rename apply under its `_op_lock` (the order pull takes
-    them), and the watcher takes `_flight_lock` non-blocking for its own
-    legs. Holding both for every manager means no CLI leg of the OLD
-    environment is in flight or can start, and a refusal at this step
-    leaves everything exactly as it was — the managers still running, still
-    owning their writer locks — so no other fused-render can claim a clone
-    a request thread is still writing. Only once every lock is held are
-    the managers stopped and their writer locks released (they live under
-    the OLD root's `.sync/`, where another fused-render on the old
-    environment may now claim them), and the preference written while the
-    locks are still held: a request past `_sync_manager` when `_syncs` was
-    cleared still holds the old manager, whose `env`/`root` are pinned, so
-    even its next leg talks to the Fused it was built for.
-    """
-    with _SYNC_LOCK:
-        managers = list(_syncs.values())
-    held_flight: list[_SyncManager] = []
-    held_op: list[_SyncManager] = []
-    try:
-        for manager in managers:
-            if not manager._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
-                return _busy(f"a sync operation is in flight for {manager.name!r}; try again in a moment")
-            held_flight.append(manager)
-            if not manager._op_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
-                return _busy(f"a write is in flight for {manager.name!r}; try again in a moment")
-            held_op.append(manager)
-        # Quiet: nothing of the old environment can run a leg now. Same
-        # shape as logout from here — unregister, stop (a push CLI cannot be
-        # in flight under the held flight lock; terminate_push is the belt),
-        # release.
-        with _SYNC_LOCK:
-            for manager in managers:
-                if _syncs.get(manager.name) is manager:
-                    del _syncs[manager.name]
-        for manager in managers:
-            manager.stop_event.set()
-        for manager in managers:
-            try:
-                manager.terminate_push()
-            except Exception:  # noqa: BLE001 — the stop below still runs
-                logger.warning("canvas %s: stopping the push on env switch failed",
-                               manager.name, exc_info=True)
-        for manager in managers:
-            manager.stop()
-        # stop() joins for STOP_JOIN_S at most. A thread still alive is
-        # inside a lock-free leg (a manifest probe); it cannot push or pull
-        # (we hold the flight lock) and its env/root are pinned, so refusing
-        # here is caution, not correctness — the user retries in a moment.
-        for manager in managers:
-            if manager.thread.is_alive():
-                return _busy(f"canvas {manager.name!r} is still syncing; try again in a moment")
-        # Each stop() released its own writer lock; this is the belt for a
-        # claim left open by a manager that was already stopped before.
-        canvas_sync_state.release_all()
-        prefs.write_pref("workbench_env", env)
-        # The `fused` wrapper bakes FUSED_ENV in as a default at server
-        # start; rewrite it so a Claude session's next `fused` call targets
-        # the new one.
-        export_fused_cli_env()
-    finally:
-        for manager in held_op:
-            manager._op_lock.release()
-        for manager in held_flight:
-            manager._flight_lock.release()
-    logger.info("canvases: environment switched to %s (clones kept under %s)",
-                env, canvases_base())
-    return api_canvases_status()
-
-
 @router.get("/api/canvases/whoami")
-def api_canvases_whoami(x_fused: str | None = Header(default=None)):
+def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None)):
     # EXECUTES a control-plane call — D36 guard, like account's probe=1.
+    # `env` is OPTIONAL: the Settings account row and the Share sheet only ask
+    # "is this login alive, and whose is it", which one credentials file
+    # answers for both envs, so they omit it and get the `_auth_env()` run.
+    # The workspace names its canvas's env: the account behind the one login
+    # is a different user record in each Fused (same handle today, different
+    # user id), and the slug URL wants the one its iframe loads. Validated
+    # (400/423) whenever given.
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT)
+    if not env:
+        env = _auth_env()
+    else:
+        env, bad = _require_env(env)
+        if bad is not None:
+            return bad
+    proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
     if err is not None:
         return err
     try:
@@ -662,7 +622,7 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
     with _LOGIN_LOCK:
         login = _active_login
         if login is None or login.proc.poll() is not None:
-            env = _cli_env(cli)
+            env = _cli_env(cli, _auth_env())
             env["PYTHONUNBUFFERED"] = "1"
             # The CLI's own login gives the browser only 30s before its
             # callback server dies (fused.workbench._auth), which loses real
@@ -742,7 +702,7 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
                 encoding="utf-8",
                 errors="replace",
                 timeout=TOKEN_TIMEOUT,
-                env=_cli_env(cli),
+                env=_cli_env(cli, _auth_env()),
             )
         except subprocess.TimeoutExpired:
             return _error(f"token refresh timed out after {int(TOKEN_TIMEOUT)}s", 502)
@@ -1051,8 +1011,9 @@ def _iso_epoch(value) -> float | None:
         return None
 
 
-def _list_entries():
-    """(entries, error): each entry is {name, id, preview_url, n_code_udfs, updated_at}.
+def _list_entries(env: str):
+    """(entries, error) for `env`'s account: each entry is {name, id,
+    preview_url, n_code_udfs, updated_at}.
 
     Preferred path is the in-interpreter shim (ids, last_updated, and resolved
     preview image URLs — the CLI's `canvas list` prints bare names only); an
@@ -1072,7 +1033,7 @@ def _list_entries():
                 encoding="utf-8",
                 errors="replace",
                 timeout=LIST_SHIM_TIMEOUT,
-                env=_cli_env(cli),
+                env=_cli_env(cli, env),
             )
         except subprocess.TimeoutExpired:
             return None, _error(
@@ -1123,7 +1084,7 @@ def _list_entries():
                         }
                     )
         return entries, None
-    proc, err = _run_cli(["workbench", "--format", "json", "canvas", "list"], LIST_TIMEOUT)
+    proc, err = _run_cli(["workbench", "--format", "json", "canvas", "list"], LIST_TIMEOUT, env)
     if err is not None:
         return None, err
     try:
@@ -1157,18 +1118,23 @@ def _list_entries():
 
 
 @router.get("/api/canvases/list")
-def api_canvases_list(x_fused: str | None = Header(default=None)):
-    # EXECUTES a control-plane call — guarded like whoami.
+def api_canvases_list(env: str = "", x_fused: str | None = Header(default=None)):
+    # EXECUTES a control-plane call — guarded like whoami. `env` picks the
+    # account listed AND the folder `cloned` is judged against: a prod clone
+    # of `alpha` says nothing about unstable's `alpha`.
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    env, bad = _require_env(env)
+    if bad is not None:
+        return bad
     if not _logged_in():
         return _error("not signed in to Fused — sign in first", 409)
-    canvases, err = _list_entries()
+    canvases, err = _list_entries(env)
     if err is not None:
         return err
     cloned = set()
-    root = canvases_root()
+    root = canvases_root(env)
     try:
         cloned = {
             d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "canvas.toml"))
@@ -1220,6 +1186,11 @@ def api_canvases_previews(
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    # The collection ids are `env`'s; signing them against the other Fused
+    # finds nothing.
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
     if not _logged_in():
         return _error("not signed in to Fused — sign in first", 409)
     ids = body.get("ids")
@@ -1245,7 +1216,7 @@ def api_canvases_previews(
             encoding="utf-8",
             errors="replace",
             timeout=PREVIEWS_SHIM_TIMEOUT,
-            env=_cli_env(cli),
+            env=_cli_env(cli, env),
         )
     except subprocess.TimeoutExpired:
         return _error(
@@ -1289,9 +1260,12 @@ def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(def
     name = body.get("name")
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
     if not _logged_in():
         return _error("not signed in to Fused — sign in first", 409)
-    proc, err = _run_cli(["workbench", "canvas", "create", name], LIST_TIMEOUT)
+    proc, err = _run_cli(["workbench", "canvas", "create", name], LIST_TIMEOUT, env)
     if err is not None:
         return err
     return {"ok": True, "name": name}
@@ -1307,7 +1281,8 @@ def api_canvases_logout(x_fused: str | None = Header(default=None)):
     login = _reap_login()
     if login is not None:
         login.proc.terminate()
-    # Pause every watcher for the CLI call (no push/pull spam using
+    # Pause every watcher — both environments': they share the one
+    # credentials file — for the CLI call (no push/pull spam using
     # about-to-be-cleared credentials) but don't stop them until logout
     # actually succeeds — a failed logout leaves the user signed in, and
     # stopping first would leave sync dead until a canvas is reopened.
@@ -1315,7 +1290,7 @@ def api_canvases_logout(x_fused: str | None = Header(default=None)):
         managers = list(_syncs.values())
     for manager in managers:
         manager.pause()
-    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT)
+    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT, _auth_env())
     if err is not None:
         # Still signed in — resume so sync keeps working until the user
         # retries. Resuming a manager we're about to stop (success path)
@@ -1340,6 +1315,9 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     name = body.get("name")
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
     if not _logged_in():
         return _error("not signed in to Fused — sign in first", 409)
     # Fetch/refresh the `workbench` skills, whose names the CLAUDE.md seeded
@@ -1352,32 +1330,26 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     # swallowed — a clone must still succeed when git is missing or the network
     # is gone, and it must not wait out a clone timeout to find that out.
     _kick_workbench_skills()
-    # Under the clone gate: an environment switch (api_canvases_env) waits
-    # for a clone in flight and refuses a new one, so a pull always finishes
-    # into the environment's folder it started in.
-    with _SYNC_LOCK:
-        switching = _ENV_SWITCHING
-    if switching:
-        return _busy("the Fused environment is being switched; try again in a moment")
-    if not _CLONE_GATE.acquire(timeout=PULL_TIMEOUT):
-        return _busy("another clone is still running; try again in a moment")
+    gate = _clone_gate(env, name)
+    if not gate.acquire(timeout=PULL_TIMEOUT):
+        return _busy("this canvas is already being cloned; try again in a moment")
     try:
-        return _clone(name)
+        return _clone(env, name)
     finally:
-        _CLONE_GATE.release()
+        gate.release()
 
 
-def _clone(name: str):
-    target = _canvas_dir(name)
+def _clone(env: str, name: str):
+    target = _canvas_dir(env, name)
     os.makedirs(target, exist_ok=True)
     # --force: the clone folder is OURS (under ~/Fused/canvas/<env>); a
     # re-clone deliberately resets it to the remote state. The sync watcher is
     # paused around the pull so its writes never echo into a push.
-    manager = _sync_manager(name, create=False)
+    manager = _sync_manager(env, name, create=False)
     if manager is not None:
         manager.pause()
     proc, err = _run_cli(
-        ["workbench", "canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT
+        ["workbench", "canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT, env
     )
     if err is None:
         # Seed BEFORE resume's rebaseline (harmless either way — both files
@@ -1441,20 +1413,19 @@ class _SyncManager:
     for sync/state are safe under the GIL.
     """
 
-    def __init__(self, name: str, *, lock_since: float | None = None):
+    def __init__(self, env: str, name: str, *, lock_since: float | None = None):
+        # (env, name) is the identity: `env` is the `<env>` segment of `dir`,
+        # handed to every CLI run of this manager (`_cli_env(cli, self.env)`),
+        # and `root` is where its `.sync/` bookkeeping (merge base, trash,
+        # push copy, writer lock) lives — beside THIS clone, apart from the
+        # other environment's same-named one.
+        self.env = env
         self.name = name
-        self.dir = _canvas_dir(name)
-        # The environment this clone belongs to — the `<env>` segment of
-        # `dir`, pinned here and handed to every CLI run of this manager
-        # (`_cli_env(cli, self.env)`), never re-read from the preference —
-        # and the root it sits under, so the `.sync/` bookkeeping (merge
-        # base, trash, push copy, lock) stays beside THIS clone for the
-        # manager's life even when the preference moves `canvases_root()`.
-        self.env = workbench_env()
-        self.root = canvases_root()
+        self.root = canvases_root(env)
+        self.dir = _canvas_dir(env, name)
         # Observability first: the property setters below (push_state,
         # server_stale) wake the state socket on every change.
-        self._log = canvas_sync_state.SyncLog(name, self._bump)
+        self._log = canvas_sync_state.SyncLog(_sync_key(env, name), self._bump)
         self._push_state = "idle"
         # SERVER_STALE: the remote moved since the sync point and nothing has
         # been pulled yet — {since, udfs: [{slug, kind}], layout}. While set
@@ -1501,7 +1472,7 @@ class _SyncManager:
         self._last_cut_held: str | None = None
         self._delta_error: str | None = None
         self._frame_seen = False
-        self._lock_path = _lock_path(name)
+        self._lock_path = _lock_path(env, name)
         self._lock_since = lock_since
         self.push_seq = 0
         self.last_push_at: float | None = None
@@ -1669,7 +1640,7 @@ class _SyncManager:
         self._fp_gen += 1
 
     def _bump(self) -> None:
-        canvas_sync_state.notify(self.name)
+        canvas_sync_state.notify(_sync_key(self.env, self.name))
 
     def log_event(self, leg: str, action: str, *, ms: float | None = None,
                   ok: bool = True, detail: str = "") -> dict:
@@ -1728,7 +1699,7 @@ class _SyncManager:
         self.thread.join(timeout=STOP_JOIN_S)
         if self.thread.is_alive():
             logger.warning("canvas %s: watcher still busy after %.0fs; stopping without it",
-                           self.name, STOP_JOIN_S)
+                           _sync_key(self.env, self.name), STOP_JOIN_S)
         # watchfiles polls stop_event every `step` ms; bounded anyway so a
         # wedged notify backend can never hang logout or a test teardown.
         self.fs_thread.join(timeout=2.0)
@@ -1745,7 +1716,7 @@ class _SyncManager:
             import watchfiles
         except ImportError:
             logger.info("canvas %s: watchfiles is not installed; disk changes reach "
-                        "the embed on the %.1fs scan only", self.name, SCAN_INTERVAL_S)
+                        "the embed on the %.1fs scan only", _sync_key(self.env, self.name), SCAN_INTERVAL_S)
             return
 
         root = os.path.realpath(self.dir)
@@ -1774,7 +1745,7 @@ class _SyncManager:
         except Exception as exc:  # noqa: BLE001 — the 1 s scan carries on alone
             if not self.stop_event.is_set():
                 logger.warning("canvas %s: fs watcher stopped (%s); falling back to "
-                               "the %.1fs scan", self.name, exc, SCAN_INTERVAL_S)
+                               "the %.1fs scan", _sync_key(self.env, self.name), exc, SCAN_INTERVAL_S)
                 self.log_event("watcher", "fs watch stopped", ok=False, detail=str(exc))
 
     def agent_run_id(self, *, fresh: bool = False) -> str:
@@ -3283,7 +3254,7 @@ class _SyncManager:
             disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
         except Exception as exc:  # noqa: BLE001 — a view we cannot read is no view
             logger.warning("canvas %s: could not re-read the clone after a write: %s",
-                           self.name, exc)
+                           _sync_key(self.env, self.name), exc)
             self._embed_view = None
             return
         self._embed_view = canvas_snapshot.held_view(
@@ -3445,7 +3416,8 @@ class _SyncManager:
             orphans = canvas_snapshot.orphan_sources(
                 self.dir, rows["nodes"].keys(), exclude=exclude)
         except Exception as exc:  # noqa: BLE001 — never block a push on this
-            logger.warning("canvas %s: orphan scan failed: %s", self.name, exc)
+            logger.warning("canvas %s: orphan scan failed: %s",
+                           _sync_key(self.env, self.name), exc)
             return
         if orphans:
             self._persist_synthesized([slug for slug, _file in orphans], leg="disk_to_server")
@@ -3643,6 +3615,7 @@ class _SyncManager:
         and `pull_error`), and the tests (push_state, push_seq)."""
         return {
             "name": self.name,
+            "env": self.env,
             "dir": self.dir,
             # "held": dirty, but the remote moved and nothing is pushed until
             # the user pulls. Internally still "pending" so the backstop
@@ -3713,6 +3686,7 @@ class _SyncManager:
 
         return {
             "name": self.name,
+            "env": self.env,
             "watching": not self.stop_event.is_set(),
             "legs": {
                 "embed_to_disk": dict(_IDLE_EMBED_TO_DISK),
@@ -3723,7 +3697,7 @@ class _SyncManager:
             "disk_rev": rev,
             "watcher_epoch": self.watcher_epoch,
             "owner": {"pid": os.getpid(), "port": canvas_sync_state.server_port()},
-            "other_watchers": _other_watchers(self.name),
+            "other_watchers": _other_watchers(self.env, self.name),
             "error_detail": list(self.error_detail),
             # The Fix-with-Claude button's one input.
             "fix_active": self.active_fix_run_id is not None,
@@ -3753,27 +3727,35 @@ def _stale_reason(stale: dict | None) -> str:
     return f"server changed: {what}"
 
 
-def _lock_path(name: str) -> str:
-    return os.path.join(canvases_root(), ".sync", f"{name}.lock")
+def _sync_key(env: str, name: str) -> str:
+    """The canvas's key in canvas_sync_state — the event ring's log label and
+    the socket notifier's channel. Env-qualified so a socket on prod's `alpha`
+    is never woken (or logged) as unstable's."""
+    return f"{env}/{name}"
 
 
-def _other_watchers(name: str) -> list[dict]:
+def _lock_path(env: str, name: str) -> str:
+    return os.path.join(canvases_root(env), ".sync", f"{name}.lock")
+
+
+def _other_watchers(env: str, name: str) -> list[dict]:
     """A live process other than this one holding the clone's writer lock —
     only possible when this process holds no manager for it (the start was
     refused) or the lock was taken over from under us."""
-    held = canvas_sync_state.lock_holder(_lock_path(name))
+    held = canvas_sync_state.lock_holder(_lock_path(env, name))
     if held is None:
         return []
     return [{"pid": held.get("pid"), "port": held.get("port")}]
 
 
-def _unwatched_state(name: str) -> dict:
+def _unwatched_state(env: str, name: str) -> dict:
     """sync/state for a canvas this process is not syncing: every leg idle,
     and the owner if another process holds the lock (the page that got the
     409 shows who)."""
-    others = _other_watchers(name)
+    others = _other_watchers(env, name)
     return {
         "name": name,
+        "env": env,
         "watching": False,
         "legs": {
             "embed_to_disk": dict(_IDLE_EMBED_TO_DISK),
@@ -3799,17 +3781,24 @@ class _CanvasOwned(Exception):
         self.owner = owner
 
 _SYNC_LOCK = threading.Lock()
-_syncs: dict[str, _SyncManager] = {}
+# Keyed (env, name): prod's `alpha` and unstable's `alpha` are two clones with
+# two managers, live at once. (Keyed by name alone, a manager had to read the
+# environment from the preference, which is why changing it once meant
+# quiescing every manager first; with the env in the key nothing reads the
+# preference and there is nothing to quiesce.)
+_syncs: dict[tuple[str, str], _SyncManager] = {}
 # Set by the quit rung (app.py `_stop_children`): no new manager — and so no
 # new writer lock — once the app is quitting.
 _QUITTING = False
-# Set by api_canvases_env for the switch's duration: no new manager, no new
-# clone, so nothing is built against one environment's root and synced
-# against the other.
-_ENV_SWITCHING = False
-# Serialises /clone's CLI pull against the switch (and clones against each
-# other, which is rare and harmless).
-_CLONE_GATE = threading.Lock()
+# One lock per (env, name), under _SYNC_LOCK: two /clone requests for one
+# canvas would run two `pull --force` into one folder. Per canvas, not
+# global, so a slow clone of one canvas never holds up another's.
+_CLONE_GATES: dict[tuple[str, str], threading.Lock] = {}
+
+
+def _clone_gate(env: str, name: str) -> threading.Lock:
+    with _SYNC_LOCK:
+        return _CLONE_GATES.setdefault((env, name), threading.Lock())
 
 
 def refuse_new_managers() -> None:
@@ -3845,38 +3834,42 @@ def shutdown() -> None:
             manager.terminate_push()
         except Exception:  # noqa: BLE001 — the stop below still runs
             logger.warning("canvas %s: stopping the push on quit failed",
-                           manager.name, exc_info=True)
+                           _sync_key(manager.env, manager.name), exc_info=True)
     for manager in managers:
         try:
             manager.stop()
         except Exception:  # noqa: BLE001 — the next manager still stops
-            logger.warning("canvas %s: stop on quit failed", manager.name, exc_info=True)
+            logger.warning("canvas %s: stop on quit failed",
+                           _sync_key(manager.env, manager.name), exc_info=True)
     canvas_sync_state.release_all()
 
 
-def _sync_manager(name: str, create: bool) -> _SyncManager | None:
-    """The live manager for `name`; with `create`, start one if none runs.
+def _sync_manager(env: str, name: str, create: bool) -> _SyncManager | None:
+    """The live manager for canvas (env, name); with `create`, start one if
+    none runs.
 
     Creating claims the clone's writer lock first (canvas_sync_state's
     docstring): a live foreign pid raises _CanvasOwned and nothing starts; a
     dead one's lock is taken over; this pid's own (a manager this process
     replaced) is simply re-taken."""
+    key = (env, name)
     with _SYNC_LOCK:
-        manager = _syncs.get(name)
+        manager = _syncs.get(key)
         if manager is not None and manager.stop_event.is_set():
             manager = None
-        if manager is None and create and (_QUITTING or _ENV_SWITCHING):
-            return None  # the quit / env-switch latch: no new watcher (and no lock)
+        if manager is None and create and _QUITTING:
+            return None  # the quit latch: no new watcher (and no lock)
         if manager is None and create:
-            path = _lock_path(name)
+            path = _lock_path(env, name)
             outcome, record = canvas_sync_state.claim_lock(path)
             if outcome == "refused":
                 logger.info("canvas %s: lock refused — pid %s (port %s) owns it since %s",
-                            name, record.get("pid"), record.get("port"), record.get("since"))
+                            _sync_key(env, name), record.get("pid"), record.get("port"),
+                            record.get("since"))
                 raise _CanvasOwned(record)
             mine = canvas_sync_state.read_lock(path) or {}
-            manager = _SyncManager(name, lock_since=mine.get("since"))
-            _syncs[name] = manager
+            manager = _SyncManager(env, name, lock_since=mine.get("since"))
+            _syncs[key] = manager
             if outcome == "taken_over":
                 manager.log_event("watcher", "lock taken over",
                                   detail=f"stale lock of pid {record.get('pid')} "
@@ -3895,26 +3888,27 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
     name = body.get("name")
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
-    if not os.path.isfile(os.path.join(_canvas_dir(name), "canvas.toml")):
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    if not os.path.isfile(os.path.join(_canvas_dir(env, name), "canvas.toml")):
         return _error(f"canvas {name!r} is not cloned yet (no canvas.toml)", 409)
     # The writer lock FIRST: a refused start must not touch a folder another
     # process owns (the seeding below writes into it).
     try:
-        manager = _sync_manager(name, create=True)
+        manager = _sync_manager(env, name, create=True)
     except _CanvasOwned as owned:
         # One writer per clone: another fused-render (the desktop app and a
         # dev server, two branches) is already syncing this folder. The page
         # says who and does not start its delta leg (owner decision Q4).
         owner = {k: owned.owner.get(k) for k in ("pid", "port", "since")}
         return JSONResponse(
-            {"error": f"canvas {name!r} is synced by another fused-render "
+            {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
                       f"(pid {owner['pid']}, port {owner['port']})",
              "code": "owned", "owner": owner}, status_code=409)
     except OSError as exc:
         return _error(f"could not take the canvas sync lock: {exc}", 500)
     if manager is None:
-        if _ENV_SWITCHING:
-            return _busy("the Fused environment is being switched; try again in a moment")
         return _busy("fused-render is quitting; canvas sync is not starting")
     # The page calls this when it OPENS a canvas (and again whenever sync/state
     # or the events socket shows no watcher — `watcher_epoch` null — to heal a
@@ -3935,7 +3929,7 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
     # fingerprint, hash and merge-base walks (_SYNC_IGNORED_BASENAMES) and from
     # every push (.fusedignore) — and shim-gated inside the helper, so the
     # external-CLI leg still cannot churn on it.
-    _seed_clone_claude_files(_canvas_dir(name), name)
+    _seed_clone_claude_files(manager.dir, name)
     return manager.status()
 
 
@@ -3962,6 +3956,9 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
     name = body.get("name")
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
     gen, seq, snapshot = body.get("gen"), body.get("seq"), body.get("body")
     rename = body.get("rename")
     if not isinstance(gen, int) or not isinstance(seq, int):
@@ -3976,10 +3973,10 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
                 return _error(f"'rename.{key}' must be a basename")
     elif not isinstance(snapshot, dict):
         return _error("'body' must be an object (or 'rename' a hint)")
-    manager = _sync_manager(name, create=False)
+    manager = _sync_manager(env, name, create=False)
     if manager is None:
         return JSONResponse(
-            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     # A short wait, not sync/push's 5 s: the page retries a 409 on its own
     # (SNAPSHOT_BUSY_WINDOW_MS), and holding the request open for the length of
@@ -4002,7 +3999,7 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
             if manager.pause_count > 0:
                 manager.log_event("embed_to_disk", "snapshot busy", ok=False,
                                   detail=f"{what} {gen}/{seq}: sync is paused")
-                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+                return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
         try:
             if isinstance(rename, dict):
                 ack = manager.apply_rename(
@@ -4053,7 +4050,7 @@ def _snapshot_ack_detail(what: str, gen: int, seq: int, ack: dict) -> str:
 
 
 @router.get("/api/canvases/delta")
-def api_canvases_delta(name: str = "", full: str = ""):
+def api_canvases_delta(name: str = "", env: str = "", full: str = ""):
     """The delta that takes the embed from what it holds to what disk holds
     (embed v3, canvas_snapshot.py's delta section). The workspace page asks
     when the events socket (or its sync/state fallback poll) shows `disk_rev`
@@ -4062,10 +4059,13 @@ def api_canvases_delta(name: str = "", full: str = ""):
     `fused-embed-delta` and relays the ack to /api/canvases/delta/ack."""
     if not _NAME_RE.fullmatch(name or ""):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
-    manager = _sync_manager(name, create=False)
+    env, bad = _require_env(env)
+    if bad is not None:
+        return bad
+    manager = _sync_manager(env, name, create=False)
     if manager is None:
         return JSONResponse(
-            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
         manager.log_event("disk_to_embed", "delta busy", ok=False,
@@ -4085,9 +4085,12 @@ def api_canvases_delta_ack(body: dict = Body(...), x_fused: str | None = Header(
     name, rev, ok = body.get("name"), body.get("rev"), body.get("ok", True)
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
     if not isinstance(rev, int):
         return _error("'rev' must be an integer")
-    manager = _sync_manager(name, create=False)
+    manager = _sync_manager(env, name, create=False)
     if manager is None:
         return JSONResponse({"ok": False, "code": "no_watcher"}, status_code=409)
     reason = body.get("reason")
@@ -4137,21 +4140,15 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
     # `env` is the environment segment of the clone's path, sent by the CLI
-    # interception (_canvas_push.py) — the ONE guard that replaced the wipe:
-    # a session still working in `~/Fused/canvas/unstable/<name>` after the
-    # switch to prod would otherwise have its push routed to this server's
-    # manager for prod's `<name>`, or (falling through) run the raw CLI with
-    # the wrapper's new FUSED_ENV=prod — either way unstable's files into
-    # prod's same-named canvas. Absent means "the server's own environment".
-    env = body.get("env")
-    if env is not None and env != workbench_env():
-        return JSONResponse(
-            {"error": f"canvas {name!r} was cloned from the {env} environment, but "
-                      f"fused-render now targets {workbench_env()}; switch the "
-                      "environment back in Preferences, or clone the canvas there",
-             "code": "other_env", "env": env, "current": workbench_env()},
-            status_code=409)
-    manager = _sync_manager(name, create=False)
+    # interception (_canvas_push.py). It ROUTES the push: the manager for
+    # (env, name) pushes with its own FUSED_ENV, so a session in
+    # `~/Fused/canvas/unstable/<name>` publishes to unstable even while
+    # prod's `<name>` syncs beside it. (It used to be refused as `other_env`
+    # when it differed from the one environment the server targeted.)
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    manager = _sync_manager(env, name, create=False)
     if manager is None:
         # Deliberately not create=True: constructing one here just to push
         # once would also start its background thread as a side effect of a
@@ -4170,18 +4167,18 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         # the CLI interception tell this apart from a genuine push failure it
         # must report verbatim, and matching on prose would break the moment
         # this wording changes.
-        others = _other_watchers(name)
+        others = _other_watchers(env, name)
         if others:
             # Not "nobody is watching": ANOTHER fused-render owns this clone
             # (the writer lock). Telling the session to "open this canvas in
             # fused-render" would send it to a start that 409s `owned`.
             owner = others[0]
             return JSONResponse(
-                {"error": f"canvas {name!r} is synced by another fused-render "
+                {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
                           f"(pid {owner['pid']}, port {owner['port']})",
                  "code": "owned", "owner": owner}, status_code=409)
         return JSONResponse(
-            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     # The three refusals below are all "someone else has this folder right
     # now", which is BENIGN — nothing is wrong with the canvas or its files.
@@ -4203,7 +4200,7 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         # wholesale (see pull()), and a session told its edits survive would
         # pull and lose them — so name the trash copy instead.
         cli = fused_cli()
-        trash = os.path.join(canvases_root(), ".sync", "trash", name)
+        trash = os.path.join(manager.root, ".sync", "trash", name)
         if cli is None or _shim_manifest_command(cli) is None:
             kept = ("this fused CLI cannot merge, so the pull REPLACES your local "
                     f"edits with the server's files; a copy is kept under {trash}")
@@ -4229,7 +4226,7 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
         # this same lock, so holding it is what makes the answer stable.
         with manager.pause_lock:
             if manager.pause_count > 0:
-                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+                return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
         before = manager.push_seq
         if manager._push() == "busy":
             return _busy(
@@ -4288,13 +4285,16 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
     name = body.get("name")
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
     # `hard`: the sync drawer's Hard pull — discard the clone's local files
     # and take the server's copy wholesale (trash snapshot first, no merge).
     hard = body.get("hard") is True
-    manager = _sync_manager(name, create=False)
+    manager = _sync_manager(env, name, create=False)
     if manager is None:
         return JSONResponse(
-            {"error": f"canvas {name!r} is not being synced (no watcher is running)",
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
              "code": "no_watcher"}, status_code=409)
     if manager.push_state == "pushing":
         return _busy("a push is running for this canvas; try again in a moment")
@@ -4304,7 +4304,7 @@ def api_canvases_sync_pull(body: dict = Body(...), x_fused: str | None = Header(
     try:
         with manager.pause_lock:
             if manager.pause_count > 0:
-                return _busy(f"syncing for {name!r} is paused; try again in a moment")
+                return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
         result = manager.pull(hard=hard)
     finally:
         manager._flight_lock.release()
@@ -4336,7 +4336,10 @@ def api_canvases_sync_check(body: dict = Body(...), x_fused: str | None = Header
     name = body.get("name")
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
-    manager = _sync_manager(name, create=False)
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    manager = _sync_manager(env, name, create=False)
     if manager is None:
         return {"ok": True, "watching": False}
     manager.check_remote_now()
@@ -4369,7 +4372,10 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
     name = body.get("name")
     if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
-    manager = _sync_manager(name, create=False)
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    manager = _sync_manager(env, name, create=False)
     if manager is None or manager.push_state != "error":
         # Nothing to fix: the button only renders on an error, so reaching
         # this means the push recovered between the click and the POST.
@@ -4426,31 +4432,37 @@ SYNC_EVENTS_PING_S = 15.0
 SYNC_EVENTS_TICK_S = 1.0
 
 
-def _state_for(name: str) -> dict:
-    manager = _sync_manager(name, create=False)
-    return _unwatched_state(name) if manager is None else manager.sync_state()
+def _state_for(env: str, name: str) -> dict:
+    manager = _sync_manager(env, name, create=False)
+    return _unwatched_state(env, name) if manager is None else manager.sync_state()
 
 
 @router.get("/api/canvases/sync/state")
-def api_canvases_sync_state(name: str = ""):
+def api_canvases_sync_state(name: str = "", env: str = ""):
     """Every leg of the two sync loops for one canvas (the build contract's
     shape). A canvas this process is not syncing answers all-idle with
     `watching: false` — never a 409: the page polls this as the socket's
     fallback, before and after a watcher exists."""
     if not _NAME_RE.fullmatch(name or ""):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
-    return _state_for(name)
+    env, bad = _require_env(env)
+    if bad is not None:
+        return bad
+    return _state_for(env, name)
 
 
 @router.get("/api/canvases/sync/log")
-def api_canvases_sync_log(name: str = "", after: int = 0):
+def api_canvases_sync_log(name: str = "", env: str = "", after: int = 0):
     """The canvas's sync event ring (200 newest), events with seq > `after`.
     `next` is the `after` for the following call. Seqs restart with a new
     watcher (the state's `watcher_epoch`); an `after` past this ring's end is
     read as 0."""
     if not _NAME_RE.fullmatch(name or ""):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
-    manager = _sync_manager(name, create=False)
+    env, bad = _require_env(env)
+    if bad is not None:
+        return bad
+    manager = _sync_manager(env, name, create=False)
     if manager is None:
         return {"events": [], "next": 0}
     return manager._log.since(after)
@@ -4460,15 +4472,16 @@ def _legs_busy(state: dict) -> bool:
     return any(leg.get("state") != "idle" for leg in state.get("legs", {}).values())
 
 
-def _socket_read(name: str, epoch, log_after: int) -> tuple[dict, list[dict], object, int]:
+def _socket_read(env: str, name: str, epoch,
+                 log_after: int) -> tuple[dict, list[dict], object, int]:
     """One socket wake's reads, in a worker thread: `_sync_manager` takes the
     threading `_SYNC_LOCK` and the state reads the lock file — neither
     belongs on the event loop. Returns (state, new log events, epoch,
     log_after). A new watcher (or none) restarts the log cursor at its
     ring's current end: only events from here on are "new" (the drawer reads
     history off sync/log)."""
-    manager = _sync_manager(name, create=False)
-    state = _unwatched_state(name) if manager is None else manager.sync_state()
+    manager = _sync_manager(env, name, create=False)
+    state = _unwatched_state(env, name) if manager is None else manager.sync_state()
     if state.get("watcher_epoch") != epoch:
         return state, [], state.get("watcher_epoch"), \
             (manager._log.last_seq if manager is not None else 0)
@@ -4485,7 +4498,8 @@ async def api_canvases_sync_events(ws: WebSocket):
     once a second while any leg is busy; `{"type": "log", "event"}` per new
     ring event; `{"type": "ping"}` every SYNC_EVENTS_PING_S while idle.
 
-    Wakes come from canvas_sync_state's per-NAME notifier (the sync threads
+    Wakes come from canvas_sync_state's per-canvas notifier (keyed
+    `_sync_key(env, name)`) (the sync threads
     call `loop.call_soon_threadsafe`), so a stop/start that replaces the
     manager is followed without re-subscribing, and every read runs in a
     worker thread — the event loop never waits on the clone or a threading
@@ -4500,8 +4514,16 @@ async def api_canvases_sync_events(ws: WebSocket):
     if not _NAME_RE.fullmatch(name):
         await ws.close(code=1008)
         return
+    # A bad env and a pinned-away one both close 1008: a socket has no body
+    # to carry the 400/423 reason, and the page's sync/state fallback poll
+    # gets the same answer with its reason.
+    env, bad = _require_env(ws.query_params.get("env"))
+    if bad is not None:
+        await ws.close(code=1008)
+        return
+    key = _sync_key(env, name)
     await ws.accept()
-    token = canvas_sync_state.subscribe(name)
+    token = canvas_sync_state.subscribe(key)
     wake = token[1]
     closed = asyncio.Event()
 
@@ -4526,7 +4548,7 @@ async def api_canvases_sync_events(ws: WebSocket):
         while not closed.is_set():
             wake.clear()
             state, events, epoch, log_after = await asyncio.to_thread(
-                _socket_read, name, epoch, log_after)
+                _socket_read, env, name, epoch, log_after)
             if closed.is_set():
                 break
             await ws.send_text(json.dumps({"type": "state", "state": state}))
@@ -4553,5 +4575,5 @@ async def api_canvases_sync_events(ws: WebSocket):
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
-        canvas_sync_state.unsubscribe(name, token)
+        canvas_sync_state.unsubscribe(key, token)
         drainer.cancel()
