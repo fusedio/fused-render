@@ -974,8 +974,14 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
       setNodeBootSeq((n) => n + 1);
       setNode(next);
     };
+    // Back / Forward move the URL without a push: `popstate`, which the
+    // router does not re-announce, lands on this same reader.
     window.addEventListener(NAV_EVENT, onNav);
-    return () => window.removeEventListener(NAV_EVENT, onNav);
+    window.addEventListener("popstate", onNav);
+    return () => {
+      window.removeEventListener(NAV_EVENT, onNav);
+      window.removeEventListener("popstate", onNav);
+    };
   }, [env, name, sendSelect]);
 
   useEffect(() => {
