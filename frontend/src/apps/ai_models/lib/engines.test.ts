@@ -157,6 +157,17 @@ describe("ignoredWarning", () => {
       .toBeNull();
   });
 
+  it("prints just the reason when the selection is auto", () => {
+    const warning = ignoredWarning(
+      mac({
+        selected: AUTO,
+        ignoredReason: "MLX FLUX does not read this model; Diffusers does",
+      }),
+    );
+    expect(warning).toBe("MLX FLUX does not read this model; Diffusers does.");
+    expect(warning).not.toContain("is not used here");
+  });
+
   it("names the choice and the reason, in one sentence", () => {
     const warning = ignoredWarning(linuxBox()) ?? "";
     expect(warning).toContain("MLX Whisper");
