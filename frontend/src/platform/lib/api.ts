@@ -1634,7 +1634,7 @@ export interface EnginesPrefs {
   // One row per capability the registry knows, servable here or not — a
   // preference the user cannot see is one they cannot fix.
   capabilities: CapabilityEngine[];
-  // One row per DOWNLOADED model with a known capability (D1387): its own pin
+  // One row per DOWNLOADED model with a known capability (D1388): its own pin
   // and what actually serves it. Optional so an older server's payload, which
   // has no such block, still reads as "no model rows".
   models?: ModelEngine[];

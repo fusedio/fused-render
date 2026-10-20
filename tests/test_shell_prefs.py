@@ -1699,7 +1699,7 @@ def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
     assert prefs_mod.indexing_enabled() is expect
 
 
-# -- per-model engine pins (D1387) ----------------------------------------------
+# -- per-model engine pins (D1388) ----------------------------------------------
 #
 # The sibling of the per-capability preference above: `model_engines` maps a
 # cached repo id to a runner code. Same store/validate/degrade rules; what a pin
