@@ -2290,7 +2290,7 @@ def test_the_seeded_claude_md_names_the_tool_that_loads_a_skill():
     assert "invoke" in head.lower()
     # Every skill the app actually hands over is listed, so none is left to
     # guesswork about whether it applies.
-    for name in ("canvas-toml", "fused-udfs", "json-ui-schemas", "fused-cli",
+    for name in ("canvas-toml", "fused-udfs", "json-ui-schemas", "fused-workbench-cli",
                  "canvas-comments"):
         assert f"workbench:{name}" in head, name
 

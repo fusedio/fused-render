@@ -236,8 +236,8 @@ WORKBENCH_PLUGIN_SRC_ENV = "FUSED_RENDER_WORKBENCH_PLUGIN"
 # The skills a clone session is actually told to load — the evidence that a
 # candidate root is the plugin we mean and not a same-named stub, and the reason
 # `_is_loadable` takes an `expected` list at all.
-WORKBENCH_SKILLS = ("canvas-toml", "fused-udfs", "json-ui-schemas", "fused-cli",
-                    "canvas-comments")
+WORKBENCH_SKILLS = ("canvas-toml", "fused-udfs", "json-ui-schemas",
+                    "fused-workbench-cli", "canvas-comments")
 
 # HTTPS, never SSH: a shipping user has no SSH key and no reason to have one, and
 # an `ssh://` remote would fail on exactly the machines this feature exists for.

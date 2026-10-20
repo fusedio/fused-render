@@ -883,7 +883,7 @@ anything, and do not skip one because the change "looks small":
 | `workbench:canvas-toml` | ALWAYS — before the first edit. canvas.toml format, folder layout |
 | `workbench:fused-udfs` | writing or changing any `.py` UDF |
 | `workbench:json-ui-schemas` | writing or changing any `.json` widget |
-| `workbench:fused-cli` | running any `fused` command |
+| `workbench:fused-workbench-cli` | running any `fused` command |
 | `workbench:canvas-comments` | reading or resolving canvas comments |
 
 `workbench:` is the correct prefix. If you also see these skill names under a
