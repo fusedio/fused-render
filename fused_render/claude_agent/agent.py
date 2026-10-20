@@ -5007,7 +5007,13 @@ def _read_echo_texts(run_dir: str) -> tuple:
         lock = _echo_locks.get(run_dir)
         if lock is None:
             if len(_echo_locks) >= _ECHO_CACHE_MAX:
-                _echo_locks.clear()
+                # Only a lock nobody holds may go (Bugbot, PR #1778): dropping
+                # a held one would let a second window on the same run mint
+                # another and read beside the first.
+                for key in [k for k, l in _echo_locks.items() if not l.locked()]:
+                    if len(_echo_locks) < _ECHO_CACHE_MAX:
+                        break
+                    del _echo_locks[key]
             lock = _echo_locks[run_dir] = threading.Lock()
     with lock:
         with _ECHO_LOCK:
@@ -5050,15 +5056,36 @@ def _read_echo_texts(run_dir: str) -> tuple:
             return [], False
         if len(echoes) > _ECHO_INDEX_MAX:
             del echoes[:-_ECHO_INDEX_MAX]
-        with _ECHO_LOCK:
-            if len(_echo_index) >= _ECHO_CACHE_MAX and run_dir not in _echo_index:
-                # The run polled longest ago goes, not the whole index: a
-                # shell visiting many live runs must not re-read every file.
-                del _echo_index[next(iter(_echo_index))]
-            _echo_index.pop(run_dir, None)   # re-insert as the newest
-            _echo_index[run_dir] = {"ident": ident, "offset": offset,
-                                    "echoes": echoes}
-        return list(echoes), True
+        return _echo_store(run_dir, ident, offset, echoes, st.st_size), True
+
+
+def _echo_store(run_dir: str, ident: tuple, offset: int, echoes: list,
+                size: int) -> list:
+    """Put one reader's result into `_echo_index` and hand back the list that
+    is current afterwards.
+
+    THE OFFSET ONLY EVER MOVES FORWARD. Should two readers of one run ever
+    overlap (the per-run lock is best effort: a lock evicted between being
+    looked up and taken), the one that read further wins, and the slower one
+    is answered with the further list rather than writing its shorter one
+    back — which would make the next read re-index a stretch already counted
+    and append duplicate echoes, the one thing the position walk cannot tell
+    from a line said twice. Every reader's list is the stored base plus the
+    bytes after it, so the further list is always a superset in order. A
+    stored offset past the file's current `size` is a file that shrank since,
+    and vouches for nothing."""
+    with _ECHO_LOCK:
+        cur = _echo_index.get(run_dir)
+        if cur and cur["ident"] == ident and size >= cur["offset"] > offset:
+            return list(cur["echoes"])
+        if cur is None and len(_echo_index) >= _ECHO_CACHE_MAX:
+            # The run polled longest ago goes, not the whole index: a shell
+            # visiting many live runs must not re-read every file.
+            del _echo_index[next(iter(_echo_index))]
+        _echo_index.pop(run_dir, None)   # re-insert as the newest
+        _echo_index[run_dir] = {"ident": ident, "offset": offset,
+                                "echoes": echoes}
+        return list(echoes)
 
 
 def _echo_key(text: str) -> str:

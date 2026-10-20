@@ -579,3 +579,41 @@ def test_a_user_row_that_is_not_an_entry_does_not_strand_the_walk(agent, tmp_pat
     _echo(run_dir, "do the thing")
     _echo(run_dir, "<agent-message from=\"a2973b78602769fc3\"> [Subagent hand-back] …")
     assert agent._poll("run")["inbox"] == []
+
+
+def test_a_slower_reader_never_moves_the_index_backwards(agent, tmp_path):
+    """Two windows on one run can read it at once; whichever read further
+    wins, and the other is answered with that list — not allowed to write a
+    shorter one back and have the next read count the gap twice."""
+    run_dir = _run_dir(tmp_path)
+    (a, ua), (b, ub) = _entries(agent, run_dir, "one", "two")
+    _echo_uuid(run_dir, ua, "one")
+    _echo_uuid(run_dir, ub, "two")
+    st = os.stat(run_dir / "out.jsonl")
+    ident = (st.st_dev, st.st_ino)
+    further = [(ua, agent._echo_key("one")), (ub, agent._echo_key("two"))]
+    assert agent._echo_store(str(run_dir), ident, st.st_size, further, st.st_size) == further
+    # The slower reader comes back with only the first echo and an older offset.
+    assert agent._echo_store(str(run_dir), ident, st.st_size // 2, further[:1],
+                             st.st_size) == further
+    assert agent._echo_index[str(run_dir)]["offset"] == st.st_size
+    assert agent._poll("run")["inbox"] == []
+
+
+def test_a_held_lock_is_never_evicted(agent, tmp_path):
+    """Bugbot, PR #1778: the per-run lock table used to be cleared wholesale
+    at its cap, lock holders included."""
+    import threading
+    held = agent._echo_locks["held-run"] = threading.Lock()
+    held.acquire()
+    try:
+        for i in range(agent._ECHO_CACHE_MAX + 3):
+            agent._echo_locks.setdefault(f"idle-{i}", threading.Lock())
+        run_dir = _run_dir(tmp_path)
+        (a, ua), = _entries(agent, run_dir, "one")
+        _echo_uuid(run_dir, ua, "one")
+        assert agent._poll("run")["inbox"] == []
+        assert agent._echo_locks["held-run"] is held
+        assert len(agent._echo_locks) <= agent._ECHO_CACHE_MAX + 1
+    finally:
+        held.release()
