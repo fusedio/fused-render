@@ -1819,12 +1819,19 @@ export function taskFile(task: Task): string {
  * the embed prefix) for the callers that need an address, e.g. a ⌘-click. */
 export const SHOW_PAGE_DOOR = !IS_QUERY_EMBED;
 
-/** What the door's words say it opens — the canvas page for a task on a
- *  canvas, the explorer for every other (see `taskHrefView`'s canvas arm). A
+/** Whether the door lands on the CANVAS PAGE — the exact condition of
+ *  `taskHrefView`'s canvas arm: a canvas task WITH a session. A queued canvas
+ *  task keeps its explorer door (the chat pane draws its waiting words), so
+ *  it must keep the explorer's words too. */
+export function opensCanvas(task: Pick<Task, "canvas" | "session_id">): boolean {
+  return !!task.canvas && !!task.session_id;
+}
+
+/** What the door's words say it opens — the canvas page or the explorer. A
  *  door reading "Open in Explorer" that lands on the canvas page would read
  *  as a bug, so every site that prints the door's label asks here. */
-export function pageDoorLabel(task: Pick<Task, "canvas">): string {
-  return task.canvas ? "Open in Canvas" : "Open in Explorer";
+export function pageDoorLabel(task: Pick<Task, "canvas" | "session_id">): string {
+  return opensCanvas(task) ? "Open in Canvas" : "Open in Explorer";
 }
 
 export function taskHref(

@@ -420,6 +420,10 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   // already have. Kept after the push recovers — the session may still be
   // finishing its final message.
   const [fixRunId, setFixRunId] = useState<string | null>(null);
+  // Bumped when a hop lands on the CANVAS chat with a session the mounted
+  // chat is not on (another root task of the same canvas, from the Tasks
+  // page): the chat reads `session_id` at boot only, so it is remounted.
+  const [canvasChatSeq, setCanvasChatSeq] = useState(0);
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
@@ -939,16 +943,32 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
       const cur = nodeRef.current;
       if (!next) {
-        if (!cur) return;
+        if (!cur) {
+          // Already on the canvas chat: a hop naming a session it is not on
+          // (another root task of this canvas) remounts it; the mount reads
+          // `session_id` off the URL, which this push has just set.
+          if (new URLSearchParams(window.location.search).has("session_id")) {
+            setCanvasChatSeq((n) => n + 1);
+          }
+          return;
+        }
         navHopRef.current = true;
         sendSelect(null);
         setNode(null);
         return;
       }
       if (cur && cur.file === next.file) {
+        // The same node: the link's tab wins (a Code tab left open would
+        // otherwise hide the chat the task named), and a session the pane
+        // is not on reboots it.
+        setNodeTab(nodeTabFromUrl());
         if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
         return;
       }
+      // Marked as a hop so the node effect leaves the `session_id` the link
+      // carries on the URL: the pane boots off the seeded map either way,
+      // but the address should still restore the task's session on reload.
+      navHopRef.current = true;
       sendSelect(next.udfName);
       setNodeTab(nodeTabFromUrl());
       setNodeBootSeq((n) => n + 1);
@@ -1599,7 +1619,7 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
             // hands the element over. The mark stays on that iframe for PR3 to
             // read (below).
             <ChatMount
-              key={fixRunId ?? "chat"}
+              key={(fixRunId ?? "chat") + ":" + canvasChatSeq}
               file={dir}
               chatOnly
               paramsSource="url"

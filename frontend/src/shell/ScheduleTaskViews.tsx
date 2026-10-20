@@ -160,6 +160,7 @@ import {
   upcomingEditEntry,
   eraseBlocked,
   ERASE_BLOCKED_HINT,
+  opensCanvas,
   pageDoorLabel,
 } from "./tasks-lib";
 import type {
@@ -4585,7 +4586,7 @@ function TaskNode({
           <a
             className="tasks-act tasks-act--page"
             href={page}
-            aria-label={`Open ${shortTaskId(task.task_id)} in ${task.canvas ? "Canvas" : "Explorer"}`}
+            aria-label={`Open ${shortTaskId(task.task_id)} in ${opensCanvas(task) ? "Canvas" : "Explorer"}`}
             data-hint={pageDoorLabel(task)}
             onClick={(e) => {
               // A modified press is the browser's (the row's own link rule).
@@ -6520,7 +6521,7 @@ function TaskCard({
             <a
               className="tasks-act tasks-card-act tasks-act--page"
               href={page}
-              aria-label={`Open ${shortTaskId(task.task_id)} in ${task.canvas ? "Canvas" : "Explorer"}`}
+              aria-label={`Open ${shortTaskId(task.task_id)} in ${opensCanvas(task) ? "Canvas" : "Explorer"}`}
               data-hint={pageDoorLabel(task)}
               onClick={(e) => {
                 if (opensElsewhere(e)) return;
