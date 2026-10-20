@@ -28,6 +28,19 @@ from fused_render.shell import prefs
 # host's leftovers) and does not hold a slot.
 YOUNG_S = 20.0
 
+# `live_count` is a directory scan plus a pid probe per run, and the Tasks page
+# asks on every poll. A one-second memo is enough to collapse those; the two
+# callers that decide whether to SPAWN (`dispatch_entry`, `tick`) pass
+# `fresh=True` and never read it.
+MEMO_S = 1.0
+_memo: tuple[float, str, int] | None = None
+
+
+def _reset_cache() -> None:
+    """Forget the memoized count (tests)."""
+    global _memo
+    _memo = None
+
 
 def _agent():
     from fused_render import project_queue
@@ -50,11 +63,24 @@ def _young_spawn(agent, run_dir: str, now: float) -> bool:
         return False
 
 
-def live_count() -> int:
-    """How many session hosts are up (or just starting) right now."""
+def live_count(fresh: bool = False) -> int:
+    """How many session hosts are up (or just starting) right now. Memoized for
+    `MEMO_S`; `fresh=True` rescans (and refills the memo)."""
+    global _memo
     agent = _agent()
     if agent is None:
         return 0
+    runs = str(agent.RUNS)
+    if not fresh and _memo is not None:
+        stamp, memo_runs, value = _memo
+        if memo_runs == runs and 0 <= time.monotonic() - stamp < MEMO_S:
+            return value
+    value = _scan(agent)
+    _memo = (time.monotonic(), runs, value)
+    return value
+
+
+def _scan(agent) -> int:
     try:
         names = sorted(os.listdir(agent.RUNS), reverse=True)[:agent._LIVE_SCAN_LIMIT]
     except OSError:
@@ -71,9 +97,9 @@ def live_count() -> int:
     return count
 
 
-def at_cap() -> bool:
+def at_cap(fresh: bool = False) -> bool:
     limit = cap()
-    return limit > 0 and live_count() >= limit
+    return limit > 0 and live_count(fresh) >= limit
 
 
 def has_live_host(entry: dict, session: str = "") -> bool:
@@ -94,9 +120,11 @@ def has_live_host(entry: dict, session: str = "") -> bool:
         return False
 
 
-def held(entry: dict, session: str = "") -> bool:
-    """Whether the cap holds this entry back from spawning a new session."""
-    return at_cap() and not has_live_host(entry, session)
+def held(entry: dict, session: str = "", fresh: bool = False) -> bool:
+    """Whether the cap holds this entry back from spawning a new session.
+    Callers about to spawn pass `fresh=True` so a slot filled a moment ago
+    counts."""
+    return at_cap(fresh) and not has_live_host(entry, session)
 
 
 def waiting(entries: list[dict], now: datetime) -> list[str]:

@@ -287,6 +287,7 @@ def _no_real_session_count(monkeypatch):
     from fused_render import session_cap
 
     monkeypatch.setattr(session_cap, "_agent", lambda: None)
+    session_cap._reset_cache()
 
 
 @pytest.fixture(autouse=True)

@@ -86,6 +86,33 @@ def test_young_pid_without_host_counts_but_an_old_one_does_not(runs):
     assert session_cap.live_count() == 1
 
 
+def test_live_count_is_memoized_for_a_second_and_fresh_rescans(runs, monkeypatch):
+    _host(runs, "20260101-000001-a", "live-1")
+    scans = []
+    real = os.listdir
+    monkeypatch.setattr(os, "listdir", lambda p: (scans.append(p), real(p))[1])
+    assert session_cap.live_count() == 1
+    _host(runs, "20260101-000002-b", "live-2")
+    assert session_cap.live_count() == 1
+    assert len(scans) == 1
+    assert session_cap.live_count(fresh=True) == 2
+    assert len(scans) == 2
+    assert session_cap.live_count() == 2  # fresh refilled the memo
+    assert len(scans) == 2
+    clock = [session_cap.time.monotonic() + 1.5]
+    monkeypatch.setattr(session_cap.time, "monotonic", lambda: clock[0])
+    session_cap.live_count()
+    assert len(scans) == 3
+
+
+def test_held_with_fresh_sees_a_slot_that_just_filled(runs, tmp_path, monkeypatch):
+    _set_cap(monkeypatch, tmp_path, 1)
+    assert session_cap.held(_entry("s-a")) is False  # primes the memo at 0
+    _host(runs, "20260101-000001-a", "live-1")
+    assert session_cap.held(_entry("s-a")) is False  # memo still says 0
+    assert session_cap.held(_entry("s-a"), fresh=True) is True
+
+
 def test_no_agent_module_counts_nothing(monkeypatch):
     monkeypatch.setattr(session_cap, "_agent", lambda: None)
     assert session_cap.live_count() == 0
