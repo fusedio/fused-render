@@ -11,6 +11,7 @@ The one thing these tests must never do is depend on the machine they run on:
 CI is Linux, MLX is Apple-only, and a suite that only passes on a Mac is a suite
 that does not run.
 """
+import dataclasses
 import json
 import os
 import re
@@ -891,6 +892,24 @@ def test_a_pin_for_the_wrong_capability_or_an_unknown_runner_is_ignored(monkeypa
         resolution = registry.resolve_for_model(registry.IMAGE_GENERATION, "org/flux2")
         assert resolution.runner is not None
         assert fragment in resolution.ignored_reason
+
+
+def test_describe_model_engines_builds_the_choices_once_per_capability(monkeypatch):
+    _mac(monkeypatch)
+    models = [CachedModel(f"org/flux-{i}", registry.IMAGE_GENERATION, 1,
+                          ("diffusers-image", "mflux-image")) for i in range(5)]
+    monkeypatch.setattr(ai_models, "cached_models", lambda: models)
+    probed = []
+    real = registry._choice
+    monkeypatch.setattr(registry, "_choice",
+                        lambda runner: (probed.append(runner.code), real(runner))[1])
+    rows = registry.describe_model_engines()
+    assert len(rows) == 5
+    image = [r.code for r in registry.all_runners()
+             if r.capability == registry.IMAGE_GENERATION]
+    # `_choice` probes `available()`: once per runner for the capability, not
+    # once per runner per model.
+    assert sorted(probed) == sorted(image)
 
 
 def test_an_uncached_model_resolves_exactly_as_the_capability_does(monkeypatch):

@@ -1954,7 +1954,8 @@ def _join_reasons(*reasons: str) -> str:
     return "; ".join(r for r in reasons if r)
 
 
-def resolve_for_model(capability: str, model_id: str) -> Resolution:
+def resolve_for_model(capability: str, model_id: str,
+                      pinned: str | None = None) -> Resolution:
     """Which runner serves `model_id` as `capability` here (D1387).
 
     The format classifier (`formats.loaders`, via the cached reading) is the one
@@ -1973,19 +1974,30 @@ def resolve_for_model(capability: str, model_id: str) -> Resolution:
     3. no cached evidence, or no available runner reads it: `resolve(capability)`
        exactly as before, so an uncached id behaves as it always did.
     """
-    return resolve_for_loaders(capability, model_id, _model_loaders(model_id))
+    return resolve_for_loaders(capability, model_id, _model_loaders(model_id),
+                               pinned)
 
 
 def resolve_for_loaders(capability: str, model_id: str,
-                        loaders: tuple[str, ...]) -> Resolution:
+                        loaders: tuple[str, ...],
+                        pinned: str | None = None) -> Resolution:
     """`resolve_for_model` with the format evidence handed in.
+
+    `pinned` is the model's pin when the caller has already read it (one
+    prefs.json read for a whole listing); None reads it here.
+
+    **Pins are scoped to the model's CACHED capability** (the one the PUT
+    validated against). A route asking for the model under another capability
+    (a VLM cached as text-generation, pinned to mlx-text, asked for as vision)
+    ignores the pin with the usual "does not do <capability>" reason.
 
     Exists for the one caller that is itself computing that evidence —
     `hub_cache._engine`, which builds `meta.loaders` and must not ask the cache
     to read the same snapshot again through `resolve_for_model` (that would
     recurse). Everyone else wants `resolve_for_model`.
     """
-    pinned = model_pin(model_id)
+    if pinned is None:
+        pinned = model_pin(model_id)
     pin_reason = ""
     if pinned and pinned != AUTO:
         runner = by_code(pinned)
@@ -2020,13 +2032,26 @@ def describe_model_engines() -> list[dict]:
     the same picker."""
     from fused_render.ai import hub_cache
 
+    pins = {}
+    try:
+        from fused_render.shell import prefs
+
+        pins = prefs.model_engines()
+    except Exception:  # noqa: BLE001 - a pin must never break the listing
+        pins = {}
+    known = capabilities()
+    choices_by_cap: dict[str, list[dict]] = {}
     rows = []
     for model in hub_cache.cached_models():
         capability = model.capability
-        if not capability or capability not in capabilities():
+        if not capability or capability not in known:
             continue
-        resolution = resolve_for_model(capability, model.repo_id)
-        pinned = model_pin(model.repo_id)
+        pinned = pins.get(model.repo_id) or AUTO
+        resolution = resolve_for_loaders(
+            capability, model.repo_id, tuple(model.loaders), pinned)
+        if capability not in choices_by_cap:
+            choices_by_cap[capability] = [
+                _choice(r) for r in _RUNNERS if r.capability == capability]
         rows.append({
             "id": model.repo_id,
             "capability": capability,
@@ -2036,7 +2061,7 @@ def describe_model_engines() -> list[dict]:
             "effectiveShortLabel": resolution.runner.short if resolution.runner else None,
             "ignoredReason": resolution.ignored_reason or None,
             "strandedLabel": _stranded_label(capability, pinned),
-            "choices": [_choice(r) for r in _RUNNERS if r.capability == capability],
+            "choices": choices_by_cap[capability],
         })
     return rows
 
