@@ -489,6 +489,20 @@ def test_a_fresh_claude_chat_still_mints_its_id(agent, target, tmp_path, monkeyp
         assert json.load(fh)["session_id"] == res["session_id"]
 
 
+def test_start_leaves_launch_json_for_the_headsup_fork(agent, target, tmp_path,
+                                                       monkeypatch):
+    """The heads-up fork rebuilds the main session's argv from this file."""
+    file, workdir = target
+    monkeypatch.setitem(agent._HOST_FILES, "claude", _stub_host(tmp_path))
+    res = agent._start(file, "hi", "", "opus", "high", "acceptEdits", has_pane=False)
+    req, run_dir = _req_of(agent, res)
+    with open(os.path.join(run_dir, "launch.json")) as fh:
+        launch = json.load(fh)
+    assert launch == {k: v for k, v in req.items() if k not in ("agent", "run_dir")}
+    assert launch["model"] == "opus" and launch["backend"] == "claude"
+    assert launch["cwd"] == workdir
+
+
 def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
                                                           tmp_path, monkeypatch):
     """What copilot_host.py codes against: session_host's keys + argv + backend."""

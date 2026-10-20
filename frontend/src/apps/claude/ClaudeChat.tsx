@@ -113,6 +113,7 @@ import {
   openCardIds,
   resetCardPolicy,
   liveViewable,
+  HeadsUp,
   RecapFold,
   SchedBlock,
   SentPop,
@@ -128,6 +129,8 @@ import {
   useArtStrip,
   useAttachments,
   useAwayRecap,
+  useHeadsUp,
+  countUserTurns,
   useFitStrip,
   useComposerDefaults,
   useRecentTasks,
@@ -157,6 +160,7 @@ import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
   queueFlagReady,
+  useChatHeadsupEnabled,
   useProjectQueueEnabled,
   useTaskRecapTitlesEnabled,
 } from "./feature-flag";
@@ -4788,6 +4792,28 @@ function ChatBody(props: ChatBodyProps) {
     eager: recapEager,
     root: recapRoot,
   });
+  // Heads-up notes (server: claude_agent/headsup.py): a side check polled while
+  // a turn runs. Claude chats only. The card clears itself after the reader's
+  // next two messages, counted off the transcript's own user rows.
+  const headsupOn = useChatHeadsupEnabled();
+  const userTurnCount = useMemo(() => countUserTurns(state.turns), [state.turns]);
+  // The heads-up's "Ask in chat" goes through the page's own send path, so the
+  // send latch, outbox parking, queue admission and optimistic bubble all apply.
+  const headsupSend = useMemo(
+    () => ({
+      sendFollowUp: async (t: string) => onFollowUp(t),
+      sendMessage: async (t: string) =>
+        onSend(t, { model: defaults.model, effort: defaults.effort, permission: defaults.permission }),
+    }),
+    [onFollowUp, onSend, defaults.model, defaults.effort, defaults.permission],
+  );
+  const headsup = useHeadsUp({
+    runId: state.runId || state.lastRunId || "",
+    running,
+    enabled: headsupOn && inChat && chatBackend === "claude",
+    userTurns: userTurnCount,
+    controller: headsupSend,
+  });
   // The task number this session is (`#session`, T:12696 showSession). Read here
   // rather than inside the topbar so the landing's kebab and the erase dialog
   // see the same one answer.
@@ -5167,8 +5193,16 @@ function ChatBody(props: ChatBodyProps) {
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
               recap={
-                away.recap ? (
-                  <RecapFold text={away.recap.text} />
+                headsup.note || away.recap ? (
+                  <>
+                    <HeadsUp
+                      note={headsup.note}
+                      onGotIt={() => void headsup.gotIt()}
+                      onAsk={() => void headsup.askInChat()}
+                      onDismiss={() => void headsup.dismiss()}
+                    />
+                    {away.recap ? <RecapFold text={away.recap.text} /> : null}
+                  </>
                 ) : null
               }
               trailing={

@@ -31,6 +31,7 @@ import {
   ReaderControl,
   ShareSheetControl,
   TaskRecapsControl,
+  ChatHeadsupControl,
 } from "./toggles";
 import {
   IndexingControl,
@@ -63,6 +64,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   engines: EnginesPointer,
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,
+  "chat-headsup": ChatHeadsupControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
   "share-sheet": ShareSheetControl,

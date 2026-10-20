@@ -8,6 +8,7 @@
 import {
   putAppSharingEnabled,
   putCanvasesEnabled,
+  putChatHeadsupEnabled,
   putGitAutoSyncEnabled,
   putGithubLinkEnabled,
   putLivePreviewsEnabled,
@@ -24,7 +25,11 @@ import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
-import { publishProjectQueueEnabled, publishTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
+import {
+  publishChatHeadsupEnabled,
+  publishProjectQueueEnabled,
+  publishTaskRecapTitlesEnabled,
+} from "@apps/claude/feature-flag";
 import { publishTaskNotifyTerminalSessions } from "../task-notify-terminal-flag";
 import { PrefToggleRow, type PrefControlProps } from "./SettingRow";
 
@@ -59,6 +64,21 @@ export function TaskRecapsControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.task_recap?.enabled === true}
       put={putTaskRecapTitlesEnabled}
       after={(next) => publishTaskRecapTitlesEnabled(next.task_recap?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// Heads-up notes: a side check may put one short note above the message box
+// while Claude works. Opt-in: every check spends tokens from the user's plan.
+// `=== true` because a server that predates the field has no notes.
+export function ChatHeadsupControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="chat-headsup"
+      checked={prefs.chat_headsup?.enabled === true}
+      put={putChatHeadsupEnabled}
+      after={(next) => publishChatHeadsupEnabled(next.chat_headsup?.enabled === true)}
       onChange={onChange}
     />
   );

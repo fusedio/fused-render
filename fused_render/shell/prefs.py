@@ -26,6 +26,9 @@ offered at all — opt-in, default off; see ``canvases_enabled``),
 Export action — opt-in, default off; see ``app_sharing_enabled``),
 **live_previews_enabled** (whether card thumbnails may render the live app
 in a scaled iframe — opt-in, default off; see ``live_previews_enabled``),
+**chat_headsup_enabled** (whether a running Claude chat gets side-check
+"heads-up" notes above the composer — opt-in, default off; see
+``chat_headsup_enabled``),
 **monitor_enabled** (whether the process Monitor — status-bar System chip
 and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **marketplace_enabled** (whether the Marketplace — sidebar row and the
@@ -251,6 +254,17 @@ def live_previews_enabled() -> bool:
     answering regardless.
     """
     return read_prefs().get("live_previews_enabled") is True
+
+
+def chat_headsup_enabled() -> bool:
+    """Whether a running Claude chat gets heads-up notes (default off — opt-in).
+
+    A side check forks the live session while it works and may put one short
+    card above the composer; each check costs tokens from the user's Claude
+    plan, so only a stored `true` turns it on — a preference file that predates
+    this setting reads as off. Guards `/api/claude-sessions/headsup`.
+    """
+    return read_prefs().get("chat_headsup_enabled") is True
 
 
 def monitor_enabled() -> bool:
@@ -775,6 +789,9 @@ def _prefs_response() -> dict:
         # (opt-in, default off). Off, every thumbnail is a still or a
         # placeholder mark; see `live_previews_enabled`.
         "live_previews": {"enabled": live_previews_enabled()},
+        # Whether a running Claude chat gets heads-up notes (opt-in, default
+        # off); see `chat_headsup_enabled`.
+        "chat_headsup": {"enabled": chat_headsup_enabled()},
         # Whether the process Monitor (status-bar System chip + /monitor page)
         # is offered (opt-in, default off). Not an API guard; see
         # `monitor_enabled`.
@@ -1039,6 +1056,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'live_previews_enabled' must be a boolean"}, status_code=400)
             prefs["live_previews_enabled"] = value
             changed = True
+        if "chat_headsup_enabled" in body:
+            value = body.get("chat_headsup_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'chat_headsup_enabled' must be a boolean"}, status_code=400)
+            prefs["chat_headsup_enabled"] = value
+            changed = True
         if "monitor_enabled" in body:
             value = body.get("monitor_enabled")
             if not isinstance(value, bool):
@@ -1294,7 +1317,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
-                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
+                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'chat_headsup_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
                           "'native_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "

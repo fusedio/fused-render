@@ -2669,3 +2669,75 @@
   background: var(--c-surface);
   color: var(--c-fg-strong);
 }
+
+/* ── heads-up note (side-check suggestion, drawn in the recap slot) ─────── */
+/* An aside in the recap's register: reading size, dim text, a faint left rule
+   as the only chrome. No plate, no accent (a warning gets no colour either),
+   and the actions are small outlined buttons, also with no accent, so they
+   read as clickable without competing with the reply. */
+.chat-root .headsup {
+  margin: 6px 0;
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--c-border);
+  font-size: var(--c-fs-read);
+  line-height: var(--c-lh-read);
+  color: var(--c-dim);
+}
+.chat-root .headsup .headsup-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.chat-root .headsup .headsup-tag {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--c-faint);
+}
+.chat-root .headsup .headsup-title {
+  font-weight: 500;
+  color: var(--c-fg);
+}
+.chat-root .headsup .headsup-bullets {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  color: var(--c-dim);
+}
+.chat-root .headsup .headsup-bullets li {
+  margin: 2px 0;
+}
+.chat-root .headsup .headsup-bullet p {
+  margin: 0;
+}
+.chat-root .headsup .headsup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chat-root .headsup .headsup-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 2px 10px;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-dim);
+  cursor: pointer;
+}
+.chat-root .headsup .headsup-btn:hover {
+  border-color: var(--c-border-strong);
+  color: var(--c-fg);
+  background: var(--c-card-bg-2);
+}
+.chat-root .headsup .headsup-btn.primary {
+  color: var(--c-fg);
+  border-color: var(--c-border-strong);
+}
+.chat-root .headsup .headsup-btn:focus-visible {
+  outline: 1px solid var(--c-border-strong);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
