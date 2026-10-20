@@ -3035,7 +3035,7 @@ _HOST_SPAWN = {"close_fds": False}
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
                  extra_read_dirs: list | None, file: str,
-                 new_session_id: str = "") -> list:
+                 new_session_id: str = "", resume_at: str = "") -> list:
     """The CLAUDE CLI's own argv — everything from the binary down to the
     last `--effort` flag. Pulled out of `_start` so the session host, which
     spawns this SAME process (just kept open on a stdin pipe instead of a
@@ -3135,7 +3135,17 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
     cmd += ["--append-system-prompt", _appended_prompt(file, pane)]
     if cli_mode:
         cmd += ["--permission-mode", cli_mode]
-    if session_id:
+    if session_id and resume_at and new_session_id:
+        # A FORK ("fork from here"): resume the old session, truncated to the
+        # record `resume_at` (the parent of the user prompt being re-asked),
+        # into a NEW session whose id we minted. `--session-id` beside
+        # `--resume` is valid ONLY together with `--fork-session`. The
+        # original transcript is left untouched. `--resume-drops-turn` is
+        # deliberately absent: it refuses whenever the dropped range spans
+        # more than one turn, which is the normal case here.
+        cmd += ["--resume", session_id, "--resume-session-at", resume_at,
+                "--fork-session", "--session-id", new_session_id]
+    elif session_id:
         cmd += ["--resume", session_id]
     elif new_session_id:
         # A FRESH SESSION, WITH AN ID WE ALREADY KNOW. Without this the CLI
@@ -3146,11 +3156,13 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
         # re-attach) waited with it. `_start` mints it instead and hands it to
         # both sides at once.
         #
-        # Mutually exclusive with `--resume` by construction, not by promise:
-        # `_start` only mints one when there is no session to resume, and the
-        # `elif` means an argv can never carry both even if a caller passes
-        # both. The CLI rejects that pair, and a run that will not spawn is a
-        # far worse failure than the lag this closes.
+        # Mutually exclusive with a plain `--resume` by construction, not by
+        # promise: `_start` only mints one when there is no session to resume
+        # (or for a fork, handled by the branch above), and the `elif` means
+        # an argv can never carry both even if a caller passes both. The CLI
+        # rejects `--session-id` + `--resume` unless `--fork-session` is also
+        # given, and a run that will not spawn is a far worse failure than the
+        # lag this closes.
         cmd += ["--session-id", new_session_id]
     if model:
         cmd += ["--model", model]
@@ -3667,13 +3679,36 @@ _COPILOT_HOST = os.path.join(HERE, "copilot_host.py")
 _HOST_FILES = {"claude": _SESSION_HOST, "copilot": _COPILOT_HOST}
 
 
+def _fork_point(transcript_path: str, prompt_uuid: str):
+    """Where a fork before the user prompt `prompt_uuid` resumes from: that
+    prompt's own `parentUuid` (often an `attachment` record; verified against
+    the CLI). "" when the prompt has no parent, so nothing precedes it and the
+    fork is a fresh chat; None when no such user record is in the transcript
+    (or the file is unreadable)."""
+    try:
+        with open(transcript_path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if prompt_uuid not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if (isinstance(rec, dict) and rec.get("uuid") == prompt_uuid
+                        and rec.get("type") == "user"):
+                    return str(rec.get("parentUuid") or "")
+    except OSError:
+        return None
+    return None
+
+
 def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False,
            has_pane: bool | None = None,
            extra_read_dirs: list | None = None,
            draft_key: str = "", terminal_hint: str = "",
-           backend: str = "", bot: str = "") -> dict:
+           backend: str = "", bot: str = "", fork_at: str = "") -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -3702,6 +3737,27 @@ def _start(file: str, message: str, session_id: str, model: str,
     # it says. Claude only: a bot pinned to Copilot gets no exemption.
     if not (bot and backend == "claude") and not _backend_enabled(backend):
         return _backend_disabled_error(backend)
+    # FORK FROM AN EARLIER USER PROMPT (`fork_at` = that prompt's uuid). Claude
+    # only, and it needs the session to fork. `fork_parent` is the record the
+    # new session keeps up to and including; "" means nothing precedes the
+    # prompt, so the fork is just a fresh chat.
+    fork_parent = ""
+    forked_from = ""
+    if fork_at:
+        if not session_id or backend != "claude":
+            return {"error": "fork is only available for Claude chats",
+                    "reason": "unsupported", "backend": backend}
+        if _bad_id(session_id) or _bad_id(fork_at):
+            return {"error": "message not found in this conversation",
+                    "reason": "fork_target_missing"}
+        point = _fork_point(
+            _session_transcript_path(_workdir(file), session_id), fork_at)
+        if point is None:
+            return {"error": "message not found in this conversation",
+                    "reason": "fork_target_missing"}
+        forked_from, fork_parent = session_id, point
+        if not fork_parent:
+            session_id = ""
     if backend == "copilot" and permission_mode == "plan":
         # No plan card to approve on ACP (D12/§7 plan_mode): refused rather
         # than silently downgraded to prompt, which would run edits the user
@@ -3766,8 +3822,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # the flag: Copilot mints its id in `session/new`, the host announces it
     # on the init row, and `_poll` records it (the `session` file, the
     # `recorded` marker, and — for this case — the settings record below).
-    new_session_id = "" if session_id or backend == "copilot" \
-        else str(uuid.uuid4())
+    new_session_id = "" if (session_id and not fork_parent) \
+        or backend == "copilot" else str(uuid.uuid4())
 
     # COPILOT'S ARGV, READY-MADE, before anything else is written. Claude's
     # host builds its own from the request (`_claude_argv`, so the two stay
@@ -3801,7 +3857,17 @@ def _start(file: str, message: str, session_id: str, model: str,
     # has — `_poll`, `_live_run`, `_send`'s fallback, the queue — and nothing
     # else about a run dir says which CLI is behind it.
     meta = {"file": file, "message": _strip_app_state(message),
-            "resumed_from": session_id, "mode": mode, "backend": backend}
+            "resumed_from": "" if fork_parent else session_id,
+            "mode": mode, "backend": backend}
+    # A FORK IS NOT A CONTINUATION of the old session, so `resumed_from` stays
+    # "" (like a fresh chat): `_live_run`, `_entry_session` and the Tasks
+    # listing match a run to a session by `resumed_from` or its own id, and the
+    # page re-attaching to the OLD session must not find this run. The link
+    # back lives under `forked_from` instead.
+    if forked_from:
+        meta["forked_from"] = forked_from
+        if fork_parent:
+            meta["fork_at"] = fork_at
     if new_session_id:
         # `session_id` on meta is the ANSWER — the conversation this run's turn
         # happens in — next to `resumed_from`, the question. Written before the
@@ -3868,6 +3934,10 @@ def _start(file: str, message: str, session_id: str, model: str,
            # WHICH host this is (D2); `argv` beside it for Copilot only — see
            # the build above.
            "backend": backend}
+    if fork_parent:
+        # Read by `_claude_argv` only; the heads-up fork resumes the NEW
+        # session by its own id and never re-truncates.
+        req["resume_at"] = fork_parent
     if argv is not None:
         req["argv"] = argv
     # The heads-up fork (headsup.py) reads this to rebuild an argv identical to
@@ -10911,7 +10981,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          answers: str = "", note: str = "", custom: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
-         terminal_hint: str = "", task_id: str = "", backend: str = "") -> dict:
+         terminal_hint: str = "", task_id: str = "", backend: str = "",
+         fork_at: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -10932,7 +11003,7 @@ def main(action: str = "start", file: str = "", message: str = "",
                       has_pane=None if has_pane == "" else has_pane != "0",
                       extra_read_dirs=_attach_dirs(read_dirs),
                       draft_key=draft_key, terminal_hint=terminal_hint,
-                      backend=backend)
+                      backend=backend, fork_at=fork_at)
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
