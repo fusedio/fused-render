@@ -3593,6 +3593,13 @@ export interface Task {
   // the tasks page should open app by default"). Optional: pulse rows and older
   // fixtures do not carry it, and a missing value reads as "not an app".
   entry?: string;
+  /** The canvas this task is on — a clone under `~/Fused/canvas/<env>/
+   *  <name>` (`file` "" = the canvas chat) or one of its top-level node
+   *  files — stamped by the server (routers/tasks.py `_task_canvas`), null
+   *  for every other row. The door lands on the canvas page, node selected,
+   *  chat on the task's session, instead of the clone in the explorer.
+   *  Optional: pulse rows and older fixtures do not carry it. */
+  canvas?: { env: "unstable" | "prod"; name: string; file: string } | null;
   session_id: string; // "" until the first run
   // How the transcript's own session ENTERED — "cli" for an interactive
   // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic
@@ -3981,6 +3988,7 @@ export type TaskPulseTask = Pick<
   | "next_run_repeats"
   | "entrypoint"
   | "backend"
+  | "canvas"
 >;
 
 /** The model / thinking a NEW task opens on: the global Claude preference

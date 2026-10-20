@@ -173,6 +173,7 @@ import {
   SHOW_PAGE_DOOR,
   taskHref,
   taskRunIntent,
+  pageDoorLabel,
 } from "./tasks-lib";
 import type { TaskRunIntent } from "./tasks-lib";
 import { shortTaskId } from "@platform/lib/task-id";
@@ -895,7 +896,7 @@ function ChipPopover({
         {SHOW_PAGE_DOOR && threadHref && (
           <button type="button" className="btn btn-secondary"
                   onClick={() => navigateUrl(threadHref)}>
-            {ICON_INBOX} Open in Explorer
+            {ICON_INBOX} {pageDoorLabel(task)}
           </button>
         )}
         {/* LAST in the row, and secondary like its neighbours, because it must

@@ -2856,6 +2856,81 @@ def _workdir(target: str) -> str:
     return target if os.path.isdir(target) else os.path.dirname(target)
 
 
+# `_task_canvas`'s roots: canvases base -> {env: {normpath, realpath}}. `_row`
+# runs per task per poll, and a realpath walks every segment; the roots do
+# not move while the server runs (only the test override changes the base).
+_CANVAS_ROOTS_MEMO: dict[str, dict[str, set[str]]] = {}
+
+
+def _canvas_roots(canvases) -> dict[str, set[str]]:
+    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
+
+    base = canvases.canvases_base()
+    roots = _CANVAS_ROOTS_MEMO.get(base)
+    if roots is None:
+        roots = {}
+        for env in WORKBENCH_ENV_CHOICES:
+            root = canvases.canvases_root(env)
+            roots[env] = {os.path.normpath(root), os.path.realpath(root)}
+        _CANVAS_ROOTS_MEMO[base] = roots
+    return roots
+
+
+def _is_canvas_node_file(file: str) -> bool:
+    """A node's source at the clone's top level — the same suffixes the
+    snapshot reads as node sources (canvas_snapshot `_SOURCE_SUFFIXES`: UDF
+    `.py`, widget `.json`, note `.md`, html `.html`), never a dotfile."""
+    from fused_render.canvas_snapshot import _SOURCE_SUFFIXES
+
+    return not file.startswith(".") and file.endswith(_SOURCE_SUFFIXES)
+
+
+def _task_canvas(target: str) -> dict | None:
+    """The canvas a task is on — `{env, name, file}` — or None.
+
+    A task whose target is a canvas CLONE (`~/Fused/canvas/<env>/<name>`,
+    canvases.canvases_root) or a NODE in it (a top-level file of the clone,
+    `<udf>.py` / `<widget>.json`) opens on the canvas page, not in the
+    explorer: the shell's door (`tasks-lib.taskHref`) lands on `/canvases/
+    <env>/<name>` with the node selected and the chat on the task's session
+    (owner, 2026-10-20: "it should go to the proper canvas page, with the node
+    selected and the session in focus on the right side"). `file` is "" for
+    the clone itself (the canvas chat) and the node's file name otherwise.
+
+    Anything deeper than one level — a `.sync/` internal, a nested file — or
+    a top-level entry that is not a node source (`.sync` itself,
+    `canvas.toml`; `_is_canvas_node_file`) is not a node the canvas page can
+    show, so it answers None and keeps the explorer door. Compared through `realpath` as well as
+    the plain path because the CLI wrapper reaches a clone through `pwd -P`,
+    and a task made from inside one may name it either way. No existence
+    check: a task on a deleted clone still names the door that was its own.
+    """
+    target = str(target or "").rstrip("/\\")
+    if not target:
+        return None
+    from fused_render import canvases
+
+    cands = {os.path.normpath(target), os.path.realpath(target)}
+    for env, bases in _canvas_roots(canvases).items():
+        for base in bases:
+            for cand in cands:
+                if cand == base or not cand.startswith(base + os.sep):
+                    continue
+                rest = cand[len(base) + 1:].split(os.sep)
+                name = rest[0]
+                if not canvases._NAME_RE.match(name) or len(rest) > 2:
+                    continue
+                file = rest[1] if len(rest) == 2 else ""
+                # A NODE is a source file the snapshot knows (`.py`, `.json`,
+                # `.md`, `.html`), nothing else at the top level: `.sync/`
+                # itself or `canvas.toml` is not a node the workbench can
+                # select, and a task on one keeps the explorer door.
+                if file and not _is_canvas_node_file(file):
+                    continue
+                return {"env": env, "name": name, "file": file}
+    return None
+
+
 # `_task_entry`'s memo: folder -> (dir mtime, answer). `_row` runs for every
 # task on every listing poll, and a listdir per app folder per poll adds up on a
 # long list; a folder whose mtime has not moved has not gained or lost a page.
@@ -3880,6 +3955,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The page a folder target opens as — "" unless it is an app
         # (`_task_entry`). The shell's door prefers it over the folder.
         "entry": canonical_fs_path(_task_entry(task["target"])),
+        # The canvas this task is on (`{env, name, file}`), None for every
+        # other row. The shell's door lands on the canvas page, node selected,
+        # chat on this session (`_task_canvas`).
+        "canvas": _task_canvas(task["target"] or task["project"]),
         "session_id": task["session_id"],
         "title": title,
         "title_source": source,
@@ -6111,6 +6190,11 @@ _PULSE_FIELDS = (
     # Which agent ran it, so a "Copilot finished: <title>" notice can say so
     # (D18) without a second fetch.
     "backend",
+    # The canvas the task is on (`_task_canvas`), None otherwise: the
+    # Notifications rows and the finished-task notice open through the same
+    # door as the Tasks page (`taskHref`), and that door is the canvas page
+    # for a canvas task. A small dict per row, not a path walk per click.
+    "canvas",
 )
 
 

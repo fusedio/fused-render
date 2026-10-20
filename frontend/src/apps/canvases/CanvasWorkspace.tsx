@@ -93,7 +93,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
-import { EMBED_PREFIX, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
@@ -113,6 +113,7 @@ import {
   startSync,
   syncEventsUrl,
   type WorkbenchEnv,
+  canvasNameFromPath,
 } from "./api";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
@@ -339,6 +340,22 @@ function nodeFromUrl(): NodeSel | null {
   return { udfName: name, kind: file.endsWith(".py") ? "udf" : "widget", file };
 }
 
+/** The chat this page's URL names for its node — `?node=…&session_id=…`, a
+ *  reload or the Tasks page's door on a canvas task (`canvasPagePath`) —
+ *  remembered under the node so the pane boots on it. The node frame's src
+ *  reads `nodeSessions` alone (`nodeBootSrc`), and that map is empty on a
+ *  fresh mount: without this the URL would select the node and land its
+ *  pane on the chat's home, not the conversation the link named. Must run
+ *  BEFORE the first render that computes the src, hence the state
+ *  initializer below rather than an effect. Answers whether a session was
+ *  named, for the nav listener that reboots the pane on one. */
+function seedNodeSessionFromUrl(env: WorkbenchEnv, canvas: string, node: NodeSel): string | null {
+  const sid = new URLSearchParams(window.location.search).get("session_id");
+  if (!sid) return null;
+  nodeSessions.set(nodeSessionKey(env, canvas, node.file), sid);
+  return sid;
+}
+
 export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name: string }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
@@ -350,7 +367,11 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   const [chatTpl, setChatTpl] = useState<string | null>(null);
   // The selected node (null = the canvas chat). Seeded from `?node=` so a
   // reload keeps the node; written back below.
-  const [node, setNode] = useState<NodeSel | null>(() => nodeFromUrl());
+  const [node, setNode] = useState<NodeSel | null>(() => {
+    const seeded = nodeFromUrl();
+    if (seeded) seedNodeSessionFromUrl(env, name, seeded);
+    return seeded;
+  });
   const [nodeTab, setNodeTab] = useState<NodeTab>(() => nodeTabFromUrl());
   // Bumped when the node pane must REBOOT on a session for the node already
   // shown (a Recent row's hop onto the selected node, below): the frame's src
@@ -399,6 +420,17 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   // already have. Kept after the push recovers — the session may still be
   // finishing its final message.
   const [fixRunId, setFixRunId] = useState<string | null>(null);
+  // Bumped when a hop lands on the CANVAS chat with a `session_id` other
+  // than the one it mounted on — another root task of the same canvas from
+  // the Tasks page, or Back to the bare canvas from one (none) — the chat
+  // reads `session_id` at boot only, so it is remounted. `canvasChatSidRef`
+  // is what the mounted chat was keyed on; the chat moving on by itself
+  // (replaceState, no event here) can leave it behind, which costs at most
+  // one needless remount onto the session the URL names.
+  const [canvasChatSeq, setCanvasChatSeq] = useState(0);
+  const canvasChatSidRef = useRef<string | null>(
+    new URLSearchParams(window.location.search).get("session_id"),
+  );
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
@@ -892,6 +924,76 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
   const nodeRef = useRef<NodeSel | null>(node);
   nodeRef.current = node;
 
+  // A HOP ONTO THIS CANVAS WHILE IT IS MOUNTED — the Tasks page's door on
+  // another node of the canvas the reader is already on, a notification —
+  // changes the URL and nothing else: App.tsx keys this component on (env,
+  // name) alone, so `nodeFromUrl` never re-runs and the new `?node=` +
+  // `session_id` would go unread. The router announces every push on
+  // NAV_EVENT (the node effect's own replaceState writes never do), so re-read
+  // them there: select the node in the workbench, remember the session under
+  // it and reboot the pane; the same node with a new session reboots alone.
+  // A hop to the bare canvas page deselects, and `navHopRef` keeps the node
+  // effect from clearing the `session_id` that hop carries for the canvas
+  // chat, which reads it off the URL as it mounts.
+  const navHopRef = useRef(false);
+  useEffect(() => {
+    const onNav = () => {
+      // Every push announces here, including the ones that LEAVE: the hop
+      // to another canvas, or to /tasks, reaches this still-mounted instance
+      // first. Only this canvas's own URL is ours to read — otherwise B's
+      // session would be filed under A's node of the same name, and the old
+      // frame told to deselect on the way out.
+      const here = canvasNameFromPath(window.location.pathname);
+      if (!here || here.env !== env || here.name !== name) return;
+      const next = nodeFromUrl();
+      const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
+      const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
+      const cur = nodeRef.current;
+      if (!next) {
+        if (!cur) {
+          // Already on the canvas chat: a URL naming a session it did not
+          // mount on — another one, or none after Back — remounts it; the
+          // mount reads `session_id` off the URL as it is now.
+          const want = new URLSearchParams(window.location.search).get("session_id");
+          if (want !== canvasChatSidRef.current) {
+            canvasChatSidRef.current = want;
+            setCanvasChatSeq((n) => n + 1);
+          }
+          return;
+        }
+        canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
+        navHopRef.current = true;
+        sendSelect(null);
+        setNode(null);
+        return;
+      }
+      if (cur && cur.file === next.file) {
+        // The same node: the link's tab wins (a Code tab left open would
+        // otherwise hide the chat the task named), and a session the pane
+        // is not on reboots it.
+        setNodeTab(nodeTabFromUrl());
+        if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
+        return;
+      }
+      // Marked as a hop so the node effect leaves the `session_id` the link
+      // carries on the URL: the pane boots off the seeded map either way,
+      // but the address should still restore the task's session on reload.
+      navHopRef.current = true;
+      sendSelect(next.udfName);
+      setNodeTab(nodeTabFromUrl());
+      setNodeBootSeq((n) => n + 1);
+      setNode(next);
+    };
+    // Back / Forward move the URL without a push: `popstate`, which the
+    // router does not re-announce, lands on this same reader.
+    window.addEventListener(NAV_EVENT, onNav);
+    window.addEventListener("popstate", onNav);
+    return () => {
+      window.removeEventListener(NAV_EVENT, onNav);
+      window.removeEventListener("popstate", onNav);
+    };
+  }, [env, name, sendSelect]);
+
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (event.origin !== baseOriginRef.current) return;
@@ -1030,10 +1132,11 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
       url.searchParams.delete("node_file");
       url.searchParams.delete("node_tab");
     }
-    if (nodeEffectRanRef.current && prevNodeKeyRef.current !== key) {
+    if (nodeEffectRanRef.current && prevNodeKeyRef.current !== key && !navHopRef.current) {
       url.searchParams.delete("session_id");
       url.searchParams.delete("run");
     }
+    navHopRef.current = false;
     nodeEffectRanRef.current = true;
     prevNodeKeyRef.current = key;
     if (url.href !== window.location.href) {
@@ -1532,7 +1635,7 @@ export default function CanvasWorkspace({ env, name }: { env: WorkbenchEnv; name
             // hands the element over. The mark stays on that iframe for PR3 to
             // read (below).
             <ChatMount
-              key={fixRunId ?? "chat"}
+              key={(fixRunId ?? "chat") + ":" + canvasChatSeq}
               file={dir}
               chatOnly
               paramsSource="url"
