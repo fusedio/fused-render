@@ -219,7 +219,7 @@ def test_auto_approval_still_cards_terminal_run(server, fake_cli, monkeypatch, t
 
 def test_forever_rule_runs_without_a_card_and_deny_runs_nothing(server, fake_cli, monkeypatch, tmp_path, pref_on):
     bot = TBot(tmp_path)
-    bot.meta["allow_rules"] = [{"kind": "terminal", "key": "echo", "label": "x"}]
+    bot.meta["allow_rules"] = [{"kind": "terminal", "key": "echo covered", "label": "x"}]
     try:
         # A covered command runs with no card, even under "Never ask"-less defaults.
         finish(start(bot, _approval_script("echo covered"), monkeypatch))
@@ -242,10 +242,10 @@ def test_forever_rule_runs_without_a_card_and_deny_runs_nothing(server, fake_cli
 
 def test_outside_task_cards_even_a_covered_command(server, fake_cli, monkeypatch, tmp_path, pref_on):
     bot = TBot(tmp_path)
-    bot.meta["allow_rules"] = [{"kind": "terminal", "key": "echo", "label": "x"}]
+    bot.meta["allow_rules"] = [{"kind": "terminal", "key": "echo covered", "label": "x"}]
     bot.task_via = chan.via(chan.PHONE_KIND, "dev1")
     try:
-        t = start(bot, _approval_script("echo outside"), monkeypatch)
+        t = start(bot, _approval_script("echo covered outside"), monkeypatch)
         assert bot.wait_event("approval")
         bot.say("no")
         finish(t)
@@ -259,3 +259,32 @@ def test_bot_sessions_do_not_count_against_the_user_cap(tbot):
     sess = tbot.terminal_session()
     assert sess.owner == "bot:tb1"
     assert sum(1 for s in pty_session.REGISTRY.list() if (s.owner or "").startswith("bot:")) >= 1
+
+
+# ---- single-word keys and a vanished session ------------------------------------------
+
+@pytest.mark.parametrize("cmd", ["gh --version", "gh 12", "rm -rf x", "ls -la"])
+def test_single_word_key_is_never_offered(tbot, cmd):
+    assert tools.forever_rule(tbot, "terminal_run", run(cmd), {}) is None
+
+
+def test_stored_single_word_rule_covers_nothing(tbot):
+    tbot.meta["allow_rules"] = [{"kind": "terminal", "key": "gh", "label": "x"}]
+    assert not tools.terminal_rule_covers("gh", "gh pr merge")
+    assert not tools.forever_match(tbot, tools.forever_rule(tbot, "terminal_run", run("gh pr merge 1"), {}))
+
+
+def test_github_preset_keys_are_multi_word():
+    from fused_render.bots import presets
+    keys = [k for p in presets.presets() for k in p.get("terminal_allow") or []]
+    assert keys and all(len(k.split()) >= 2 for k in keys)
+
+
+@pytest.mark.parametrize("act,args", [("terminal_read", {}), ("terminal_interrupt", {}), ("terminal_run", {"command": "echo hi"})])
+def test_vanished_session_returns_error_string(tbot, monkeypatch, act, args):
+    tbot._terminal_id = "gone"
+    monkeypatch.setattr(tbot, "terminal_id", lambda: "gone")
+    monkeypatch.setattr(tbot, "terminal_session", lambda: None)
+    monkeypatch.setattr(pty_session.REGISTRY, "get", lambda sid: None)
+    out = tools._terminal_exec(tbot, act, args)
+    assert isinstance(out, str) and out.startswith("error:")

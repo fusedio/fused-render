@@ -492,6 +492,8 @@ def forever_rule(bot, act: str, d: dict, obs: dict):
         if chan.is_outside(getattr(bot, "task_via", None)):
             return None
         key = terminal_key(d.get("command"))
+        if len(key.split()) < 2:
+            return None  # a lone executable would cover every command it runs
         return {"kind": "terminal", "key": key, "label": f"runs `{key} …` in its terminal"} if key else None
     return None
 
@@ -526,7 +528,7 @@ def terminal_rule_covers(rule_key: str, key: str) -> bool:
     """A stored terminal rule covers a command whose own key starts with the rule's words (`gh search` covers
     `gh search prs`)."""
     r, k = str(rule_key).split(), str(key).split()
-    return bool(r) and k[:len(r)] == r
+    return len(r) >= 2 and k[:len(r)] == r
 
 
 def builtin_forever_rule(bot, name: str, inp: dict):
@@ -1421,6 +1423,9 @@ def _market_install(bot, d: dict) -> str:
 
 
 # --------------------------------------------------------------- execute ---
+_NO_TERMINAL = "error: no terminal yet; use terminal_run first"
+
+
 def _terminal_busy(sess) -> bool:
     """True while a program other than the shell holds the terminal. Gives a fresh shell a moment to finish
     starting (its rc files can briefly hold the foreground)."""
@@ -1436,8 +1441,10 @@ def _terminal_exec(bot, act: str, d: dict) -> str:
         if act == "terminal_read":
             sid = bot.terminal_id()
             if sid is None:
-                return "error: no terminal yet; use terminal_run first"
+                return _NO_TERMINAL
             sess = pty_session.REGISTRY.get(sid)
+            if sess is None:
+                return _NO_TERMINAL
             try:
                 n = int(d.get("lines") or TERMINAL_READ_DEFAULT)
             except (TypeError, ValueError):
@@ -1448,8 +1455,10 @@ def _terminal_exec(bot, act: str, d: dict) -> str:
         if act == "terminal_interrupt":
             sid = bot.terminal_id()
             if sid is None:
-                return "error: no terminal yet; use terminal_run first"
+                return _NO_TERMINAL
             sess = pty_session.REGISTRY.get(sid)
+            if sess is None:
+                return _NO_TERMINAL
             sess.write(b"\x03")
             time.sleep(0.4)
             return "sent Ctrl-C. Screen now:\n" + (sess.text(20) or "(empty)")
@@ -1463,6 +1472,8 @@ def _terminal_exec(bot, act: str, d: dict) -> str:
             wait_s = float(TERMINAL_WAIT_DEFAULT_S)
         wait_s = max(1.0, min(wait_s, float(TERMINAL_WAIT_MAX_S)))
         sess = bot.terminal_session()
+        if sess is None:
+            return _NO_TERMINAL
         if _terminal_busy(sess):
             return "error: terminal is busy; read it or interrupt"
         before = sess.shell_state.done_count
