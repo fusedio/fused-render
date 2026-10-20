@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import dataclasses
 import os
 import re
 import signal
@@ -67,6 +68,10 @@ _KILL_GRACE_S = 2.0
 #: wants the shared-ticker treatment fused_render/server/watch.py's
 #: _WATCH_REGISTRY already gives stats (one ticker, many subscribers).
 MAX_SESSIONS = 8
+#: Sessions owned by a bot (owner "bot:<id>") count against this cap instead,
+#: so bots cannot starve the user's drawer slots.
+MAX_BOT_SESSIONS = 4
+BOT_OWNER_PREFIX = "bot:"
 
 
 #: Size a session is assumed to have when the client never sent one.
@@ -175,9 +180,12 @@ class PtySession:
     scrollback ring, and the subscribers currently streaming its output."""
 
     def __init__(self, sid: str, profile: TerminalProfile,
-                 rows: Optional[int] = None, cols: Optional[int] = None):
+                 rows: Optional[int] = None, cols: Optional[int] = None,
+                 owner: Optional[str] = None):
         self.id = sid
         self.profile = profile
+        #: None for a user's terminal; "bot:<id>" for one a bot drives.
+        self.owner = owner
         self.alive = True
         self.exit_code: Optional[int] = None
         # Fed from the reader thread; read by the /text route and the list.
@@ -205,6 +213,9 @@ class PtySession:
         #: 256 KiB on EVERY read once full; a deque trims from the left in O(1).
         self._scrollback: collections.deque = collections.deque()
         self._scrollback_len = 0
+        #: Bytes ever appended; `_total - _scrollback_len` is the stream
+        #: offset of the ring's first byte (matches ShellEventParser offsets).
+        self._total = 0
 
         master_fd, slave_fd = os.openpty()
         self.master_fd = master_fd
@@ -330,6 +341,7 @@ class PtySession:
         (at most one read's worth of copying). Caller holds `_lock`."""
         self._scrollback.append(data)
         self._scrollback_len += len(data)
+        self._total += len(data)
         excess = self._scrollback_len - SCROLLBACK_CAP
         while excess > 0:
             head = self._scrollback[0]
@@ -445,6 +457,25 @@ class PtySession:
             rows, cols = self.rows, self.cols
         return render_screen_text(data, rows, cols, lines)
 
+    def last_output(self, max_lines: int = DEFAULT_TEXT_LINES) -> str:
+        """Rendered output of the latest command only: the bytes between its
+        OSC 133;C and 133;D (or the end of the ring while it still runs).
+        Empty before any command ran; prefixed "[output truncated]" when the
+        ring has already dropped the start of the output."""
+        with self._lock:
+            st = self.shell_state
+            start, end = st.output_start, st.output_end
+            if start is None:
+                return ""
+            ring_start = self._total - self._scrollback_len
+            data = b"".join(self._scrollback)
+            rows, cols = self.rows, self.cols
+        truncated = start < ring_start
+        lo = max(start, ring_start) - ring_start
+        hi = len(data) if end is None else max(lo, end - ring_start)
+        text = render_screen_text(data[lo:hi], rows, cols, max_lines)
+        return "[output truncated]\n" + text if truncated else text
+
     def snapshot(self) -> dict:
         """The metadata shared by the list and /text responses (camelCase,
         JSON-ready)."""
@@ -457,6 +488,7 @@ class PtySession:
             "lastCommand": st.last_command,
             "lastExit": st.last_exit,
             "lastActivity": self.last_activity,
+            "owner": self.owner,
         }
 
     def resize(self, rows: int, cols: int) -> None:
@@ -596,19 +628,27 @@ class PtySessionRegistry:
 
     def create(self, cwd: Optional[str] = None,
                rows: Optional[int] = None,
-               cols: Optional[int] = None) -> PtySession:
+               cols: Optional[int] = None,
+               owner: Optional[str] = None,
+               env: Optional[dict] = None,
+               shells: Optional[tuple] = None) -> PtySession:
         with self._lock:
             self._reap_dead_locked()
-            live = sum(1 for s in self._sessions.values() if s.alive)
-            if live >= MAX_SESSIONS:
+            is_bot = bool(owner) and owner.startswith(BOT_OWNER_PREFIX)
+            live = sum(1 for s in self._sessions.values()
+                       if s.alive and bool(s.owner and s.owner.startswith(BOT_OWNER_PREFIX)) == is_bot)
+            cap = MAX_BOT_SESSIONS if is_bot else MAX_SESSIONS
+            if live >= cap:
                 raise SessionLimitError(
-                    f"terminal session cap ({MAX_SESSIONS}) reached")
-            profile = resolve_profile(cwd=cwd)
+                    f"terminal session cap ({cap}) reached")
+            profile = resolve_profile(cwd=cwd, **({} if shells is None else {"shells": shells}))
             if profile is None:
                 raise RuntimeError("no usable shell found ($SHELL, /bin/bash, /bin/sh)")
+            if env:
+                profile = dataclasses.replace(profile, env={**profile.env, **env})
             profile = integrate(profile)
             sid = uuid.uuid4().hex
-            session = PtySession(sid, profile, rows=rows, cols=cols)
+            session = PtySession(sid, profile, rows=rows, cols=cols, owner=owner)
             self._sessions[sid] = session
             return session
 

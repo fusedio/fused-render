@@ -34,6 +34,9 @@ and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **marketplace_enabled** (whether the Marketplace — sidebar row and the
 /marketplace pages — is offered; opt-in, default off; see
 ``marketplace_enabled``),
+**bot_terminals_enabled** (whether bots you opt in may run commands in their
+own terminal; opt-in, default off, and turning it off closes every bot
+terminal; see ``bot_terminals_enabled``),
 **github_link_enabled** (whether the Share sheet offers a GitHub install link
 for an app whose folder is its own pushed GitHub repo — opt-in, default off;
 see ``github_link_enabled``),
@@ -301,6 +304,17 @@ def marketplace_enabled() -> bool:
     every install has to opt in.
     """
     return read_prefs().get("marketplace_enabled") is True
+
+
+def bot_terminals_enabled() -> bool:
+    """Whether bots may drive their own terminal (default off — opt-in).
+
+    The global half of two switches: a bot also needs its own `terminal`
+    setting (fused_render/bots/tools.py `terminal_enabled`). It doubles as a
+    kill switch: the PUT that turns it off closes every bot-owned pty. Any
+    non-`true` stored value (missing/legacy) reads as off.
+    """
+    return read_prefs().get("bot_terminals_enabled") is True
 
 
 def github_link_enabled() -> bool:
@@ -799,6 +813,8 @@ def _prefs_response() -> dict:
         # Whether the Marketplace (sidebar row + /marketplace pages) is offered
         # (opt-in, default off). Not an API guard; see `marketplace_enabled`.
         "marketplace": {"enabled": marketplace_enabled()},
+        # Whether bots may drive their own terminal (opt-in, default off).
+        "bot_terminals": {"enabled": bot_terminals_enabled()},
         # Whether the Share sheet offers the GitHub install-link card (opt-in,
         # default off). Not an API guard; see `github_link_enabled`.
         "github_link": {"enabled": github_link_enabled()},
@@ -1024,6 +1040,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     with _PREFS_LOCK:
         prefs = read_prefs()
         changed = False
+        bot_terminals_off = False
         if "engine" in body:
             engine = body.get("engine")
             if engine not in VALID_ENGINES:
@@ -1073,6 +1090,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             if not isinstance(value, bool):
                 return JSONResponse({"error": "'marketplace_enabled' must be a boolean"}, status_code=400)
             prefs["marketplace_enabled"] = value
+            changed = True
+        if "bot_terminals_enabled" in body:
+            value = body.get("bot_terminals_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'bot_terminals_enabled' must be a boolean"}, status_code=400)
+            prefs["bot_terminals_enabled"] = value
+            bot_terminals_off = not value
             changed = True
         if "github_link_enabled" in body:
             value = body.get("github_link_enabled")
@@ -1317,7 +1341,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
-                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'chat_headsup_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
+                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'chat_headsup_enabled', 'monitor_enabled', 'marketplace_enabled', 'bot_terminals_enabled', 'github_link_enabled', "
                           "'native_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
@@ -1334,6 +1358,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 status_code=400,
             )
         storage.write_json(_path(), prefs)
+    if bot_terminals_off:
+        # The kill switch: after the write, so a bot that races a new
+        # session sees the pref already off.
+        from fused_render.bots import bot as bots_bot
+
+        bots_bot.close_all_terminals()
     if launcher_changed:
         # AFTER the write, like `lan_enabled`: the app rebinds from the
         # stored preference on its main thread a tick later, so the
