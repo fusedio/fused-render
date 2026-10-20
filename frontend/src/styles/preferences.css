@@ -1567,6 +1567,82 @@
   border-bottom: 0;
 }
 
+/* The row's list control is the app's own dropdown (shell/Dropdown): a chip
+   as wide as the longest choice would need, never the OS select. */
+.settings-row-control .settings-select .schedule-when-field {
+  min-width: 170px;
+}
+
+/* The segmented choice (Appearance: System / Light / Dark) says which one is
+   on in the accent, not a shade of grey (Akshil, 2026-10-20: "better
+   highlight which is selected"). */
+.settings-row [data-slot="toggle-group-item"][data-state="on"],
+.settings-row [data-slot="toggle-group-item"][aria-pressed="true"] {
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--accent);
+  position: relative;
+  z-index: 1;
+}
+
+/* An unset Claude toggle: Claude's own default, drawn dimmed. */
+.settings-switch-inherited {
+  opacity: 0.5;
+}
+
+/* -- accordions (the Claude Code group) ------------------------------------- */
+.settings-section-collapsible .settings-section-title {
+  margin-left: 0;
+}
+
+.settings-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.settings-section-toggle:hover {
+  color: var(--fg);
+}
+
+.settings-section-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-section-chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s ease;
+}
+
+.settings-section-toggle[aria-expanded="true"] .settings-section-chevron,
+.settings-section-toggle[data-panel-open] .settings-section-chevron {
+  transform: rotate(90deg);
+}
+
+.settings-section-count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.settings-section-collapsible:not(:has([data-panel-open])) {
+  margin-bottom: 12px;
+}
+
 /* The settings.json rows: the reset (or the default hint) then the control,
    right-aligned like every other row's control on this page. */
 .settings-claude-control {

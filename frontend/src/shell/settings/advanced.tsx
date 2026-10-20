@@ -20,10 +20,9 @@ import { chordLabel, ENTER_LABEL, isMac, MOD_LABEL } from "@platform/lib/platfor
 import { navigate } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
-import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { Textarea } from "@platform/shadcn/ui/textarea";
-import { labelId, RowSwitch, SettingRow, usePrefWrite, type PrefControlProps } from "./SettingRow";
+import { RowSwitch, SettingRow, SettingSelect, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
 // ── Call log (fused_render/calls.py) ──────────────────────────────────────
 // The switch shows the STORED pref and the status line what is actually in
@@ -92,16 +91,17 @@ export function CallParamsControl({ prefs, onChange }: PrefControlProps) {
       id="call-params"
       off={!calls.effective_enabled}
       control={
-        <NativeSelect
-          aria-labelledby={labelId("call-params")}
+        <SettingSelect
+          id="call-params"
           value={calls.params}
+          options={[
+            { key: "full", label: "Record values" },
+            { key: "keys", label: "Names only" },
+            { key: "off", label: "Record nothing" },
+          ]}
           disabled={busy || !calls.effective_enabled}
-          onChange={(e) => void run(() => putCallsParamsMode(e.target.value as CallsParamsMode))}
-        >
-          <NativeSelectOption value="full">Record values</NativeSelectOption>
-          <NativeSelectOption value="keys">Names only</NativeSelectOption>
-          <NativeSelectOption value="off">Record nothing</NativeSelectOption>
-        </NativeSelect>
+          onChange={(v) => void run(() => putCallsParamsMode(v as CallsParamsMode))}
+        />
       }
     >
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -131,18 +131,19 @@ export function CallRetentionControl({ prefs, onChange }: PrefControlProps) {
         ) : undefined
       }
       control={
-        <NativeSelect
-          aria-labelledby={labelId("call-retention")}
+        <SettingSelect
+          id="call-retention"
           value={String(calls.retention_days)}
+          options={[
+            { key: "1", label: "1 day" },
+            { key: "7", label: "7 days" },
+            { key: "14", label: "14 days" },
+            { key: "90", label: "90 days" },
+            { key: "0", label: "Until the size cap" },
+          ]}
           disabled={busy || !calls.effective_enabled || locked}
-          onChange={(e) => void run(() => putCallsRetentionDays(Number(e.target.value)))}
-        >
-          <NativeSelectOption value="1">1 day</NativeSelectOption>
-          <NativeSelectOption value="7">7 days</NativeSelectOption>
-          <NativeSelectOption value="14">14 days</NativeSelectOption>
-          <NativeSelectOption value="90">90 days</NativeSelectOption>
-          <NativeSelectOption value="0">Until the size cap</NativeSelectOption>
-        </NativeSelect>
+          onChange={(v) => void run(() => putCallsRetentionDays(Number(v)))}
+        />
       }
     >
       {error && <ErrorBanner>{error}</ErrorBanner>}
@@ -377,18 +378,18 @@ export function DiagnosticsControl() {
       }
       control={
         <>
-          <NativeSelect
-            aria-label="Diagnostics window"
+          <SettingSelect
+            id="diagnostics"
+            ariaLabel="Diagnostics window"
             value={win}
+            options={DIAGNOSTICS_WINDOWS.map((w) => ({
+              key: w.key,
+              label: w.label,
+              disabled: w.key === "boot" && startedAt === null,
+            }))}
             disabled={busy}
-            onChange={(e) => setWin(e.target.value as DiagnosticsWindow)}
-          >
-            {DIAGNOSTICS_WINDOWS.map((w) => (
-              <NativeSelectOption key={w.key} value={w.key} disabled={w.key === "boot" && startedAt === null}>
-                {w.label}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            onChange={(v) => setWin(v as DiagnosticsWindow)}
+          />
           <Button variant="accent" size="sm" disabled={busy} onClick={() => void save()}>
             {busy ? "Collecting…" : "Save…"}
           </Button>

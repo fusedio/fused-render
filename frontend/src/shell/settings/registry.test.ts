@@ -139,7 +139,7 @@ describe("visibility", () => {
 
   test("sections come out in first-appearance order", () => {
     const secs = sectionsOf(visibleSettings(ctx()), "general").map((s) => s.section);
-    expect(secs).toEqual(["Appearance", "Windows", "Keyboard", "Updates"]);
+    expect(secs).toEqual(["Appearance", "Windows", "Keyboard", "Updates", "Status bar", "Accessibility"]);
   });
 });
 

@@ -33,6 +33,7 @@
 // becoming a history entry.
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ChevronRight,
   Search,
   SlidersHorizontal,
   Sparkles,
@@ -68,7 +69,15 @@ import {
   type GroupId,
   type SettingEntry,
 } from "./settings/registry";
-import { ClaudeConfigProvider, ClaudeGitChip, ClaudePrefRow, isClaudePref, useClaudePrefEntries } from "./settings/claude";
+import {
+  ClaudeConfigProvider,
+  ClaudeGitChip,
+  ClaudePrefRow,
+  isClaudePref,
+  useClaudePrefEntries,
+  useClaudeSectionLayout,
+} from "./settings/claude";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/shadcn/ui/collapsible";
 import { searchSettings, tokenize } from "./settings/search";
 import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
@@ -89,6 +98,15 @@ const GROUP_ICONS: Record<GroupId, LucideIcon> = {
 
 const FLASH_MS = 1800;
 
+/** The Claude Code group's sections in the order this visit opens them in. */
+function claudeSections<T extends { section: string }>(
+  sections: T[],
+  layout: { order: (names: readonly string[]) => string[] },
+): T[] {
+  const order = layout.order(sections.map((s) => s.section));
+  return [...sections].sort((a, b) => order.indexOf(a.section) - order.indexOf(b.section));
+}
+
 function urlWith(edit: (p: URLSearchParams) => void): string {
   const params = new URLSearchParams(location.search);
   edit(params);
@@ -101,34 +119,58 @@ function Section({
   entries,
   prefs,
   onChange,
+  collapsible,
 }: {
   title: string;
   entries: readonly SettingEntry[];
   prefs: Prefs;
   onChange: (p: Prefs) => void;
+  /** An accordion (the Claude Code group): the title is the toggle. */
+  collapsible?: { open: boolean; onToggle: () => void };
 }) {
   // A block is its section's only entry: the card is the block, captioned
   // with the file it edits. In search results (SettingsViewContext.tokens)
   // the block's control is a pointer row and the card is an ordinary one.
   const block = entries.find((e) => e.block) ?? null;
   const searching = useContext(SettingsViewContext).tokens !== null;
+  const card = (
+    <div className={cn("settings-card", block && !searching && "settings-card-block")}>
+      {block && !searching && (
+        <div className="settings-block-caption">
+          <code>{block.description}</code>
+          {block.readOnly && <Badge variant="secondary">read-only</Badge>}
+        </div>
+      )}
+      {entries.map((e) => {
+        if (isClaudePref(e)) return <ClaudePrefRow key={e.id} entry={e} />;
+        const Control = CONTROLS[e.id as keyof typeof CONTROLS];
+        return <Control key={e.id} prefs={prefs} onChange={onChange} />;
+      })}
+    </div>
+  );
+  if (!collapsible) {
+    return (
+      <section className="settings-section" aria-label={title}>
+        <h3 className="settings-section-title">{title}</h3>
+        {card}
+      </section>
+    );
+  }
   return (
-    <section className="settings-section" aria-label={title}>
-      <h3 className="settings-section-title">{title}</h3>
-      <div className={cn("settings-card", block && !searching && "settings-card-block")}>
-        {block && !searching && (
-          <div className="settings-block-caption">
-            <code>{block.description}</code>
-            {block.readOnly && <Badge variant="secondary">read-only</Badge>}
-          </div>
-        )}
-        {entries.map((e) => {
-          if (isClaudePref(e)) return <ClaudePrefRow key={e.id} entry={e} />;
-          const Control = CONTROLS[e.id as keyof typeof CONTROLS];
-          return <Control key={e.id} prefs={prefs} onChange={onChange} />;
-        })}
-      </div>
-    </section>
+    <Collapsible
+      open={collapsible.open}
+      onOpenChange={collapsible.onToggle}
+      render={<section className="settings-section settings-section-collapsible" aria-label={title} />}
+    >
+      <h3 className="settings-section-title">
+        <CollapsibleTrigger className="settings-section-toggle">
+          <ChevronRight aria-hidden="true" className="settings-section-chevron" />
+          {title}
+          {!block && <span className="settings-section-count">{entries.length}</span>}
+        </CollapsibleTrigger>
+      </h3>
+      <CollapsibleContent>{card}</CollapsibleContent>
+    </Collapsible>
   );
 }
 
@@ -204,6 +246,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const groups = useMemo(() => visibleGroups(entries), [entries]);
   const sections = useMemo(() => navSections(groups), [groups]);
   const byId = (id: string) => entries.find((e) => e.id === id);
+  const claudeLayout = useClaudeSectionLayout();
 
   // Scroll a jumped-to row into view, light it briefly, then let it go — once
   // the row IS on the page: a settings.json row is not until its catalog has
@@ -213,12 +256,18 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   // deep link into a late row can land a little short. Accepted.)
   useEffect(() => {
     if (!flash || !prefs) return;
+    // A row inside a closed Claude section: open it, then land on the row.
+    const target = byId(flash);
+    if (target?.group === "claude" && !claudeLayout.isOpen(target.section)) {
+      claudeLayout.ensureOpen(target.section);
+      return;
+    }
     const el = document.getElementById(rowId(flash));
     if (!el) return;
     el.scrollIntoView({ block: "center" });
     const t = window.setTimeout(() => setFlash(null), FLASH_MS);
     return () => window.clearTimeout(t);
-  }, [flash, prefs !== null, entries.length]);
+  }, [flash, prefs !== null, entries.length, claudeLayout]);
 
   const setQuery = (q: string) => {
     setQueryState(q);
@@ -359,7 +408,9 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
             <div className="settings-head">
               <div className="settings-head-row">
                 <h2>{head}</h2>
-                {!searching && current === "claude" && <ClaudeGitChip />}
+                {!searching && current === "claude" && (
+                  <ClaudeGitChip onOpen={() => claudeLayout.ensureOpen("History")} />
+                )}
               </div>
               <p>{blurb}</p>
             </div>
@@ -377,9 +428,20 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                           onChange={setPrefs}
                         />
                       ))
-                  : sectionsOf(entries, current).map((s) => (
-                      <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
-                    ))}
+                  : current === "claude"
+                    ? claudeSections(sectionsOf(entries, current), claudeLayout).map((s) => (
+                        <Section
+                          key={s.section}
+                          title={s.section}
+                          entries={s.entries}
+                          prefs={prefs}
+                          onChange={setPrefs}
+                          collapsible={{ open: claudeLayout.isOpen(s.section), onToggle: () => claudeLayout.toggle(s.section) }}
+                        />
+                      ))
+                    : sectionsOf(entries, current).map((s) => (
+                        <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
+                      ))}
               </IndexStateProvider>
             </SettingsViewContext.Provider>
           </main>

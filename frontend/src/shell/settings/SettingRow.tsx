@@ -7,6 +7,7 @@ import { Children, createContext, useContext, useState, type ReactNode } from "r
 import { ChevronRight } from "lucide-react";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Switch } from "@platform/shadcn/ui/switch";
+import { Dropdown } from "@shell/Dropdown";
 import { cn } from "@platform/lib/utils";
 import type { Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -122,6 +123,39 @@ export function RowSwitch({
         className="settings-switch"
       />
     </span>
+  );
+}
+
+/** A row's list control: the app's own dropdown (shell/Dropdown, the New task
+ *  form's), not the OS select — one control for one job across the shell
+ *  (Akshil, 2026-10-20). Labelled by its row unless `ariaLabel` says
+ *  otherwise (a second control in a row with a name of its own). */
+export function SettingSelect({
+  id,
+  value,
+  options,
+  onChange,
+  disabled,
+  ariaLabel,
+}: {
+  id: SettingId | string;
+  value: string;
+  options: { key: string; label: string; disabled?: boolean }[];
+  onChange: (key: string) => void;
+  disabled?: boolean;
+  ariaLabel?: string;
+}) {
+  const label = options.find((o) => o.key === value)?.label ?? value;
+  return (
+    <Dropdown
+      className="settings-select"
+      labelledBy={ariaLabel ? undefined : labelId(id)}
+      ariaLabel={ariaLabel}
+      value={label}
+      options={options}
+      onPick={onChange}
+      disabled={disabled}
+    />
   );
 }
 

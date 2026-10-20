@@ -25,7 +25,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { Clock, Info, RefreshCw, Undo2 } from "lucide-react";
 import * as cc from "@apps/claude_config/api";
 import type { PrefEntry, PreferencesGet } from "@apps/claude_config/api";
-import { Toggle3, toastErr, toastOk, useGitStatus, type GitStatusState } from "@apps/claude_config/bits";
+import { toastErr, toastOk, useGitStatus, type GitStatusState } from "@apps/claude_config/bits";
 import { optionLabel, storedOptionLabel } from "@apps/claude_config/pref-option-label";
 import HistorySection from "@apps/claude_config/sections/HistorySection";
 import McpSection from "@apps/claude_config/sections/McpSection";
@@ -36,11 +36,11 @@ import StatuslineSection from "@apps/claude_config/sections/StatuslineSection";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
-import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
+import { Switch } from "@platform/shadcn/ui/switch";
 import { cn } from "@platform/lib/utils";
 import { PointerRow } from "./ai";
 import type { SettingEntry, SettingId } from "./registry";
-import { rowId, SettingRow, SettingsViewContext } from "./SettingRow";
+import { labelId, rowId, SettingRow, SettingSelect, SettingsViewContext } from "./SettingRow";
 
 // -- the store ---------------------------------------------------------------
 
@@ -63,6 +63,8 @@ interface ClaudeStore {
    *  reader on General never needs the git status or the catalog; the page
    *  calls this once the Claude Code group is shown or a search starts. */
   wake: () => void;
+  /** Note an edit in a section, for the order the next visit opens in. */
+  touch: (section: string) => void;
 }
 
 const IDLE_GIT: GitStatusState = { status: null, failed: false, recheck: () => undefined };
@@ -81,6 +83,7 @@ const ClaudeContext = createContext<ClaudeStore>({
   refreshCatalog: async () => undefined,
   refreshing: false,
   wake: () => undefined,
+  touch: () => undefined,
 });
 
 export function ClaudeConfigProvider({ available, children }: { available: boolean; children: ReactNode }) {
@@ -116,6 +119,7 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
     };
   }, [live, catalogEpoch, sectionEpoch]);
 
+  const touch = useCallback((section: string) => touchSection(section), []);
   const patch = useCallback(
     async (key: string, value: unknown) => {
       try {
@@ -124,13 +128,15 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
         else {
           toastOk("Saved");
           onChanged();
+          const section = catalog?.schema.find((d) => d.key === key)?.group;
+          if (section) touchSection(section);
         }
       } catch (e) {
         toastErr((e as Error).message);
       }
       reloadCatalog();
     },
-    [onChanged, reloadCatalog],
+    [onChanged, reloadCatalog, catalog],
   );
 
   const [refreshing, setRefreshing] = useState(false);
@@ -167,6 +173,7 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
       refreshCatalog,
       refreshing,
       wake,
+      touch,
     }),
     [
       available,
@@ -182,6 +189,7 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
       refreshCatalog,
       refreshing,
       wake,
+      touch,
     ],
   );
   return <ClaudeContext.Provider value={value}>{children}</ClaudeContext.Provider>;
@@ -319,31 +327,30 @@ export function ClaudePrefRow({ entry }: { entry: ClaudePrefEntry }) {
             </span>
           )}
           {d.control === "toggle" && (
-            <Toggle3
-              label={d.label}
-              value={isSet ? !!val : boolDefault(d)}
-              inherited={!isSet && boolDefault(d) !== null}
-              onChange={patch}
+            // Unset draws Claude's documented default, dimmed: the position is
+            // Claude's, not the reader's, until they press it.
+            <Switch
+              aria-labelledby={labelId(entry.id)}
+              checked={isSet ? !!val : boolDefault(d) === true}
+              onCheckedChange={(c) => patch(!!c)}
+              className={cn("settings-switch", !isSet && "settings-switch-inherited")}
             />
           )}
           {d.control === "select" && (
-            <NativeSelect
-              aria-label={d.label}
+            <SettingSelect
+              id={entry.id}
               value={isSet ? String(val) : ""}
-              onChange={(e) => patch(e.target.value === "" ? null : e.target.value)}
-            >
-              <NativeSelectOption value="">— {unsetLabel(d)} —</NativeSelectOption>
-              {/* The value on disk when the catalog doesn't list it: a key that
-                  IS set (model: "fable") must not render as "Claude default". */}
-              {isSet && !(d.options || []).includes(String(val)) && (
-                <NativeSelectOption value={String(val)}>{storedOptionLabel(d, String(val))}</NativeSelectOption>
-              )}
-              {(d.options || []).map((o) => (
-                <NativeSelectOption key={o} value={o}>
-                  {optionLabel(d, o)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              options={[
+                { key: "", label: `— ${unsetLabel(d)} —` },
+                // The value on disk when the catalog doesn't list it: a key that
+                // IS set (model: "fable") must not render as "Claude default".
+                ...(isSet && !(d.options || []).includes(String(val))
+                  ? [{ key: String(val), label: storedOptionLabel(d, String(val)) }]
+                  : []),
+                ...(d.options || []).map((o) => ({ key: o, label: optionLabel(d, o) })),
+              ]}
+              onChange={(v) => patch(v === "" ? null : v)}
+            />
           )}
           {(d.control === "text" || d.control === "number") && (
             <ScalarControl entry={d} value={val} onCommit={patch} />
@@ -395,20 +402,29 @@ function Block({ id, children }: { id: SettingId; children: ReactNode }) {
   );
 }
 
+/** A block's `onChanged`, also noting the edit for the section order. */
+function useBlockChanged(section: string): () => void {
+  const { onChanged, touch } = useContext(ClaudeContext);
+  return useCallback(() => {
+    touch(section);
+    onChanged();
+  }, [section, onChanged, touch]);
+}
+
 export function ClaudePluginsBlock() {
-  const { onChanged } = useContext(ClaudeContext);
+  const changed = useBlockChanged("Plugins");
   return (
     <Block id="claude-plugins">
-      <PluginsSection onChanged={onChanged} />
+      <PluginsSection onChanged={changed} />
     </Block>
   );
 }
 
 export function ClaudeMemoryBlock() {
-  const { onChanged } = useContext(ClaudeContext);
+  const changed = useBlockChanged("Memory");
   return (
     <Block id="claude-memory">
-      <MemorySection onChanged={onChanged} />
+      <MemorySection onChanged={changed} />
     </Block>
   );
 }
@@ -438,7 +454,8 @@ export function ClaudeMcpBlock() {
 }
 
 export function ClaudeHistoryBlock() {
-  const { onChanged, onCommitted, badgeEpoch } = useContext(ClaudeContext);
+  const { onCommitted, badgeEpoch } = useContext(ClaudeContext);
+  const onChanged = useBlockChanged("History");
   // Keyed on EVERY edit, not only on a commit: the card reads its own git
   // status and log, and a plugin toggle or a settings.json write above it is
   // drift it must show beside the chip that already counts it. (The panel had
@@ -456,7 +473,7 @@ export function ClaudeHistoryBlock() {
  *  way down to the History block where the drift is committed. Three states,
  *  not two: it states "Clean" POSITIVELY, so it must never say that from a
  *  null status — during the first read, or forever if the read keeps failing. */
-export function ClaudeGitChip() {
+export function ClaudeGitChip({ onOpen }: { onOpen?: () => void }) {
   const { git } = useContext(ClaudeContext);
   const { status, failed } = git;
   return (
@@ -472,11 +489,101 @@ export function ClaudeGitChip() {
               ? `${status.files.length} uncommitted change(s) — review and commit them under History`
               : "Commits, profiles and uncommitted changes"
       }
-      onClick={() => document.getElementById(rowId("claude-history"))?.scrollIntoView({ block: "start", behavior: "smooth" })}
+      onClick={() => {
+        onOpen?.();
+        // After the open has painted: a closed section has no block to scroll to.
+        requestAnimationFrame(() =>
+          document.getElementById(rowId("claude-history"))?.scrollIntoView({ block: "start", behavior: "smooth" }),
+        );
+      }}
     >
       <span className="cc-gitchip-dot" aria-hidden="true" />
       {failed ? "Status unknown" : !status ? "Checking…" : status.dirty ? `${status.files.length} uncommitted` : "Clean"}
       <Clock aria-hidden="true" className="size-3" />
     </button>
+  );
+}
+
+// -- the section layout -----------------------------------------------------------
+// ACCORDIONS, CLOSED BY DEFAULT (Akshil, 2026-10-20): eighteen sections on one
+// page is a wall; a reader opens the one they came for. Model & reasoning is
+// first and open — it is the one nearly everyone came for. The rest are ordered
+// by when the reader last changed something in them, so a section they keep
+// coming back to rises; the order is read ONCE per visit, never re-sorted
+// under the pointer. Both facts live in localStorage: they are about this
+// reader's habits on this machine, not the config.
+
+const LAYOUT_KEY = "fused.prefs.claude-sections";
+export const FIRST_SECTION = "Model & reasoning";
+
+interface SectionLayout {
+  open: string[];
+  edited: Record<string, number>;
+}
+
+function readLayout(): SectionLayout {
+  try {
+    const raw = localStorage.getItem(LAYOUT_KEY);
+    if (raw) {
+      const v = JSON.parse(raw) as Partial<SectionLayout>;
+      return { open: Array.isArray(v.open) ? v.open : [FIRST_SECTION], edited: v.edited ?? {} };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { open: [FIRST_SECTION], edited: {} };
+}
+
+function writeLayout(l: SectionLayout): void {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(l));
+  } catch {
+    /* private mode, full — the order is a convenience */
+  }
+}
+
+function touchSection(section: string): void {
+  const l = readLayout();
+  l.edited[section] = Date.now();
+  writeLayout(l);
+}
+
+/** The sections in the order a visit opens them in: the first one, then the
+ *  recently edited newest first, then the rest as the page lists them. */
+export function orderClaudeSections(names: readonly string[], edited: Record<string, number>): string[] {
+  const rest = names.filter((n) => n !== FIRST_SECTION);
+  const recent = rest.filter((n) => edited[n]).sort((a, b) => edited[b] - edited[a]);
+  const others = rest.filter((n) => !edited[n]);
+  return [...(names.includes(FIRST_SECTION) ? [FIRST_SECTION] : []), ...recent, ...others];
+}
+
+export interface ClaudeSectionLayout {
+  order: (names: readonly string[]) => string[];
+  isOpen: (name: string) => boolean;
+  toggle: (name: string) => void;
+  ensureOpen: (name: string) => void;
+}
+
+export function useClaudeSectionLayout(): ClaudeSectionLayout {
+  const [layout, setLayout] = useState<SectionLayout>(readLayout);
+  // The edit stamps as they were when the page opened: an edit made now
+  // changes the NEXT visit's order, not this one's.
+  const [editedAtOpen] = useState(() => layout.edited);
+  const update = useCallback((f: (l: SectionLayout) => SectionLayout) => {
+    setLayout((prev) => {
+      const next = f({ ...prev, edited: readLayout().edited });
+      writeLayout(next);
+      return next;
+    });
+  }, []);
+  return useMemo(
+    () => ({
+      order: (names) => orderClaudeSections(names, editedAtOpen),
+      isOpen: (name) => layout.open.includes(name),
+      toggle: (name) =>
+        update((l) => ({ ...l, open: l.open.includes(name) ? l.open.filter((n) => n !== name) : [...l.open, name] })),
+      ensureOpen: (name) => update((l) => (l.open.includes(name) ? l : { ...l, open: [...l.open, name] })),
+    }),
+    [layout.open, editedAtOpen, update],
   );
 }

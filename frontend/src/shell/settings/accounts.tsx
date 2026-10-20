@@ -22,8 +22,7 @@ import { publishLoggedIn } from "@apps/canvases/logged-in";
 import { cancelHfLogin, getHfAuth, getPrefsShared, hfLogout, startHfLogin, type HfAuth } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
-import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
-import { labelId, SettingRow } from "./SettingRow";
+import { SettingRow, SettingSelect } from "./SettingRow";
 
 const FUSED_LOGIN_POLL_MS = 1500;
 
@@ -266,16 +265,17 @@ export function WorkbenchEnvControl() {
       }
       control={
         !status ? undefined : (
-          <NativeSelect
-            aria-labelledby={labelId("workbench-env")}
+          <SettingSelect
+            id="workbench-env"
             value={known ? current : ""}
+            options={[
+              ...(known ? [] : [{ key: "", label: current }]),
+              { key: "prod", label: ENV_LABELS.prod },
+              { key: "unstable", label: ENV_LABELS.unstable },
+            ]}
             disabled={busy || locked}
-            onChange={(e) => void onPick(e.target.value as WorkbenchEnv)}
-          >
-            {!known && <NativeSelectOption value="">{current}</NativeSelectOption>}
-            <NativeSelectOption value="prod">{ENV_LABELS.prod}</NativeSelectOption>
-            <NativeSelectOption value="unstable">{ENV_LABELS.unstable}</NativeSelectOption>
-          </NativeSelect>
+            onChange={(v) => void onPick(v as WorkbenchEnv)}
+          />
         )
       }
     >

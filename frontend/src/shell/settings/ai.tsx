@@ -10,10 +10,9 @@ import { navigateUrl } from "@platform/lib/router";
 import { IssueRow } from "@platform/ui/ClaudeHealthStrip";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
-import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { signedInHint } from "../onboarding/ToolsStep";
 import type { SettingId } from "./registry";
-import { labelId, RowSwitch, SettingRow, SettingsViewContext, usePrefWrite, type PrefControlProps } from "./SettingRow";
+import { RowSwitch, SettingRow, SettingSelect, SettingsViewContext, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
 type AgentId = "claude" | "copilot";
 
@@ -147,18 +146,13 @@ export function DefaultAgentControl({ prefs, onChange }: PrefControlProps) {
     <SettingRow
       id="agent-default"
       control={
-        <NativeSelect
-          aria-labelledby={labelId("agent-default")}
+        <SettingSelect
+          id="agent-default"
           value={ids.includes(agents.default as AgentId) ? agents.default : ids[0]}
+          options={ids.map((id) => ({ key: id, label: agentLabel(id) }))}
           disabled={busy}
-          onChange={(e) => void write(() => putDefaultBackend(e.target.value))}
-        >
-          {ids.map((id) => (
-            <NativeSelectOption key={id} value={id}>
-              {agentLabel(id)}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
+          onChange={(v) => void write(() => putDefaultBackend(v))}
+        />
       }
     >
       {error && <ErrorBanner>{error}</ErrorBanner>}

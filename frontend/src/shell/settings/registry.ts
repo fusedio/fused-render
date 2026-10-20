@@ -70,8 +70,8 @@ export const GROUPS: readonly SettingsGroup[] = [
   {
     id: "features",
     nav: "general",
-    label: "Optional features",
-    blurb: "Off by default. Each one adds a sidebar row, a status-bar chip or a file view when you turn it on.",
+    label: "Experimental features",
+    blurb: "Off by default and still settling. Each one adds a sidebar row or a page when you turn it on.",
   },
   { id: "ai", nav: "bots", label: "AI & agents", blurb: "Which coding agents run your chats and tasks." },
   {
@@ -479,7 +479,7 @@ const ENTRIES = [
   },
   {
     id: "monitor",
-    group: "features",
+    group: "general",
     section: "Status bar",
     label: "Process monitor",
     description: "A System chip in the status bar with what this app and its processes cost in CPU and memory, and a live Monitor page.",
@@ -487,8 +487,8 @@ const ENTRIES = [
   },
   {
     id: "reader",
-    group: "features",
-    section: "File views",
+    group: "general",
+    section: "Accessibility",
     label: "Reader",
     description: "Adds a Reader mode to text files and PDFs that reads them aloud.",
     keywords: "read aloud speech tts listen accessibility pdf voice",
