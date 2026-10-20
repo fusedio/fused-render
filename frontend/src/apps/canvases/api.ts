@@ -81,9 +81,11 @@ export const catalogPath = (env: WorkbenchEnv) => `/canvases?env=${env}`;
  *  here and forgotten there is a type error (the app page's APP_PAGE_TABS
  *  pattern, current-apps-lib.ts). Overview is the workbench framed read-only,
  *  Tasks the Tasks page scoped to the clone, Files the clone's files in their
- *  templates. No API or Doctor tab: a canvas is not an app folder with
- *  endpoints to call or a share-readiness to check. */
-export const CANVAS_PAGE_TABS = ["overview", "tasks", "files"] as const;
+ *  templates, Sync the clone's sync panel (the strip, the log, Pull / Hard
+ *  pull, a failed push's detail) — the Overview shows the canvas and nothing
+ *  else (owner, 2026-10-20). No API or Doctor tab: a canvas is not an app
+ *  folder with endpoints to call or a share-readiness to check. */
+export const CANVAS_PAGE_TABS = ["overview", "tasks", "files", "sync"] as const;
 export type CanvasPageTab = (typeof CANVAS_PAGE_TABS)[number];
 export const DEFAULT_CANVAS_PAGE_TAB: CanvasPageTab = CANVAS_PAGE_TABS[0];
 /** The query param naming the tab; absent = the default (the app page's `_tab`). */

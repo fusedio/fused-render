@@ -51,7 +51,15 @@
 // the room; `.app-page-body`'s frame is not touched). Inside it the Tasks
 // panel keeps the Tasks page's own column (schedule.css).
 import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
-import { AppWindow, ExternalLink, Files, ListTodo, PencilLine, type LucideIcon } from "lucide-react";
+import {
+  AppWindow,
+  ExternalLink,
+  Files,
+  ListTodo,
+  PencilLine,
+  RefreshCw,
+  type LucideIcon,
+} from "lucide-react";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, spaLinkProps } from "@platform/lib/router";
@@ -93,6 +101,12 @@ type TabCtx = {
   /** The clone folder, `<canvases_dir>/<name>` — null until status answers. */
   dir: string | null;
   onWorkbenchUrl: (url: string | null) => void;
+  /** The Sync tab's panel element while that tab is on screen, else null:
+   *  the Overview's CanvasWorkspace portals the sync chrome into it. */
+  syncSlot: HTMLElement | null;
+  /** The Sync panel's ref callback (a state setter: stable, and a portal
+   *  target read from a ref on the first render would be null). */
+  setSyncSlot: (el: HTMLElement | null) => void;
 };
 
 type TabDef = {
@@ -109,8 +123,14 @@ const TAB_DEFS: Record<CanvasPageTab, TabDef> = {
     label: "Overview",
     Icon: AppWindow,
     keepMounted: true,
-    render: ({ env, name, onWorkbenchUrl }) => (
-      <CanvasWorkspace env={env} name={name} embedded onWorkbenchUrl={onWorkbenchUrl} />
+    render: ({ env, name, onWorkbenchUrl, syncSlot }) => (
+      <CanvasWorkspace
+        env={env}
+        name={name}
+        embedded
+        onWorkbenchUrl={onWorkbenchUrl}
+        syncSlot={syncSlot}
+      />
     ),
   },
   tasks: {
@@ -140,6 +160,16 @@ const TAB_DEFS: Record<CanvasPageTab, TabDef> = {
       ) : (
         <SkeletonLines rows={2} label="Loading files" />
       ),
+  },
+  sync: {
+    label: "Sync",
+    Icon: RefreshCw,
+    // Not keepMounted, and EMPTY of its own: the panel is a slot the
+    // Overview's CanvasWorkspace portals the sync chrome into (the strip,
+    // the log pinned open, Pull / Hard pull, a failed push's detail). The
+    // state and the loops live with the Overview, which stays mounted behind
+    // every tab; this tab is only where they are shown.
+    render: ({ setSyncSlot }) => <div className="canvas-page-sync-slot" ref={setSyncSlot} />,
   },
 };
 
@@ -227,7 +257,11 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
 
   const [headFit, headRef] = useAppHeadFit();
   const [tabbarFit, tabbarRef] = useAppTabbarFit();
-  const ctx = useMemo<TabCtx>(() => ({ env, name, dir, onWorkbenchUrl }), [env, name, dir, onWorkbenchUrl]);
+  const [syncSlot, setSyncSlot] = useState<HTMLElement | null>(null);
+  const ctx = useMemo<TabCtx>(
+    () => ({ env, name, dir, onWorkbenchUrl, syncSlot, setSyncSlot }),
+    [env, name, dir, onWorkbenchUrl, syncSlot],
+  );
 
   return (
     <div className="app-page canvas-page">

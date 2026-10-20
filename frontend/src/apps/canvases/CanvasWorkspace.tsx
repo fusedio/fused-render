@@ -91,6 +91,7 @@
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
+import { createPortal } from "react-dom";
 import { ChatMount } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
@@ -361,6 +362,7 @@ export default function CanvasWorkspace({
   name,
   embedded = false,
   onWorkbenchUrl,
+  syncSlot = null,
 }: {
   env: WorkbenchEnv;
   name: string;
@@ -379,6 +381,15 @@ export default function CanvasWorkspace({
    *  the base URL and handle are known; null until then. The project page's
    *  header draws it as "Open in Workbench". */
   onWorkbenchUrl?: (url: string | null) => void;
+  /** `embedded` only: the project page's SYNC TAB panel. The sync chrome —
+   *  the strip, the log (pinned open, no Close), Pull / Hard pull, a failed
+   *  push's detail with Fix with Claude — is portalled INTO it instead of
+   *  drawn over the canvas (owner, 2026-10-20: "remove the sync row from the
+   *  overview. Add a sync tab with all the sync panel details"). The state
+   *  stays here, with the sync loops, which the Overview keeps running
+   *  behind every tab; the panel is only where it is shown. Null while the
+   *  Sync tab is not the one on screen: nothing is drawn, nothing stops. */
+  syncSlot?: HTMLElement | null;
 }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
@@ -1420,8 +1431,13 @@ export default function CanvasWorkspace({
   const s2dState = sync?.legs.server_to_disk.state;
   const pushLeg = sync?.legs.disk_to_server;
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
+  // The sync chrome. In the editor it sits above the panes (the strip, the
+  // drawer on click, the failed-push banner). Embedded, it goes to the
+  // project page's Sync tab (`syncSlot`) — the log pinned open, since the
+  // tab IS the log — and nothing of it over the Overview.
+  const pinned = embedded;
+  const chrome = (
+    <>
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {startError && !error && (
         <ErrorBanner>{`Could not start syncing this canvas (retrying): ${startError}`}</ErrorBanner>
@@ -1436,11 +1452,12 @@ export default function CanvasWorkspace({
         failure={relayFailure}
         owned={owned}
         live={live}
-        open={drawerOpen}
+        open={pinned || drawerOpen}
         // No drawer to open before the first state: arming it now would pop
-        // it unprompted when that state lands.
+        // it unprompted when that state lands. Pinned, there is nothing to
+        // toggle.
         onToggle={() => {
-          if (sync || owned) setDrawerOpen((o) => !o);
+          if (!pinned && (sync || owned)) setDrawerOpen((o) => !o);
         }}
         // Back to the environment this canvas lives in, not the default.
         onBack={() => navigateUrl(catalogPath(env))}
@@ -1453,7 +1470,7 @@ export default function CanvasWorkspace({
           onPull: () => void onPull(),
         }}
       />
-      {drawerOpen && (sync || owned) && (
+      {(pinned || drawerOpen) && (sync || owned) && (
         <SyncDrawer
           env={env}
           name={name}
@@ -1476,17 +1493,7 @@ export default function CanvasWorkspace({
               pushLeg?.state === "pushing",
             onPull: () => void onPull(true),
           }}
-          onClose={() => setDrawerOpen(false)}
-        />
-      )}
-      {frameSrc && (
-        <SyncFramePoster
-          name={name}
-          server={sync}
-          queue={relayQueue}
-          failure={relayFailure}
-          repost={repostSeq}
-          post={postSyncState}
+          {...(pinned ? {} : { onClose: () => setDrawerOpen(false) })}
         />
       )}
       {pushError && pushLeg && sync && (
@@ -1535,6 +1542,22 @@ export default function CanvasWorkspace({
             </pre>
           )}
         </div>
+      )}
+    </>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
+      {embedded ? (syncSlot ? createPortal(chrome, syncSlot) : null) : chrome}
+      {frameSrc && (
+        <SyncFramePoster
+          name={name}
+          server={sync}
+          queue={relayQueue}
+          failure={relayFailure}
+          repost={repostSeq}
+          post={postSyncState}
+        />
       )}
       <div
         ref={rowRef}

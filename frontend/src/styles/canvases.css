@@ -322,6 +322,21 @@
 .canvas-page-tasks .schedule-page {
   padding-inline: 0;
 }
+/* The Sync tab: a plate like the Overview's, holding the slot the Overview's
+   CanvasWorkspace portals the sync chrome into (the strip on top, the log
+   below it taking the rest). */
+.canvas-page-sync {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.canvas-page-sync-slot {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 
 /* The sidebar's Canvases section (shell/CanvasesSection.tsx): Projects' rows
    with a canvas glyph, and the environment after the name when both hold
