@@ -4123,10 +4123,17 @@ def _alive(run_dir: str) -> bool:
 #: its answer to a control request of ours (the STOP button's `interrupt`,
 #: which lands AFTER the `result` when the reader presses stop on a turn that
 #: just ended — Akshil, 2026-09-23: "why is it in progress when it already
-#: completed"), and `rate_limit_event` is plan bookkeeping. Neither reopens a
-#: turn; treating them as if they did left a finished run reading live for as
-#: long as the session host kept the process alive.
-_NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event"})
+#: completed"), `rate_limit_event` is plan bookkeeping, and
+#: `command_lifecycle` is the CLI's receipt for a stdin line that carried a
+#: `uuid` (`_write_inbox_entry` stamps one): `queued` / `started` /
+#: `completed` frames, the last of which lands right AFTER the `result` of
+#: the turn that answered the line. None reopens a turn; treating them as if
+#: they did left a finished run reading live for as long as the session host
+#: kept the process alive — and a reload then re-attached to a "live" turn
+#: and drew its prompt a second time (seen 2026-10-20, the day the uuid went
+#: on the wire).
+_NOT_A_TURN_ROW = frozenset({"control_response", "rate_limit_event",
+                             "command_lifecycle"})
 
 #: `system` rows that are bookkeeping ABOUT a turn rather than a turn
 #: speaking: the CLI writes `task_summary` right AFTER the `result` of a turn
