@@ -458,6 +458,7 @@ _state: "collections.OrderedDict[str, dict]" = collections.OrderedDict()
 #: agent) can find a run's `headsup.json` after a restart.
 _runs_root: str | None = None
 _FILE = "headsup.json"
+_MAX_CHECKED = 200
 
 
 def _state_path(run_id: str, run_dir: str | None) -> str | None:
@@ -490,6 +491,12 @@ def _load(path: str | None) -> dict:
     dismissed = data.get("dismissed")
     if isinstance(dismissed, list):
         out["dismissed"] = {d for d in dismissed if isinstance(d, str)}
+    checked = data.get("checked")
+    if isinstance(checked, list):
+        out["checked"] = {
+            (p[0], p[1]) for p in checked
+            if isinstance(p, list) and len(p) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) for v in p)}
     return out
 
 
@@ -504,7 +511,11 @@ def _save(st: dict) -> None:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"note": st["note"], "note_id": st["note_id"],
                        "offered_turn": st["offered_turn"],
-                       "dismissed": sorted(st["dismissed"])}, fh)
+                       "dismissed": sorted(st["dismissed"]),
+                       # a restart must not re-run a fork (~134k tokens) for a
+                       # turn that was already checked
+                       "checked": [list(k) for k in
+                                   sorted(st["checked"])[-_MAX_CHECKED:]]}, fh)
         os.replace(tmp, path)
     except OSError:
         logger.warning("could not save %s", path, exc_info=True)
@@ -618,8 +629,10 @@ def _poll(agent, run_id: str) -> dict:
             mem["skip_checks"] -= 1
             _mem_save(_runs_root, mem)
             st["checked"].add(key)
+            _save(st)
             return {"state": "idle"}
         st["checked"].add(key)
+        _save(st)
         st["inflight"] = True
     threading.Thread(target=_worker, args=(agent, run_id, run_dir, turn_index),
                      daemon=True).start()

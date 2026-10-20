@@ -814,3 +814,30 @@ def test_claude_lists_union_and_corrupt_ignored(fake_claude_store):
     (fake_claude_store / "cc-plugin-you-should-know_builtin-3.json").write_text(
         json.dumps({"seen": "oops", "known": ["k2"]}))
     assert headsup._claude_lists() == (["a"], ["k1", "k2"])
+
+
+# ------------------------------------------------- checked turns persist
+
+def test_checked_turn_is_not_rechecked_after_restart(runs, gen):
+    calls, _ = gen
+    agent = FakeAgent(runs)
+    _rows(runs, _asst(7), RESULT)
+    assert headsup.poll(agent, "r1")["state"] == "checking"
+    _wait(agent, None)
+    assert len(calls) == 1
+    headsup._state.clear()                       # simulated restart / eviction
+    assert headsup.poll(agent, "r1") == {"state": "idle"}
+    assert len(calls) == 1
+
+
+def test_checked_set_is_saved_validated_and_capped(runs):
+    path = str(runs / "r1" / "headsup.json")
+    st = headsup._run_state("r1", str(runs / "r1"))
+    st["checked"] = {(t, 1) for t in range(300)}
+    headsup._save(st)
+    saved = json.loads((runs / "r1" / "headsup.json").read_text())["checked"]
+    assert len(saved) == 200
+    assert sorted(saved)[0] == [100, 1]
+    (runs / "r1" / "headsup.json").write_text(json.dumps(
+        {"checked": [[1, 2], [True, 1], ["a", 1], [1], [3, 4, 5], "x", [2, -1], [1.5, 1]]}))
+    assert headsup._load(path)["checked"] == {(1, 2), (2, -1)}
