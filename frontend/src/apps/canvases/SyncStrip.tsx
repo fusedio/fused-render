@@ -142,7 +142,11 @@ export function SyncStrip({
         gap: 10,
         minWidth: 0,
         padding: "4px 12px",
-        minHeight: 28,
+        // Fixed at the height a .btn (32px) gives it, so the strip does not
+        // jump when Pull / Open in workbench come and go.
+        height: 40,
+        flex: "none",
+        boxSizing: "border-box",
         borderBottom: `1px solid ${style.border}`,
         background: style.bg,
         fontSize: 12,
