@@ -4388,7 +4388,8 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
             # CLAUDE, NAMED: a canvas fix is a Claude feature (like the app
             # builder), so it never follows the Preferences default agent.
             res = claude_spawn.spawn_helper(manager.dir, prompt, "auto",
-                                            backend="claude")
+                                            backend="claude",
+                                            isolate_mcp=True)
         except Exception as exc:  # noqa: BLE001 — spawn failure is the answer
             return _error(f"failed to start Claude session: {exc}", 500)
         if res.get("reason") == "backend_disabled":

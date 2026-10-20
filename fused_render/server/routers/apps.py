@@ -1020,7 +1020,8 @@ def api_app_doctor_fix(body: dict = Body(...),
         findings = row["findings"] if row else []
         detail = row["detail"] if row else ""
         prompt = app_doctor.doctor_prompt(entry_html, check_id, findings, detail)
-    task, task_error = _create_app_task(entry_html, prompt, model, effort)
+    task, task_error = _create_app_task(entry_html, prompt, model, effort,
+                                        strict_mcp=True)
     return {
         "path": folder,
         "entry_html": entry_html,
@@ -1138,7 +1139,7 @@ def api_app_doctor_run(body: dict = Body(...),
         prompt = app_doctor.check_prompt(entry_html, gathered["files"])
         task, task_error = _create_app_task(
             entry_html, prompt, app_doctor_ai.MODEL, app_doctor_ai.EFFORT,
-            permission_mode=app_doctor_ai.PERMISSION_MODE)
+            permission_mode=app_doctor_ai.PERMISSION_MODE, strict_mcp=True)
         if task is None:
             # No task, so no run record: the row goes back to "not checked yet"
             # (the previous verdict was already dropped by `begin`, which is the
@@ -1389,7 +1390,8 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
                      effort: str = "",
                      images: list[str] | None = None,
                      permission_mode: str = "",
-                     backend: str = "claude") -> tuple[dict | None, str | None]:
+                     backend: str = "claude",
+                     strict_mcp: bool = False) -> tuple[dict | None, str | None]:
     """Create the scaffolding TASK: the prompt, on the app's index.html, due now.
 
     The seam a test stubs. `schedule.create` is the New task form's own path
@@ -1443,7 +1445,8 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
             entry_html, prompt, datetime.now(timezone.utc),
             immediate=True, model=model, effort=effort,
             permission_mode=permission_mode, images=images or None,
-            backend=backend or "claude")
+            backend=backend or "claude",
+            **({"strict_mcp": True} if strict_mcp else {}))
     except schedule.BackendRefused as exc:
         # The agent refusal WHOLE (`reason`, `backend`), not flattened into
         # the sentence below: the page needs `backend_disabled` to point at the

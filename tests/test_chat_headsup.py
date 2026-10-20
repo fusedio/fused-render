@@ -916,3 +916,27 @@ def test_spawn_argv_posix_shape_is_the_interpreter_setsid_wrapper():
     assert argv[:3] == [sys.executable, "-B", "-I"]
     assert argv[3] == "-c" and "setsid" in argv[4]
     assert argv[5:] == ["/work", "/x/claude", "-p"]
+
+
+def test_fork_follows_the_parents_recorded_strict_mcp(agent, tmp_path):
+    """The prompt-cache prefix includes the MCP tool roster, so a fork must be
+    as lean as the session it forks — and no leaner."""
+    fork = headsup.build_fork_argv(agent, _launch_run(agent, tmp_path, strict_mcp=True))
+    try:
+        assert "--strict-mcp-config" in fork.argv
+    finally:
+        import shutil
+        shutil.rmtree(fork.dir, ignore_errors=True)
+    # An older host's launch.json has no key at all: not strict.
+    fork = headsup.build_fork_argv(agent, _launch_run_again(agent, tmp_path))
+    try:
+        assert "--strict-mcp-config" not in fork.argv
+    finally:
+        import shutil
+        shutil.rmtree(fork.dir, ignore_errors=True)
+
+
+def _launch_run_again(agent, tmp_path):
+    import shutil
+    shutil.rmtree(os.path.join(agent.RUNS, "r1"))
+    return _launch_run(agent, tmp_path)

@@ -20,6 +20,7 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putTaskRecapTitlesEnabled,
   putTaskSummaryTitlesEnabled,
+  putClaudeStrictMcpEnabled,
 } from "@platform/lib/api";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
@@ -80,6 +81,19 @@ export function TaskSummaryTitlesControl({ prefs, onChange }: PrefControlProps) 
       id="task-summary-titles"
       checked={prefs.task_summary_titles?.enabled === true}
       put={putTaskSummaryTitlesEnabled}
+      onChange={onChange}
+    />
+  );
+}
+
+// Lean Claude sessions: no user MCP servers / connectors in chat and tasks.
+// ON unless stored false, so `!== false` (an older server has no field).
+export function ClaudeStrictMcpControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="claude-strict-mcp"
+      checked={prefs.claude_strict_mcp?.enabled !== false}
+      put={putClaudeStrictMcpEnabled}
       onChange={onChange}
     />
   );

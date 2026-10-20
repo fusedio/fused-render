@@ -334,7 +334,8 @@ def main() -> None:
         # started by an older one (a run adopted across an upgrade) simply has
         # no minted id — which is the pre-`--session-id` behaviour, not an
         # error.
-        req.get("new_session_id", ""), req.get("resume_at", ""))
+        req.get("new_session_id", ""), req.get("resume_at", ""),
+        strict_mcp=bool(req.get("strict_mcp", False)))
     # The session this run's turn is IN: a fork resumes the old id but runs in
     # the NEW one, so there the minted id wins.
     own_sid = (req.get("new_session_id", "") if req.get("resume_at")

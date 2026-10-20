@@ -366,6 +366,14 @@ const ENTRIES = [
     keywords: "summary title name fixed stable rename",
   },
   {
+    id: "claude-strict-mcp",
+    group: "tasks",
+    section: "Running",
+    label: "Lean Claude sessions",
+    description: "Chat and tasks start without the MCP servers from your global Claude config and your claude.ai connectors, so many sessions can run at once (about 200 MB less each). MCP servers from your enabled plugins still load. Scheduled runs, canvas agents and App Doctor are always lean.",
+    keywords: "mcp memory connectors strict lean",
+  },
+  {
     id: "chat-headsup",
     group: "tasks",
     section: "Chat",

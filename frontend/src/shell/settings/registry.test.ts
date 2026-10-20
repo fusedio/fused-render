@@ -201,7 +201,7 @@ describe("search", () => {
 
   test("the Claude blocks are findable by what they hold", () => {
     const rows = visibleSettings(ctx({ claudeConfig: true }));
-    expect(searchSettings(rows, "mcp").map((h) => h.id)).toEqual(["claude-mcp"]);
+    expect(searchSettings(rows, "mcp").map((h) => h.id)).toEqual(["claude-mcp", "claude-strict-mcp"]);
     expect(searchSettings(rows, "marketplace").map((h) => h.id).sort()).toEqual(["claude-plugins", "marketplace"]);
   });
 

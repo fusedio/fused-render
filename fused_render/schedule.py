@@ -1541,7 +1541,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
            create_target: bool = False,
            model: str = "", effort: str = "", priority=None,
            follow_of: str = "", origin: str = "", bot: str = "",
-           backend: str = "") -> dict:
+           backend: str = "", strict_mcp: bool = False) -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `backend` — "claude" | "copilot" | "" — is which agent runs the turn (D2),
@@ -2004,6 +2004,10 @@ def create(target: str, message: str, due=None, session_id: str = "",
         entry["origin"] = origin
     if bot:
         entry["bot"] = bot
+    if strict_mcp:
+        # Run lean (`--strict-mcp-config`), whatever the Preferences default is
+        # — App Doctor's tasks. Written only when true, like `bot`.
+        entry["strict_mcp"] = True
     if spec is not None:
         # The first run of the series, kept where materialization cannot move
         # it — see the docstring. Every occurrence is "the anchor plus k steps",
@@ -3025,6 +3029,11 @@ def _send(entry: dict) -> None:
             # send without images keeps the exact call shape it has always had.
             attachments = ({"extra_read_dirs": [shots_dir()]}
                            if _stored_attachments(entry) else {})
+            if entry.get("template_id") or entry.get("strict_mcp"):
+                # A recurring occurrence (nobody is watching it) or an entry
+                # that asked for it runs lean; passed only when true so the
+                # plain call shape is unchanged.
+                attachments["isolate_mcp"] = True
             # `backend` ALWAYS rides, never "": `_start` reads "" on a fresh
             # chat as Claude, not as the Preferences default, so the entry's
             # pinned agent has to be said out loud every time.

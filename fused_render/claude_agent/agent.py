@@ -641,6 +641,96 @@ def _backend_enabled(backend: str) -> bool:
     return False
 
 
+def _strict_mcp_pref() -> bool:
+    """Whether chat and Tasks-page sessions start "lean" — with
+    `--strict-mcp-config`, so the user's own MCP servers and claude.ai
+    connectors are not launched (about 220 MB less per session). On unless
+    `claude_strict_mcp_enabled` is stored False in `<home>/prefs.json`;
+    a stdlib read for the same reason as `_backend_enabled`. A missing or
+    unreadable file reads as the default."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(prefs, dict)
+                and prefs.get("claude_strict_mcp_enabled") is False)
+
+
+def _plugin_mcp_servers(claude_home: str) -> dict:
+    """MCP servers declared by every ENABLED plugin, keyed the way the CLI keys
+    them (`plugin_<plugin>_<server>`, so tool names stay
+    `mcp__plugin_<plugin>_<server>__*` and the plugins' own hooks keep
+    matching).
+
+    `--strict-mcp-config` drops plugin MCP servers along with the user's, but a
+    lean session must still have them (context-mode above all), so they are
+    re-added to the run's mcp.json by hand. Enabled = `enabledPlugins` in
+    `<claude_home>/settings.json` is True; the install dir comes from
+    `plugins/installed_plugins.json` (the `user`-scope install, else the
+    first); definitions from `.claude-plugin/plugin.json` `mcpServers` (a dict,
+    or a path to a JSON file) else `.mcp.json`. `${CLAUDE_PLUGIN_ROOT}` is
+    expanded in command, args and env values, and exported as an env var.
+    Anything unreadable skips that plugin: this must never fail a spawn."""
+    def load(path):
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def expand(value, root):
+        return value.replace("${CLAUDE_PLUGIN_ROOT}", root) if isinstance(value, str) else value
+
+    out: dict = {}
+    try:
+        enabled = load(os.path.join(claude_home, "settings.json")).get("enabledPlugins")
+        installed = load(os.path.join(claude_home, "plugins", "installed_plugins.json")).get("plugins")
+        if not isinstance(enabled, dict) or not isinstance(installed, dict):
+            return out
+    except (OSError, ValueError, AttributeError):
+        return out
+    for key, on in enabled.items():
+        if on is not True or not isinstance(key, str):
+            continue
+        try:
+            installs = installed.get(key)
+            if not isinstance(installs, list) or not installs:
+                continue
+            pick = next((i for i in installs if isinstance(i, dict) and i.get("scope") == "user"), installs[0])
+            root = pick["installPath"]
+            servers = None
+            try:
+                manifest = load(os.path.join(root, ".claude-plugin", "plugin.json"))
+            except (OSError, ValueError):
+                manifest = {}
+            declared = manifest.get("mcpServers") if isinstance(manifest, dict) else None
+            if isinstance(declared, str):
+                declared = load(os.path.join(root, declared))
+                if isinstance(declared, dict) and isinstance(declared.get("mcpServers"), dict):
+                    declared = declared["mcpServers"]
+            if isinstance(declared, dict):
+                servers = declared
+            else:
+                bare = load(os.path.join(root, ".mcp.json"))
+                servers = bare.get("mcpServers") if isinstance(bare.get("mcpServers"), dict) else bare
+            plugin = key.split("@", 1)[0]
+            found = {}
+            for name, spec in servers.items():
+                if not isinstance(spec, dict):
+                    continue
+                spec = dict(spec)
+                if "command" in spec:
+                    spec["command"] = expand(spec["command"], root)
+                if isinstance(spec.get("args"), list):
+                    spec["args"] = [expand(a, root) for a in spec["args"]]
+                env = {k: expand(v, root) for k, v in (spec.get("env") or {}).items()}
+                env["CLAUDE_PLUGIN_ROOT"] = root
+                spec["env"] = env
+                found[f"plugin_{plugin}_{name}"] = spec
+            out.update(found)
+        except Exception:  # noqa: BLE001 — one bad plugin must not cost the spawn
+            continue
+    return out
+
+
 def _backend_disabled_error(backend: str) -> dict:
     """The refusal every spawn entry answers with (D17) — same body
     `agent_backends.registry.disabled_error` builds for the router's 400."""
@@ -1793,7 +1883,8 @@ def _terminal_tools_supported() -> bool:
     return bool(_origin())
 
 
-def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True) -> str:
+def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
+                      strict: bool = False) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
@@ -1816,7 +1907,12 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True) -> 
     optional fused engine (D69) this module is `exec`'d into a namespace that
     has no `__file__` at all, so reaching for it directly is a NameError for
     anyone with the `fused` extra installed. HERE is resolved once at import,
-    behind the shim at the top of this file that covers both engines."""
+    behind the shim at the top of this file that covers both engines.
+
+    `strict` (a lean session, `--strict-mcp-config`) also writes the enabled
+    plugins' MCP servers (`_plugin_mcp_servers`) next to ours, since strict mode
+    would otherwise drop them; ours wins a key collision. Non-strict runs leave
+    the CLI to load plugin servers itself — adding them would start each twice."""
     path = os.path.join(run_dir, "mcp.json")
     server = os.path.join(HERE, "permission_server.py")
     args = [server, _perm_dir(run_dir)]
@@ -1843,8 +1939,9 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True) -> 
         # must be in THIS dict to reach the server — and absent otherwise,
         # which is what keeps the tools out of the roster.
         server_env["FUSED_RENDER_TERMINAL_ORIGIN"] = _origin()
+    servers = _plugin_mcp_servers(CLAUDE_DIR) if strict else {}
     with _private_open(path) as fh:
-        json.dump({"mcpServers": {PERMISSION_SERVER: {
+        json.dump({"mcpServers": {**servers, PERMISSION_SERVER: {
             # sys.executable, matching how the app spawns every other helper
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
@@ -3082,7 +3179,8 @@ _HOST_SPAWN = {"close_fds": False}
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
                  extra_read_dirs: list | None, file: str,
-                 new_session_id: str = "", resume_at: str = "") -> list:
+                 new_session_id: str = "", resume_at: str = "",
+                 strict_mcp: bool = False) -> list:
     """The CLAUDE CLI's own argv — everything from the binary down to the
     last `--effort` flag. Pulled out of `_start` so the session host, which
     spawns this SAME process (just kept open on a stdin pipe instead of a
@@ -3102,7 +3200,8 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            # follow-up sent mid-turn actually reached the CLI's own queue
            # rather than landing on a pipe nobody was reading from anymore.
            "--replay-user-messages",
-           "--mcp-config", _write_mcp_config(run_dir, pane),
+           "--mcp-config", _write_mcp_config(run_dir, pane, strict=strict_mcp),
+           *(["--strict-mcp-config"] if strict_mcp else []),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
            # Naming a permission-prompt tool also un-gates AskUserQuestion and
@@ -3758,7 +3857,8 @@ def _start(file: str, message: str, session_id: str, model: str,
            has_pane: bool | None = None,
            extra_read_dirs: list | None = None,
            draft_key: str = "", terminal_hint: str = "",
-           backend: str = "", bot: str = "", fork_at: str = "") -> dict:
+           backend: str = "", bot: str = "", fork_at: str = "",
+           isolate_mcp: bool = False) -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -3983,7 +4083,12 @@ def _start(file: str, message: str, session_id: str, model: str,
            "new_session_id": new_session_id,
            # WHICH host this is (D2); `argv` beside it for Copilot only — see
            # the build above.
-           "backend": backend}
+           "backend": backend,
+           # Lean session (`--strict-mcp-config`): asked for by the caller
+           # (scheduled runs, canvas agents, App Doctor) or the Preferences
+           # default. Recorded so the heads-up fork rebuilds the SAME argv —
+           # its prompt-cache prefix includes the MCP tool roster.
+           "strict_mcp": bool(isolate_mcp or _strict_mcp_pref())}
     if fork_parent:
         # Read by `_claude_argv` only; the heads-up fork resumes the NEW
         # session by its own id and never re-truncates.

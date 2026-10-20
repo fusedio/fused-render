@@ -106,7 +106,8 @@ class _HostProc:
 def _argv_from_req(agent, req, run_dir):
     return agent._claude_argv(
         run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
-        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"],
+        strict_mcp=bool(req.get("strict_mcp", False)))
 
 
 # --------------------------------------------------------------- the MCP wire
@@ -2497,3 +2498,53 @@ def test_permission_server_does_not_import_urllib_request_eagerly():
     out = subprocess.run([sys.executable, "-c", code, path],
                          capture_output=True, text=True, check=True).stdout
     assert out.strip() == "False"
+
+
+# ------------------------------------------------------- lean (strict MCP) runs
+
+def _argv_for(agent, tmp_path, **kw):
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir / "perm", exist_ok=True)
+    return agent._claude_argv(str(run_dir), False, None, "", "", "", None, "/x/f.html", **kw)
+
+
+def test_strict_mcp_flag_follows_the_mcp_config_pair(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    lean = _argv_for(agent, tmp_path, strict_mcp=True)
+    i = lean.index("--mcp-config")
+    assert lean[i + 2] == "--strict-mcp-config"
+    assert "--strict-mcp-config" not in _argv_for(agent, tmp_path)
+
+
+def _start_req(agent, tmp_path, monkeypatch, *, pref, isolate):
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_strict_mcp_pref", lambda: pref)
+    seen = {}
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    kw = {"isolate_mcp": True} if isolate else {}
+    run_id = agent._start(str(target), "hi", "", "", "", **kw)["run_id"]
+    launch = json.load(open(os.path.join(agent.RUNS, run_id, "launch.json")))
+    return seen["req"], launch
+
+
+@pytest.mark.parametrize("pref,isolate,expected", [
+    (False, True, True), (True, True, True), (True, False, True), (False, False, False)])
+def test_start_decides_strict_from_pref_or_isolate(agent, tmp_path, monkeypatch,
+                                                   pref, isolate, expected):
+    req, launch = _start_req(agent, tmp_path, monkeypatch, pref=pref, isolate=isolate)
+    assert req["strict_mcp"] is expected
+    assert launch["strict_mcp"] is expected
+
+
+def test_strict_mcp_pref_reads_prefs_json_and_defaults_on(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_home_dir", lambda: str(tmp_path))
+    assert agent._strict_mcp_pref() is True  # no file
+    (tmp_path / "prefs.json").write_text("{not json")
+    assert agent._strict_mcp_pref() is True
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": False}))
+    assert agent._strict_mcp_pref() is False
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}))
+    assert agent._strict_mcp_pref() is True  # only a stored False turns it off

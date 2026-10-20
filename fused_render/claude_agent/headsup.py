@@ -267,7 +267,8 @@ def build_fork_argv(agent, run_dir: str):
         argv = agent._claude_argv(
             fork_dir, bool(launch.get("pane")), None, session_id,
             model, effort,
-            launch.get("extra_read_dirs") or [], launch.get("file") or "")
+            launch.get("extra_read_dirs") or [], launch.get("file") or "",
+            strict_mcp=bool(launch.get("strict_mcp")))
     except Exception:
         shutil.rmtree(fork_dir, ignore_errors=True)
         raise
