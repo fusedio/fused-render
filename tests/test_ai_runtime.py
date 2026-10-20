@@ -1046,7 +1046,7 @@ def test_auto_is_honoured_by_definition(monkeypatch):
     assert resolution.honoured and resolution.ignored_reason == ""
 
 
-def test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served(monkeypatch):
+def test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served(monkeypatch, tmp_path):
     """Resolution moves under models that are already loaded, and until now the
     only thing that noticed was `evict_stale_engines` — which has exactly ONE
     caller, the prefs PUT handler.
@@ -1066,9 +1066,16 @@ def test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served(monkeypatch):
                                runner_code="mlx-whisper", token="t", state="ready")
     monkeypatch.setitem(supervisor._workers, registry.SPEECH_TO_TEXT, worker)
 
+    # The resolution is memoised on prefs.json's stat, so the "edit" has to
+    # touch a real file, as a hand edit or a sync would.
+    prefs_file = tmp_path / "prefs.json"
+    prefs_file.write_text("{}")
+    monkeypatch.setattr("fused_render.shell.prefs._path", lambda: str(prefs_file))
+
     assert supervisor.ready_worker(registry.SPEECH_TO_TEXT) is worker
 
     _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "faster-whisper")
+    prefs_file.write_text('{"inference_engines": {"x": "faster-whisper"}}')
 
     assert supervisor.ready_worker(registry.SPEECH_TO_TEXT) is None
     # …and it is GONE, not merely refused. A worker nothing will ever route to

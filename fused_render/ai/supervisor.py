@@ -411,9 +411,47 @@ class Worker:
     #: thread checks it at every step so an evicted load stops downloading
     #: instead of finishing into a table it no longer belongs to.
     stopping: bool = False
+    #: Memo for `_resolved_code`: the (prefs.json stat, repo signature) key the
+    #: last resolution was computed under, and what it answered. A request path
+    #: re-resolves only when one of those inputs moved.
+    resolution_key: tuple | None = field(default=None, repr=False)
+    resolved_code: str | None = field(default=None, repr=False)
 
 
 _lock = threading.RLock()
+
+
+def _resolution_key(worker: "Worker") -> tuple | None:
+    """What `resolve_for_model` reads, as two cheap stat results: prefs.json
+    (preference and pins) and the model's cache folder signature (format
+    evidence). None when it cannot be taken, which never matches a memo."""
+    try:
+        from fused_render.ai import hub_cache
+        from fused_render.shell import prefs
+
+        try:
+            st = os.stat(prefs._path())
+            prefs_key = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            prefs_key = None
+        repo_dir = os.path.join(
+            hub_cache.hub_cache_dir(), "models--" + worker.model.replace("/", "--"))
+        return (prefs_key, hub_cache._repo_signature(repo_dir))
+    except Exception:  # noqa: BLE001 - no key means no memo, never a failure
+        return None
+
+
+def _resolved_code(worker: "Worker") -> str | None:
+    """The runner code `resolve_for_model` gives this worker's model, memoised
+    on the worker under `_resolution_key`. Call OUTSIDE `_lock`."""
+    key = _resolution_key(worker)
+    if key is not None and key == worker.resolution_key:
+        return worker.resolved_code
+    runner = registry.resolve_for_model(worker.capability, worker.model).runner
+    code = runner.code if runner is not None else None
+    worker.resolution_key = key
+    worker.resolved_code = code
+    return code
 #: capability -> the one Worker resident for it.
 _workers: dict[str, Worker] = {}
 #: model -> the weights-only fetch running for it right now.
@@ -2696,14 +2734,16 @@ def evict_stale_engines() -> list[str]:
     switches engines mid-download almost certainly wants the download.
     """
     with _lock:
-        stale = []
-        for worker in list(_workers.values()):
-            # The resolution FOR THE RESIDENT MODEL (D1387): the capability-level
-            # answer would call a model stale whenever its serving runner is
-            # not the one the preference names, and restart it forever.
-            resolved = registry.resolve_for_model(worker.capability, worker.model).runner
-            if resolved is not None and resolved.code != worker.runner_code:
-                stale.append(worker)
+        workers = list(_workers.values())
+    stale = []
+    for worker in workers:
+        # The resolution FOR THE RESIDENT MODEL (D1387): the capability-level
+        # answer would call a model stale whenever its serving runner is
+        # not the one the preference names, and restart it forever. Resolved
+        # OUTSIDE `_lock`: it reads prefs.json and the cache folder.
+        resolved = _resolved_code(worker)
+        if resolved is not None and resolved != worker.runner_code:
+            stale.append(worker)
     for worker in stale:
         unload(model=worker.model, capability=worker.capability)
     return [worker.model for worker in stale]
@@ -3282,8 +3322,11 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
 
     The resolution happens OUTSIDE `_lock` — it reads prefs.json off disk, and
     that is not something to do while holding the table every other thread
-    wants. It costs one small JSON read per generation request, which is the
-    price of the preference meaning something between PUTs.
+    wants. The answer is memoised on the worker, keyed on prefs.json's mtime and
+    size plus the model's cache-folder signature (two cheap stats per request),
+    so the full resolution reruns only when a preference, a pin or the cached
+    files actually changed — which is what keeps the preference meaning
+    something between PUTs.
     """
     with _lock:
         worker = _workers.get(capability)
@@ -3303,8 +3346,8 @@ def ready_worker(capability: str, model: str | None = None) -> Worker | None:
     if _exited(worker):
         _drop_gone(worker)
         return None
-    resolved = registry.resolve_for_model(capability, worker.model).runner
-    if resolved is not None and resolved.code != worker.runner_code:
+    resolved = _resolved_code(worker)
+    if resolved is not None and resolved != worker.runner_code:
         evict_stale_engines()
         return None
     return worker
