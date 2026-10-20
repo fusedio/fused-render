@@ -232,8 +232,8 @@ const ENTRIES = [
     section: "Chat",
     label: "Heads-up notes in chat",
     description:
-      "While Claude works, a side check looks for something important you might miss and shows a short note above the message box. Uses extra tokens from your Claude plan.",
-    keywords: "heads-up headsup note chat warning side check tokens",
+      "While Claude works, a side check looks for something important you might miss and shows a short note above the message box. Uses extra usage from your Claude plan.",
+    keywords: "heads-up headsup note chat warning side check",
   },
   {
     id: "notify-terminal",
