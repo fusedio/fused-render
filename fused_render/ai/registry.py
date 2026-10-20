@@ -1913,6 +1913,70 @@ def resolve(capability: str) -> Resolution:
     return Resolution(_first_available(capability), AUTO)
 
 
+def model_pin(model_id: str) -> str:
+    """The user's per-MODEL engine pin (D1387) — `AUTO` when there is none.
+    Read per resolution and defended exactly as `preferred_code` is."""
+    try:
+        from fused_render.shell import prefs
+
+        return prefs.engine_for_model(model_id)
+    except Exception:  # noqa: BLE001 - a pin must never break resolution
+        return AUTO
+
+
+def resolve_for_model(capability: str, model_id: str) -> Resolution:
+    """Which runner serves `model_id` as `capability` here (D1387).
+
+    A pin names a runner for ONE model and outranks everything else when that
+    runner can run here. A pin that cannot be honoured is IGNORED with a reason,
+    never an error — the D302 rule, one level down — and resolution continues
+    as if there were no pin. An id with no pin resolves as the capability does.
+    """
+    pinned = model_pin(model_id)
+    if pinned and pinned != AUTO:
+        runner = by_code(pinned)
+        if runner is None:
+            reason = f"{pinned} is not a runner this build knows"
+        elif runner.capability != capability:
+            reason = f"{runner.short} does not do {capability}"
+        else:
+            status = runner.available()
+            if status.ok:
+                return Resolution(runner, pinned)
+            reason = status.reason or f"{runner.short} cannot run here"
+        base = resolve(capability)
+        return Resolution(base.runner, pinned, reason)
+    return resolve(capability)
+
+
+def describe_model_engines() -> list[dict]:
+    """One row per DOWNLOADED model whose capability is known: its pin, what
+    serves it, and why a pin is not in force. The per-capability row's shape
+    (`describe_engines`), keyed by repo id, so the Engines tab renders both with
+    the same picker."""
+    from fused_render.ai import hub_cache
+
+    rows = []
+    for model in hub_cache.cached_models():
+        capability = model.capability
+        if not capability or capability not in capabilities():
+            continue
+        resolution = resolve_for_model(capability, model.repo_id)
+        pinned = model_pin(model.repo_id)
+        rows.append({
+            "id": model.repo_id,
+            "capability": capability,
+            "selected": pinned,
+            "effective": resolution.runner.code if resolution.runner else None,
+            "effectiveLabel": resolution.runner.label if resolution.runner else None,
+            "effectiveShortLabel": resolution.runner.short if resolution.runner else None,
+            "ignoredReason": resolution.ignored_reason or None,
+            "strandedLabel": _stranded_label(capability, pinned),
+            "choices": [_choice(r) for r in _RUNNERS if r.capability == capability],
+        })
+    return rows
+
+
 def for_capability(capability: str) -> Runner | None:
     """The runner that serves `capability` HERE, or None.
 
