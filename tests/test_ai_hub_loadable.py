@@ -624,17 +624,43 @@ def test_mlx_vlm_model_types_caches_by_venv_dir(tmp_path, monkeypatch):
     (frozenset({formats.DIFFUSERS_MODULAR_INDEX}), {}),
     (frozenset(), {"library_name": "diffusers"}),
 ])
-def test_whatever_admission_admits_as_diffusers_loaders_names_a_runner(names, config):
-    """Cross-layer invariant (the FLUX 3 klein report): the layer that admits
-    a repo and the layer that classifies its loaders must agree. A repo the
-    diffusers kind admits on a real signal must never have empty loaders."""
+def test_admission_is_wider_than_loading_for_diffusers(names, config):
+    """Admission is the wide net: it admits modular-only and `library_name`
+    repos. Loading is narrow: only a flat index has a loader (D1386 fix 1)."""
     admitted, _ = hub_loadable._admits(
         "diffusers", None, model_id="org/m", model_type=None, names=names,
         library_name=config.get("library_name"))
     assert admitted is True
-    assert formats.loaders(
+    assert bool(formats.loaders(
         repo_id="org/m", names=names, dirnames=set(), config=config,
-        torch_weights=False)
+        torch_weights=False)) == (formats.DIFFUSERS_INDEX in names)
+
+
+def test_mflux_available_models_sees_a_venv_installed_after_a_none(tmp_path, monkeypatch):
+    import types as _types
+
+    from fused_render import envinstall
+    from fused_render.ai import registry
+
+    venv_dir = tmp_path / "venv"
+    runner = _types.SimpleNamespace(folder=str(tmp_path / "project"))
+    monkeypatch.setattr(registry, "by_code", lambda code: runner)
+    monkeypatch.setattr(envinstall, "venv_dir_for", lambda folder: str(venv_dir))
+    assert hub_loadable.mflux_available_models() is None
+    assert hub_loadable.mflux_registry_stamp() is None
+    cfg = (venv_dir / "lib" / "python3.12" / "site-packages" / "mflux"
+           / "models" / "common" / "config")
+    cfg.mkdir(parents=True)
+    (cfg / "model_config.py").write_text('''
+AVAILABLE_MODELS = {
+    "flux3-image-klein": ModelConfig(
+        priority=11, aliases=["flux3"],
+        model_name="black-forest-labs/flux-3-image-klein", base_model=None),
+}
+''')
+    assert hub_loadable.mflux_available_models() == {
+        "black-forest-labs/flux-3-image-klein": "flux3-image-klein"}
+    assert hub_loadable.mflux_registry_stamp() is not None
 
 
 def test_mflux_registry_parser_returns_repo_to_registry_key_and_the_set_is_its_keys():
@@ -648,5 +674,5 @@ AVAILABLE_MODELS = {
     assert formats.parse_mflux_available_models(source) == {
         "black-forest-labs/flux-3-image-klein": "flux3-image-klein",
         "org/alias": "flux3-image-klein"}
-    assert hub_loadable._repo_ids_from_available_models(source) == frozenset({
+    assert frozenset(formats.parse_mflux_available_models(source)) == frozenset({
         "black-forest-labs/flux-3-image-klein", "org/alias"})

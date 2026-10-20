@@ -310,6 +310,8 @@ def load_worker(monkeypatch, base, with_mflux=True, model=None, mlx_core=None,
     assert spec is not None and spec.loader is not None, WORKER_PATH
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # The worker's own top-level `formats` instance: no dev-machine registry.
+    module.formats.set_mflux_registry_reader(lambda: {})
     return module, made
 
 

@@ -1388,18 +1388,35 @@ def test_speech_options_auto_bypasses_the_language_catalog():
         "voice": "aiden", "language": "auto"}
 
 
+def test_a_flat_index_snapshot_has_the_diffusers_loaders():
+    assert formats.loaders(
+        repo_id="org/m", names={"model_index.json"}, dirnames=set(), config={},
+        torch_weights=False) == tuple(formats.DIFFUSERS_RUNNERS)
+    assert formats.is_diffusers_loadable({"model_index.json"})
+
+
 @pytest.mark.parametrize("names,config", [
     ({"modular_model_index.json"}, {}),
     (set(), {"library_name": "diffusers"}),
-    ({"model_index.json"}, {}),
+    ({"modular_model_index.json"}, {"library_name": "diffusers"}),
 ])
-def test_a_diffusers_snapshot_is_any_of_the_three_signals(names, config):
-    """Admission (`hub_architecture.is_diffusers_repo`) and `loaders()` share
-    ONE predicate: a modular-only snapshot and a `library_name: diffusers`
-    config each read as the Diffusers runners, not only a flat index."""
+def test_modular_only_and_library_name_snapshots_have_no_diffusers_loader(names, config):
+    """Loading is narrower than admission: the worker has no ModularPipeline
+    path (D1386) and `library_name` is on every LoRA repo."""
     assert formats.loaders(
         repo_id="org/m", names=names, dirnames=set(), config=config,
-        torch_weights=False) == tuple(formats.DIFFUSERS_RUNNERS)
+        torch_weights=False) == ()
+    assert not formats.is_diffusers_loadable(names)
+
+
+@pytest.mark.parametrize("names,lib", [
+    (frozenset({"modular_model_index.json"}), None),
+    (frozenset(), "diffusers"),
+    (frozenset({"model_index.json"}), None),
+])
+def test_is_diffusers_snapshot_still_admits_all_three_signals(names, lib):
+    assert formats.is_diffusers_snapshot(names, lib)
+    assert not formats.is_diffusers_snapshot(frozenset({"x"}), "transformers")
 
 
 def test_is_diffusers_repo_delegates_to_the_formats_predicate():
@@ -1478,3 +1495,45 @@ def test_a_cached_flux3_repo_gets_the_mflux_runner_once_the_registry_lists_it():
     formats.set_mflux_registry_reader(
         lambda: formats.parse_mflux_available_models(_MFLUX_SOURCE))
     assert "mflux-image" in formats.loaders(**kwargs)
+
+
+def test_default_registry_reader_finds_hub_loadable_without_hub_cache(monkeypatch):
+    """The server's reader is lazy: no caller has to import `hub_cache` first."""
+    from fused_render.ai import hub_loadable
+    monkeypatch.setattr(hub_loadable, "mflux_available_models",
+                        lambda: formats.parse_mflux_available_models(_MFLUX_SOURCE))
+    formats.set_mflux_registry_reader(None)
+    assert "mflux-image" in formats.loaders(
+        repo_id="black-forest-labs/flux-3-image-klein", names={"model_index.json"},
+        dirnames={"transformer", "text_encoder", "vae"}, config={},
+        torch_weights=False)
+
+
+def test_in_process_registry_is_parsed_once_per_file_version(tmp_path, monkeypatch):
+    import builtins
+    import sys
+    cfg = tmp_path / "mflux" / "models" / "common" / "config"
+    cfg.mkdir(parents=True)
+    for d in (tmp_path / "mflux", tmp_path / "mflux" / "models",
+              tmp_path / "mflux" / "models" / "common", cfg):
+        (d / "__init__.py").write_text("")
+    (cfg / "model_config.py").write_text(_MFLUX_SOURCE)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in [m for m in sys.modules if m == "mflux" or m.startswith("mflux.")]:
+        monkeypatch.delitem(sys.modules, name)
+    formats.set_mflux_registry_reader(formats._in_process_mflux_registry)
+    real_open = builtins.open
+    opens = []
+
+    def counting(path, *a, **kw):
+        if str(path).endswith("model_config.py"):
+            opens.append(path)
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", counting)
+    rid = "black-forest-labs/flux-3-image-klein"
+    for _ in range(3):
+        assert formats.mflux_variant_recipe(rid)
+        assert formats.mflux_native_mode(rid) == "generate"
+        assert formats.mflux_edit_recipe(rid)
+    assert len(opens) == 1

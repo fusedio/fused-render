@@ -101,7 +101,6 @@ from typing import NamedTuple
 
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog as _catalog
-from fused_render.ai import hub_loadable as _hub_loadable  # noqa: F401 - installs formats' mflux registry reader
 from fused_render.ai import registry as _ai_registry
 from fused_render.ai import tasks as _tasks
 from fused_render.ai.runners import embed_common, formats
@@ -749,7 +748,7 @@ def _safetensors_params(path: str, quantized_bits: int | None = None) -> tuple[i
 # contents are immutable once written (every file in it is a link to a
 # content-addressed blob), so its own mtime is a sufficient key, and a Refresh
 # on a 40-repo cache re-reads nothing.
-_META_CACHE: dict[str, tuple[float, _RepoMeta]] = {}
+_META_CACHE: dict[str, tuple[tuple, _RepoMeta]] = {}
 
 
 def _default_snapshot(repo_dir: str) -> str | None:
@@ -777,6 +776,11 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         stamp = os.stat(snapshot).st_mtime
     except OSError:
         return _RepoMeta()
+    # The loaders derive from the installed mflux registry too, so its
+    # identity is part of the memo key: installing mflux after a download
+    # must not leave the card engine-less until restart.
+    from fused_render.ai import hub_loadable
+    stamp = (stamp, hub_loadable.mflux_registry_stamp())
     cached = _META_CACHE.get(snapshot)
     if cached is not None and cached[0] == stamp:
         return cached[1]
