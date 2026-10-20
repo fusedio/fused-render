@@ -41,12 +41,12 @@ Model it on the recap code in `fused_render/server/routers/claude_sessions.py` (
 - Make a fresh `tempfile.mkdtemp(prefix="headsup-")` as the fork's run dir. The MCP config and permission server for the fork must never write into the live run's dir.
 - Call `agent._claude_argv(fork_dir, pane, None, session_id, model, effort, extra_read_dirs, file)`. Pass `cli_mode=None` and `session_id` set to the resolved session, which yields `--resume <sid>`.
 - Append `["--fork-session", "--no-session-persistence", "--permission-mode", "dontAsk", "--max-turns", "1"]`.
-- `cwd` is `launch["cwd"]`, falling back to `tempfile.gettempdir()` if that dir does not exist.
+- `cwd` is `launch["cwd"]`. If it is missing or not a directory, return `None` (no check): `--resume` resolves the session from the cwd's project, so a fork started elsewhere could not resume. There is no tempdir fallback.
 - Remove the temp dir after the run, using `shutil.rmtree(ignore_errors=True)`.
 
 **`main_steps(run_dir) -> (turn_index, steps_in_current_turn, turn_open)`**
 - Read `out.jsonl` with the same row rules as `_turn_state` (agent.py:3308). Skip rows with `parent_tool_use_id` and skip `_not_a_turn_row` rows.
-- `turn_index` is the number of `result` rows seen.
+- `turn_index` is the 0-based index of the turn the steps belong to, i.e. the number of `result` rows seen BEFORE that turn. The closing `result` of a turn does not renumber it.
 - `steps_in_current_turn` is the number of `tool_use` content blocks in main-thread `assistant` rows after the last `result` row. If the last row is a `result`, it counts the turn that just ended, i.e. the rows between the previous `result` and this one.
 - `turn_open` uses the same rule as `_turn_state`.
 
@@ -55,7 +55,7 @@ Model it on the recap code in `fused_render/server/routers/claude_sessions.py` (
   - `subprocess.Popen` with `env=agent._spawn_env()`, `stdin=PIPE`, `stdout=PIPE`, `stderr=DEVNULL`, `text=True`, `encoding="utf-8"`, `errors="replace"`, `close_fds=False`.
   - Follow the same Popen kwargs as recap. Do not pass `cwd=` if recap does not. Check the PROJ atfork note: posix_spawn needs an absolute exe path, and `_claude_bin()` already returns one. Copy recap's spawn kwargs exactly, adding only `cwd` as recap does.
 - Send the prompt below over stdin as one stream-json user message.
-- Timeout is `HEADSUP_TIMEOUT = 120.0`. On timeout, kill the process and return `None`.
+- Timeout is `HEADSUP_TIMEOUT = 120.0`. On timeout, kill the fork's whole process group (`os.killpg(pid, SIGKILL)`, falling back to `proc.kill()`) so MCP children are not orphaned, and return `None`. On POSIX `_spawn_argv` launches through `[sys.executable, "-B", "-I", "-c", <setsid, chdir, execvp>, cwd, *argv]`, so the child makes itself a group leader; `Popen` still gets no `cwd=`, `start_new_session=` or `preexec_fn=` (all force fork, which crashes with libproj) and keeps `close_fds=False`. Without an absolute `sys.executable` it falls back to a `/bin/sh` wrapper (the group kill then finds no group and falls back to `proc.kill()`). Windows is unchanged.
 - Parse the terminal `result` event with the same logic as `_recap_result`. Reuse it by importing it, or move it somewhere shared if importing the router module would create a cycle. Write down which you chose.
 - Parse the reply with `parse_note(text)`.
 
@@ -132,7 +132,7 @@ Bound the state dict to the 64 most recent `run_id`s using an `OrderedDict` LRU.
 ### 5. Flag
 
 - Add `putChatHeadsupEnabled(enabled)` to `frontend/src/platform/lib/api.ts`, next to `putLivePreviewsEnabled` (around line 1835).
-- Add a `chat_headsup_enabled?: boolean` field to the `Prefs` type.
+- Add a `chat_headsup?: { enabled: boolean }` field to the `Prefs` type. The prefs GET returns `chat_headsup: {enabled}` (the shape every other flag uses); the PUT body key and the on-disk key are the flat `chat_headsup_enabled`.
 - Add the hook `useChatHeadsupEnabled()` to `frontend/src/apps/claude/feature-flag.ts`. Read it from the same shared prefs GET that `queue` uses, opt-in (`=== true`), with its own listener set.
 
 ### 6. Settings toggle
@@ -237,3 +237,11 @@ Answers to a card steer later checks, as in Claude Code's own "You should know".
 - **Feedback round.** Answers steer later checks: `headsup_memory.json` (seen/known/ignored_in_a_row/skip_checks), prompt sections + reply dedupe, `answer` on the dismiss route and hook, ignore back-off, read-only merge of Claude Code's own lists. Tests first; test_chat_headsup 66 pass, HeadsUp + useHeadsUp 20 pass.
 - **Quiet-aside round.** Restyled the note from a card to an aside in the recap register: faint 2px left rule only, inline tag + title, dim bullets, actions as text links, no accent on `warn`. CSS + HeadsUp.tsx only; HeadsUp + useHeadsUp 20 pass, no test pinned old markup/CSS.
 - **Button-affordance round.** Actions were bare grey text and did not read as clickable; now small outlined buttons (1px border, 6px radius, hover fill, Got it a step stronger), still no accent. CSS only; HeadsUp + useHeadsUp suites re-run.
+
+### Fix round 6
+
+- "Ask in chat" no longer calls the controller directly: `ClaudeChat` passes `useHeadsUp` a memoized seam built from the page's own `onFollowUp` / `onSend`, so it goes through `dispatchSend` (send latch, outbox parking, queue admission, optimistic bubble). The hook's `controller` type is narrowed to `{sendFollowUp, sendMessage}`. Wiring only, no new test (no test mounts ClaudeChat with the hook); suites unchanged.
+- `checked` (the `(turn, bucket)` pairs) now persists in `headsup.json` as `[turn, bucket]` int pairs, capped at the 200 highest, validated on load (non-int and bool dropped), and `_save` runs wherever `checked` grows. A restart or LRU eviction no longer re-runs a fork for an already-checked turn.
+- `build_fork_argv` returns `None` when `launch["cwd"]` is missing or not a directory; the tempdir fallback is gone (the fork could not resume from it). `tempfile` stays imported for the fork's private dir.
+- Timeout kills the process group. POSIX `_spawn_argv` is now the interpreter wrapper with `setsid` (replacing the `/bin/sh` form described in the earlier "Fork cwd" entry); `generate` calls `os.killpg` then `communicate(timeout=5)`. Tests: fake Popen asserts `killpg(pid, SIGKILL)`; a real subprocess test checks a grandchild is gone after a timeout.
+- Spec text aligned with the code: `turn_index` is the 0-based index of the turn the steps belong to, and the prefs GET payload is `chat_headsup: {enabled}` with PUT key `chat_headsup_enabled`.
