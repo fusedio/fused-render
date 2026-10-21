@@ -51,6 +51,14 @@ and its `pushState` navigations never pass through the policy delegate.
 A main menu is installed too (rumps never builds one): without an Edit menu
 a WKWebView has no ⌘C/⌘V/⌘X/⌘Z/⌘A, and there would be no ⌘W/⌘N/⌘R/⌘P/⌘M.
 
+THE ENGINE IS A PER-WINDOW CHOICE. With the experimental
+``chromium_windows_enabled`` preference on and the on-demand engine on disk
+(`fused_render.chromium`), a NEW window's content view is an
+`FRChromiumView` (Chromium via CEF, `chromium/mac.py`) instead of a
+`WKWebView`; everything around it — this NSWindow, the menu, the Dock, the
+titlebar buttons, focus-or-open, saved frames — is the same code. A window
+keeps the engine it was born with; `_Window.engine` says which.
+
 macOS-only. `app.py` imports this lazily inside `main()` and falls back to
 `webbrowser.open` if construction fails — the app is never left without a
 surface. Every method must run on the main thread; `app.py` hops with
@@ -688,27 +696,7 @@ class _WebDelegate(NSObject):
     # ---- window title and identity follow the page (KVO) -------------------
 
     def observeValueForKeyPath_ofObject_change_context_(self, key, obj, change, ctx):
-        window = self._window
-        if window is None:
-            return
-        if key == "title":
-            window.set_title(str(obj.title() or ""))
-        elif key == "URL":
-            u = obj.URL()
-            current = str(u.absoluteString()) if u is not None else None
-            was_embed = window.view == "embed"
-            window.key = window_policy.window_key_of(current)
-            window.view = window_policy.window_view_of(current)
-            if (window.view == "embed") != was_embed and not window._popup:
-                # The window crossed between shell and an app's run window —
-                # the title bar's Home/Edit out of an app window, say: it takes the frame of
-                # what it shows now and lets go of the old one, so neither
-                # side's saved frame is the other's to move. Edit hands
-                # before loading, so it is already a no-op here. A popup
-                # never holds a saved frame (`_place`).
-                self._manager.hand_frame(
-                    window, window_policy.frame_autosave_name(window.key, window.view))
-            window.sync_edit_button()
+        follow_page(self._manager, self._window, key, obj)
 
     # ---- NSWindowDelegate --------------------------------------------------
 
@@ -717,6 +705,31 @@ class _WebDelegate(NSObject):
 
     def windowDidBecomeKey_(self, notification):
         self._manager._touch(self._window)
+
+
+def follow_page(manager, window, key: str, view) -> None:
+    """The KVO body: the window's title and identity follow its page (either
+    engine's view exposes `title` and `URL` under KVO)."""
+    if window is None or manager is None:
+        return
+    if key == "title":
+        window.set_title(str(view.title() or ""))
+    elif key == "URL":
+        u = view.URL()
+        current = str(u.absoluteString()) if u is not None else None
+        was_embed = window.view == "embed"
+        window.key = window_policy.window_key_of(current)
+        window.view = window_policy.window_view_of(current)
+        if (window.view == "embed") != was_embed and not window._popup:
+            # The window crossed between shell and an app's run window —
+            # the title bar's Home/Edit out of an app window, say: it takes the frame of
+            # what it shows now and lets go of the old one, so neither
+            # side's saved frame is the other's to move. Edit hands
+            # before loading, so it is already a no-op here. A popup
+            # never holds a saved frame (`_place`).
+            manager.hand_frame(
+                window, window_policy.frame_autosave_name(window.key, window.view))
+        window.sync_edit_button()
 
 
 for _sel in (_SEL_POINTER_LOCK_REQUEST, _SEL_POINTER_LOCK_LOST, _SEL_GEOLOCATION,
@@ -728,11 +741,15 @@ for _sel in (_SEL_POINTER_LOCK_REQUEST, _SEL_POINTER_LOCK_LOST, _SEL_GEOLOCATION
 
 
 class _Window:
-    """One open window: the NSWindow, its WKWebView, and the strong delegate."""
+    """One open window: the NSWindow, its web view (a WKWebView, or an
+    FRChromiumView when ``engine`` is ``"chromium"``), and the strong
+    delegate."""
 
     def __init__(self, manager: "WindowManager", url: str, configuration,
-                 load: bool = True, html: str | None = None):
+                 load: bool = True, html: str | None = None,
+                 engine: str = "webkit"):
         self.manager = manager
+        self.engine = engine
         # What the window shows NOW (an app folder or a file path, or None):
         # kept current by the URL observer. Plain Python attribute, so the
         # server thread may read it without touching WebKit.
@@ -767,8 +784,18 @@ class _Window:
         self.ns.setTitlebarAppearsTransparent_(True)
         self.ns.setBackgroundColor_(_dynamic_titlebar_color())
 
-        self.webview = WKWebView.alloc().initWithFrame_configuration_(
-            NSMakeRect(0, 0, w, h), configuration)
+        if engine == "chromium":
+            from fused_render.chromium import mac as chromium_mac
+
+            self.webview = chromium_mac.make_view(NSMakeRect(0, 0, w, h))
+            self.delegate = chromium_mac.make_delegate(manager, self)
+            self.webview.setDelegate_(self.delegate)
+        else:
+            self.webview = WKWebView.alloc().initWithFrame_configuration_(
+                NSMakeRect(0, 0, w, h), configuration)
+            self.delegate = _WebDelegate.alloc().initWithManager_window_(manager, self)
+            self.webview.setNavigationDelegate_(self.delegate)
+            self.webview.setUIDelegate_(self.delegate)
         # WKWebView paints opaque white until the page's first frame; let the
         # theme-matched window background show through instead (no white flash).
         try:
@@ -778,9 +805,6 @@ class _Window:
         self.webview.setAllowsBackForwardNavigationGestures_(True)
         self.ns.setContentView_(self.webview)
 
-        self.delegate = _WebDelegate.alloc().initWithManager_window_(manager, self)
-        self.webview.setNavigationDelegate_(self.delegate)
-        self.webview.setUIDelegate_(self.delegate)
         for path in ("title", "URL"):
             self.webview.addObserver_forKeyPath_options_context_(
                 self.delegate, path, NSKeyValueObservingOptionNew, None)
@@ -788,8 +812,8 @@ class _Window:
         self._add_titlebar_buttons()
 
         self._place(self.key, self.view)
-        # A popup WebKit asked us to create (`window.open`) loads itself once
-        # we hand the view back; loading here too would race it.
+        # A popup the engine asked us to create (`window.open`) loads itself
+        # once we hand the view back; loading here too would race it.
         if load:
             if html is not None:
                 # A placeholder shown until the caller `load`s the real page
@@ -992,8 +1016,11 @@ class _Window:
                 webview.removeObserver_forKeyPath_(delegate, path)
             except Exception:  # noqa: BLE001 — already removed; nothing to undo
                 pass
-        webview.setNavigationDelegate_(None)
-        webview.setUIDelegate_(None)
+        if self.engine == "chromium":
+            webview.setDelegate_(None)
+        else:
+            webview.setNavigationDelegate_(None)
+            webview.setUIDelegate_(None)
         ns.setDelegate_(None)
         try:
             webview.stopLoading()
@@ -1009,6 +1036,13 @@ class _Window:
         if webview is None:
             return
         self.webview = self.ns = self.delegate = None
+        if self.engine == "chromium":
+            # CEF's browser is closed explicitly (its renderer process goes
+            # with it); dropping the view alone would leave it running.
+            try:
+                webview.closeBrowser()
+            except Exception:  # noqa: BLE001 — still break the cycle below
+                logger.debug("closeBrowser failed", exc_info=True)
         try:
             for vc in list(ns.titlebarAccessoryViewControllers() or ()):
                 vc.removeFromParentViewController()
@@ -1032,6 +1066,11 @@ def _run_print_panel(win, frame) -> None:
     none, for the main frame — File > Print. The per-frame operation is
     private WKWebView API (`_printOperationWithPrintInfo:forFrame:`); where
     it is missing, the main frame prints, which is what happened before."""
+    if getattr(win, "engine", "webkit") == "chromium":
+        # Chromium runs its own print flow (the system panel included) and
+        # prints the frame that asked, so `frame` has nothing to add.
+        win.webview.printPage()
+        return
     info = NSPrintInfo.sharedPrintInfo()
     op = None
     if frame is not None:
@@ -1211,10 +1250,63 @@ class WindowManager:
         if not self.enabled:
             _open_external(url)
             return None
-        win = _Window(self, url, self._configuration, html=html)
+        engine = self.engine_for_new_window()
+        try:
+            win = _Window(self, url, self._configuration, html=html, engine=engine)
+        except Exception:
+            if engine == "webkit":
+                raise
+            # The option must never cost a window: a Chromium view or
+            # delegate that fails to build gives this window to WebKit.
+            logger.exception("chromium view failed to build; this window is WebKit")
+            win = _Window(self, url, self._configuration, html=html, engine="webkit")
         self._windows.append(win)
         win.show()
         return win
+
+    def engine_for_new_window(self) -> str:
+        """``"chromium"`` or ``"webkit"`` for the NEXT window: the
+        preference, read now (not at boot — flipping it changes the next
+        window, never an open one), the engine's state on disk, and whether
+        the framework loads into this process. Any doubt is WebKit."""
+        from fused_render import chromium
+        from fused_render.shell.prefs import chromium_windows_enabled
+
+        try:
+            enabled = chromium_windows_enabled()
+            state = chromium.status()["state"] if enabled else chromium.MISSING
+            loadable = False
+            if enabled and state == chromium.READY:
+                from fused_render.chromium import mac as chromium_mac
+
+                loadable = chromium_mac.available()
+            return chromium.engine_for_new_window(enabled, state, loadable)
+        except Exception:  # noqa: BLE001 — a window is never lost to the option
+            logger.exception("chromium engine check failed; using WebKit")
+            return "webkit"
+
+    def open_chromium_popup(self, url: str) -> _Window:
+        """A window for a Chromium page's `window.open`: the view is made
+        here, the engine attaches the popup browser to it and performs the
+        load (see `_Window`)."""
+        win = _Window(self, url, None, load=False, engine="chromium")
+        self._windows.append(win)
+        win.show()
+        return win
+
+    def windows_not_on(self, engine: str) -> int:
+        """How many open windows were born on an engine other than
+        ``engine`` (popups included: they go with their opener). Any thread:
+        reads a copied list, no AppKit."""
+        return sum(1 for w in list(self._windows) if w.engine != engine)
+
+    def reopen_all(self) -> None:
+        """The engine preference changed: close every window and open one
+        Home window on the engine new windows get now. Main thread only."""
+        if not self.enabled:
+            return
+        self.close_all()
+        self.focus_or_open_home()
 
     def set_enabled(self, on: bool) -> None:
         """The preference flipped. Off closes every open window first, so
@@ -1522,6 +1614,18 @@ class WindowManager:
                 logger.debug("close failed; tearing down directly", exc_info=True)
             self._forget(win)
         self._windows.clear()
+
+    def shutdown_engines(self) -> None:
+        """Quit path, after `close_all`: stop the Chromium engine if it was
+        ever started (CEF leaves helper processes behind otherwise). Not
+        part of `close_all`: the preference going off closes windows but
+        the engine stays, since CEF cannot start twice in one process."""
+        import sys
+
+        if "fused_render.chromium.mac" in sys.modules:
+            from fused_render.chromium import mac as chromium_mac
+
+            chromium_mac.shutdown()
 
 
 def _build_main_menu(target) -> NSMenu:

@@ -6634,6 +6634,27 @@
     });
   }
 
+  // The whole transcript as ONE FILE's text: Markdown by default (the Bots
+  // export's layout), or the parsed turns as JSON — `GET /api/tasks/<key>/export`.
+  // opts: {format: "md"|"json"}, {scope: "all"} to find a task outside this app
+  // (as get()). Resolves to the text; the page decides whether to show it,
+  // feed it to a model, or hand it to the reader as a download.
+  function tasksExport(key, opts) {
+    const fmt = (opts && opts.format) === "json" ? "json" : "md";
+    return taskSessionRow(key, opts).then(async (row) => {
+      const res = await fetch(taskPath(row.key, "/export?format=" + fmt), {
+        method: "GET",
+        headers: callHeaders(),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw taskError(res.status,
+          (data && typeof data.detail === "string" && data.detail) || "HTTP " + res.status);
+      }
+      return res.text();
+    });
+  }
+
   // Only the fields given: an empty field is "not saying", never "clear it".
   // opts: {scope: "all"} to find a task outside this app (as get()).
   function tasksSettings(key, patch, opts) {
@@ -6900,6 +6921,7 @@
     markRead: tasksMarkRead,
     messages: tasksMessages,
     transcript: tasksTranscript,
+    export: tasksExport,
     settings: tasksSettings,
     watch: tasksWatch,
   };

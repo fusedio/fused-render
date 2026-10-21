@@ -141,6 +141,22 @@ describe("visibility", () => {
     const secs = sectionsOf(visibleSettings(ctx()), "general").map((s) => s.section);
     expect(secs).toEqual(["Appearance", "Windows", "Keyboard", "Updates", "Status bar", "Accessibility"]);
   });
+
+  test("the Chromium engine row is drawn only where the server says it is available", () => {
+    const off = ctx({}, { chromium_windows: { available: false, enabled: false } } as unknown as Partial<Prefs>);
+    expect(visibleSettings(off).map((s) => s.id)).not.toContain("chromium-windows");
+    expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("chromium-windows");
+    const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
+    expect(visibleSettings(on).map((s) => s.id)).toContain("chromium-windows");
+  });
+
+  test("Optional features keeps its sections in order, Windows last", () => {
+    const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
+    const secs = sectionsOf(visibleSettings(on), "features").map((s) => s.section);
+    expect(secs).toEqual(["Sidebar", "Windows"]);
+    // Without the capability the group is what it was.
+    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Sidebar"]);
+  });
 });
 
 describe("resolveGroup", () => {

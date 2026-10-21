@@ -308,8 +308,10 @@ test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () =>
   // this menu owns no vocabulary of the annotation subsystem's.
   expect(src).toContain("locked?: boolean");
   expect(src).toContain("lockedReason?: string");
-  const items = src.split("<DropdownMenuItem").slice(4);
-  expect(items).toHaveLength(2); // Archive and Delete; full screen and the terminal/copy items are neither
+  const items = src.split("<DropdownMenuItem").slice(5);
+  // Archive and Delete; full screen, the terminal/copy items and Download
+  // transcript are none of them — saving a copy changes nothing.
+  expect(items).toHaveLength(2);
   for (const item of items) {
     const head = item.slice(0, item.indexOf("</DropdownMenuItem>"));
     // A run is still named first — it is the refusal the reader cannot lift
@@ -387,6 +389,19 @@ test("still answers the number the listing holds for a pending: key", async () =
 // does not exist and Archive would file work that has not happened. Delete
 // stays, because calling the message off IS what a reader wants here (Akshil,
 // 2026-09-12).
+test("offers Download transcript on any chat with a task behind it, not the landing page or a queued chat", () => {
+  const src = readFileSync(join(import.meta.dir, "Kebab.tsx"), "utf8");
+  // Gated on `hasTask` like Archive: the export route reads the task
+  // listing, so a session it does not know would 404 (CodeRabbit, #1815).
+  const row = src.slice(src.indexOf("{!landing && sessionId && hasTask && !queued ? ("));
+  expect(row.slice(0, row.indexOf("</DropdownMenuItem>"))).toContain('"Download transcript"');
+  expect(src).toContain('await downloadTaskTranscript(sessionId, "md")');
+  // Between the terminal items and Archive, the order the Tasks kebab uses.
+  expect(src.indexOf('"Download transcript"')).toBeLessThan(
+    src.indexOf("{!landing && hasTask && !queued ? ("),
+  );
+});
+
 test("hides Continue in terminal and Archive while the chat is queued", () => {
   const src = readFileSync(join(import.meta.dir, "Kebab.tsx"), "utf8");
   expect(src).toContain("queued?: boolean");

@@ -1589,6 +1589,12 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // Chromium (CEF) engine for app windows (fused_render/shell/prefs.py's
+  // `chromium_windows_enabled`): experimental, off by default. `available` is
+  // false unless this is the macOS app with native windows, where the row is
+  // not rendered. `engine` is the on-disk engine's download state. OPTIONAL:
+  // an older server answers without it.
+  chromium_windows?: ChromiumWindowsState;
   // The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
   // catalog's initial pick, the `fused` wrapper's env outside a canvas clone,
   // share uploads' target. Canvases carry their own env, so this is a plain
@@ -1602,6 +1608,36 @@ export interface Prefs {
   // the last one off (400 "turn on the other agent first"). OPTIONAL: an older
   // server answers without it, and the reader treats absence as Claude only.
   agents?: { claude: boolean; copilot: boolean; default: string };
+}
+
+export type ChromiumEngineState =
+  | "unsupported"
+  | "unpublished"
+  | "missing"
+  | "downloading"
+  | "ready"
+  | "failed";
+
+export interface ChromiumEngineStatus {
+  state: ChromiumEngineState;
+  /** 0..1 while downloading (download ~0..0.9, then verify/unpack). */
+  progress: number;
+  /** "download" | "verify" | "unpack" while downloading. */
+  phase?: string;
+  /** Set when `state` is "failed". */
+  error: string | null;
+  engine_version: string | null;
+  cef_version: string | null;
+  path: string | null;
+}
+
+export interface ChromiumWindowsState {
+  enabled: boolean;
+  available: boolean;
+  engine: ChromiumEngineStatus;
+  // Open windows born on the other engine (they keep theirs): the row
+  // offers "Reopen windows" while this is > 0. OPTIONAL: older server.
+  stale_windows?: number;
 }
 
 export interface LauncherPrefs {
@@ -1844,6 +1880,31 @@ export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
 
 export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
+}
+
+/** Turning it ON also starts the engine download server-side. */
+export function putChromiumWindowsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { chromium_windows_enabled: enabled });
+}
+
+/** Just the `chromium_windows` slice — the cheap poll while downloading. */
+export function getChromiumEngine(): Promise<ChromiumWindowsState> {
+  return getJson<ChromiumWindowsState>("/api/prefs/chromium");
+}
+
+/** Retry the engine download after a failure. */
+export function installChromiumEngine(): Promise<ChromiumWindowsState> {
+  return postJson<ChromiumWindowsState>("/api/prefs/chromium/install", {});
+}
+
+/** Close every app window and open one Home window on the current engine. */
+export function reopenChromiumWindows(): Promise<ChromiumWindowsState> {
+  return postJson<ChromiumWindowsState>("/api/prefs/chromium/reopen-windows", {});
+}
+
+/** Delete the engine from disk; the server also turns the preference off. */
+export function removeChromiumEngine(): Promise<ChromiumWindowsState> {
+  return postJson<ChromiumWindowsState>("/api/prefs/chromium/remove", {});
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
@@ -4401,6 +4462,50 @@ export function markTaskIdle(sessionId: string, turn: number): Promise<{ ok: boo
     session_id: sessionId,
     turn,
   });
+}
+
+/** One task's whole transcript as a file — `GET /api/tasks/{key}/export`.
+ *  `md` is the Bots export's layout; `json` is the parsed turns the chat
+ *  restores from. The kebab's "Download transcript" row hands it to the
+ *  reader through a blob link, the same door `downloadTemplatesExport` uses. */
+export type TaskExportFormat = "md" | "json";
+
+export function taskExportUrl(key: string, format: TaskExportFormat = "md"): string {
+  return `/api/tasks/${encodeURIComponent(key)}/export?format=${format}`;
+}
+
+export async function downloadTaskTranscript(
+  key: string,
+  format: TaskExportFormat = "md",
+): Promise<void> {
+  const res = await fetch(taskExportUrl(key, format));
+  if (!res.ok) {
+    let message = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === "string") message = body.detail;
+    } catch {
+      /* non-JSON error body — keep the status-based message */
+    }
+    throw new Error(message);
+  }
+  // The server names the file (`<title-slug>-<session8>.<fmt>`); read it
+  // back off the header so the saved name matches the row that was pressed.
+  const disposition = res.headers.get("content-disposition") || "";
+  const named = /filename="([^"]+)"/.exec(disposition);
+  const filename = named ? named[1] : `transcript.${format}`;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
 }
 
 // "Show more": the whole thread, newest first. Deliberately a separate call —

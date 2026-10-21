@@ -6,6 +6,7 @@ import type { PrefControlProps } from "./SettingRow";
 import {
   AppearanceControl,
   AutoUpdateControl,
+  ChromiumWindowsControl,
   LauncherHotkeyControl,
   LauncherRowControl,
   NativeWindowsControl,
@@ -101,6 +102,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   marketplace: MarketplaceControl,
   monitor: MonitorControl,
   reader: ReaderControl,
+  "chromium-windows": ChromiumWindowsControl,
   lan: LanControl,
   "fused-account": FusedAccountControl,
   "workbench-env": WorkbenchEnvControl,
