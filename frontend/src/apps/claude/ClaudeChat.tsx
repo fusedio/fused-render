@@ -48,6 +48,7 @@ import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
 import type { SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
+import type { PermissionMode } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
@@ -3829,13 +3830,17 @@ function ChatBody(props: ChatBodyProps) {
       permission: defaults.permission,
       setModel: defaults.setModel,
       setEffort: defaults.setEffort,
-      setPermission: defaults.setPermission,
+      // The pill moves the param/record, AND a live run takes it now (no send).
+      setPermission: (value: PermissionMode) => {
+        defaults.setPermission(value);
+        void controller.applyPermission(value);
+      },
       backend: defaults.backend,
       backendFixed: defaults.backendFixed,
       setBackend: defaults.setBackend,
       ready: defaults.pillsReady,
     }),
-    [defaults],
+    [defaults, controller],
   );
 
   const actions = useMemo(

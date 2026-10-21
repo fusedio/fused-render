@@ -7237,6 +7237,13 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **Step boundary.** `main_steps`'s incremental cache also tracks unanswered main-thread `tool_use` ids (`pending_tools`). `_poll` returns idle on an open turn while any is unanswered, without recording the bucket in `checked`, so the same bucket fires on a later poll once the step completes. Turn-end behaviour is unchanged. Mid-turn checks stay.
 - **Origin.** The prompt rules are ported from Claude Code's built-in `you-should-know` plugin (2.1.305), which forks in-process at turn steps (every 6th step) and whose prompt carries the "agent keeps working / don't race it / skip what the user is already discussing" rules.
 
+## D1395: Claude chat approvals default to auto, changeable globally and per chat (2026-10-21, claude-permission)
+
+- **Decision.** New pref `claude_default_permission` (default `auto`; `plan`/`prompt`/`acceptEdits`/`auto`, 400 otherwise), shown as "Default approvals for new chats" in Preferences. An empty `permission_mode` in `_start` uses it; in `_send` it still means "no change". Copilot, bots and scheduled jobs are unchanged.
+- **Ranking.** Frontend `resolvePermission(param, recorded, globalDefault)`: this chat's recorded pick, then the `permission` param, then the pref, then `auto`. A present-but-unknown value is `prompt` (strictest), never a looser fallback.
+- **Per chat.** `permission` is recorded beside model/effort (`tasks_store.record_settings`, `/api/tasks/settings`) and written back into the params on read so a remounted Task page keeps the pick.
+- **Live apply.** `agent._set_mode` (extracted from `_send`, exposed as the `set_mode` action) switches a running host's mode without a message. A `{respawn: true}` reply (Copilot acceptEdits) is left for the next send.
+
 ## D1396: Task-page chat sidebar draws a slim chat header (2026-10-21, task-peek-chat-header)
 
 - **Problem.** The Task side peek and peek modal hid the chat top bar, so the worktree menu, the worktree hint chip and the session id the explorer `_side=claude` sidebar shows were missing.
