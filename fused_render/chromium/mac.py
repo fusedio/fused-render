@@ -111,7 +111,10 @@ def _load() -> None:
     objc.loadBundle("FusedChromium", globals(), bundle_path=fw)
     engine_cls = objc.lookUpClass("FRChromiumEngine")
     cache = os.path.join(chromium.engines_root(), "profile")
-    os.makedirs(cache, exist_ok=True)
+    # Owner-only, and enforced on an existing dir too: with the mock keychain
+    # the file mode is what guards the profile (cookies, local storage).
+    os.makedirs(cache, mode=0o700, exist_ok=True)
+    os.chmod(cache, 0o700)
     from fused_render.mac_window import THEME_HANDLER_NAME, USER_AGENT_MARKER
 
     engine = engine_cls.startWithEngineDirectory_cachePath_userAgentProduct_scriptMessageHandlerNames_(

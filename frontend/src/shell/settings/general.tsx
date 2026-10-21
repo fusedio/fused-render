@@ -129,7 +129,9 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
 
   // The poll merges into the LATEST prefs, not the ones it started with.
   const latest = useRef({ prefs, onChange });
-  latest.current = { prefs, onChange };
+  useEffect(() => {
+    latest.current = { prefs, onChange };
+  });
   const merge = useCallback((next: ChromiumWindowsState) => {
     const { prefs: p, onChange: publish } = latest.current;
     publish({ ...p, chromium_windows: next });
@@ -189,8 +191,10 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
     setBusy(true);
     try {
       merge(await reopenChromiumWindows());
-    } catch {
-      /* the window closed under the request: that is the reopen happening */
+    } catch (e) {
+      // A response with a status is the server refusing (409: no window host);
+      // no status is the window closing under the request, the reopen itself.
+      if (typeof (e as { status?: unknown }).status === "number") setError((e as Error).message);
     } finally {
       setBusy(false);
     }

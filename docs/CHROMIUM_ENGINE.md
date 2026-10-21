@@ -2,7 +2,9 @@
 
 The desktop app's windows are `WKWebView`s. With **Preferences → Optional
 features → Chromium engine for windows** on, every *new* app window is drawn by
-Chromium (the Chromium Embedded Framework, CEF) instead. Everything around the
+Chromium (the Chromium Embedded Framework, CEF) once the engine is on disk and
+loaded into the process; until then (downloading, failed, unsupported) a new
+window is a `WKWebView` as before. Everything around the
 view is unchanged: the same `NSWindow`, main menu, Dock icon, ⌘-shortcuts,
 titlebar buttons, focus-or-open and saved frames. The menu-bar dock, the
 launcher, the pinned popover and the recording pill stay on WebKit.
@@ -138,22 +140,29 @@ change. Security patches to Chromium are therefore ours to roll by bumping
 ## Status of this implementation
 
 The Python, API and frontend halves are unit-tested on every OS (the delegate
-is tested against stub `objc`/`AppKit` modules). The native framework was
-written against the CEF 139 headers (branch `chromium/7258`) and desk-checked
-against them, but it has **not been compiled or run**: that needs a Mac with
-Xcode, the first `build.sh` run, and a session in the packaged app. Expect the
-first build to surface compiler nits; the API surface and the PyObjC contract
-(`FRChromiumView.h` ↔ `chromium/mac.py`) are what the review pinned down.
+is tested against stub `objc`/`AppKit` modules). The native framework compiles
+and runs: engines 1–5 were built by the workflow and the owner ran them on an
+Apple silicon Mac (2026-10-20/21), navigating canvases, Preferences and app
+windows. Three things the first run fixed, all in `FRChromiumEngine.mm`:
 
-Known gaps for the first real run to look at:
+* `main_bundle_path` is what every helper gets as `--main-bundle-path`;
+  Chromium's `AmIBundled()` and the base bundle ID (the Mach rendezvous port
+  every child looks up at start) both derive from it. A non-`.app` host
+  (`python -m fused_render.app`) borrows the helper app as that bundle;
+* the external message pump re-arms a timer at the maximum delay after every
+  run (cefclient's fallback): CEF does not ask for a run for every task that
+  becomes ready, and without it a navigation stalled after `OnBeforeBrowse`;
+* `--use-mock-keychain`, so the first window never asks for keychain access.
 
-* the CEF version pin — the CDN index (`cef-builds.spotifycdn.com/index.json`)
-  was not reachable from the authoring environment; confirm
-  `139.0.37+gb457b0b+chromium-139.0.7258.139` exists there, or move to the
-  current stable branch (newer is better for security anyway);
+Not yet exercised:
+
+* ⌘-click / `window.open` popups, downloads, `alert()`/`confirm()`/`prompt()`,
+  `<input type=file>`, the right-click menu, ⌘P, `requestFullscreen`;
 * the external message pump under modal panels (the JS and file dialogs are
   answered on the next run-loop turn so the pump never nests; verify no
   input lag);
+* the engine prefetch during an app update (`update/mac.py`): needs a release
+  whose manifest pins a newer engine than the one installed;
 * `drawsBackground`: a windowed Chromium browser is always opaque, so the
   first frame is painted in the window's background colour rather than
   transparent;

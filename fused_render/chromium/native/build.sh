@@ -28,12 +28,16 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-read -r CEF_VERSION ENGINE_VERSION < <(python3 - "$HERE/../manifest.json" <<'EOF'
+read -r CEF_VERSION ENGINE_VERSION CEF_SHA1 < <(python3 - "$HERE/../manifest.json" "$ARCH" <<'EOF'
 import json, sys
 m = json.load(open(sys.argv[1]))
-print(m["cef_version"], m["engine_version"])
+print(m["cef_version"], m["engine_version"], (m.get("cef_sha1") or {}).get(sys.argv[2]) or "-")
 EOF
 )
+if [[ "$CEF_SHA1" == "-" ]]; then
+  echo "FATAL: manifest.json has no cef_sha1 for $ARCH (the CDN publishes it beside the tarball)" >&2
+  exit 1
+fi
 case "$ARCH" in
   arm64) CEF_PLATFORM="macosarm64" ;;
   x86_64) CEF_PLATFORM="macosx64" ;;
@@ -46,10 +50,31 @@ BUILD="$HERE/build-$ARCH"
 mkdir -p "$CACHE" "$BUILD" "$OUT_DIR"
 
 echo "==> engine $ENGINE_VERSION / CEF $CEF_VERSION / $ARCH"
-if [[ ! -d "$CACHE/$DIST" ]]; then
+# The tarball is verified against the manifest's sha1 on EVERY run (the CI
+# cache is keyed by manifest, but a bad entry would otherwise be reused), and
+# the extracted tree counts only with a marker naming the verified digest:
+# an extraction that died halfway is redone, into a temp dir renamed into
+# place.
+TARBALL="$CACHE/$DIST.tar.bz2"
+if [[ ! -f "$TARBALL" ]]; then
   echo "==> fetching $DIST_URL"
-  curl -fL --retry 3 -o "$CACHE/$DIST.tar.bz2" "$DIST_URL"
-  tar -xjf "$CACHE/$DIST.tar.bz2" -C "$CACHE"
+  curl -fL --retry 3 -o "$TARBALL" "$DIST_URL"
+fi
+ACTUAL_SHA1="$(shasum -a 1 "$TARBALL" | cut -d' ' -f1)"
+if [[ "$ACTUAL_SHA1" != "$CEF_SHA1" ]]; then
+  rm -f "$TARBALL"
+  echo "FATAL: $DIST.tar.bz2 sha1 $ACTUAL_SHA1 != manifest $CEF_SHA1 (removed; rerun to refetch)" >&2
+  exit 1
+fi
+MARKER="$CACHE/$DIST/.verified-sha1"
+if [[ ! -f "$MARKER" || "$(cat "$MARKER")" != "$CEF_SHA1" ]]; then
+  echo "==> extracting $DIST"
+  rm -rf "$CACHE/$DIST" "$CACHE/.extract-$DIST"
+  mkdir -p "$CACHE/.extract-$DIST"
+  tar -xjf "$TARBALL" -C "$CACHE/.extract-$DIST"
+  mv "$CACHE/.extract-$DIST/$DIST" "$CACHE/$DIST"
+  rmdir "$CACHE/.extract-$DIST"
+  printf '%s' "$CEF_SHA1" > "$MARKER"
 fi
 CEF_ROOT="$CACHE/$DIST"
 

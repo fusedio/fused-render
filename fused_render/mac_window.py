@@ -1250,8 +1250,16 @@ class WindowManager:
         if not self.enabled:
             _open_external(url)
             return None
-        win = _Window(self, url, self._configuration, html=html,
-                      engine=self.engine_for_new_window())
+        engine = self.engine_for_new_window()
+        try:
+            win = _Window(self, url, self._configuration, html=html, engine=engine)
+        except Exception:
+            if engine == "webkit":
+                raise
+            # The option must never cost a window: a Chromium view or
+            # delegate that fails to build gives this window to WebKit.
+            logger.exception("chromium view failed to build; this window is WebKit")
+            win = _Window(self, url, self._configuration, html=html, engine="webkit")
         self._windows.append(win)
         win.show()
         return win

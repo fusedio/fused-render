@@ -58,6 +58,10 @@ def mac(monkeypatch):
     import fused_render.chromium.mac as m
 
     importlib.reload(m)
+    # Registered through monkeypatch so teardown removes the stub-backed module
+    # (delitem/delattr above record nothing when the key was absent).
+    monkeypatch.setitem(sys.modules, "fused_render.chromium.mac", m)
+    monkeypatch.setattr(pkg, "mac", m, raising=False)
     m._loaded.clear()
     m._mw = mw
     return m

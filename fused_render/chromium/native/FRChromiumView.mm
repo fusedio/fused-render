@@ -97,6 +97,7 @@ enum FRMenuCommand {
 - (void)browserCreated:(CefRefPtr<CefBrowser>)browser;
 - (void)browserClosed;
 - (void)popupAborted;
+- (void)popupCreationStarted;
 - (void)addressChanged:(const CefString &)url;
 - (CefRefPtr<CefClient>)client;
 - (FRChromiumEngine *)engine;
@@ -206,6 +207,10 @@ class FRClient : public CefClient,
     extra_info = ExtraInfo([popup engine]);
     settings.background_color = [popup backgroundCefColor];
     pending_popups_[popup_id] = popup;
+    // The popup's browser is now CEF's to create (asynchronously): the view
+    // is `creating`, so a close before OnAfterCreated is honoured there and a
+    // loadRequest: meanwhile waits instead of making a second browser.
+    [popup popupCreationStarted];
     return false;
   }
 
@@ -849,6 +854,10 @@ class FRClient : public CefClient,
   _browser = nullptr;
   _closing = YES;
   [_engine unregisterView:self];
+}
+
+- (void)popupCreationStarted {
+  _creating = YES;
 }
 
 - (void)popupAborted {

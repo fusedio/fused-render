@@ -229,13 +229,19 @@ def _run_install(art: Artifact, fetch) -> None:
         _install_sync(art, fetch or _http_fetch)
         logger.info("chromium engine %s (%s) ready at %s",
                     art.engine_version, art.cef_version, dest)
-        prune_others(art)
     except Exception as exc:  # noqa: BLE001 — reported through status()
         logger.warning("chromium engine install failed: %s", exc)
         with _state.lock:
             _state.error = str(exc) or exc.__class__.__name__
             _state.failed_for = dest
         shutil.rmtree(dest, ignore_errors=True)
+        return
+    # Outside the handler above: a prune failure must never delete the
+    # engine that just installed, nor report the install as failed.
+    try:
+        prune_others(art)
+    except Exception:  # noqa: BLE001
+        logger.debug("chromium prune failed", exc_info=True)
 
 
 def prune_others(art: Artifact | None = None) -> list[str]:
