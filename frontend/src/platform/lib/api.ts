@@ -4094,12 +4094,13 @@ export type TaskPulseTask = Pick<
   | "background_jobs"
   // What the notice titles a task by (tasks-lib `cardTitleLine`) — optional,
   // each absent with its flag off or on an older server.
-  | "title_source"
   | "title_mode"
   | "recap"
   | "last_reply"
   | "last_message"
->;
+> &
+  // Optional: a pulse row from a server that predates it carries none.
+  Partial<Pick<Task, "title_source">>;
 
 /** The model / thinking a NEW task opens on: the global Claude preference
  *  (`~/.claude/settings.json` `model` / `effortLevel`, the pair the Claude
