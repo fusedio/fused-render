@@ -568,9 +568,14 @@ def _push_blocked(root):
                allow=(0, 1)).decode("utf-8", "replace").strip()
     m = _GITHUB_REPO.match(url)
     who = m.group(1) if m else "its author's version on GitHub"
+    # `fused.ownerunknown`: fused could not ask GitHub whose app this is yet —
+    # if it turns out to be yours, it publishes as usual from then on.
+    unknown = _git(root, "config", "--local", "--get", "fused.ownerunknown",
+                   allow=(0, 1)).decode("utf-8", "replace").strip() == "true"
+    until = " until Fused knows whether this app is yours" if unknown else ""
     if _app_page_on():
-        return f"This app follows {who}. Send your changes from its app page."
-    return f"This copy of {who} has changes of its own, and they stay on this computer."
+        return f"This app follows {who}{until}. Send your changes from its app page."
+    return f"This copy of {who} has changes of its own, and they stay on this computer{until}."
 
 
 def _app_page_on():

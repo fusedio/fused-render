@@ -1029,8 +1029,48 @@ def test_sign_in_upgrade_with_flags_off_is_their_repo_auto_pushing(world, monkey
     classify.after_sign_in({"login": "alice", "id": 1})
     assert classify.kind_of(bob) == "own" and not classify.is_held(bob)
     assert store.get(bob)["hold"] is None
+    assert store.activity(bob)[0]["text"] == classify.PUBLISHED_AS_USUAL
     r = _sync(bob, push=True)
     assert r["pushed"] is True and _remote_main(world) == git(bob, "rev-parse", "HEAD").strip()
+
+
+def test_unknown_owner_wording_never_promises_the_edits_stay(world):
+    """Final gate (R7): a GitHub-link copy whose owner fused couldn't ask
+    about may turn out to be yours (then it publishes) — Doctor and the git
+    panel say "until Fused knows whether this app is yours"."""
+    import importlib.util
+
+    from fused_render import app_doctor
+
+    bob = _install(world)  # signed out: owner unchecked
+    _sync(bob)
+    row = app_doctor._contrib_git_row(bob)
+    assert row["detail"] == ("Your changes stay on this computer until Fused knows "
+                             "whether this app is yours.")
+    ops_path = os.path.join(os.path.dirname(app_git.__file__), "templates", "git", "ops.py")
+    spec = importlib.util.spec_from_file_location("ops_for_contrib_test", ops_path)
+    ops = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ops)
+    assert ops._push_blocked(bob).endswith("until Fused knows whether this app is yours.")
+    store.update(bob, lambda r: r.__setitem__("owner_checked", True))
+    _sync(bob)
+    assert "until Fused knows" not in ops._push_blocked(bob)
+    assert "until you propose them" in app_doctor._contrib_git_row(bob)["detail"]
+
+
+def test_a1_off_while_held_says_so_before_publishing(world, monkeypatch):
+    """Final gate: A1 switched off while held — the next push publishes the
+    held edits; one activity line says so and the hold is dropped."""
+    _prefs(world.home, contrib_sources_enabled=True)
+    bob = _install(world)
+    _commit(bob, "b1.txt", "x\n", "l1")
+    monkeypatch.setattr(classify, "_owns", lambda owner, ident: True)
+    classify.after_sign_in({"login": "alice", "id": 1})
+    assert classify.is_held(bob)
+    _prefs(world.home)  # A1 off
+    r = _sync(bob, push=True)
+    assert r["pushed"] is True and store.get(bob)["hold"] is None
+    assert store.activity(bob)[0]["text"] == classify.PUBLISHED_AS_USUAL
 
 
 def test_a_finder_duplicate_of_a_github_copy_is_a_github_copy(world):

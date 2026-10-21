@@ -1098,6 +1098,10 @@ def _sync_plain(root, *, action, push, kind=None):
                     classify.release_hold(root)
                 else:
                     held = True
+            else:
+                # A1 off since the hold was set: the push below publishes
+                # the held edits — one activity line says so first.
+                classify.settle_stale_hold(root)
         except Exception:  # noqa: BLE001 — unknown hold reads as held
             logger.exception("contrib hold check failed for %s", root)
             held = True

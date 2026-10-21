@@ -88,6 +88,8 @@ MESSAGES = {
     "edits": ("You have unsaved edits to {files} that the newer version on GitHub "
               "also changes."),
     "publish-failed": "Couldn't save your edits to GitHub. Try again.",
+    "publish-hook": ("Your own check in this app's folder stopped the publish, so your edits "
+                     "aren't on GitHub yet. Fix what it found, then try again."),
     "publish-auth": ("GitHub didn't accept this Mac's sign-in, so your edits aren't "
                      "saved there yet."),
     "merging": "Claude is combining your edits with the version on GitHub.",
@@ -114,6 +116,7 @@ FIXES = {
     "edits": ["save-edits"],
     "publish-failed": ["publish-now"],
     "publish-auth": ["publish-now"],
+    "publish-hook": ["publish-now"],
     "held": ["publish-now"],
     "unknown": ["publish-now", "use-github"],
     "kept": ["bring-in"],
@@ -459,13 +462,37 @@ def _stuck(root, f: _Facts, state: str, *, files=(), then=None, unknown=False) -
 def _push(root, branch) -> tuple[bool, str | None]:
     """`git push -- origin <b>` (the author's own remote, never forced).
     `(pushed, why-not)`: why-not is `offline`, `rejected` (GitHub moved
-    again: the next sync combines and pushes), `auth` or `git-failed`."""
-    r = replay.git(root, "push", "--", "origin", branch)
+    again: the next sync combines and pushes), `hook`, `auth` or
+    `git-failed`."""
+    r = _publish_git(root, "push", "--", "origin", branch)
     if gu._ok(r):
         return True, None
-    why = gu._classify(r, push=True)
+    why = _push_failure(root, r)
     logger.info("ownsync: push from %s refused (%s): %s", root, why, gu._text(r))
     return False, why
+
+
+def _publish_git(root, *args):
+    """A push of the author's OWN copy to her own GitHub repo (§16.12 P5):
+    plain `git_upstream._run` — her hooks (a secret scanner in pre-push)
+    and her fsmonitor run exactly as for a push she makes herself. Only
+    fused's private operations (reads, in-memory picks/merges, backups) go
+    through `replay.git`'s hook-free SAFE_CONFIG."""
+    return gu._run(root, *args)
+
+
+def _push_failure(root, result) -> str:
+    """Why a push failed: `gu._classify`'s reason, or `hook` when it is a
+    git-level failure and the repo has its own pre-push check (the only
+    thing on this side that refuses a push without a remote answer)."""
+    why = gu._classify(result, push=True)
+    if why == "git-failed":
+        path = gu._out(gu._run(root, "rev-parse", "--git-path", "hooks/pre-push"))
+        if path and not os.path.isabs(path):
+            path = os.path.join(root, path)
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return "hook"
+    return why
 
 
 def _after_push(root, f: _Facts, *, pulled, pushed, why) -> dict:
@@ -478,7 +505,7 @@ def _after_push(root, f: _Facts, *, pulled, pushed, why) -> dict:
     if why == "rejected":
         _settle(root)
         return _result(root, f.branch, "skipped", "rejected", pulled=pulled)
-    state = "publish-auth" if why == "auth" else "publish-failed"
+    state = {"auth": "publish-auth", "hook": "publish-hook"}.get(why, "publish-failed")
     head = replay.rev(root, "HEAD")
     _set_state(root, state, head=head, tip=replay.rev(root, _tracking(f.branch)), files=[])
     return _result(root, f.branch, "skipped", state, pulled=pulled)
@@ -831,6 +858,7 @@ def put_on_top(root) -> dict:
         note_seen(root, replay.rev(root, _tracking(f.branch)) or "")
     if not pushed:
         return _answer(root, False, OFFLINE if why == "offline"
+                       else MESSAGES["publish-hook"] if why == "hook"
                        else "Your edits are on top here, but aren't saved to GitHub yet. "
                             "Try Publish now.")
     return _answer(root, True, "Your edits are on top of the version on GitHub and saved "
@@ -854,19 +882,20 @@ def publish_over(root) -> dict:
         if not seen or not replay.rev(root, "HEAD"):
             return _answer(root, False, UNREADABLE)
         pin = _pin(root, seen, "publish-over")
-        r = replay.git(root, "push", f"--force-with-lease={branch}:{seen}", "--",
-                    "origin", f"HEAD:refs/heads/{branch}")
+        r = _publish_git(root, "push", f"--force-with-lease={branch}:{seen}", "--",
+                         "origin", f"HEAD:refs/heads/{branch}")
         if not gu._ok(r):
             if pin:
                 replay.git(root, "update-ref", "-d", pin)
-            why = gu._classify(r, push=True)
+            why = _push_failure(root, r)
             logger.info("ownsync: publish over refused in %s (%s): %s", root, why, gu._text(r))
             if why == "offline":
                 return _answer(root, False, OFFLINE)
             if why == "rejected":
                 return _answer(root, False, "The version on GitHub changed again since you "
                                "looked. Check again before replacing it.")
-            return _answer(root, False, MESSAGES["publish-failed"])
+            return _answer(root, False, MESSAGES["publish-hook" if why == "hook"
+                                                 else "publish-failed"])
         _set_state(root, None)
         release_hold(root)  # published, on the person's say-so
         # Not undoable here: putting this copy back on GitHub's old version

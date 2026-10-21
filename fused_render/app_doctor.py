@@ -953,6 +953,11 @@ def _contrib_git_row(app_dir: str) -> dict | None:
         if rec.get("needs_merge"):
             state, detail = FAIL, ("The author's latest overlaps your changes — "
                                    "open the app page to combine them.")
+        elif not rec.get("owner_checked"):
+            # Whose app this is is not known yet (signed out): if it turns
+            # out to be yours, it publishes as usual — never promise "stays".
+            state, detail = PASS, ("Your changes stay on this computer until Fused knows "
+                                   "whether this app is yours.")
         else:
             state, detail = PASS, "Your changes stay on this computer until you propose them."
     else:

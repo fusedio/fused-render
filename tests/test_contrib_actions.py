@@ -179,6 +179,8 @@ TABLE = [
      ["use-github", "publish-over", "check"]),
     ("own edits", own("edits", files=["a.py"]), ["save-edits", "check"]),
     ("own publish failed", own("publish-failed", unpublished=1), ["publish-now", "check"]),
+    ("own publish stopped by her own check", own("publish-hook", unpublished=1),
+     ["publish-now", "check"]),
     ("own publish auth, signed out", own("publish-auth", unpublished=1, github=OUT),
      ["sign-in", "publish-now", "check"]),
     ("own merging", own("merging", merge_job={"id": "m", "status": "running",
@@ -254,6 +256,7 @@ def test_buttons(name, f, want):
     ("github-changed", own("github-changed", unpublished=1), "put-on-top"),
     ("held", own("held", unpublished=2), "publish-now"),
     ("kept", own("kept", github_new=1), "bring-in"),
+    ("publish-hook", own("publish-hook", unpublished=1), "publish-now"),
     ("choice", gh("needs-merge", merge_job={"id": "m", "status": "choice"}), "choose-mine"),
     ("own choice", own("needs-merge", merge_job={"id": "m", "status": "choice",
                                                  "purpose": "own-sync"}), "choose-mine"),
@@ -284,6 +287,7 @@ STUCK = [
     gh(sync_error="Couldn't reach GitHub."),
     own("needs-merge"), own("github-changed"), own("edits"),
     own("publish-failed", unpublished=1), own("publish-auth", unpublished=1),
+    own("publish-hook", unpublished=1),
     {**gh(), "copy": None}, {**own(), "own": None},
 ]
 
@@ -332,6 +336,9 @@ def test_labels_name_the_author():
     assert _button(gh("declined", **CH), "propose")["label"] == "Propose again"
     assert _button(own(remix_of="alice/x", original_update=True), "bring-in")["label"] \
         == "Bring it in"
+    assert _button(own("publish-hook", unpublished=1), "publish-now")["label"] == "Try again"
+    assert _button(own("publish-failed", unpublished=1), "publish-now")["label"] \
+        == "Publish now"
 
 
 def test_dialog_buttons():

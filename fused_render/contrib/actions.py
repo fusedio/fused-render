@@ -530,6 +530,10 @@ def _own(f: dict, flags: dict) -> dict:
             continue  # Claude can't combine this one
         if fix == "publish-over":
             spec = {**spec, "confirm": _publish_over_confirm()}
+        if fix == "publish-now" and state == "publish-hook":
+            # Her own check stopped it: once she has dealt with it, it is a
+            # retry of the same publish.
+            spec = {**spec, "label": "Try again"}
         # With nothing unpublished, GitHub's version is the safe way out.
         b.add(fix, primary=fix == "use-github" and not unpublished and state == "github-changed",
               **spec)

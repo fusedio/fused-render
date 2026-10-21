@@ -539,19 +539,25 @@ def _recheck(app_dir, rec, identity, *, block=False) -> dict | None:
         n = unpublished
         store.add_activity(app_dir, HELD, f"This is your app. {n} edit{'' if n == 1 else 's'} "
                                           f"{'is' if n == 1 else 'are'} ready to publish.")
+    elif out and upgrade:
+        # Every upgrade says so once: the page (or the git panel) had said
+        # "your changes stay on this computer" until now.
+        store.add_activity(app_dir, "yours", PUBLISHED_AS_USUAL)
     if out and upgrade and root is not None:
         try:
             with replay.slot(block=block) as held:
                 if held:
                     ensure_push_guard(root, "own")
+                    _mark_unchecked(root, False)
         except Exception:  # noqa: BLE001 — the next sync settles it
             logger.exception("contrib: unguarding %s failed", app_dir)
     return out
 
 
-#: `own_state` of an own copy whose unpublished work must wait for Publish
-#: now (§16.12); `release_hold` clears it.
+#: The activity kind of the upgrade hold line (§16.12); `release_hold`
+#: clears the record's `hold`.
 HELD = "held"
+PUBLISHED_AS_USUAL = "This is your app — your edits will be published as usual."
 
 
 def _unpublished(root) -> int:
@@ -574,6 +580,16 @@ def release_hold(root) -> bool:
     if not (store.get(root) or {}).get("hold"):
         return False
     return store.update(root, lambda r: r.__setitem__("hold", None)) is not None
+
+
+def settle_stale_hold(root) -> bool:
+    """A1 was switched off while a copy was held: nothing shows the hold any
+    more and the next push publishes the held edits — say so in one
+    activity line and drop the hold (final gate). Answers whether it did."""
+    if _sources_on() or not (store.get(root) or {}).get("hold"):
+        return False
+    store.add_activity(root, "yours", PUBLISHED_AS_USUAL)
+    return release_hold(root)
 
 
 def after_sign_in(ident=None) -> dict:
@@ -688,6 +704,20 @@ def ensure_push_guard(root, kind) -> bool:
         return False
 
 
+#: Repo-local marker: a `github` copy whose owner fused could not ask about
+#: yet — the git panel (PY-15, cannot read the store) words its Push
+#: sentence as "until Fused knows whether this app is yours".
+UNCHECKED_CONFIG = "fused.ownerunknown"
+
+
+def _mark_unchecked(root, unchecked: bool) -> None:
+    have = _local_config(root, UNCHECKED_CONFIG) == "true"
+    if unchecked and not have:
+        _g(root, "config", "--local", UNCHECKED_CONFIG, "true")
+    elif have and not unchecked:
+        _g(root, "config", "--local", "--unset-all", UNCHECKED_CONFIG)
+
+
 def is_push_guarded(root) -> bool:
     """Whether `root`'s origin carries the P2 push guard."""
     r = _g(root, "config", "--get-all", "remote.origin.pushurl")
@@ -790,6 +820,7 @@ def settle_locked(root, kind=None) -> dict | None:
         if kind == "github":
             _point_back(root, rec)
         ensure_push_guard(root, kind)
+        _mark_unchecked(root, kind == "github" and not rec.get("owner_checked"))
         if kind in ("github", "own"):
             _stamp_copy(root, rec)
         return store.get(root) or rec

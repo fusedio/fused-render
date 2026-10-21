@@ -774,13 +774,13 @@ def test_rewind_never_republishes_what_github_removed(env):
 
 def test_plain_ahead_publishes_in_few_processes(env, monkeypatch):
     mine = _commit(env.lap, "c.txt", "c\n", "c")
-    calls, unsafe = [], []
+    calls, plain = [], []
     real = git_upstream._run
 
     def counting(root, *a, **k):
         calls.append(_verb(a)[0])
-        if _verb(a)[0] in ("push", "rev-list", "merge-base") and a[:1] != ("-c",):
-            unsafe.append(a)
+        if a[:1] != ("-c",):
+            plain.append(_verb(a)[0])
         return real(root, *a, **k)
 
     with replay.slot():
@@ -789,9 +789,55 @@ def test_plain_ahead_publishes_in_few_processes(env, monkeypatch):
         res = ownsync.resolve(env.lap, action="test", push=True)
     assert res["status"] == "synced" and res["pushed"] is True and _remote(env) == mine
     assert calls.count("push") == 1 and len(calls) - 1 <= 6, calls
-    # ownsync's own git calls run with fsmonitor and hooks off (§16.12);
-    # `rev-list` here may be git_upstream's ahead/behind count (its own).
-    assert not [a for a in unsafe if _verb(a)[0] != "rev-list"], unsafe
+    # The publish runs as the author's own push would — her hooks, her
+    # fsmonitor (P5); fused's private reads run with them off (§16.12).
+    # (`symbolic-ref`/`rev-list` here are git_upstream's own helpers.)
+    assert "push" in plain
+    assert not [c for c in plain if c not in ("push", "symbolic-ref", "rev-list")], plain
+
+
+def _refusing_hook(repo):
+    """The author's own pre-push check (a secret scanner) that refuses."""
+    path = os.path.join(repo, ".git", "hooks", "pre-push")
+    with open(path, "w") as fh:
+        fh.write("#!/bin/sh\necho 'secret scanner: blocked' >&2\nexit 1\n")
+    os.chmod(path, 0o755)
+
+
+def _hook_stopped(st):
+    assert st["state"] == "publish-hook" and st["fixes"] == ["publish-now"], st
+    assert "own check" in st["message"] and _plain(st["message"])
+
+
+@pytest.mark.parametrize("how", ["auto", "publish-now"])
+def test_R3_authors_pre_push_check_runs_on_every_publish(env, how):
+    """Audit R3: fused's own pushes ran with hooks off, so the author's secret
+    scanner never saw them. Now it runs, and its refusal is a plain state."""
+    _refusing_hook(env.lap)
+    before = _remote(env)
+    _commit(env.lap, "secret.txt", "AKIA...\n", "Claude: oops")
+    if how == "auto":
+        res = _sync(env.lap)
+        assert res["status"] == "skipped" and res["why"] == "publish-hook"
+    else:
+        assert ownsync.publish_now(env.lap)["ok"] is False
+    assert _remote(env) == before
+    assert git_upstream.sync_failures() == []
+    _hook_stopped(ownsync.status(env.lap))
+
+
+def test_R3_pre_push_check_runs_for_put_on_top_and_publish_over(env):
+    _commit(env.lap, "x.txt", "x\n", "published")
+    assert _sync(env.lap)["pushed"] is True
+    gh_tip = _rewrite_elsewhere(env)
+    _commit(env.lap, "n.txt", "n\n", "edit")
+    assert _sync(env.lap)["why"] == "github-changed"
+    _refusing_hook(env.lap)
+    out = ownsync.put_on_top(env.lap)
+    assert out["ok"] is False and "own check" in out["message"] and _remote(env) == gh_tip
+    _hook_stopped(ownsync.status(env.lap))
+    out = ownsync.publish_over(env.lap)
+    assert out["ok"] is False and "own check" in out["message"] and _remote(env) == gh_tip
 
 
 # --------------------------------------------------------------- audit G
