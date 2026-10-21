@@ -393,19 +393,28 @@ describe("the peek header", () => {
     expect(PEEK_CSS).toContain("--peek-chat-bg: var(--bg-alt);");
   });
 
-  it("carries a VERTICAL kebab holding exactly the three stated acts", () => {
+  it("carries a VERTICAL kebab whose acts come from the shared task-menu vocabulary", () => {
     // Vertical because it sits at the end of a row rather than in one.
     expect(HEAD).toContain('<circle cx="12" cy="5"');
-    for (const label of ["Continue this task in terminal", "Archive task", "Delete task"]) {
-      expect(HEAD).toContain(label);
+    // D1391: the words are platform/lib/task-actions', the same the chat's ⋮
+    // reads — never a string typed here.
+    for (const key of ["copyCommand", "download", "archive", "unarchive", "delete"]) {
+      expect(HEAD).toContain(`TASK_ACTION_LABELS.${key}`);
     }
-    expect(HEAD).toContain("Unarchive task");
-    // D1390: the conversation as a file, between the terminal rows and the
-    // filing ones; disabled rather than hidden on a row with no session yet.
-    expect(HEAD).toContain('label: "Download transcript"');
-    expect(HEAD.indexOf('label: "Download transcript"')).toBeLessThan(
-      HEAD.indexOf('label: filing.kind === "archive"'),
-    );
+    expect(HEAD).toContain("terminalActionLabel(");
+    expect(HEAD).not.toContain('"Continue this task in terminal"');
+    expect(HEAD).not.toContain('label: "Delete task"');
+    // One order: hand-offs, a separator, then filing.
+    const menu = HEAD.slice(HEAD.indexOf("const menuItems = (): MenuEntry[]"));
+    const at = (needle: string) => menu.indexOf(needle);
+    expect(at("terminalActionLabel(")).toBeLessThan(at("TASK_ACTION_LABELS.copyCommand"));
+    expect(at("TASK_ACTION_LABELS.copyCommand")).toBeLessThan(at("TASK_ACTION_LABELS.download"));
+    expect(at("TASK_ACTION_LABELS.download")).toBeLessThan(at("TASK_ACTION_LABELS.archive"));
+    const between = menu.slice(at("TASK_ACTION_LABELS.download"), at("TASK_ACTION_LABELS.archive"));
+    expect(between).toContain('items.push("separator")');
+    expect(at("TASK_ACTION_LABELS.archive")).toBeLessThan(at("TASK_ACTION_LABELS.delete"));
+    // A running task's Archive is greyed with the reason, like the chat's.
+    expect(menu).toContain("blockedActionLabel(TASK_ACTION_LABELS.archive, RUN_BLOCKED_HINT)");
     // The two that left: the first is a control of its own in the header now,
     // the second was a menu row nobody could find for an act the address bar
     // already does.
