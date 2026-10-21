@@ -27,6 +27,7 @@ pattern, D119) when the preference is first turned on:
 | The window layer's engine choice (per window, at open) | `fused_render/mac_window.py` (`engine_for_new_window`) |
 | Preference, status and install/remove routes | `fused_render/shell/prefs.py` (`chromium_windows_enabled`, `/api/prefs/chromium*`) |
 | Preferences row with download progress | `frontend/src/shell/settings/general.tsx` (`ChromiumWindowsControl`) |
+| "Reopen windows" (open windows keep their engine; `stale_windows` counts the ones on the other engine) | `POST /api/prefs/chromium/reopen-windows` → `WindowManager.reopen_all`: close all, one Home window |
 | The native framework source | `fused_render/chromium/native/` |
 
 Unpacked engines live under `<base home>/chromium/engine-<engine_version>-<arch>/`

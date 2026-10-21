@@ -992,8 +992,16 @@ def _chromium_windows_state() -> dict:
     # process shows native windows, `status` says the platform can host CEF.
     available = ("apply" in hooks and engine["state"] != chromium.UNSUPPORTED
                  and hooks.get("usable", lambda: True)())
-    return {"enabled": chromium_windows_enabled(), "available": available,
-            "engine": engine}
+    enabled = chromium_windows_enabled()
+    # Open windows keep the engine they were born with: how many are not on
+    # the one a NEW window gets now (the row offers "Reopen windows"). The
+    # target is computed here, cheaply, never through `engine_for_new_window`:
+    # that may load CEF, which only the main thread can do.
+    target = "chromium" if enabled and engine["state"] == chromium.READY else "webkit"
+    count = hooks.get("windows_not_on")
+    stale = count(target) if count is not None else 0
+    return {"enabled": enabled, "available": available, "engine": engine,
+            "stale_windows": stale}
 
 
 def _native_windows_state() -> dict:
@@ -1604,6 +1612,21 @@ def post_chromium_install(x_fused: str | None = Header(default=None)):
     from fused_render import chromium
 
     chromium.install()
+    return _chromium_windows_state()
+
+
+@router.post("/api/prefs/chromium/reopen-windows")
+def post_chromium_reopen_windows(x_fused: str | None = Header(default=None)):
+    """Close every app window and open one Home window on the engine new
+    windows get now — the way the preference takes effect for what is open."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import window_policy
+
+    reopen = window_policy.native_hooks.get("reopen_windows")
+    if reopen is None or not reopen():
+        return JSONResponse({"error": "no window host in this process"}, status_code=409)
     return _chromium_windows_state()
 
 

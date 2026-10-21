@@ -12,6 +12,7 @@ import {
   putLauncherRowModifier,
   putNativeWindowsEnabled,
   removeChromiumEngine,
+  reopenChromiumWindows,
   type ChromiumEngineStatus,
   type ChromiumWindowsState,
 } from "@platform/lib/api";
@@ -170,6 +171,21 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
     }
   };
 
+  // The windows that are open keep their engine; the page itself is one of
+  // them, so its own request may die with it — a rejection is not an error.
+  const stale = cw?.stale_windows ?? 0;
+  const reopen = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      merge(await reopenChromiumWindows());
+    } catch {
+      /* the window closed under the request: that is the reopen happening */
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const line = chromiumStatusLine(engine, enabled);
   const status =
     line || state === "ready" || state === "failed" ? (
@@ -205,6 +221,17 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
       onChange={onChange}
     >
       {error && <ErrorBanner>{error}</ErrorBanner>}
+      {stale > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span>
+            {stale === 1 ? "1 open window still uses" : `${stale} open windows still use`} the previous
+            engine. Reopen them for the change to take effect.
+          </span>
+          <Button variant="outline" size="xs" disabled={busy} onClick={() => void reopen()}>
+            Reopen windows
+          </Button>
+        </div>
+      )}
     </PrefToggleRow>
   );
 }

@@ -1632,6 +1632,9 @@ export interface ChromiumWindowsState {
   enabled: boolean;
   available: boolean;
   engine: ChromiumEngineStatus;
+  // Open windows born on the other engine (they keep theirs): the row
+  // offers "Reopen windows" while this is > 0. OPTIONAL: older server.
+  stale_windows?: number;
 }
 
 export interface LauncherPrefs {
@@ -1889,6 +1892,11 @@ export function getChromiumEngine(): Promise<ChromiumWindowsState> {
 /** Retry the engine download after a failure. */
 export function installChromiumEngine(): Promise<ChromiumWindowsState> {
   return postJson<ChromiumWindowsState>("/api/prefs/chromium/install", {});
+}
+
+/** Close every app window and open one Home window on the current engine. */
+export function reopenChromiumWindows(): Promise<ChromiumWindowsState> {
+  return postJson<ChromiumWindowsState>("/api/prefs/chromium/reopen-windows", {});
 }
 
 /** Delete the engine from disk; the server also turns the preference off. */

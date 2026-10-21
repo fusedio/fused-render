@@ -1286,6 +1286,20 @@ class WindowManager:
         win.show()
         return win
 
+    def windows_not_on(self, engine: str) -> int:
+        """How many open windows were born on an engine other than
+        ``engine`` (popups included: they go with their opener). Any thread:
+        reads a copied list, no AppKit."""
+        return sum(1 for w in list(self._windows) if w.engine != engine)
+
+    def reopen_all(self) -> None:
+        """The engine preference changed: close every window and open one
+        Home window on the engine new windows get now. Main thread only."""
+        if not self.enabled:
+            return
+        self.close_all()
+        self.focus_or_open_home()
+
     def set_enabled(self, on: bool) -> None:
         """The preference flipped. Off closes every open window first, so
         nothing of ours stays on screen for a menu item to act on. Main

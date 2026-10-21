@@ -2142,6 +2142,24 @@ def main() -> None:
         _apply_windows(native_windows_enabled())
         window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(_apply_windows, on)
 
+        # The Chromium-engine row (shell/prefs.py): how many open windows are
+        # on the other engine, and "close them all, open one Home window on
+        # the current one". The reopen is deferred a beat so the request's
+        # response lands before the Preferences window itself goes away.
+        def _windows_not_on(engine: str) -> int:
+            manager = state["windows"]
+            return manager.windows_not_on(engine) if manager is not None else 0
+
+        def _reopen_windows() -> bool:
+            manager = state["windows"]
+            if manager is None:
+                return False
+            threading.Timer(0.3, lambda: AppHelper.callAfter(manager.reopen_all)).start()
+            return True
+
+        window_policy.native_hooks["windows_not_on"] = _windows_not_on
+        window_policy.native_hooks["reopen_windows"] = _reopen_windows
+
         def _open_window(target: str) -> None:
             # A menu-bar surface's `window.open` / target=_blank, main
             # thread already. Classified FIRST, like a window's own policy:
