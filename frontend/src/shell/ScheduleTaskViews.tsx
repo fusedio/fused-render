@@ -855,29 +855,6 @@ export function StatusIcon({
  * (`.tasks-row-file` in the row below). There it answers a question the row
  * otherwise cannot — is this task about the whole folder, or one document in it
  * — which is worth a mark, where "this folder chip contains a folder" was not. */
-/** The PR view's stand-in for the folder chip: `#1818`, a link to the pull
- *  request on GitHub (a plain label when the repository is not known). Wears
- *  the folder chip's own classes so it sits in the row exactly where that
- *  chip does; the link is lifted over the row's stretched link (`.task-pr-num`)
- *  and its press never counts as a press on the row. */
-function PrNumChip({ prRef }: { prRef: PrRef }) {
-  const body = <span className="schedule-tv-id-name">#{prRef.number}</span>;
-  const href = prUrl(prRef);
-  if (!href) return <span className="schedule-tv-id">{body}</span>;
-  return (
-    <a
-      className="schedule-tv-id task-pr-num"
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      data-hint={`${prRef.repo} #${prRef.number}`}
-      onClick={(e) => e.stopPropagation()}
-    >
-      {body}
-    </a>
-  );
-}
-
 export function IdentityChip({ name, title, onPick, active = false }: {
   name: string;
   title?: string;
@@ -952,6 +929,40 @@ export function IdentityChip({ name, title, onPick, active = false }: {
       >
         {body}
       </button>
+    </span>
+  );
+}
+
+/** The PR view's stand-in for the folder chip: `#1818`, a link to the pull
+ *  request on GitHub (a plain label when the repository is not known). Wears
+ *  the folder chip's own classes so it sits in the row exactly where that
+ *  chip does; the link is lifted over the row's stretched link (`.task-pr-num`)
+ *  and its press never counts as a press on the row. */
+function PrNumChip({ prRef }: { prRef: PrRef }) {
+  const body = <span className="schedule-tv-id-name">#{prRef.number}</span>;
+  const href = prUrl(prRef);
+  if (!href) return <span className="schedule-tv-id">{body}</span>;
+  // The same shield + pill the project chip wears (`IdentityChip` with `onPick`),
+  // so border, radius, padding, size and hover come from `.schedule-tv-id--tag`
+  // itself; the pill is an <a> rather than a <button>.
+  return (
+    <span
+      className="schedule-tv-id-shield"
+      data-hint=""
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <a
+        className="schedule-tv-id schedule-tv-id--tag task-pr-num"
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-hint={`${prRef.repo} #${prRef.number}`}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        {body}
+      </a>
     </span>
   );
 }

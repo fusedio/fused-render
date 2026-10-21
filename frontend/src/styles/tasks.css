@@ -1031,18 +1031,16 @@ button.tasks-caret,
   cursor: default;
 }
 
-/* THE PR VIEW'S `#N` CHIP: the folder chip's slot, but a real link. Lifted
-   above `.tasks-rowlink` (z-index 1) like the shield, so a click on it opens
-   GitHub rather than the task; no underline until the pointer is on it. */
+/* THE PR VIEW'S `#N` CHIP wears the folder tag's pill (`.schedule-tv-id--tag`,
+   above) inside the same shield, so it only overrides what makes it a link: a
+   pointer in place of the filter funnel, no underline, tabular digits. */
 .tasks-row .task-pr-num {
-  position: relative;
-  z-index: 2;
   text-decoration: none;
   cursor: pointer;
+  color: inherit;
 }
-.tasks-row .task-pr-num:hover .schedule-tv-id-name {
-  color: var(--fg);
-  text-decoration: underline;
+.tasks-row .task-pr-num .schedule-tv-id-name {
+  font-variant-numeric: tabular-nums;
 }
 
 .tasks-row .schedule-tv-id-shield::after {
