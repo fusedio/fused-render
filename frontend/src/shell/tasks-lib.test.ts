@@ -8699,14 +8699,14 @@ describe("sortForList: the page's one order", () => {
     // `now` is a dep since 2026-09-15 — half of what `sortForList` decides is "is
     // this scheduled for LATER", which goes stale with the clock and nothing else.
     expect(VIEWS).toContain(
-      "const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);",
+      "const sorted = useMemo(() => sortForList(tasks, now, sortBy), [tasks, now, sortBy]);",
     );
     // The plain List draws straight off that order, with nothing between the
     // rows. The grouped views (Time / Project / PR, 2026-10-16) are the one
     // OPT-IN exception: a reader who put a grouped tab on the row asked for the
     // cut, and `rows` is still the sorted list, flattened in section order.
     expect(VIEWS).toContain('<div className="tasks-list-frame">{rows.map(rowAt)}</div>');
-    expect(VIEWS).toContain("groupBy ? groupRows(sorted, groupBy, home, now) : null");
+    expect(VIEWS).toContain("groupBy ? groupRows(sorted, groupBy, home, now, sortBy) : null");
     // The index rides along ONLY so the row can take its React key from
     // `taskListKeys` (the queue's identity rule).
     expect(VIEWS).toContain("key={rowKeys[ix]}");
