@@ -9,6 +9,7 @@
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
 import { beforeEach, describe, expect, it } from "bun:test";
+import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 
 const {
   PREVIEW_CAP_FRACTION,
@@ -435,16 +436,34 @@ describe("the door-time check (ensureAppFor)", () => {
         text: async () => JSON.stringify(body),
       } as unknown as Response);
     };
-    const askA = ensureAppFor("/w/a");
-    const askB = ensureAppFor("/w/b");
-    pending[1]!(undefined); // B's answer first — the newest ask, adopted as is
-    await askB;
-    expect(appForProject("/w/b", knownApps())?.name).toBe("b");
-    pending[0]!(undefined); // then A's stale [A] — not written, and B's table kept
-    await askA;
-    expect(reads.length).toBe(0); // no re-read either: a newer adoption is current
-    expect(appForProject("/w/b", knownApps())?.name).toBe("b");
-    expect(appForProject("/w/a", knownApps())?.name).toBe("a");
+    // WITH THE LIVE LISTENER'S EFFECT. The shim's `window.dispatchEvent` is a
+    // no-op, so an announce costs nothing here — while in the browser (and
+    // under a suite that installed a real DOM earlier in the same `bun test`
+    // run) the module-level listener drops the cache on every announce. A
+    // stale answer that announced and then kept "the newer table" was
+    // keeping nothing: the announce had just emptied it. Dispatch for real
+    // for this test, so the stale road is exercised the way the browser
+    // runs it whatever file order bun picks.
+    const win = globalThis.window as unknown as { dispatchEvent: (ev: Event) => boolean };
+    const dispatch = win.dispatchEvent;
+    win.dispatchEvent = (ev: Event) => {
+      if (ev.type === CURRENT_APPS_CHANGED_EVENT) forgetAppsCache();
+      return true;
+    };
+    try {
+      const askA = ensureAppFor("/w/a");
+      const askB = ensureAppFor("/w/b");
+      pending[1]!(undefined); // B's answer first — the newest ask, adopted as is
+      await askB;
+      expect(appForProject("/w/b", knownApps())?.name).toBe("b");
+      pending[0]!(undefined); // then A's stale [A] — not written, and B's table kept
+      await askA;
+      expect(reads.length).toBe(0); // no re-read either: a newer adoption is current
+      expect(appForProject("/w/b", knownApps())?.name).toBe("b");
+      expect(appForProject("/w/a", knownApps())?.name).toBe("a");
+    } finally {
+      win.dispatchEvent = dispatch;
+    }
   });
 
   it("a failed ask is a 'no' and the next open may retry", async () => {

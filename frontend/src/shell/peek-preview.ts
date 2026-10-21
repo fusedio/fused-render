@@ -357,10 +357,10 @@ export function ensureAppFor(project: string): Promise<boolean> {
   const ask = ensureCurrentApp(project)
     .then(({ app, added, apps }) => {
       if (!app) return false;
-      // Announce FIRST: the module-level listener above drops the cache on
-      // the event, and the fresh table must survive it.
-      announceCurrentAppsChanged();
       if (added && apps && gen === ensureGen) {
+        // Announce FIRST: the module-level listener above drops the cache on
+        // the event, and the fresh table must survive it.
+        announceCurrentAppsChanged();
         appsCache = currentApps(apps, []);
         adoptedGen = gen;
         return true;
@@ -374,8 +374,13 @@ export function ensureAppFor(project: string): Promise<boolean> {
       return (appsInFlight ?? Promise.resolve()).then(() => {
         // A newer answer adopted its table during the wait: that table is
         // the current one; clearing it would only risk an empty cache if
-        // the re-read failed.
+        // the re-read failed. NOT ANNOUNCED EITHER: the newer answer
+        // announced its own change, and announcing here would have the
+        // listener above drop the very table this branch keeps — which is
+        // how a stale answer used to leave the cache empty whenever the
+        // announce went out ahead of this check.
         if (adoptedGen > gen) return true;
+        announceCurrentAppsChanged();
         appsCache = null;
         return ensureApps().then(() => true);
       });
