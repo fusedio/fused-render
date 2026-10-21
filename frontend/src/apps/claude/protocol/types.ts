@@ -27,6 +27,7 @@ export type Action =
   | "cancel"
   | "live_host"
   | "send"
+  | "set_mode"
   | "commands"
   | "task_output"
   | "task_stop"
@@ -38,7 +39,12 @@ export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
 /** The two modes a card may switch INTO (SWITCHABLE_MODES, T:13756). */
 export type SwitchableMode = "acceptEdits" | "auto";
 export type Decision = "allow" | "deny";
-export type DecisionScope = "once" | "session";
+/** "session": every call of this tool for the rest of the chat (file tools only).
+ *  "exact": this exact call (Bash: the command string) for the rest of the chat. */
+export type DecisionScope = "once" | "session" | "exact";
+/** The model-written read of a pending call (agent.py `_risk_fields`). */
+export type RiskSeverity = "low" | "medium" | "high";
+export type RiskState = "" | "pending" | "ready" | "failed";
 /** What lands on disk for a permission row: "" = still open. */
 export type LandedDecision = "" | "allow" | "deny" | "expired";
 
@@ -245,6 +251,8 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
+  /** The pill changed on a live run: apply the mode now, no message, no turn. */
+  set_mode: { run_id: string; permission_mode: string };
   commands: CommandsRequest;
   task_output: TaskOutputRequest;
   task_stop: TaskOutputRequest;
@@ -361,6 +369,12 @@ export interface PermissionRow {
   decision: LandedDecision;
   scope: "" | DecisionScope;
   mode: "" | SwitchableMode;
+  /** The model's severity for this call, "" until `risk_state` is "ready". Optional: an older server sends none. */
+  severity?: "" | RiskSeverity;
+  /** One plain-English sentence on what the call does; "" until ready. */
+  risk_summary?: string;
+  /** "pending" while the assessment runs (the card shows a placeholder), "failed" or "" shows nothing extra. */
+  risk_state?: RiskState;
   /** WHY a deny nobody clicked: "abandoned" (the CLI walked away from the
    *  asking call — a subagent told to carry on; agent.py `_close_abandoned`),
    *  "cancelled" (Stop), "timeout" (the permission server gave up). "" on a
@@ -548,6 +562,9 @@ export interface PollResponse {
   error: string;
   tokens: number;
   phase: Phase;
+  /** Epoch seconds the current turn began (server stamp); 0 or absent on an
+   *  older agent.py. */
+  turn_started_at?: number;
   /** The run's original first user message. */
   message: string;
   permissions: PermissionRow[];
@@ -692,6 +709,8 @@ export type StartResponse = { run_id: string; session_id?: string; error?: undef
 
 /** agent.py:2971-3038 — exactly one of the three. */
 export type SendResponse = { sent: true } | { respawn: true } | ErrorOnly;
+/** `set_mode`'s answer: `mode` is the page spelling now in force. */
+export type SetModeResponse = { ok: true; mode: PermissionMode } | { respawn: true } | ErrorOnly;
 
 /** agent.py:1601-1607; error branches carry only `error`. */
 export type DecideResponse =
@@ -1042,6 +1061,7 @@ export interface AgentResponses {
   cancel: CancelResponse;
   live_host: RunIdResponse | ErrorOnly;
   send: SendResponse;
+  set_mode: SetModeResponse;
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
   task_stop: TaskStopResponse | ErrorOnly;

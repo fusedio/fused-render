@@ -38,6 +38,9 @@ the five **contrib_*_enabled** phase switches of the GitHub contribution loop
 (opt-in, default off; see ``CONTRIB_PREF_KEYS`` and ``fused_render.contrib.flags``),
 **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
+**chromium_windows_enabled** (whether the macOS app's NEW windows are hosted
+by the on-demand Chromium engine instead of WKWebView — experimental, opt-in,
+default off; see ``chromium_windows_enabled`` and `fused_render.chromium`),
 and the **execution engine** for /api/run:
 
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
@@ -212,6 +215,22 @@ def native_windows_enabled() -> bool:
     `window_policy.native_hooks["apply"]` on a PUT.
     """
     return read_prefs().get("native_windows_enabled") is not False
+
+
+def chromium_windows_enabled() -> bool:
+    """Whether a NEW macOS app window is hosted by the Chromium (CEF) engine
+    instead of WKWebView (experimental, opt-in, default off — same `is True`
+    idiom as the other optional features).
+
+    Read by `mac_window.WindowManager` at EVERY window open, not once at
+    boot: flipping it changes what the next window gets, and open windows
+    keep the engine they were born with. It only takes effect when the
+    engine is on disk (`fused_render.chromium.status()["state"] == "ready"`);
+    a PUT that turns it on starts the download, and until that lands new
+    windows keep using WebKit. The dock, launcher, pinned popover and
+    recording pill are never behind this switch.
+    """
+    return read_prefs().get("chromium_windows_enabled") is True
 
 
 def app_sharing_enabled() -> bool:
@@ -483,6 +502,17 @@ def claude_strict_mcp_enabled() -> bool:
     plugins' MCP servers are kept). Default ON: only a stored `false` turns it
     off. `claude_agent/agent.py::_strict_mcp_pref` reads the same key."""
     return read_prefs().get("claude_strict_mcp_enabled") is not False
+
+
+VALID_CLAUDE_PERMISSIONS = ("plan", "prompt", "acceptEdits", "auto")
+
+
+def claude_default_permission() -> str:
+    """Approvals mode a new Claude chat starts in (`claude_default_permission`
+    pref): plan | prompt | acceptEdits | auto, `"auto"` when unset or junk.
+    `claude_agent/agent.py::_default_permission_pref` reads the same key."""
+    value = read_prefs().get("claude_default_permission")
+    return value if value in VALID_CLAUDE_PERMISSIONS else "auto"
 
 
 def lan_enabled() -> bool:
@@ -925,6 +955,10 @@ def _prefs_response() -> dict:
         # `fused-render serve` or another platform has no windows to offer, so
         # the Preferences section stays hidden there.
         "native_windows": _native_windows_state(),
+        # The experimental Chromium engine for the macOS windows (opt-in):
+        # `available` is "this process has native windows on macOS", and
+        # `engine` is the download state the page shows next to the toggle.
+        "chromium_windows": _chromium_windows_state(),
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
@@ -951,6 +985,7 @@ def _prefs_response() -> dict:
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default on).
         "claude_strict_mcp": {"enabled": claude_strict_mcp_enabled()},
+        "claude_default_permission": claude_default_permission(),
         # The Bots page's three switches and the Tasks page's view tabs —
         # localStorage until D1386 (see the readers' section comment).
         "bots": {"autostage": bots_autostage(), "sounds": bots_sounds(),
@@ -1009,6 +1044,28 @@ def _prefs_response() -> dict:
         # Preferences section renders only then.
         "launcher": _launcher_state(),
     }
+
+
+def _chromium_windows_state() -> dict:
+    from fused_render import chromium
+    from fused_render import window_policy
+
+    hooks = window_policy.native_hooks
+    engine = chromium.status()
+    # Only the macOS app has windows to put the engine in: the hook says this
+    # process shows native windows, `status` says the platform can host CEF.
+    available = ("apply" in hooks and engine["state"] != chromium.UNSUPPORTED
+                 and hooks.get("usable", lambda: True)())
+    enabled = chromium_windows_enabled()
+    # Open windows keep the engine they were born with: how many are not on
+    # the one a NEW window gets now (the row offers "Reopen windows"). The
+    # target is computed here, cheaply, never through `engine_for_new_window`:
+    # that may load CEF, which only the main thread can do.
+    target = "chromium" if enabled and engine["state"] == chromium.READY else "webkit"
+    count = hooks.get("windows_not_on")
+    stale = count(target) if count is not None else 0
+    return {"enabled": enabled, "available": available, "engine": engine,
+            "stale_windows": stale}
 
 
 def _native_windows_state() -> dict:
@@ -1231,6 +1288,20 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     status_code=409,
                 )
             changed = True
+        if "chromium_windows_enabled" in body:
+            value = body.get("chromium_windows_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'chromium_windows_enabled' must be a boolean"}, status_code=400)
+            prefs["chromium_windows_enabled"] = value
+            changed = True
+            if value:
+                # Turning it on is also "get the engine": the download runs
+                # in the background and the page polls GET /api/prefs for
+                # its progress. A no-op when it is unsupported, unpublished,
+                # already there or already downloading (`install`).
+                from fused_render import chromium
+
+                chromium.install()
         if "task_notify_terminal_sessions" in body:
             value = body.get("task_notify_terminal_sessions")
             if not isinstance(value, bool):
@@ -1258,6 +1329,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'task_summary_titles_enabled' must be a boolean"},
                                     status_code=400)
             prefs["task_summary_titles_enabled"] = value
+            changed = True
         for key in ("bots_autostage", "bots_sounds", "bots_clear_enabled"):
             if key in body:
                 value = body.get(key)
@@ -1284,6 +1356,15 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'claude_strict_mcp_enabled' must be a boolean"},
                                     status_code=400)
             prefs["claude_strict_mcp_enabled"] = value
+            changed = True
+        if "claude_default_permission" in body:
+            value = body.get("claude_default_permission")
+            if value not in VALID_CLAUDE_PERMISSIONS:
+                return JSONResponse(
+                    {"error": "'claude_default_permission' must be one of: "
+                              + ", ".join(repr(v) for v in VALID_CLAUDE_PERMISSIONS)},
+                    status_code=400)
+            prefs["claude_default_permission"] = value
             changed = True
         if "lan_enabled" in body:
             value = body.get("lan_enabled")
@@ -1497,12 +1578,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'contrib_sources_enabled', 'contrib_changes_enabled', "
                           "'contrib_inbox_enabled', 'contrib_loop_enabled', "
                           "'contrib_remix_enabled', "
-                          "'native_windows_enabled', "
+                          "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
                           "'task_summary_titles_enabled', "
-                          "'claude_strict_mcp_enabled', "
+                          "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
                           "'tasks_view_tabs', "
                           "'lan_enabled', "
@@ -1596,3 +1677,57 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         # would invite the page to say "nothing was unloaded" about a read.
         response["engines"]["unloaded"] = unloaded
     return response
+
+
+# ---- the Chromium engine (experimental; see fused_render.chromium) ----------
+
+@router.get("/api/prefs/chromium")
+def get_chromium_engine():
+    """The engine's download state alone — what the Preferences row polls
+    while a download runs, cheaper than the whole prefs document."""
+    return _chromium_windows_state()
+
+
+@router.post("/api/prefs/chromium/install")
+def post_chromium_install(x_fused: str | None = Header(default=None)):
+    """Start (or retry after a failure) the engine download."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import chromium
+
+    chromium.install()
+    return _chromium_windows_state()
+
+
+@router.post("/api/prefs/chromium/reopen-windows")
+def post_chromium_reopen_windows(x_fused: str | None = Header(default=None)):
+    """Close every app window and open one Home window on the engine new
+    windows get now — the way the preference takes effect for what is open."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import window_policy
+
+    reopen = window_policy.native_hooks.get("reopen_windows")
+    if reopen is None or not reopen():
+        return JSONResponse({"error": "no window host in this process"}, status_code=409)
+    return _chromium_windows_state()
+
+
+@router.post("/api/prefs/chromium/remove")
+def post_chromium_remove(x_fused: str | None = Header(default=None)):
+    """Delete the unpacked engine from disk and switch the preference off.
+    Open windows keep running on it until they close."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import chromium
+
+    with _PREFS_LOCK:
+        prefs = read_prefs()
+        if prefs.get("chromium_windows_enabled") is not None:
+            prefs["chromium_windows_enabled"] = False
+            storage.write_json(_path(), prefs)
+    chromium.remove()
+    return _chromium_windows_state()

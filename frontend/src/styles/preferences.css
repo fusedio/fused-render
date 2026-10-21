@@ -1600,58 +1600,6 @@
   opacity: 0.5;
 }
 
-/* -- accordions (the Claude Code group) ------------------------------------- */
-.settings-section-collapsible .settings-section-title {
-  margin-left: 0;
-}
-
-.settings-section-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 4px 2px 0;
-  border: 0;
-  background: none;
-  font: inherit;
-  letter-spacing: inherit;
-  text-transform: inherit;
-  color: inherit;
-  cursor: pointer;
-  border-radius: 4px;
-}
-
-.settings-section-toggle:hover {
-  color: var(--fg);
-}
-
-.settings-section-toggle:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.settings-section-chevron {
-  width: 14px;
-  height: 14px;
-  transition: transform 0.15s ease;
-}
-
-.settings-section-toggle[aria-expanded="true"] .settings-section-chevron,
-.settings-section-toggle[data-panel-open] .settings-section-chevron {
-  transform: rotate(90deg);
-}
-
-.settings-section-count {
-  font-weight: 400;
-  letter-spacing: 0;
-  text-transform: none;
-  font-variant-numeric: tabular-nums;
-  opacity: 0.8;
-}
-
-.settings-section-collapsible:not(:has([data-panel-open])) {
-  margin-bottom: 12px;
-}
-
 /* The settings.json rows: the reset (or the default hint) then the control,
    right-aligned like every other row's control on this page. */
 .settings-claude-control {

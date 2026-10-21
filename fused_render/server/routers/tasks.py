@@ -139,8 +139,10 @@ from starlette.concurrency import run_in_threadpool
 from fused_render import netlog
 from fused_render import (
     app_listing,
+    claude_remote,
     current_apps,
     drafts,
+    pr_status,
     project_queue,
     queue_manager,
     schedule,
@@ -503,10 +505,91 @@ def _mark_fate(prompts: list[dict], fate: bool, line: str = "") -> None:
         prompts[-1]["limit"] = bool(fate) and _limit_hit(line)
 
 
+# A GitHub PR URL as it sits in a transcript line. The trailing lookahead keeps
+# `/pull/12/files` from reading as 123 and `/pull/1234567890` from matching.
+_PR_URL_RE = re.compile(
+    r"https://github\.com/([\w.-]+/[\w.-]+?)/pull/(\d{1,7})(?!\d)")
+_PRS_PER_SCAN = 50
+
+
+_GH_PR_IDS_CAP = 200
+
+
+def _add_prs(rec: dict, text: str) -> None:
+    """Append every PR URL in `text` to the scan's `prs`, first-seen order,
+    deduped case-insensitively (the first spelling is displayed)."""
+    prs = rec.setdefault("prs", [])
+    # A raw JSON line escapes its slashes in some writers (`https:\/\/...`).
+    for repo, number in _PR_URL_RE.findall(text.replace("\\/", "/")):
+        if len(prs) >= _PRS_PER_SCAN:
+            return
+        key = f"{repo.lower()}#{int(number)}"
+        if any(f"{p['repo'].lower()}#{p['number']}" == key for p in prs):
+            continue
+        prs.append({"repo": repo, "number": int(number),
+                    "url": f"https://github.com/{repo}/pull/{int(number)}"})
+
+
+def _result_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return ""
+
+
+def _note_prs(rec: dict, line: str) -> None:
+    """Attach PRs from the few places that mean "this session's PR": plain chat
+    text (assistant text blocks, the user's own message) and the result of a
+    Bash `gh pr ...` command (plus a URL in that command). Never file reads,
+    other tools' inputs, thinking, meta/attachment lines or subagent chatter."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(obj, dict) or obj.get("isSidechain") or obj.get("isMeta"):
+        return
+    kind = obj.get("type")
+    if kind not in ("assistant", "user"):
+        return
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        if kind == "user":
+            _add_prs(rec, content)
+        return
+    if not isinstance(content, list):
+        return
+    ids = rec.setdefault("gh_pr_tool_ids", [])
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text" and isinstance(block.get("text"), str):
+            _add_prs(rec, block["text"])
+        elif kind == "assistant" and btype == "tool_use":
+            inp = block.get("input")
+            cmd = inp.get("command") if isinstance(inp, dict) else None
+            if block.get("name") == "Bash" and isinstance(cmd, str) \
+                    and "gh pr " in cmd:
+                if isinstance(block.get("id"), str):
+                    ids.append(block["id"])
+                    del ids[:-_GH_PR_IDS_CAP]
+                _add_prs(rec, cmd)
+        elif kind == "user" and btype == "tool_result" \
+                and block.get("tool_use_id") in ids:
+            _add_prs(rec, _result_text(block.get("content")))
+
+
 def _absorb(rec: dict, line: str) -> None:
     """Fold one raw transcript line into a scan record. Screened before parsing:
     a transcript is mostly assistant turns and tool results, and `json.loads` on
     every one of them is the cost this endpoint cannot pay."""
+    # PR capture is scoped (see `_note_prs`); substring screen first, same
+    # reason as below. A `gh pr` tool_use line has no URL yet, so screen for it.
+    if ("github.com" in line and "pull" in line) or "gh pr " in line:
+        _note_prs(rec, line)
     # An assistant reply is the one non-user line with a fact to contribute:
     # whether the newest prompt's last answer was an API error. Substring tests
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
@@ -594,7 +677,8 @@ def _new_scan() -> dict:
     # before the assistant reply was dropped from this scan may still carry its
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0}
+            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0,
+            "prs": [], "gh_pr_tool_ids": []}
 
 
 def _condense_reply(rec: dict) -> None:
@@ -2189,7 +2273,10 @@ def _ahead_facts(tasks: dict[str, dict], key: str) -> dict:
     try:
         _place(task)
         record = _scan(task["path"]) if task["path"] else None
-        title, _source = _title(task, record, task["first_prompt"])
+        title, _source = _title(task, record, task["first_prompt"],
+                                tasks_store.session_title(
+                                    tasks_store.settings_state(),
+                                    task["session_id"]))
         return {"title": title,
                 # A `pending:<entry>` row has no session and therefore no chat
                 # to open: "" here is the same absence `taskHref` refuses on.
@@ -2393,9 +2480,12 @@ def _failed(speaker: dict | None) -> bool:
 # ----------------------------------------------------------------- the titles
 
 
-def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
-    """(title, where it came from). The precedence is §4's: what the user called
-    it (`user`), then Claude Code's own one-liner for the session (`ai`), then
+def _title(task: dict, rec: dict | None, first_prompt: str,
+           custom: str = "") -> tuple[str, str]:
+    """(title, where it came from). The precedence is §4's: a title the user
+    typed over the task in the Tasks UI (`renamed`, the stored `custom_title`,
+    passed in as `custom` so the caller's one settings read serves it), then
+    what the user called it (`user`), then Claude Code's own one-liner for the session (`ai`), then
     the first line of the first message. No summarisation call anywhere — the
     title we want is already written into the transcript once per turn.
 
@@ -2431,6 +2521,9 @@ def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
     the client's to choose. A placeholder invented here would not stay a
     placeholder — it is what the New task form prefills a Title field with, and a
     prefill the user saves becomes the task's permanent name."""
+    custom = str(custom or "").strip()
+    if custom:
+        return custom[:200], "renamed"
     for entry in reversed(task["entries"]):
         title = str(entry.get("title") or "").strip()
         if title:
@@ -3891,7 +3984,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     surfaced = max(active, (newest["at"] or 0.0) if newest is not None else 0.0)
     if not surfaced and task["entries"]:
         surfaced = _entry_at(task["entries"][-1])
-    title, source = _title(task, rec, task["first_prompt"])
+    prs = _row_prs(task["session_id"], rec, settings)
+    title, source = _title(task, rec, task["first_prompt"],
+                           tasks_store.session_title(settings or {},
+                                                     task["session_id"]))
     # WHAT THIS RUN IS WAITING ON, asked once here so the row's `status`, its
     # `blocked_reason` and its `attention` line cannot describe three different
     # states of the same run. Keyed by the session id: a task with none (a
@@ -4003,6 +4099,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The List row prints it, grey and italic, after the title; the Board
         # card's hover says the same.
         "last_reply": _last_reply(rec, status, said),
+        # Every PR this session touched, oldest first (`_row_prs`).
+        "prs": prs,
         # Deferred by §12 — Claude Code stores no summary, so filling this needs
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
@@ -5561,6 +5659,22 @@ def _repo_slug(folder: object) -> str:
     return slug
 
 
+def _row_prs(sid: str, rec: dict | None, settings: dict | None) -> list[dict]:
+    """The stored PRs plus any the scan has seen that the store has not, the
+    new ones persisted (a shrunk transcript restarts the scan, so the scan alone
+    forgets). Oldest first; `[]` for none."""
+    stored = tasks_store.session_prs(settings or {}, sid)
+    seen = {f"{p['repo'].lower()}#{p['number']}" for p in stored}
+    merged = stored + [p for p in (rec.get("prs") or [] if rec else [])
+                       if f"{p['repo'].lower()}#{p['number']}" not in seen]
+    if merged != stored and sid:
+        try:
+            tasks_store.record_prs(sid, merged)
+        except (OSError, ValueError):
+            pass  # costs the filing, not the row
+    return merged
+
+
 def _row_hash(row: dict) -> str:
     """A short digest of a row's content, for the page's "is this the row I
     already hold" test. Field order is the build's own and stable, so the plain
@@ -6231,7 +6345,32 @@ _PULSE_FIELDS = (
     # door as the Tasks page (`taskHref`), and that door is the canvas page
     # for a canvas task. A small dict per row, not a path walk per click.
     "canvas",
+    # The held background jobs (`_row`), `None` when there are none: a task
+    # whose turn ended but whose chat still holds a background Agent, Monitor or
+    # run_in_background Bash is `done` by status, and the Tasks page paints it
+    # In Progress (tasks-lib `liveJobRow`). The sidebar must apply the same rule
+    # or it paints running work as "finished, not read".
+    "background_jobs",
 )
+
+
+# What the finished / failed / needs-input notice names a task by
+# (task-status-notify `noticeTitle`): the reader's newest message, unless the
+# task was renamed or summary-only titles are on. `title_mode` is ABSENT with
+# its flag off, so these ride only when the row has them.
+_PULSE_TITLE_FIELDS = ("title_source", "title_mode", "last_message")
+
+
+def _pulse_row(row: dict) -> dict:
+    out = {field: row.get(field) for field in _PULSE_FIELDS}
+    for field in _PULSE_TITLE_FIELDS:
+        if field not in row:
+            continue
+        value = row[field]
+        if field == "last_message" and isinstance(value, dict):
+            value = {**value, "text": str(value.get("text") or "")}
+        out[field] = value
+    return out
 
 
 @router.get("/api/tasks/pulse")
@@ -6251,7 +6390,7 @@ def api_tasks_pulse():
     listing already pays. Server-side since D1386 — see `api_tasks_seen`."""
     return {
         "tasks": [
-            {field: row[field] for field in _PULSE_FIELDS}
+            _pulse_row(row)
             for row in _task_rows()
             if row.get("kind") != "draft"
         ],
@@ -6312,6 +6451,24 @@ def api_tasks_seen(body: Any = Body(default=None),
             detail="expected {seen: {key: number}} with non-empty string keys "
                    "and finite numbers")
     return {"ok": True, "seen": tasks_store.set_seen_done(seen)}
+
+
+class PrStatusBody(BaseModel):
+    refs: list[str] = []
+
+
+@router.post("/api/tasks/pr-status")
+async def api_tasks_pr_status(body: PrStatusBody,
+                              x_fused: str | None = Header(default=None)):
+    """`{"owner/repo#n": "open"|"draft"|"merged"|"closed"|null}` for the PRs the
+    Tasks page and the chat chip are showing — GitHub's answer through the
+    user's `gh` token, cached (`pr_status`). POST because the list is a body,
+    guarded like the other POSTs; the call blocks on the network, so it runs in
+    the threadpool."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    return await run_in_threadpool(pr_status.fetch_statuses, body.refs[:100])
 
 
 class RunningPatch(BaseModel):
@@ -6454,6 +6611,156 @@ def api_task_messages(key: str):
     _place(task)
     messages = _thread(task, tasks_store.read_state(), time.time())
     return {"messages": list(reversed(messages))}
+
+
+# ----------------------------------------------------------- export (D1390)
+#
+# `GET /api/tasks/{key}/export?format=md|json` — one task's WHOLE transcript
+# as a file. The kebab's "Download transcript" row and a bot's
+# `fused.tasks.export(key)` both land here. Two shapes, one source:
+#
+#   md    the conversation as Markdown, the layout the Bots page already
+#         exports its own transcripts in (`bots/store.export_markdown`), so a
+#         reader who has seen one of ours can read the other.
+#   json  the parsed turns the chat itself restores from (`agent._history`:
+#         `turns` of {role, text, segments, uuid, ts}) under a small header —
+#         NOT the raw JSONL under ~/.claude, whose row shapes are Claude
+#         Code's to change.
+#
+# Read from the transcript PATH the row already resolved (`task["path"]`), so
+# a task whose folder is gone still exports.
+_EXPORT_FORMATS = ("md", "json")
+
+
+def _export_name(task: dict, fmt: str) -> str:
+    """`<title-slug>-<session8>.<fmt>`, every part ASCII-safe for a header."""
+    def safe(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    slug = safe(str(task.get("title") or ""))[:40]
+    sid = safe(str(task.get("session_id") or ""))[:8]
+    return "-".join(p for p in (slug or "transcript", sid) if p) + "." + fmt
+
+
+def _export_stamp(ts) -> str:
+    """` · YYYY-MM-DD HH:MM`, or "" for a missing or unusable stamp."""
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        return ""
+    try:
+        return " · " + time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _quoted(body: str, italic: bool = False) -> list[str]:
+    """A block quote that covers EVERY line, not just the first."""
+    return [("> _" + line + "_" if italic and line.strip() else "> " + line).rstrip()
+            for line in body.split("\n")]
+
+
+def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
+    """The turns as Markdown, in the Bots export's vocabulary. Lossy by
+    design (tool results are not inlined); `format=json` is the full record."""
+    who = {"copilot": "Copilot"}.get(str(backend or ""), "Claude")
+    title = " ".join(str(task.get("title") or "Task").split())
+    out = [f"# {title} — transcript", ""]
+    if task.get("target"):
+        out.append(f"Folder: {task['target']}  ")
+    out += [f"Session: {task.get('session_id', '')}", ""]
+    for turn in turns:
+        role = turn.get("role")
+        text = str(turn.get("text") or "").rstrip()
+        stamp = _export_stamp(turn.get("ts"))
+        if role == "user":
+            out += [f"**You**{stamp}", "", text, ""]
+            continue
+        if role != "assistant":
+            if text:
+                out += _quoted(text) + [""]
+            continue
+        out += [f"**{who}**{stamp}", ""]
+        segments = turn.get("segments") or []
+        if not segments and text:
+            out += [text, ""]
+        in_tools = False
+        for seg in segments:
+            kind = seg.get("kind")
+            body = str(seg.get("text") or "").rstrip()
+            if kind == "tool":
+                # The one line a reader needs: the call's own summary, else
+                # what the tool was pointed at (Bash's description/command,
+                # a file tool's path), never the whole input.
+                inp = seg.get("input") if isinstance(seg.get("input"), dict) else {}
+                detail = str(seg.get("detail") or inp.get("description")
+                             or inp.get("file_path") or inp.get("command")
+                             or inp.get("pattern") or "").strip().split("\n")[0][:160]
+                out.append(f"- `{seg.get('name') or 'tool'}` {detail}".rstrip())
+                in_tools = True
+                continue
+            if not body:
+                continue
+            if in_tools:
+                # Close the tool list, or the next paragraph reads as a lazy
+                # continuation of its last bullet.
+                out.append("")
+                in_tools = False
+            if kind == "thinking":
+                out += _quoted(body, italic=True) + [""]
+            elif kind == "notice":
+                out += _quoted(body) + [""]
+            else:
+                out += [body, ""]
+        if in_tools:
+            out.append("")
+    return "\n".join(out) + "\n"
+
+
+@router.get("/api/tasks/{key}/export")
+def api_task_export(key: str, format: str = "md"):
+    """One task's whole transcript as a downloadable file — see above."""
+    fmt = (format or "md").lower()
+    if fmt not in _EXPORT_FORMATS:
+        raise HTTPException(status_code=400, detail="format must be md or json")
+    tasks = _collect()
+    task = tasks.get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    if not task.get("session_id"):
+        raise HTTPException(status_code=409,
+                            detail="that task has not started a session yet")
+    # A session named only by a send mark or a scheduled entry: it started,
+    # but there is no transcript on disk to export.
+    if not task.get("path"):
+        raise HTTPException(status_code=404, detail="that task's transcript is gone")
+    agent = _agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503, detail="the claude agent module did not load")
+    _place(task)
+    # Named the way the listing names it (`_row`), so the file a reader saves
+    # is called what the row they pressed was called.
+    record = _scan(task["path"])
+    task["title"], _source = _title(task, record, task.get("first_prompt") or "")
+    if not os.path.isfile(task["path"]):
+        raise HTTPException(status_code=404, detail="that task's transcript is gone")
+    try:
+        history = agent._history(task.get("target") or "", task["session_id"],
+                                 transcript=task["path"])
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"could not read the transcript: {e}") from e
+    turns = list(history.get("turns") or []) if isinstance(history, dict) else []
+    backend = str(history.get("backend") or "") if isinstance(history, dict) else ""
+    name = _export_name(task, fmt)
+    headers = {"Content-Disposition": f'attachment; filename="{name}"',
+               "Cache-Control": "no-store"}
+    if fmt == "json":
+        payload = {"key": task["key"], "title": task.get("title") or "",
+                   "target": task.get("target") or "",
+                   "session_id": task["session_id"], "backend": backend,
+                   "turns": turns}
+        return Response(json.dumps(payload, ensure_ascii=False, indent=1),
+                        media_type="application/json", headers=headers)
+    return Response(_export_markdown(task, turns, backend),
+                    media_type="text/markdown; charset=utf-8", headers=headers)
 
 
 # How far outside the asked-for window a scheduled entry is still considered a
@@ -6691,6 +6998,9 @@ _VALID_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 _MODEL_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
+_VALID_PERMISSIONS = ("plan", "prompt", "acceptEdits", "auto")
+
+
 class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
@@ -6699,6 +7009,8 @@ class SettingsPatch(BaseModel):
     # starts a conversation; a later POST naming the same value is a no-op and
     # one naming another is refused — the backend never changes (D2).
     backend: str = ""
+    # The Approvals pill: plan | prompt | acceptEdits | auto, "" (not saying).
+    permission: str = ""
 
 
 def _settings_session_id(raw: str) -> str:
@@ -6752,7 +7064,8 @@ def api_task_settings_read(session_id: str = ""):
     # what the RECORD says, and the row (`_row_backend`) is where the root
     # fills the gap for a session that predates the field.
     return {"model": _display_model(model), "effort": effort,
-            "backend": tasks_store.session_backend(state, session_id)}
+            "backend": tasks_store.session_backend(state, session_id),
+            "permission": tasks_store.session_permission(state, session_id)}
 
 
 @router.post("/api/tasks/settings")
@@ -6808,11 +7121,18 @@ def api_task_settings(patch: SettingsPatch,
             model)
         if foreign is not None:
             raise HTTPException(status_code=400, detail=foreign["error"])
-    if not (model or effort or backend):
-        raise HTTPException(status_code=400,
-                            detail="nothing to record (send model, effort or backend)")
+    permission = patch.permission.strip()
+    if permission and permission not in _VALID_PERMISSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid permission {permission!r}: expected one of "
+                   + ", ".join(repr(v) for v in _VALID_PERMISSIONS))
+    if not (model or effort or backend or permission):
+        raise HTTPException(
+            status_code=400,
+            detail="nothing to record (send model, effort, backend or permission)")
     record = tasks_store.record_settings(session_id, model, effort,
-                                         backend=backend)
+                                         backend=backend, permission=permission)
     # THE ROW CARRIES THIS PAIR (`_row_settings`), so the other windows have to
     # be told — the same ring `POST /api/tasks/read` makes for the same reason.
     # A session that is not a task is a key nobody is watching, and the notify
@@ -6821,7 +7141,8 @@ def api_task_settings(patch: SettingsPatch,
     return {"ok": True,
             "model": str(record.get("model") or ""),
             "effort": str(record.get("effort") or ""),
-            "backend": str(record.get("backend") or "")}
+            "backend": str(record.get("backend") or ""),
+            "permission": str(record.get("permission") or "")}
 
 
 # ------------------------------------------------------------------ archiving
@@ -6901,6 +7222,46 @@ def api_task_archive(patch: ArchivePatch,
     # filing kept underneath, and the card is how the reader finds out.
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed,
             "stopped": stopped}
+
+
+class RenamePatch(BaseModel):
+    key: str
+    # Typed `Any` so a non-string reaches the handler as a 400 of ours, not a
+    # pydantic 422 the client has no wording for.
+    title: Any = ""
+
+
+@router.post("/api/tasks/rename")
+def api_task_rename(patch: RenamePatch,
+        x_fused: str | None = Header(default=None)):
+    """Give one started task a title of the user's own, or take it back.
+
+    The title is stored on the session's settings record (`custom_title`) and
+    wins every title mode (`_title`); an empty one deletes it and the automatic
+    title returns. Only the first line is kept, capped at 200 characters, the
+    same cap the listing applies. A task with no session yet (a `pending:`
+    message, a draft, a new chat) has nothing to key the title on and is
+    refused. Answers with the title as stored ("" when cleared)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not isinstance(patch.title, str):
+        raise HTTPException(status_code=400, detail="title must be a string")
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    session_id = task["session_id"]
+    if (key.startswith((tasks_store.PENDING_PREFIX, "draft:",
+                        drafts.NEW_CHAT_PREFIX)) or not session_id):
+        return _error("only a started task can be renamed")
+    text = patch.title.strip()
+    first = text.splitlines()[0].strip() if text else ""
+    stored = tasks_store.record_title(session_id, first[:200])
+    tasks_watch.notify({key})
+    return {"ok": True, "title": stored}
 
 
 def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
@@ -9304,6 +9665,14 @@ def api_task_send(key: str, body: dict = Body(...),
     if refusal is not None:
         return refusal
 
+    delivered = claude_remote.admit([session], _deliver_page_send, key, task, target,
+                                    session, text, model, effort, owner)
+    if delivered == {"error": claude_remote.HELD}:
+        return _error(claude_remote.HELD, status=409)
+    return delivered
+
+
+def _deliver_page_send(key, task, target, session, text, model, effort, owner):
     agent = project_queue.agent_module()
     if agent is not None:
         try:

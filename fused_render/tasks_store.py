@@ -1026,6 +1026,15 @@ def session_settings(state: dict, session_id: str) -> tuple[str, str]:
     return (str(rec.get("model") or ""), str(rec.get("effort") or ""))
 
 
+def session_permission(state: dict, session_id: str) -> str:
+    """The Approvals mode recorded for one session (plan | prompt | acceptEdits
+    | auto), "" when none — the pill's own pick, which outranks the page's seed
+    and the global default."""
+    rec = state.get(str(session_id or ""))
+    value = rec.get("permission") if isinstance(rec, dict) else ""
+    return value if value in ("plan", "prompt", "acceptEdits", "auto") else ""
+
+
 def session_backend(state: dict, session_id: str) -> str:
     """The agent backend recorded for one session ("claude" | "copilot"), ""
     when this store has no answer — which is every session that predates the
@@ -1040,7 +1049,8 @@ def session_backend(state: dict, session_id: str) -> str:
 
 
 def record_settings(session_id: str, model: str = "", effort: str = "",
-                    now: float | None = None, backend: str = "") -> dict:
+                    now: float | None = None, backend: str = "",
+                    permission: str = "") -> dict:
     """Record what this conversation runs with; return the stored record.
 
     ONLY THE FIELDS GIVEN. An empty `model` means "I am not saying anything
@@ -1061,7 +1071,12 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
     backend = str(backend or "").strip()
     if backend not in roots.BACKENDS:
         backend = ""
-    if not session_id or not (model or effort or backend):
+    # The Approvals pill's value, one of the four page spellings; junk is
+    # dropped rather than stored.
+    permission = str(permission or "").strip()
+    if permission not in ("plan", "prompt", "acceptEdits", "auto"):
+        permission = ""
+    if not session_id or not (model or effort or backend or permission):
         return {}
     stamp = time.time() if now is None else float(now)
 
@@ -1074,6 +1089,8 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
             rec["effort"] = effort
         if backend:
             rec["backend"] = backend
+        if permission:
+            rec["permission"] = permission
         rec["at"] = stamp
         state[session_id] = rec
         return rec, True
@@ -1133,6 +1150,118 @@ def record_recap(session_id: str, for_uuid: str, text: str,
     return _update(SETTINGS_FILE, mutate)
 
 
+# EVERY GITHUB PR A SESSION HAS TOUCHED rides on the same record too, under
+# `prs`, oldest first:
+#
+#     {"<session-id>": {..., "prs": [{"repo": "o/r", "number": 12, "url": "…"}]}}
+#
+# The Tasks listing collects them from the transcript, but its scan starts over
+# when the file shrinks (a compaction), so the transcript alone is not durable:
+# the row builder merges what it sees into this list and reads the list back.
+# Deduped by lowercased `repo#number`, the first spelling kept.
+
+
+def _pr_key(pr: dict) -> str:
+    return f"{pr['repo'].lower()}#{pr['number']}"
+
+
+def _clean_prs(value) -> list[dict]:
+    """The well-formed entries of a stored PR list, with `url` rebuilt from
+    repo and number (a stored url is never trusted to be the canonical one)."""
+    out, seen = [], set()
+    for pr in value if isinstance(value, list) else []:
+        if not isinstance(pr, dict):
+            continue
+        repo, number = pr.get("repo"), pr.get("number")
+        if not isinstance(repo, str) or not repo \
+                or isinstance(number, bool) or not isinstance(number, int):
+            continue
+        clean = {"repo": repo, "number": number,
+                 "url": f"https://github.com/{repo}/pull/{number}"}
+        if _pr_key(clean) not in seen:
+            seen.add(_pr_key(clean))
+            out.append(clean)
+    return out
+
+
+# Lists written before capture was scoped (version 1, no marker) were greedy
+# and are dropped; the transcript scan recomputes them.
+_PRS_VERSION = 2
+
+
+def session_prs(state: dict, session_id: str) -> list[dict]:
+    """The stored PRs for one session, oldest first — `[]` when there are none
+    (or the record is not that shape)."""
+    rec = state.get(str(session_id or ""))
+    if not isinstance(rec, dict) or rec.get("prs_v") != _PRS_VERSION:
+        return []
+    return _clean_prs(rec.get("prs"))
+
+
+def record_prs(session_id: str, prs: list) -> list[dict]:
+    """Merge `prs` into the session's stored list (existing first) and return
+    the result. Writes only when that changed anything; nothing for an empty
+    session id."""
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return []
+    incoming = _clean_prs(prs)
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        have = _clean_prs(rec.get("prs")) \
+            if rec.get("prs_v") == _PRS_VERSION else []
+        merged = _clean_prs(have + incoming)
+        if merged == have and rec.get("prs") == have \
+                and rec.get("prs_v") == _PRS_VERSION:
+            return merged, False
+        rec["prs"] = merged
+        rec["prs_v"] = _PRS_VERSION
+        state[session_id] = rec
+        return merged, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
+# THE USER'S OWN TITLE for a task rides on the same record, under `custom_title`
+# (set from the Tasks UI's rename gesture). It is stored here and nowhere else:
+# Claude Code's transcript is Claude Code's file, and nothing reads a title
+# written into it. Empty text deletes the key, which restores the automatic
+# title. `forget_session` drops it with the rest of the record.
+
+
+def session_title(state: dict, session_id: str) -> str:
+    """The user's own title for one session, or "" when there is none."""
+    rec = state.get(str(session_id or ""))
+    title = rec.get("custom_title") if isinstance(rec, dict) else None
+    return title.strip() if isinstance(title, str) else ""
+
+
+def record_title(session_id: str, text: str) -> str:
+    """Store the user's title for one session beside whatever its record
+    already holds; empty or whitespace-only text clears it. Returns what is
+    stored now ("" when cleared, or for an empty session id)."""
+    session_id = str(session_id or "").strip()
+    text = str(text or "").strip()
+    if not session_id:
+        return ""
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        if text:
+            rec["custom_title"] = text
+        elif "custom_title" in rec:
+            del rec["custom_title"]
+        else:
+            return text, False  # nothing to clear: no write
+        state[session_id] = rec
+        return text, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
 def forget_session(session_id: str) -> dict:
     """Erase what these stores keep about one session — the erase gesture's
     share of `POST /api/tasks/erase`, where the transcript itself goes too.
@@ -1141,7 +1270,8 @@ def forget_session(session_id: str) -> dict:
     no longer exist, and there is no thread left for them to be about.
 
     `session_settings.json`'s record GOES for the same reason: it says which
-    model a conversation runs with (and holds its last turn recap), and the
+    model a conversation runs with (and holds its last turn recap and its PR
+    list), and the
     conversation is gone. Left behind,
     it would be the one thing that outlived the erase and re-seeded a new chat
     that happened to be handed the same id.

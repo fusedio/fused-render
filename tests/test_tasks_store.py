@@ -1370,3 +1370,37 @@ def test_update_writes_through_a_tmp_file_and_replace(state_dir, monkeypatch):
     src, dst, body = seen[-1]
     assert src != dst and src.startswith(dst) and "Fixed the login bug" in body
     assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a")["text"]
+
+
+def test_record_settings_round_trips_permission():
+    rec = tasks_store.record_settings("sid-1", permission="acceptEdits")
+    assert rec["permission"] == "acceptEdits"
+    # A later model-only write leaves it; junk is not stored.
+    tasks_store.record_settings("sid-1", model="haiku", permission="bogus")
+    state = tasks_store.settings_state()
+    assert tasks_store.session_permission(state, "sid-1") == "acceptEdits"
+    assert tasks_store.session_settings(state, "sid-1")[0] == "haiku"
+    assert tasks_store.session_permission(state, "nope") == ""
+
+
+def test_a_custom_title_rides_on_the_settings_record_and_goes_with_an_erase(state_dir):
+    """The user's own name for a task is one more field on the session's
+    record: it leaves model/effort alone, empty text clears it, and an erase
+    takes the whole record."""
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    assert tasks_store.session_title(tasks_store.settings_state(), "sess-a") == ""
+    tasks_store.record_title("sess-a", "  Release prep  ")
+    state = tasks_store.settings_state()
+    assert tasks_store.session_title(state, "sess-a") == "Release prep"
+    assert tasks_store.session_settings(state, "sess-a") == ("haiku", "low")
+    assert tasks_store.session_title(state, "nobody") == ""
+
+    tasks_store.record_title("sess-a", "   ")
+    state = tasks_store.settings_state()
+    assert tasks_store.session_title(state, "sess-a") == ""
+    assert "custom_title" not in state["sess-a"]
+    assert tasks_store.session_settings(state, "sess-a") == ("haiku", "low")
+
+    tasks_store.record_title("sess-a", "Again")
+    tasks_store.forget_session("sess-a")
+    assert tasks_store.session_title(tasks_store.settings_state(), "sess-a") == ""

@@ -6,6 +6,7 @@ import type { PrefControlProps } from "./SettingRow";
 import {
   AppearanceControl,
   AutoUpdateControl,
+  ChromiumWindowsControl,
   LauncherHotkeyControl,
   LauncherRowControl,
   NativeWindowsControl,
@@ -38,6 +39,7 @@ import {
   ContribLoopControl,
   ContribRemixControl,
   ContribSourcesControl,
+  ClaudeDefaultPermissionControl,
 } from "./toggles";
 import {
   IndexingControl,
@@ -89,6 +91,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "task-recaps": TaskRecapsControl,
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
+  "claude-default-permission": ClaudeDefaultPermissionControl,
   "claude-max-sessions": ClaudeMaxSessionsControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
@@ -109,6 +112,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   marketplace: MarketplaceControl,
   monitor: MonitorControl,
   reader: ReaderControl,
+  "chromium-windows": ChromiumWindowsControl,
   lan: LanControl,
   "fused-account": FusedAccountControl,
   "workbench-env": WorkbenchEnvControl,

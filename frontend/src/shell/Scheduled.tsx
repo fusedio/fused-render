@@ -130,8 +130,10 @@ import {
   defaultViewFacets,
   parseViewFilters,
   VIEW_FILTERS_KEY,
+  readTaskSort,
+  writeTaskSort,
 } from "./tasks-lib";
-import type { QueueOverride, QueueOverrides, TaskView, ViewFacets } from "./tasks-lib";
+import type { QueueOverride, QueueOverrides, TaskSortBy, TaskView, ViewFacets } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { missingFolders } from "./useMissingFolders";
@@ -310,7 +312,7 @@ const VIEW_HINTS: Partial<Record<TaskView, string>> = {
  * off), and Cancel / Done right after the +. Edits land in `tabs` (the page's
  * draft) and only Done writes them anywhere.
  */
-function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
+function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sortBy, onSortBy }: {
   tabs: TaskView[];
   /** The view the page is showing — a chip's press previews its view below
    *  (Akshil, 2026-10-16), so the row keeps saying which one is up. */
@@ -319,6 +321,10 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
   onChange: (tabs: TaskView[]) => void;
   onCancel: () => void;
   onDone: () => void;
+  /** The page's "Sort by". Unlike the tabs it applies at once and is not
+   *  staged behind Done: Cancel does not revert it. */
+  sortBy: TaskSortBy;
+  onSortBy: (v: TaskSortBy) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const available = TASK_VIEWS.filter((v) => !tabs.includes(v));
@@ -497,6 +503,24 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
               ))}
             </div>
           )}
+        </div>
+        <div className="schedule-view-sort">
+          <span className="schedule-view-sort-lbl" id="schedule-sort-lbl">Sort by</span>
+          <div className="schedule-form-seg" role="radiogroup" aria-labelledby="schedule-sort-lbl">
+            {([["changed", "Last change"], ["created", "Created"]] as const).map(([v, label]) => (
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={sortBy === v}
+                data-sort={v}
+                className={"btn btn-secondary schedule-view-btn" + (sortBy === v ? " is-active" : "")}
+                onClick={() => onSortBy(v)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         {/* Right after the +, not at the far end (Akshil, 2026-10-19): the
             three controls that finish the edit sit together. */}
@@ -737,6 +761,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // The editor's draft: null while the row is a switcher, the tabs-in-progress
   // while it is being edited. Cancel drops it; Done makes it `tabs`.
   const [tabsDraft, setTabsDraft] = useState<TaskView[] | null>(null);
+  // "Sort by" (List / Time / Project / PR; Board, Cards and Calendar ignore
+  // it). Lives under the cog, applies at once, remembered across sittings.
+  const [sortBy, setSortBy] = useState<TaskSortBy>(readTaskSort);
+  const changeSort = (v: TaskSortBy) => {
+    setSortBy(v);
+    writeTaskSort(v);
+  };
   // The view that was up when the editor opened: chips PREVIEW their view
   // while editing (Akshil, 2026-10-16), Done keeps what is showing, Cancel
   // puts this one back.
@@ -1570,6 +1601,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 onChange={setTabsDraft}
                 onCancel={cancelTabs}
                 onDone={finishTabs}
+                sortBy={sortBy}
+                onSortBy={changeSort}
               />
             ) : (<>
             <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
@@ -1585,7 +1618,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                         aria-pressed={view === v}
                         onClick={() => pickView(v)}>
                   {VIEW_ICONS[v]}
-                  <span className="schedule-fit-lbl">{VIEW_LABELS[v]}</span>
+                  <span className="schedule-fit-lbl">
+                    {VIEW_LABELS[v]}
+                    {v === "calendar" && (
+                      <span className="sidebar-count-chip sidebar-beta-chip schedule-beta-tag">Beta</span>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>
@@ -1617,6 +1655,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               home={home}
               onChange={setFilters}
               hideArchiveStatus={view === "calendar"}
+              hideUpcomingStatus={view === "cards"}
               // The ladder's Project rung: one trigger instead of two, same rows
               // inside it, each under its own heading (shell/row-fit.ts
               // TOOLBAR_DROPS). Project loses its own control here and stays
@@ -1715,6 +1754,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               tasks={shown}
               // Time / Project / PR are this List cut into sections.
               groupBy={groupOfView(view)}
+              sortBy={sortBy}
               onNewTaskIn={(folder) => openForm("blank", null, NO_HOP, null, folder)}
               home={home}
               missing={missing}

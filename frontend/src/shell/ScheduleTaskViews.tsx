@@ -149,7 +149,8 @@ import {
   taskUnreadLabel,
   cardTitleLine,
   recapTitlesOn,
-  taskWhen,
+  taskWhenFor,
+  type TaskSortBy,
   threadView,
   tildePath,
   toggleExpanded,
@@ -161,8 +162,12 @@ import {
   ERASE_BLOCKED_HINT,
   opensCanvas,
   pageDoorLabel,
+  flattenGroupRefs,
+  prKey,
+  prUrl,
 } from "./tasks-lib";
 import type {
+  PrRef,
   FilingIntent,
   LaneChoices,
   ListMemory,
@@ -177,6 +182,8 @@ import type {
 } from "./tasks-lib";
 import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import { useProjectQueueEnabled } from "@apps/claude/feature-flag";
+import { usePrStatuses } from "@platform/lib/prStatus";
+import { prRefsOf } from "@platform/lib/task-prs";
 import { runAgent } from "@apps/claude/protocol/agent";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
@@ -927,6 +934,40 @@ export function IdentityChip({ name, title, onPick, active = false }: {
   );
 }
 
+/** The PR view's stand-in for the folder chip: `#1818`, a link to the pull
+ *  request on GitHub (a plain label when the repository is not known). Wears
+ *  the folder chip's own classes so it sits in the row exactly where that
+ *  chip does; the link is lifted over the row's stretched link (`.task-pr-num`)
+ *  and its press never counts as a press on the row. */
+function PrNumChip({ prRef }: { prRef: PrRef }) {
+  const body = <span className="schedule-tv-id-name">#{prRef.number}</span>;
+  const href = prUrl(prRef);
+  if (!href) return <span className="schedule-tv-id">{body}</span>;
+  // The same shield + pill the project chip wears (`IdentityChip` with `onPick`),
+  // so border, radius, padding, size and hover come from `.schedule-tv-id--tag`
+  // itself; the pill is an <a> rather than a <button>.
+  return (
+    <span
+      className="schedule-tv-id-shield"
+      data-hint=""
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <a
+        className="schedule-tv-id schedule-tv-id--tag task-pr-num"
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-hint={`${prRef.repo} #${prRef.number}`}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        {body}
+      </a>
+    </span>
+  );
+}
+
 /**
  * WHICH AGENT RUNS THIS TASK, as a mark (docs/COPILOT_BACKEND.md D18) — on the
  * List row (and so the chat's Recent list, which borrows it), the Board card,
@@ -1520,6 +1561,7 @@ export function TaskFilterControls({
   home = "",
   onChange,
   hideArchiveStatus = false,
+  hideUpcomingStatus = false,
   merged = false,
 }: {
   filters: TaskFilters;
@@ -1541,6 +1583,14 @@ export function TaskFilterControls({
    * act on it.
    */
   hideArchiveStatus?: boolean;
+  /**
+   * True on the Cards wall (Akshil, 2026-10-20: "for cards check and seed the
+   * status filter"). The wall never draws an Upcoming row — it has no
+   * conversation on file (tasks-lib.cardsForTasks) — so an Upcoming tick would
+   * change nothing on screen. The row is hidden, as Archive is on the Calendar,
+   * and the stored value is left alone.
+   */
+  hideUpcomingStatus?: boolean;
   /**
    * THE LAST RUNG OF THE TOOLBAR'S LADDER (shell/row-fit.ts): the two triggers
    * become ONE, and its popover holds both lists under their own headings.
@@ -1569,15 +1619,15 @@ export function TaskFilterControls({
   // the filter offers the lanes the Board draws, so one Blocked tick brings
   // both the broken run and the one waiting on you. taskMatches matches by
   // lane for the same reason.
-  const statusColumns = hideArchiveStatus
-    ? BOARD_LANES.filter((c) => c.key !== "archived")
-    : BOARD_LANES;
+  const statusColumns = BOARD_LANES.filter(
+    (c) => !(hideArchiveStatus && c.key === "archived") && !(hideUpcomingStatus && c.key === "upcoming"),
+  );
   // Excludes Archive from the badge for the same reason the row is hidden: a
   // count that includes a facet the popover will not even show would read as
   // a filter this menu cannot explain.
-  const statusCount = hideArchiveStatus
-    ? filters.statuses.filter((s) => s !== "archived").length
-    : filters.statuses.length;
+  const statusCount = filters.statuses.filter(
+    (s) => !(hideArchiveStatus && s === "archived") && !(hideUpcomingStatus && s === "upcoming"),
+  ).length;
 
   // ONE PROJECT AT A TIME (design.md, 2026-09-14). The STORED shape is still a
   // list — `taskMatches` asks it with `includes` and every caller that composes
@@ -2158,6 +2208,7 @@ export function TaskList({
   floored = false,
   emptyLabel = "Nothing to show here.",
   groupBy = null,
+  sortBy = "changed",
   onNewTaskIn,
 }: {
   /** The Project view's + on a folder's heading (Akshil, 2026-10-19): open
@@ -2169,6 +2220,9 @@ export function TaskList({
    *  Project / PR views, tasks-lib.groupRows). null ⇒ the plain List. Rows keep
    *  the List's order inside every section. */
   groupBy?: TaskGroupBy | null;
+  /** The page's "Sort by" (tasks-lib.TaskSortBy): last change (lanes, today's
+   *  order) or creation time, newest first. */
+  sortBy?: TaskSortBy;
   /** A queue verb landed here: paint the claim over the row until the server's
    * own answer arrives (tasks-lib.QueueOverride). The page holds the claims —
    * see TaskBoard's own note for why they must outlive this component. */
@@ -2340,14 +2394,31 @@ export function TaskList({
   // resolution the rows print anyway — so this re-sorts sixty times an hour, not
   // once a second.
   const now = useNow();
-  const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);
+  const sorted = useMemo(() => sortForList(tasks, now, sortBy), [tasks, now, sortBy]);
   // The grouped views cut the sorted list into sections and draw them one frame
   // each; `rows` stays the flat, in-order list every index below is about.
+  // THE PR VIEW SECTIONS BY GITHUB STATUS, asked of the server for the PRs
+  // on screen only (and not at all on any other view). The answer lands after
+  // the first paint, so rows first file under "Unknown" and move.
+  const visiblePrKeys = useMemo(
+    () =>
+      groupBy === "pr"
+        ? [...new Set(sorted.flatMap((t) => prRefsOf(t)).filter((r) => r.repo).map(prKey))]
+        : [],
+    [sorted, groupBy],
+  );
+  const prStatuses = usePrStatuses(visiblePrKeys);
   const groups = useMemo(
-    () => (groupBy ? groupRows(sorted, groupBy, home, now) : null),
-    [sorted, groupBy, home, now],
+    () => (groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `prStatuses` is a fresh object each render; its values are the dep
+    [sorted, groupBy, home, now, sortBy, visiblePrKeys.map((k) => prStatuses[k] ?? "").join(",")],
   );
   const rows = useMemo(() => (groups ? flattenGroups(groups) : sorted), [groups, sorted]);
+  // The pull request each row stands for (PR view only): a task naming two PRs
+  // is drawn twice, so the row's React key and its `#N` chip need the pair.
+  // expanded / peeked / selected stay keyed by `task.key`, so both copies of a
+  // task light up together — deliberate, they are the same task.
+  const rowRefs = useMemo(() => (groups ? flattenGroupRefs(groups) : null), [groups]);
   // Which sections are folded (the grouped views only; see groupFrames).
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(readCollapsedGroups);
   // THE FIRST VISIT TO A GROUPED VIEW STARTS FOLDED (Akshil, 2026-10-19), bar
@@ -2381,7 +2452,10 @@ export function TaskList({
    * queue off it is `task.key` for every row and nothing has changed.
    */
   const queueOn = useProjectQueueEnabled();
-  const rowKeys = useMemo(() => taskListKeys(rows, queueOn), [rows, queueOn]);
+  const rowKeys = useMemo(() => {
+    const keys = taskListKeys(rows, queueOn);
+    return rowRefs ? keys.map((k, i) => (rowRefs[i] ? `${k}@${prKey(rowRefs[i]!)}` : k)) : keys;
+  }, [rows, queueOn, rowRefs]);
 
   /**
    * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
@@ -2835,7 +2909,10 @@ export function TaskList({
         onNode={onNode}
         task={task}
         home={home}
-        showProject={showProject}
+        // The PR view's `#N` chip takes the folder chip's slot (see PrNumChip).
+        showProject={showProject && !rowRefs?.[ix]}
+        prRef={rowRefs?.[ix] ?? null}
+        sortBy={sortBy}
         folderMissing={missing?.has(taskFolder(task)) ?? false}
         open={expanded.has(task.key)}
         peekOn={peekOn}
@@ -3099,6 +3176,8 @@ function TaskNode({
   task,
   home,
   showProject,
+  prRef = null,
+  sortBy = "changed",
   folderMissing,
   open: requested,
   variant = "task",
@@ -3137,6 +3216,11 @@ function TaskNode({
   /** Whether the folder chip is worth drawing. The LIST's answer, not this row's:
    * a chip that every visible row repeats distinguishes nothing (spansProjects). */
   showProject: boolean;
+  /** The PR view's row: the pull request this copy of the task stands for.
+   *  Replaces the folder chip with a `#N` link to GitHub. */
+  prRef?: PrRef | null;
+  /** Which time the row's last cell prints: its last change, or its creation. */
+  sortBy?: TaskSortBy;
   /** The task's folder is gone from the disk (useMissingFolders). The row then
    * has nowhere to go: its press raises a toast instead of leaving for an
    * Explorer that can only answer with a stat error. */
@@ -3376,7 +3460,7 @@ function TaskNode({
   // every row in a list re-letters in ONE paint — two rows flipping "59m ago" to
   // "1h ago" a second apart is two cells of one column disagreeing.
   const now = useNow();
-  const when = taskWhen(task, now);
+  const when = taskWhenFor(task, now, sortBy);
   // A run still ahead — the mark after the title, clock or circle arrows
   // (tasks-lib.scheduledMark). No chip beside the time any more (Akshil,
   // 2026-09-11: "we don't need to show time 2 times on the right side").
@@ -4182,6 +4266,7 @@ function TaskNode({
             then the folder it belongs to, then the words. It lived at the right
             end among the tags until then; DraftChip stays there alone. Same
             component, same press, same shield — only the slot moved. */}
+        {prRef && <PrNumChip prRef={prRef} />}
         {showProject && (
           <IdentityChip
             name={basename(task.project)}

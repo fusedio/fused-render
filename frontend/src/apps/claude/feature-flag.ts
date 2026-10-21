@@ -14,6 +14,7 @@
 import { useEffect, useState } from "react";
 import { getPrefs, getPrefsShared, dropSharedPrefsRead } from "@platform/lib/api";
 import { GATE_FALLBACK_MS } from "@platform/lib/clock";
+import type { PermissionMode } from "./protocol/types";
 
 let reading: Promise<void> | null = null;
 let generation = 0;
@@ -39,6 +40,52 @@ let settledOnce = false;
  *  and read by the same single prefs GET. */
 let recapTitles = false;
 const recapListeners = new Set<(v: boolean) => void>();
+
+/** The four Approvals modes, for narrowing a value off the wire or a URL. */
+const PERMISSION_VALUES: readonly PermissionMode[] = ["plan", "prompt", "acceptEdits", "auto"];
+
+/** `v` when it is one of the four modes, else "". The ONE narrowing the chat
+ *  uses wherever an Approvals value arrives as text (a param, a record, a pref). */
+export function narrowPermission(v: unknown): PermissionMode | "" {
+  return PERMISSION_VALUES.includes(v as PermissionMode) ? (v as PermissionMode) : "";
+}
+
+/** The user's default Approvals mode for new chats (`prefs.claude_default_permission`,
+ *  Preferences > "Default approvals for new chats"). "auto" until the one prefs
+ *  read lands, which is also the server's own default, so a user who never
+ *  touched the setting never sees anything else. Read by the same single GET. */
+let defaultPermission: PermissionMode = "auto";
+const defaultPermissionListeners = new Set<(v: PermissionMode) => void>();
+
+function setDefaultPermission(next: PermissionMode) {
+  if (defaultPermission === next) return;
+  defaultPermission = next;
+  for (const listener of defaultPermissionListeners) listener(next);
+}
+
+/** The default Approvals mode right now — a plain read, like `queueEnabled`. */
+export function defaultPermissionNow(): PermissionMode {
+  return defaultPermission;
+}
+
+/** Hand over a known-fresh answer (the prefs payload a PUT returned). */
+export function publishDefaultPermission(next: unknown) {
+  setDefaultPermission(narrowPermission(next) || "auto");
+}
+
+/** Subscribe to the default Approvals mode; triggers the one prefs read. */
+export function useDefaultPermission(): PermissionMode {
+  const [current, setCurrent] = useState<PermissionMode>(() => defaultPermission);
+  useEffect(() => {
+    defaultPermissionListeners.add(setCurrent);
+    setCurrent(defaultPermission);
+    void read();
+    return () => {
+      defaultPermissionListeners.delete(setCurrent);
+    };
+  }, []);
+  return current;
+}
 
 function setRecapTitles(next: boolean) {
   if (recapTitles === next) return;
@@ -131,6 +178,8 @@ function read(): Promise<void> {
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
       setRecapTitles(p.task_recap?.enabled === true);
+      // A server that predates the field keeps "auto", the server's default.
+      setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
     })
     .catch(() => {
       // A failed read keeps whatever answer the page already has (the default,
@@ -291,4 +340,5 @@ export function resetFlagsForTests() {
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
   setRecapTitles(false);
+  setDefaultPermission("auto");
 }

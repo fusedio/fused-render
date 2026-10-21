@@ -1572,6 +1572,18 @@ def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, mon
     assert prefs_mod.task_summary_titles_enabled() is False
 
 
+def test_task_summary_titles_solo_put_saves_and_turns_off(tmp_path, monkeypatch):
+    """Regression: the handler set the pref but never marked the write changed,
+    so a PUT carrying ONLY this key came back 400 "no known preference"."""
+    client, _home = _client(tmp_path, monkeypatch)
+    on = client.put("/api/prefs", json={"task_summary_titles_enabled": True}, headers=FUSED)
+    assert on.status_code == 200
+    assert client.get("/api/prefs").json()["task_summary_titles"] == {"enabled": True}
+    off = client.put("/api/prefs", json={"task_summary_titles_enabled": False}, headers=FUSED)
+    assert off.status_code == 200
+    assert client.get("/api/prefs").json()["task_summary_titles"] == {"enabled": False}
+
+
 def test_claude_strict_mcp_defaults_on_toggles_and_rejects_junk(tmp_path, monkeypatch):
     """Lean sessions are the default: only a stored `false` turns them off."""
     client, home = _client(tmp_path, monkeypatch)
@@ -1694,3 +1706,92 @@ def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
     # A stored preference does not beat the process-level switch.
     client.put("/api/prefs", json={"indexing_enabled": not expect}, headers=FUSED)
     assert prefs_mod.indexing_enabled() is expect
+
+
+def test_claude_default_permission_defaults_auto_and_validates(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["claude_default_permission"] == "auto"
+    assert prefs_mod.claude_default_permission() == "auto"
+    body = client.put("/api/prefs", json={"claude_default_permission": "prompt"},
+                      headers=FUSED).json()
+    assert body["claude_default_permission"] == "prompt"
+    assert prefs_mod.claude_default_permission() == "prompt"
+    bad = client.put("/api/prefs", json={"claude_default_permission": "yolo"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "claude_default_permission" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"claude_default_permission": 3}),
+                                     encoding="utf-8")
+    assert prefs_mod.claude_default_permission() == "auto"
+
+
+# -- chromium_windows_enabled (experimental) ----------------------------------------
+
+
+def _chromium_fakes(monkeypatch, state="missing"):
+    """`fused_render.chromium` with no disk or network: a canned status and
+    a recording `install`/`remove`."""
+    from fused_render import chromium
+
+    calls = []
+    monkeypatch.setattr(chromium, "status", lambda *a, **k: {
+        "state": state, "progress": 0.0, "error": None, "engine_version": "1",
+        "cef_version": "x", "path": "/p"})
+    monkeypatch.setattr(chromium, "install", lambda *a, **k: calls.append("install"))
+    monkeypatch.setattr(chromium, "remove", lambda *a, **k: calls.append("remove") or True)
+    return calls
+
+
+def test_chromium_windows_defaults_off_and_unavailable_without_native_windows(tmp_path, monkeypatch):
+    """Opt-in like the other optional features; `available` needs the
+    native-window hook (the macOS app) AND a platform that can host CEF."""
+    _chromium_fakes(monkeypatch)
+    client, _ = _client(tmp_path, monkeypatch)
+    body = client.get("/api/prefs").json()["chromium_windows"]
+    assert body["enabled"] is False
+    assert body["available"] is False
+    assert body["engine"]["state"] == "missing"
+
+
+def test_chromium_windows_available_only_with_hook_and_supported_platform(tmp_path, monkeypatch):
+    from fused_render import window_policy
+
+    calls = _chromium_fakes(monkeypatch)
+    client, _ = _client(tmp_path, monkeypatch)
+    window_policy.native_hooks["apply"] = lambda on: None
+    try:
+        assert client.get("/api/prefs").json()["chromium_windows"]["available"] is True
+        _chromium_fakes(monkeypatch, state="unsupported")
+        assert client.get("/api/prefs").json()["chromium_windows"]["available"] is False
+    finally:
+        window_policy.native_hooks.clear()
+    assert calls == []
+
+
+def test_chromium_windows_enabled_put_saves_and_starts_the_download(tmp_path, monkeypatch):
+    calls = _chromium_fakes(monkeypatch)
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs", json={"chromium_windows_enabled": True}, headers=FUSED).json()
+    assert body["chromium_windows"]["enabled"] is True
+    assert json.loads((home / "prefs.json").read_text())["chromium_windows_enabled"] is True
+    assert calls == ["install"]
+    # off writes false and starts nothing
+    body = client.put("/api/prefs", json={"chromium_windows_enabled": False}, headers=FUSED).json()
+    assert body["chromium_windows"]["enabled"] is False
+    assert calls == ["install"]
+    assert client.put("/api/prefs", json={"chromium_windows_enabled": "yes"}, headers=FUSED).status_code == 400
+
+
+def test_chromium_engine_routes(tmp_path, monkeypatch):
+    calls = _chromium_fakes(monkeypatch, state="failed")
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs/chromium").json()["engine"]["state"] == "failed"
+    # the POSTs need the X-Fused header (D3)
+    assert client.post("/api/prefs/chromium/install").status_code == 403
+    assert client.post("/api/prefs/chromium/install", headers=FUSED).status_code == 200
+    assert calls == ["install"]
+    client.put("/api/prefs", json={"chromium_windows_enabled": True}, headers=FUSED)
+    body = client.post("/api/prefs/chromium/remove", headers=FUSED).json()
+    assert body["enabled"] is False
+    assert json.loads((home / "prefs.json").read_text())["chromium_windows_enabled"] is False
+    assert calls[-1] == "remove"

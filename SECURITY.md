@@ -91,6 +91,11 @@ narrow exceptions that fetch something on first use:
 
 - `usd/convert_worker.py` downloads a pinned `usd-core` wheel from PyPI on
   the first `.usd`/`.usdz` conversion (D119).
+- `fused_render/chromium` downloads the pinned Chromium (CEF) engine from our
+  own GitHub release the first time the experimental `chromium_windows_enabled`
+  preference is turned on (D1408): HTTPS only (redirects that leave HTTPS are
+  refused), verified against the size and SHA-256 in `chromium/manifest.json`
+  before anything is unpacked, and unpacked with a zip-slip guard.
 - `docs/install_worker.py` and `latex/install_worker.py` download the
   `typst` and `tectonic` binaries from GitHub Releases on first use.
 - `zarr_aoi/tile_server.py` builds a dedicated venv via `uv` (from PyPI) on

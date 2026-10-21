@@ -278,7 +278,7 @@ describe("start → poll → done", () => {
       session_id: "",
       model: "sonnet",
       effort: "high",
-      permission_mode: "prompt",
+      permission_mode: "auto",
       has_pane: "1",
       read_dirs: "[]",
     });
@@ -1099,7 +1099,85 @@ describe("follow-ups (T:16024, D687)", () => {
     ]);
     // The field name and the value T sends — NOT `permission`, and not the
     // CLI's own spelling of the flag.
-    expect(started.fields.permission_mode).toBe("prompt");
+    // Absent param = the user's default pref, "auto" until changed.
+    expect(started.fields.permission_mode).toBe("auto");
+  });
+
+  test("an absent param follows the default pref; the param beats it; junk is the strictest", async () => {
+    const { publishDefaultPermission } = await import("../feature-flag");
+    try {
+      publishDefaultPermission("acceptEdits");
+      const a = makeController({ start: () => ({ run_id: "r1" }), poll: () => poll({ done: true }) });
+      await a.controller.sendMessage("go");
+      expect(a.agent.of("start")[0]!.fields.permission_mode).toBe("acceptEdits");
+      const b = makeController(
+        { start: () => ({ run_id: "r1" }), poll: () => poll({ done: true }) },
+        createMemoryParamsStore({ permission: "plan" }),
+      );
+      await b.controller.sendMessage("go");
+      expect(b.agent.of("start")[0]!.fields.permission_mode).toBe("plan");
+      const c = makeController(
+        { start: () => ({ run_id: "r1" }), poll: () => poll({ done: true }) },
+        createMemoryParamsStore({ permission: "yolo" }),
+      );
+      await c.controller.sendMessage("go");
+      expect(c.agent.of("start")[0]!.fields.permission_mode).toBe("prompt");
+    } finally {
+      publishDefaultPermission("auto");
+    }
+  });
+
+  test("changing the pill mid-turn calls set_mode on the live run, with no send", async () => {
+    let controller!: ChatController;
+    let modeAfter = "";
+    const params = createMemoryParamsStore();
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        set_mode: (f) => ({ ok: true, mode: f.permission_mode }),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            params.set({ permission: "acceptEdits" });
+            await controller.applyPermission("acceptEdits");
+            modeAfter = controller.getState().permissionMode;
+            return poll({ segments: [text("working")] });
+          }
+          return poll({ done: true, segments: [text("working")] });
+        },
+      },
+      params,
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    const calls = made.agent.of("set_mode");
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.fields).toEqual({ run_id: "r1", permission_mode: "acceptEdits" });
+    expect(made.agent.of("send").length).toBe(0);
+    expect(modeAfter).toBe("acceptEdits");
+  });
+
+  test("set_mode with no live run is a no-op, and a respawn reply leaves the mode alone", async () => {
+    const idle = makeController({});
+    await idle.controller.applyPermission("auto");
+    expect(idle.agent.of("set_mode").length).toBe(0);
+    let controller!: ChatController;
+    let modeAfter = "";
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      set_mode: () => ({ respawn: true }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.applyPermission("acceptEdits");
+          modeAfter = controller.getState().permissionMode;
+          return poll({ segments: [text("working")] });
+        }
+        return poll({ done: true, segments: [text("working")] });
+      },
+    });
+    controller = made.controller;
+    await made.controller.sendMessage("go");
+    expect(made.agent.of("set_mode").length).toBe(1);
+    expect(modeAfter).not.toBe("acceptEdits");
   });
 
   test("the picker's mode rides every follow-up `send` too (T:16128)", async () => {
@@ -2603,6 +2681,31 @@ describe("permission cards: pinned open, parked once answered (T:14665-14775)", 
     expect(row.liveMode).toBe("prompt");
   });
 
+  test("a late risk assessment republishes the open card", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ permissions: [permRow({ risk_state: "pending", severity: "", risk_summary: "" })] })
+          : n === 1
+            ? poll({
+                permissions: [
+                  permRow({ risk_state: "ready", severity: "high", risk_summary: "Deletes everything." }),
+                ],
+              })
+            : poll({ done: true, permissions: [permRow({ decision: "allow", scope: "once" })] }),
+    });
+    const seen: string[] = [];
+    const off = controller.subscribe(() => {
+      const p = controller.getState().permissions[0];
+      if (p) seen.push(String(p.risk_state));
+    });
+    await controller.sendMessage("go");
+    off();
+    expect(seen).toContain("pending");
+    expect(seen).toContain("ready");
+  });
+
   test("open cards sort after parked ones, in request order", async () => {
     const { controller } = makeController({
       start: () => ({ run_id: "r1" }),
@@ -3499,8 +3602,8 @@ describe("ChatState.permissionMode: the mode the RUN is in (T:13884-13886)", () 
     );
     await controller.sendMessage("go");
     expect(controller.getState().permissionMode).toBe("prompt");
-    // …but the WIRE still carries it verbatim: agent.py is what rejects a mode.
-    expect(agent.of("start")[0].fields.permission_mode).toBe("yolo");
+    // …and the wire carries the SAME narrowed value, never the raw text.
+    expect(agent.of("start")[0].fields.permission_mode).toBe("prompt");
   });
 
   test("poll's own `mode` outranks the seed: it is agent.py's `_live_mode`", async () => {
@@ -5140,5 +5243,42 @@ describe("the run's tasks", () => {
       expect(m.ended_at).toBe(null);
       expect(controller.getState().tasksRunId).toBe("r1");
     }
+  });
+});
+
+describe("the working clock survives a reload (server stamp)", () => {
+  test("a poll's turn_started_at sets working.startedAt with empty sessionStorage", async () => {
+    // `now` is fixed at 1000 ms here, so a stamp of 0.4 s is 600 ms in the past.
+    const seen: number[] = [];
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n === 1) seen.push(controller.getState().working?.startedAt ?? -1);
+        return n <= 1
+          ? poll({ turn_started_at: 0.4, segments: [text("still going")] })
+          : poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(seen).toEqual([400]);
+  });
+
+  test("a 0 stamp keeps the local clock", async () => {
+    const seen: number[] = [];
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n === 1) seen.push(controller.getState().working?.startedAt ?? -1);
+        return n <= 1
+          ? poll({ turn_started_at: 0, segments: [text("still going")] })
+          : poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(seen).toEqual([1000]);
   });
 });

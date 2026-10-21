@@ -131,6 +131,22 @@ export interface TopbarProps {
    *  into another worktree (a `git worktree add`, EnterWorktree, an isolated
    *  subagent). Nothing when there is nothing to say. */
   worktreeHint?: ReactNode;
+  /**
+   * THE SLIM LINE (a peek that opts in with `headerInPeek`): only the session
+   * label, the running / limit word, the worktree menu, its hint chip and
+   * `extra`. The mark, title, file and identity block are left out, because the
+   * host's own head (TaskPeek) already names the project and agent.
+   */
+  slim?: boolean;
+  /** The host's node for the line's last seat before `tail` (the PR chip) —
+   *  drawn by the slim line and by the task-identity head. */
+  extra?: ReactNode;
+  /** First child of the row, before the identity (the merged head's `← Chats`). */
+  lead?: ReactNode;
+  /** Last child, pushed to the right end (the merged head's menu). */
+  tail?: ReactNode;
+  /** Leave the project name out: the host is already inside that folder. */
+  noProject?: boolean;
 }
 
 export function Topbar({
@@ -145,6 +161,11 @@ export function Topbar({
   queue,
   worktree,
   worktreeHint,
+  slim,
+  extra,
+  lead,
+  tail,
+  noProject,
 }: TopbarProps) {
   // THE AGENT'S NAME AND MARK (D18): the conversation's own, off the context.
   // Above every early return: a header that moves from the fallback to the
@@ -152,6 +173,36 @@ export function Topbar({
   const agent = useAgent();
   // Null on every row that is not waiting in a line, which is the common case.
   const line = queue ? queueCaption(queue) : null;
+  if (slim) {
+    const slimLabel =
+      shortTaskId(taskId || knownTaskId(sessionId) || "") ||
+      (sessionId ? sessionId.slice(0, 8) : "");
+    return (
+      <div className="c-topbar c-topbar-slim">
+        {slimLabel ? (
+          <span className="c-session" title={sessionId || undefined}>
+            {slimLabel}
+          </span>
+        ) : null}
+        {status ? (
+          <span className="c-tb-paused" aria-live="polite">
+            {status}
+          </span>
+        ) : running ? (
+          <span className="c-tb-run" aria-live="polite">
+            running
+          </span>
+        ) : null}
+        {/* The gap pins the chips to the right edge whether or not the worktree
+            menu has loaded, so the PR chip does not jump when the branch chip
+            arrives. */}
+        <span className="c-tb-slim-gap" aria-hidden="true" />
+        {worktree}
+        {worktreeHint}
+        {extra ? <span className="c-tb-slim-extra">{extra}</span> : null}
+      </div>
+    );
+  }
   // ONE ROW FOR THE RING AND THE WORDS (Bugbot, PR #1194, eighth round). The
   // identity block came from the SESSION's row (`useSessionTask`) and the
   // caption from the chat's LIVE row (`useSchedule.row`, pending key first) —
@@ -185,9 +236,10 @@ export function Topbar({
       // tooltip goes on the line itself rather than on a span of its own, so the
       // header spends no width on a string nobody reads on purpose (T:12700).
       <div
-        className={"c-topbar" + (line ? " is-queued" : "")}
+        className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "")}
         title={sessionId || undefined}
       >
+        {lead}
         {/* THE RING IS INSIDE THIS BLOCK, at the left end, and the row's own
             `status: "queued"` is what draws it dashed (taskColumn → StatusIcon).
             Nothing queued-specific is passed: the peek block already says what
@@ -196,7 +248,7 @@ export function Topbar({
         {/* …AND THE PLACE IN THE LINE TRAILS THE TITLE, exactly where a Tasks
             row puts it, rather than at the far end of the header. */}
         {line ? <QueuedCaption line={line} /> : null}
-        <TaskPeekProject task={who} {...(home ? { home } : {})} />
+        {noProject ? null : <TaskPeekProject task={who} {...(home ? { home } : {})} />}
         <TaskPeekAgent task={who} />
         {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
             the ring says running or not, and "resumes 4:00 AM" is the one fact
@@ -212,6 +264,10 @@ export function Topbar({
             drives the composer's stop square; the header defers to the ring. */}
         {worktree}
         {worktreeHint}
+        {/* The host's PR chip (explorer pane): the slim line seats `extra` too,
+            so both heads say which pull requests the task is about. */}
+        {extra ? <span className="c-tb-extra">{extra}</span> : null}
+        {tail ? <span className="c-tb-tail">{tail}</span> : null}
       </div>
     );
   }
@@ -232,13 +288,15 @@ export function Topbar({
   // placeholder over a KNOWN state would hide the only answer the header has.
   if (pending && !task && !line) {
     return (
-      <div className="c-topbar" title={sessionId || undefined}>
+      <div className={"c-topbar" + (lead || tail ? " c-topbar-merged" : "")} title={sessionId || undefined}>
+        {lead}
         <span className="c-tb-skel" aria-hidden="true">
           <span className="c-skel-dot" />
           <span className="c-skel-bar is-title" />
         </span>
         {worktree}
         {worktreeHint}
+        {tail ? <span className="c-tb-tail">{tail}</span> : null}
       </div>
     );
   }
@@ -250,7 +308,8 @@ export function Topbar({
     shortTaskId(taskId || knownTaskId(sessionId) || "") ||
     (sessionId ? sessionId.slice(0, 8) : "");
   return (
-    <div className={"c-topbar" + (line ? " is-queued" : "")}>
+    <div className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "")}>
+      {lead}
       {/* THE RING TAKES THE MARK'S SEAT rather than sitting beside it: the line
           keeps ONE glyph at its left end, and on a waiting chat the fact worth a
           glyph is that it is waiting — the ✻ names the tool, which the page says
@@ -265,9 +324,11 @@ export function Topbar({
       )}
       <span className="c-tb-title">{agent.label}</span>
       {line ? <QueuedCaption line={line} /> : null}
-      <span className="c-tb-file" title={subtitle || undefined}>
-        {subtitle ?? ""}
-      </span>
+      {noProject ? null : (
+        <span className="c-tb-file" title={subtitle || undefined}>
+          {subtitle ?? ""}
+        </span>
+      )}
       {label ? (
         // The full session id stays reachable for the reader who actually wants
         // it (a log line, a bug report) without spending header width on it
@@ -292,6 +353,7 @@ export function Topbar({
       ) : null}
       {worktree}
       {worktreeHint}
+      {tail ? <span className="c-tb-tail">{tail}</span> : null}
     </div>
   );
 }

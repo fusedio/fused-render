@@ -462,12 +462,15 @@ def test_started_is_the_transcript_head_for_a_task_with_no_entry(
     assert task["started"] == tasks_mod.tasks_store.epoch(T9)
 
 
+BIG_BODY = "a large message body the sidebar must not receive" + " pad" * 400
+
+
 def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         client, projects_dir, state_dir):
     """The sidebar gets the same state without downloading page-only content."""
     _already_using(state_dir)
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
-        _user("a large message body the sidebar must not receive", T9),
+        _user(BIG_BODY, T9),
         _assistant("done", T10),
         _ai_title("A page-only title"),
     ])
@@ -505,18 +508,26 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # The canvas a task is on (2026-10-20): the notification's door is the
         # canvas page for a canvas task, like the Tasks page's.
         "canvas",
+        # Held background work (2026-10-21): the sidebar paints such a row as
+        # running, like the Tasks page, and needs the list to know.
+        "background_jobs",
     )
+    # What the finished/needs-input notice titles a task by (the newest user
+    # message unless renamed): riding only when the row has them.
+    title_fields = ("title_source", "last_message")  # + title_mode, flag-gated
     assert pulse == [
-        {field: row[field] for field in pulse_fields}
+        {field: row[field] for field in pulse_fields + title_fields if field in row}
         for row in full
     ]
-    assert set(pulse[0]) == set(pulse_fields)
+    assert set(pulse[0]) == set(pulse_fields) | {f for f in title_fields if f in full[0]}
     # COMPACT IS ABOUT THE HEAVY FIELDS, not about how many there are: what this
     # endpoint exists to leave behind is the parsed transcript — the message
     # previews and the description — never a title of a few dozen characters.
     assert "messages" not in pulse[0]
     assert "description" not in pulse[0]
-    assert "a large message body the sidebar must not receive" not in json.dumps(pulse)
+    # Only a capped first line of the newest message rides (the notice title),
+    # never the body.
+    assert BIG_BODY not in json.dumps(pulse)
     assert len(json.dumps(pulse)) < len(json.dumps(full)) / 2
 
 
@@ -1118,6 +1129,91 @@ def test_show_more_returns_the_whole_thread_newest_first(client, projects_dir):
 
 def test_an_unknown_task_is_a_404(client):
     assert client.get("/api/tasks/nope/messages").status_code == 404
+
+
+# ------------------------------------------------------------ export (D1390)
+#
+# `GET /api/tasks/{key}/export` — the whole transcript as a file, Markdown by
+# default (the Bots export's layout) or the parsed turns as JSON. The kebab's
+# "Download transcript" and a bot's `fused.tasks.export` both read it.
+
+
+def test_export_markdown_is_a_named_attachment_in_the_bots_layout(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9, uuid="u1"),
+        _assistant("Ran it, 3 tables updated", T10),
+    ])
+
+    r = client.get("/api/tasks/sess-a/export")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    disposition = r.headers["content-disposition"]
+    assert disposition.startswith("attachment; filename=\"")
+    assert disposition.endswith("-sess-a.md\"")
+    assert "run-the-migration" in disposition
+    body = r.text
+    assert body.startswith("# run the migration — transcript\n")
+    assert "Session: sess-a" in body
+    assert "**You**" in body and "\nrun the migration\n" in body
+    assert "**Claude**" in body and "Ran it, 3 tables updated" in body
+    assert body.index("**You**") < body.index("**Claude**")
+
+
+def test_export_markdown_names_what_each_tool_call_did(client, projects_dir):
+    call = {"type": "assistant", "timestamp": T10,
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "ls -la\npwd", "description": "List files"}}]}}
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("look", T9), call])
+
+    body = client.get("/api/tasks/sess-a/export").text
+    assert "- `Bash` List files" in body
+
+
+def test_export_markdown_closes_a_tool_list_before_the_next_paragraph(
+        client, projects_dir):
+    call = {"type": "assistant", "timestamp": T10,
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Read",
+                 "input": {"file_path": "/p/a.py"}}]}}
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("look", T9), call, _assistant("Done reading", T10)])
+
+    body = client.get("/api/tasks/sess-a/export").text
+    assert "- `Read` /p/a.py\n\nDone reading\n" in body
+
+
+def test_export_json_carries_the_parsed_turns_under_a_header(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9, uuid="u1"),
+        _assistant("Ran it", T10),
+    ])
+
+    r = client.get("/api/tasks/sess-a/export", params={"format": "json"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.headers["content-disposition"].endswith("-sess-a.json\"")
+    payload = r.json()
+    assert payload["key"] == "sess-a"
+    assert payload["session_id"] == "sess-a"
+    assert payload["title"] == "run the migration"
+    assert [t["role"] for t in payload["turns"]] == ["user", "assistant"]
+    assert payload["turns"][0]["text"] == "run the migration"
+    assert payload["turns"][0]["uuid"] == "u1"
+
+
+def test_export_refuses_an_unknown_format_task_or_session(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    assert client.get("/api/tasks/sess-a/export",
+                      params={"format": "pdf"}).status_code == 400
+    assert client.get("/api/tasks/nope/export").status_code == 404
+    # A scheduled task that has not run has no session and nothing to export.
+    _seed_schedule([_entry("e1", "later", _later())])
+    r = client.get("/api/tasks/pending:e1/export")
+    assert r.status_code == 409
 
 
 def test_numbers_restart_per_project_and_survive_a_new_session(client,
@@ -4372,6 +4468,20 @@ def test_background_work_is_a_caption_not_a_status(
         "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
 
 
+def test_the_pulse_ships_a_done_rows_held_background_jobs(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The sidebar cannot apply the Tasks page's "live job = running" rule
+    unless the pulse carries the job list."""
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    row = _pulse(client)[0]
+    assert row["status"] == "done"
+    assert row["background_jobs"] == {
+        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
+
+
 def test_background_work_under_a_dead_host_does_not_count(
         client, projects_dir, parked, monkeypatch, registry):
     """The host's `background_tasks_changed` row outlives the host, and a
@@ -5321,3 +5431,78 @@ def test_recap_backfill_jobs_are_marked_for_the_busy_recheck(monkeypatch, lanes)
     with tasks_mod._recap_cond:
         job, _ = tasks_mod._recap_next(tasks_mod._recap_started + 1e6)
     assert job["backfill"] is True
+
+
+# ------------------------------------------------------------- renaming a task
+# `POST /api/tasks/rename` — the user's own title, stored on the session's
+# settings record, wins every title mode; an empty title restores the automatic
+# one.
+
+_FUSED = {"X-Fused": "1"}
+
+
+def _rename(client, key, title, headers=_FUSED):
+    return client.post("/api/tasks/rename", headers=headers,
+                       json={"key": key, "title": title})
+
+
+def test_a_renamed_title_beats_every_other_source(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", T9), _ai_title("News puller"),
+    ])
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", claude_session_id="sess-a",
+                           title="Morning briefing")])
+    assert _tasks(client)[0]["title"] == "Morning briefing"
+    r = _rename(client, "sess-a", "  My name ")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "title": "My name"}
+    row = _tasks(client)[0]
+    assert (row["title"], row["title_source"]) == ("My name", "renamed")
+
+
+def test_a_renamed_title_beats_the_first_message_and_clearing_restores_it(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("fix the parser", T9)])
+    _rename(client, "sess-a", "Parser work")
+    row = _tasks(client)[0]
+    assert (row["title"], row["title_source"]) == ("Parser work", "renamed")
+    r = _rename(client, "sess-a", "   ")
+    assert r.json() == {"ok": True, "title": ""}
+    row = _tasks(client)[0]
+    assert (row["title"], row["title_source"]) == ("fix the parser", "message")
+
+
+def test_a_renamed_title_wins_in_summary_mode(client, projects_dir, tmp_path,
+                                              monkeypatch):
+    monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("fix the login bug", T9), _assistant("Fixed it.", T10)])
+    _rename(client, "sess-a", "Login")
+    row = _tasks(client)[0]
+    assert row["title_mode"] == "summary"
+    assert (row["title"], row["title_source"]) == ("Login", "renamed")
+
+
+def test_a_multi_line_or_long_title_is_cut_to_its_first_line(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hello", T9)])
+    r = _rename(client, "sess-a", "first line\nsecond line")
+    assert r.json()["title"] == "first line"
+    assert len(_rename(client, "sess-a", "x" * 500).json()["title"]) == 200
+
+
+def test_rename_refuses_bad_requests(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hello", T9)])
+    assert _rename(client, "sess-a", 5).status_code == 400
+    assert _rename(client, "nope", "x").status_code == 404
+    assert _rename(client, "sess-a", "x", headers={}).status_code == 403
+    assert _tasks(client)[0]["title_source"] == "message"
+
+
+def test_a_task_without_a_session_cannot_be_renamed(client, tmp_path):
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    assert key.startswith("pending:")
+    r = _rename(client, key, "x")
+    assert r.status_code == 400
+    assert r.json() == {"error": "only a started task can be renamed"}

@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import type { PrState } from "@platform/lib/prStatus";
 import {
   BOARD_COLUMNS,
   BOARD_LANES,
@@ -48,6 +49,7 @@ import {
   activityAt,
   defaultViewFacets,
   LANES_BUT_ARCHIVE,
+  LANES_BUT_UPCOMING,
   groupFoldKeys,
   openOnFirstVisit,
   parseSeededViews,
@@ -55,8 +57,12 @@ import {
   seedCollapsedGroups,
   groupSize,
   parseViewTabs,
+  flattenGroupRefs,
+  prKey,
   prOfTask,
   prRefOf,
+  prRefsOf,
+  prUrl,
   canRunNow,
   cancelIntent,
   carryMarkToHeld,
@@ -154,6 +160,11 @@ import {
   taskUnread,
   taskUnreadLabel,
   taskWhen,
+  taskWhenFor,
+  createdAt,
+  readTaskSort,
+  writeTaskSort,
+  TASKS_SORT_KEY,
   threadView,
   tildePath,
   toggleExpanded,
@@ -6609,7 +6620,48 @@ describe("the grouped lists start with every lane but Archive ticked (2026-10-17
       const out = filterTasks(tasks, filtersForView({ ...EMPTY_FILTERS, ...f }, view));
       expect(out.map((t) => t.key)).toEqual(["a", "c", "d", "e", "f"]);
     }
-    for (const view of BASE_VIEWS) expect(defaultViewFacets(view)).toEqual({ statuses: [], projects: [] });
+    for (const view of BASE_VIEWS.filter((v) => v !== "cards")) {
+      expect(defaultViewFacets(view)).toEqual({ statuses: [], projects: [] });
+    }
+  });
+
+  it("starts the Cards wall on every lane it draws (no Upcoming), ticked, so the menu matches the wall", () => {
+    const f = defaultViewFacets("cards");
+    expect(f.statuses).toEqual(LANES_BUT_UPCOMING);
+    expect(f.statuses).not.toContain("upcoming");
+    expect(f.statuses).toContain("archived");
+    const out = filterTasks(tasks, filtersForView({ ...EMPTY_FILTERS, ...f }, "cards"));
+    expect(out.map((t) => t.key)).toEqual(["b", "c", "d", "f"]);
+  });
+
+  it("ignores a stored Upcoming tick on Cards — the row is hidden, so the facet cannot empty the wall", () => {
+    const stale = { ...EMPTY_FILTERS, statuses: ["upcoming" as const] };
+    expect(filtersForView(stale, "cards").statuses).toEqual([]);
+    expect(filterTasks(tasks, filtersForView(stale, "cards")).map((t) => t.key)).toEqual(
+      ["a", "b", "c", "d", "e", "f"],
+    );
+    const mixed = { ...EMPTY_FILTERS, statuses: ["upcoming" as const, "done" as const] };
+    expect(filtersForView(mixed, "cards").statuses).toEqual(["done"]);
+    // The stored value is untouched, and every other view still honours it.
+    expect(stale.statuses).toEqual(["upcoming"]);
+    expect(filtersForView(stale, "list")).toBe(stale);
+    expect(filtersForView(stale, "board")).toBe(stale);
+  });
+
+  it("names the Cards wall's own empty case on its starting facets", () => {
+    const f = { ...EMPTY_FILTERS, ...defaultViewFacets("cards") };
+    expect(emptyTasksLabel("cards", f, 3, false)).toBe(
+      "Nothing has run yet. Cards show conversations; upcoming tasks are on the List.",
+    );
+    expect(emptyTasksLabel("cards", { ...f, search: "x" }, 3, false)).toBe("Nothing matches these filters.");
+    expect(emptyTasksLabel("cards", EMPTY_FILTERS, 3, false)).toBe("Nothing matches these filters.");
+    expect(emptyTasksLabel("cards", f, 0, false)).toBe("No tasks yet. Everything Claude runs for you shows up here.");
+    // A stale Upcoming tick beside the starting lanes is ignored by the query
+    // (filtersForView), so the sentence is judged on the query that ran.
+    const stale = { ...f, statuses: [...f.statuses, "upcoming" as const] };
+    expect(emptyTasksLabel("cards", stale, 3, false)).toBe(
+      "Nothing has run yet. Cards show conversations; upcoming tasks are on the List.",
+    );
   });
 
   it("the query is what is ticked — an emptied list means everything, Archive included", () => {
@@ -8311,8 +8363,10 @@ describe("the tasks toolbar", () => {
     // Since the tab editor (2026-10-16) the row is drawn from `tabs`, one button
     // per view name, each pairing the view's glyph (VIEW_ICONS) with its word
     // (VIEW_LABELS) — the pairing is unchanged, it is just said once.
+    // …and Calendar's word is followed by the sidebar's Beta chip, INSIDE the
+    // label so it folds away with the word when the toolbar is short on room.
     expect(PAGE).toMatch(
-      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">\{VIEW_LABELS\[v\]\}<\/span>/,
+      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">\s*\{VIEW_LABELS\[v\]\}\s*\{v === "calendar" && \(\s*<span className="sidebar-count-chip sidebar-beta-chip schedule-beta-tag">Beta<\/span>\s*\)\}\s*<\/span>/,
     );
     for (const [view, icon] of [
       ["list", "ICON_VIEW_LIST"],
@@ -8650,14 +8704,16 @@ describe("sortForList: the page's one order", () => {
     // `now` is a dep since 2026-09-15 — half of what `sortForList` decides is "is
     // this scheduled for LATER", which goes stale with the clock and nothing else.
     expect(VIEWS).toContain(
-      "const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);",
+      "const sorted = useMemo(() => sortForList(tasks, now, sortBy), [tasks, now, sortBy]);",
     );
     // The plain List draws straight off that order, with nothing between the
     // rows. The grouped views (Time / Project / PR, 2026-10-16) are the one
     // OPT-IN exception: a reader who put a grouped tab on the row asked for the
     // cut, and `rows` is still the sorted list, flattened in section order.
     expect(VIEWS).toContain('<div className="tasks-list-frame">{rows.map(rowAt)}</div>');
-    expect(VIEWS).toContain("groupBy ? groupRows(sorted, groupBy, home, now) : null");
+    expect(VIEWS).toContain(
+      "groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null",
+    );
     // The index rides along ONLY so the row can take its React key from
     // `taskListKeys` (the queue's identity rule).
     expect(VIEWS).toContain("key={rowKeys[ix]}");
@@ -9500,7 +9556,8 @@ describe("the Cards view's frame", () => {
     // Akshil, 2026-09-06: "blocked should be clubbed and needs attention". The
     // Status menu offers the Board's lanes, and a stored needs_attention from an
     // older session still means the Blocked lane.
-    expect(VIEWS).toContain("? BOARD_LANES.filter((c) => c.key !== \"archived\")\n    : BOARD_LANES;");
+    expect(VIEWS).toContain('!(hideArchiveStatus && c.key === "archived")');
+    expect(VIEWS).toContain('!(hideUpcomingStatus && c.key === "upcoming")');
     const blocked = task({ key: "s1", status: "blocked" });
     const parked = task({ key: "s2", status: "needs_attention" });
     const running = task({ key: "s3", status: "in_progress" });
@@ -9560,9 +9617,10 @@ describe("the Cards view's frame", () => {
     // clear"). No "Open in Tasks": we are already in Tasks.
     const acts = CARDS.slice(CARDS.indexOf("headActions={"), CARDS.indexOf("footer={"));
     expect(acts).not.toContain("Open in Tasks");
-    expect(acts.indexOf("Open in Explorer")).toBeGreaterThan(-1);
+    // The door's word is `pageDoorLabel(task)` — "Open in Canvas" on a canvas task.
+    expect(acts.indexOf("pageDoorLabel(task)")).toBeGreaterThan(-1);
     // Archive first, the folder last, beside the close button (Akshil, 2026-09-05).
-    expect(acts.indexOf("{filing.label}")).toBeLessThan(acts.indexOf("Open in Explorer"));
+    expect(acts.indexOf("{filing.label}")).toBeLessThan(acts.indexOf("pageDoorLabel(task)"));
     // Three: Archive, the live folder door, and its disabled twin for a folder
     // that is gone — the last two never drawn together (`explorer` / `gone`).
     expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(3);
@@ -9598,7 +9656,7 @@ describe("the Cards view's frame", () => {
     expect(CARDS_CSS).not.toContain("@media");
     expect(CARDS_CSS).toContain("@container (max-width: 920px)");
     expect(CARDS_CSS).toContain("@container (max-width: 600px)");
-    expect(acts).toContain("{ICON_FOLDER}\n              Open in Explorer");
+    expect(acts).toContain("{ICON_FOLDER}\n              {pageDoorLabel(task)}");
     // Bugbot, #1009: the popup follows the polls (a "Starting…" task gains its
     // session), survives an empty wall (a failed poll, a filter), and puts the
     // caret in the chat.
@@ -11386,6 +11444,34 @@ describe("cardTitleLine — summary-only titles (title_mode: summary)", () => {
   });
 });
 
+describe("cardTitleLine — a renamed title (title_source: renamed)", () => {
+  const base = {
+    title: "My name\nsecond line",
+    title_source: "renamed",
+    last_message: { text: "newest message" },
+    last_reply: "Fixed it.",
+    status: "done",
+    recap: { text: "haiku recap", for_uuid: "u1" },
+  };
+
+  it("beats summary mode, the recap, the reply and the last message", () => {
+    const want = { text: "My name", said: false, kind: "title" as const, hint: "My name\nsecond line" };
+    expect(cardTitleLine({ ...base, title_mode: "summary" })).toEqual(want);
+    expect(cardTitleLine(base)).toEqual(want);
+    expect(cardTitleLine({ ...base, recap: undefined })).toEqual(want);
+    expect(cardTitleLine({ ...base, recap: undefined, status: "running" })).toEqual(want);
+  });
+
+  it("an empty renamed title falls through to the old rules", () => {
+    expect(cardTitleLine({ ...base, title: "  " }).kind).toBe("recap");
+    expect(cardTitleLine({ ...base, title: "", recap: undefined }).kind).toBe("said");
+  });
+
+  it("another title_source changes nothing", () => {
+    expect(cardTitleLine({ ...base, title_source: "ai" }).kind).toBe("recap");
+  });
+});
+
 describe("cardTitleLine — task recaps (prefs task_recap.enabled)", () => {
   const base = {
     title: "ai title",
@@ -11574,7 +11660,7 @@ describe("groupRows", () => {
     expect([...openOnFirstVisit(groupRows([{ ...due, project: "/later" }], "project", "", NOW), "project", NOW)]).toEqual([]);
     expect(activityAt(t, NOW)).toBe(sec("2026-10-16T09:00:00"));
   });
-  it("by PR: repositories and pull requests newest activity first, the number breaking a tie", () => {
+  it("by PR: repositories newest activity first, rows keep list order in a status section", () => {
     const pr = (key: string, n: number, repo: string, iso: string) =>
       row({ key, title: `PR #${n}`, repo, last_active: sec(iso) });
     const g = groupRows(
@@ -11587,27 +11673,57 @@ describe("groupRows", () => {
       "pr", "", NOW,
     );
     expect(g.map((x) => x.label)).toEqual(["x/new", "x/old"]);
-    expect(g[0]?.groups?.map((x) => x.label)).toEqual(["#99", "#5", "#100"]);
+    // No status asked: one Unknown section per repository.
+    expect(g[0]?.groups?.map((x) => [x.key, x.label, x.rows.map((r) => r.key)])).toEqual([
+      ["pr:x/new:unknown", "Unknown", ["p2", "p3", "p4"]],
+    ]);
     expect(g[0]?.recentAt).toBe(sec("2026-10-16T14:00:00"));
   });
-  it("by PR: repository first, then pull request, each heading linked (Akshil, 2026-10-16)", () => {
+  it("by PR: repository, then status sections in a fixed order, empty ones omitted", () => {
+    const states: Record<string, PrState | null> = { "x/y#1": "merged", "x/y#2": "open", "x/y#3": "closed", "x/y#4": "draft", "x/y#5": "open" };
+    const rowsIn = [1, 2, 3, 4, 5, 6].map((n) =>
+      row({ key: `t${n}`, title: `PR #${n}`, repo: "x/y", last_active: sec("2026-10-16T14:00:00") }),
+    );
+    const g = groupRows(rowsIn, "pr", "", NOW, "changed", (k) => states[k]);
+    expect(g).toHaveLength(1);
+    expect(g[0]?.groups?.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([
+      ["Open", ["t2", "t5"]],
+      ["Draft", ["t4"]],
+      ["Merged", ["t1"]],
+      ["Closed", ["t3"]],
+      ["Unknown", ["t6"]],
+    ]);
+    expect(g[0]?.groups?.[0]?.refs?.map((r) => r.number)).toEqual([2, 5]);
+  });
+  it("by PR: a task naming two PRs is one row in each section; flattenGroupRefs lines up", () => {
+    const two = row({
+      key: "two",
+      repo: "x/y",
+      title: "https://github.com/x/y/pull/1 then https://github.com/x/y/pull/2",
+      last_active: sec("2026-10-16T14:00:00"),
+    });
+    const none = row({ key: "none", title: "plain", last_active: sec("2026-10-16T13:00:00") });
+    const g = groupRows([two, none], "pr", "", NOW, "changed", (k) => (k === "x/y#1" ? "merged" : "open"));
+    expect(g.map((x) => x.label)).toEqual(["x/y", "No PR"]);
+    const flat = flattenGroups(g);
+    expect(flat.map((r) => r.key)).toEqual(["two", "two", "none"]);
+    expect(flattenGroupRefs(g).map((r) => r && prKey(r))).toEqual(["x/y#2", "x/y#1", null]);
+  });
+  it("by PR: repository first, then status, rows reachable in drawing order (Akshil, 2026-10-16)", () => {
     // a + d name #1203 in a folder whose remote the server read; b carries a
     // full GitHub link to another repo; c names no PR.
     const g = groupRows(rows.map((r) => (r.key === "c" || r.key === "b" ? r : { ...r, repo: "fusedio/fused-render" })), "pr", "", NOW);
     expect(g.map((x) => x.label)).toEqual(["fusedio/fused-render", "x/y", "No PR"]);
-    expect(g[0]?.groups?.map((x) => [x.label, x.href, x.rows.map((r) => r.key)])).toEqual([
-      ["#1203", "https://github.com/fusedio/fused-render/pull/1203", ["a", "d"]],
-    ]);
-    expect(g[1]?.groups?.map((x) => [x.label, x.href])).toEqual([["#77", "https://github.com/x/y/pull/77"]]);
+    expect(g[0]?.groups?.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([["Unknown", ["a", "d"]]]);
+    expect(g[1]?.groups?.map((x) => x.label)).toEqual(["Unknown"]);
     expect(g[2]?.rows.map((r) => r.key)).toEqual(["c"]);
-    // The flat order the List draws, repositories A→Z and PRs highest first.
     expect(flattenGroups(g).map((r) => r.key)).toEqual(["a", "d", "b", "c"]);
     expect(groupSize(g[0]!)).toBe(2);
   });
-  it("by PR: a folder with no GitHub remote files its PRs under Unknown repository, unlinked", () => {
+  it("by PR: a folder with no GitHub remote files its PRs under Unknown repository", () => {
     const g = groupRows(rows, "pr", "", NOW);
     expect(g.map((x) => x.label)).toEqual(["x/y", "Unknown repository", "No PR"]);
-    expect(g[1]?.groups?.map((x) => [x.label, x.href ?? null])).toEqual([["#1203", null]]);
+    expect(g[1]?.groups?.map((x) => x.label)).toEqual(["Unknown"]);
   });
   it("opens Later / Last hour / Today on a first visit to Time, folds the rest", () => {
     const g = groupRows(
@@ -11636,9 +11752,9 @@ describe("groupRows", () => {
       ],
       "pr", "", NOW,
     );
-    expect([...openOnFirstVisit(pr, "pr", NOW)]).toEqual(["pr:repo:x/y", "pr:pr:x/y#1"]);
-    expect([...seedCollapsedGroups(new Set(), pr, "pr", NOW)].sort()).toEqual(["pr:pr:x/y#2", "pr:pr:x/z#3", "pr:repo:x/z"]);
-    expect(groupFoldKeys(pr, "pr")).toEqual(["pr:repo:x/y", "pr:pr:x/y#1", "pr:pr:x/y#2", "pr:repo:x/z", "pr:pr:x/z#3"]);
+    expect([...openOnFirstVisit(pr, "pr", NOW)]).toEqual(["pr:repo:x/y", "pr:pr:x/y:unknown"]);
+    expect([...seedCollapsedGroups(new Set(), pr, "pr", NOW)].sort()).toEqual(["pr:pr:x/z:unknown", "pr:repo:x/z"]);
+    expect(groupFoldKeys(pr, "pr")).toEqual(["pr:repo:x/y", "pr:pr:x/y:unknown", "pr:repo:x/z", "pr:pr:x/z:unknown"]);
   });
   it("reads the seeded views and the per-tab facets out of untrusted stores", () => {
     expect([...parseSeededViews('["time","nope","pr"]')]).toEqual(["time", "pr"]);
@@ -11662,6 +11778,35 @@ describe("groupRows", () => {
     expect(prRefOf(row({ title: "fix #34", repo: "c/d" }))).toEqual({ number: 34, repo: "c/d" });
     expect(prRefOf(row({ title: "fix #34" }))).toEqual({ number: 34, repo: null });
     expect(prRefOf(row({ title: "nothing" }))).toBeNull();
+  });
+  it("prRefsOf: every PR a task names, newest first", () => {
+    const refs = prRefsOf(row({
+      title: "https://github.com/a/b/pull/12",
+      last_reply: "second: https://github.com/a/b/pull/14 and https://github.com/c/d/pull/3",
+    }));
+    expect(refs.map(prKey)).toEqual(["c/d#3", "a/b#14", "a/b#12"]);
+    expect(prUrl(refs[0])).toBe("https://github.com/c/d/pull/3");
+  });
+  it("prRefsOf: server prs come first (oldest to newest), text adds and dedupes", () => {
+    const refs = prRefsOf(row({
+      prs: [
+        { repo: "a/b", number: 1, url: "https://github.com/a/b/pull/1" },
+        { repo: "a/b", number: 2, url: "https://github.com/a/b/pull/2" },
+      ],
+      title: "see https://github.com/A/B/pull/2 and https://github.com/a/b/pull/5",
+    }));
+    expect(refs.map(prKey)).toEqual(["a/b#5", "a/b#2", "a/b#1"]);
+    expect(refs[1].repo).toBe("a/b");
+  });
+  it("prRefsOf: bare numbers only count when nothing is named, and take the folder's repo", () => {
+    expect(prRefsOf(row({ title: "Issue #55 blocks PR #1203", repo: "c/d" })).map(prKey)).toEqual(["c/d#1203"]);
+    expect(prRefsOf(row({ title: "fix #34", repo: "c/d" })).map(prKey)).toEqual(["c/d#34"]);
+    expect(prRefsOf(row({ title: "fix #34" })).map(prKey)).toEqual(["?#34"]);
+    expect(prRefsOf(row({ title: "nothing" }))).toEqual([]);
+  });
+  it("prRefsOf: a named number already known with a repo is not repeated with the folder's", () => {
+    const refs = prRefsOf(row({ title: "PR #12 https://github.com/a/b/pull/12", repo: "c/d" }));
+    expect(refs.map(prKey)).toEqual(["a/b#12"]);
   });
   it("reads a PR out of the latest message too", () => {
     expect(prOfTask(row({ title: "x", last_message: { role: "assistant", text: "opened #99", at: 1 } }))).toBe(99);
@@ -11770,5 +11915,99 @@ describe("a live background job under a finished turn", () => {
     const t = task({ status: "done", background_jobs: held(1) });
     expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["in_progress"] })).toBe(true);
     expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["done"] })).toBe(false);
+  });
+});
+
+describe("Sort by: Created", () => {
+  const T = Date.parse("2026-10-16T15:00:00");
+  const sec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const row = (over: Partial<Task>): Task => task({ messages: [], ...over }, 0);
+  const rows: Task[] = [
+    row({ key: "old", started: sec("2026-10-01T09:00:00"), last_active: sec("2026-10-16T14:50:00") }),
+    row({ key: "new", started: sec("2026-10-15T09:00:00"), last_active: sec("2026-10-02T09:00:00") }),
+    row({ key: "noStart", started: 0, last_active: sec("2026-10-10T09:00:00") }),
+  ];
+  it("createdAt falls back to last_active, then 0", () => {
+    expect(createdAt(rows[0]!)).toBe(sec("2026-10-01T09:00:00"));
+    expect(createdAt(rows[2]!)).toBe(sec("2026-10-10T09:00:00"));
+    expect(createdAt(row({ started: undefined, last_active: 0 }))).toBe(0);
+  });
+  it("within one lane rows order by creation, newest first; ties keep input order; last_active fallback", () => {
+    expect(sortForList(rows, T, "created").map((t) => t.key)).toEqual(["new", "noStart", "old"]);
+    const tie = [row({ key: "a", started: 100 }), row({ key: "b", started: 100 }), row({ key: "c", started: 100 })];
+    expect(sortForList(tie, T, "created").map((t) => t.key)).toEqual(["a", "b", "c"]);
+  });
+  it("keeps the status lanes: a Done task created today sorts below older In Progress and Blocked ones", () => {
+    const rs = [
+      row({ key: "doneNew", status: "done", started: sec("2026-10-16T14:00:00") }),
+      row({ key: "runOld", status: "in_progress", live: true, started: sec("2026-10-01T09:00:00") }),
+      row({ key: "blockedOld", status: "blocked", started: sec("2026-10-02T09:00:00") }),
+    ];
+    const keys = sortForList(rs, T, "created").map((t) => t.key);
+    expect(keys.indexOf("runOld")).toBeLessThan(keys.indexOf("blockedOld"));
+    expect(keys.indexOf("blockedOld")).toBeLessThan(keys.indexOf("doneNew"));
+  });
+  it("an archived task created most recently still sorts last", () => {
+    const rs = [
+      row({ key: "arch", status: "archived", started: sec("2026-10-16T14:00:00") }),
+      row({ key: "done", status: "done", started: sec("2026-10-01T09:00:00") }),
+    ];
+    expect(sortForList(rs, T, "created").map((t) => t.key)).toEqual(["done", "arch"]);
+  });
+  it("within Blocked an older needs-attention task stays above a newer blocked one", () => {
+    const rs = [
+      row({ key: "blockedNew", status: "blocked", started: sec("2026-10-15T09:00:00") }),
+      row({ key: "attnOld", status: "needs_attention", started: sec("2026-10-01T09:00:00") }),
+    ];
+    expect(sortForList(rs, T, "created").map((t) => t.key)).toEqual(["attnOld", "blockedNew"]);
+  });
+  it("orders each lane by creation inside the lane", () => {
+    const rs = [
+      row({ key: "d1", status: "done", started: 100 }),
+      row({ key: "d2", status: "done", started: 300 }),
+      row({ key: "d3", status: "done", started: 0, last_active: 200 }),
+    ];
+    expect(sortForList(rs, T, "created").map((t) => t.key)).toEqual(["d2", "d3", "d1"]);
+  });
+  it("the default argument is today's order", () => {
+    expect(sortForList(rows, T).map((t) => t.key)).toEqual(sortForList(rows, T, "changed").map((t) => t.key));
+  });
+  it("time buckets use the creation time", () => {
+    const g = groupRows(sortForList(rows, T, "created"), "time", "", T, "created");
+    expect(g.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([
+      ["Yesterday", ["new"]],
+      ["This week", ["noStart"]],
+      ["Earlier", ["old"]],
+    ]);
+    const none = groupRows([row({ key: "z", started: 0, last_active: 0 })], "time", "", T, "created");
+    expect(none.map((x) => x.label)).toEqual(["No date"]);
+  });
+  it("project sections order by newest created", () => {
+    const rs = [
+      row({ key: "a", project: "/p/a", started: 100, last_active: 9000 }),
+      row({ key: "b", project: "/p/b", started: 500, last_active: 200 }),
+    ];
+    expect(groupRows(rs, "project", "", T, "created").map((g) => g.label)).toEqual(["b", "a"]);
+  });
+  it("the time cell prints the creation stamp", () => {
+    const w = taskWhenFor(rows[0]!, T, "created");
+    expect(w.kind).toBe("created");
+    expect(w.title.startsWith("Created ")).toBe(true);
+    expect(taskWhenFor(rows[0]!, T).kind).toBe(taskWhen(rows[0]!, T).kind);
+  });
+  it("readTaskSort: garbage and a blocked store give 'changed'", () => {
+    const store = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    };
+    expect(readTaskSort()).toBe("changed");
+    store.set(TASKS_SORT_KEY, "banana");
+    expect(readTaskSort()).toBe("changed");
+    writeTaskSort("created");
+    expect(readTaskSort()).toBe("created");
+    (globalThis as any).localStorage = { getItem: () => { throw new Error("blocked"); } };
+    expect(readTaskSort()).toBe("changed");
+    delete (globalThis as any).localStorage;
   });
 });

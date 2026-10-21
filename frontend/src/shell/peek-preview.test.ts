@@ -19,6 +19,7 @@ const {
   PREVIEW_VH,
   PREVIEW_VW,
   appForProject,
+  ensureAppFor,
   ensureApps,
   forgetAppsCache,
   getPreviewHeight,
@@ -330,5 +331,127 @@ describe("the desk's table, cached", () => {
     await ensureApps();
     expect(knownApps()).toEqual([]);
     expect(appForProject("/w/sine", knownApps())).toBeNull();
+  });
+});
+
+describe("the door-time check (ensureAppFor)", () => {
+  const row = { path: "/w/built", name: "built", entry: "/w/built/index.html", exists: true };
+  function stubEnsure(answer: { app: string | null; added: boolean; apps: unknown[] | null }) {
+    const calls: string[] = [];
+    (globalThis as { fetch: unknown }).fetch = (url: string, init?: { body?: string }) => {
+      calls.push(url);
+      const body = url.endsWith("/ensure") ? { ok: true, ...answer } : { apps: [] };
+      void init;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response);
+    };
+    return calls;
+  }
+
+  it("adopts the server's table when the folder turned out to be an app", async () => {
+    const calls = stubEnsure({ app: "/w/built", added: true, apps: [row] });
+    expect(await ensureAppFor("/w/built/sub")).toBe(true);
+    expect(calls.filter((u) => u.endsWith("/ensure")).length).toBe(1);
+    // The fresh table survived the announce (which drops the cache; the shim's
+    // window does not dispatch, so the order of the two is what the live
+    // listener above pins — see `ensureAppFor`).
+    expect(appForProject("/w/built/sub", knownApps())?.name).toBe("built");
+  });
+
+  it("does NOT remember a 'no' — a build still writing its page is a 'yes' later", async () => {
+    let calls = stubEnsure({ app: null, added: false, apps: null });
+    expect(await ensureAppFor("/w/built")).toBe(false);
+    expect(calls.length).toBe(1);
+    calls = stubEnsure({ app: "/w/built", added: true, apps: [row] });
+    expect(await ensureAppFor("/w/built")).toBe(true);
+    expect(calls.length).toBe(1);
+    expect(await ensureAppFor("")).toBe(false);
+  });
+
+  it("an app already on the desk that this table lacks = a stale cache: re-read", async () => {
+    const calls: string[] = [];
+    (globalThis as { fetch: unknown }).fetch = (url: string) => {
+      calls.push(url);
+      const body = url.endsWith("/ensure")
+        ? { ok: true, app: "/w/built", added: false, apps: null }
+        : { apps: [row] };
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response);
+    };
+    expect(await ensureAppFor("/w/built")).toBe(true);
+    expect(calls.some((u) => u.endsWith("/api/current-apps"))).toBe(true);
+    expect(appForProject("/w/built", knownApps())?.name).toBe("built");
+  });
+
+  it("two mounts asking at once share the one request", async () => {
+    const calls = stubEnsure({ app: "/w/built", added: true, apps: [row] });
+    const [a, b] = await Promise.all([ensureAppFor("/w/built"), ensureAppFor("/w/built")]);
+    expect([a, b]).toEqual([true, true]);
+    expect(calls.length).toBe(1);
+  });
+
+  it("an older ask landing after a newer one never writes its stale snapshot", async () => {
+    // A fast task swap: the ask for A goes out, then the ask for B; the server
+    // answered A with a table of [A] and B with [A, B]; A's answer lands LAST.
+    const rowA = { ...row, path: "/w/a", name: "a", entry: "/w/a/index.html" };
+    const rowB = { ...row, path: "/w/b", name: "b", entry: "/w/b/index.html" };
+    const pending: Array<(v: unknown) => void> = [];
+    const reads: string[] = [];
+    (globalThis as { fetch: unknown }).fetch = (url: string, init?: { body?: string }) => {
+      if (url.endsWith("/ensure")) {
+        const path = JSON.parse(init?.body ?? "{}").path as string;
+        const body = path === "/w/a"
+          ? { ok: true, app: "/w/a", added: true, apps: [rowA] }
+          : { ok: true, app: "/w/b", added: true, apps: [rowA, rowB] };
+        return new Promise((resolve) => {
+          pending.push(() =>
+            resolve({
+              ok: true,
+              status: 200,
+              headers: { get: () => "application/json" },
+              json: async () => body,
+              text: async () => JSON.stringify(body),
+            } as unknown as Response),
+          );
+        });
+      }
+      reads.push(url);
+      const body = { apps: [rowA, rowB] };
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response);
+    };
+    const askA = ensureAppFor("/w/a");
+    const askB = ensureAppFor("/w/b");
+    pending[1]!(undefined); // B's answer first — the newest ask, adopted as is
+    await askB;
+    expect(appForProject("/w/b", knownApps())?.name).toBe("b");
+    pending[0]!(undefined); // then A's stale [A] — not written, and B's table kept
+    await askA;
+    expect(reads.length).toBe(0); // no re-read either: a newer adoption is current
+    expect(appForProject("/w/b", knownApps())?.name).toBe("b");
+    expect(appForProject("/w/a", knownApps())?.name).toBe("a");
+  });
+
+  it("a failed ask is a 'no' and the next open may retry", async () => {
+    (globalThis as { fetch: unknown }).fetch = () => Promise.reject(new Error("offline"));
+    expect(await ensureAppFor("/w/built")).toBe(false);
+    const calls = stubEnsure({ app: "/w/built", added: true, apps: [row] });
+    expect(await ensureAppFor("/w/built")).toBe(true);
+    expect(calls.length).toBe(1);
   });
 });

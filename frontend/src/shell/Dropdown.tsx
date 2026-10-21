@@ -167,10 +167,58 @@ export function Dropdown({
   const menuRef = useRef<HTMLDivElement>(null);
 
   // Open on the current choice, so the first ArrowDown steps off it.
+  // Focus the chip too: WebKit does not focus a button on click, so without
+  // this the wrapper's Escape/arrow keys never reach it after a mouse open.
   const show = () => {
     setActive(options.findIndex((o) => o.label === value));
     setOpen(true);
+    btnRef.current?.focus({ preventScroll: true });
   };
+
+  // Close on a press outside. The wrapper's onBlur alone works in Chrome, but
+  // WebKit never focused the chip, so nothing ever blurred and the menu stayed
+  // open over the page. A press inside an app/chat iframe never reaches this
+  // document, so the window losing focus closes it too.
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const onDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node | null)) close();
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("blur", close);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("blur", close);
+    };
+  }, [open]);
+
+  // The panel is placed from the chip's rect at render, so re-place it when
+  // the chip moves — a resize, a scroll or a hidden sidebar left the menu
+  // where the chip used to be (Akshil, 2026-10-21 screenshot). A frame loop,
+  // because a sidebar folding moves the chip without any event on it.
+  const [, replace] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    // The window's height is in the key: it decides whether the panel flips up.
+    const where = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      return r ? `${r.left},${r.top},${r.width},${r.height},${window.innerHeight}` : "";
+    };
+    // Seeded now, so a move between the opening render and the first frame
+    // (the modal's scale-in, a sidebar mid-fold) still counts as a move.
+    let last = where();
+    let raf = 0;
+    const tick = () => {
+      const at = where();
+      if (at !== last) replace((n) => n + 1);
+      last = at;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
 
   // Keep the active option in view when it is stepped past the panel's edge.
   useEffect(() => {
@@ -190,6 +238,7 @@ export function Dropdown({
 
   return (
     <div
+      ref={wrapRef}
       className={"schedule-pop-wrap" + (className ? " " + className : "")}
       onBlur={(e) => {
         if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
@@ -232,6 +281,9 @@ export function Dropdown({
         aria-label={ariaLabel}
         aria-labelledby={labelledBy}
         disabled={disabled}
+        // WebKit drops focus off a pressed button, so the wrapper's blur shut
+        // the menu and the click then reopened it. show() focuses the chip.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={() => (open ? setOpen(false) : show())}
       >
         <span className="schedule-select-label">{value}</span>

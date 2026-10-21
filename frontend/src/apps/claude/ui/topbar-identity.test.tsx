@@ -279,3 +279,14 @@ test("a blocked row is not painted broken while a new turn is running", () => {
   expect(v.has("schedule-ring--failed").length).toBe(0);
   expect(v.has("schedule-ring--in_progress").length).toBe(1);
 });
+
+test("the host's `extra` (the explorer pane's PR chip) rides the identity head too", () => {
+  const { has, text } = render({
+    sessionId: "sess-1",
+    task: task(),
+    running: false,
+    extra: createElement("span", { id: "pr-chip" }, "PR #7"),
+  });
+  expect(has("c-tb-extra")).toHaveLength(1);
+  expect(text()).toContain("PR #7");
+});

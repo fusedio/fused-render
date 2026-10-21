@@ -34,6 +34,7 @@ export type LocalPlan =
   | { do: "model"; value: string }
   | { do: "effort"; value: string }
   | { do: "worktree"; name?: string }
+  | { do: "remote-control"; name: string }
   | { refuse: string };
 
 export interface LocalContext {
@@ -41,6 +42,7 @@ export interface LocalContext {
   worktreeReady: boolean;
   /** Whose models `/model` and `/effort` validate against; Claude when absent. */
   backend?: string;
+  hasSession?: boolean;
 }
 
 export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): LocalPlan {
@@ -79,6 +81,12 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
       if ("error" in parsed) return { refuse: `Usage: /worktree ${hint("worktree")}. ${parsed.error}` };
       return "name" in parsed ? { do: "worktree", name: parsed.name } : { do: "worktree" };
     }
+    case "remote-control":
+      if ((ctx.backend || "claude") !== "claude") {
+        return { refuse: `Remote Control is a Claude Code feature, not available for ${agentLabel(ctx.backend)}` };
+      }
+      if (!ctx.hasSession) return { refuse: "Send a first message, then turn on Remote Control" };
+      return { do: "remote-control", name: cmd.arg };
     default:
       return { refuse: `/${cmd.name} is not a local command` };
   }

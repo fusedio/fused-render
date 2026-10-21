@@ -18,6 +18,7 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putTaskRecapTitlesEnabled,
   putTaskSummaryTitlesEnabled,
+  putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
   putContribFlag,
   type ContribPrefs,
@@ -30,12 +31,15 @@ import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import {
+  publishDefaultPermission,
   publishProjectQueueEnabled,
   publishTaskRecapTitlesEnabled,
 } from "@apps/claude/feature-flag";
 import { publishTaskNotifyTerminalSessions } from "../task-notify-terminal-flag";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { PERMISSION_LABELS } from "@apps/claude/protocol/summaries";
 import { settingById, type SettingId } from "./registry";
-import { PrefToggleRow, type PrefControlProps } from "./SettingRow";
+import { PrefToggleRow, SettingRow, SettingSelect, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
 // ── Tasks ──────────────────────────────────────────────────────────────────
 
@@ -96,6 +100,36 @@ export function ClaudeStrictMcpControl({ prefs, onChange }: PrefControlProps) {
       put={putClaudeStrictMcpEnabled}
       onChange={onChange}
     />
+  );
+}
+
+// The Approvals mode a new chat opens on. A select, not a switch; published so
+// a composer already on screen (and the next send) reads the new default.
+// "auto" when unset (an older server has no field).
+const PERMISSION_CHOICES = ["plan", "prompt", "acceptEdits", "auto"] as const;
+export function ClaudeDefaultPermissionControl({ prefs, onChange }: PrefControlProps) {
+  const { busy, error, run } = usePrefWrite(onChange);
+  const current = prefs.claude_default_permission ?? "auto";
+  return (
+    <SettingRow
+      id="claude-default-permission"
+      control={
+        <SettingSelect
+          id="claude-default-permission"
+          value={PERMISSION_CHOICES.includes(current as (typeof PERMISSION_CHOICES)[number]) ? current : "auto"}
+          options={PERMISSION_CHOICES.map((key) => ({ key, label: PERMISSION_LABELS[key] }))}
+          disabled={busy}
+          onChange={(v) =>
+            void run(
+              () => putClaudeDefaultPermission(v),
+              (next) => publishDefaultPermission(next.claude_default_permission),
+            )
+          }
+        />
+      }
+    >
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
   );
 }
 
