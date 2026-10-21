@@ -20,6 +20,8 @@ import tempfile
 import threading
 import time
 
+from fused_render import _platform
+
 PREFIX = "claude:"
 # Fallback expiry: a chat's tab disappears this long after its last command
 # wrote anything, and the list is capped, so old chats do not pile up as tabs.
@@ -97,7 +99,7 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except PermissionError:

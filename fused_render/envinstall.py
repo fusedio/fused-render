@@ -65,6 +65,8 @@ import threading
 import time
 from typing import Any
 
+from fused_render import _platform
+
 logger = logging.getLogger(__name__)
 
 # `projectenv.venv_key_for` returns sha256(...)[:16], so every real key is 16
@@ -1153,7 +1155,7 @@ def _pid_alive(pid: int) -> bool:
         except OSError:
             pass
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:

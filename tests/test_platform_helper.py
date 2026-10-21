@@ -76,3 +76,11 @@ def test_import_never_raises_without_posix_modules():
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
+
+
+def test_probe_pid_alive_and_gone():
+    _platform.probe_pid(os.getpid())
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    with pytest.raises(ProcessLookupError):
+        _platform.probe_pid(proc.pid)

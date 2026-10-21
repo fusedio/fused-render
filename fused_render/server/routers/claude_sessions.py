@@ -29,7 +29,6 @@ disk are dropped rather than listed — the point of this tab is "open it", and
 a folder that isn't there can't be opened.
 """
 import collections
-import fcntl
 import glob
 import json
 import logging
@@ -45,6 +44,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
+from fused_render import _platform
 from fused_render import claude_health, session_liveness, tasks_store
 from fused_render.agent_backends import roots
 from fused_render._view_url_codec import canonical_fs_path
@@ -1486,7 +1486,7 @@ def write_triage(session_id: str, status: str) -> None:
     triage_path = os.path.join(STATE_DIR, "triage.json")
     lock_path = triage_path + ".lock"
     with open(lock_path, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _platform.flock(lock)
         triage = _load_state("triage.json")
         rec = triage.get(session_id)
         if not isinstance(rec, dict):
@@ -1522,7 +1522,7 @@ def clear_triage(session_id: str) -> bool:
     triage_path = os.path.join(STATE_DIR, "triage.json")
     lock_path = triage_path + ".lock"
     with open(lock_path, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _platform.flock(lock)
         triage = _load_state("triage.json")
         rec = triage.get(session_id)
         if not isinstance(rec, dict) or "status" not in rec:
@@ -1552,7 +1552,7 @@ def forget_triage(session_id: str) -> bool:
     triage_path = os.path.join(STATE_DIR, "triage.json")
     lock_path = triage_path + ".lock"
     with open(lock_path, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _platform.flock(lock)
         triage = _load_state("triage.json")
         if session_id not in triage:
             return False

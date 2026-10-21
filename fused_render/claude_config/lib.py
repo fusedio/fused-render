@@ -15,7 +15,6 @@ owner of ~/.fused-render in this codebase and the reason FUSED_RENDER_HOME
 redirects the override for tests for free.
 """
 import contextlib
-import fcntl
 import itertools
 import json
 import os
@@ -24,6 +23,7 @@ import subprocess
 import threading
 from typing import Any, Generator, Optional
 
+from fused_render import _platform
 from fused_render.shell.storage import home_dir
 
 
@@ -119,7 +119,7 @@ _INIT_LOCK = threading.Lock()
 def config_lock() -> Generator[None, None, None]:
     os.makedirs(CLAUDE_DIR, exist_ok=True)
     with _THREAD_LOCK, open(_LOCK_PATH, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _platform.flock(lock)
         yield
 
 

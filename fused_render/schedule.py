@@ -107,6 +107,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
+from fused_render import _platform
 from fused_render import (_startonce, claude_remote, claude_spawn, cron, recur,
                           session_cap, tasks_store)
 from fused_render.shell import storage
@@ -1356,7 +1357,7 @@ def _watcher_stamp() -> dict:
 def _pid_running(pid: int) -> bool:
     """`os.kill(pid, 0)` sends no signal, it only probes."""
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:

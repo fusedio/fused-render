@@ -57,7 +57,7 @@ import shutil
 import time
 import urllib.parse
 
-from fused_render import session_liveness
+from fused_render import _platform, session_liveness
 from fused_render.agent_backends import roots
 
 logger = logging.getLogger(__name__)
@@ -155,7 +155,7 @@ def _pid_alive(pid: int) -> bool:
     alive: the cost of a wrong "alive" is a deferred move, the cost of a wrong
     "gone" is a split conversation."""
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:
