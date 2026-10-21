@@ -73,6 +73,13 @@ def resolve_profile(cwd: Optional[str] = None, shells: Optional[tuple] = None) -
     # module docstring for why those two are NOT scrubbed here) are left to
     # the default (inherit); the child gets whatever the server process
     # already has.
+    # FUSED_ENV is the exception, as for Claude sessions (claude_agent
+    # `env.pop("FUSED_ENV")`): the `fused` wrapper only picks the canvas
+    # clone's env when FUSED_ENV is unset, so a value the SERVER happened to
+    # inherit would send a bare `fused` in a clone to the wrong Fused — and
+    # in a custom clone, unset is the target itself. A value the user's own
+    # shell rc exports, or `FUSED_ENV=x fused ...`, still wins.
+    env.pop("FUSED_ENV", None)
     env["TERM"] = "xterm-256color"
     env["COLORTERM"] = "truecolor"
 

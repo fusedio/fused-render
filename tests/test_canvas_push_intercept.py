@@ -44,12 +44,12 @@ def test_the_canonical_push_is_recognised():
     prompt tells a session to type."""
     assert _canvas_push.parse_push(
         ["workbench", "canvas", "push", "/x/alpha", "--canvas", "alpha"]
-    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": []}
+    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": [], "env": None}
     assert _canvas_push.parse_push(["workbench", "canvas", "push", "."]) == {
-        "source_dir": ".", "canvas": None, "unsupported": []}
+        "source_dir": ".", "canvas": None, "unsupported": [], "env": None}
     assert _canvas_push.parse_push(
         ["workbench", "canvas", "push", "--canvas=alpha", "."]
-    ) == {"source_dir": ".", "canvas": "alpha", "unsupported": []}
+    ) == {"source_dir": ".", "canvas": "alpha", "unsupported": [], "env": None}
 
 
 @pytest.mark.parametrize("global_prefix", [
@@ -67,10 +67,24 @@ def test_a_global_option_before_the_subcommand_is_still_recognised(global_prefix
     is a real shape a session can type, and matching `args[:3]` verbatim
     missed it entirely, falling through to the raw, unguarded push."""
     assert _canvas_push.parse_push([*global_prefix, "workbench", "canvas", "push", "."]) == {
-        "source_dir": ".", "canvas": None, "unsupported": []}
+        "source_dir": ".", "canvas": None, "unsupported": [], "env": None}
     assert _canvas_push.parse_push(
         [*global_prefix, "workbench", "canvas", "push", "/x/alpha", "--canvas", "alpha"]
-    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": []}
+    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": [], "env": None}
+
+
+def test_the_workbench_groups_own_env_is_recognised_and_reported():
+    """`fused workbench --env prod canvas push .` is FUSED_ENV in flag form
+    (the workbench group's `--env`), unlike the top-level `--env` (agent_core's
+    OPENFUSED_ENV, reported as no target). Unmatched it fell through to the
+    raw push unchecked; now it is matched and its value carried."""
+    assert _canvas_push.parse_push(
+        ["workbench", "--env", "prod", "--format=json", "canvas", "push", "."]
+    ) == {"source_dir": ".", "canvas": None, "unsupported": [], "env": "prod"}
+    assert _canvas_push.parse_push(
+        ["--env", "x", "workbench", "--env=custom", "canvas", "push", "."]
+    )["env"] == "custom"
+    assert _canvas_push.parse_push(["workbench", "--env"]) is None
 
 
 def test_an_unrecognised_option_before_the_subcommand_falls_through():
@@ -350,6 +364,24 @@ def test_a_custom_clone_refuses_a_set_fused_env_and_falls_through_unset(root, mo
     code, _, _ = _intercept(args, monkeypatch, server)
     assert code == 0
     assert [c[1:] for c in server.calls] == [("alpha", "custom")]
+
+
+def test_a_workbench_env_flag_naming_another_env_is_refused_on_fall_through(root, monkeypatch):
+    """`workbench --env` beats FUSED_ENV in the CLI, so it does here: a flag
+    naming another env refuses even with FUSED_ENV unset (or matching), for a
+    custom clone and a named one alike."""
+    custom = root.parent / "custom" / "alpha"
+    custom.mkdir(parents=True)
+    monkeypatch.delenv("FUSED_ENV", raising=False)
+    for clone, flag in ((custom, "prod"), (root / "alpha", OTHER_ENV)):
+        args = ["workbench", "--env", flag, "canvas", "push", str(clone)]
+        code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+        assert code == 1, clone
+        assert "(--env)" in err
+    monkeypatch.setenv("FUSED_ENV", ENV)
+    args = ["workbench", "--env", ENV, "canvas", "push", str(root / "alpha")]
+    code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    assert code is None
 
 
 def test_a_mismatched_fused_env_still_posts_when_the_server_takes_it(root, monkeypatch):

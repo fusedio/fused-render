@@ -234,7 +234,7 @@ def test_status_reports_signed_out(harness):
     assert body["cli_found"] is True
     assert body["logged_in"] is False
     assert body["login_in_flight"] is False
-    assert set(body["envs"]) == {"unstable", "prod"}
+    assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert all(e["base_url"] for e in body["envs"].values())
 
 
@@ -2631,7 +2631,7 @@ def test_status_lists_every_environment_and_the_default(harness):
     body = harness.client.get("/api/canvases/status").json()
     assert body["workbench_env"] == ENV  # the preference's default
     assert body["locked"] is False
-    assert set(body["envs"]) == {"unstable", "prod"}
+    assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert body["envs"][OTHER_ENV]["canvases_dir"] == str(harness.base / OTHER_ENV)
     assert body["envs"][OTHER_ENV]["cloned_count"] == 1
     assert body["envs"][ENV]["cloned_count"] == 0

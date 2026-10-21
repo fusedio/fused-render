@@ -302,6 +302,9 @@ def test_custom_workbench_url_follows_fused_settings(monkeypatch, tmp_path):
     assert canvases.workbench_base_url("custom") == "https://www.fused.io"
     toml.write_text("base_url = \n")
     assert canvases.workbench_base_url("custom") == "https://json.example.com"
+    # A base_url urlparse rejects falls back instead of failing the status call.
+    toml.write_text('base_url = "https://[::1"\n')
+    assert canvases.workbench_base_url("custom") == "https://www.fused.io"
     # The named envs never read the file.
     assert canvases.workbench_base_url("prod") == "https://www.fused.io"
 

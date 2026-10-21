@@ -257,7 +257,10 @@ def _fused_settings_web_url() -> str:
     known = _FUSED_API_WEB_URLS.get(api)
     if known:
         return known
-    parts = urllib.parse.urlparse(api)
+    try:
+        parts = urllib.parse.urlparse(api)
+    except ValueError:  # e.g. an unclosed IPv6 bracket, `https://[::1`
+        return _ENV_WEB_URLS["prod"]
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return _ENV_WEB_URLS["prod"]
     return f"{parts.scheme}://{parts.netloc}"
