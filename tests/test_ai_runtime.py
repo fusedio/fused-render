@@ -15,6 +15,7 @@ import dataclasses
 import json
 import os
 import re
+import subprocess
 import sys
 import textwrap
 import threading
@@ -369,6 +370,41 @@ def fake_runner(tmp_path, monkeypatch):
     yield runner
     supervisor.unload()
     supervisor.reset()
+
+
+@pytest.fixture(autouse=True)
+def _spawned_workers(monkeypatch):
+    """Record every worker `_spawn` starts and kill any survivor at teardown.
+
+    `fake_runner`'s teardown (`unload()` + `reset()`) only reaches workers still
+    in `supervisor._workers`. A test that overwrites the slot or `_drop_gone`s a
+    live worker orphans its real process, which runs in its own session and so
+    outlives pytest (reparented to PID 1). Autouse fixtures set up first, so
+    this one tears down AFTER `fake_runner`."""
+    spawned = []
+    real_spawn = supervisor._spawn
+
+    def recording_spawn(runner, worker, python):
+        try:
+            return real_spawn(runner, worker, python)
+        finally:
+            # In a `finally`: `_spawn` can raise after Popen set worker.proc.
+            spawned.append(worker)
+
+    monkeypatch.setattr(supervisor, "_spawn", recording_spawn)
+    yield spawned
+    _reap_spawned(spawned)
+
+
+def _reap_spawned(workers):
+    for w in workers:
+        supervisor._kill_tree(w)  # no-op for a dead worker
+        proc = getattr(w, "proc", None)
+        if proc is not None:
+            try:
+                proc.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
 
 
 @pytest.fixture()
@@ -4175,6 +4211,22 @@ def test_drop_gone_clears_an_unheld_conflict_on_its_resident(fake_runner):
 
     assert supervisor._workers.get(registry.TEXT_GENERATION) is None
     assert supervisor.describe()["conflicts"] == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(pid, 0) is CTRL_C_EVENT on Windows")
+def test_a_worker_dropped_from_the_table_is_still_reaped(fake_runner, _spawned_workers):
+    """`_drop_gone` removes a LIVE worker from `_workers` without killing it, so
+    `fake_runner`'s teardown cannot reach it; the spawn recorder must."""
+    _force_conflict("org/b", "org/a")
+    worker = _wait_ready("org/b")
+    pid = worker.pid
+    supervisor._drop_gone(worker)
+    os.kill(pid, 0)  # still alive: nothing but the recorder knows about it
+
+    _reap_spawned(_spawned_workers)
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 def test_an_internal_unload_does_not_clear_a_held_conflict(fake_runner):

@@ -391,7 +391,10 @@ fused-render = "fused_render.cli:main"
 fused-render-app = "fused_render.app:main"
 
 # Run the suite in parallel by default (needs pytest-xdist, in the dev extra).
-# -n auto spawns one worker per CPU; the suite is xdist-safe (see the dev-extra
+# -n auto is rationed by tests/conftest.py (pytest_xdist_auto_num_workers: a
+# machine-wide flock slot budget, cap 4 per run; bypassed in CI, on Windows, or
+# with FUSED_RENDER_PYTEST_BUDGET=0 / PYTEST_XDIST_AUTO_NUM_WORKERS=N) instead
+# of one worker per CPU; the suite is xdist-safe (see the dev-extra
 # comment, including its one machine-global exception, which self-serialises
 # rather than needing a scheduling flag here) and no test needs --dist loadgroup.
 # `-m "not integration"` deselects tests marked `integration` by default — a
