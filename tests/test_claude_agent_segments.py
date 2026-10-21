@@ -893,6 +893,12 @@ def _compact_rows(meta):
     ]
 
 
+def test_compact_label_rounds_half_up_like_the_frontend(agent):
+    # compact.ts uses Math.round (half-up); Python's round() is banker's.
+    assert (agent._compact_label(2500, 4500)
+            == "Context compacted \u00b7 3k \u2192 5k tokens")
+
+
 def test_history_renders_a_compaction_summary_as_a_compact_turn(
         agent, tmp_path, monkeypatch):
     turns = _history(agent, tmp_path, monkeypatch, _compact_rows(

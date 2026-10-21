@@ -9,6 +9,9 @@ describe("compactLabel", () => {
   test("pre only, small number, manual", () => {
     expect(compactLabel(800, undefined, "manual")).toBe("Context compacted · 800 tokens · manual");
   });
+  test("exact halves round up", () => {
+    expect(compactLabel(2500, 4500)).toBe("Context compacted · 3k → 5k tokens");
+  });
   test("no numbers", () => {
     expect(compactLabel()).toBe("Context compacted");
   });

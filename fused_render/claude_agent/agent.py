@@ -10006,7 +10006,7 @@ def _compact_summary_text(text: str) -> str:
 
 def _compact_token_str(n) -> str:
     n = int(n)
-    return f"{round(n / 1000)}k" if n >= 1000 else str(n)
+    return f"{int(n / 1000 + 0.5)}k" if n >= 1000 else str(n)
 
 
 def _compact_label(pre=None, post=None, trigger=None) -> str:
