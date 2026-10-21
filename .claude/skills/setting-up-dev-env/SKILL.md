@@ -70,6 +70,14 @@ cd frontend && npm install && npm run build && cd ..                # shell-dist
 
 If you have run `dev.sh` once, both already exist. Verify: `ls fused_render/static/shell-dist/index.html` and `.venv/bin/python -m pytest -q` (~1170 pass). The suite is xdist-safe, so `pytest -n auto` works (~4.5× faster).
 
+### Running tests alongside other sessions
+
+Many sessions share one Mac, so `-n auto` is rationed by `tests/conftest.py`: each run claims up to 4 flock slots (one per CPU, in `$TMPDIR/fused-render-pytest-slots`) and gets that many workers, or 1 if none are free. The pytest header says what you got (`xdist budget: 3 workers (3 of 10 machine slots free; cap 4)`). The slots free themselves when your pytest exits, even if killed.
+
+- `FUSED_RENDER_PYTEST_MAX_WORKERS=N` changes the per-run cap; `FUSED_RENDER_PYTEST_BUDGET=0` opts out (plain `-n auto`); `PYTEST_XDIST_AUTO_NUM_WORKERS=N` forces N workers. CI and Windows skip the budget.
+- Running only `path::test` node ids uses no workers at all. For one or two files, pass `-n 0` yourself.
+- Local runs are niced by 10 (`FUSED_RENDER_PYTEST_NICE=0` disables). On macOS, `taskpolicy -b pytest …` pushes a run onto the efficiency cores; opt-in only, because it also throttles disk I/O and can slow or flake I/O-heavy tests.
+
 ## Reference
 
 | Item | Why |
