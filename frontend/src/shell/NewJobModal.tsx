@@ -1597,9 +1597,6 @@ export const titlePlaceholderFor = (agent: string) =>
 // and leaving that question here while the field above asks it too would put the
 // user in front of the same question twice.
 export const ASK_PLACEHOLDER = "Paste a screenshot or drop a file.";
-// The key that brings the caret down from the title (its onKeyDown). No longer
-// drawn in the placeholder — the footer says it as ⇧↵ — but still exported.
-export const ASK_HINT_KEY = "shift + enter";
 
 // One line of a block of prose, trimmed. Used to reduce a multi-line value to
 // something an <input> can hold — it would strip the newlines anyway. It also
@@ -1653,6 +1650,24 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
   // before it rather than losing it.
   const boundary = line.slice(0, max + 1).lastIndexOf(" ");
   return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
+}
+
+// What the one box opens holding. A saved draft's `text` is verbatim; an Edit
+// takes the entry's full `message` (what Claude was sent) — recomposing from the
+// clamped title would cut or repeat a long first line; anything else joins the
+// title and the description.
+export function initialTextOf(
+  saved: { title: string | null; text?: string | null },
+  entry: ScheduledMessage | null | undefined,
+  derivedTitle: string,
+  initialAsk: string,
+): string {
+  if (saved.text) return saved.text;
+  if (
+    entry?.message && saved.title === null
+    && withoutTitleHeading(entry.message, entry.title ?? "") === entry.message
+  ) return entry.message.trim();
+  return joinDraft(saved.title ?? derivedTitle, initialAsk);
 }
 
 // THE ONE BOX'S THREE DERIVED VALUES. The card holds a single text; what Claude
@@ -2510,6 +2525,8 @@ export interface DraftSeed {
 
 export interface SeededDraftForm {
   title: string | null;
+  /** The whole box, verbatim — beats title + description on reopen. */
+  text: string | null;
   description: string | null;
   target: string | null;
   when: string | null;
@@ -2589,6 +2606,7 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
   return {
     title: str("title"),
     description: str("description"),
+    text: str("text"),
     target: str("target"),
     when: str("when"),
     repeat: str("repeat"),
@@ -2963,9 +2981,10 @@ export default function NewJobModal({
     initialTitleStateOf(editing, nameSession, draft.title);
   // ONE box: the text is the truth, the name and the description are read out
   // of it (taskFieldsOf). Opens on exactly the message the two-field form sent.
-  const [text, setText] = useState(
-    joinDraft(saved.title ?? derivedTitle, initialAsk),
-  );
+  // A saved draft's own `text` wins; an Edit opens on the entry's full message
+  // (a first line over the clamp would be cut by title + description).
+  const initialText = initialTextOf(saved, editing, derivedTitle, initialAsk);
+  const [text, setText] = useState(initialText);
   const fields = taskFieldsOf(text);
   const initialTargetValue = saved.target ?? editing?.target ?? initialTarget ?? "";
   const [target, setTarget] = useState(initialTargetValue);
@@ -3581,7 +3600,6 @@ export default function NewJobModal({
   // Escape-from-a-row hands focus back to the field WITHOUT reopening the
   // list it just dismissed — the input's onFocus otherwise undoes the close
   // in the same tick.
-  const suppressOpen = useRef(false);
   // Whether the picker is closing because a folder was chosen (done — stay
   // closed) or backed out of (return to the recents dropdown). onPick runs
   // just before onClose, so a ref is enough to tell the two closes apart.
@@ -3627,7 +3645,7 @@ export default function NewJobModal({
     // close-twice guard on an untouched modal (the bug the getConfig effect's
     // setInitial exists for — this is the same one, one prefill earlier).
     target: initialTargetValue,
-    text: joinDraft(saved.title ?? derivedTitle, initialAsk),
+    text: initialText,
     when,
     repeat,
     repeatOn,
@@ -3890,11 +3908,13 @@ export default function NewJobModal({
    * that constant. An Edit on a task with no session still writes nothing: it is
    * a stored entry, not a draft.
    */
+  const draftSplit = splitDraft(text);
   const draftBody: TaskDraftForm | null = (!editing || !!recordKey) && dirty
     && (draftContent || draftId !== null || !!recordKey)
     ? {
-      title: splitDraft(text).title,
-      description: splitDraft(text).description,
+      title: draftSplit.title,
+      description: draftSplit.description,
+      text,
       target,
       when: timePicked ? when : null,
       repeat: repeatOn ? repeat : null,
@@ -4191,9 +4211,9 @@ export default function NewJobModal({
       return;
     }
     if (which === "where") {
-      openRecents();
       // The popover opens ON the path: the first thing anyone does there is type
       // or arrow. Next tick, so the input exists to be focused.
+      // The focus opens the recents (onFocus), as the old field did.
       window.setTimeout(() => pathRef.current?.focus(), 0);
     } else if (which === "when") {
       setWhenPane("presets");
@@ -4587,7 +4607,12 @@ export default function NewJobModal({
   // saveActionLabel — and note it is read from the same `picked`/`repeatOn` the
   // when-row edits, so folding the row away does not freeze the word: a card
   // left on its default of now says Run, which is exactly what it does.
-  const actionLabel = saveActionLabel(pickedOk ? picked : null, repeatOn, new Date());
+  const actionLabel = saveActionLabel(
+    // Nothing picked runs now: the word is Create whatever the field holds.
+    timePicked ? (pickedOk ? picked : null) : new Date(),
+    repeatOn,
+    new Date(),
+  );
 
   // What a press does when the form is not ready. Save is NOT disabled on that
   // any more — see saveBlockedReason for why a dead button was the wrong answer
@@ -4601,10 +4626,9 @@ export default function NewJobModal({
       return;
     }
     setError(blocked.text);
-    const el = blocked.field === "title" ? askRef.current
-      : blocked.field === "target" ? pathRef.current
-        : null;
-    el?.focus();
+    if (blocked.field === "title") askRef.current?.focus();
+    // The path input only exists while WHERE is open: open it (it focuses).
+    if (blocked.field === "target" && !recentsOpen) togglePill("where");
   };
 
   // ---- What the four pills say -------------------------------------------------
@@ -4617,7 +4641,7 @@ export default function NewJobModal({
       : choices.find((c) => c.key === repeat)?.label ?? "Does not repeat";
   const nowForPills = new Date();
   const whenText = whenPillLabel(
-    pickedOk ? picked : null,
+    timePicked && pickedOk ? picked : null,
     repeatOn ? repeatPillName(repeat, repeatLabel) : null,
     nowForPills,
   );
@@ -4659,10 +4683,9 @@ export default function NewJobModal({
   const permissionOptions = (permissionModes.length ? permissionModes : ["auto"])
     // No plan mode for an agent without one (§7 `plan_mode`).
     .filter((m) => m !== "plan" || capsOf(agent).plan_mode);
-  // MODEL's value: the model, then — when one is chosen — how hard. "" is the
-  // card still asking the server what the run gets, and says nothing.
-  const modelText = (taskRunLabel(runModels, model) || "Default")
-    + (effort ? ` · ${taskRunLabel(runEfforts, effort)}` : "");
+  // MODEL's value: the model alone — Thinking lives in the popover, so the four
+  // pills keep to one line.
+  const modelText = taskRunLabel(runModels, model) || "Default";
 
   // THE WHERE POPOVER'S KEYS (arrows, Tab, Enter). On the pill's wrapper, not the
   // input: a row reached by Tab is focusable too. Escape is PropPill's — it
@@ -5154,10 +5177,6 @@ export default function NewJobModal({
                   // places the caret like any text field, so editing is still
                   // there for whoever wants it.
                   e.currentTarget.select();
-                  if (suppressOpen.current) {
-                    suppressOpen.current = false;
-                    return;
-                  }
                   openRecents();
                 }}
                 // The mouse-up that ends the focusing click would collapse the
@@ -5784,8 +5803,7 @@ export default function NewJobModal({
             // the confirmation; the field now shows the path, and the list is
             // one click away if anyone wants the verdict row too.
             onName={() => {
-              suppressOpen.current = true;
-              window.setTimeout(() => pathRef.current?.focus(), 0);
+              if (!recentsOpen) togglePill("where");
             }}
             onClose={() => {
               closePicker();

@@ -182,13 +182,22 @@ function textOf(n: unknown): string {
 }
 
 /** What one of the card's controls is currently SAYING. The MODEL pill reads
- *  "Model · Thinking"; ACCESS reads the permission. */
+ *  the model; ACCESS reads the permission. */
 function label(b: ReactTestRenderer, aria: string): string {
   const trigger = pillOf(b, aria);
   const said = trigger.findAll((n) => String(n.props?.className ?? "").startsWith("pp-v"))[0];
   const text = textOf(said);
-  if (aria === "Model") return text.split(" · ")[0];
-  if (aria === "Thinking") return text.split(" · ")[1] ?? "";
+  if (aria === "Model") return text;
+  if (aria === "Thinking") {
+    // Thinking is not in the pill (the row must stay on one line): read the
+    // checked row of the popover's Thinking group.
+    const find = () => b.root.findAll((n) => n.props?.role === "group" && n.props["aria-label"] === "Thinking")[0];
+    // The popover only mounts its rows while open: open it for the read.
+    if (!find()) act(() => { pillOf(b, "Model").props.onClick(); });
+    const group = find();
+    const on = group?.findAll((n) => n.type === "button" && n.props["aria-checked"] === true)[0];
+    return on ? textOf(on) : "";
+  }
   return text;
 }
 

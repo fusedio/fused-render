@@ -45,6 +45,7 @@ let saveBlockedReason: typeof import("./NewJobModal").saveBlockedReason;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
 let ASK_PLACEHOLDER: typeof import("./NewJobModal").ASK_PLACEHOLDER;
 let taskFieldsOf: typeof import("./NewJobModal").taskFieldsOf;
+let initialTextOf: typeof import("./NewJobModal").initialTextOf;
 let composeTaskMessage: typeof import("./NewJobModal").composeTaskMessage;
 let withoutTitleHeading: typeof import("./NewJobModal").withoutTitleHeading;
 let splitDraft: typeof import("./NewJobModal").splitDraft;
@@ -86,6 +87,7 @@ beforeAll(async () => {
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
   ASK_PLACEHOLDER = mod.ASK_PLACEHOLDER;
   taskFieldsOf = mod.taskFieldsOf;
+  initialTextOf = mod.initialTextOf;
   composeTaskMessage = mod.composeTaskMessage;
   withoutTitleHeading = mod.withoutTitleHeading;
   splitDraft = mod.splitDraft;
@@ -1119,7 +1121,7 @@ describe("naming the task", () => {
     expect(TITLE_PLACEHOLDER).not.toContain("optional");
   });
 
-  test("…and the second field is the OVERFLOW of that question, and says it is optional", () => {
+  test("…and the placeholder is the attachment hint: no second field, nothing to say about optional", () => {
     // Never the same question twice: the field above asks what the task is, so
     // this one asks only for what that answer left out.
     expect(ASK_PLACEHOLDER).toBe("Paste a screenshot or drop a file.");
@@ -1750,9 +1752,9 @@ describe("where the new-folder answer is shown", () => {
     // reopened the dropdown after the user had clicked away — a dropdown that
     // could not stay dismissed. The row rides the open list only.
     expect(s).not.toContain("revealNew");
-    // A folder named in the picker refocuses the field WITHOUT the focus
-    // handler popping the list over the form.
-    expect(s).toContain("suppressOpen.current = true;\n              window.setTimeout(() => pathRef.current?.focus(), 0);");
+    // A folder named in the picker re-opens WHERE (which focuses the input),
+    // since the input only exists while the popover is open.
+    expect(s).toContain('onName={() => {\n              if (!recentsOpen) togglePill("where");');
   });
 });
 
@@ -2856,6 +2858,45 @@ describe("Tab in the folder field", () => {
 describe("property pills", () => {
   const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
   const now = new Date("2026-10-21T14:30:00");
+
+  test("the WHEN pill and the Save word read what the submit sends: nothing picked is Now / Create", () => {
+    const s = src();
+    expect(s).toMatch(/whenPillLabel\(\s*timePicked && pickedOk \? picked : null,/);
+    expect(s).toMatch(/saveActionLabel\(\s*(\/\/[^\n]*\n\s*)?timePicked \?/);
+  });
+
+  test("the MODEL pill shows the model alone; Thinking stays in the popover", () => {
+    const s = src();
+    expect(s).toContain('const modelText = taskRunLabel(runModels, model) || "Default";');
+    expect(s).not.toMatch(/modelText[^;]*·/);
+  });
+
+  test("Escape in an open pill popover closes the popover only", () => {
+    const s = src();
+    expect(s).toMatch(/e\.key === "Escape" && open && !e\.isPropagationStopped\(\)\) \{\s*e\.stopPropagation\(\);\s*onDismiss\(\);/);
+  });
+
+  test("a refused Save on the path, and the Browse hand-back, open WHERE rather than focus an unmounted input", () => {
+    const s = src();
+    expect(s).toContain('if (blocked.field === "target" && !recentsOpen) togglePill("where");');
+    expect(s).toContain('if (!recentsOpen) togglePill("where");');
+    expect(s).not.toContain("suppressOpen");
+    expect(s).not.toContain("ASK_HINT_KEY");
+  });
+
+  test("editing keeps a long first line whole, once", () => {
+    const line = "L".repeat(90);
+    const entry = (message: string, title: string, description = "") =>
+      ({ message, title, description }) as never;
+    const none = { title: null, text: null };
+    const t = taskFieldsOf(line).title;
+    expect(initialTextOf(none, entry(line, t), t, "")).toBe(line);
+    expect(initialTextOf(none, entry(`${line}\n\nbody`, t, "body"), t, "body")).toBe(`${line}\n\nbody`);
+    // No message: the join of title and description, as before.
+    expect(initialTextOf(none, entry("", "Name", "body"), "Name", "body")).toBe("Name\n\nbody");
+    // A draft's own text is verbatim — a single newline is not widened.
+    expect(initialTextOf({ title: "a", text: "a\nb" }, undefined, "a", "b")).toBe("a\nb");
+  });
 
   test("four pills, in source order: Where, When, Access, Model", () => {
     const s = src();
