@@ -9,10 +9,11 @@
 // file named for its group, mapped by `settings/controls.tsx`. This file only
 // lays them out.
 //
-// The Claude Code group (settings/claude.tsx) is the former Claude Config
-// panel: its sections are BLOCKS — a card each, not a row — and the rows of
-// settings.json come from a catalog fetched at mount, spliced in after the
-// registry's catalog row so the nav count, the search and the page agree.
+// The Claude Code groups (settings/claude.tsx) are the former Claude Config
+// panel, a group per tab under the nav's Claude Code heading: their sections
+// are BLOCKS — a card each, not a row — and the rows of settings.json come
+// from a catalog fetched at mount, spliced in after the registry's catalog
+// row so the nav count, the search and the page agree.
 //
 // It replaced five tabs, the first of which ("Render preferences") had grown
 // to twenty sections in the order their flags shipped, with no way to search.
@@ -33,11 +34,14 @@
 // becoming a history entry.
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ChevronRight,
+  Brain,
+  FileJson,
+  History,
+  Puzzle,
   Search,
+  Server,
   SlidersHorizontal,
   Sparkles,
-  SquareTerminal,
   ListChecks,
   LayoutGrid,
   FolderSearch,
@@ -75,9 +79,7 @@ import {
   ClaudePrefRow,
   isClaudePref,
   useClaudePrefEntries,
-  useClaudeSectionLayout,
 } from "./settings/claude";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/shadcn/ui/collapsible";
 import { searchSettings, tokenize } from "./settings/search";
 import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
@@ -87,7 +89,11 @@ const GROUP_ICONS: Record<GroupId, LucideIcon> = {
   general: SlidersHorizontal,
   features: ToggleRight,
   ai: Sparkles,
-  claude: SquareTerminal,
+  "claude-plugins": Puzzle,
+  "claude-memory": Brain,
+  "claude-mcp": Server,
+  "claude-settings": FileJson,
+  "claude-history": History,
   tasks: ListChecks,
   apps: LayoutGrid,
   indexing: FolderSearch,
@@ -97,15 +103,6 @@ const GROUP_ICONS: Record<GroupId, LucideIcon> = {
 };
 
 const FLASH_MS = 1800;
-
-/** The Claude Code group's sections in the order this visit opens them in. */
-function claudeSections<T extends { section: string }>(
-  sections: T[],
-  layout: { order: (names: readonly string[]) => string[] },
-): T[] {
-  const order = layout.order(sections.map((s) => s.section));
-  return [...sections].sort((a, b) => order.indexOf(a.section) - order.indexOf(b.section));
-}
 
 function urlWith(edit: (p: URLSearchParams) => void): string {
   const params = new URLSearchParams(location.search);
@@ -119,14 +116,11 @@ function Section({
   entries,
   prefs,
   onChange,
-  collapsible,
 }: {
   title: string;
   entries: readonly SettingEntry[];
   prefs: Prefs;
   onChange: (p: Prefs) => void;
-  /** An accordion (the Claude Code group): the title is the toggle. */
-  collapsible?: { open: boolean; onToggle: () => void };
 }) {
   // A block is its section's only entry: the card is the block, captioned
   // with the file it edits. In search results (SettingsViewContext.tokens)
@@ -148,29 +142,11 @@ function Section({
       })}
     </div>
   );
-  if (!collapsible) {
-    return (
-      <section className="settings-section" aria-label={title}>
-        <h3 className="settings-section-title">{title}</h3>
-        {card}
-      </section>
-    );
-  }
   return (
-    <Collapsible
-      open={collapsible.open}
-      onOpenChange={collapsible.onToggle}
-      render={<section className="settings-section settings-section-collapsible" aria-label={title} />}
-    >
-      <h3 className="settings-section-title">
-        <CollapsibleTrigger className="settings-section-toggle">
-          <ChevronRight aria-hidden="true" className="settings-section-chevron" />
-          {title}
-          {!block && <span className="settings-section-count">{entries.length}</span>}
-        </CollapsibleTrigger>
-      </h3>
-      <CollapsibleContent>{card}</CollapsibleContent>
-    </Collapsible>
+    <section className="settings-section" aria-label={title}>
+      <h3 className="settings-section-title">{title}</h3>
+      {card}
+    </section>
   );
 }
 
@@ -185,12 +161,12 @@ let lastPrefs: Prefs | null = null;
 let writeGen = 0;
 
 export default function Preferences() {
-  // The Claude Code group's store wraps the page: the catalog rows it holds
-  // are part of the entry list (search included), and the git chip in the
+  // The Claude Code groups' store wraps the page: the catalog rows it holds
+  // are part of the entry list (search included), and the git chip in each
   // group's head reads the same epoch its blocks bump.
   // null until the probe answers: the page waits for it (with the prefs GET
   // it waits for anyway) rather than resolve `?tab=claude` to General for a
-  // moment and then flip — every job and notification link into the group
+  // moment and then flip — every job and notification link into the groups
   // lands on a cold cache.
   const claudeConfig = useClaudeConfigStatus();
   return (
@@ -235,7 +211,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const tokens = useMemo(() => tokenize(query), [query]);
   const searching = tokens.length > 0;
   // The catalog is read with the page, not when its group opens: the nav's
-  // count for Claude Code is every row (Akshil, 2026-10-20: "keep it as 83"),
+  // count for Settings is every row (Akshil, 2026-10-20: "keep it as 83"),
   // so the page waits for the rows the way it waits for the prefs GET.
   const { rows: claudeRows, ready: claudeReady } = useClaudePrefEntries(claudeConfig === true);
   const loaded = prefs !== null && claudeConfig !== null && claudeReady;
@@ -249,7 +225,6 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const groups = useMemo(() => visibleGroups(entries), [entries]);
   const sections = useMemo(() => navSections(groups), [groups]);
   const byId = (id: string) => entries.find((e) => e.id === id);
-  const claudeLayout = useClaudeSectionLayout();
 
   // Scroll a jumped-to row into view, light it briefly, then let it go — once
   // the row IS on the page: a settings.json row is not until its catalog has
@@ -259,18 +234,12 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   // deep link into a late row can land a little short. Accepted.)
   useEffect(() => {
     if (!flash || !prefs) return;
-    // A row inside a closed Claude section: open it, then land on the row.
-    const target = byId(flash);
-    if (target?.group === "claude" && !claudeLayout.isOpen(target.section)) {
-      claudeLayout.ensureOpen(target.section);
-      return;
-    }
     const el = document.getElementById(rowId(flash));
     if (!el) return;
     el.scrollIntoView({ block: "center" });
     const t = window.setTimeout(() => setFlash(null), FLASH_MS);
     return () => window.clearTimeout(t);
-  }, [flash, prefs !== null, entries.length, claudeLayout]);
+  }, [flash, prefs !== null, entries.length]);
 
   const setQuery = (q: string) => {
     setQueryState(q);
@@ -295,8 +264,8 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
 
   // `?s=` names a setting: its group wins over `?tab=`. A settings.json row
   // (`claude-pref:…`) is in `entries` only once its catalog has loaded; until
-  // then `?tab=claude` — which every link to one of them also carries — is
-  // what decides.
+  // then `?tab=` — which every link to one of them also carries — is what
+  // decides.
   const deep = byId(params.get("s") ?? "");
   const current: GroupId = deep ? deep.group : resolveGroup(params.get("tab"), groups);
 
@@ -309,14 +278,14 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
       // from AI & agents the store is still asleep — but its group is known,
       // and the mount that follows highlights the row once it exists (the
       // flash effect waits for it).
-      const group = byId(id)?.group ?? (isClaudePref({ id } as SettingEntry) ? "claude" : undefined);
+      const group = byId(id)?.group ?? (isClaudePref({ id } as SettingEntry) ? "claude-settings" : undefined);
       if (group) showGroup(group, id);
     },
   };
 
   // Pointer rows count: they are rows a reader can find and follow, and the
   // counts must mean the same thing with and without a search — every row,
-  // the Claude Code group's catalog rows included (the page waits for them).
+  // the Settings group's catalog rows included (the page waits for them).
   const navCount = (g: GroupId) => (searching ? hits : entries).filter((e) => e.group === g).length;
 
   const head = searching
@@ -419,8 +388,11 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                     </Badge>
                   )}
                 </h2>
-                {!searching && current === "claude" && (
-                  <ClaudeGitChip onOpen={() => claudeLayout.ensureOpen("History")} />
+                {/* Every Claude Code group wears the git chip: the drift it
+                    counts is the one fact that matters while a reader is on
+                    some other block. It leads to the History group. */}
+                {!searching && groupOf(current).nav === "claude" && (
+                  <ClaudeGitChip onOpen={() => showGroup("claude-history", "claude-history")} />
                 )}
               </div>
               <p>{blurb}</p>
@@ -439,20 +411,9 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                           onChange={setPrefs}
                         />
                       ))
-                  : current === "claude"
-                    ? claudeSections(sectionsOf(entries, current), claudeLayout).map((s) => (
-                        <Section
-                          key={s.section}
-                          title={s.section}
-                          entries={s.entries}
-                          prefs={prefs}
-                          onChange={setPrefs}
-                          collapsible={{ open: claudeLayout.isOpen(s.section), onToggle: () => claudeLayout.toggle(s.section) }}
-                        />
-                      ))
-                    : sectionsOf(entries, current).map((s) => (
-                        <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
-                      ))}
+                  : sectionsOf(entries, current).map((s) => (
+                      <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
+                    ))}
               </IndexStateProvider>
             </SettingsViewContext.Provider>
           </main>
