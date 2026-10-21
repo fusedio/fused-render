@@ -235,7 +235,7 @@ bundled = [
 # that keeps the index honest between scans (server/index_watch.py). pyarrow
 # writes the index; duckdb reads it; watchfiles is the watcher.
 index = [
-    "duckdb>=1.1",
+    "duckdb>=1.1,<2",
     "pyarrow>=14",
     "watchfiles>=1.0",
 ]
