@@ -951,6 +951,30 @@ def test_record_sync_failure_helper_writes_todays_row(world):
     assert git_upstream.sync_failures()[0]["output"] == "Your copy and the author's both changed."
 
 
+def test_recorded_copies_sync_without_repo_hooks_record_less_repos_keep_them(world):
+    """§16.12: every fused git call on a contrib repo runs hook-free (and
+    fsmonitor-free); a repo with no record keeps today's sync, hooks and
+    all."""
+    def refuse_hook(repo):
+        hook = os.path.join(repo, ".git", "hooks", "pre-push")
+        with open(hook, "w") as f:
+            f.write("#!/bin/sh\necho refused-by-repo-hook >&2\nexit 1\n")
+        os.chmod(hook, 0o755)
+
+    a = _install(world)
+    store.update(a, lambda r: r.__setitem__("kind", "own"))
+    classify.ensure_push_guard(a, "own")
+    refuse_hook(a)
+    _commit(a, "b.txt", "mine\n", "mine")
+    r = _sync(a, push=True)
+    assert r["status"] == "synced" and r["pushed"] is True
+    store.drop(a)
+    classify._kind_memo.clear()
+    _commit(a, "c.txt", "mine\n", "mine 2")
+    r = _sync(a, push=True)
+    assert r["status"] == "failed" and "refused-by-repo-hook" in r["failure"]["output"]
+
+
 def test_binding_never_drops_a_v2_record_over_its_origin(world):
     """§16.1: binding is on the root commit ONLY. An own copy's origin is its
     author's to change (a rename, a transfer); a v2 row missing its root

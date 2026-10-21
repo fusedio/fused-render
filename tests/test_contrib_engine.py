@@ -216,6 +216,10 @@ def test_row9_fast_forward_says_what_came_in(w):
     assert _backups(w) == []
     _remote_untouched(w, a)
     assert (store.get(w.app) or {}).get("last_checked")
+    assert store.get(w.app)["last_head"] == a           # adoption after a Finder move
+    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    engine.status(w.app)
+    assert store.get(w.app)["last_head"] == mine
 
 
 def test_row8_noop_keeps_bobs_commit(w):

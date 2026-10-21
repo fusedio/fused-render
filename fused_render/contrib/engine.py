@@ -610,9 +610,19 @@ def _land(root, branch, old, new, why) -> tuple:
         return replay.land_locked(root, branch=branch, old_tip=old, new_tip=new, why=why)
 
 
+def _note_head(root, head=None) -> None:
+    try:
+        store.note_head(root, head or replay.rev(root, "HEAD"))
+    except Exception:  # noqa: BLE001 — bookkeeping for adoption only
+        logger.exception("contrib: note_head failed for %s", root)
+
+
 def _settled(root, *, clear_proposal=False):
     """After a land or a noop: a recorded overlap and a Keep mine no longer
-    apply (HEAD contains the tip now)."""
+    apply (HEAD contains the tip now); the record notes where HEAD is
+    (`store.note_head`, adoption after a Finder move)."""
+    _note_head(root)
+
     def fn(r):
         r["needs_merge"] = None
         r["skip_tip"] = None
@@ -1038,6 +1048,7 @@ def go_back_main(root) -> dict:
                     replay.unbackup_locked(root, [backup, backup + "-wip"])
                 return _refuse("failed", "Couldn't go back to the main version; a file here is "
                                          "in the way. Nothing was changed.")
+        _note_head(root)
         _activity(root, "go-back", text, backup=backup)
         return {"ok": True, "message": text}
 
@@ -1253,6 +1264,7 @@ def merge_landed(root, *, purpose, old_tip, new_tip, backup=None, **_legacy) -> 
     (`ownsync.merge_landed`, else git_upstream's scheduled sync), a
     proposal's merge to `proposals.merge_accepted` (Update sends it)."""
     try:
+        _note_head(root, new_tip)
         rec = store.get(root) or {}
         who = _who(rec)
         if purpose in ("update", "return"):
@@ -1361,6 +1373,8 @@ def status(root) -> dict:
     if fol is None or not head:
         view["state"] = "following"
         return view
+    if rec.get("last_head") != head:
+        _note_head(root, head)
     tip = follow.tip(root, fol)
     proposal = rec.get("proposal") if isinstance(rec.get("proposal"), dict) else None
     sent = replay.rev(root, (proposal or {}).get("sent") or "")

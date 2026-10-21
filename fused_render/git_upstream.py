@@ -132,9 +132,39 @@ def _popen_kwargs():
     }
 
 
+# The contribution loop's rule for every fused git call on a contrib repo
+# (docs/CONTRIB_LOOP.md §16.12, replay.SAFE_CONFIG's twin): no repo-configured
+# fsmonitor command, no hooks — `.git/config` and `.git/hooks` are writable by
+# the app and by Claude sessions in the folder. Applied (1) always by the
+# read-only plumbing helpers the engine shares (`_run_safe`: no hook runs and
+# no fsmonitor is asked for those commands, so a record-less repo sees no
+# difference), and (2) to every call inside `contrib_git()` — the sync of a
+# recorded copy (`_sync_locked`) and any contrib caller that wraps its work.
+# A repo with no record keeps today's plain sync, its own hooks included.
+SAFE_CONFIG = ("-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null")
+_contrib_ctx = threading.local()
+
+
+@contextlib.contextmanager
+def contrib_git():
+    """Every `_run` on this thread inside the block carries SAFE_CONFIG."""
+    prev = getattr(_contrib_ctx, "on", False)
+    _contrib_ctx.on = True
+    try:
+        yield
+    finally:
+        _contrib_ctx.on = prev
+
+
+def _run_safe(root, *args, timeout=TIMEOUT_S):
+    return _run(root, *SAFE_CONFIG, *args, timeout=timeout)
+
+
 def _run(root, *args, timeout=TIMEOUT_S):
     """One bounded git call; `(returncode, stdout, stderr)`, or None when git
     could not even be run (missing, timed out, OS-level spawn failure)."""
+    if getattr(_contrib_ctx, "on", False) and args[:2] != SAFE_CONFIG[:2]:
+        args = (*SAFE_CONFIG, *args)
     try:
         proc = subprocess.run(
             [_git_bin(), "-C", root, *args],
@@ -178,12 +208,12 @@ def _default_branch(root):
     fallback for a clone (or a hand-init'd repo) missing that symref. None
     when there is no `origin` remote, or git cannot resolve it — either way,
     nothing to compare HEAD against."""
-    result = _run(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    result = _run_safe(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     if not _ok(result):
-        fixed = _run(root, "remote", "set-head", "origin", "--auto")
+        fixed = _run_safe(root, "remote", "set-head", "origin", "--auto")
         if not _ok(fixed):
             return None
-        result = _run(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+        result = _run_safe(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
         if not _ok(result):
             return None
     short = _out(result)
@@ -191,7 +221,7 @@ def _default_branch(root):
 
 
 def _current_branch(root):
-    result = _run(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    result = _run_safe(root, "symbolic-ref", "--quiet", "--short", "HEAD")
     return _out(result) or None if _ok(result) else None
 
 
@@ -211,7 +241,7 @@ def _ahead_behind_counts(root, default_branch):
     narrower call this replaced): `ahead` is what the "Fix with Claude"
     prompt (repo-updates-lib.ts's `repoFixPrompt`) needs to describe a
     refusal honestly, whatever mutation triggered it."""
-    result = _run(root, "rev-list", "--left-right", "--count",
+    result = _run_safe(root, "rev-list", "--left-right", "--count",
                   f"HEAD...origin/{default_branch}")
     if not _ok(result):
         return None, None
@@ -318,7 +348,7 @@ def _real_gitdir(root):
     nothing here has to special-case `.git`-as-file by hand. None on any
     failure (git missing, `root` not a repo) — the same silent-on-uncertainty
     posture the rest of this preflight uses, never a raise."""
-    result = _run(root, "rev-parse", "--absolute-git-dir")
+    result = _run_safe(root, "rev-parse", "--absolute-git-dir")
     if not _ok(result):
         return None
     return _out(result) or None
@@ -905,19 +935,22 @@ def _sync_locked(root, *, action, push):
         return _skipped("contrib-error")
     if kind == "github":
         try:
-            _cls.settle_locked(root, "github")
-            from fused_render.contrib import engine as _contrib
-            return _contrib.sync(root, action=action, push=push)
+            with contrib_git():
+                _cls.settle_locked(root, "github")
+                from fused_render.contrib import engine as _contrib
+                return _contrib.sync(root, action=action, push=push)
         except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
             logger.exception("contrib sync failed for %s", root)
             return _skipped("contrib-error")
     if kind == "scratch":
         return _skipped("scratch")
     if kind == "own":
-        try:
-            _cls.settle_locked(root, "own")
-        except Exception:  # noqa: BLE001 — a guard failure never costs a sync
-            logger.exception("contrib settle failed for %s", root)
+        with contrib_git():
+            try:
+                _cls.settle_locked(root, "own")
+            except Exception:  # noqa: BLE001 — a guard failure never costs a sync
+                logger.exception("contrib settle failed for %s", root)
+            return _sync_plain(root, action=action, push=push, kind=kind)
     return _sync_plain(root, action=action, push=push, kind=kind)
 
 
