@@ -21,7 +21,7 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from fused_render import netlog
 from fused_render.server import dirpicker
 from fused_render.server.common import _error, _require_fused, logger
-from fused_render.server.gitignore import _git_ignored, _is_repo_root
+from fused_render.server.gitignore import _git_ignored_cached, _is_repo_root
 from fused_render.server import git_status
 # The tuning knobs (`_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
 # caps) are read through their DEFINING module below — `_server_templates._CONDITIONS_TTL_S`
@@ -154,7 +154,7 @@ def api_fs_list(path: str, cursor: str | None = None):
             }
         )
     names = [e["name"] for e in entries]
-    ignored = _git_ignored(path, names)
+    ignored = _git_ignored_cached(path, names)
     # Git tinting for the row NAMES, alongside the gitignore dimming for whole
     # rows. Both are one batched `git` call for the listing and both degrade to
     # nothing, so a folder outside a repo — or a machine without git — pays two
