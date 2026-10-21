@@ -860,6 +860,50 @@ longer fits" + Ask to update / Merge with Claude. Install page wording per
 | WS-A api | `server/routers/contrib.py`, `contrib/actions.py` (new), `server/routers/apps.py` (card field), `tests/test_contrib_router.py`, `tests/test_contrib_actions.py` |
 | WS-F frontend | `frontend/src/platform/lib/contrib.ts`, `frontend/src/shell/contrib/*`, `frontend/src/styles/contrib.css`, `frontend/src/apps/marketplace/FusedFilePage.tsx`, git panel UI file for Push |
 
+### 16.12 Review round 1 amendments (TL, 2026-10-21) — override §16.0–16.10
+
+- **Gating (replaces the P1 row split).** A state is recorded in the form
+  whose UI is visible. `github` copy: rows 8–11 with a CLEAN merge run
+  whatever the flags (an automatic, local, undoable move is not a stuck
+  state). Rows 5, 6, 11-conflict: with `flags.sources()` on → v2 states
+  (blocked / commit-edits / needs_merge) whose fix buttons (Merge with
+  Claude, Keep mine, Use <who>'s version, Move my file aside) are gated by
+  `sources` ONLY; with it off → today's git_upstream failure row
+  (`dirty` / `diverged` / `git-failed`) with a plain message, tree untouched.
+  `changes` gates only proposal UI (Propose/Update/Withdraw/push-main);
+  `remix` gates Remix. Row 7 needs a proposal (so A2). Wording that points at
+  the app page (install page, git panel Push sentence) only when `sources` is
+  on; otherwise plain "has changes of its own" text without git words.
+- **`not-default`**: fetch first, then refuse to move; status still shows
+  how far behind; Go back button under `sources`.
+- **Classification while signed out**: pre-loop folders (migration) are NOT
+  classified until a GitHub identity exists (no record → today's plain sync).
+  Fresh link installs still record `github` unchecked at install.
+- **github→own upgrade with unpublished commits** (sign-in re-check): never
+  auto-push them. Record `own_state = held` ("This is your app. N edits are
+  ready to publish.") with **Publish now**; ahead-only sync skips the push
+  while held; Publish now clears it.
+- **No-push hook**: `github` copies get a fused `pre-push` hook in the repo's
+  own `.git/hooks` that refuses every push with a plain sentence; fused's own
+  pushes run with `core.hooksPath=/dev/null`. Removed on `own`.
+- **Every fused git call on a contrib repo** runs with `-c core.fsmonitor=
+  -c core.hooksPath=/dev/null` (and the existing non-interactive env).
+- **Merge with Claude sandbox**: the resolver runs with `--setting-sources=`
+  (no project/user settings, hooks, CLAUDE.md), `--strict-mcp-config` with no
+  servers, tools limited to Read/Edit/Write on the conflicted files, and the
+  worktree's `.claude/`, `CLAUDE.md`, `AGENTS.md`, `.mcp.json` are not loaded.
+  File names reach the prompt only fenced as data, newline-free.
+- **own sync**: `_job_open`/status count only purpose `own-sync`; a push never
+  waits on a job. Published points R also include the last 20 GitHub tips
+  fused saw (store), so a repo without a reflog is not blind; R = [tip] only →
+  "unknown": no Put my edits on top, ahead-only push with an unknown rewind
+  state is held with a button. Undo of an automatic combine holds until
+  GitHub's tip moves (own `skip_tip`).
+- **Proposals**: Update offered when the proposal no longer fits or HEAD's
+  tree differs from the PR head's (not only when `unproposed > 0`); Update
+  accepts `include`; the credit line has no Undo; Remix and Discard stay
+  offered while proposed; a merged state with kept edits offers Propose.
+
 Cross-WS calls use exactly the names in §16.1–16.9. Need something another
 WS owns → message that WS (and the TL). Tests: real temp repos + FakeGitHub,
 `-n0`; port every audit repro (scratchpad `audit-{user,author,contrib}/`) that
