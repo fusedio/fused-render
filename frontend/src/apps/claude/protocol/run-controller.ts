@@ -1538,12 +1538,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
   let workingStartedAt = 0;
   /** WHEN THIS TURN STARTED, kept across a reload (owner E2E R1, F10): the
    *  working line's "(10s)" restarted from 0 on F5 because the start was a
-   *  controller-local `now()`. The frame that starts a turn stamps the run
-   *  in sessionStorage; a frame that re-attaches to the same run reads the
-   *  stamp back. Same tab only, which is the reload case; a new tab starts
-   *  its clock at attach, as before. Cleared when the loop ends so an
-   *  idle-time send into the same host does not inherit the last turn's
-   *  clock. */
+   *  controller-local `now()`. THE SOURCE OF TRUTH IS THE SERVER: the poll's
+   *  `turn_started_at` (stamped when the turn's first message was written)
+   *  replaces this clock whenever it is earlier, so a reload, another tab or
+   *  a reopened task pane all keep counting from the real start.
+   *  sessionStorage is the fallback for an older server that sends none: the
+   *  frame that starts a turn stamps the run, a re-attaching frame reads it
+   *  back (same tab only). Cleared when the loop ends so an idle-time send
+   *  into the same host does not inherit the last turn's clock. */
   const turnStartKey = (runId: string) => `fused-render:claude-turn-start:${runId}`;
   const turnStartedAt = (runId: string): number => {
     try {
@@ -1957,6 +1959,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (poll.session_id) noteSessionId(String(poll.session_id), seat, opts.prompt);
         if (loopSeq === seat) noteBackend(poll.backend);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
+
+        // The server's stamp of when this turn began wins on re-attach.
+        const serverStart = Number(poll.turn_started_at || 0) * 1000;
+        if (serverStart > 0) {
+          const at = Math.min(serverStart, now());
+          if (!(workingStartedAt > 0) || at < workingStartedAt) workingStartedAt = at;
+        }
 
         // usage arrives only at message end; estimate from streamed text meanwhile
         const tokens = Math.max(poll.tokens || 0, Math.round((poll.text || "").length / 4));
