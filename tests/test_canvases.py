@@ -2194,7 +2194,12 @@ def test_the_managers_own_push_does_not_route_back_through_the_endpoint(
                             headers=GUARD)
         (harness.root / "alpha" / "a.py").write_text("a2-edited\n")
 
-        status = _wait_sync(lambda s: s["push_seq"] >= 1)
+        # Settled, not just counted: `push_seq` is bumped a beat before
+        # `push_state` leaves "pushing", and an edit that landed mid-push
+        # re-arms a second one ("pending" -> "pushing") — a loaded runner
+        # sampled either window and read "pushing" (CI, fused-engine job).
+        status = _wait_sync(lambda s: s["push_seq"] >= 1
+                            and s["push_state"] not in ("pending", "pushing"))
         assert status and status["push_seq"] >= 1, (
             "the manager's own push never succeeded", status)
         assert status["push_state"] == "idle", status

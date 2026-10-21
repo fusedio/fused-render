@@ -182,7 +182,7 @@ def _require_serve_extras() -> None:
             "fused-render serve needs at least `[cli]`; this install is missing "
             f"{', '.join(f'[{m}]' for m in missing)}.\n"
             f"  {extras.install_hint('cli')}\n"
-            "or [all] for native desktop integrations\n"
+            f"or {extras.install_hint('all')} for native desktop integrations\n"
             "The base install runs one app: fused-render open <github-url or path>"
         )
 
