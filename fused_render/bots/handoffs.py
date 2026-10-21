@@ -186,6 +186,8 @@ def _relay_card(sb, t, hd, ev, card):
                 source="handoff", handoff=sb._handoff_ref(hd), via=hd.get("origin_via"))
         return
     relay = {"bot": t.id, "seq": ev.get("seq"), "kind": "approval" if role == "approval" else "question", "options": opts}
+    if role == "approval":  # the target's own text + detail: the relayed card splits the command from the why as a direct one does
+        relay.update({k: ev[k] for k in ("text", "detail") if isinstance(ev.get(k), str)})
     text = f"{name} needs your OK: {card}" if role == "approval" else f"{name} asks: {card}"
     # Top-level `options` is what a phone is numbered with (Router.render), only while the switch is on. Off, the text
     # goes out unnumbered and render() ends it "Needs your OK at the Mac."; the card in Super Bot's chat still works.

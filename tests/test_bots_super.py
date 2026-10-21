@@ -214,7 +214,8 @@ def test_handoff_runs_blocks_and_reports_one_result(pair):
     hv = chan.handoff_via(sb.id, hd["id"])
     # the target waits on the user: blocked. Its approval is relayed into Super Bot's chat with live buttons that
     # post to the bot that waits (#1638); a question without options stays a "needs you at the laptop" notice.
-    t.emit("approval", "About to submit the form. Approve?", via=hv, severity="high", risk_summary="Submits the checkout form.")
+    t.emit("approval", "About to submit the form. Approve?", via=hv, severity="high", risk_summary="Submits the checkout form.",
+           detail="submit the form")
     assert hd["state"] == "blocked" and hd["blocked"]["kind"] == "approval"
     t.emit("question", "Which airport?", via=hv)
     assert hd["blocked"] == {"kind": "question", "text": "Which airport?"}
@@ -222,6 +223,9 @@ def test_handoff_runs_blocks_and_reports_one_result(pair):
     assert relayed["text"] == "Scout needs your OK: About to submit the form."
     assert relayed["options"] == ["Approve", "Deny"] and relayed["relay"]["bot"] == t.id
     assert relayed["relay"]["kind"] == "approval"
+    # the target's own text + detail ride along so the card can split the command from the why
+    assert relayed["relay"]["text"] == "About to submit the form. Approve?" and relayed["relay"]["detail"] == "submit the form"
+    assert "text" not in notice.get("relay", {})
     assert relayed["severity"] == "high" and relayed["risk_summary"] == "Submits the checkout form."
     assert notice["text"] == "Scout needs you at the laptop: Which airport? Answer it at the Mac."
     assert not notice.get("relay") and not notice.get("options")

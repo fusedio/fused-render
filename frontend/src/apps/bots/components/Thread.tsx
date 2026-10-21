@@ -17,6 +17,7 @@ import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { approvalParts } from "@platform/lib/approvalParts";
 import { GateCard } from "@platform/ui/GateCard";
 
 import { ApprovalCard } from "./ApprovalCard";
@@ -139,7 +140,7 @@ function Action({ text, result, detail, thumbSrc, title }: { text: string; resul
 /** Hand-off events written before 2026-10-07 carry the old state names; bot.json rows were renamed on load, events were not. */
 const LEGACY_HANDOFF_STATE: Record<string, string> = { queued: "received", running: "working", waiting: "blocked", error: "failed", stopped: "cancelled" };
 
-function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: BotEvent; state: string; targetLive: boolean; targetWaiting?: number | null }) {
+export function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: BotEvent; state: string; targetLive: boolean; targetWaiting?: number | null }) {
   const state = LEGACY_HANDOFF_STATE[rawState] || rawState;
   const h = e.handoff!, who = h.target_name || "the bot";
   const relay = e.role === "question" ? e.relay : undefined;
@@ -175,14 +176,17 @@ function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: Bot
   // A relayed APPROVAL is the shared gate card, the same one the bot's own chat shows; this wrapper only adds the door
   // to that bot's chat under it.
   if (relay?.kind === "approval") {
+    // With the target's own text + detail the card splits the command from the why, as a direct card does.
+    const parts = relay.detail ? approvalParts({ text: relay.text ?? text, detail: relay.detail }) : null;
     return (
       <div className={`handoff-card gated ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
         <GateCard
           head={head}
           severity={e.severity}
           riskSummary={e.risk_summary}
-          body={text}
-          bodyWhat="request"
+          body={parts ? parts.body : text}
+          bodyWhat={parts ? parts.bodyWhat : "request"}
+          sub={parts?.sub}
           resolved={!live}
           status={!live && !sent && targetWaiting !== relay.seq ? { tone: "expired", text: "Answered" } : undefined}
           actions={[
