@@ -193,7 +193,7 @@ export function TroubleCard({
   children?: React.ReactNode;
 }) {
   const kind = kindProp ?? troubleKind(error, backend);
-  const fallback = (backend && SAID_BY_AGENT[backend]?.[kind]) ?? SAID[kind] ?? SAID.raw;
+  const fallback = (backend ? SAID_BY_AGENT[backend]?.[kind] : undefined) ?? SAID[kind] ?? SAID.raw;
   const said = { title: title ?? fallback.title, explain: explain ?? fallback.explain };
   const ctx = { what, error, ...(facts ?? {}), ...(backend ? { backend } : {}) };
   const report = troubleReport(ctx);
