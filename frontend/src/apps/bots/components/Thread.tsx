@@ -13,10 +13,12 @@ import { openBuilds, getBuildRows } from "../builds/builds";
 import { ApiError, api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
+import { severityLabel } from "../lib/risk";
 import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { ApprovalCard } from "./ApprovalCard";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
 
@@ -164,6 +166,9 @@ function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: Bot
   return (
     <div className={`handoff-card ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
       <div className="hd"><span className="ttl">{head}</span><span className={`pill ${state}`}>{state}</span></div>
+      {relay?.kind === "approval" && severityLabel(e.severity) ? (
+        <div className="riskhead"><span className={`riskpill ${e.severity}`}>{severityLabel(e.severity)}</span>{e.risk_summary ? <span className="risksum">{e.risk_summary}</span> : null}</div>
+      ) : null}
       {text ? <HtmlMsg className="msg md" title={fmtWhen(e.ts)} html={md(text)} /> : null}
       {relay ? (
         // Its own class, not `.msg.approval` / `.msg.question`: the thread's click handler reads those as Super Bot's cards.
@@ -256,25 +261,7 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
     const app = e.app?.dir ? e.app : appFromText(e.text, appsRoot);
     return <><div className="msg note" title={title}>{e.text}</div>{app ? <AppCard app={app} onBeside={onBeside} /> : null}</>;
   }
-  if (e.role === "approval") {
-    // Live card while the bot is still waiting on this one; a plain note once answered.
-    return (
-      <div className={`msg approval${live ? "" : " settled"}`} data-seq={e.seq} title={title}>
-        {e.text}
-        <div className="btns">
-          <button className="primary" data-approve="1" disabled={!live}>Approve</button>
-          <button data-deny="1" disabled={!live}>Deny</button>
-          {e.forever ? (
-            // The third answer: a yes that also writes the card's rule (bot.json allow_rules), so this bot never asks
-            // again when it does the same thing. Only cards whose call can be remembered carry `forever`.
-            <button className="forever" data-forever="1" disabled={!live} title={`Never ask again when this bot ${e.forever.label}. Undo it in Settings › Permissions.`}>
-              Approve, don't ask again
-            </button>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
+  if (e.role === "approval") return <ApprovalCard e={e} live={live} title={title} />;  // live while the bot still waits on this card
   if (e.role === "question") {
     // Optional one-click answers: lettered rows, like a quick poll. Typing in the composer still works.
     const options = e.options || [];

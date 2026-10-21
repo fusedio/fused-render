@@ -53,6 +53,9 @@ export interface BotEvent {
   /** approval: the rule the card's third button writes (send with `forever: true`); absent when this call may never
    *  be remembered (bot management, a phone-started task). `label` is the sentence the user approves. */
   forever?: AllowRule;
+  /** approval: the model's read of the call (agent_engine._risk_fields); both absent when the assessment failed. */
+  severity?: "low" | "medium" | "high";
+  risk_summary?: string;
   offer?: Offer;
   app?: AppRef;
   reply?: ReplyRef;
