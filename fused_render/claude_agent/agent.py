@@ -6789,6 +6789,19 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                 if _row_ts(row) is not None:
                     seg["ts"] = _row_ts(row)
                 segments.append(seg)
+        elif t == "system" and row.get("subtype") == "compact_boundary":
+            # Live shape is snake_case `compact_metadata`; the persisted
+            # transcript's camelCase twin is read by `_history`.
+            meta = row.get("compact_metadata")
+            meta = meta if isinstance(meta, dict) else {}
+            seg = {"kind": "notice",
+                   "text": [_compact_label(meta.get("pre_tokens"),
+                                           meta.get("post_tokens"),
+                                           meta.get("trigger"))],
+                   "status": ""}
+            if _row_ts(row) is not None:
+                seg["ts"] = _row_ts(row)
+            segments.append(seg)
         elif t == "user" and isinstance(content, str):
             note = _task_notification(content)
             if note:
@@ -9561,7 +9574,8 @@ def _cli_preview(path: str, workdir: str) -> tuple[str, str]:
                 if os.path.abspath(cwd) != workdir:
                     return "", ""
                 cwd_seen = True
-        if row.get("type") != "user" or row.get("isMeta") or row.get("isSidechain"):
+        if (row.get("type") != "user" or row.get("isMeta")
+                or row.get("isSidechain") or row.get("isCompactSummary")):
             continue
         content = (row.get("message") or {}).get("content")
         if isinstance(content, list):
@@ -9975,6 +9989,38 @@ def _transcript_stat(path: str) -> dict:
         return {"path": path, "mtime": st.st_mtime, "size": st.st_size}
     except OSError:
         return {"path": path, "mtime": 0.0, "size": 0}
+
+
+def _compact_summary_text(text: str) -> str:
+    """The summary body of a compaction row, without the CLI's preamble
+    ("This session is being continued ... Summary:"). Unchanged when there is
+    no `Summary:` line."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line.strip().startswith("Summary:"):
+            rest = line.strip()[len("Summary:"):].strip()
+            body = ([rest] if rest else []) + lines[i + 1:]
+            return "\n".join(body).strip()
+    return text.strip()
+
+
+def _compact_token_str(n) -> str:
+    n = int(n)
+    return f"{round(n / 1000)}k" if n >= 1000 else str(n)
+
+
+def _compact_label(pre=None, post=None, trigger=None) -> str:
+    """`Context compacted · 167k → 16k tokens`; the numbers drop out when the
+    boundary did not carry them. The frontend has the same helper."""
+    label = "Context compacted"
+    if isinstance(pre, (int, float)) and not isinstance(pre, bool):
+        label += f" · {_compact_token_str(pre)}"
+        if isinstance(post, (int, float)) and not isinstance(post, bool):
+            label += f" → {_compact_token_str(post)}"
+        label += " tokens"
+    if trigger == "manual":
+        label += " · manual"
+    return label
 
 
 def _row_ts(row: dict) -> float | None:
@@ -10410,6 +10456,9 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # is the estimate that replaces them (spec §6). Reset by the next real
     # reading, which is the API's own count of what the summary actually cost.
     compacted = None
+    # The newest boundary's trigger / token counts, held until the
+    # `isCompactSummary` user row that follows it turns into the divider turn.
+    pending_compact = None
 
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
@@ -10503,6 +10552,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
             meta = row.get("compactMetadata")
             compacted = meta if isinstance(meta, dict) else {}
+            pending_compact = compacted
         if (backend == "copilot" and row.get("type") == "system"
                 and row.get("subtype") == "task_notification"):
             # The LIVE notice shape, persisted: the Copilot host writes its
@@ -10543,7 +10593,28 @@ def _history(file: str, session_id: str, app_reads: bool = False,
             # Everything filtered here falls to `stretch`, where
             # `_segments_from_rows` turns a task-notification into its chip and
             # ignores the others.
-            if text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
+            if row.get("isCompactSummary") and text.strip():
+                # THE CLI'S COMPACTION SUMMARY, not something the human said.
+                # It drew as a screenful-tall user bubble; it is its own
+                # `role: "compact"` turn, which the page draws as a divider
+                # with the summary folded away.
+                close_stretch()
+                meta = pending_compact or {}
+                pending_compact = None
+                ctrn = {"role": "compact", "text": _compact_summary_text(text),
+                        "uuid": str(row.get("uuid") or "")}
+                if meta.get("trigger"):
+                    ctrn["trigger"] = str(meta["trigger"])
+                for src, dst in (("preTokens", "pre_tokens"),
+                                 ("postTokens", "post_tokens")):
+                    n = meta.get(src)
+                    if isinstance(n, (int, float)) and not isinstance(n, bool):
+                        ctrn[dst] = int(n)
+                ts = _row_ts(row)
+                if ts is not None:
+                    ctrn["ts"] = ts
+                turns.append(ctrn)
+            elif text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
                 close_stretch()  # before the user turn, or the segments land on it
                 turn = {"role": "user", "text": text,
                         "uuid": str(row.get("uuid") or "")}

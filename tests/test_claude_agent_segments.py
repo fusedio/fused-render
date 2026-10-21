@@ -878,6 +878,61 @@ def test_history_renders_a_task_notification_as_a_notice_not_a_bubble(
         'Background command "pytest -q" completed'
 
 
+_SUMMARY = ("This session is being continued from a previous conversation "
+            "that ran out of context.\n\nSummary:\n1. Primary request: fix X")
+
+
+def _compact_rows(meta):
+    return [
+        _t_user("fix X"),
+        _t_assistant([{"type": "text", "text": "On it."}]),
+        {"type": "system", "subtype": "compact_boundary",
+         "compactMetadata": meta},
+        {**_t_user(_SUMMARY), "isCompactSummary": True, "uuid": "u-sum"},
+        _t_assistant([{"type": "text", "text": "Continuing."}]),
+    ]
+
+
+def test_history_renders_a_compaction_summary_as_a_compact_turn(
+        agent, tmp_path, monkeypatch):
+    turns = _history(agent, tmp_path, monkeypatch, _compact_rows(
+        {"trigger": "auto", "preTokens": 167165, "postTokens": 16130}))
+    assert [t["role"] for t in turns] == ["user", "assistant", "compact",
+                                          "assistant"]
+    c = turns[2]
+    assert c["text"] == "1. Primary request: fix X"
+    assert (c["trigger"], c["pre_tokens"], c["post_tokens"]) == \
+        ("auto", 167165, 16130)
+    assert c["uuid"] == "u-sum"
+
+
+def test_history_compact_turn_omits_absent_numbers(
+        agent, tmp_path, monkeypatch):
+    turns = _history(agent, tmp_path, monkeypatch, _compact_rows(
+        {"trigger": "auto", "preTokens": 5000}))
+    c = [t for t in turns if t["role"] == "compact"][0]
+    assert "post_tokens" not in c and c["pre_tokens"] == 5000
+
+
+def test_a_compaction_summary_is_not_human_text(agent):
+    assert agent._compact_summary_text("no preamble here") == "no preamble here"
+    rows = [{"type": "user", "isCompactSummary": True,
+             "message": {"content": _SUMMARY}}]
+    assert agent._segments_from_rows(rows) == []
+
+
+def test_live_compact_boundary_is_a_notice_segment(agent):
+    segs = agent._segments_from_rows([
+        {"type": "system", "subtype": "compact_boundary",
+         "compact_metadata": {"trigger": "auto", "pre_tokens": 167165,
+                              "post_tokens": 16130}}])
+    assert [(s["kind"], s["text"]) for s in segs] == \
+        [("notice", ["Context compacted \u00b7 167k \u2192 16k tokens"])]
+    bare = agent._segments_from_rows([
+        {"type": "system", "subtype": "compact_boundary"}])
+    assert bare[0]["text"] == ["Context compacted"]
+
+
 def test_history_drops_the_other_synthetic_user_records_too(
         agent, tmp_path, monkeypatch):
     """Everything in `_MACHINERY_DROP` is Claude Code writing a `user` record on
