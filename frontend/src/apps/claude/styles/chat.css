@@ -712,14 +712,29 @@
   line-height: 1.5;
 }
 .chat-root .c-topbar-merged .task-side-peek-who {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 1 1 0;
+  min-width: 6em;
   overflow: hidden;
 }
-.chat-root .c-topbar-merged .task-side-peek-agent,
-.chat-root .c-topbar-merged .chat-worktree-menu {
+.chat-root .c-topbar-merged .task-side-peek-agent {
   flex: 0 1 auto;
   min-width: 0;
+}
+/* The pill must shrink with its wrapper, or it overflows onto the hint chip. */
+.chat-root .c-topbar-merged .chat-worktree-menu {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .chat-worktree-menu .chat-worktree-btn {
+  max-width: 100%;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .chat-worktree-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
 }
 .chat-root .c-topbar-merged .c-tb-tail {
   margin-left: auto;
