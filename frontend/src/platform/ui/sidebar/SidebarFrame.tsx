@@ -145,11 +145,15 @@ export function NavItem({
   extra,
   trailing,
   active,
+  title,
 }: {
   href: string;
   label: string;
   icon: React.ReactNode;
   id?: string;
+  /** The row's tooltip — the sentence the rail's badge would carry, for a
+      state that has words but no mark (the Bots row's "1 error"). */
+  title?: string;
   /** A mark ON the icon (the Settings row's resident-model dot). */
   extra?: React.ReactNode;
   /** Content AFTER the label, pushed to the row's trailing edge — where a count
@@ -166,6 +170,7 @@ export function NavItem({
     <a
       href={href}
       id={id}
+      title={title || undefined}
       className={"sidebar-item" + ((active ?? location.pathname === href) ? " active" : "")}
       onClick={(e) => {
         e.preventDefault();
