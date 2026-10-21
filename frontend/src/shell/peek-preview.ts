@@ -342,6 +342,10 @@ const asking = new Map<string, Promise<boolean>>();
 // answer that is not the newest never writes its snapshot — it drops the
 // cache and re-reads, which is always current.
 let ensureGen = 0;
+// The generation whose snapshot the cache currently holds (0 = none): a
+// stale answer that waited its turn must not throw away a table a NEWER
+// answer adopted meanwhile.
+let adoptedGen = 0;
 
 /** Ask the desk to adopt `project`'s app if it is one and missing. Resolves to
  *  true when the table changed (and has been replaced + announced). */
@@ -358,6 +362,7 @@ export function ensureAppFor(project: string): Promise<boolean> {
       announceCurrentAppsChanged();
       if (added && apps && gen === ensureGen) {
         appsCache = currentApps(apps, []);
+        adoptedGen = gen;
         return true;
       }
       // ON THE DESK ALREADY, yet this table had no app for the project: the
@@ -367,6 +372,10 @@ export function ensureAppFor(project: string): Promise<boolean> {
       // already in flight has settled, or `ensureApps` would hand back that
       // older read as the fresh one (CodeRabbit on #1830).
       return (appsInFlight ?? Promise.resolve()).then(() => {
+        // A newer answer adopted its table during the wait: that table is
+        // the current one; clearing it would only risk an empty cache if
+        // the re-read failed.
+        if (adoptedGen > gen) return true;
         appsCache = null;
         return ensureApps().then(() => true);
       });
@@ -417,6 +426,7 @@ export function resetPeekPreviewForTests(): void {
   appsInFlight = null;
   asking.clear();
   ensureGen = 0;
+  adoptedGen = 0;
   draggedHeight = null;
   listeners.clear();
 }
