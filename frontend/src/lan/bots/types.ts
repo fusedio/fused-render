@@ -64,6 +64,9 @@ export interface BotEvent {
   options?: string[];
   /** Several options may be ticked; the answer is "A, B" (or "None"). */
   multi?: boolean;
+  /** approval: the model's read of the call; both absent when the assessment failed. */
+  severity?: "low" | "medium" | "high";
+  risk_summary?: string;
   offer?: Offer;
   app?: AppRef;
   reply?: ReplyRef;

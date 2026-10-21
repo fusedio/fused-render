@@ -29,6 +29,7 @@ import {
   multiPicked,
   oneLine,
   optionKey,
+  severityLabel,
   type Item,
 } from "./lib";
 import type { BotDetail, BotEvent } from "./types";
@@ -286,6 +287,7 @@ const Row = memo(function Row({ item, answer, live, held, onReply, onVerdict, on
 
   if (e.role === "approval") {
     const verdict = approvalVerdict(answer?.text);
+    const risk = severityLabel(e.severity);
     return (
       <div className="flex flex-col gap-1 pt-1">
         <div
@@ -300,7 +302,24 @@ const Row = memo(function Row({ item, answer, live, held, onReply, onVerdict, on
             <ShieldAlertIcon className="size-4" />
             {live ? "Needs your OK" : "Asked for approval"}
           </div>
-          <div className="text-[16px] leading-[1.4] break-words whitespace-pre-wrap">{e.text}</div>
+          {risk ? (
+            <div className="mb-1.5 flex flex-col items-start gap-1">
+              <span
+                className={cn(
+                  "m-0 rounded-full border px-2.5 py-0.5 text-[12px] font-semibold",
+                  e.severity === "high"
+                    ? "border-[color-mix(in_srgb,var(--error)_45%,transparent)] bg-[color-mix(in_srgb,var(--error)_14%,transparent)] text-[var(--error)]"
+                    : e.severity === "medium"
+                      ? "border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[color-mix(in_srgb,var(--warning)_14%,transparent)] text-[var(--warning)]"
+                      : "border-[color-mix(in_srgb,var(--success)_45%,transparent)] bg-[color-mix(in_srgb,var(--success)_14%,transparent)] text-[var(--success)]",
+                )}
+              >
+                {risk}
+              </span>
+              {e.risk_summary ? <div className="m-0 text-[16px] leading-[1.4]">{e.risk_summary}</div> : null}
+            </div>
+          ) : null}
+          <div className={cn("break-words whitespace-pre-wrap", risk && e.risk_summary ? "text-[13px] leading-[1.35] text-[var(--fg-muted)]" : "text-[16px] leading-[1.4]")}>{e.text}</div>
           {live ? (
             <div className="mt-3 flex gap-2">
               <Button variant="accent" className="h-11 flex-1 rounded-xl text-[15px]" onClick={() => onVerdict(e.seq, true)}>

@@ -309,3 +309,8 @@ export function localInputToEpoch(v: string): number {
   const t = new Date(v).getTime();
   return Number.isFinite(t) ? Math.floor(t / 1000) : NaN;
 }
+
+/** "Low risk" / "Medium risk" / "High risk" for an approval card's `severity`, or null (absent or unknown). */
+export function severityLabel(sev: unknown): string | null {
+  return sev === "low" ? "Low risk" : sev === "medium" ? "Medium risk" : sev === "high" ? "High risk" : null;
+}
