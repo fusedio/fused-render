@@ -3175,10 +3175,11 @@ def _commit_turn(file: str, message: str) -> None:
         return
 
     identity = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
+    safe = []
 
     def git(*args):
         return subprocess.run(
-            [git_bin, "-C", repo_dir, *identity, *args],
+            [git_bin, "-C", repo_dir, *safe, *identity, *args],
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
 
@@ -3202,6 +3203,10 @@ def _commit_turn(file: str, message: str) -> None:
             return r.stdout.strip() if r.returncode == 0 else ""
         if repo_dir == app_dir and local("fused.kind") == "github":
             trailer = "\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+            # Someone else's app: its `.git/config` and hooks are the side the
+            # app can write — no fsmonitor command, no hooks (§16.12). An own
+            # app keeps its author's hooks. Mirrors app_git._SAFE.
+            safe = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"]
             if local("user.name") and local("user.email"):
                 identity = []
     except Exception:

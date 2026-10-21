@@ -126,12 +126,12 @@ def _merge_job(root):
 
 def _job_open(root) -> bool:
     job = _merge_job(root)
-    return bool(job) and job.get("status") in ("running", "ready", "landing")
+    return bool(job) and job.get("status") in ("running", "ready", "landing", "choice")
 
 
 def _discard_job(root) -> None:
     job = _merge_job(root)
-    if job and job.get("id") and job.get("status") in ("running", "ready"):
+    if job and job.get("id") and job.get("status") in ("running", "ready", "choice"):
         try:
             from fused_render.contrib import merge_job
 

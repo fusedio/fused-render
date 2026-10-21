@@ -958,8 +958,10 @@ def _contrib_git_row(app_dir: str) -> dict | None:
     else:
         own = rec.get("own_state")
         own = own.get("state") if isinstance(own, dict) else own
-        if classify.is_held(root):
-            state, detail = FAIL, _HELD_DETAIL
+        hold = rec.get("hold") if classify.is_held(root) else None
+        if hold:
+            unknown = isinstance(hold, dict) and hold.get("why") == "unknown"
+            state, detail = FAIL, _OWN_STATE_DETAIL["unknown"] if unknown else _HELD_DETAIL
         elif own in _OWN_STATE_DETAIL:
             state, detail = FAIL, _OWN_STATE_DETAIL[own]
         else:

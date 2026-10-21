@@ -83,7 +83,7 @@ ORPHAN_TTL_S = 30 * 24 * 3600
 #: The record fields `adopt` carries to a new folder.
 ADOPT_KEEP = ("kind", "repo", "branch", "remix_of", "proposal", "classified_by",
               "classified_at", "owner_checked", "root_commit", "copy_id", "last_head",
-              "seen_tips")
+              "seen_tips", "hold")
 
 #: How long a binding answer is trusted for an unchanged folder (its memo
 #: key already changes on a re-clone; this only bounds a stale object DB).

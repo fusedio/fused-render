@@ -88,7 +88,7 @@ _lock = threading.Lock()
 _jobs: dict = {}
 # A job is OPEN from start until it is accepted, discarded or failed —
 # "landing" included: a second merge must never start while one lands.
-_OPEN = ("running", "ready", "landing")
+_OPEN = ("running", "ready", "landing", "choice")
 _swept = False
 
 
@@ -244,11 +244,11 @@ def _prune_locked(now: float) -> list:
         ended = job["ended_at"] or job["started_at"]
         if now - ended < EXPIRE_S:
             continue
-        if job["status"] == "ready":
+        if job["status"] in ("ready", "choice"):
             job["status"] = "discarded"
             dead.append(job["worktree"])
             job["worktree"] = None
-        if job["status"] in ("failed", "choice", "accepted", "discarded"):
+        if job["status"] in ("failed", "accepted", "discarded"):
             del _jobs[jid]
     return dead
 
@@ -325,11 +325,30 @@ def start(app_dir: str, *, purpose: str, ours: str | None = None, theirs: str | 
                "new_tip": None, "worktree": None,
                "status": "running", "summary": "", "files": [], "error": None,
                "started_at": time.time(), "ended_at": None,
-               "cancel": False}
+               "cancel": False, "choices": [], "chose": None, "resolver": None,
+               "expected_tree": None, "conflicted": set()}
         _jobs[job_id] = job
-    threading.Thread(target=_run, args=(job, resolver or claude_resolver),
+    job["resolver"] = resolver or claude_resolver
+    threading.Thread(target=_run, args=(job, job["resolver"]),
                      daemon=True, name="contrib-merge-job").start()
     return job_id
+
+
+def choose(job_id: str, side: str) -> dict:
+    """The person's answer to a "choice" job: `side` "mine" keeps our side
+    of every choice path (a removal stays removed, our binary stays),
+    "theirs" takes theirs. Only those paths; the same job then goes on —
+    text overlaps to Claude as usual, none left → ready. `{ok, message?}`."""
+    if side not in ("mine", "theirs"):
+        raise ValueError(f"unknown side {side!r}")
+    with _lock:
+        job = _jobs.get(job_id)
+        if job is None or job["status"] != "choice" or not job["worktree"]:
+            return {"ok": False, "message": "This merge is no longer waiting for you."}
+        job["status"], job["chose"], job["error"] = "running", side, None
+    threading.Thread(target=_run, args=(job, job["resolver"], side),
+                     daemon=True, name="contrib-merge-job").start()
+    return {"ok": True}
 
 
 def get(job_id: str) -> dict | None:
@@ -359,7 +378,7 @@ def current(app_dir: str, purpose=None) -> dict | None:
     live = [j for j in mine if j["status"] in _OPEN]
     if live:
         return _public(live[-1])
-    failed = sorted((j for j in mine if j["status"] in ("failed", "choice")),
+    failed = sorted((j for j in mine if j["status"] == "failed"),
                     key=lambda j: j["started_at"])
     if failed and _still_needed(root, failed[-1]["purpose"]):
         return _public(failed[-1])
@@ -398,13 +417,18 @@ def _finish(job: dict, status: str, *, error: str | None = None) -> None:
         job["ended_at"] = time.time()
 
 
-def _run(job: dict, resolver) -> None:
+def _run(job: dict, resolver, side: str | None = None) -> None:
     try:
-        _run_inner(job, resolver)
+        if side is None:
+            _run_inner(job, resolver)
+        elif _apply_choice(job, side):
+            _resolve(job, resolver)
+        else:
+            _finish(job, "failed", error=FAILED_MESSAGE)
     except Exception:  # noqa: BLE001 — a job never takes the thread down silently
         logger.exception("merge job %s crashed", job["id"])
         _finish(job, "failed", error=FAILED_MESSAGE)
-    if job["status"] in ("failed", "choice", "discarded"):
+    if job["status"] in ("failed", "discarded"):
         wt, job["worktree"] = job["worktree"], None
         _cleanup(wt)
 
@@ -474,26 +498,65 @@ def _run_inner(job: dict, resolver) -> None:
         _finish(job, "failed", error=FAILED_MESSAGE)
         return
 
+    job["expected_tree"], job["conflicted"] = expected_tree, conflicted
     # Only text overlaps with markers go to Claude. A file removed on one
-    # side and changed on the other, or changed on both sides but not line
-    # by line (binary), has nothing to combine — and doing nothing would
-    # pass every check below while silently picking a side. That is the
-    # person's choice (Keep mine / Use theirs for the whole update).
+    # side and changed on the other, changed on both sides but not line by
+    # line (binary), or under a folder that is a link — has nothing Claude
+    # could combine, and doing nothing would pass every check below while
+    # silently picking a side. The job stops at "choice" (its worktree
+    # kept) until the person picks a side for those files (`choose`).
     choice = _choices(wt, job)
     if choice:
         with _lock:
+            job["choices"] = choice
             job["files"] = [p for p, _why in choice]
         _finish(job, "choice", error=" ".join(why for _p, why in choice[:3]))
         return
+    _resolve(job, resolver)
 
+
+def _apply_choice(job: dict, side: str) -> bool:
+    """Resolve every choice path in the job's worktree to `side`'s version
+    ("mine" = ours, stage 2; "theirs" = stage 3); a side with no version
+    of the path removes it. Git does it (never writes through a link)."""
+    wt, stage = job["worktree"], "--ours" if side == "mine" else "--theirs"
+    for path, _why in job["choices"]:
+        have = _stages(wt).get(path, set())
+        if (("2" if side == "mine" else "3") in have):
+            ok = _ok(_git(wt, "checkout", stage, "--", path)) \
+                and _ok(_git(wt, "add", "--", path))
+        else:
+            ok = _ok(_git(wt, "rm", "-q", "--ignore-unmatch", "--", path))
+        if not ok:
+            logger.warning("merge job %s: could not take %s's side of %s", job["id"], side, path)
+            return False
+    return True
+
+
+def _resolve(job: dict, resolver) -> None:
+    """The text overlaps (Claude, round by round), the merge commit, the
+    server's checks, ready."""
+    root, wt = job["root"], job["worktree"]
+    deadline = job["started_at"] + MAX_SECONDS
+    message = _message(job)
+    commit_args = _commit_args(root, job["identity"])
+    expected_tree, conflicted = job["expected_tree"], job["conflicted"]
+    chosen = [p for p, _why in job["choices"]] if job["chose"] else []
     summaries, touched = [], []
     for _round in range(MAX_ROUNDS):
         if job["cancel"]:
             return
         if not _merging(wt):
             break  # the resolver finished the merge itself; checked below
-        files = _unmerged(wt) or [f for f in sorted(conflicted) if _has_markers(wt, f)]
+        files = _unmerged(wt) or [f for f in sorted(conflicted)
+                                  if f not in chosen and _has_markers(wt, f)]
         if not files:
+            res = _git(wt, *commit_args, "commit", "-q", "--no-verify", "-m", message,
+                       env=_NO_EDITOR)
+            if not _ok(res):
+                _log_git("merge commit", res)
+                _finish(job, "failed", error=FAILED_MESSAGE)
+                return
             break
         if time.time() >= deadline:
             _finish(job, "failed", error=FAILED_MESSAGE)
@@ -536,14 +599,33 @@ def _run_inner(job: dict, resolver) -> None:
         return
 
     new_tip = _out(_git(wt, "rev-parse", "HEAD"))
-    if not new_tip or not _result_sound(job, new_tip, expected_tree, conflicted | set(touched)):
+    if not new_tip or not _result_sound(job, new_tip, expected_tree,
+                                        conflicted | set(touched) | set(chosen)):
         _finish(job, "failed", error=FAILED_MESSAGE)
         return
     job["new_tip"] = new_tip
-    job["files"] = touched
-    job["summary"] = _combine_summaries(summaries) or (
-        "Claude combined both versions of " + _file_words(touched) + ".")
+    job["files"] = touched + [p for p in chosen if p not in touched]
+    parts = []
+    if chosen:
+        sides = job["sides"] or _sides(root, job["purpose"])
+        kept = sides["first"] if job["chose"] == "mine" else sides["second"]
+        parts.append(f"For {_file_words(chosen)}, kept {kept}.")
+    if touched:
+        parts.append(_combine_summaries(summaries) or (
+            "Claude combined both versions of " + _file_words(touched) + "."))
+    job["summary"] = " ".join(parts) or CLEAN_MERGE_SUMMARY
     _finish(job, "ready")
+
+
+def _stages(wt: str) -> dict:
+    """`{unmerged path: {"1", "2", "3"} stages present}`."""
+    res = _git(wt, "ls-files", "-u", "-z")
+    stages: dict = {}
+    for item in (res[1].split("\0") if _ok(res) else []):
+        meta, _, path = item.partition("\t")
+        if path and meta.split()[-1:]:
+            stages.setdefault(path, set()).add(meta.split()[-1])
+    return stages
 
 
 def _choices(wt: str, job: dict) -> list:
@@ -551,15 +633,9 @@ def _choices(wt: str, job: dict) -> list:
     one side has no version of it (removed, or renamed away), or there are
     no markers to resolve (a binary file). Empty when every overlap is a
     text one."""
-    res = _git(wt, "ls-files", "-u", "-z")
-    stages: dict = {}
-    for item in (res[1].split("\0") if _ok(res) else []):
-        meta, _, path = item.partition("\t")
-        if path and meta.split()[-1:]:
-            stages.setdefault(path, set()).add(meta.split()[-1])
     sides = job["sides"] or _sides(job["root"], job["purpose"])
     out = []
-    for path, have in sorted(stages.items()):
+    for path, have in sorted(_stages(wt).items()):
         name = _plain_name(os.path.basename(path))
         if "2" not in have:
             out.append((path, f"{name} was removed in {sides['first']} and changed in "
@@ -567,7 +643,10 @@ def _choices(wt: str, job: dict) -> list:
         elif "3" not in have:
             out.append((path, f"{name} was changed in {sides['first']} and removed in "
                               f"{sides['second']}."))
-        elif not _has_markers(wt, path) or not os.path.isfile(os.path.join(wt, path)):
+        elif not _plain_file_inside(wt, path):
+            out.append((path, f"{name} sits under a linked folder, so it can't be "
+                              "combined here."))
+        elif not _has_markers(wt, path):
             out.append((path, f"{name} was changed in both versions in a way that can't be "
                               "combined line by line."))
     return out

@@ -986,6 +986,40 @@ def test_an_own_copys_auto_push_still_runs_its_authors_hooks(world):
     assert _remote_main(world) == before
 
 
+def test_commits_in_a_github_copy_never_run_its_fsmonitor_or_hooks(world, monkeypatch):
+    """rev-sec r2: a GitHub-link copy's `.git/config` is the side its app
+    (or a Claude session in it) can write. A planted `core.fsmonitor`
+    command and a pre-commit hook must not run when fused commits there —
+    app_git or the Claude-turn sweep. (An own copy keeps its author's.)"""
+    import importlib.util
+
+    from fused_render.claude_agent import AGENT_PATH
+
+    bob = _install(world)
+    marker = str(world.tmp / "ran.txt")
+    script = str(world.tmp / "evil.sh")
+    with open(script, "w") as f:
+        f.write(f"#!/bin/sh\necho ran >> {marker}\nexit 1\n")
+    os.chmod(script, 0o755)
+    git(bob, "config", "core.fsmonitor", script)
+    hook = os.path.join(bob, ".git", "hooks", "pre-commit")
+    with open(hook, "w") as f:
+        f.write(f"#!/bin/sh\necho hook >> {marker}\nexit 1\n")
+    os.chmod(hook, 0o755)
+    monkeypatch.setattr(git_upstream, "schedule_sync", lambda *a, **k: None)
+    write(bob, "index.html", "<p>bob</p>\n")
+    assert app_git.commit(os.path.join(bob, "index.html"), "Edit")
+    monkeypatch.setenv("FUSED_RENDER_WORKSPACE_DIR", str(world.ws))
+    spec = importlib.util.spec_from_file_location("test_contrib_agent_safe", AGENT_PATH)
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+    monkeypatch.setattr(agent, "_request_sync", lambda app_dir: None)
+    write(bob, "index.html", "<p>by claude</p>\n")
+    agent._commit_turn(os.path.join(bob, "index.html"), "tweak")
+    assert git(bob, "log", "-1", "--format=%s").strip() == "Claude: tweak"
+    assert not os.path.exists(marker)
+
+
 def test_sign_in_upgrade_with_flags_off_is_their_repo_auto_pushing(world, monkeypatch):
     """Round 2 R7: with A1 off there is no Publish now anywhere — the
     upgrade holds nothing; it is their repo and auto-pushes as today."""
