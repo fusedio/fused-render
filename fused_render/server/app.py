@@ -31,8 +31,10 @@ from fused_render import health
 from fused_render.canvases import router as canvases_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.home_layout import router as home_layout_router
+from fused_render.shell.notifications import router as notifications_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
+from fused_render.shell.ui_layout import router as ui_layout_router
 
 from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
 from fused_render.server.common import (
@@ -48,7 +50,9 @@ from fused_render.server.routers.background_apps import router as background_app
 from fused_render.server.routers.claude_agent import router as claude_agent_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
+from fused_render.server.routers.agent_backends import router as agent_backends_router
 from fused_render.server.routers.claude_health import router as claude_health_router
+from fused_render.server.routers.copilot_health import router as copilot_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.marketplace import router as marketplace_router
@@ -68,7 +72,9 @@ from fused_render.server.routers.git_upstream import router as git_upstream_rout
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
+from fused_render.server import serverstats
 from fused_render.server.routers.system import router as system_router
+from fused_render.server.routers.system_net import router as system_net_router
 from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
@@ -129,6 +135,9 @@ def export_app_env() -> None:
     per-branch nesting (``FUSED_RENDER_BRANCH``) — so no consumer re-implements
     those rules. Called from the same place as ``set_server_origin_env``, i.e.
     before the server starts serving, so every child process inherits them.
+
+    Also starts the one-shot login-shell PATH probe (login_path.py), so a
+    Finder-launched app's children see fnm/nvm/volta tools too.
     """
     from fused_render import canvases
     from fused_render import skill_plugin
@@ -163,8 +172,13 @@ def export_app_env() -> None:
     # target a canvas clone?" (appenv.canvases_root) the same way the server
     # does — re-deriving it there would drift the instant either side changes,
     # and a wrong answer silently withholds the workbench skills from the one
-    # session shape that needs them.
-    os.environ["FUSED_RENDER_CANVASES_DIR"] = canvases.canvases_root()
+    # session shape that needs them. The env-independent BASE
+    # (`~/Fused/canvas`), never one `canvases_root(env)`: clones of BOTH
+    # environments sync at once and a session in either needs the skills,
+    # and `canvases_base()` reads this very var first — exporting one env's
+    # folder would nest every root under it (`<env>/<env>/<name>`).
+    os.environ["FUSED_RENDER_CANVASES_DIR"] = canvases.canvases_base()
+    canvases.log_url_override_without_pin()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
     # script under home_dir()/fused-bin goes on PATH and its dir is published
     # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
@@ -173,6 +187,11 @@ def export_app_env() -> None:
     from fused_render import fusedcli
     fusedcli.export_fused_cli_env()
     _export_bundled_uv_path()
+    # MUST stay last: every PATH writer above is a synchronous read-modify-write
+    # of os.environ["PATH"], and the probe's background thread does the same.
+    # Started earlier, it could overwrite a prepend made after it began.
+    from fused_render import login_path
+    login_path.start()
 
 
 def _server_json_path() -> str:
@@ -357,6 +376,11 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
                 logger.info("startup: %s took %.1fs", name, took)
         logger.info("startup: %d handler(s) in %.1fs",
                     len(startup_handlers), time.monotonic() - t_all)
+        # "Every startup handler finished" — what work deferred past the
+        # boot (the low-impact startup index scan) waits on.
+        done = getattr(getattr(app, "state", None), "startup_done", None)
+        if done is not None:
+            done.set()
         try:
             yield
         finally:
@@ -486,6 +510,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # the exact sequence against what `on_event` produced.
     app.state.startup_handlers = startup_handlers
     app.state.shutdown_handlers = shutdown_handlers
+    app.state.startup_done = threading.Event()
     app.state.start_dir = start_dir
 
     @on_startup_full
@@ -548,8 +573,43 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     @on_startup
     async def _startup_sync_user_plugin():
         from fused_render import user_plugin
+        from fused_render.agent_backends import registry
 
+        # It spawns `claude plugin install/update`: with Claude switched off
+        # in Preferences (D17) nothing of Claude's is started at all.
+        if not registry.is_enabled("claude"):
+            return
         user_plugin.start()
+
+    # Fused Web's `~/Fused/canvas` folder, if it already exists at startup, also
+    # gets the workbench skills fetch kicked — `canvases._kick_workbench_skills`,
+    # the SAME best-effort, off-thread, lock-guarded, never-raising call the
+    # canvases page's /clone route and its watcher already make. Without this,
+    # a Fused Web-only user whose `~/Fused/canvas` predates this server start
+    # would have no clone on disk until their FIRST task after a restart
+    # happened to land here via `api_task_create`'s own kick (routers/tasks.py)
+    # — one request paying for a cold clone instead of finding it ready. This
+    # handler only ever shortens that wait; `api_task_create` still covers a
+    # `~/Fused/canvas` folder CREATED after this ran.
+    #
+    # Filesystem check only (an `isdir`), same discipline as
+    # `export_workbench_plugin_env` above: this runs on the pre-bind path, so
+    # the git clone itself must stay off it — `_kick_workbench_skills` already
+    # hands that to its own daemon thread, so this handler returns at once
+    # either way and never delays the socket bind. Never kicks for a machine
+    # with no `~/Fused/canvas` at all: this must stay scoped to Fused Web's
+    # folder, not a general warm-up for every machine.
+    @on_startup
+    async def _startup_kick_fused_web_workbench_skills():
+        from fused_render import canvases
+        from fused_render.skill_plugin import fused_web_canvas_root
+
+        try:
+            if os.path.isdir(fused_web_canvas_root()):
+                canvases._kick_workbench_skills()
+        except Exception:  # noqa: BLE001 — never worth delaying/failing startup
+            logger.warning("could not kick the workbench skills fetch for "
+                           "~/Fused/canvas", exc_info=True)
 
     # The project queue's dispatcher (queue_manager.py), wired EXPLICITLY.
     #
@@ -713,6 +773,21 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _shutdown_server_json():
         remove_server_json()
 
+    # Event-loop lag gauge (serverstats.py) for the Monitor's Overview: a task
+    # on the serving loop, cancelled at shutdown. Skipped in `lean` like the
+    # other background gauges: a lean server has no Monitor to read it.
+    @on_startup_full
+    async def _startup_loop_lag():
+        from fused_render.server import dashboard
+        lag = serverstats.loop_lag()
+        if dashboard.record_loop_state not in lag.on_tick:
+            lag.on_tick.append(dashboard.record_loop_state)
+        lag.start()
+
+    @on_shutdown
+    async def _shutdown_loop_lag():
+        await serverstats.loop_lag().stop()
+
     # Resource trail (health.py, SPEC §50): one RSS/swap/load line per INTERVAL_S
     # into resources.jsonl, so a diagnostics bundle shows what memory looked
     # like in the hours before an outage. Its own daemon thread; a failure to
@@ -830,6 +905,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # prefs, recents), kept out of this module's fs/render internals.
     app.include_router(bookmarks_router)
     app.include_router(home_layout_router)
+    # The shell's durable layout and the Notifications panel's memory (D1386):
+    # moved off localStorage, which the desktop app's port walk resets.
+    app.include_router(ui_layout_router)
+    app.include_router(notifications_router)
     app.include_router(prefs_router)
     # Local-network sharing (lan.py): the desktop's pairing + device routes.
     # Loopback only in effect — the LAN wrapper's allowlist never forwards them.
@@ -894,6 +973,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Live CPU/memory of fused-render's own processes (routers/system.py,
     # fused_render/sysmon): the status bar's System chip and the /monitor page.
     app.include_router(system_router)
+    app.include_router(system_net_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
@@ -1020,6 +1100,14 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # warm_in_background), never from here — importing the server in a test must
     # not spawn the user's login shell.
     app.include_router(claude_health_router)
+    # The Copilot twin (routers/copilot_health.py): /api/copilot/{health,
+    # health/refresh, install, login, login/cancel}, same snapshot keys, same
+    # entry-point warm-up rule.
+    app.include_router(copilot_health_router)
+    # The agent catalog (routers/agent_backends.py): which agents exist, which
+    # are on, and each one's models/efforts/modes/caps — the one list every
+    # picker reads (docs/COPILOT_BACKEND.md D11). Read-only, no auth guard.
+    app.include_router(agent_backends_router)
     # Is the GitHub CLI usable at all (routers/github.py): found / version /
     # signed-in, so "Publish to GitHub" can be TOLD up front rather than left
     # to discover it by failing — same doctrine as claude_health just above.
@@ -1196,6 +1284,17 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         if not extras.available("index"):
             return
+        from fused_render.shell.prefs import index_low_impact_enabled
+
+        if index_low_impact_enabled():
+            # Low-impact indexing: nothing index-shaped on the boot path. A
+            # daemon thread waits for every startup handler to finish, plus a
+            # grace period, then prunes, scans and warms — owner or not (the
+            # store is per branch; only the watcher is owner-gated).
+            index_routes.start_deferred_startup_scan(
+                start_dir, app.state.startup_done)
+            index_routes.start_index_job_bridge()
+            return
         await index_routes.startup_scan(start_dir)
         # ...and warm the corpus path the explorer's home search reads, on a
         # detached thread, so the gitignore sweep and the duckdb import are
@@ -1224,12 +1323,25 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         if not extras.available("index"):
             return
+        from fused_render.shell.prefs import index_low_impact_enabled
+
+        if index_low_impact_enabled():
+            # Low-impact indexing: one watcher per Mac. The owner lease
+            # (server/index_owner.py) starts this process's watcher only
+            # while it holds the lease, and stops it on handover.
+            from fused_render.server import index_owner
+
+            index_owner.ensure_owner_waiter(on_acquire=index_watch.start,
+                                            on_release=index_watch.stop)
+            return
         index_watch.start()
 
     @on_shutdown
     async def _shutdown_index_watch():
-        from fused_render.server import index_watch
+        from fused_render.server import index_owner, index_watch
 
+        index_routes.stop_deferred_startup_scan()
+        index_owner.stop_waiter()
         index_watch.stop()
 
     # THE IN-APP UPDATE MANAGER (update/mac.py, update/linux.py), for every

@@ -37,6 +37,7 @@ import { paneChatUrl, taskPane } from "./list-rows";
 import { SCHEDULE_URL } from "../sched/scheduled";
 import { noteQueueClaim, reloadRecentTasks, seedSessionTask } from "./useRecentTasks";
 import { Snapshots } from "./Snapshots";
+import { useAgent } from "./agent-context";
 import type { SnapshotsState } from "./useSnapshots";
 
 /** T:4269-4283 — the bar's labels, and each section's own heading. */
@@ -156,11 +157,15 @@ export function Lists({
           ? timeline.versions.length
           : 0;
 
+  // SNAPSHOTS ARE CLAUDE'S (docs/COPILOT_BACKEND.md §7 `snapshots`): an agent
+  // whose caps say none gets no tab and no list — counted as empty, which is
+  // how a list stays off the tab bar.
+  const snapsOn = useAgent().caps.snapshots;
   const counts: ListCounts = {
     recent: recent === null ? null : recent.length,
     artifacts: artifacts === null ? null : artifacts.length,
-    snaps: snapCount,
-    snapsFailed,
+    snaps: snapsOn ? snapCount : 0,
+    snapsFailed: snapsOn && snapsFailed,
   };
   const view = computeLists(counts, tab);
 
@@ -400,7 +405,7 @@ export function Lists({
       </div>
     ),
     snaps:
-      file && snaps && timeline !== undefined ? (
+      file && snaps && snapsOn && timeline !== undefined ? (
         <Snapshots
           file={file}
           timeline={timeline}

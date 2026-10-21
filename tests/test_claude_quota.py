@@ -9,6 +9,7 @@ row's translation into `quota`, the one field the comeback is scheduled on.
 """
 import importlib.util
 import json
+import time
 import os
 
 import pytest
@@ -146,12 +147,15 @@ def test_history_carries_the_transcripts_quota_on_the_error_turn(agent, tmp_path
     monkeypatch.setattr(agent, "PROJECTS", str(projects))
     pdir = projects / agent._munge(agent._workdir(str(file)))
     pdir.mkdir(parents=True)
+    reset = int(time.time()) + 3600
     rows = [
         {"type": "user", "uuid": "u1",
          "message": {"role": "user", "content": "go"}},
         {"type": "assistant", "uuid": "a1", "isApiErrorMessage": True,
          "apiErrorStatus": 429, "error": "rate_limit",
-         "quotaLimits": {"status": "rejected", "resetsAt": 1789066800,
+         # In the future: a reset that has PASSED is dropped from history
+         # (`_drop_stale_limit_errors`), and this test is about the copy.
+         "quotaLimits": {"status": "rejected", "resetsAt": reset,
                          "rateLimitType": "five_hour"},
          "message": {"role": "assistant", "content": [
              {"type": "text",
@@ -163,5 +167,5 @@ def test_history_carries_the_transcripts_quota_on_the_error_turn(agent, tmp_path
     err = [t for t in data["turns"] if t["role"] == "error"]
     assert len(err) == 1
     assert err[0]["quota"]["status"] == "rejected"
-    assert err[0]["quota"]["resets_at"] == 1789066800
+    assert err[0]["quota"]["resets_at"] == reset
     assert err[0]["quota"]["windows"] == {}

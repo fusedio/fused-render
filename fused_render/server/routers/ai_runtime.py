@@ -1479,8 +1479,19 @@ def api_ai_catalog():
             # `capabilities[].models` — every picker maps that list as "things
             # I may download and load", and an apple id has neither action. A
             # client opts in (the Playground does) and draws them its own way.
-            "providers": {"apple": _apple_catalog()},
+            "providers": {"apple": _apple_catalog(), "local": _local_catalog()},
             "ramGb": fit.machine_ram_gb()}
+
+
+def _local_catalog() -> dict:
+    """The `provider: "local"` tier as a whole: `state: "disabled"` on an Intel
+    Mac (`registry.local_ai_disabled`), where every runner refuses with the
+    same reason, else "available". Whole-tier only — whether one capability
+    can run here is its own `capabilities[]` row's `available`/`reason`."""
+    disabled = registry.local_ai_disabled()
+    return {"available": disabled is None,
+            "state": "disabled" if disabled else "available",
+            "reason": disabled}
 
 
 #: What the catalog says about each apple id — the OS owns the weights, so
@@ -1504,7 +1515,10 @@ def _apple_catalog() -> dict:
 
     problem = apple_host.platform_problem()
     if problem:
-        return {"available": False, "state": "unavailable", "reason": problem,
+        # "disabled", not "unavailable", on an Intel Mac: the same switch that
+        # turns every local runner off (`_local_catalog`), not a probe result.
+        state = "disabled" if registry.local_ai_disabled() else "unavailable"
+        return {"available": False, "state": state, "reason": problem,
                 "relevant": False, "os": None, "models": []}
     availability = apple_host.probe()
     models = [

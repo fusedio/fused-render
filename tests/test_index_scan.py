@@ -1022,3 +1022,79 @@ def test_a_cancel_during_the_pool_phase_ends_the_run_cancelled(
     scan_mod.run_scan(run_dir)
     assert _summary(run_dir)["msg"] == "cancelled"
     assert read_manifest(cfg) is None
+
+
+# -- low-impact indexing: the flag arrives through spec.json only -------------
+
+def test_pool_workers_caps_at_four_under_low_impact(tmp_path):
+    from fused_render.index.scan import pool_workers
+
+    assert pool_workers(_cfg(tmp_path, nproc=10)) == 10
+    assert pool_workers(_cfg(tmp_path, nproc=10), low_impact=True) == 4
+    assert pool_workers(_cfg(tmp_path, nproc=2), low_impact=True) == 2
+
+
+@pytest.mark.parametrize("flag,expect", [(None, False), (False, False),
+                                         (True, True), ("yes", False)])
+def test_run_scan_passes_the_spec_low_impact_flag_to_compact(
+        tmp_path, monkeypatch, flag, expect):
+    import fused_render.index.scan as scan_mod
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _tree(src)
+    cfg = _cfg(tmp_path)
+    run_dir = _spec_run_dir(cfg, src, f"li-{flag}")
+    if flag is not None:
+        spec_path = os.path.join(run_dir, "spec.json")
+        spec = json.load(open(spec_path))
+        spec["low_impact"] = flag
+        json.dump(spec, open(spec_path, "w"))
+    seen = []
+    real = scan_mod.compact
+
+    def spy(*a, **kw):
+        seen.append(kw.get("low_impact"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(scan_mod, "compact", spy)
+    run_scan(run_dir)
+    assert _summary(run_dir)["msg"] == "complete"
+    assert seen == [expect]
+
+
+def test_low_impact_pool_is_capped_at_four_workers(tmp_path, monkeypatch):
+    import concurrent.futures as cf
+    import fused_render.index.scan as scan_mod
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _wide_tree(src, n=8 * 24 + 10)  # past the nproc*24 frontier
+    cfg = _cfg(tmp_path, nproc=8)
+    run_dir = _spec_run_dir(cfg, src, "li-pool")
+    spec_path = os.path.join(run_dir, "spec.json")
+    spec = json.load(open(spec_path))
+    spec["low_impact"] = True
+    json.dump(spec, open(spec_path, "w"))
+    seen = {}
+
+    class FakeExecutor:
+        def __init__(self, *a, **k):
+            seen.update(k)
+
+        def submit(self, fn, *a):
+            return cf.Future()  # never resolves
+
+        def shutdown(self, wait=True, cancel_futures=False):
+            pass
+
+    real_wait = cf.wait
+
+    def wait_then_cancel(fs, timeout=None, return_when=cf.ALL_COMPLETED):
+        open(os.path.join(run_dir, "cancel"), "w").close()
+        return real_wait(fs, timeout=0.01, return_when=return_when)
+
+    monkeypatch.setattr(cf, "ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(cf, "wait", wait_then_cancel)
+    scan_mod.run_scan(run_dir)
+    assert seen["max_workers"] == 4

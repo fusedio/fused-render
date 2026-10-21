@@ -896,3 +896,29 @@ def test_two_threads_never_shell_out_to_the_wake_stub_at_once(target, monkeypatc
 
     assert peak, "nothing synced, so this proves nothing"
     assert max(peak) == 1, f"{max(peak)} syncs were inside launchctl at once"
+
+
+def test_plain_one_off_does_not_isolate_mcp_but_strict_entry_and_recurring_do(
+        target, monkeypatch):
+    calls = {}
+
+    def fake_spawn(t, prompt, mode, session_id="", **kw):
+        calls[prompt.split("\n")[-1] if "\n" in prompt else prompt] = kw
+        return {"run_id": f"r-{len(calls)}"}
+
+    monkeypatch.setattr(claude_spawn, "spawn_helper", fake_spawn)
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
+    plain = schedule.create(str(target), "plain-msg", _in(-5))
+    assert "strict_mcp" not in plain
+    lean = schedule.create(str(target), "lean-msg", _in(-5), strict_mcp=True)
+    assert lean["strict_mcp"] is True
+    schedule.tick()
+    assert not any(k in calls["plain-msg"] for k in ("isolate_mcp",))
+    assert calls["lean-msg"]["isolate_mcp"] is True
+
+    calls.clear()
+    template = schedule.create(str(target), "series-msg", repeats="*/5 * * * *")
+    occ = [e for e in schedule.list_entries()
+           if e.get("template_id") == template["id"]][0]
+    schedule.tick(now=schedule.parse_due(occ["due"]) + timedelta(seconds=1))
+    assert calls["series-msg"]["isolate_mcp"] is True

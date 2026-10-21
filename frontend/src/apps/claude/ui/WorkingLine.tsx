@@ -13,7 +13,8 @@ import { cn } from "@platform/lib/utils";
 import type { RunStatus, Working } from "../protocol/controller-api";
 import { explicitModelLabel, taskVerb } from "../protocol/tasks";
 import type { Activity, RetryInfo, TaskRecord } from "../protocol/types";
-import { ClaudeMark } from "./ClaudeMark";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { useAgent } from "./agent-context";
 
 /** T:11803 — the model's turn has no useful noun, so it gets a mood. */
 export const VERBS = [
@@ -35,12 +36,12 @@ const QUIET_SECS = 20;
  *  because 529 and 429 send the user looking in different places: the API is
  *  swamped and waiting helps, versus we are being throttled. Plain words, not
  *  API vocabulary. */
-export function retryVerb(retry: RetryInfo): string {
+export function retryVerb(retry: RetryInfo, agent = "Claude"): string {
   const what =
     retry.status === 429
-      ? "Claude is busy"
+      ? `${agent} is busy`
       : retry.status === 529
-        ? "Claude's servers are busy"
+        ? `${agent}'s servers are busy`
         : "Connection problem";
   const budget = retry.max_retries ? "/" + retry.max_retries : "";
   return what + " — retrying (" + retry.attempt + budget + ")";
@@ -56,7 +57,7 @@ export interface VerbStats {
 
 /** T:14806-14846 — the verb for a run this page owns, from the poll's phase and
  *  `activity`. `quietSecs` is how long the poll has reported nothing new. */
-export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: number): string {
+export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: number, agent = "Claude"): string {
   const act = stats.activity;
   if (act?.hook) return "Running project setup";
   if (stats.phase === "tooling") {
@@ -107,10 +108,10 @@ export function activityVerb(stats: VerbStats, thinkVerb: string, quietSecs: num
   if (quietSecs >= QUIET_SECS) {
     return act?.tasks?.length
       ? "Waiting for a background command to finish"
-      : "Claude is taking longer than usual";
+      : `${agent} is taking longer than usual`;
   }
-  if (stats.phase === "requesting") return "Sending to Claude";
-  if (stats.phase === "composing") return "Claude is replying";
+  if (stats.phase === "requesting") return `Sending to ${agent}`;
+  if (stats.phase === "composing") return `${agent} is replying`;
   // BACKGROUND WORK THE REGISTRY CAN NAME (SPEC T-5): agents, then monitors,
   // then shells — a truer verb than a mood, but only in the mood's place: while
   // the model is streaming, what it is doing right now is the news.
@@ -137,6 +138,7 @@ export interface WorkingLineProps {
 }
 
 export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: WorkingLineProps) {
+  const agent = useAgent();
   // One mood per line, drawn when it appears rather than per second.
   const thinkVerb = useRef(VERBS[Math.floor(Math.random() * VERBS.length)]);
   // When the poll last told us something NEW. The stream rows carry no clock,
@@ -179,7 +181,10 @@ export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: 
   const stopping = status === "stopping";
   // A run owned by another tab or host: no process here to kill, and a "stop"
   // that quietly did nothing would be the worst control on the page (D415).
-  const fixedVerb = working.external ? "Running outside this app" : "";
+  // …except the card watch's own line (`Working.cardWait`: a reply ended with
+  // a background task still running, and that task's card is open): external,
+  // so no Stop, but the line says what it is actually waiting for.
+  const fixedVerb = working.external && !working.cardWait ? "Running outside this app" : "";
   const stoppable = !working.external;
   const secs = Math.round((now() - working.startedAt) / 1000);
   const quiet = Math.round((now() - lastChange.current) / 1000);
@@ -193,10 +198,10 @@ export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: 
         : // A live retry outranks every phase but the user's own stop: it is the
           // only one of these that explains why nothing is happening.
           working.retry
-          ? retryVerb(working.retry)
+          ? retryVerb(working.retry, agent.label)
           : working.phase === "awaiting"
             ? "Waiting for your approval"
-            : activityVerb(stats, thinkVerb.current, quiet)) + "…";
+            : activityVerb(stats, thinkVerb.current, quiet, agent.label)) + "…";
 
   const parts = [secs + "s"];
   const detail = stopping || fixedVerb ? "" : activityDetail(stats);
@@ -210,7 +215,7 @@ export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: 
       {/* The pulsing spark is the Claude mark now, not a `✻` (#5/#15) — the
           same shape the assistant avatar and the header draw. */}
       <span className="star" aria-hidden="true">
-        <ClaudeMark size={0.9} />
+        <AgentMark backend={agent.backend} size={0.9} />
       </span>
       <span className="verb">{verb}</span>
       <span className="meta">{" (" + parts.join(" · ") + ")"}</span>

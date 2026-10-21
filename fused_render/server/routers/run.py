@@ -17,6 +17,7 @@ from urllib.parse import unquote
 
 from fastapi import APIRouter, Body, Header, Request, Response, WebSocket, WebSocketDisconnect
 
+from fused_render import netlog
 from fused_render import calls as shell_calls
 from fused_render import jobs as shell_jobs
 from fused_render.server.common import _require_fused, resolve_py, ws_origin_ok
@@ -141,6 +142,7 @@ _WS_ROUTE = "/api/run"
 
 
 @router.websocket("/api/run/ws")
+@netlog.tracked_ws("run")
 async def api_run_ws(ws: WebSocket):
     # Cross-site WebSocket hijacking guard. The POST's X-Fused header works
     # only because it forces a CORS preflight a foreign page fails; a socket

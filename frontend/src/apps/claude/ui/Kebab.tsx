@@ -34,17 +34,20 @@ import {
   type Task,
 } from "@platform/lib/api";
 import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
-import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { CHAT_ACTIVITY_KEY, TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { PENDING_KEY_PREFIX } from "@platform/lib/queue";
 import { canRunInTerminal, useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockStore";
 import { copyPendingText } from "@platform/lib/clipboard";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
 import { forgetSessionSeed } from "./useRecentTasks";
+import { useAgent } from "./agent-context";
+import { agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 
-/** Live by the listing's own clock (T:13166-13169). */
+/** Live by the listing's own clock (T:13166-13169). `needs_attention` is NOT
+ *  here (Akshil, 2026-10-19): a run parked on a permission card is one the
+ *  server stops itself on delete, and archive never minded a run at all. */
 const RUNNING_STATES = new Set<Task["status"]>([
   "in_progress",
-  "needs_attention",
 ]);
 
 /** Page-level, like T's `archiveStates` / `taskIds` / `taskRunning`: the answer
@@ -108,12 +111,6 @@ const inflight = new Map<string, Set<() => void>>();
  * document's own chat-activity stamp) short-circuits the wait.
  */
 export const ASK_AGAIN_MS = [900, 2500, 5000, 8000];
-
-/** ClaudeChat's `CHAT_ACTIVITY_KEY`, restated rather than imported: that module
- *  imports this one through `ui/index`, and a chat cannot be made to depend on
- *  its own menu to know the name of a localStorage key. One string, in two
- *  places, that has not changed since T:16435. */
-const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
 
 /**
  * T:12696 `showSession` + T:12705 `loadTaskId` — THE TASK NUMBER FOR THIS CHAT,
@@ -189,7 +186,7 @@ export function useTaskId(sessionId: string): string {
     // announced by this document's own run controller the moment a turn starts
     // (protocol/run-controller.ts), which is the same moment the row is created;
     // the storage stamp is every OTHER document's chat saying the same thing
-    // (ClaudeChat's CHAT_ACTIVITY_KEY). Both are pokes, not payloads, so both
+    // (CHAT_ACTIVITY_KEY, which ClaudeChat stamps). Both are pokes, not payloads, so both
     // land on one handler.
     const poke = () => {
       if (!live || taskIds.has(sessionId)) return;
@@ -245,6 +242,13 @@ export interface KebabProps {
   /** This page's own turn: `body.running`'s replacement. Live by EITHER clock
    *  — the listing's word or ours (T:13166). */
   running: boolean;
+  /** A permission or question card is OPEN on this chat (`openCardIds`). The
+   *  page's own `running` stays true while the turn waits on it, and that is
+   *  not the kind of live Archive and Delete step back from: the run is going
+   *  nowhere until someone answers, and deleting is an answer (the server
+   *  denies the card and ends the run). So an open card lifts `running`'s
+   *  hold on the two items; the listing's `in_progress` still holds. */
+  asking?: boolean;
   /** The session is GONE. Every cache keyed by it is dropped here (this menu
    *  owns them), so the caller only has to leave the transcript — "Back to
    *  chats" IS the way out (T:13352-13366). */
@@ -290,6 +294,10 @@ export interface KebabProps {
    * the reader cannot act on from inside it (T:13100-13108).
    */
   queued?: boolean;
+  /** The side pane's FULL SCREEN toggle (lib/side-maximized-store), offered
+   *  first. Passed only when this chat lives in a side pane; absent elsewhere,
+   *  and the item with it. */
+  fullScreen?: { on: boolean; onToggle: () => void };
 }
 
 export function Kebab({
@@ -303,6 +311,8 @@ export function Kebab({
   locked = false,
   lockedReason,
   queued = false,
+  fullScreen,
+  asking = false,
 }: KebabProps) {
   const [open, setOpen] = useState(false);
   const [erasing, setErasing] = useState(false);
@@ -317,6 +327,23 @@ export function Kebab({
   const busy = useRef(false);
   const timers = useRef<number[]>([]);
   const canRun = useCanRunInTerminal();
+  // "Continue with Copilot in terminal" (D18): the agent's own word, since the
+  // command this hands over is that agent's `--resume`. ONE helper for the
+  // item's resting label and the two places that put it back, and gated like
+  // TaskPeek's item (`agentNamed`): with only Claude to name, the words are the
+  // ones this menu always said, handed in as `claudeWords`.
+  const agent = useAgent();
+  useAgentBackends();
+  const agentOff = isBackendOff(agent.backend);
+  const restingTerminal = useCallback(
+    (claudeWords: string) =>
+      agentNamed(agent.backend)
+        ? sessionId
+          ? `Continue with ${agent.label} in terminal`
+          : `New ${agent.label} session in terminal`
+        : claudeWords,
+    [agent.backend, agent.label, sessionId],
+  );
 
   useEffect(
     () => () => {
@@ -337,7 +364,7 @@ export function Kebab({
 
   const filed = sessionId ? archiveStates.get(sessionId) : undefined;
   const hasTask = !!sessionId && filed !== undefined && filed !== null;
-  const live = (!!sessionId && !!taskRunning.get(sessionId)) || running;
+  const live = (!!sessionId && !!taskRunning.get(sessionId)) || (running && !asking);
 
   /** Re-read the listing and correct the item. FAILS CLOSED, unlike the task
    *  number read: an item offered on a listing we could not read is an item
@@ -434,20 +461,20 @@ export function Kebab({
       // Named at open time: the session param changes without a reload
       // (T:13415).
       setTerminalLabel(
-        sessionId ? "Continue in terminal" : "New session in terminal",
+        restingTerminal(sessionId ? "Continue in terminal" : "New session in terminal"),
       );
       setCopyLabel("Copy command");
       setArchiveLabel("");
       void refresh();
     },
-    [sessionId, refresh],
+    [sessionId, refresh, restingTerminal],
   );
 
   const restingArchive = filed ? "Unarchive this task" : "Archive this task";
 
   const fetchTerminalCommand = useCallback(
-    (): Promise<string> => fetchAgentTerminalCommand(file ?? "", sessionId),
-    [file, sessionId],
+    (): Promise<string> => fetchAgentTerminalCommand(file ?? "", sessionId, agent.backend),
+    [file, sessionId, agent.backend],
   );
 
   /** THE PRIMARY ITEM. Where the status-bar drawer exists (canRunInTerminal()),
@@ -486,11 +513,11 @@ export function Kebab({
       later(() => {
         busy.current = false;
         setTerminalLabel(
-          sessionId ? "Continue in terminal" : "New session in terminal",
+          restingTerminal(sessionId ? "Continue in terminal" : "New session in terminal"),
         );
       }, 2500);
     }
-  }, [fetchTerminalCommand, sessionId, later]);
+  }, [fetchTerminalCommand, sessionId, later, restingTerminal]);
 
   /** THE SECONDARY ITEM, only offered where the primary one no longer copies —
    *  a reader with their own terminal should not have to fight the drawer for
@@ -610,6 +637,15 @@ export function Kebab({
           aria-label="More options"
           className="c-overlay c-kebabpop w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0"
         >
+          {fullScreen ? (
+            <DropdownMenuItem className="c-kebab-opt" onClick={fullScreen.onToggle}>
+              {fullScreen.on ? "Exit full screen" : "Full screen"}
+            </DropdownMenuItem>
+          ) : null}
+          {/* NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): the command
+              hands the chat to that agent's CLI, which is exactly what the
+              switch said not to do — the Explorer's item follows the same rule. */}
+          {!agentOff ? (<>
           {/* NOT WHILE THIS CHAT IS WAITING (`queued`): there is no session to
               continue, so the command this copies would open a conversation that
               does not exist yet. */}
@@ -620,7 +656,7 @@ export function Kebab({
               onClick={() => void onTerminal()}
             >
               {terminalLabel ||
-                (sessionId ? "Continue in terminal" : "New session in terminal")}
+                restingTerminal(sessionId ? "Continue in terminal" : "New session in terminal")}
             </DropdownMenuItem>
           ) : null}
           {/* The primary item above now RUNS the command where it can — this is
@@ -635,6 +671,7 @@ export function Kebab({
               {copyLabel || "Copy command"}
             </DropdownMenuItem>
           ) : null}
+          </>) : null}
           {/* HIDDEN, not disabled, when there is no task behind the chat: a
               disabled row invites the reader to work out what would enable it,
               and the answer is not something they can act on from this menu

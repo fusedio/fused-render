@@ -10,7 +10,8 @@ dependencies = [
     "tokenizers>=0.23,<1",
     "safetensors>=0.4,<1",
     "numpy>=1.26,<3",
-    "pillow",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
     "pillow-heif>=1.5,<2",
     "huggingface_hub",
     "psutil",

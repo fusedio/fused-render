@@ -22,6 +22,12 @@ export interface Tick {
   label: string;
 }
 
+export const PCT_TICKS: Tick[] = [
+  { v: 0, label: "0%" },
+  { v: 50, label: "50%" },
+  { v: 100, label: "100%" },
+];
+
 const W = 600;
 const H = 100;
 
@@ -48,18 +54,28 @@ function runsOf(points: { t: number; v: number }[]): { t: number; v: number }[][
   return runs;
 }
 
-function pathOf(points: { t: number; v: number }[], x: (t: number) => number, y: (v: number) => number) {
+/** `step` draws step-after: hold the previous value across, then jump (for
+ *  integer-valued series, where a smooth line reads as a sawtooth). */
+function pathOf(points: { t: number; v: number }[], x: (t: number) => number, y: (v: number) => number, step = false) {
   return runsOf(points)
-    .map((run) => run.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join(""))
+    .map((run) =>
+      run
+        .map((p, i) => {
+          const pt = `${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`;
+          if (!i) return `M${pt}`;
+          return step ? `L${x(p.t).toFixed(1)},${y(run[i - 1].v).toFixed(1)}L${pt}` : `L${pt}`;
+        })
+        .join(""),
+    )
     .join("");
 }
 
-function areaOf(points: { t: number; v: number }[], x: (t: number) => number, y: (v: number) => number) {
+function areaOf(points: { t: number; v: number }[], x: (t: number) => number, y: (v: number) => number, step = false) {
   return runsOf(points)
     .filter((run) => run.length > 1)
     .map(
       (run) =>
-        `${pathOf(run, x, y)}L${x(run[run.length - 1].t).toFixed(1)},${H}L${x(run[0].t).toFixed(1)},${H}Z`,
+        `${pathOf(run, x, y, step)}L${x(run[run.length - 1].t).toFixed(1)},${H}L${x(run[0].t).toFixed(1)},${H}Z`,
     )
     .join("");
 }
@@ -97,19 +113,21 @@ export function AreaChart({
   ticks,
   windowS,
   label,
+  step = false,
 }: {
   points: ChartPoint[];
   max: number;
   ticks: Tick[];
   windowS: number;
   label: string;
+  step?: boolean;
 }) {
   const end = points.length ? points[points.length - 1].t : 0;
   const { t0, x, y } = geometry(windowS, end, max);
   const pts = known(points, t0);
   const last = pts[pts.length - 1];
-  const line = pts.length > 1 ? pathOf(pts, x, y) : "";
-  const area = line ? areaOf(pts, x, y) : "";
+  const line = pts.length > 1 ? pathOf(pts, x, y, step) : "";
+  const area = line ? areaOf(pts, x, y, step) : "";
   return (
     <div className="monitor-chart" role="img" aria-label={label}>
       <Axis ticks={ticks} max={max} />

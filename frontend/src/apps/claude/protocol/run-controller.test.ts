@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 // The run loop against a FAKE agent.py. Every test here is one of the rules the
 // template earned the hard way: whole-turn replay, D687 slicing after a
 // follow-up, ownership by the newest loop, card placement, the two poll
@@ -1082,8 +1083,10 @@ describe("follow-ups (T:16024, D687)", () => {
     // `draft_key` is the one field T never sent, and it is native's own: this
     // send has no session, so it is the send that CREATES one and it names the
     // `new:<file>` draft whose TASK number has to follow (PR #1118 round 5).
-    // Every other field is T's, spelled T's way.
+    // Every other field is T's, spelled T's way — bar `backend`, the agent the
+    // chat runs on (docs/COPILOT_BACKEND.md D2), which every start names.
     expect(Object.keys(started.fields).sort()).toEqual([
+      "backend",
       "draft_key",
       "effort",
       "file",
@@ -1715,8 +1718,9 @@ describe("follow-ups (T:16024, D687)", () => {
     ]);
     expect(made.agent.of("cancel")).toEqual([]);
     const sent = made.agent.of("send")[0]!.fields;
-    // The same field set legacy posts (T:16138-16150).
+    // The same field set legacy posts (T:16138-16150), plus `backend` (D2).
     expect(Object.keys(sent).sort()).toEqual([
+      "backend",
       "effort",
       "message",
       "model",
@@ -3711,15 +3715,33 @@ describe("addError: the slot AND the row (T:13698)", () => {
     expect(new Set(keys).size).toBe(2);
   });
 
-  test("the rows survive the next send, which clears the slot", async () => {
+  test("the next send clears the slot; its REPLY retires the row", async () => {
+    // T kept the row for good (T:13698). Not any more (Akshil, 2026-10-16): a
+    // failure the next turn resolved is a scar above the answer, so the row
+    // goes once that answer has landed — and not before, so a send that is
+    // still out keeps the record of what went wrong the last time.
     const { controller } = makeController({
       start: (_f, n) => (n === 0 ? { error: "it broke" } : { run_id: "r1" }),
       poll: () => poll({ done: true, segments: [text("fine now")] }),
     });
     await controller.sendMessage("one");
+    expect(errors(controller).map((t) => t.text)).toEqual(["it broke"]);
     await controller.sendMessage("two");
     expect(controller.getState().trouble).toBeNull();
-    expect(errors(controller).map((t) => t.text)).toEqual(["it broke"]);
+    expect(errors(controller)).toEqual([]);
+    // "one" never got a bubble (a refused start hands the words back), so
+    // the log is the turn that worked and nothing else.
+    expect(controller.getState().turns.map((t) => t.role)).toEqual(["user", "assistant"]);
+  });
+
+  test("a send that fails again keeps the earlier row — nothing was resolved", async () => {
+    const { controller } = makeController({
+      start: (_f, n) => ({ error: n === 0 ? "it broke" : "still broken" }),
+      poll: () => poll({ done: true }),
+    });
+    await controller.sendMessage("one");
+    await controller.sendMessage("two");
+    expect(errors(controller).map((t) => t.text)).toEqual(["it broke", "still broken"]);
   });
 
   test("a recognised failure keeps its kind, so the card copy still applies", async () => {
@@ -4387,6 +4409,85 @@ describe("the start response names the session (task status in under a second)",
       restore();
     }
   });
+
+  test("a Copilot start answering session_id \"\" takes the id from the first poll that carries it", async () => {
+    // Copilot mints its own id (docs/COPILOT_BACKEND.md), so a fresh start
+    // answers `session_id: ""` and the init row's poll is the first to name it.
+    // An empty id must never reach the url, the state or a running mark.
+    const { posts, restore } = captureFetch();
+    try {
+      const params = createMemoryParamsStore();
+      const atPoll: string[] = [];
+      const { controller } = makeController(
+        {
+          start: () => ({ run_id: "r1", session_id: "", backend: "copilot" }),
+          poll: (_f, n) => {
+            atPoll.push(params.get("session_id") || "");
+            // The first frame has no id yet; the second carries the init row's.
+            return poll({
+              done: n > 1,
+              session_id: n > 0 ? "s-copilot" : "",
+              text: "ok",
+              segments: [text("ok")],
+            });
+          },
+        },
+        params,
+      );
+      await controller.sendMessage("hi");
+      expect(atPoll[0]).toBe("");
+      expect(params.get("session_id")).toBe("s-copilot");
+      expect(controller.getState().sessionId).toBe("s-copilot");
+      expect(controller.getState().backend).toBe("copilot");
+      // Marked once, under the real id — never under "".
+      expect(marks(posts)).toEqual([
+        { session_id: "s-copilot", turn: 1_000, text: "hi", file: "/proj/app.py" },
+      ]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a plan left on the param goes out as the default for an agent with no plan mode (Bugbot)", async () => {
+    for (const [agentId, expected] of [
+      ["copilot", "prompt"],
+      ["claude", "plan"],
+    ] as const) {
+      const params = createMemoryParamsStore();
+      params.set({ permission: "plan" });
+      const { controller, agent } = makeController(
+        {
+          history: () => ({ turns: [], transcript: null, backend: agentId }),
+          live_host: () => ({ host: "" }),
+          start: () => ({ run_id: "r1", session_id: "s1" }),
+          poll: () => poll({ done: true, segments: [text("ok")] }),
+        },
+        params,
+      );
+      await controller.openSession("s1", { backend: agentId });
+      await controller.sendMessage("hi");
+      expect(agent.of("start")[0]!.fields.permission_mode).toBe(expected);
+    }
+  });
+
+  test("the opener's agent is a guess the session's history corrects (CodeRabbit)", async () => {
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, backend: "copilot" }),
+    });
+    // The row it was opened from said Claude; the transcript's root says Copilot.
+    await controller.openSession("s1", { backend: "claude" });
+    expect(controller.getState().backend).toBe("copilot");
+  });
+
+  test("an opener's agent stands while nothing on the wire names one", async () => {
+    // `backend: ""` is what agent.py `_history` answers for a session with no
+    // transcript on disk and no record yet — no evidence, never a guess.
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, backend: "" }),
+    });
+    await controller.openSession("s1", { backend: "copilot" });
+    expect(controller.getState().backend).toBe("copilot");
+  });
 });
 
 describe("running and idle marks can race (Bugbot #1163)", () => {
@@ -4781,6 +4882,59 @@ describe("the run's tasks", () => {
     expect(controller.getState().tasksRunId).toBe("r1");
   });
 
+  test("a follow-up on a newer host keeps the job an older host holds, and watches it through the turn", async () => {
+    // Akshil, 2026-10-19: the chat reopened on its folder starts a second
+    // host (r2) while r1 still runs the job. r2's empty polls say nothing
+    // about r1's job; r1's own `tasks` answer ends it.
+    let during: { ids: string[]; owner: string | null } | null = null;
+    let ended = false;
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: (_f, n) => {
+        if (n === 1) {
+          const st = controller.getState();
+          during = { ids: st.tasks.map((t) => t.id), owner: st.tasksRunId };
+        }
+        return n < 2 ? poll({}) : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
+      tasks: () =>
+        ended
+          ? { tasks: [{ ...T("h"), status: "killed" as const }], tasks_pending: false, host_alive: true }
+          : { tasks: [T("h", "running")], tasks_pending: true, host_alive: true },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    expect(during as unknown).toEqual({ ids: ["h"], owner: "r1" });
+    expect(controller.getState().tasksRunId).toBe("r1");
+    expect(controller.getState().tasks[0]!.status).toBe("running");
+    ended = true;
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(agent.of("tasks").length).toBeGreaterThan(0);
+    expect(agent.of("tasks").every((c) => c.fields.run_id === "r1")).toBe(true);
+    expect(controller.getState().tasks[0]!.status).toBe("killed");
+  });
+
+  test("CodeRabbit: the older host's ended row keeps its grace through the newer run's polls", async () => {
+    let lap: string[] = [];
+    const ended = { ...T("h"), status: "killed" as const, ended_at: Date.now() / 1000 };
+    const { controller } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [ended] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      start: () => ({ run_id: "r2" }),
+      poll: (_f, n) => {
+        if (n === 1) lap = controller.getState().tasks.map((t) => t.id);
+        return n < 2 ? poll({}) : poll({ done: true, segments: [text("ok")], text: "ok" });
+      },
+    });
+    await controller.openSession("s9");
+    await controller.sendMessage("go");
+    expect(lap).toEqual(["h"]);
+  });
+
   test("a restore lands history's tasks", async () => {
     const { controller } = makeController({
       history: () => ({ turns: [], transcript: null, live_run: "", tasks: [T("h", "completed")] }),
@@ -4864,6 +5018,111 @@ describe("the run's tasks", () => {
     await controller.refreshHistory("s1");
     expect(controller.getState().tasks.map((t) => t.id)).toEqual(["a"]);
     expect(controller.getState().tasksRunId).toBe("r1");
+  });
+
+  /** Let the host watch's sleep → `tasks` → publish laps run (sleep is instant here). */
+  const settle = async () => {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+  };
+
+  test("Akshil 2026-10-18: a turn that ends with a live job keeps the row live, then ends it when the HOST says so", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+      tasks: (_f, n) =>
+        n === 0
+          ? { tasks: [SH], tasks_pending: true, host_alive: true }
+          : { tasks: [{ ...SH, status: "completed", ended_at: 5 }], tasks_pending: false, host_alive: true },
+    });
+    await controller.sendMessage("go");
+    await settle();
+    // Asked of THIS run, and only until nothing is pending.
+    expect(agent.of("tasks").map((c) => c.fields.run_id)).toEqual(["r1", "r1"]);
+    const sh = controller.getState().tasks[0]!;
+    expect([sh.status, sh.ended_at]).toEqual(["completed", 5]);
+    expect(controller.getState().tasksRunId).toBe("r1");
+  });
+
+  test("the host watch rides out a failed ask or two, and asks once per run+seat", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+      tasks: (_f, n) => {
+        if (n < 2) throw new Error("socket dropped");
+        return { tasks: [{ ...SH, status: "completed", ended_at: 5 }], tasks_pending: false, host_alive: true };
+      },
+    });
+    await controller.sendMessage("go");
+    await settle();
+    expect(agent.of("tasks")).toHaveLength(3);
+    expect(controller.getState().tasks[0]!.status).toBe("completed");
+  });
+
+  test("Bugbot 4307278676: a history refresh saying nothing live leaves the watched rows (and the watch) alone", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    let n = 0;
+    let refreshing = false;
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () =>
+        !refreshing
+          ? { turns: [], transcript: null }
+          : { turns: [], transcript: { path: "/p", mtime: ++n, size: 1 }, live_run: "", tasks: [] },
+      tasks: () => ({ tasks: [SH], tasks_pending: true, host_alive: true }),
+    });
+    await controller.sendMessage("go");
+    await settle();
+    refreshing = true;
+    await controller.refreshHistory("s1");
+    expect(controller.getState().tasks.map((t) => t.id)).toEqual(["sh"]);
+    expect(controller.getState().tasksRunId).toBe("r1");
+    // …and the watch is still asking the host.
+    const asked = agent.of("tasks").length;
+    await settle();
+    expect(agent.of("tasks").length).toBeGreaterThan(asked);
+    controller.newChat();
+  });
+
+  test("Bugbot 4307278686: only the OWNING loop's done starts (or retires) a host watch", () => {
+    const src = readFileSync(new URL("./run-controller.ts", import.meta.url), "utf8");
+    expect(src).toContain("if (loopSeq === seat) watchHostTasks(runId, seat);");
+    expect(src).not.toMatch(/if \(poll\.tasks_pending\) watchHostTasks\(runId, seat\);/);
+  });
+
+  test("a host that dies under the watch downgrades the live rows, the one case that still does", async () => {
+    const SH = { ...T("sh"), kind: "shell" as const };
+    const { controller, agent } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: () => poll({ done: true, tasks_pending: true, tasks: [SH], segments: [text("ok")], text: "ok" }),
+      history: () => ({ turns: [], transcript: null }),
+      tasks: () => ({ tasks: [SH], tasks_pending: false, host_alive: false }),
+    });
+    await controller.sendMessage("go");
+    await settle();
+    expect(agent.of("tasks")).toHaveLength(1);
+    expect(controller.getState().tasks[0]!.status).toBe("unknown");
+  });
+
+  test("a reload onto a live host with live rows watches it too; leaving the conversation stops the watch", async () => {
+    const { controller, agent } = makeController({
+      history: () => ({ turns: [], transcript: null, live_run: "", tasks_run: "r1", tasks: [T("h", "running")] }),
+      live_run: () => ({ run_id: "" }),
+      live_host: () => ({ run_id: "" }),
+      tasks: () => ({ tasks: [T("h", "running")], tasks_pending: true, host_alive: true }),
+    });
+    await controller.openSession("s9");
+    await settle();
+    expect(agent.of("tasks").length).toBeGreaterThan(0);
+    controller.newChat();
+    const asked = agent.of("tasks").length;
+    await settle();
+    expect(agent.of("tasks").length).toBeLessThanOrEqual(asked + 1);
+    expect(controller.getState().tasks).toEqual([]);
   });
 
   test("Bugbot: a done poll with tasks_pending keeps a running monitor running; without it, unknown", async () => {

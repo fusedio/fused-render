@@ -106,7 +106,8 @@ class _HostProc:
 def _argv_from_req(agent, req, run_dir):
     return agent._claude_argv(
         run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
-        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"],
+        strict_mcp=bool(req.get("strict_mcp", False)))
 
 
 # --------------------------------------------------------------- the MCP wire
@@ -2439,3 +2440,111 @@ def monkeypatch_alive(agent):
     """Treat the run as in flight — these fixtures write no pid file, and a
     decision on a finished run is deliberately recorded as expired."""
     agent._alive = lambda _run_dir: True
+
+
+def test_a_cancelled_request_latches_abandoned_and_ends_the_wait(tmp_path):
+    """The CLI stopped waiting on a request (`notifications/cancelled`, the
+    subagent was told to carry on): its card must not read "waiting for you"
+    for the rest of the hour."""
+    perm_dir = tmp_path / "perm"
+    s = _Server(perm_dir)
+    try:
+        s.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+        pending = s.send_async("tools/call", {
+            "name": "approve",
+            "arguments": {"tool_name": "Bash", "input": {"command": "ls"},
+                          "tool_use_id": "tu-1"}})
+        req = _wait_for_request(perm_dir)
+        s.proc.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": pending.id, "reason": "moved on"}}) + "\n")
+        s.proc.stdin.flush()
+        payload = _result_payload(pending.result(20))
+        assert payload["behavior"] == "deny"
+        assert "moved on" in payload["message"]
+        recorded = json.loads((perm_dir / (req["id"] + ".res.json")).read_text())
+        assert recorded == {"decision": "deny", "reason": "abandoned"}
+    finally:
+        s.close()
+
+
+def test_a_cancel_for_an_unknown_request_is_ignored(tmp_path):
+    perm_dir = tmp_path / "perm"
+    s = _Server(perm_dir)
+    try:
+        s.call("initialize", {"protocolVersion": "2025-06-18", "capabilities": {}})
+        s.proc.stdin.write(json.dumps({
+            "jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 999}}) + "\n")
+        s.proc.stdin.flush()
+        assert s.call("ping")["result"] == {}
+        assert not list(perm_dir.glob("*.res.json"))
+    finally:
+        s.close()
+
+
+def test_permission_server_does_not_import_urllib_request_eagerly():
+    """~10 MB resident per session: `urllib.request` is imported only when an
+    event or terminal call is actually sent."""
+    import subprocess
+    import sys
+    path = os.path.join("fused_render", "claude_agent", "permission_server.py")
+    code = (
+        "import importlib.util, sys\n"
+        "spec = importlib.util.spec_from_file_location('ps_mod', sys.argv[1])\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "print('urllib.request' in sys.modules)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code, path],
+                         capture_output=True, text=True, check=True).stdout
+    assert out.strip() == "False"
+
+
+# ------------------------------------------------------- lean (strict MCP) runs
+
+def _argv_for(agent, tmp_path, **kw):
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir / "perm", exist_ok=True)
+    return agent._claude_argv(str(run_dir), False, None, "", "", "", None, "/x/f.html", **kw)
+
+
+def test_strict_mcp_flag_follows_the_mcp_config_pair(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    lean = _argv_for(agent, tmp_path, strict_mcp=True)
+    i = lean.index("--mcp-config")
+    assert lean[i + 2] == "--strict-mcp-config"
+    assert "--strict-mcp-config" not in _argv_for(agent, tmp_path)
+
+
+def _start_req(agent, tmp_path, monkeypatch, *, pref, isolate):
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_strict_mcp_pref", lambda: pref)
+    seen = {}
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    kw = {"isolate_mcp": True} if isolate else {}
+    run_id = agent._start(str(target), "hi", "", "", "", **kw)["run_id"]
+    launch = json.load(open(os.path.join(agent.RUNS, run_id, "launch.json")))
+    return seen["req"], launch
+
+
+@pytest.mark.parametrize("pref,isolate,expected", [
+    (False, True, True), (True, True, True), (True, False, True), (False, False, False)])
+def test_start_decides_strict_from_pref_or_isolate(agent, tmp_path, monkeypatch,
+                                                   pref, isolate, expected):
+    req, launch = _start_req(agent, tmp_path, monkeypatch, pref=pref, isolate=isolate)
+    assert req["strict_mcp"] is expected
+    assert launch["strict_mcp"] is expected
+
+
+def test_strict_mcp_pref_reads_prefs_json_and_defaults_on(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_home_dir", lambda: str(tmp_path))
+    assert agent._strict_mcp_pref() is True  # no file
+    (tmp_path / "prefs.json").write_text("{not json")
+    assert agent._strict_mcp_pref() is True
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": False}))
+    assert agent._strict_mcp_pref() is False
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}))
+    assert agent._strict_mcp_pref() is True  # only a stored False turns it off

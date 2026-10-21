@@ -19,9 +19,20 @@
 // import cycle — and the boundary check (scripts/check-boundaries.mjs) opens a
 // hole for named shell modules one file at a time for the same reason.
 import type { Task } from "@platform/lib/api";
+import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { columnLabel } from "./schedule-lib";
-import { StatusIcon } from "./ScheduleTaskViews";
-import { basename, cardTitleLine, firstLine, ringFailed, shortTaskId, taskColumn, tildePath } from "./tasks-lib";
+import { StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
+import {
+  BACKGROUND_LABEL,
+  basename,
+  cardTitleLine,
+  firstLine,
+  liveJobRow,
+  ringFailed,
+  shortTaskId,
+  taskColumn,
+  tildePath,
+} from "./tasks-lib";
 
 /** The title the header prints — the task's own first line, and the word every
  *  surface uses for a task that has none. Exported because the peek's menu and
@@ -79,20 +90,42 @@ export function TaskPeekWho({ task, running = false }: {
   // a question the reader is being asked (StatusIcon's own note on `failed`).
   const column = taskColumn(task);
   const status = running && column !== "needs_attention" ? "in_progress" : column;
+  // …and a finished turn whose chat still holds a live background job wears the
+  // List row's blue "Background" ring (tasks-lib.liveJobRow).
+  const background = !running && liveJobRow(task);
   return (
     <div className="task-side-peek-who">
       <span
         className="task-side-peek-status"
-        title={status ? columnLabel(status) : undefined}
+        title={background ? BACKGROUND_LABEL : status ? columnLabel(status) : undefined}
       >
-        <StatusIcon status={status} failed={running ? false : ringFailed(task)} />
+        <StatusIcon
+          status={status}
+          failed={running ? false : ringFailed(task)}
+          background={background}
+        />
       </span>
+      <TaskAgentMark backend={task.backend} />
       <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
       <span className="task-side-peek-title" title={title}>
         {title}
       </span>
     </div>
   );
+}
+
+/**
+ * WHO RUNS IT — "Copilot · gpt-5.4" (docs/COPILOT_BACKEND.md D18): the agent
+ * and the model it was set to, muted, beside the project. Only where there is
+ * an agent to tell apart (`agentNamed`), so a Claude-only header is the header
+ * it always was.
+ */
+export function TaskPeekAgent({ task }: { task: Task }) {
+  useAgentBackends();
+  if (!agentNamed(task.backend)) return null;
+  const model = task.model ? modelLabelsOf(task.backend)[task.model] ?? task.model : "";
+  const line = model ? `${agentLabel(task.backend)} · ${model}` : agentLabel(task.backend);
+  return <span className="task-side-peek-project" title={line}>{line}</span>;
 }
 
 /**

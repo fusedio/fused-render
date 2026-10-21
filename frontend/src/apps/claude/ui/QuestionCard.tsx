@@ -36,6 +36,7 @@ import { CollapsiblePre } from "./CollapsiblePre";
  *  the OPTIONS BACK, live, over a decision already waiting in the line (browser
  *  QA round 2, 2026-09-12). */
 import { answerHeld, queuedAnswerText } from "./PermCard";
+import { useAgent } from "./agent-context";
 
 /** The row Claude did not write, last always: it is the answer for when none of
  *  the ones above are, and the backend matches a multi-select join in exactly
@@ -138,6 +139,7 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
   // SIZED FROM THE CURRENT ROW, not once at mount. A replayed row whose
   // `questions` array changes length (T rebuilds the card per id) left these
   // short, and `picked[i]` came back undefined for the questions past the end.
+  const agent = useAgent();
   const [picked, setPicked] = useState<string[][]>(() => questions.map(() => []));
   const [otherOpen, setOtherOpen] = useState<boolean[]>(() => questions.map(() => false));
   const [otherText, setOtherText] = useState<string[]>(() => questions.map(() => ""));
@@ -582,7 +584,7 @@ export function QuestionCard({ row, onAnswer, onDismiss }: QuestionCardProps) {
 
   return (
     <div className={cn("turn", "perm", "ask", resolved && "resolved")} data-perm-id={row.id}>
-      <div className="perm-head">{resolved ? "Claude asked you" : "Claude is asking you"}</div>
+      <div className="perm-head">{resolved ? `${agent.label} asked you` : `${agent.label} is asking you`}</div>
       {answerable ? (
         <div className={cn("qscroll", tabbed && "is-tabbed")}>
           {/* TABS, NOT A SCROLLER (#20). A four-question card with four options

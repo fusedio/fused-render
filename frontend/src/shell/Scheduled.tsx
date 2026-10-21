@@ -61,9 +61,12 @@ import {
 import { createPortal } from "react-dom";
 import {
   getConfig,
+  getPrefsShared,
   getSchedule,
   getScheduleQueue,
+  putTasksViewTabs,
 } from "@platform/lib/api";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import type {
   ScheduledMessage,
   ScheduleResult,
@@ -81,6 +84,9 @@ import type { ChatDraft } from "@platform/lib/drafts";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import ScheduleCalendar, {
+  ICON_CLOCK,
+  ICON_FOLDER,
+  ICON_PLUS,
   ICON_VIEW_BOARD,
   ICON_VIEW_CALENDAR,
   ICON_VIEW_CARDS,
@@ -107,8 +113,13 @@ import {
   useTasksFeeder,
 } from "./tasksPulse";
 import {
+  DEFAULT_VIEW_TABS,
   TASK_VIEWS,
+  VIEW_LABELS,
   applyQueueOverrides,
+  emptyTasksLabel,
+  groupOfView,
+  parseViewTabs,
   expireQueueOverrides,
   isChatDraftTask,
   NO_QUEUE_OVERRIDES,
@@ -116,8 +127,11 @@ import {
   skipLine,
   viewFromSearch,
   viewUrl,
+  defaultViewFacets,
+  parseViewFilters,
+  VIEW_FILTERS_KEY,
 } from "./tasks-lib";
-import type { QueueOverride, QueueOverrides, TaskView } from "./tasks-lib";
+import type { QueueOverride, QueueOverrides, TaskView, ViewFacets } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { missingFolders } from "./useMissingFolders";
@@ -162,16 +176,338 @@ const POLL_MS = 20000;
 // not "when", and the calendar is the drill-down for the scheduled subset.
 //
 // SECOND to the URL, since 2026-08-18. `?view=` (tasks-lib.viewFromSearch) is
-// what a link carries and therefore what wins; this key is the fallback for a
-// bare `/tasks`, which is how the page is opened from the sidebar. Both are
-// kept in step, so switching the view in one tab still greets the next visit
-// the same way.
+// what a link carries and therefore what wins; the remembered view is the
+// fallback for a bare `/tasks`, which is how the page is opened from the
+// sidebar. Both are kept in step, so switching the view in one tab still greets
+// the next visit the same way.
+//
+// Remembered in the layout document's `tasks.view` (platform/lib/ui-layout.ts,
+// D1386). It was the localStorage key `fused-render:scheduled-view` until the
+// desktop app's port walk (a new origin, so empty storage, on most relaunches)
+// was found resetting it; ui-layout.ts imports that key once.
 //
 // Shared with the app page's Tasks tab (AppPage.tsx, D488), which mounts this
 // same component scoped to one folder: picking Board there is remembered here
 // too. One page, one memory — a per-app key would make the same control forget
 // on every other app.
-const VIEW_KEY = "fused-render:scheduled-view";
+
+// THE SWITCHER'S TABS are a PREFERENCE, prefs.py `tasks_view_tabs` (D1386),
+// not layout: which views a reader keeps a click away is a choice about how
+// they work, and Preferences-shaped. Read through `getPrefsShared` on every
+// mount (another window may have edited the row), with the last answer kept
+// here so a remount paints the reader's row rather than flashing the defaults
+// while the read is out.
+let knownViewTabs: TaskView[] | null = null;
+
+/** import-only (D1386) — where the switcher's chosen tabs USED to live (a JSON
+ *  array of view names, per browser), until the desktop app's port walk was
+ *  found handing most relaunches a new origin with empty storage. Read once by
+ *  `readViewTabs`, pushed to prefs, removed. Here rather than in tasks-lib so
+ *  the literal sits beside its `removeItem` (tests/test_browser_storage_allowlist.py). */
+const VIEW_TABS_KEY = "fused-render:scheduled-view-tabs";
+
+// ONE WRITER AT A TIME for the tab row. `/api/prefs` serialises its own
+// read-modify-write but takes whatever value arrives last, and two writes can
+// be in flight here: the one-shot import above and an edit the reader saves
+// before that import's PUT has landed. Unqueued, the older imported row could
+// land AFTER the edit and overwrite it. Every write goes through this chain, so
+// the edit is always persisted last; a failed link never blocks the next.
+let viewTabsWrite: Promise<void> = Promise.resolve();
+// Set the moment the reader saves a row in this document. `readViewTabs` checks
+// it AFTER its prefs GET: an edit queued while that GET was out would otherwise
+// be followed by the import's PUT, which lands last and then removes the old
+// key — the server keeping the imported row with no retry left for the edit.
+// Once the reader has spoken, the old row is only ever removed, never pushed.
+let viewTabsEditedHere = false;
+function enqueueViewTabsWrite(tabs: TaskView[]): Promise<void> {
+  const write = viewTabsWrite.then(() => putTasksViewTabs(tabs).then(() => undefined));
+  viewTabsWrite = write.catch(() => {});
+  return write;
+}
+
+/**
+ * The tabs, from prefs — and, once, the old per-browser localStorage row
+ * (`VIEW_TABS_KEY`): pushed to prefs when prefs have none yet, then removed
+ * either way. Only an EMPTY preference is filled, the same rule ui-layout.ts
+ * applies to its imports: a second origin (yesterday's port) still holding an
+ * old row must not overwrite the one the reader has saved since. A failed push
+ * keeps the old key for the next visit.
+ */
+async function readViewTabs(): Promise<TaskView[]> {
+  let legacy: string | null = null;
+  try {
+    legacy = localStorage.getItem(VIEW_TABS_KEY);
+  } catch {
+    legacy = null; // blocked storage: nothing to import
+  }
+  const stored = (await getPrefsShared()).tasks_view_tabs;
+  if (legacy === null) return parseViewTabs(stored);
+  if (!stored?.length && !viewTabsEditedHere) {
+    // The old row shows at once (the other D1386 importers apply the local
+    // value first too); the push is not awaited, so a failed PUT cannot cost
+    // this visit its tabs — the key stays and the next visit re-decides.
+    const tabs = parseViewTabs(legacy);
+    void enqueueViewTabsWrite(tabs).then(
+      () => {
+        try {
+          localStorage.removeItem(VIEW_TABS_KEY);
+        } catch {
+          // unreachable in practice: the read above succeeded
+        }
+      },
+      () => {},
+    );
+    return tabs;
+  }
+  try {
+    localStorage.removeItem(VIEW_TABS_KEY);
+  } catch {
+    // as above
+  }
+  return parseViewTabs(stored);
+}
+
+// The switcher's glyphs, one per view — the four the page always had
+// (ScheduleCalendar) and the three grouped lists' (lucide `clock`, `folder`,
+// `git-pull-request`), at the same 14px.
+const svg = (paths: React.ReactNode) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {paths}
+  </svg>
+);
+const ICON_PR = svg(
+  <><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" />
+    <path d="M13 6h3a2 2 0 0 1 2 2v7" /><line x1="6" y1="9" x2="6" y2="21" /></>,
+);
+// lucide `settings` (the cog): the tab editor's door, beside the switcher.
+// Hover-only (Akshil, 2026-10-16) — schedule.css fades it in with the toolbar.
+const ICON_TUNE = svg(
+  <><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+    <circle cx="12" cy="12" r="3" /></>,
+);
+const ICON_X = svg(<><path d="M18 6 6 18" /><path d="m6 6 12 12" /></>);
+const VIEW_ICONS: Record<TaskView, React.ReactNode> = {
+  list: ICON_VIEW_LIST,
+  board: ICON_VIEW_BOARD,
+  cards: ICON_VIEW_CARDS,
+  calendar: ICON_VIEW_CALENDAR,
+  time: ICON_CLOCK,
+  project: ICON_FOLDER,
+  pr: ICON_PR,
+};
+/** What the `+` menu says a grouped view does, under its name. */
+const VIEW_HINTS: Partial<Record<TaskView, string>> = {
+  time: "List grouped by when it last moved",
+  project: "List grouped by folder",
+  pr: "List grouped by pull request",
+};
+
+/**
+ * THE TAB EDITOR (Akshil, 2026-10-16): the switcher's row, taken over. Every
+ * current tab as a chip with its own remove, a `+` that offers every view not
+ * yet on the row (the three grouped lists, and any of the four a person took
+ * off), and Cancel / Done right after the +. Edits land in `tabs` (the page's
+ * draft) and only Done writes them anywhere.
+ */
+function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
+  tabs: TaskView[];
+  /** The view the page is showing — a chip's press previews its view below
+   *  (Akshil, 2026-10-16), so the row keeps saying which one is up. */
+  active: TaskView;
+  onPick: (view: TaskView) => void;
+  onChange: (tabs: TaskView[]) => void;
+  onCancel: () => void;
+  onDone: () => void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const available = TASK_VIEWS.filter((v) => !tabs.includes(v));
+  const addRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  // DRAG TO REORDER (Akshil, 2026-10-16): native HTML5 drag on the chips. The
+  // chip being carried and the one under the pointer; the drop splices the
+  // first in at the second's place.
+  const [dragging, setDragging] = useState<TaskView | null>(null);
+  const [over, setOver] = useState<TaskView | null>(null);
+  const dropOn = (target: TaskView) => {
+    if (!dragging || dragging === target) return;
+    // Lands on the TARGET's slot either way: carried rightward it goes after
+    // the target, leftward before it — removing first and inserting before the
+    // target made a move right onto the next chip a no-op and the last slot
+    // unreachable (Bugbot, #1704).
+    const to = tabs.indexOf(target);
+    const next = tabs.filter((t) => t !== dragging);
+    next.splice(to, 0, dragging);
+    onChange(next);
+  };
+  // KEYBOARD REORDER (CodeRabbit, #1704; Akshil chose shortcut over visible
+  // move buttons, 2026-10-16): Alt+←/→ on a focused chip moves it one slot,
+  // clamped at the ends, and focus follows the chip to its new place.
+  const nudge = (view: TaskView, by: -1 | 1) => {
+    const from = tabs.indexOf(view);
+    const to = Math.min(tabs.length - 1, Math.max(0, from + by));
+    if (from < 0 || to === from) return;
+    const next = tabs.filter((t) => t !== view);
+    next.splice(to, 0, view);
+    onChange(next);
+    requestAnimationFrame(() => {
+      stripRef.current
+        ?.querySelector<HTMLElement>(`.schedule-view-chip[data-view="${view}"] .schedule-view-chip-pick`)
+        ?.focus();
+    });
+  };
+  // Focus lands on the first chip when the strip opens: the cog that opened it
+  // is gone from the page, and focus falling to the body meant Tab restarted
+  // from the top of the document.
+  useEffect(() => {
+    stripRef.current?.querySelector<HTMLElement>(".schedule-view-chip-pick")?.focus();
+  }, []);
+  // The + menu closes on a press anywhere outside it — pointerdown, not blur:
+  // WebKit does not focus a button on click, so a blur-based close fired on the
+  // mousedown and unmounted the item before its click could land.
+  useEffect(() => {
+    if (!adding) return;
+    const onDown = (e: PointerEvent) => {
+      if (!addRef.current?.contains(e.target as Node)) setAdding(false);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [adding]);
+  // Escape = Cancel (or close the + menu first), wherever focus is: a removed
+  // chip takes the focus with it, so a listener on the strip alone missed the
+  // key right after the most natural edit.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      if (adding) setAdding(false);
+      else onCancel();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [adding, onCancel]);
+  return (
+    <div className="schedule-view-editor" role="group" aria-label="Edit views" ref={stripRef}>
+      <div className="schedule-view-editor-tabs">
+        {tabs.map((v) => (
+          <span
+            key={v}
+            className={
+              "schedule-view-chip"
+              + (active === v ? " is-active" : "")
+              + (dragging === v ? " is-dragging" : "")
+              + (over === v && dragging !== v ? " is-over" : "")
+            }
+            data-view={v}
+            draggable
+            title="Drag or Alt+←/→ to reorder"
+            onDragStart={(e) => {
+              setDragging(v);
+              e.dataTransfer.effectAllowed = "move";
+              e.dataTransfer.setData("text/plain", v);
+            }}
+            onDragEnd={() => {
+              setDragging(null);
+              setOver(null);
+            }}
+            onDragOver={(e) => {
+              if (!dragging) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (over !== v) setOver(v);
+            }}
+            onDragLeave={() => {
+              if (over === v) setOver(null);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              dropOn(v);
+              setDragging(null);
+              setOver(null);
+            }}
+          >
+            {/* The chip's face is a press: it shows that view below while the
+                row is being edited, and Done keeps whatever is up. */}
+            <button
+              type="button"
+              className="schedule-view-chip-pick"
+              aria-pressed={active === v}
+              title={`Show ${VIEW_LABELS[v]}`}
+              aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
+              onClick={() => onPick(v)}
+              onKeyDown={(e) => {
+                if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+                e.preventDefault();
+                nudge(v, e.key === "ArrowLeft" ? -1 : 1);
+              }}
+            >
+              {VIEW_ICONS[v]}
+              <span className="schedule-view-chip-lbl">{VIEW_LABELS[v]}</span>
+            </button>
+            <button
+              type="button"
+              className="schedule-view-chip-x"
+              aria-label={`Remove ${VIEW_LABELS[v]}`}
+              title={tabs.length <= 1 ? "Keep at least one view" : "Remove"}
+              disabled={tabs.length <= 1}
+              onClick={(e) => {
+                // Hand focus to the next chip before this one unmounts.
+                const chip = e.currentTarget.closest(".schedule-view-chip");
+                const next = (chip?.nextElementSibling ?? chip?.previousElementSibling) as HTMLElement | null;
+                next?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+                onChange(tabs.filter((t) => t !== v));
+              }}
+            >
+              {ICON_X}
+            </button>
+          </span>
+        ))}
+        <div className="schedule-view-add" ref={addRef}>
+          <button
+            type="button"
+            className="btn btn-secondary schedule-view-add-btn"
+            aria-label="Add view"
+            aria-expanded={adding}
+            disabled={!available.length}
+            title={available.length ? "Add view" : "Every view is on the row"}
+            onClick={() => setAdding((a) => !a)}
+          >
+            {ICON_PLUS}
+          </button>
+          {adding && available.length > 0 && (
+            // `data-hint-stop`: the menu hangs over the task list, and the
+            // hint layer pierces to whatever row title sits under the pointer
+            // (platform/lib/hints.ts hintAt) unless told this surface owns it.
+            <div className="schedule-view-add-menu" role="group" aria-label="Add view" data-hint-stop>
+              {available.map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  className="schedule-view-add-item"
+                  data-view={v}
+                  onClick={() => {
+                    onChange([...tabs, v]);
+                    setAdding(false);
+                  }}
+                >
+                  {VIEW_ICONS[v]}
+                  <span className="schedule-view-add-name">{VIEW_LABELS[v]}</span>
+                  {VIEW_HINTS[v] && <span className="schedule-view-add-hint">{VIEW_HINTS[v]}</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* Right after the +, not at the far end (Akshil, 2026-10-19): the
+            three controls that finish the edit sit together. */}
+        <div className="schedule-view-editor-end">
+          <button type="button" className="btn btn-secondary" onClick={onCancel}>Cancel</button>
+          <button type="button" className="btn btn-primary" onClick={onDone}>Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // How far ahead a deep link's prefilled time lands. The form's own default is
 // +1h, which is a planning answer; a link says "I want to set this up now", so
@@ -363,27 +699,85 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // localStorage can THROW (private mode, locked-down webviews), and this read
-  // runs during first render — unguarded it took the whole page down for a
-  // preference. Storage failing costs the memory, never the page.
   const [view, setView] = useState<TaskView>(() => {
     let saved: TaskView = "list";
-    try {
-      const stored = localStorage.getItem(VIEW_KEY);
-      // Against TASK_VIEWS rather than a hand-written list of the non-default
-      // ones: this store is untrusted input (an older build wrote it, a person
-      // edited it), and the one place that decides what a view NAME is has to be
-      // the same place `?view=` reads (tasks-lib.TASK_VIEWS).
-      if (stored && (TASK_VIEWS as string[]).includes(stored)) saved = stored as TaskView;
-    } catch {
-      // A blocked store just means no remembered view; the URL may still say.
-    }
+    const stored = getUiLayout().tasks?.view;
+    // Against TASK_VIEWS rather than a hand-written list of the non-default
+    // ones: this store is untrusted input (an older build wrote it, the one-shot
+    // import of an old localStorage value, a hand-edited file), and the one
+    // place that decides what a view NAME is has to be the same place `?view=`
+    // reads (tasks-lib.TASK_VIEWS).
+    if (stored && (TASK_VIEWS as string[]).includes(stored)) saved = stored as TaskView;
     // The URL outranks the memory, and the memory is what a bare `/tasks`
     // falls back to. Read once, in the initialiser: the page remounts on every
     // navigation (App.tsx keys it on the nav epoch), so a back button onto
     // `?view=board` comes through here rather than needing a subscription.
     return viewFromSearch(location.search, saved);
   });
+  // WHICH TABS THE SWITCHER SHOWS (Akshil, 2026-10-16) — the reader's own
+  // row, a preference since D1386 (see `readViewTabs`); the defaults until
+  // they edit it, and until the first read of this document lands.
+  const [tabs, setTabs] = useState<TaskView[]>(() => knownViewTabs ?? DEFAULT_VIEW_TABS);
+  // An edit made while the read is still out outranks the read.
+  const tabsEdited = useRef(false);
+  useEffect(() => {
+    let live = true;
+    readViewTabs().then(
+      (next) => {
+        if (tabsEdited.current) return;
+        knownViewTabs = next;
+        if (live) setTabs(next);
+      },
+      (e) => console.warn("[fused] could not read the Tasks view tabs:", e)
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  // The editor's draft: null while the row is a switcher, the tabs-in-progress
+  // while it is being edited. Cancel drops it; Done makes it `tabs`.
+  const [tabsDraft, setTabsDraft] = useState<TaskView[] | null>(null);
+  // The view that was up when the editor opened: chips PREVIEW their view
+  // while editing (Akshil, 2026-10-16), Done keeps what is showing, Cancel
+  // puts this one back.
+  const viewBeforeEdit = useRef<TaskView>(view);
+  const openTabs = () => {
+    viewBeforeEdit.current = view;
+    setTabsDraft(tabs);
+  };
+  // Focus back on the cog once the strip is gone, so Tab carries on from
+  // where the reader was rather than from the top of the document.
+  const refocusCog = () => {
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(".schedule-view-edit")?.focus();
+    });
+  };
+  const cancelTabs = () => {
+    setTabsDraft(null);
+    if (view !== viewBeforeEdit.current) pickView(viewBeforeEdit.current);
+    refocusCog();
+  };
+  const finishTabs = () => {
+    if (!tabsDraft) return;
+    viewTabsEditedHere = true;
+    setTabs(tabsDraft);
+    tabsEdited.current = true;
+    knownViewTabs = tabsDraft;
+    // A failed write forgets the row; the edit itself still lands.
+    enqueueViewTabsWrite(tabsDraft).catch((e) => console.warn("[fused] could not save the Tasks view tabs:", e));
+    setTabsDraft(null);
+    // The view that was up was just taken OFF the row: land on the first tab
+    // left rather than keep showing a view no button names. Only when it was
+    // on the row to begin with — a view reached by URL alone (`?view=pr`) was
+    // never in the draft, and Done with nothing changed must not move it
+    // (review, 2026-10-16). Asked of the view the editor OPENED on, not of
+    // the saved row: a chip press previews any draft view, so add PR, preview
+    // it, remove it, Done must not keep a PR view no button names (CodeRabbit,
+    // #1704).
+    const reachedByUrlOnly = view === viewBeforeEdit.current && !tabs.includes(view);
+    if (!tabsDraft.includes(view) && !reachedByUrlOnly) pickView(tabsDraft[0]);
+    refocusCog();
+  };
   // null = closed; a Date = open, prefilled (from a calendar slot click);
   // "blank" = open from the New task button, prefilled with "in an hour".
   const [creating, setCreating] = useState<Date | "blank" | null>(null);
@@ -428,7 +822,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     entry: ScheduledMessage | null,
     seed: ChatHop = NO_HOP,
     draft: DraftSeed | null = null,
+    // The folder a Project section's + names (Akshil, 2026-10-19): the card
+    // opens with it as the target. Null on every other door.
+    target: string | null = null,
   ) => {
+    setFolderSeed(target);
     // Every opening ABANDONS any chat-draft fetch still in flight (Bugbot on
     // PR #1126, 2026-09-12): a press that lands here through any door — New
     // task, a calendar slot, an Edit, a draft row, or a resolved hop — is the
@@ -453,6 +851,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // and the effect below looks it up by session before opening (Akshil,
   // 2026-09-12).
   const [draftSeed, setDraftSeed] = useState<DraftSeed | null>(null);
+  /** The folder a Project section's + handed the card, or null. */
+  const [folderSeed, setFolderSeed] = useState<string | null>(null);
   /** THE GENERATION OF THE PRESS THAT OWNS THE MODAL. Two openings still fetch
    *  before they can seed — the `?new=1&draft=` hop and the Draft chip's press —
    *  and an answer whose number is no longer current is dropped rather than
@@ -551,9 +951,48 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     if (!session) return;
     openChatRecord(session, draftChatUrl(task), task.project || task.file || "");
   };
-  // Search, status and project, client-side only — nothing here is worth a URL
+  // Search and the Draft chip, client-side only — nothing here is worth a URL
   // or a localStorage row: a filter is how you read the page this minute.
-  const [filters, setFilters] = useState<TaskFilters>(EMPTY_FILTERS);
+  const [shared, setShared] = useState<TaskFilters>(EMPTY_FILTERS);
+  // STATUS AND PROJECT ARE EACH TAB'S OWN (Akshil, 2026-10-19) — remembered
+  // per view for as long as the window is open (tasks-lib.parseViewFilters).
+  // Read once; a blocked store just means every tab starts unfiltered.
+  const [facets, setFacets] = useState<Partial<Record<TaskView, ViewFacets>>>(() => {
+    try {
+      return parseViewFilters(sessionStorage.getItem(VIEW_FILTERS_KEY));
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(VIEW_FILTERS_KEY, JSON.stringify(facets));
+    } catch {
+      // A blocked store forgets the facets on reload; they still apply now.
+    }
+  }, [facets]);
+  // The one `TaskFilters` every control below reads and writes: the shared
+  // facets plus the current tab's own. A write splits the same way, so the
+  // controls never learn there are two stores.
+  const filters = useMemo<TaskFilters>(
+    () => ({ ...shared, ...(facets[view] ?? defaultViewFacets(view)) }),
+    [shared, facets, view],
+  );
+  const setFilters = useCallback(
+    (update: TaskFilters | ((f: TaskFilters) => TaskFilters)) => {
+      const next = typeof update === "function" ? update(filtersRef.current) : update;
+      // Written back at once, so two updates in one tick compose instead of
+      // the second reading the snapshot the first already replaced (review).
+      filtersRef.current = next;
+      setShared({ ...next, statuses: [], projects: [] });
+      setFacets((cur) => ({ ...cur, [viewRef.current]: { statuses: next.statuses, projects: next.projects } }));
+    },
+    [],
+  );
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
+  const viewRef = useRef(view);
+  viewRef.current = view;
   // Only so a folder chip's tooltip can say "~/Desktop/fused" rather than the
   // full /Users/... path. Missing home just means untouched paths.
   const [home, setHome] = useState("");
@@ -869,7 +1308,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const pickProject = (project: string) =>
     setFilters((f) => ({
       ...f,
-      projects: f.projects.length === 1 && f.projects[0] === project ? [] : [project],
+      // IN OR OUT OF THE SET (Akshil, 2026-10-19: the facet is multi-select):
+      // a chip press adds its folder, a press on a pinned one lets it go.
+      projects: f.projects.includes(project)
+        ? f.projects.filter((p) => p !== project)
+        : [...f.projects, project],
     }));
 
   // The Draft chip pressed on a row or a card: keep only the rows carrying
@@ -893,11 +1336,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     } catch {
       // Some embeddings refuse history writes; the switch itself still happens.
     }
-    try {
-      localStorage.setItem(VIEW_KEY, v);
-    } catch {
-      // A blocked store forgets the choice; the switch itself still happens.
-    }
+    patchUiLayout((d) => (d.tasks?.view === v ? d : { ...d, tasks: { ...d.tasks, view: v } }));
   };
 
   const entries = state?.entries ?? [];
@@ -974,18 +1413,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // and the pane scrolls sideways. Floored is a subset of tight (500 < any
   // baseline), so nothing the floor did is lost.
   const scrolls = peek.open && peek.tight;
-  // ONE sentence for "there is nothing here", handed to all four views, so a
+  // ONE sentence for "there is nothing here", handed to every view, so a
   // reader flipping List → Board → Cards → Calendar over the same empty set
   // reads the same words in the same place (Akshil, 2026-09-09). Which sentence
-  // is the page's call, not a view's: only the page knows whether the set is
-  // empty because the machine has no tasks, this app has none, or the filters
-  // matched none.
-  const emptyLabel =
-    inScope.length === 0
-      ? scope
-        ? "No tasks for this app yet."
-        : "No tasks yet. Everything Claude runs for you shows up here."
-      : "Nothing matches these filters.";
+  // is the page's call, not a view's — tasks-lib.emptyTasksLabel knows whether
+  // the set is empty because the machine has no tasks, this app has none, the
+  // filters matched none, or a grouped view is hiding an all-archived scope.
+  const emptyLabel = emptyTasksLabel(view, filters, inScope.length, scope != null);
 
   // PUT THE CARD AWAY — the modal's ✕, and the source chip's press, which opens
   // the task it names and cannot do that under an open card. One function, so
@@ -1128,48 +1562,41 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 controls in the app wear `.schedule-form-seg` (the calendar's
                 range, the modal's Ends), so the shared class cannot name this
                 one. Styling still hangs off `.schedule-form-seg`. */}
+            {tabsDraft ? (
+              <ViewTabsEditor
+                tabs={tabsDraft}
+                active={view}
+                onPick={pickView}
+                onChange={setTabsDraft}
+                onCancel={cancelTabs}
+                onDone={finishTabs}
+              />
+            ) : (<>
             <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
-              <button type="button"
-                      data-view="list"
-                      title="List"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
-                      aria-pressed={view === "list"}
-                      onClick={() => pickView("list")}>
-                {ICON_VIEW_LIST}
-                <span className="schedule-fit-lbl">List</span>
-              </button>
-              <button type="button"
-                      data-view="board"
-                      title="Board"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
-                      aria-pressed={view === "board"}
-                      onClick={() => pickView("board")}>
-                {ICON_VIEW_BOARD}
-                <span className="schedule-fit-lbl">Board</span>
-              </button>
-              {/* Before the calendar (Akshil, 2026-09-03): the first three
-                  answer "what is there" and "what is happening right now",
-                  and the calendar is the drill-down for the scheduled subset —
-                  the same argument that made List the default. */}
-              <button type="button"
-                      data-view="cards"
-                      title="Cards"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "cards" ? " is-active" : "")}
-                      aria-pressed={view === "cards"}
-                      onClick={() => pickView("cards")}>
-                {ICON_VIEW_CARDS}
-                <span className="schedule-fit-lbl">Cards</span>
-              </button>
-              <button type="button"
-                      data-view="calendar"
-                      title="Calendar"
-                      className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
-                      aria-pressed={view === "calendar"}
-                      onClick={() => pickView("calendar")}>
-                {ICON_VIEW_CALENDAR}
-                <span className="schedule-fit-lbl">Calendar</span>
-              </button>
+              {/* The row is the reader's own (`tabs`); a view reached by URL that
+                  is not on it is drawn at the end for as long as it is up, so
+                  the active state always has a button to sit on. */}
+              {(tabs.includes(view) ? tabs : [...tabs, view]).map((v) => (
+                <button type="button"
+                        key={v}
+                        data-view={v}
+                        title={VIEW_LABELS[v]}
+                        className={"btn btn-secondary schedule-view-btn" + (view === v ? " is-active" : "")}
+                        aria-pressed={view === v}
+                        onClick={() => pickView(v)}>
+                  {VIEW_ICONS[v]}
+                  <span className="schedule-fit-lbl">{VIEW_LABELS[v]}</span>
+                </button>
+              ))}
             </div>
+            {/* The tab editor's door: right beside the row it edits. */}
+            <button type="button"
+                    className="btn btn-secondary schedule-view-edit"
+                    title="Edit views"
+                    aria-label="Edit views"
+                    onClick={openTabs}>
+              {ICON_TUNE}
+            </button>
             {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
                 used to be hidden on the calendar, on the argument that it
                 answers "when" and a week with tasks filtered out of it is a week
@@ -1201,6 +1628,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                     onClick={() => openForm("blank", null)}>
               +<span className="schedule-fit-lbl"> New task</span>
             </button>
+            </>)}
           </div>
 
           {/* No chip row under the toolbar: each filter menu already carries its
@@ -1278,7 +1706,16 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
             />
           ) : (
             <TaskList
+              // One instance PER VIEW (Bugbot, #1704): List, Time, Project and
+              // PR order the rows differently, so a shared instance carried the
+              // scroll offset, the reveal band and the list memory across a
+              // switch and landed mid-list on the wrong tasks. Each view keeps
+              // its own memory (tasks-lib.listMemoryKey).
+              key={view}
               tasks={shown}
+              // Time / Project / PR are this List cut into sections.
+              groupBy={groupOfView(view)}
+              onNewTaskIn={(folder) => openForm("blank", null, NO_HOP, null, folder)}
               home={home}
               missing={missing}
               // The rows NEVER fold their marks while the panel is up
@@ -1369,7 +1806,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           // Prefill only — the field shows exactly what will be saved, and
           // deleting the filename back to the folder is the user's to make. A
           // deep link's own target still wins: it named a path on purpose.
-          initialTarget={scope?.entry ?? scope?.project ?? null}
+          // A SECTION'S + NAMES ITS FOLDER ON PURPOSE, so it outranks the
+          // scope's own prefill (Bugbot, #1756): on an app-scoped tab the
+          // Project view's folder is the app's anyway, and the card must open
+          // on the folder the reader pressed, not the app's entry page.
+          initialTarget={folderSeed ?? scope?.entry ?? scope?.project ?? null}
           // The stored record, handed back whole — a task draft's own form, or
           // a chat record turned into one by `chatHopSeed`. Null on every
           // opening that had nothing stored behind it.
@@ -1409,7 +1850,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           planning={view === "calendar" || creating instanceof Date || !!editing}
           permissionModes={state.permission_modes}
           // Newest-first fallback recents: past entries arrive newest first,
-          // and the modal dedupes against what localStorage already knows.
+          // and the modal dedupes against the folders it already remembers.
           recentTargets={entries.map((e) => e.target)}
           // THE SAME FOLDERS THE PROJECT FILTER OFFERS (Akshil, 2026-09-19:
           // "when I clear the path and search, it should search from projects —

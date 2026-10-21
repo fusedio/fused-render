@@ -51,14 +51,21 @@ import threading
 import time
 
 from fused_render import session_liveness, tasks_store
+from fused_render.agent_backends import roots
 
 logger = logging.getLogger(__name__)
 
-# CLAUDE_CONFIG_DIR wins where set — same rule, same deliberate local copy, as
-# session_liveness.py and tasks_store.py. Module-level so tests can point them
-# at a tmp dir.
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+# Claude Code's live-session registry (CLAUDE_CONFIG_DIR wins where set —
+# `agent_roots.claude_dir`). Module-level so tests can point it at a tmp dir;
+# the readers walk `_sessions_roots()`, which puts the Copilot host's registry
+# (same `<pid>.json` shape, fused's own root — docs/COPILOT_BACKEND.md D3)
+# beside whatever this says.
+CLAUDE_DIR = roots.claude_dir()
 SESSIONS_DIR = os.path.join(CLAUDE_DIR, "sessions")
+
+
+def _sessions_roots() -> list[str]:
+    return [root for _b, root in roots.sessions_roots(SESSIONS_DIR)]
 
 TICK_SEC = 1.0
 # How long a long-poll may block. Below the 30s most proxies and the
@@ -110,6 +117,21 @@ _ended: dict[str, float] = {}
 # pid, and its turn is not over (`is_turn_ended`). `_ended` above is what an
 # UNSCOPED event leaves, and it speaks for every process on the session.
 _ended_by_pid: dict[str, dict[str, float]] = {}
+# session_id -> epoch when the session host last saw the CLI OPEN a turn on
+# its own (`mark_turn_started`, off the host's `turn_started` event): a
+# subagent hand-back or a task notification the CLI picks up with no page send
+# to mark it and — background jobs keeping its registry row `busy` — no
+# rewrite of that row either. The one word that the end above is history and
+# a later turn is on. Scoped exactly like the ended stamps (`_reopened_by_pid`
+# per process a registry file has shown, `_reopened` for the session);
+# `is_turn_ended` weighs the two (T329, 2026-10-20). ONLY EVER A COUNTERWEIGHT
+# TO AN END: it never makes a row the CLI itself calls `idle` read running —
+# the registry has to corroborate (`live_from_registry` still asks for
+# `busy`/`shell`), so a stray row the host misread as a reopen (`_turn_state`
+# has had its false positives) can at worst keep a busy row In Progress until
+# the CLI rewrites it idle, never pin an idle one.
+_reopened: dict[str, float] = {}
+_reopened_by_pid: dict[str, dict[str, float]] = {}
 _primed = False
 _sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
@@ -205,6 +227,17 @@ _perm_stamps: dict[str, tuple] = {}
 # has to be: a run the listing will not look at cannot become a parked ROW, so
 # watching further back would ring about news no page could draw.
 PERM_SCAN_LIMIT = 120
+# run_dir -> (out.jsonl size, {session ids}) for every hosted run the last
+# listing found HOLDING BACKGROUND WORK (`watch_background`). See
+# `_read_background_runs`.
+_bg_runs: dict[str, tuple] = {}
+# A handful at most in practice (one per chat with a background Bash/Agent/
+# Monitor still going); the cap only keeps a pathological machine's tick cheap.
+BG_WATCH_LIMIT = 32
+# The most new `out.jsonl` bytes one tick reads per watched run. More than that
+# in a second is rung without looking — the listing re-reads it anyway.
+BG_READ_MAX = 4 * 1024 * 1024
+_BG_MARKER = b"background_tasks_changed"
 _started = False
 # Guards `start()`'s check-then-set so two concurrent first callers can't both
 # see `_started` as False and both spawn a watcher thread.
@@ -247,6 +280,23 @@ def registry_row(session_id: str) -> dict | None:
         return dict(row) if row else None
 
 
+def session_has_pid(session_id: str, pid) -> bool:
+    """Is `session_id` held in the live registry by the `claude` process `pid`?
+
+    Every file naming the session counts, not only the row `_settle` stands
+    (two processes can hold one session). Dead pids have already been dropped
+    by `_read_registry`, which is what makes this the check that a pid in a
+    stale file elsewhere (a run dir's `pid`, a `host.json`) is the process it
+    claims to be."""
+    if not session_id or not pid:
+        return False
+    pid = str(pid)
+    with _cond:
+        return any(owner == session_id and path in _sess_rows
+                   and str(_sess_rows[path][0].get("pid") or "") == pid
+                   for path, owner in _sess_sids.items())
+
+
 def session_for_pid(pid) -> str:
     """The session id the `claude` process `pid` is holding, or `""`.
 
@@ -275,11 +325,23 @@ def session_for_pid(pid) -> str:
         for row, _mtime in _sess_rows.values():
             if str(row.get("pid") or "") == pid_s:
                 return str(row.get("sessionId") or "")
-    try:
-        with open(os.path.join(SESSIONS_DIR, pid_s + ".json"),
-                  encoding="utf-8") as fh:
-            row = json.load(fh)
-    except (OSError, ValueError):
+    # EVERY REGISTRY DIR, NEWEST WINS: pids are recycled, so the same
+    # `<pid>.json` can sit under both backends' dirs — a dead run's leftover
+    # in one and the live process in the other. The newer write is the one
+    # this pid is holding now.
+    row, newest = None, -1.0
+    for root in _sessions_roots():
+        path = os.path.join(root, pid_s + ".json")
+        try:
+            mtime = os.path.getmtime(path)
+            if mtime <= newest:
+                continue
+            with open(path, encoding="utf-8") as fh:
+                row = json.load(fh)
+            newest = mtime
+        except (OSError, ValueError):
+            continue
+    if row is None:
         return ""
     if not isinstance(row, dict) or str(row.get("pid") or "") != pid_s:
         return ""
@@ -351,7 +413,12 @@ def is_turn_ended(session_id: str) -> bool:
       REWRITTEN (`_registry_mtime`) strictly after the ended stamp. The SAME
       turn's row, re-read unchanged or re-asserting the same status without a
       fresh write, keeps an mtime from before the stamp and does not clear it
-      — see `mark_turn_ended`.
+      — see `mark_turn_ended`;
+    * the session host's own word that the CLI REOPENED a turn
+      (`mark_turn_started`) strictly after the end that would speak for the
+      row — the turn the CLI wakes itself for (a subagent hand-back, a task
+      notification), which no page marks and no busy-kept row ever rewrites
+      for (T329, 2026-10-20).
 
     ONE SESSION, SEVERAL PROCESSES (`_sess_rows`): the registry check runs over
     every live file on the session, each against the stamps that speak for it
@@ -372,6 +439,15 @@ def is_turn_ended(session_id: str) -> bool:
         def covering(r: dict) -> float:
             return max(ended_at or 0.0, by_pid.get(str(r.get("pid") or ""), 0.0))
 
+        started_at = _reopened.get(session_id, 0.0)
+        started_by_pid = _reopened_by_pid.get(session_id, {})
+
+        def restarted(r: dict) -> bool:
+            # The host saw this process (or, unscoped, the session) open a
+            # turn after the end that speaks for it: that end is history.
+            started = max(started_at, started_by_pid.get(str(r.get("pid") or ""), 0.0))
+            return started > covering(r)
+
         mark = _marks.get(session_id)
         # `>=`, NOT `>`: a mark stamped in the same clock tick as the ended
         # stamp is the NEXT turn's — the queue marks a session running right
@@ -388,9 +464,17 @@ def is_turn_ended(session_id: str) -> bool:
             rows.append((row, _registry_mtime.get(session_id)))
         for r, mtime in rows:
             status = r.get("status")
-            if (isinstance(status, str) and status in RUNNING_STATUSES
-                    and mtime is not None and mtime > covering(r)):
+            running_row = isinstance(status, str) and status in RUNNING_STATUSES
+            # A start only counts on a row the CLI itself calls busy — the
+            # counterweight rule (`_reopened`): a false reopen on an idle
+            # sibling must not cancel the standing process's own end
+            # (CodeRabbit/Bugbot, PR #1780).
+            if running_row and restarted(r):
                 return False
+            if running_row and mtime is not None and mtime > covering(r):
+                return False
+        if not rows and restarted({}):
+            return False   # departed: the collapsed, unscoped stamps decide
     return True
 
 
@@ -820,6 +904,61 @@ def mark_turn_ended(session_id: str, run_id: str = "",
     _bump({session_id})
 
 
+def mark_turn_started(session_id: str, run_id: str = "",
+                      at: float | None = None, pid: int | None = None) -> None:
+    """The session host's word that the CLI just OPENED a turn on its own —
+    `POST /api/tasks/queue/event` (`turn_started`), the host seeing turn rows
+    land after a `result` row on the `out.jsonl` it tails (`_turn_state`).
+
+    THE TURN NOBODY ELSE ANNOUNCES (T329, Akshil, 2026-10-20). A subagent
+    hand-back or a task notification is picked up by the CLI itself, on the
+    same held-open stdin: no page sent it, so there is no `mark_running`, and
+    with background jobs still going the CLI leaves its registry row `busy`
+    — the row never gets the rewrite `is_turn_ended` watches for. So the end
+    the host reported for the previous turn outranked everything for the whole
+    of the next one, and the listing read Done while the chat said Brewing.
+    This is the matching fact: the same scoping as `mark_turn_ended` (a pid a
+    registry file has shown is that process's own, otherwise the session's),
+    the same never-backwards rule, and `is_turn_ended` weighs it against the
+    end that would otherwise speak for the row — a start strictly newer than
+    that end means the turn is open again.
+
+    A COUNTERWEIGHT ONLY. It cancels an end; it never asserts running on its
+    own. `live_from_registry` still needs the row to say `busy`/`shell`, so a
+    row the CLI rewrote `idle` reads idle whatever this says: the host's
+    reopen rule (`_turn_state`, any non-bookkeeping row after a `result`) has
+    misread stray rows before, and a start that could outrank the registry
+    would pin such a session In Progress with nothing left to clear it. With
+    the registry's say-so required, the worst case is a busy row that stays
+    In Progress until the CLI itself writes idle — which it does.
+
+    Fires for every reopen the host sees, a page-sent follow-up included:
+    harmless there, the page's mark and the CLI's busy rewrite already carry
+    that turn, and the next end lands after this by `at`.
+
+    Touches no send mark: a mark is the sending page's own account of a turn
+    it started. `run_id` is accepted for symmetry with `mark_turn_ended` and
+    not stored."""
+    if not session_id:
+        return
+    started_at = time.time() if at is None else float(at)
+    pid_s = "" if pid is None else str(pid)
+    with _cond:
+        known = pid_s in _session_pids.get(session_id, ())
+    if pid_s and not known and session_for_pid(pid_s) == session_id:
+        with _cond:
+            _session_pids.setdefault(session_id, set()).add(pid_s)
+    with _cond:
+        scoped = pid_s in _session_pids.get(session_id, ())
+        stamps = _reopened_by_pid.setdefault(session_id, {}) if scoped else _reopened
+        key = pid_s if scoped else session_id
+        prev = stamps.get(key)
+        if prev is not None and started_at <= prev:
+            return  # older or duplicate delivery: a stamp never moves back
+        stamps[key] = started_at
+    _bump({session_id})
+
+
 def _expire_marks(now: float) -> set[str]:
     """Session ids whose mark has just run out — CHANGED KEYS, because they are.
 
@@ -948,6 +1087,11 @@ def _settle(sid: str) -> dict | None:
         newest = max((_ended_by_pid.pop(sid, None) or {}).values(), default=None)
         if newest is not None:
             _ended[sid] = max(newest, _ended.get(sid, newest))
+        # …and the newest per-pid start the same way, so the two keep their
+        # order for `is_turn_ended`'s row-less read.
+        restart = max((_reopened_by_pid.pop(sid, None) or {}).values(), default=None)
+        if restart is not None:
+            _reopened[sid] = max(restart, _reopened.get(sid, restart))
         _departed[sid] = time.time()
         return None
     _registry[sid] = best[1]
@@ -983,15 +1127,20 @@ def _read_registry() -> set[str]:
     and this is the loop that sees it first."""
     keys: set[str] = set()
     stopped = False
-    try:
-        names = os.listdir(SESSIONS_DIR)
-    except OSError:
-        names = []
-    seen: set[str] = set()
-    for name in names:
-        if not name.endswith(".json"):
+    # Every backend's registry in one pass: the rows are keyed by PATH below,
+    # so a Claude pid and a Copilot pid can never collide even when the same
+    # number is reused across the two dirs.
+    listed: list[str] = []
+    for root in _sessions_roots():
+        try:
+            names = os.listdir(root)
+        except OSError:
             continue
-        path = os.path.join(SESSIONS_DIR, name)
+        listed.extend(os.path.join(root, name) for name in names)
+    seen: set[str] = set()
+    for path in listed:
+        if not path.endswith(".json"):
+            continue
         try:
             st = os.stat(path)
         except OSError:
@@ -1102,7 +1251,13 @@ def _read_live_transcripts() -> set[str]:
     for sid in registered:
         path = _tr_paths.get(sid)
         if not path or not os.path.exists(path):
-            path = session_liveness.transcript_path(sid, tasks_store.PROJECTS_DIR)
+            # Root by root through `tasks_store`'s list rather than letting
+            # `transcript_path` walk its own: the tests patch
+            # `tasks_store.PROJECTS_DIR`, and this is the module they patch
+            # it for.
+            path = next((p for _b, root in tasks_store.projects_roots()
+                         for p in [session_liveness.transcript_path(sid, root)]
+                         if p), "")
             if not path:
                 continue
             _tr_paths[sid] = path
@@ -1208,6 +1363,69 @@ def _read_permission_cards() -> set[str]:
     return keys
 
 
+def watch_background(runs: dict) -> None:
+    """Replace the set of runs `tick` stats for background-work news.
+
+    `runs` is `{run_dir: (bytes of out.jsonl the listing parsed, {session
+    ids})}` — `routers/tasks.py _hosted_runs`' pending half, handed over by
+    every listing build. A run already watched keeps the size this module last
+    saw (news it has already rung is not news again); a new one starts from the
+    size the listing read, so a row that changed between that read and this
+    call still rings."""
+    global _bg_runs
+    fresh: dict[str, tuple] = {}
+    with _cond:
+        for run_dir, (size, sids) in list(runs.items())[:BG_WATCH_LIMIT]:
+            held = _bg_runs.get(run_dir)
+            fresh[run_dir] = (held[0] if held else size, frozenset(sids))
+        _bg_runs = fresh
+
+
+def _read_background_runs() -> set[str]:
+    """Session ids whose run is holding background work and whose `out.jsonl`
+    just gained a `background_tasks_changed` row.
+
+    THE ONE CHANGE TO THAT WORK NOTHING ELSE ANNOUNCES. A row whose reply has
+    ended with a `run_in_background` Bash (or a background Agent, or a Monitor)
+    still going carries `background_jobs` (`routers/tasks.py
+    _hosted_runs`), and the registry has ALREADY flipped to idle by then — so
+    when the CLI writes the row that empties that list and stays idle (a task
+    killed, or one that finished with nothing to wake the model for), no
+    registry rewrite and no transcript growth says so. The host writes that row
+    into `out.jsonl`, so the watch is one `stat` per run, and on growth a read
+    of the NEW bytes only, ringing just when they hold the row that changes the
+    answer. A background Agent streams its own rows into the same file every
+    second; those are not news and must not cost a rebuild each."""
+    with _cond:
+        watched = dict(_bg_runs)
+    keys: set[str] = set()
+    for run_dir, (seen, sids) in watched.items():
+        path = os.path.join(run_dir, "out.jsonl")
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = None
+        if size == seen:
+            continue
+        news = True
+        if size is not None and seen is not None and seen < size <= seen + BG_READ_MAX:
+            # Back up by the marker's length, so a row split across two
+            # ticks' reads is still seen whole by the second.
+            start = max(0, seen - len(_BG_MARKER))
+            try:
+                with open(path, "rb") as fh:
+                    fh.seek(start)
+                    news = _BG_MARKER in fh.read(size - start)
+            except OSError:
+                news = True
+        if news:
+            keys |= sids
+        with _cond:
+            if run_dir in _bg_runs:
+                _bg_runs[run_dir] = (size, sids)
+    return keys
+
+
 # (mtime_ns, size) of each shared store last seen, keyed by path. These are
 # edited by OTHER processes — the machine-duties leader's scheduler writes the
 # schedule store and the queue index for every app on the machine — and a lean
@@ -1220,7 +1438,7 @@ def _store_paths() -> list[str]:
     from fused_render import queue_manager, schedule
 
     return [schedule.store_path(),
-            os.path.join(tasks_store.STATE_DIR, queue_manager.INDEX_FILE)]
+            os.path.join(tasks_store.duties_dir(), queue_manager.INDEX_FILE)]
 
 
 #: Per-path content signature of the stores whose file also changes for reasons
@@ -1310,6 +1528,9 @@ def tick() -> set[str]:
             # first sighting is a baseline that names nobody, so `card_keys` is
             # empty there.
             _wake_schedule()
+    # Unconditional: a handful of stats at most, and empty unless a listing
+    # found a run holding background work.
+    keys |= _read_background_runs()
     # LAST, so a mark whose registry row arrived in the same tick is retired
     # against a listing that already knows better. The row does not flicker
     # either way — `_live` reads `busy` over a mark — but the announcement
@@ -1375,10 +1596,13 @@ def reset() -> None:
         _registry_mtime.clear()
         _ended.clear()
         _ended_by_pid.clear()
+        _reopened.clear()
+        _reopened_by_pid.clear()
         _marks.clear()
         _mark_turns.clear()
         _mark_busy_seen.clear()
         _last_idle_turn.clear()
+        _bg_runs.clear()
         # Wake, not just drop: a parked wait_async would otherwise sleep out
         # its full deadline against a generation that just went back to 0.
         waiters = list(_async_waiters)

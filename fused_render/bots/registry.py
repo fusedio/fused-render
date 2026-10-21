@@ -321,7 +321,7 @@ def _try_probe_lock() -> bool:
     it without keeping it: a probe, not an election — a lean server asks this."""
     import fcntl
     try:
-        fh = open(os.path.join(bpaths.data_root(), "routines.lock"), "a+")
+        fh = open(os.path.join(bpaths.data_root(), "routines.lock"), "a+", encoding="utf-8")
     except OSError:
         return False
     try:
@@ -517,7 +517,7 @@ def seed_super() -> str | None:
     b.emit("done", bm.SUPER_GREETING, source="seed")
     try:
         os.makedirs(os.path.dirname(stamp), exist_ok=True)
-        with open(stamp, "w") as f:
+        with open(stamp, "w", encoding="utf-8") as f:
             json.dump({"id": b.id, "at": time.time()}, f)
     except OSError:
         logger.warning("could not write %s", stamp, exc_info=True)
@@ -555,7 +555,7 @@ def _take_routines_lock() -> bool:
     import fcntl
     path = os.path.join(bpaths.data_root(), "routines.lock")
     try:
-        fh = open(path, "a+")
+        fh = open(path, "a+", encoding="utf-8")
     except OSError:
         return False
     try:

@@ -34,6 +34,7 @@ import { createPortal } from "react-dom";
 
 import { confirmLeave, currentUrl, navigateUrl } from "@platform/lib/router";
 import { registerChatComposer } from "@platform/lib/chat-focus";
+import { CHAT_ACTIVITY_KEY } from "@platform/lib/tasksChanged";
 import {
   chatDraftKey,
   newTaskDraftId,
@@ -81,7 +82,7 @@ import {
 } from "./ann";
 import { captureAudio, captureSources } from "@platform/lib/capture-audio";
 import { terminalHint } from "@platform/lib/terminalFocus";
-import { composeOutgoing, formatAnnotations, type AnnotationWire } from "./protocol/wire";
+import { composeOutgoing, formatAnnotations, isInterruptMark, type AnnotationWire } from "./protocol/wire";
 import { getStream, isNativeOff, noteSourcesProbe, shotsDir } from "./shots";
 import {
   AppPane,
@@ -99,7 +100,7 @@ import {
   type PaneSrcFlags,
   type TargetNoun,
 } from "./pane";
-import { useSideMaximized } from "@platform/lib/side-maximized-store";
+import { setSideMaximized, useSideMaximized } from "@platform/lib/side-maximized-store";
 import {
   AnnStrip,
   ArtStrip,
@@ -113,6 +114,7 @@ import {
   openCardIds,
   resetCardPolicy,
   liveViewable,
+  HeadsUp,
   RecapFold,
   SchedBlock,
   SentPop,
@@ -128,6 +130,8 @@ import {
   useArtStrip,
   useAttachments,
   useAwayRecap,
+  useHeadsUp,
+  countUserTurns,
   useFitStrip,
   useComposerDefaults,
   useRecentTasks,
@@ -137,8 +141,12 @@ import {
   useLimitWord,
   type TranscriptTail,
   type Viewable,
+  AgentProvider,
 } from "./ui";
+import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
+import { sessionSeed } from "./ui/useRecentTasks";
+import { takenAskBackend } from "@platform/lib/pending-claude-ask";
 import type { ClassifiedCommand } from "./protocol/commands";
 import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
@@ -211,11 +219,11 @@ export type ChatParamsSource = "url" | ParamsStore;
  *  wonders whether anything happened. */
 export const ASK_DETECTION_TIMEOUT_MS = 1500;
 
-/** T:16435 — the cross-document poke. `storage` fires only on a CHANGED value
- *  and never in the writing document, which is exactly the shape needed; the
- *  clock plus a nonce means two panes stamping in the same millisecond cannot
- *  swallow each other's poke. */
-export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
+// T:16435 — the cross-document poke, CHAT_ACTIVITY_KEY (one home:
+// @platform/lib/tasksChanged, D1386). `storage` fires only on a CHANGED value
+// and never in the writing document, which is exactly the shape needed; the
+// clock plus a nonce (stampChatActivity) means two panes stamping in the same
+// millisecond cannot swallow each other's poke.
 
 /** How often the HOST's app-state frame is looked up again (`annotateTarget`).
  *  The mark moves with the host's own mode switcher and goes when it shows a
@@ -256,6 +264,11 @@ export interface ClaudeChatProps {
   annotateTarget?: () => HTMLIFrameElement | null;
   /** `_preview=1` — this mount is a thumbnail, so the pane's own render is too. */
   preview?: boolean;
+  /** `_noann=1` — no Screenshot / Comment / Annotate seats and no narrow-view
+   *  toggle: the host shows this chat where its pane must stay out of reach
+   *  (the canvas node pane, whose Code tab is the file's view). The pane
+   *  itself stays mounted — it is what files the chat under its file. */
+  noAnnTools?: boolean;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -573,7 +586,16 @@ function ChatBody(props: ChatBodyProps) {
       if (!frame) return null;
       // A frame still loading answers with its own `about:blank` document,
       // which is readable and no reason to disown it — the watcher polls.
-      if (!frame.contentDocument && !frame.contentWindow) return null;
+      //
+      // A CROSS-ORIGIN frame (the canvas workspace's hosted workbench) answers
+      // a WindowProxy but a null `contentDocument`, and that is a frame whose
+      // document is NOT ours to read: it used to pass here, which put
+      // `has_pane:"1"` on the wire — the `app_state` tool in the roster and
+      // the app-folder prompt for a page the model could never read. The
+      // annotation overlay is unaffected: it takes the frame straight from
+      // `annotateTarget` (useAnnotations `markedFrame`), never through here,
+      // because it only needs the frame's BOX, not its document.
+      if (!frame.contentDocument) return null;
       return frame;
     } catch {
       return null; // the getter threw, or the document is not ours to read
@@ -703,6 +725,11 @@ function ChatBody(props: ChatBodyProps) {
     const host = rootRef.current?.closest(".preview-side, .listing-pane-slot");
     setLeadHost((host?.querySelector(".side-header-lead") as HTMLElement | null) ?? null);
   }, [sideMaximized]);
+  // In a side pane, the ⋮ carries the pane's Full screen toggle.
+  const [inSidePane, setInSidePane] = useState(false);
+  useEffect(() => {
+    setInSidePane(!!rootRef.current?.closest(".preview-side, .listing-pane-slot"));
+  }, []);
   const inLead = (row: ReactElement) => (leadHost ? createPortal(row, leadHost) : row);
   // The noun the app-state block reads (see `paneNounRef`'s own note). Written
   // on every render rather than in an effect: the watcher pulls it lazily at
@@ -797,6 +824,8 @@ function ChatBody(props: ChatBodyProps) {
   // run loop.
   const liveModel = useRef("");
   const liveEffort = useRef("");
+  /** The Agent pill's pick, read at send time like the two above (D2). */
+  const liveBackend = useRef("");
   /** PR4's run-clock seats, filled below once the stores that answer them
    *  exist. Refs for the reason every other send-time read here is one: the
    *  controller closes over them and is built first. */
@@ -1170,6 +1199,7 @@ function ChatBody(props: ChatBodyProps) {
         historyCache: sharedHistoryCache,
         model: () => liveModel.current,
         effort: () => liveEffort.current,
+        backend: () => liveBackend.current,
         hasPane: () => paneAnswer.current(),
         // The controller already announces on THIS document
         // (`announceTasksChanged`); the stamp is for every OTHER one (T:16435).
@@ -1708,7 +1738,22 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   // ── the three pills ────────────────────────────────────────────────────────
-  const defaults = useComposerDefaults(file, params, !!props.hostSeededSettings);
+  const defaults = useComposerDefaults(file, params, !!props.hostSeededSettings, state.backend);
+  // WHICH AGENT THIS CHAT IS ABOUT (docs/COPILOT_BACKEND.md D2/D18): the
+  // conversation's own once the wire has said, else the pill's pick, else the
+  // catalog's default — `useComposerDefaults` resolves exactly that. Every
+  // surface below reads it off the `AgentProvider`; the caps decide which
+  // Claude-only controls are drawn at all (§7).
+  const agentCatalog = useAgentBackends();
+  const chatBackend = defaults.backend;
+  const agentCaps = capsOf(chatBackend);
+  // THE AGENT IS SWITCHED OFF (D17): the transcript still reads, the box
+  // closes with one line and the Preferences link. Only a session that HAS an
+  // agent — a fresh chat follows the catalog's default, which is always on —
+  // and only once the catalog has answered: before it, every agent but Claude
+  // reads as off, and a Copilot chat would flash a shut box.
+  const agentOff = agentCatalog.loaded && !!state.backend && !isBackendEnabled(state.backend);
+  liveBackend.current = chatBackend;
   // WHAT THE RUN IS ACTUALLY LAUNCHED WITH (`run-controller`'s `curModel` /
   // `curEffort`, read at send time on every `start` and `send`) — and it is ""
   // for as long as the pills have not resolved.
@@ -1909,7 +1954,15 @@ function ChatBody(props: ChatBodyProps) {
         // navigated to, so disowning it must not buy a Back entry (T:19216).
         // `history: "replace"` spelled out, not inherited: a stale identifier is
         // not a place anyone navigated to, so disowning it must buy no entry.
-        params.set({ session_id: null, run: null }, { history: "replace" });
+        // …AND THE AGENT THE ASK NAMED, when it named one ("Fix with Claude",
+        // D17): the pill's param for this new chat, and the send-time read
+        // straight away, since the send below may go before a render.
+        const askAgent = takenAskBackend(ask);
+        params.set(
+          { session_id: null, run: null, ...(askAgent ? { backend: askAgent } : {}) },
+          { history: "replace" },
+        );
+        if (askAgent) liveBackend.current = askAgent;
         setEntered(true);
         await Promise.race([detected.current!.promise, sleep(ASK_DETECTION_TIMEOUT_MS)]);
         // THE ASK IS SPENT ONCE. The host took its pending ask and cleared it
@@ -1961,7 +2014,11 @@ function ChatBody(props: ChatBodyProps) {
           // already leaves (run-controller.openSession swallows the error by
           // design, T:18057-18059). Never a blank box.
           await Promise.race([
-            controller.openSession(sessionId),
+            // The host's seed (`ChatMount backend`, a task row's) or the
+            // row's, so the agent is named before the history lands.
+            controller.openSession(sessionId, {
+              backend: params.get("backend") || sessionSeed(sessionId)?.backend || "",
+            }),
             deadline(GATE_FALLBACK_MS),
           ]);
           if (cancelled) return;
@@ -2687,7 +2744,7 @@ function ChatBody(props: ChatBodyProps) {
         if (parked?.taken.items.length) attachBack.current?.(parked.taken.items);
         strand(text);
       }
-      const t = troubleFromError(err);
+      const t = troubleFromError(err, liveBackend.current);
       controller.reportTrouble({ ...t, message: "This message was not sent: " + t.message });
     },
     // `setOutbox` is a `[]`-deps callback (stable for the mount), left out so
@@ -3292,6 +3349,20 @@ function ChatBody(props: ChatBodyProps) {
     [pullOutbox],
   );
 
+  /** "Fork from here" (Transcript `onFork`): the controller parks that turn and
+   *  everything after it, and the words go back through the same restore seat a
+   *  pulled bubble uses. Nothing happens when the controller refuses (a run is
+   *  active, not a Claude chat). */
+  const onFork = useCallback(
+    (turnKey: string) => {
+      const text = controller.beginFork(turnKey);
+      if (text === null) return;
+      strandSeq.current += 1;
+      setStranded({ text, seq: strandSeq.current });
+    },
+    [controller],
+  );
+
   /**
    * SEND NOW — Claude Code's Ctrl+Enter (`chat:sendNow`): stop the turn, then
    * the typed line goes FIRST, ahead of anything parked, and the outbox drains
@@ -3550,7 +3621,7 @@ function ChatBody(props: ChatBodyProps) {
       // transcript until something else re-rendered (Bugbot, d9f041e11).
       leader.forget();
       params.set({ [QUEUED_PARAM]: null }, { history: "replace" });
-      void controller.openSession(sessionId);
+      void controller.openSession(sessionId, { backend: sessionSeed(sessionId)?.backend || "" });
     },
     [controller, cardPolicy, leader, params],
   );
@@ -3566,7 +3637,13 @@ function ChatBody(props: ChatBodyProps) {
   // ── SLASH COMMANDS (SPEC C-1/C-3) ──────────────────────────────────────────
   //
   // The folder's list, fetched per `_file` and again when a poll says it moved.
-  const { commands: slashCommands, refetch: refetchCommands } = useSlashCommands(file);
+  // PER AGENT (D11): the session's own menu, or the Agent pill's for a new
+  // chat — so a Copilot chat never offers Claude's commands, and a pill flip
+  // re-asks.
+  const { commands: slashCommands, refetch: refetchCommands } = useSlashCommands(file, undefined, {
+    sessionId: state.sessionId || "",
+    backend: chatBackend,
+  });
   commandsChanged.current = refetchCommands;
   // The worktree menu's `/worktree` requests (`ui/WorktreeMenu`).
   const wtSeq = useRef(0);
@@ -3606,6 +3683,7 @@ function ChatBody(props: ChatBodyProps) {
   const onLocalCommand = useCallback(
     (cmd: ClassifiedCommand): boolean => {
       const plan = planLocalCommand(cmd, {
+        backend: liveBackend.current,
         worktreeReady: worktreeTarget && worktreeReady.current,
       });
       if ("refuse" in plan) {
@@ -3706,8 +3784,18 @@ function ChatBody(props: ChatBodyProps) {
     if (href) onNavigate(href);
   }, [onNavigate]);
 
-  // T:16714 — one `scrollBottom()` after the turn has settled, which T runs
+  // T:16714 — one scroll to the tail after the turn has settled, which T runs
   // after the awaited pollLoop. `status` leaving "running" is that moment.
+  //
+  // THROUGH THE FOLLOW FLAG, not a raw write (Akshil 2026-10-19). T's
+  // `scrollBottom()` here moved the reader whatever they were doing, and a
+  // reader who had scrolled up to re-read the middle of a long reply was yanked
+  // to the tail the moment the run ended — one of the "jumps to a different
+  // place" in the report. The settle exists for the working line leaving
+  // (the log gets SHORTER, which the follow's ResizeObserver answers only by
+  // not moving), so a pinned reader is put back on the tail and a reader who
+  // left it is left where they are. A finished run the reader was AWAY for is
+  // the other case, and it stays unconditional in `useRepairScroll` below.
   const settled = state.status === "idle";
   const wasRunning = useRef(false);
   useEffect(() => {
@@ -3717,8 +3805,7 @@ function ChatBody(props: ChatBodyProps) {
     }
     if (!wasRunning.current) return;
     wasRunning.current = false;
-    const log = rootRef.current?.querySelector(".chat-logwrap");
-    if (log) log.scrollTop = log.scrollHeight;
+    transcriptFollow.current?.();
   }, [settled]);
 
   // AND UNCONDITIONALLY AFTER A REPAIR (T:17851, P4-10) — the rule, and why it
@@ -3735,6 +3822,9 @@ function ChatBody(props: ChatBodyProps) {
       setModel: defaults.setModel,
       setEffort: defaults.setEffort,
       setPermission: defaults.setPermission,
+      backend: defaults.backend,
+      backendFixed: defaults.backendFixed,
+      setBackend: defaults.setBackend,
       ready: defaults.pillsReady,
     }),
     [defaults],
@@ -3751,10 +3841,11 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
-  const name = file ? file.split("/").filter(Boolean).pop() || file : "Claude";
+  const name = file ? file.split("/").filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
-  const worktreeMenu = worktreeTarget ? (
+  // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
+  const worktreeMenu = worktreeTarget && agentCaps.worktrees ? (
     <WorktreeMenu
       key={file as string}
       file={file as string}
@@ -4070,6 +4161,22 @@ function ChatBody(props: ChatBodyProps) {
       ),
     [state.inbox, state.queued, state.turns],
   );
+  /**
+   * THE COMPOSER'S ↑ HISTORY: this session's own prompts, oldest first, as
+   * Claude Code's prompt history walks them. The CLI's interrupt marker is a
+   * user row but not a prompt anyone typed, and a line sent twice in a row is
+   * one step, not two.
+   */
+  const promptHistory = useMemo(() => {
+    const out: string[] = [];
+    for (const t of state.turns) {
+      if (t.role !== "user") continue;
+      const words = t.text;
+      if (!words.trim() || isInterruptMark(words)) continue;
+      if (out[out.length - 1] !== words) out.push(words);
+    }
+    return out;
+  }, [state.turns]);
   const claimedNext = nextClaim !== null && nextClaim === sched.recGen;
   const waitFacts = useMemo(
     () => waitingFacts(sched.rec, admitAhead, claimedNext),
@@ -4146,7 +4253,7 @@ function ChatBody(props: ChatBodyProps) {
       // the scheduler's sentence as `reason` (2026-09-21): that message is out
       // of the queue for good and the next tick sends it, so the poll below is
       // the honest answer rather than an error about work that is on its way.
-      const t = troubleFromError(err);
+      const t = troubleFromError(err, liveBackend.current);
       controller.reportTrouble({ ...t, message: "The queue did not take that: " + t.message });
     } finally {
       setForcing(false);
@@ -4224,7 +4331,7 @@ function ChatBody(props: ChatBodyProps) {
         // that road and it still stays put.
         if (leaving) onBack();
       } catch (err) {
-        const t = troubleFromError(err);
+        const t = troubleFromError(err, liveBackend.current);
         controller.reportTrouble({
           ...t,
           message: stopId
@@ -4306,7 +4413,7 @@ function ChatBody(props: ChatBodyProps) {
     // session lands as a prop, the key changes, and the box's text is handed to
     // `draftSyncer(<session>).setText(...)`. One record, minted by the flip that
     // needs it, with no second key to reconcile.
-    void controller.openSession(adoptSession);
+    void controller.openSession(adoptSession, { backend: sessionSeed(adoptSession)?.backend || "" });
   }, [adoptSession, controller, cardPolicy, params]);
 
   /**
@@ -4525,6 +4632,7 @@ function ChatBody(props: ChatBodyProps) {
       queuedCount: outboxCount,
       notSentCount,
       onPullQueued,
+      history: promptHistory,
       onSendNow,
       onPaste,
       // The chip row is ABOVE the control row and changes the composer's height,
@@ -4537,9 +4645,23 @@ function ChatBody(props: ChatBodyProps) {
       // The SEND button is deliberately left alone: while a run is live it is
       // the STOP button, and a chat that cannot stop its own running turn is a
       // worse state than the one this feature prevents.
-      blocked: sched.blocked,
-      blockedPlaceholder: sched.placeholder,
-      blockedReason: sched.reason,
+      // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
+      // its own sentence, and the link to the switch under it.
+      blocked: sched.blocked || agentOff,
+      blockedPlaceholder: agentOff
+        ? `${agentLabel(state.backend)} is turned off in Preferences.`
+        : sched.placeholder,
+      blockedReason: agentOff
+        ? `${agentLabel(state.backend)} is turned off in Preferences.`
+        : sched.reason,
+      blockedNote: agentOff ? (
+        <>
+          {agentLabel(state.backend)} is turned off in Preferences.{" "}
+          <a href={AGENT_PREFS_URL} onClick={(e) => { e.preventDefault(); onNavigate(AGENT_PREFS_URL); }}>
+            Turn it on
+          </a>
+        </>
+      ) : undefined,
       // THE FLAG TAKES THE FOLLOW-UP FOOTNOTE AWAY (see `ComposerCardProps`):
       // under the queue this pane says "waiting" about messages that really are,
       // and a count of follow-ups the live host will drain in seconds is the one
@@ -4555,6 +4677,8 @@ function ChatBody(props: ChatBodyProps) {
     [
       file,
       state.sessionId,
+      state.backend,
+      agentOff,
       state.status,
       state.queued,
       inboxRows,
@@ -4574,6 +4698,7 @@ function ChatBody(props: ChatBodyProps) {
       outboxCount,
       notSentCount,
       onPullQueued,
+      promptHistory,
       onSendNow,
       urlTick,
       attach.items,
@@ -4681,6 +4806,27 @@ function ChatBody(props: ChatBodyProps) {
     eager: recapEager,
     root: recapRoot,
   });
+  // Heads-up notes (server: claude_agent/headsup.py): a side check polled while
+  // a turn runs. Claude chats only. The card clears itself after the reader's
+  // next two messages, counted off the transcript's own user rows.
+  const userTurnCount = useMemo(() => countUserTurns(state.turns), [state.turns]);
+  // The heads-up's "Ask in chat" goes through the page's own send path, so the
+  // send latch, outbox parking, queue admission and optimistic bubble all apply.
+  const headsupSend = useMemo(
+    () => ({
+      sendFollowUp: async (t: string) => onFollowUp(t),
+      sendMessage: async (t: string) =>
+        onSend(t, { model: defaults.model, effort: defaults.effort, permission: defaults.permission }),
+    }),
+    [onFollowUp, onSend, defaults.model, defaults.effort, defaults.permission],
+  );
+  const headsup = useHeadsUp({
+    runId: state.runId || state.lastRunId || "",
+    running,
+    enabled: inChat && chatBackend === "claude",
+    userTurns: userTurnCount,
+    controller: headsupSend,
+  });
   // The task number this session is (`#session`, T:12696 showSession). Read here
   // rather than inside the topbar so the landing's kebab and the erase dialog
   // see the same one answer.
@@ -4750,6 +4896,7 @@ function ChatBody(props: ChatBodyProps) {
   );
 
   return (
+   <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
    <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
     <div
@@ -4875,7 +5022,7 @@ function ChatBody(props: ChatBodyProps) {
               // The row itself follows the ANNOTATE TARGET — ours or the
               // host's — because all three seats act on it
               // (`enterNoPane`'s step 6 note).
-              shown={annTarget}
+              shown={annTarget && !props.noAnnTools}
               // NO CAMERA GATE — T RENDERS THIS SEAT IN THE NARROW CHAT VIEW,
               // and the owner's rule is identical UX (visual pass 2, FIX-18).
               // T:3823's `body.view-chat .viewshot { display: none }` has
@@ -4944,7 +5091,7 @@ function ChatBody(props: ChatBodyProps) {
                 leftMode={leftMode}
               />
             ) : null}
-            {narrowView.narrow ? <ViewToggle narrowView={narrowView} /> : null}
+            {narrowView.narrow && !props.noAnnTools ? <ViewToggle narrowView={narrowView} /> : null}
             {/* The menu rides the same seat in BOTH views (T's `#kebab` is on
                 the one strip they share), so it never appears out of nowhere on
                 entering a chat. On the landing it is the one item that can mean
@@ -4954,6 +5101,10 @@ function ChatBody(props: ChatBodyProps) {
               sessionId={inChat ? (state.sessionId ?? "") : ""}
               btnRef={kebabBtn}
               running={running}
+              // Only a RUNNING turn's hold is lifted by its open card: a
+              // `stopping` turn with a card still painted is a process on its
+              // way out, and the menu waits for it like before.
+              asking={!!openCards && state.status === "running"}
               landing={!inChat}
               onErased={onErased}
               // ARCHIVE LEAVES THROUGH THE SAME DOOR DELETE DOES (Akshil,
@@ -4980,6 +5131,11 @@ function ChatBody(props: ChatBodyProps) {
               // resume and nothing finished to put away. Delete stays: calling
               // the message off is exactly what a reader wants here.
               queued={queuedChat}
+              fullScreen={
+                inSidePane
+                  ? { on: sideMaximized, onToggle: () => setSideMaximized(!sideMaximized) }
+                  : undefined
+              }
             />
           </div>
         ) : null}
@@ -5046,12 +5202,21 @@ function ChatBody(props: ChatBodyProps) {
               onAnchorSpent={onAnchorSpent}
               {...(debugSent ? { onShowSent: setSent } : {})}
               onPullPending={onPullPending}
+              {...(chatBackend === "claude" && !running ? { onFork } : {})}
               onOpenShot={setViewing}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
               recap={
-                away.recap ? (
-                  <RecapFold text={away.recap.text} />
+                headsup.note || away.recap ? (
+                  <>
+                    <HeadsUp
+                      note={headsup.note}
+                      onGotIt={() => void headsup.gotIt()}
+                      onAsk={() => void headsup.askInChat()}
+                      onDismiss={() => void headsup.dismiss()}
+                    />
+                    {away.recap ? <RecapFold text={away.recap.text} /> : null}
+                  </>
                 ) : null
               }
               trailing={
@@ -5124,7 +5289,7 @@ function ChatBody(props: ChatBodyProps) {
             {!compact ? (
               <DockRow
                 tasks={
-                  summarizeTasks(state.tasks) || tasksOpen ? (
+                  agentCaps.bg_tasks && (summarizeTasks(state.tasks) || tasksOpen) ? (
                     <TasksPanel
                       tasks={state.tasks}
                       runId={state.tasksRunId}
@@ -5165,19 +5330,30 @@ function ChatBody(props: ChatBodyProps) {
               onStop={sched.onStop}
               cardRef={sched.cardRef}
             />
+            {/* FORK NOTICE: the next send starts a NEW session from the message
+                above; Cancel puts the hidden turns back. */}
+            {state.fork ? (
+              <div className="fork-notice" role="status">
+                <span>Forking from an earlier message</span>
+                <button type="button" className="fork-notice-cancel" onClick={() => controller.cancelFork()}>
+                  Cancel
+                </button>
+              </div>
+            ) : null}
             {/* A card is READ, not typed into: compact is the one cut that takes
                 the composer away, which is the whole difference from peek
                 (T:1412-1422). The strip rides INSIDE the composer's own block
                 (between the box and the footnote, T:4203) when there is one,
                 and stands alone in the compact tile that has none. */}
+            {/* The artifacts strip is Claude's (§7 `artifacts`). */}
             {!compact ? (
               <Composer
                 {...card}
-                artStrip={<ArtStrip items={art.items} />}
+                artStrip={agentCaps.artifacts ? <ArtStrip items={art.items} /> : null}
               />
-            ) : (
+            ) : agentCaps.artifacts ? (
               <ArtStrip items={art.items} />
-            )}
+            ) : null}
           </>
         ) : (
           <Home
@@ -5185,7 +5361,7 @@ function ChatBody(props: ChatBodyProps) {
             {...card}
             name={name}
             {...(file ? { path: file } : {})}
-            placeholder={homePlaceholderFor(pane.noun)}
+            placeholder={homePlaceholderFor(pane.noun, agentLabel(chatBackend))}
             recent={recent}
             onOpenSession={onOpenSession}
             onFillDraft={onFillDraft}
@@ -5220,6 +5396,7 @@ function ChatBody(props: ChatBodyProps) {
     </div>
    </FilePreviewProvider>
    </CardPolicyProvider>
+   </AgentProvider>
   );
 }
 

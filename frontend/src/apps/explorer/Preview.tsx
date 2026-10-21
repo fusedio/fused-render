@@ -3,6 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
+import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -100,6 +101,9 @@ import { OPEN_CHAT_EVENT, armFocusOnRegister } from "@platform/lib/chat-focus";
 
 /** The chat companion's mode key, in `templates` and in `_side` alike. */
 const CHAT_MODE = "claude";
+// `?_noann=1` on this document's URL (an embed a host frames): the content-pane
+// chat renders without its annotate seats (ChatMount `noAnnTools`).
+const NO_ANN_TOOLS = new URLSearchParams(location.search).get("_noann") === "1";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
@@ -271,6 +275,10 @@ function usePreviewFileMenu(
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
   const [dialog, setDialog] = useState<PreviewDialog | null>(null);
   const canRun = useCanRunInTerminal();
+  // "Open in Claude" FOLLOWS THE CLAUDE SWITCH (docs/COPILOT_BACKEND.md D17):
+  // with Claude Code turned off in Preferences the terminal door to it goes
+  // too. Subscribed so a flip repaints; the menus read it when they open.
+  useAgentBackends();
   // Publish this header menu's overlay state to the shared registry (lib/
   // ui-overlay). A directory opened in Preview embeds a Listing whose own
   // document-level keyboard handlers would otherwise fire (Cmd+Backspace,
@@ -606,12 +614,12 @@ function usePreviewFileMenu(
     }),
     copy: [
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: doCopyPath },
-      {
+      ...(isBackendEnabled("claude") ? [{
         label: canRun ? "Open in Claude" : "Copy Claude session command",
         icon: MenuIcons.openWith,
         onClick: doOpenInClaude,
-      },
-      ...(canRun
+      }] : []),
+      ...(canRun && isBackendEnabled("claude")
         ? [
             {
               label: "Copy Claude session command",
@@ -2244,6 +2252,13 @@ function TemplatePreview({
                      model call for a fold nobody reads as it is of the keyboard
                      (ChatMount's `recap`). */
                   {...(IS_PREVIEW ? { preview: true, noFocus: true } : { recap: true })}
+                  {...(NO_ANN_TOOLS
+                    ? // `_noann=1`: a host framing this route where the chat's
+                      // pane must stay out of reach (the canvas node pane) asks
+                      // for no annotate seats and no view toggle. Read off this
+                      // document's URL, the embed's own.
+                      { noAnnTools: true }
+                    : {})}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}

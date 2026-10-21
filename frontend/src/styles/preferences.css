@@ -1307,54 +1307,12 @@
   width: 100%;
 }
 
-.prefs-title {
-  margin: 0 0 14px;
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-/* Compact layout for narrow panes: tighten the settings page padding. */
+/* Compact layout for narrow panes: tighten the page padding. */
 @media (max-width: 560px) {
   .prefs-page {
     padding: 14px 14px 24px;
     gap: 18px;
   }
-}
-
-/* Render preferences / Indexing tabs (D125) — same look as the
-   Templates page's bindings/library tabs. */
-.prefs-tabs {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-.prefs-tab {
-  font: inherit;
-  font-size: 13px;
-  padding: 9px 4px;
-  margin-right: 20px;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.prefs-tab:hover {
-  color: var(--fg);
-}
-
-.prefs-tab.active {
-  color: var(--fg);
-  border-bottom-color: var(--accent);
-}
-
-.prefs-tabpanel {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
 }
 
 .prefs-section {
@@ -1409,51 +1367,597 @@
   cursor: default;
 }
 
-/* A row of sibling actions. The generic `.prefs-section button` rule pins each
-   button to flex-start, which stacks them vertically when a section has more
-   than one; this puts them side by side without touching that default. */
-.prefs-actions {
+/* ---- the Preferences page (shell/Preferences.tsx + shell/settings/) -----
+   A nav of groups beside one column of setting rows, a search box above both.
+   Layout only: the controls are shadcn (switch, select, toggle group,
+   button), styled by Tailwind through their own data-slot, and this file
+   never reaches into them except to give the switch the shell's accent. A
+   CONTAINER, not the viewport, decides when the nav folds above the rows:
+   the page is as often a split pane or the Bots panel's iframe as a window. */
+.settings-page {
+  container-type: inline-size;
+  overflow-y: auto;
+  height: 100%;
+  padding: 22px 24px 48px;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.settings-header {
+  max-width: 1040px;
+  margin: 0 auto 20px;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  align-items: center;
+  gap: 12px 32px;
+}
+
+.settings-title {
+  margin: 0;
+  flex: 0 0 200px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.settings-search {
+  position: relative;
+  flex: 999 1 320px;
+  min-width: 0;
+  display: flex;
   align-items: center;
 }
 
-/* Free-text list editor (the index's skip rules). Monospace because every line
-   is a path or glob, where a mistaken space matters. */
-.prefs-textarea {
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+.settings-search-icon {
+  position: absolute;
+  left: 10px;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-muted);
+  pointer-events: none;
+}
+
+.settings-search .settings-search-input {
+  height: 36px;
+  padding-left: 34px;
+  padding-right: 36px;
+  font-size: 14px;
+}
+
+/* The native cancel glyph would sit under our own clear button. */
+.settings-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+.settings-search .settings-search-clear {
+  position: absolute;
+  right: 4px;
+}
+
+.settings-body {
+  max-width: 1040px;
+  margin: 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 32px;
+}
+
+.settings-nav {
+  flex: 0 0 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 0;
+}
+
+/* The nav's headings are the sidebar's (.sidebar-heading, styles/sidebar.css):
+   the same word for the same destination, in the same type. */
+.settings-nav-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-section + .settings-nav-section {
+  margin-top: 8px;
+}
+
+.settings-nav-heading {
+  padding: 4px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.settings-nav .settings-nav-item {
+  justify-content: flex-start;
+  height: 34px;
+  color: var(--fg);
+  font-weight: 400;
+}
+
+.settings-nav .settings-nav-item svg {
+  color: var(--fg-muted);
+}
+
+.settings-nav .settings-nav-item.is-active {
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
+.settings-nav .settings-nav-item.is-active svg {
+  color: var(--accent);
+}
+
+.settings-nav .settings-nav-item.is-dim {
+  opacity: 0.45;
+}
+
+.settings-nav-label {
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+.settings-nav-count {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-main {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.settings-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 4px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.settings-head h2 .settings-badge-beta {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+/* -- blocks: a card that IS a panel section (Claude Code) ------------------ */
+/* The section's own toolbar, groups, lists and rows (styles/claude-config.css)
+   inside the page's card: the card's surface under the sticky toolbar, the
+   card's padding around the whole, and a list inside it on the page's base
+   surface so card-in-card still reads as two levels. */
+.settings-block-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.settings-block-caption code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-block {
+  padding: 2px 16px 14px;
+}
+
+.settings-block .cc-toolbar {
+  background: var(--bg-alt);
+  margin-bottom: 10px;
+}
+
+.settings-block .cc-group:last-child {
+  margin-bottom: 0;
+}
+
+.settings-block .cc-list,
+.settings-block .cc-card {
+  background: var(--bg);
+}
+
+.settings-block .cc-row:last-child {
+  border-bottom: 0;
+}
+
+/* The row's list control is the app's own dropdown (shell/Dropdown): a chip
+   as wide as the longest choice would need, never the OS select. */
+.settings-row-control .settings-select .schedule-when-field {
+  min-width: 170px;
+}
+
+/* The segmented choice (Appearance: System / Light / Dark) says which one is
+   on in the accent, not a shade of grey (Akshil, 2026-10-20: "better
+   highlight which is selected"). */
+.settings-row [data-slot="toggle-group-item"][data-state="on"],
+.settings-row [data-slot="toggle-group-item"][aria-pressed="true"] {
+  background: rgba(var(--accent-rgb), 0.16);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--accent);
+  position: relative;
+  z-index: 1;
+}
+
+/* An unset Claude toggle: Claude's own default, drawn dimmed. */
+.settings-switch-inherited {
+  opacity: 0.5;
+}
+
+/* -- accordions (the Claude Code group) ------------------------------------- */
+.settings-section-collapsible .settings-section-title {
+  margin-left: 0;
+}
+
+.settings-section-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.settings-section-toggle:hover {
+  color: var(--fg);
+}
+
+.settings-section-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-section-chevron {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s ease;
+}
+
+.settings-section-toggle[aria-expanded="true"] .settings-section-chevron,
+.settings-section-toggle[data-panel-open] .settings-section-chevron {
+  transform: rotate(90deg);
+}
+
+.settings-section-count {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.settings-section-collapsible:not(:has([data-panel-open])) {
+  margin-bottom: 12px;
+}
+
+/* The settings.json rows: the reset (or the default hint) then the control,
+   right-aligned like every other row's control on this page. */
+.settings-claude-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-claude-control [data-slot="native-select"],
+.settings-claude-control select {
+  min-width: 170px;
+}
+
+.settings-claude-control input {
+  width: 170px;
+}
+
+
+.settings-head p {
+  margin: 0 0 20px;
+  color: var(--fg-muted);
+}
+
+.settings-section {
+  margin: 0 0 22px;
+}
+
+.settings-section-title {
+  margin: 0 0 8px 2px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.settings-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+  overflow: hidden;
+}
+
+.settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 24px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  /* A jump lands here; the highlight fades rather than snapping off. */
+  transition: background-color 0.6s ease;
+}
+
+.settings-row:first-child {
+  border-top: 0;
+}
+
+.settings-row-child {
+  padding-left: 40px;
+}
+
+.settings-row-flash {
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
+.settings-row-main {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+.settings-row-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.settings-row-label mark {
+  background: rgba(var(--accent-rgb), 0.3);
+  color: inherit;
+  border-radius: 3px;
+}
+
+.settings-row-label .settings-badge-beta {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.settings-row-desc,
+.settings-row-status,
+.settings-row-via {
+  margin: 2px 0 0;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+
+.settings-row-status {
+  margin-top: 6px;
+}
+
+.settings-row-via {
+  font-style: italic;
+}
+
+.settings-row code,
+.settings-head code {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-row-control {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Whatever the row needs under its main line, full width: a health check, a
+   pairing code, an editor, an error. */
+.settings-row-extra {
+  flex: 1 1 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-row-extra:empty {
+  display: none;
+}
+
+.settings-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 0 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.settings-crumb:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
+.settings-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--fg-muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.settings-link:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.settings-warn {
+  color: var(--error);
+}
+
+/* A status line led by a dot: green when all is well, amber when not. */
+.settings-dot::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+  background: var(--success);
+}
+
+.settings-dot-warn::before {
+  background: var(--warning);
+}
+
+/* shadcn's checked switch is its near-white primary; the shell says "on" in
+   its accent everywhere else, so the switch does too. */
+.settings-page .settings-switch[data-checked] {
+  background: var(--accent);
+}
+
+.settings-page .settings-switch[data-checked] [data-slot="switch-thumb"] {
+  background: var(--on-accent);
+}
+
+.settings-keycap {
+  min-width: 104px;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-keycap.settings-keycap-rec {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.35);
+}
+
+.settings-inline-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--fg-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.settings-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-mono {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
   line-height: 1.5;
-  padding: 8px 10px;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  resize: vertical;
 }
 
-/* The Hugging Face authorize link. An <a>, not a button, because it opens a URL
-   in a new tab and must survive a middle-click and a copy-link — but it is the
-   primary action of the section while a login is pending, so it wears .btn and
-   needs the inline-block and centring an <a> does not have. */
-.hf-authorize-link {
-  display: inline-block;
-  text-decoration: none;
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 
-/* Safety net for unmigrated selects only — .field-control selects carry their
-   own canonical skin + custom chevron. */
-.prefs-section select:not(.field-control) {
-  font: inherit;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 10px;
+.settings-row-status .lan-working {
+  margin: 0;
 }
 
-/* ---- the index Query panel (shell/Indexing.tsx) ------------------------- */
+.settings-row .claude-health-issues {
+  margin: 8px 0 0;
+}
+
+/* Narrow: the nav folds into one scrolling row above the settings. */
+@container (max-width: 720px) {
+  .settings-title {
+    flex-basis: 100%;
+  }
+
+  .settings-body {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .settings-nav {
+    position: static;
+    flex: none;
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .settings-nav .settings-nav-item {
+    flex: 0 0 auto;
+  }
+
+  .settings-nav-count {
+    display: none;
+  }
+
+  .settings-nav-section {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .settings-nav-section + .settings-nav-section {
+    margin: 0 0 0 10px;
+  }
+
+  .settings-nav-heading {
+    padding: 0 6px 0 0;
+  }
+
+
+  .settings-row-child {
+    padding-left: 28px;
+  }
+}
+
+@media (max-width: 560px) {
+  .settings-page {
+    padding: 14px 14px 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-row {
+    transition: none;
+  }
+}
+
+/* ---- the index query console (shell/settings/advanced.tsx) ------------- */
 
 /* A statement is wider than a skip rule and wrapping one mid-identifier is
    unreadable, so this box does not wrap — it scrolls, like an editor. */
@@ -1530,7 +2034,7 @@
 }
 
 
-/* Share on local network: QR pairing + paired devices (Preferences ▸ Render). */
+/* Share on local network: QR pairing + paired devices (Preferences ▸ Phone & network). */
 .lan-pair {
   display: flex;
   gap: 20px;
@@ -1638,182 +2142,6 @@
 .lan-devices li .deploy-muted {
   flex: 1;
   font-size: 12px;
-}
-
-/* ---- Shortcuts (the macOS launcher: hotkey recorder + row modifier) ------- */
-
-.prefs-shortcuts {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-alt);
-  overflow: hidden;
-}
-
-.prefs-shortcut-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 14px;
-}
-
-.prefs-shortcut-row + .prefs-shortcut-row {
-  border-top: 1px solid var(--border);
-}
-
-.prefs-shortcut-label {
-  min-width: 0;
-}
-
-.prefs-shortcut-label b {
-  display: block;
-  font-weight: 500;
-  font-size: 14px;
-}
-
-.prefs-shortcut-label span {
-  display: block;
-  font-size: 12.5px;
-  color: var(--fg-muted);
-}
-
-.prefs-shortcut-label .prefs-shortcut-warn {
-  color: var(--error);
-}
-
-/* Specificity: `.prefs-section button` styles every button on the page;
-   these two controls need their own look and win by being more specific. */
-.prefs-section .prefs-keycap {
-  font: inherit;
-  font-size: 13px;
-  min-width: 88px;
-  padding: 5px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--fg) 5%, var(--bg-alt));
-  color: var(--fg);
-  font-variant-numeric: tabular-nums;
-  flex: none;
-}
-
-.prefs-section .prefs-keycap.rec {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
-}
-
-.prefs-seg {
-  display: flex;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-  flex: none;
-}
-
-.prefs-section .prefs-seg button {
-  font: inherit;
-  font-size: 14px;
-  padding: 5px 12px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--fg);
-}
-
-.prefs-section .prefs-seg button + button {
-  border-left: 1px solid var(--border);
-}
-
-.prefs-section .prefs-seg button.on {
-  background: var(--accent);
-  color: var(--accent-ink, var(--bg));
-}
-
-@media (max-width: 520px) {
-  .prefs-shortcut-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-}
-
-/* Diagnostics window presets (SPEC §50): four radios on one wrapping row,
-   each the same .prefs-radio as the section's checkbox below them. */
-.prefs-radio-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 18px;
-  margin: 8px 0;
-}
-
-.prefs-radio {
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  cursor: pointer;
-}
-
-.prefs-radio input {
-  margin-top: 3px;
-  accent-color: var(--accent);
-}
-
-.prefs-radio.locked {
-  cursor: default;
-  opacity: 0.65;
-}
-
-/* Community: a ticked switch held back by an unticked prerequisite says so on
-   its own line under the description — the body colour so it stands apart
-   from the muted description, but no warning tone: nothing is wrong, the
-   switch just has not taken effect yet. */
-.prefs-contrib-needs {
-  display: block;
-  margin-top: 3px;
-  font-size: 12px;
-  color: var(--fg);
-}
-
-/* A labelled control plus its explanation (the Call log section's parameter
-   and retention selects). Same vertical rhythm as .prefs-radio rows, but the
-   label and its <select> sit on one line above the muted note. */
-.prefs-field {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.prefs-field > label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.prefs-field select:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-/* Registry table: pattern -> template chips (+ source badge). */
-.prefs-registry-table {
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.prefs-registry-table td {
-  padding: 5px 10px 5px 0;
-  border-top: 1px solid var(--border);
-  vertical-align: top;
-}
-
-.prefs-registry-table .registry-templates code + code {
-  margin-left: 5px;
-}
-
-.prefs-registry-table .default-mode {
-  border-color: var(--accent);
-}
-
-.prefs-registry-table .registry-error {
-  color: var(--error);
 }
 
 .registry-source {

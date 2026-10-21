@@ -5,10 +5,13 @@ import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ShellErrorBoundary } from "@platform/ui/ShellErrorBoundary";
 import { installShellErrorReporter, reportShellError } from "@platform/lib/shell-errors";
 import { IS_EMBED, IS_SNAPSHOT } from "@platform/lib/router";
+import { installNetTiming, shellPageIdentity } from "@platform/lib/netTiming";
 import { clearListPrefetch, getConfig } from "@platform/lib/api";
 import { notifyFsChanged } from "@apps/explorer/listing/fsChangeBus";
 import { hydrateBookmarks, refreshBookmarks } from "@platform/lib/bookmarks";
+import { hydrateUiState } from "@platform/lib/hydrate-ui-state";
 import { hydrateRecents } from "@apps/explorer/lib/recents";
+import { hydrateNotificationsState } from "@shell/notifications-seen-store";
 import { notifyBookmarksChanged, setDefaultFavicon } from "@platform/lib/hooks";
 import { displayName, isBot, seedFlavor } from "@platform/lib/flavor";
 import { openTerminal, type TerminalRequest } from "@platform/lib/terminalDockStore";
@@ -19,6 +22,10 @@ import "./shell.css";
 // own evaluation — or in a lazy chunk, or in a render — is otherwise a blank
 // window that the server log never hears about (lib/shell-errors.ts).
 installShellErrorReporter();
+
+// Browser-side request queue time for the Monitor's Network tab. Collects and
+// beacons only while a dashboard is open (lib/netTiming.ts).
+installNetTiming(() => shellPageIdentity(window.location));
 
 // The preview iframe's injected runtime writes view params via
 // parent.history.replaceState (same history object), which fires no event.
@@ -105,8 +112,25 @@ const root = createRoot(document.getElementById("root")!);
 // failure and the card below says what to do.
 const CONFIG_TIMEOUT_MS = 20_000;
 
-getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }).then(
-  (config) => {
+// Server-held UI state (D1386) — the layout document and the notifications
+// panel's seen-state — read BEFORE the first render, in parallel with the
+// config. These used to be localStorage, which is synchronous, so the first
+// frame already had the dragged sidebar width, the remembered Tasks view and
+// every folder's sort; they moved to the server because the desktop app's port
+// walk (1777..1787, then an ephemeral port) makes every relaunch a new origin
+// with empty storage. Rendering before they land would be a flash of the
+// default layout on every load. Bounded at 2 s and never rejects
+// (hydrate-ui-state.ts), so it can delay the first paint but never prevent it,
+// and a config failure still reaches its error card.
+//
+// Embeds hydrate the LAYOUT too: an explorer pane in an iframe reads the
+// companion side pane's shut / width / full-screen stores in its first render.
+// They skip the notifications state — no embed draws the panel, and every
+// preview card on Home is an embed, so that would be one wasted request each.
+const uiState = hydrateUiState(IS_EMBED ? [] : [hydrateNotificationsState]);
+
+Promise.all([getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }), uiState]).then(
+  ([config]) => {
     // Flavor first: the sidebar and the title read it synchronously in this
     // very render, and a seed a tick later is a flash of the wrong brand.
     seedFlavor(config);
@@ -129,6 +153,8 @@ getConfig({ signal: AbortSignal.timeout(CONFIG_TIMEOUT_MS) }).then(
     // Recents hydrate the same way; the store notifies its own subscribers.
     // (The app builder's parallel (tag, name) store went with its route.)
     void hydrateRecents();
+    // (The Notifications panel's memory hydrates with the layout document
+    // above, in `uiState`, before the first render.)
     // Poll every 30 s so another tab's/window's bookmark edits converge here
     // (D77). refreshBookmarks() re-renders only when the tree actually changed.
     // In-flight guarded (mirrors ServerStatusBanner's probingRef, D126): both

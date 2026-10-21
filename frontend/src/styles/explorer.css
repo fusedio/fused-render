@@ -28,6 +28,10 @@
 :root {
   --topbar-h: 48px;
   --topbar-pad-y: 8px;
+  /* `.status-bar`'s height (notifications.css). The maximized preview and
+     listing panes pad their content up by it when `#main` has a status bar
+     (not in embed mode). */
+  --status-bar-h: 22px;
 }
 
 #breadcrumb {
@@ -1154,8 +1158,9 @@
 
 /* FULL SCREEN for the folder pane (lib/side-maximized-store): the slot is lifted
    over the viewport, see `.preview-side.maximized` in preview.css for the why
-   (z-index, fixed containing block). The slot's inline flex-basis is a percentage,
-   hence !important; the seam is hidden because there is nothing beside it. */
+   (z-index, fixed containing block, the status-bar padding). The slot's inline
+   flex-basis is a percentage, hence !important; the seam is hidden because
+   there is nothing beside it. */
 .listing-pane-slot.maximized {
   position: fixed;
   inset: 0;
@@ -1165,6 +1170,9 @@
   min-width: 0;
   max-width: none;
   background: var(--bg-alt);
+}
+#main:has(> .status-bar) .listing-pane-slot.maximized {
+  padding-bottom: var(--status-bar-h);
 }
 .listing-pane-slot.maximized::before {
   display: none;

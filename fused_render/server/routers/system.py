@@ -20,6 +20,7 @@ import re
 
 from fastapi import APIRouter, Body, Header
 
+from fused_render import netlog
 from fused_render.server.common import _error, _require_fused
 from fused_render.sysmon import sampler as sysmon_sampler
 
@@ -48,13 +49,75 @@ def redact_args(args: str) -> str:
     return _SECRET_PAIR.sub(lambda m: m.group(1) + m.group(2) + REDACTED, " ".join(parts))
 
 
+def redact_argv(argv: list[str]) -> list[str]:
+    """`redact_args` for an argv list (each element kept whole)."""
+    out = []
+    for i, a in enumerate(argv):
+        if i and argv[i - 1].lower() in _SECRET_FLAGS and a:
+            out.append(REDACTED)
+        else:
+            out.append(_SECRET_PAIR.sub(lambda m: m.group(1) + m.group(2) + REDACTED, a))
+    return out
+
+
 @router.get("/api/system/activity")
 def api_system_activity(scope: str = "fused"):
+    # The chip polls this every second even when closed, so it must NOT set the
+    # netlog "watched" flag (that turns on Server-Timing headers and browser
+    # queue reports). Only the dashboard and net endpoints do.
     body = sysmon_sampler.get_sampler().poll("all" if scope == "all" else "fused")
     for row in body["procs"]:
         if "args" in row:
             row["args"] = redact_args(row["args"])
+    try:
+        from fused_render.server import dashboard
+        body["verdict"] = dashboard.compact_verdict()
+    except Exception:  # noqa: BLE001 — the chip works without a verdict
+        # "unknown", not "ok": a verdict that could not be computed must not
+        # read as a clean bill of health (the chip draws no dot for it).
+        body["verdict"] = {"level": "unknown", "headline": ""}
     return body
+
+
+@router.get("/api/system/dashboard")
+async def api_system_dashboard():
+    from fused_render.server import dashboard
+    netlog.get().touch_watch()
+    return await dashboard.build_async()
+
+
+@router.get("/api/system/activity/detail")
+async def api_system_activity_detail(pid: str = ""):
+    import anyio
+    from fused_render.sysmon import detail
+    try:
+        n = int(pid)
+    except ValueError:
+        return _error("pid must be an integer", status=400)
+    sampler = sysmon_sampler.get_sampler()
+    # lsof and procfs block: off the event loop.
+    body = await anyio.to_thread.run_sync(
+        lambda: detail.process_detail(sampler, n, redact_argv))
+    if body is None:
+        return _error("no such process", status=404)
+    return body
+
+
+@router.post("/api/system/record")
+async def api_system_record_start(x_fused: str | None = Header(default=None)):
+    if (error := _require_fused(x_fused)) is not None:
+        return error
+    import anyio
+    from fused_render.server import perfrecord
+    # start() lists the recordings dir for its status: off the event loop.
+    return await anyio.to_thread.run_sync(perfrecord._RECORDER.start)
+
+
+@router.get("/api/system/record")
+async def api_system_record_status():
+    import anyio
+    from fused_render.server import perfrecord
+    return await anyio.to_thread.run_sync(perfrecord._RECORDER.status)
 
 
 @router.get("/api/system/activity/history")

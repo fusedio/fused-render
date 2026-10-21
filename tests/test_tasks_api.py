@@ -499,6 +499,12 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # "cli"/"sdk-cli"/None (2026-09-18): the notification hook's terminal-
         # session gate reads this off the pulse row, not `/api/tasks`.
         "entrypoint",
+        # Which agent ran it (2026-10-16, docs/COPILOT_BACKEND.md D18): the
+        # finished-task notice names it.
+        "backend",
+        # The canvas a task is on (2026-10-20): the notification's door is the
+        # canvas page for a canvas task, like the Tasks page's.
+        "canvas",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
@@ -2371,7 +2377,7 @@ def test_a_pill_pick_is_written_for_the_conversation(client, projects_dir):
                     json={"session_id": "sess-a", "model": "haiku",
                           "effort": "low"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "model": "haiku", "effort": "low"}
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "low", "backend": ""}
     assert [_by_key(client)["sess-a"][k] for k in ("model", "effort")] \
         == ["haiku", "low"]
 
@@ -2384,7 +2390,7 @@ def test_picking_one_pill_never_erases_the_other(client, projects_dir):
                 json={"session_id": "sess-a", "model": "haiku", "effort": "low"})
     r = client.post("/api/tasks/settings", headers={"X-Fused": "1"},
                     json={"session_id": "sess-a", "effort": "max"})
-    assert r.json() == {"ok": True, "model": "haiku", "effort": "max"}
+    assert r.json() == {"ok": True, "model": "haiku", "effort": "max", "backend": ""}
 
 
 # ---- READING the record, without the subprocess (Akshil, 2026-09-19) --------
@@ -2406,7 +2412,7 @@ def test_the_record_can_be_read_back_without_spawning_anything(
     tasks_store.record_settings("sess-a", "haiku", "low")
     r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"model": "haiku", "effort": "low"}
+    assert r.json() == {"model": "haiku", "effort": "low", "backend": ""}
 
 
 def test_reading_a_record_under_the_retired_pinned_Fable_id_says_fable(client):
@@ -2415,7 +2421,7 @@ def test_reading_a_record_under_the_retired_pinned_Fable_id_says_fable(client):
     on a blank pill. Display only — what the CLI is handed is untouched."""
     tasks_store.record_settings("sess-a", "claude-fable-5-1", "max")
     r = client.get("/api/tasks/settings", params={"session_id": "sess-a"})
-    assert r.json() == {"model": "fable", "effort": "max"}
+    assert r.json() == {"model": "fable", "effort": "max", "backend": ""}
 
 
 def test_a_session_with_nothing_recorded_reads_as_no_opinion(client):
@@ -2425,7 +2431,7 @@ def test_a_session_with_nothing_recorded_reads_as_no_opinion(client):
     chose."""
     r = client.get("/api/tasks/settings", params={"session_id": "no-such"})
     assert r.status_code == 200
-    assert r.json() == {"model": "", "effort": ""}
+    assert r.json() == {"model": "", "effort": "", "backend": ""}
 
 
 def test_a_record_of_one_field_reads_back_as_one_field(client):
@@ -2435,7 +2441,7 @@ def test_a_record_of_one_field_reads_back_as_one_field(client):
     tasks_store.record_settings("sess-a", effort="low")
     assert client.get("/api/tasks/settings",
                       params={"session_id": "sess-a"}).json() \
-        == {"model": "", "effort": "low"}
+        == {"model": "", "effort": "low", "backend": ""}
 
 
 def test_the_read_refuses_the_same_ids_the_write_does(client):
@@ -3091,7 +3097,8 @@ def test_archiving_a_task_with_no_session_only_cancels(client, tmp_path):
     key = _tasks(client)[0]["key"]
     r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False}
+    assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False,
+                        "stopped": False}
     assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
     assert _tasks(client) == []
 
@@ -4075,6 +4082,23 @@ class _FakeAgent:
         self.RUNS = str(runs_dir)
         self._runs = runs           # name -> list of permission dicts
         self._alive_set = set(alive)
+        self.cancelled: list[str] = []
+        #: `(run_id, interrupt_first)` per `_cancel` call.
+        self.cancel_calls: list[tuple[str, bool]] = []
+        #: Runs whose process survives a kill — the fake's way of saying the
+        #: signal did not land.
+        self.stubborn: set[str] = set()
+
+    def _cancel(self, run_id, interrupt_first=True, queued=False):
+        """The Stop button's action, faked: the card is denied and the process
+        is gone, which is what the real one does to the runs tree."""
+        self.cancelled.append(run_id)
+        self.cancel_calls.append((run_id, interrupt_first))
+        if run_id not in self.stubborn:
+            self._alive_set.discard(run_id)
+        for perm in self._runs.get(run_id, []):
+            perm["decision"] = "cancelled"
+        return {"cancelled": run_id}
 
     def _permissions(self, run_dir):
         return self._runs.get(os.path.basename(run_dir), [])
@@ -4239,6 +4263,266 @@ def test_a_stale_ok_entry_does_not_outrank_a_still_parked_run(client,
     assert _by_key(client)["sess-a"]["status"] == "needs_attention"
 
 
+# ------------------------------------- a reply that ended with work still going
+# A turn that ends with a `run_in_background` Bash (or a background Agent, or a
+# Monitor) still running leaves an idle registry row and a finished transcript,
+# while the session host stays up for that work. The STATUS reads the messages
+# as ever (`done`) — that work may be a dev server that never ends — and the row
+# says it separately, as `background_jobs` (`_hosted_runs`). Staged as the
+# host leaves it: `host.json`, the CLI's `pid`, `out.jsonl`, and the CLI's own
+# registry file.
+
+
+def _dead_pid():
+    import subprocess
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
+
+
+class _HostedAgent(_FakeAgent):
+    """`_FakeAgent` plus the real agent's `_host_alive`, so a staged
+    `host.json` is read exactly as the host's own callers read it."""
+
+    def _host_alive(self, run_dir):
+        from fused_render.claude_agent import agent_module
+        return agent_module()._host_alive(run_dir)
+
+
+def _bg_row(tasks):
+    """The CLI's background list; a task is an id, or `(id, description)`."""
+    return {"type": "system", "subtype": "background_tasks_changed",
+            "tasks": [{"task_id": t} if isinstance(t, str)
+                      else {"task_id": t[0], "description": t[1]}
+                      for t in tasks]}
+
+
+def _append(run, row):
+    with open(run / "out.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row) + "\n")
+
+
+def _stage_hosted(runs_dir, name, session_id, tasks, host_pid,
+                  cli_pid=None):
+    """A run whose reply has ENDED (a trailing `result`), with the CLI's
+    background list as `tasks`, a `host.json` naming `host_pid`, and the CLI's
+    own pid in `run_dir/pid`."""
+    d = _stage_run(runs_dir, name, session_id)
+    rows = [{"type": "system", "subtype": "init", "session_id": session_id},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "started it in the background"}]}},
+            _bg_row(tasks),
+            {"type": "result", "subtype": "success"}]
+    (d / "out.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    if host_pid is not None:
+        (d / "host.json").write_text(json.dumps({"pid": host_pid}))
+    (d / "pid").write_text(str(os.getpid() if cli_pid is None else cli_pid))
+    return d
+
+
+@pytest.fixture()
+def registry(tmp_path, monkeypatch):
+    """Claude Code's live registry, read by the real watcher: `hold(sid, pid)`
+    writes the CLI's `sessions/<pid>.json` (status idle — the reply is over)
+    and ticks it in."""
+    sessions = tmp_path / "claude-sessions"
+    sessions.mkdir()
+    monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(sessions))
+    tasks_watch.reset()
+
+    def hold(sid, pid=None):
+        pid = os.getpid() if pid is None else pid
+        (sessions / f"{pid}.json").write_text(json.dumps(
+            {"pid": pid, "sessionId": sid, "cwd": "/p", "status": "idle"}))
+        tasks_watch.tick()
+
+    yield hold
+    tasks_watch.reset()
+
+
+def _replied(projects_dir):
+    """A hand-typed chat whose reply is in and long over."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("sleep 30 in the background", T9, uuid="u1"),
+        _assistant("Started it.", T9),
+    ])
+
+
+def _install_hosted(monkeypatch, runs_dir, per_run=None, alive=()):
+    agent = _HostedAgent(runs_dir, per_run or {}, alive)
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: agent)
+    return agent
+
+
+def test_background_work_is_a_caption_not_a_status(
+        client, projects_dir, parked, monkeypatch, registry):
+    """Status stays `done` — a `run_in_background` dev server never ends, and
+    a row that could never leave In Progress would never fire anything waiting
+    on `done` — and the row says the work is there."""
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "done"
+    assert task["live"] is False
+    # Exactly what the row's Stop hands the agent's `task_stop`: the run dir's
+    # name and the CLI's own task id.
+    assert task["background_jobs"] == {
+        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
+
+
+def test_background_work_under_a_dead_host_does_not_count(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The host's `background_tasks_changed` row outlives the host, and a
+    stale row must not caption the task for ever."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], _dead_pid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+
+    # …and no host.json at all is the same answer.
+    (run / "host.json").unlink()
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+
+
+def test_a_live_host_pid_is_not_enough_without_its_claude(
+        client, projects_dir, parked, monkeypatch, registry):
+    """PID REUSE: `host.json` survives a reboot or a SIGKILL and an unrelated
+    process can own its pid. The run's own `claude` has to be in the live
+    registry under this session too."""
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid(),
+                  cli_pid=_dead_pid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")  # held by another pid than the run's
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+
+
+def test_the_caption_clears_when_the_background_list_empties(
+        client, projects_dir, parked, monkeypatch, registry):
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    assert _by_key(client)["sess-a"]["background_jobs"] is not None
+
+    # Read incrementally: unrelated rows in between change nothing…
+    _append(run, {"type": "system", "subtype": "task_progress"})
+    assert _by_key(client)["sess-a"]["background_jobs"] is not None
+    # …and the newest list decides.
+    _append(run, _bg_row([]))
+    task = _by_key(client)["sess-a"]
+    assert task["background_jobs"] is None
+    assert task["status"] == "done"
+
+
+def test_background_jobs_name_every_job_and_follow_the_newest_list(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The badge counts and names what the CLI's NEWEST list holds — "2 jobs
+    running" with both descriptions — and a Stop that ends one of them (the
+    CLI re-sends the list without it) drops it to one."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a",
+                        [("b1", "npm run dev"), ("b2", "sleep 900")],
+                        os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    jobs = _by_key(client)["sess-a"]["background_jobs"]
+    assert jobs == {"count": 2, "run_id": "r-1",
+                    "jobs": [{"id": "b1", "title": "npm run dev"},
+                             {"id": "b2", "title": "sleep 900"}]}
+
+    _append(run, _bg_row([("b1", "npm run dev")]))
+    jobs = _by_key(client)["sess-a"]["background_jobs"]
+    assert jobs["count"] == 1
+    assert [j["id"] for j in jobs["jobs"]] == ["b1"]
+
+
+def test_a_cold_read_of_a_long_run_parses_only_its_tail(
+        client, projects_dir, parked, monkeypatch, registry):
+    """A background Agent streams rows into `out.jsonl` for hours, and a cold
+    memo (first sight, a server restart) used to parse the whole file on the
+    request thread. Only the tail is read now, from the first whole row — the
+    CLI re-sends its full list on every change, so the newest one is there."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["old_job"], os.getpid())
+    for i in range(200):
+        _append(run, {"type": "system", "subtype": "task_progress",
+                      "description": f"line {i} " + "x" * 80})
+    _append(run, _bg_row([("b1", "npm run dev")]))
+    monkeypatch.setattr(tasks_mod, "_BG_COLD_TAIL", 4096)
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    jobs = _by_key(client)["sess-a"]["background_jobs"]
+    assert jobs["jobs"] == [{"id": "b1", "title": "npm run dev"}]
+    offset, held = tasks_mod._bg_memo[str(run)]
+    assert offset == (run / "out.jsonl").stat().st_size
+    assert held == (("b1", "npm run dev"),)
+
+
+def test_a_cold_read_stops_at_its_tail(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The bound's accepted cost, pinned so it is a decision: a list older than
+    the tail is not seen on a cold read (a full parse would have found
+    `old_job`). Only reachable when one job streams more than the tail since
+    the CLI last changed its list."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["old_job"], os.getpid())
+    for i in range(200):
+        _append(run, {"type": "system", "subtype": "task_progress",
+                      "description": f"line {i} " + "x" * 80})
+    monkeypatch.setattr(tasks_mod, "_BG_COLD_TAIL", 4096)
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+
+
+def test_a_parked_card_still_outranks_background_work(
+        client, projects_dir, parked, monkeypatch, registry):
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir,
+                    {"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                              "input": {"command": "rm -rf build"}}]},
+                    alive={"r-1"})
+    registry("sess-a")
+    task = _by_key(client)["sess-a"]
+    assert task["status"] == "needs_attention"
+    assert task["attention"] == {"tool": "Bash", "summary": "rm -rf build"}
+    assert task["background_jobs"] is not None
+
+
+def test_the_watcher_rings_on_a_background_list_change_only(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The CLI can empty its background list and stay idle — no registry
+    rewrite, no transcript growth — so the watcher reads the new bytes of the
+    runs the listing found holding work. A background Agent streams rows into
+    the same file every second, and those must not ring."""
+    _replied(projects_dir)
+    run = _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    assert _by_key(client)["sess-a"]["background_jobs"] is not None
+    assert str(run) in tasks_watch._bg_runs
+    assert "sess-a" not in tasks_watch.tick()
+
+    _append(run, {"type": "system", "subtype": "task_progress",
+                  "description": "x" * 200})
+    assert "sess-a" not in tasks_watch.tick()
+
+    _append(run, _bg_row([]))
+    gen = tasks_watch.generation()
+    assert "sess-a" in tasks_watch.tick()
+    assert tasks_watch.generation() > gen
+    # Rung once, not every tick.
+    assert "sess-a" not in tasks_watch.tick()
+
+    # The rebuild it triggers sees nothing pending and stops watching.
+    assert _by_key(client)["sess-a"]["background_jobs"] is None
+    assert tasks_watch._bg_runs == {}
+
 def test_a_broken_run_says_blocked_and_why(client, projects_dir):
     """The other half of the Blocked lane. The word alone cannot tell a reader
     which button to reach for — Retry for a run that broke, Open for one that is
@@ -4275,17 +4559,185 @@ def test_the_listing_puts_what_wants_hands_on_top():
     assert [r["key"] for r in same] == ["newer", "older"]
 
 
-def test_a_waiting_task_cannot_be_deleted_out_from_under_its_run(
+def test_deleting_a_waiting_task_stops_its_run_first(
         client, projects_dir, parked):
-    """Delete refuses a run in flight, and a waiting run is one. The guard reads
-    both words so that a row whose status is the finer one is not a hole in it."""
+    """A run parked on a card is deletable (Akshil, 2026-10-19): the door
+    stops the run itself — the card denied, the tree ended, the Stop button's
+    own action — and then takes the row. "Stop the run first" is no longer an
+    answer the reader has to go and act on."""
     _running(projects_dir)
     _stage_run(parked.dir, "r-1", "sess-a")
-    parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]},
-           alive={"r-1"})
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
+
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    # The whole tree, not an interrupt: an interrupt the CLI answers leaves the
+    # host alive for a next send that is never coming.
+    assert agent.cancel_calls == [("r-1", False)]
+    assert "sess-a" not in _by_key(client)
+
+
+def test_erasing_a_quiet_hand_typed_chat_parked_on_a_card_stops_it_first(
+        client, projects_dir, parked, monkeypatch):
+    """Bugbot, PR #1752. No entry, no busy registry row, transcript gone quiet:
+    a row built WITHOUT the parked index reads this chat `done`, so neither
+    running word refused it and no stop reached it — erase would have removed
+    the transcript under a live parked process. The door's row now carries
+    the index, and the stop lands."""
+    path = _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-10), uuid="u1"),
+    ])
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {"command": "rm -rf build"}}]},
+                   alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
+
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert agent.cancel_calls == [("r-1", False)]
+    assert not path.exists()
+    assert "sess-a" not in _by_key(client)
+
+    # …and the same quiet chat, stubborn, is refused by ERASE rather than
+    # filed `done` and unlinked: the parked word is what the door reads now,
+    # and the file stays under the process that would not go (CodeRabbit:
+    # delete never touches the transcript, so only erase can prove this).
+    monkeypatch.setattr(tasks_mod, "_STOP_PARKED_WAIT_S", 0.2)
+    path = _write_transcript(projects_dir, "sess-b", "/p", [
+        _user("go", _near_now(-10), uuid="u1"),
+    ])
+    _stage_run(parked.dir, "r-2", "sess-b")
+    agent._runs["r-2"] = [{"id": "p2", "tool": "Bash", "decision": "",
+                           "input": {"command": "rm -rf build"}}]
+    agent._alive_set.add("r-2")
+    agent.stubborn.add("r-2")
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-b"})
+    assert r.status_code == 409, r.text
+    assert path.exists()
+    assert "sess-b" in _by_key(client)
+
+
+def test_archiving_a_waiting_task_stops_its_run_and_files_it(
+        client, projects_dir, parked):
+    """Akshil, 2026-10-19. Filing does not stop a run, and a parked run never
+    stops on its own — so archive stops it (card denied, tree ended) and then
+    files, and the row reads `archived` rather than `needs_attention` for ever."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "needs_attention"
+
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["filed"] is True
+    assert r.json()["stopped"] is True
+    assert agent.cancel_calls == [("r-1", False)]
+    # The transcript is untouched — archive is the reversible verb.
+    assert "sess-a" in _by_key(client)
+
+
+def test_archiving_a_stubborn_waiting_task_files_it_and_says_so(
+        client, projects_dir, parked, monkeypatch):
+    """Best-effort: the filing is kept, the row stays where the live process
+    puts it, and the answer says the run did not stop."""
+    monkeypatch.setattr(tasks_mod, "_STOP_PARKED_WAIT_S", 0.2)
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    agent.stubborn.add("r-1")
+
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert r.json()["filed"] is True
+    assert r.json()["stopped"] is False
+    # The card was denied on the way (that is `_cancel`'s first act) and the
+    # process is still there, so the row reads as a turn in flight — NOT
+    # `archived`: the live process outranks the filing until it ends.
+    assert "r-1" in agent._alive_set
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+
+def test_a_card_answered_between_scan_and_kill_is_not_killed(
+        client, projects_dir, parked):
+    """The race the docstring names: the scan proved the run parked, the user
+    answered the card a moment later, and the turn is streaming again. The
+    card is read again before the kill, nothing is sent, and the delete is
+    refused as a streaming run always is."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    perms = [{"id": "p1", "tool": "Bash", "decision": "", "input": {}}]
+    agent = parked({"r-1": perms}, alive={"r-1"})
+    real_scan = tasks_mod._parked_runs
+
+    def scan_then_answer():
+        out = real_scan()
+        perms[0]["decision"] = "allow"
+        return out
+    client.app  # noqa: B018 — the client is built; patch after
+    tasks_mod._parked_runs = scan_then_answer
+    try:
+        r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    finally:
+        tasks_mod._parked_runs = real_scan
+    assert r.status_code == 409, r.text
+    assert agent.cancel_calls == []
+    assert "sess-a" in _by_key(client)
+
+
+def test_a_waiting_task_whose_run_will_not_die_is_still_refused(
+        client, projects_dir, parked, monkeypatch):
+    """The kill is waited on, and a process that outlives it keeps the 409:
+    a tombstone over a live run is the exact thing the guard exists for, and
+    "proven gone" is the only word that lifts it."""
+    monkeypatch.setattr(tasks_mod, "_STOP_PARKED_WAIT_S", 0.2)
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+    agent.stubborn.add("r-1")
 
     r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
     assert r.status_code == 409, r.text
+    assert agent.cancelled == ["r-1"]
+    assert "sess-a" in _by_key(client)
+
+
+def test_erasing_a_waiting_task_stops_its_run_before_the_files_go(
+        client, projects_dir, parked):
+    """Erase takes the same road: the parked run is stopped, THEN the transcript
+    leaves the disk — never a file removed under a process still holding it."""
+    _running(projects_dir)
+    path = projects_dir / "-encoded-sess-a" / "sess-a.jsonl"
+    assert path.exists()
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash", "decision": "",
+                             "input": {}}]}, alive={"r-1"})
+
+    r = client.post("/api/tasks/erase", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 200, r.text
+    assert agent.cancelled == ["r-1"]
+    assert not path.exists()
+    assert "sess-a" not in _by_key(client)
+
+
+def test_a_streaming_task_is_still_refused_when_nothing_is_parked(
+        client, projects_dir, parked):
+    """The lifted guard is for the PARKED run only: a turn in flight with no
+    card up is still "stop the run first" — nothing was stopped on the way."""
+    _running(projects_dir)
+    _stage_run(parked.dir, "r-1", "sess-a")
+    agent = parked({"r-1": [{"id": "p1", "tool": "Bash",
+                             "decision": "allow", "input": {}}]}, alive={"r-1"})
+    assert _by_key(client)["sess-a"]["status"] == "in_progress"
+
+    r = client.post("/api/tasks/delete", headers={"X-Fused": "1"}, json={"key": "sess-a"})
+    assert r.status_code == 409, r.text
+    assert agent.cancelled == []
 
 
 # ---- a number is never minted from a GUESSED project ---------------------------
@@ -4398,6 +4850,94 @@ def test_create_answers_the_stored_target_and_its_folder(client, tmp_path,
     assert r.json()["under"] == str(app_dir)
 
 
+# -- a Fused Web canvas target kicks the workbench skills fetch ----------------
+#
+# Fused Web (sandbox/showcase, a separate codebase) keeps its own local canvas
+# clones at `~/Fused/canvas/<name>` and starts tasks against them through
+# `fused.tasks.create` -> this very route. The gate in `claude_agent/agent.py`
+# already hands such a session the `workbench` plugin, but only if a clone of
+# the skills is already on disk — and the only things that ever fetched it were
+# fused-render's own canvases page. A Fused Web-only user reaches this route
+# with no clone at all, so `api_task_create` has to kick the same best-effort,
+# off-thread, never-raising fetch `canvases._kick_workbench_skills` already
+# gives the canvases page.
+
+def test_create_inside_fused_web_canvas_kicks_the_workbench_skills_fetch(
+        client, tmp_path, monkeypatch):
+    from fused_render import canvases as canvases_mod
+
+    home = tmp_path / "realhome"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    kicked = []
+    monkeypatch.setattr(canvases_mod, "_kick_workbench_skills",
+                        lambda: kicked.append(1))
+
+    target = home / "Fused" / "canvas" / "my_canvas"
+    target.mkdir(parents=True)
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(target)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert kicked == [1]
+
+
+def test_create_outside_fused_web_canvas_does_not_kick_the_fetch(
+        client, tmp_path, monkeypatch):
+    from fused_render import canvases as canvases_mod
+
+    home = tmp_path / "realhome"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+    kicked = []
+    monkeypatch.setattr(canvases_mod, "_kick_workbench_skills",
+                        lambda: kicked.append(1))
+
+    # Elsewhere under the ordinary workspace — not inside ~/Fused/canvas.
+    target = tmp_path / "proj"
+    target.mkdir()
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(target)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert kicked == []
+
+    # Nor a sibling that merely starts with the same letters.
+    evil = home / "Fused" / "canvas-evil" / "x"
+    evil.mkdir(parents=True)
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(evil)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert kicked == []
+
+
+def test_a_failing_kick_never_fails_the_create_request(client, tmp_path,
+                                                        monkeypatch):
+    """`_kick_workbench_skills` itself never raises (it only starts a thread),
+    but the call site must not assume that forever: a raise there is a bug
+    in plumbing the route owns, not a reason to fail the user's task."""
+    from fused_render import canvases as canvases_mod
+
+    home = tmp_path / "realhome"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: {"ok": True})
+
+    def boom():
+        raise RuntimeError("no thread for you")
+    monkeypatch.setattr(canvases_mod, "_kick_workbench_skills", boom)
+
+    target = home / "Fused" / "canvas" / "my_canvas"
+    target.mkdir(parents=True)
+    r = client.post("/api/tasks/create",
+                    json={"prompt": "go", "target": str(target)},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+
+
 # ------------------------------------------------------- the duties waiter
 
 
@@ -4428,6 +4968,25 @@ def test_ensure_duties_does_not_block_a_request_behind_a_held_lease(
 
     assert calls == [True]
     assert elapsed < 1.0
+
+
+# ------------------------------------- summary-only titles (task_summary_titles_enabled)
+
+
+def test_title_mode_absent_when_summary_titles_off(client, projects_dir, tmp_path):
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("fix the login bug", T9), _assistant("Fixed it.", T10)])
+    assert "title_mode" not in _tasks(client)[0]
+
+
+def test_title_mode_summary_when_summary_titles_on(client, projects_dir, tmp_path,
+                                                   monkeypatch):
+    monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("fix the login bug", T9), _assistant("Fixed it.", T10)])
+    row = _tasks(client)[0]
+    assert row["title_mode"] == "summary"
+    assert row["title"]
 
 
 # ------------------------------------- task recap titles (task_recap_titles_enabled)
@@ -4497,7 +5056,10 @@ def test_recap_candidate_rules(tmp_path):
 
     assert ask("in_progress", {}) == (None, [])
     assert ask("needs_attention", {}) == (None, [])
-    assert ask("done", {}, reply="")[1] == []
+    assert ask("queued", {}, reply=tasks_mod._QUEUED_REPLY)[1] == []
+    # A finished turn with no prose reply (tools only, a limit, an API error)
+    # is asked too: the worker's tail reaches back to the newest prose.
+    assert len(ask("done", {}, reply="")[1]) == 1
     shown, out = ask("done", {})
     assert shown is None and out[0]["stale_before"] == 0.0
 
@@ -4638,6 +5200,33 @@ def test_recap_candidate_waits_out_the_settle_minute(tmp_path):
     assert len(young) == 1 and young[0]["due"] > time.time()
     old = ask(61.0)
     assert len(old) == 1 and "due" not in old[0]
+
+
+def test_recap_candidate_without_a_reply_settles_from_the_message(tmp_path):
+    """A turn whose newest event is the reader's message (no prose answered
+    it yet) is measured from THAT: a message sent 10 s ago is still settling
+    even though the last reply is an hour old — the turn is about to start —
+    and one from 2 min ago is asked, keyed on the message time."""
+    task = {"key": "k", "session_id": "s", "project": str(tmp_path)}
+
+    def ask(said_age, settings=None):
+        out = []
+        said_at = time.time() - said_age
+        rec = {"tail": [{"anchor": "u2", "at": said_at}],
+               "reply_at": time.time() - 3600.0}
+        shown = tasks_mod._recap_candidate(task, rec, "done", "", settings or {}, out)
+        return shown, out, said_at
+
+    _, young, _ = ask(10.0)
+    assert len(young) == 1 and young[0]["due"] > time.time()
+    _, old, said_at = ask(120.0)
+    assert len(old) == 1 and "due" not in old[0]
+    assert old[0]["reply_at"] == said_at
+    # Recapped after the message landed: settled, and shown.
+    stored = {"s": {"recap": {"text": "Asked for X, waiting",
+                              "for_uuid": "u2", "at": time.time() - 60.0}}}
+    shown, out, _ = ask(120.0, stored)
+    assert shown == {"text": "Asked for X, waiting", "for_uuid": "u2"} and out == []
 
 
 def _job(sid, reply_at):

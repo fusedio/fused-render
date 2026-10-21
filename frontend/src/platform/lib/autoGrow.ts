@@ -62,9 +62,33 @@ export function useAutoGrow(value: string, maxLines = COMPOSER_MAX_LINES) {
       parseFloat(style.paddingBottom) +
       parseFloat(style.borderTopWidth) +
       parseFloat(style.borderBottomWidth);
-    box.style.height = "auto";
-    box.style.height =
-      Math.min(box.scrollHeight, Math.round(line * maxLines + chrome)) + "px";
+    // THE MEASURING COLLAPSE MUST NOT REACH THE PAGE (Akshil 2026-10-19, the
+    // chat transcript "jumps weirdly" on every new line when the reader sits
+    // a little above the bottom). `height: auto` is one forced layout with the
+    // box at its content height — which, for a box that is about to GROW, is
+    // taller, and for one that is about to shrink is shorter — and whatever
+    // shares a column with the box moves for that layout. The chat's
+    // transcript is a scroller right above this composer: when the box
+    // shrank for the measurement the scroller got taller, the browser clamped
+    // its offset down by the difference, and the restore a line later left
+    // the reader those pixels off where they were. The parent is held at its
+    // current height across the measurement, so nothing outside the box can
+    // see it happen; the box's own `scrollHeight` is its content and does not
+    // care what its parent is doing.
+    // `getBoundingClientRect` and not `offsetHeight`: the border-box height
+    // unrounded, so a fractional parent is not held half a pixel taller. The
+    // global `box-sizing: border-box` is what makes a border-box number the
+    // right one for `min-height` here.
+    const parent = box.parentElement;
+    const held = parent ? parent.style.minHeight : "";
+    if (parent) parent.style.minHeight = parent.getBoundingClientRect().height + "px";
+    try {
+      box.style.height = "auto";
+      box.style.height =
+        Math.min(box.scrollHeight, Math.round(line * maxLines + chrome)) + "px";
+    } finally {
+      if (parent) parent.style.minHeight = held;
+    }
   }, [maxLines]);
   // Layout effect, not effect: this runs between React writing the value and
   // the browser painting, so the box is never on screen at the wrong height.

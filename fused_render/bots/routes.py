@@ -268,6 +268,8 @@ def _status_bot(b, shot_for: str, fast: bool, cursors: dict) -> dict:
     # After the read: events_since lifts the counter over lines another writer appended, and the page stores this
     # `seq` as its cursor. The pre-read value would make the next poll hand those lines over a second time.
     s["seq"] = b.seq
+    # `seen_seq` (the unread mark, `_seen`, D1386) needs no line here: it is a meta key, and summary() spreads meta, so
+    # it is on the row once the bot has been opened and absent before — the client's never-opened = 0 unread contract.
     return s
 
 
@@ -311,12 +313,15 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     browser = body.get("browser_id") or ""
     if not isinstance(browser, str):
         raise ValueError("browser_id must be a browser id")
+    terminal = _check_terminal(bm, body, kind == "super")  # before the bot exists: a 400 leaves nothing behind
     b = registry.create(body.get("name") or "", body.get("model") or "", body.get("effort") or "", body.get("instructions") or "",
                         preset=preset, kind=kind, browser=browser)
     if body.get("approval") in ("ask", "auto"):
         b.meta["approval"] = body["approval"]
     if body.get("build_access") in bm.BUILD_MODES:
         b.meta["build_access"] = body["build_access"]
+    if terminal is not None:
+        b.meta["terminal"] = terminal
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
     if isinstance(body.get("allow_rules"), list):
@@ -329,6 +334,19 @@ def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=Non
     if body.get("encrypt"):
         b.set_encrypt(True)
     return {"ok": True, "id": b.id}
+
+
+def _check_terminal(bm, body, is_super_bot):
+    """The `terminal` opt-in from a create/settings body: None when absent, else a bool. A non-bool, or turning
+    it ON for Super Bot (which already has Bash), is a 400 (ValueError)."""
+    if "terminal" not in body:
+        return None
+    value = body["terminal"]
+    if not isinstance(value, bool):
+        raise ValueError("terminal must be true or false")
+    if value and is_super_bot:
+        raise ValueError("Super Bot already has Bash; it has no terminal setting")
+    return value
 
 
 @router.get("/api/bots/browsers")
@@ -389,7 +407,7 @@ def bots_profiles():
 @_handled
 def bots_presets():
     """The "+" chooser's catalog (OpenBot `presets`): playbooks as titles only."""
-    return {"ok": True, "presets": [{**{k: v for k, v in p.items() if k != "skills"}, "skills": [s["title"] for s in p["skills"]]}
+    return {"ok": True, "presets": [{**{k: v for k, v in p.items() if k not in ("skills", "terminal_allow")}, "skills": [s["title"] for s in p["skills"]]}
                                     for p in _presets().presets()]}
 
 
@@ -551,7 +569,7 @@ def bot_control(bid: str, op: str, body: dict = Body(default=None), x_fused: str
     """pause | resume | stop | takeover | giveback | popout | dock | wake | clear (Clear context) | open (the user clicked the bot open: Super Bot's
     first task, docs §5), and the rest of the
     one-segment POSTs (goto, nav, tab, attach, react, flag, settings,
-    profile, clone, routines, skills, reveal, tool)."""
+    profile, clone, routines, skills, reveal, tool, seen)."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
@@ -630,6 +648,30 @@ def _react(bid, body):
     return {"ok": True, "reactions": rx}
 
 
+def _seen(bid, body):
+    """The page opened this bot: `{seq}` is the event seq it had read up to. Stored as meta["seen_seq"], which
+    `summary()` spreads into the bot's status row as `seen_seq` — absent until the bot is first opened, which is the
+    client's `unreadOf(undefined, …) = 0` contract (a bot never opened has nothing to catch up on).
+
+    Server-side since D1386: this map was localStorage `browser-bot.seen`, and the desktop app walks ports 1777..1787
+    then an ephemeral one, each a new origin with empty storage, so a relaunch on another port forgot which bots had
+    been read and every "N new" badge went back to zero (or, worse, never-opened). MONOTONE: two windows racing, or a
+    stale page posting an old cursor, must never lower the mark and re-light messages already read, so the write
+    happens under the bot lock and only when it raises the value. Event seqs only grow (line counts; Clear context
+    appends a note, it does not truncate), so "never lower" is always right."""
+    seq = body.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        raise ValueError("seen needs an integer seq >= 0")
+    b = _bot(bid)
+    with b.lock:
+        cur = b.meta.get("seen_seq")
+        if not isinstance(cur, int) or isinstance(cur, bool) or seq > cur:
+            b.meta["seen_seq"] = seq
+            b.save()
+        stored = b.meta["seen_seq"]
+    return {"ok": True, "seen_seq": stored}
+
+
 def _flag(bid, body):
     """Sidebar bookkeeping: pinned / hidden / avatar face."""
     b = _bot(bid)
@@ -657,6 +699,7 @@ def _settings(bid, body):
     # Validate before any key lands on the live meta: a ValueError past this line would leave half the dialog's
     # edits in memory for the next save() to persist.
     folders = bm.clean_folders(body["folders"]) if isinstance(body.get("folders"), list) else None  # ValueError -> 400
+    terminal = _check_terminal(bm, body, bm.is_super(b.meta))
     if name and name != b.meta.get("name") and b.meta.get("artifacts_dir") and not os.path.isdir(b.meta["artifacts_dir"]):
         b.meta.pop("artifacts_dir", None)  # never used on disk: let the new name pick the folder
     b.meta["name"] = name or b.meta.get("name")
@@ -677,6 +720,11 @@ def _settings(bid, body):
             b.meta["imessage_approvals"] = bool(body["imessage_approvals"])  # "Approve by text" (docs §10)
     if body.get("build_access") in bm.BUILD_MODES:
         b.meta["build_access"] = body["build_access"]
+    if terminal is not None:
+        # User-only (never in MANAGE_FIELDS): a bot cannot give itself a shell. Turning it off ends the session.
+        b.meta["terminal"] = terminal
+        if not terminal:
+            b.close_terminal()
     if isinstance(body.get("trusted_apps"), list):
         b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
     if folders is not None:
@@ -974,7 +1022,8 @@ def bot_app_events(bid: str, addr: str = Query(default=""), since: str = Query(d
 
 _POSTS = {"goto": _goto, "nav": _nav, "tab": _tab, "attach": _attach, "react": _react,
           "flag": _flag, "settings": _settings, "profile": _profile, "clone": _clone, "routines": _routines,
-          "skills": _skills, "reveal": _reveal, "tool": _tool, "viewport": _viewport, "failures": _failures}
+          "skills": _skills, "reveal": _reveal, "tool": _tool, "viewport": _viewport, "failures": _failures,
+          "seen": _seen}
 # The app door's POSTs read the X-Fused-Page header too (docs §13).
 _APP_POSTS = {"app_send": _app_send, "app_stop": _app_stop}
 

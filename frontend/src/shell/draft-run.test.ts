@@ -27,6 +27,8 @@ let canRunDraft: typeof import("./draft-run").canRunDraft;
 let draftRunPayload: typeof import("./draft-run").draftRunPayload;
 let boundDraftPayload: typeof import("./draft-run").boundDraftPayload;
 let chatDraftPayload: typeof import("./draft-run").chatDraftPayload;
+let storedDraftBackend: typeof import("./NewJobModal").storedDraftBackend;
+let agents: typeof import("@platform/lib/agent-backends");
 
 beforeAll(async () => {
   const mod = await import("./draft-run");
@@ -34,6 +36,8 @@ beforeAll(async () => {
   draftRunPayload = mod.draftRunPayload;
   boundDraftPayload = mod.boundDraftPayload;
   chatDraftPayload = mod.chatDraftPayload;
+  storedDraftBackend = (await import("./NewJobModal")).storedDraftBackend;
+  agents = await import("@platform/lib/agent-backends");
 });
 
 // A draft row exactly as `/api/tasks` emits one: the client-minted id, and the
@@ -308,5 +312,66 @@ describe("there is one payload builder", () => {
     expect(src).not.toContain("draft.preview");
     expect(src).toContain("await fetchDrafts()");
     expect(src).toContain("await fetchChatDraft(sessionId)");
+  });
+});
+
+describe("a draft's model belongs to the agent it runs on (D2)", () => {
+  /** The server's catalog with both agents on and `dflt` as the default. */
+  const catalog = (dflt: string) => {
+    const rows = [
+      { ...agents.CLAUDE_FALLBACK, enabled: true },
+      { ...agents.COPILOT_FALLBACK, enabled: true },
+    ];
+    return { backends: rows, default: dflt, all: rows };
+  };
+
+  test("the card stores the agent beside a model or effort, and only the pick otherwise", () => {
+    expect(storedDraftBackend("sonnet", "", "claude", "")).toBe("claude");
+    expect(storedDraftBackend("", "high", "copilot", "")).toBe("copilot");
+    expect(storedDraftBackend("", "", "copilot", "")).toBe("");
+    expect(storedDraftBackend("", "", "copilot", "claude")).toBe("claude");
+  });
+
+  test("a no-pick draft holding Claude's model runs on a Copilot default with Copilot's", () => {
+    agents.resetAgentBackendsForTests(catalog("copilot"));
+    try {
+      const body = boundDraftPayload("d1", { ...FORM, model: "sonnet", effort: "ultra" }, NOW)!;
+      expect(body.backend).toBe("copilot");
+      expect(body.model).toBe("auto");
+      // An effort the agent does not offer is dropped, not sent.
+      expect(body.effort).toBeUndefined();
+    } finally {
+      agents.resetAgentBackendsForTests();
+    }
+  });
+
+  test("a Claude pick holding Copilot's model falls to Claude's default", () => {
+    agents.resetAgentBackendsForTests(catalog("copilot"));
+    try {
+      const body = boundDraftPayload("d1", { ...FORM, backend: "claude", model: "auto", effort: "high" }, NOW)!;
+      expect(body.backend).toBe("claude");
+      expect(body.model).toBe("sonnet");
+      expect(body.effort).toBe("high");
+    } finally {
+      agents.resetAgentBackendsForTests();
+    }
+  });
+
+  test("an id no agent lists is carried through as typed", () => {
+    agents.resetAgentBackendsForTests(catalog("claude"));
+    try {
+      const body = boundDraftPayload("d1", { ...FORM, model: "claude-opus-4-6" }, NOW)!;
+      expect(body.backend).toBe("claude");
+      expect(body.model).toBe("claude-opus-4-6");
+    } finally {
+      agents.resetAgentBackendsForTests();
+    }
+  });
+
+  test("before the catalog answers, the draft goes as stored", () => {
+    agents.resetAgentBackendsForTests();
+    const body = boundDraftPayload("d1", { ...FORM, model: "sonnet" }, NOW)!;
+    expect(body.backend).toBeUndefined();
+    expect(body.model).toBe("sonnet");
   });
 });

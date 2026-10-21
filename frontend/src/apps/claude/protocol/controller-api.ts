@@ -164,11 +164,17 @@ export type TroubleKind =
    *  knowing anything about the app's insides: `ui/TroubleView`'s `SAID` gives
    *  it two plain sentences and no verbatim block. */
   | "boot"
+  /** ADDED (docs/COPILOT_BACKEND.md D17): the agent this chat names is
+   *  switched off in Preferences — `start`/`send` answered 400
+   *  `{reason: "backend_disabled"}`. The card's one action is the switch. */
+  | "disabled"
   | "generic";
 
 export interface Trouble {
   kind: TroubleKind;
   message: string;
+  /** For `disabled`: which agent the refusal named. */
+  backend?: string;
   /** Verbatim traceback / stderr when present. */
   detail?: string;
   /** For `limit`: the window that refused the turn, so the card can say WHEN
@@ -189,13 +195,38 @@ export interface Working {
   startedAt: number;
   /** "Claude is …" line for a run owned by another tab/host (T:17506 setExternalWorking). */
   external?: boolean;
+  /** The card watch's line (run-controller `paintCardWait`): the reply ended,
+   *  a background task's card is open, and this says "Waiting for your
+   *  approval" — external (no turn to stop), but not "running outside". */
+  cardWait?: boolean;
 }
 
 export type RunStatus = "idle" | "starting" | "running" | "stopping";
 
+/** "Fork from here": the user turn being re-asked and everything after it,
+ *  parked out of `turns` until the send starts the new session (or Cancel). */
+export interface ForkState {
+  /** The user prompt's transcript uuid — the server resolves the resume point. */
+  uuid: string;
+  /** The prompt's editable text (what the composer is prefilled with). */
+  text: string;
+  /** That turn and every later one, in order. */
+  hidden: Turn[];
+}
+
 export interface ChatState {
   file: string | null;
   sessionId: string | null;
+  /**
+   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" — as the
+   * server reported it (poll, history, defaults), or "" while nothing has
+   * (docs/COPILOT_BACKEND.md D2). Immutable once a session has a turn: the
+   * Agent pill fixes on it, and a send names it. "" for a brand-new chat,
+   * whose pill reads the `backend` param and the catalog's default instead.
+   * Optional on the type so a host or a test that builds a state by hand
+   * predating the field still compiles; the controller always writes it.
+   */
+  backend?: string;
   runId: string | null;
   /**
    * THE LAST RUN THIS CONVERSATION HAD, and unlike `runId` it OUTLIVES the turn.
@@ -332,6 +363,10 @@ export interface ChatState {
    * Starts at 0, so a reader can skip the mount.
    */
   transcriptGen: number;
+  /** Set between "Fork from here" and the send (or Cancel). Optional so a
+   *  hand-built state predating the field still compiles; the controller
+   *  always writes it (`null` when there is no fork). */
+  fork?: ForkState | null;
   /** Monotonic; bumps on every state change so cheap memo keys work. */
   rev: number;
 }
@@ -484,6 +519,16 @@ export interface ChatController {
   /** Queue/send a follow-up into the live run (T:16024). `opts` ADDED: notes
    *  and pictures fold into a follow-up exactly as into a fresh turn. */
   sendFollowUp(text: string, opts?: SendOptions): Promise<void>;
+  /**
+   * "Fork from here": park the user turn `turnKey` and everything after it,
+   * and answer its editable text for the composer. Null — and nothing parked —
+   * while a run is active or a send is in flight, off Claude, or for a turn
+   * with no transcript uuid. The next `sendMessage` starts a NEW session
+   * (`fork_at`); the original is untouched.
+   */
+  beginFork(turnKey: string): string | null;
+  /** Put the parked turns back and clear the fork. */
+  cancelFork(): void;
   /** Stop the live run (T:15870-16023 stopRun). No-op when idle. */
   stopRun(): Promise<void>;
 
@@ -501,7 +546,9 @@ export interface ChatController {
   answerAppState(id: string, block: string): Promise<void>;
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
-  openSession(sessionId: string): Promise<void>;
+  /** `backend`: the arriving conversation's agent, when the opener knows it
+   *  (a task row's) — named before the history lands (D2/D18). */
+  openSession(sessionId: string, opts?: { backend?: string }): Promise<void>;
   /** Re-attach to a run id from the URL (T:17792 resumeRun). `opts` ADDED in
    *  PR4 — the three postures the standing watch and the scheduled-run poller
    *  need (see `ResumeOptions`). */
@@ -656,7 +703,19 @@ export interface ControllerDeps {
     due: string;
     session_id: string;
     title: string;
+    /** The session's agent (D2). */
+    backend?: string;
   }) => Promise<unknown>;
+  /** ADDED: the schedule as the server holds it, for `retireLimit` to find
+   *  every comeback still booked on the session — the server's list and not a
+   *  memory of what this frame posted, so a reload or a second limit hit
+   *  cannot orphan one. Defaults to `getSchedule`. */
+  listSchedule?: () => Promise<{
+    entries: Array<{ id: string; session_id: string; message: string; state: string; created?: string }>;
+  }>;
+  /** ADDED: cancels one booked comeback (`retireLimit`). Defaults to
+   *  `cancelScheduledMessage`. */
+  cancelSchedule?: (id: string) => Promise<unknown>;
   /** ADDED: `sleep` for the 400 ms poll cadence and the follow-up wait —
    *  injectable so a test runs the loop without real time (T:16377). */
   sleep?: (ms: number) => Promise<void>;
@@ -665,6 +724,9 @@ export interface ControllerDeps {
    *  Falls back to the `permission` param and "" when absent. */
   model?: () => string;
   effort?: () => string;
+  /** ADDED (D2): the agent the pickers currently show, read at SEND time for
+   *  a chat with no session yet; a session's own `backend` outranks it. */
+  backend?: () => string;
   /** ADDED: `has_pane` is the PAGE's answer, sent on every turn (T:16609). */
   /**
    * The page's answer to `has_pane`, and it is TRI-STATE: `true` a pane is

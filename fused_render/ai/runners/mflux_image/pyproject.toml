@@ -31,8 +31,25 @@
 #                   range means the next such move is a deliberate bump with a
 #                   render behind it rather than a silent one on a user's
 #                   machine.
+#                   Now `>=0.23,<0.24` (was 0.19): 0.23 adds the FLUX 3 Image
+#                   Klein configs next to FLUX.2 klein, which it keeps. Probed
+#                   on 0.23.0 — every `mflux` symbol `worker.py` and
+#                   `hub_loadable.py` read still exists with the signatures
+#                   they are called with. **New floors:** 0.23 requires
+#                   `torch>=2.13` and `transformers>=5.5` (still `mlx>=0.32,
+#                   <0.33`). Measured on a fresh macOS arm64 3.12 `uv sync`:
+#                   the 0.19 and 0.23 environments both resolve torch 2.14.1 and
+#                   transformers 5.20.2 and weigh the same ~1.1GB, so the
+#                   bump adds no download; the floors only stop an old torch
+#                   from being kept. Re-run the stream measurements in
+#                   `worker.py::_pin_stream` with a render when this is bumped.
+#   pillow          CEILING <13, named here though mflux pulls it in: Pillow
+#                   13.0.0 imports `numbers._IntegralLike`, which exists only on
+#                   Python 3.15, so `import PIL._typing` (and mflux) fails on
+#                   3.12. Drop the ceiling once a 3.12-safe 13.x ships or mflux
+#                   stops importing `PIL._typing`.
 #   huggingface_hub downloads
-#   psutil          the RSS half of "how much memory is this costing"; the MLX
+#   psutil         the RSS half of "how much memory is this costing"; the MLX
 #                   half comes from mlx's own allocator (see `memory()`)
 #
 # No `av`, unlike the transcription runner: nothing here decodes media. The
@@ -61,7 +78,8 @@ name = "fused-render-runner-mflux-image"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "mflux>=0.19,<0.20",
+    "mflux>=0.23,<0.24",
+    "pillow>=12.3,<13",
     "huggingface_hub",
     "psutil",
 ]

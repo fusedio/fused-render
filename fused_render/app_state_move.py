@@ -72,28 +72,35 @@ def _rewrite_contrib(old_root: str, new_root: str) -> None:
 def _rewrite_current_apps(old_root: str, new_root: str) -> None:
     """The desk stores canonical absolute paths. If the new path is already a
     row (a task ran there before this open), the stale row just drops."""
+    # Under current_apps' own lock (D1386): the desk is now read-modify-written
+    # by a drag (`set_order`) and by `observe` on every listing, so an unlocked
+    # rewrite here could hand back a snapshot taken before either and erase it.
+    from fused_render import current_apps
+
     path = os.path.join(storage.home_dir(), "current_apps.json")
-    data = storage.read_json(path)
-    apps = data.get("apps") if isinstance(data, dict) else None
-    if not isinstance(apps, list):
-        return
-    changed = False
-    kept, have = [], set()
-    for app in apps:
-        remapped = workspace_migration._remap(
-            app.get("path") if isinstance(app, dict) else None, old_root, new_root)
-        if remapped is not None:
-            app["path"] = canonical_fs_path(remapped)
-            changed = True
-        key = app.get("path") if isinstance(app, dict) else None
-        if isinstance(key, str) and key in have:
-            changed = True
-            continue
-        have.add(key)
-        kept.append(app)
+    with current_apps._LOCK:
+        data = storage.read_json(path)
+        apps = data.get("apps") if isinstance(data, dict) else None
+        if not isinstance(apps, list):
+            return
+        changed = False
+        kept, have = [], set()
+        for app in apps:
+            remapped = workspace_migration._remap(
+                app.get("path") if isinstance(app, dict) else None, old_root, new_root)
+            if remapped is not None:
+                app["path"] = canonical_fs_path(remapped)
+                changed = True
+            key = app.get("path") if isinstance(app, dict) else None
+            if isinstance(key, str) and key in have:
+                changed = True
+                continue
+            have.add(key)
+            kept.append(app)
+        if changed:
+            data["apps"] = kept
+            storage.write_json(path, data)
     if changed:
-        data["apps"] = kept
-        storage.write_json(path, data)
         logger.info("re-rooted moved app in %s", path)
 
 

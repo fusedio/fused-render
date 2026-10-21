@@ -11,6 +11,8 @@ import os
 
 from fastapi.testclient import TestClient
 
+import pytest
+
 import fused_render.shell.prefs as prefs_mod
 from fused_render.ai import registry as ai_registry
 from fused_render.server import create_app
@@ -231,6 +233,12 @@ def test_marketplace_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
         client.put("/api/prefs", json={"marketplace_enabled": "yes"}, headers=FUSED).status_code
         == 400
     )
+
+
+def test_removed_always_on_prefs_are_not_in_the_payload(tmp_path, monkeypatch):
+    client, _home = _client(tmp_path, monkeypatch)
+    body = client.get("/api/prefs").json()
+    assert "bot_terminals" not in body and "chat_headsup" not in body
 
 
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
@@ -516,68 +524,30 @@ def test_ranked_search_enabled_toggle_is_independent_of_other_prefs(
     assert body["indexing"]["ranked"] is False
 
 
-def test_default_model_defaults_to_unset_and_round_trips(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    # Unset is its own value — "" means "whatever each consumer's own default
-    # is", not a model. Every consumer treats it as no answer at all.
-    assert client.get("/api/prefs").json()["model"]["default"] == ""
-    body = client.put("/api/prefs", json={"default_model": "opus"}, headers=FUSED).json()
-    assert body["model"]["default"] == "opus"
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["default_model"] == "opus"
-    assert client.get("/api/prefs").json()["model"]["default"] == "opus"
-    # And back to unset, which is a settable choice and not just an absence.
-    assert (
-        client.put("/api/prefs", json={"default_model": ""}, headers=FUSED).json()["model"][
-            "default"
-        ]
-        == ""
-    )
-
-
-def test_default_model_accepts_exactly_the_short_names(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    # The short names are the claude template's own selector list — the
-    # preference has to speak the same vocabulary as the control it presets.
-    for name in ("fable", "opus", "sonnet", "haiku"):
-        assert (
-            client.put("/api/prefs", json={"default_model": name}, headers=FUSED).json()["model"][
-                "default"
-            ]
-            == name
-        )
-
-
-def test_put_rejects_an_unknown_default_model(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    # A full API id is NOT accepted: the pref is the short name, and the
-    # short→id mapping lives in exactly one place (server/ai.py).
-    for bad in ("claude-opus-5", "gpt-4", 3, None):
-        assert (
-            client.put("/api/prefs", json={"default_model": bad}, headers=FUSED).status_code == 400
-        )
-    assert not (home / "prefs.json").exists()
-
-
-def test_default_model_is_independent_of_the_other_prefs(tmp_path, monkeypatch):
-    client, _ = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
-    client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
-    client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED)
-    body = client.put("/api/prefs", json={"default_model": "haiku"}, headers=FUSED).json()
-    assert body["engine"]["selected"] == "fused"
-    assert body["reader"]["enabled"] is True
-    assert body["model"]["default"] == "haiku"
-
-
-def test_default_model_reader_ignores_a_hand_edited_junk_value(tmp_path, monkeypatch):
-    # prefs.json is a user-editable file; an unknown value reads as unset
-    # rather than reaching a consumer that would pass it to a CLI.
+def test_the_default_model_pref_is_retired(tmp_path, monkeypatch):
+    # The global Claude model in ~/.claude/settings.json (Claude Config ›
+    # Model) is the one default every surface reads; fused-render's own
+    # `default_model` pref and its Preferences control are gone. The GET no
+    # longer reports it, a PUT naming only it changes nothing, and a value an
+    # older build stored is ignored rather than read by anyone.
     client, home = _client(tmp_path, monkeypatch)
     home.mkdir(parents=True, exist_ok=True)
-    (home / "prefs.json").write_text(json.dumps({"default_model": "wat"}), encoding="utf-8")
-    assert prefs_mod.default_model() == ""
-    assert client.get("/api/prefs").json()["model"]["default"] == ""
+    (home / "prefs.json").write_text(json.dumps({"default_model": "opus"}), encoding="utf-8")
+    assert "model" not in client.get("/api/prefs").json()
+    assert client.put("/api/prefs", json={"default_model": "haiku"}, headers=FUSED).status_code == 400
+    assert not hasattr(prefs_mod, "default_model")
+
+
+def test_the_menubar_pin_pref_is_retired(tmp_path, monkeypatch):
+    # The pinned-file popover is no longer a choice: the Dock is the status
+    # item's only surface, so the GET stops describing a `menubar` and the PUT
+    # stops accepting the switch.
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"menubar_pin_enabled": True}), encoding="utf-8")
+    assert "menubar" not in client.get("/api/prefs").json()
+    assert client.put("/api/prefs", json={"menubar_pin_enabled": True}, headers=FUSED).status_code == 400
+    assert not hasattr(prefs_mod, "menubar_pin_enabled")
 
 
 def test_env_var_reports_as_forcing(tmp_path, monkeypatch):
@@ -1583,6 +1553,45 @@ def test_task_recap_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monke
     assert prefs_mod.task_recap_titles_enabled() is False
 
 
+def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Same opt-in idiom as the recap flag: only a stored `true` is on."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["task_summary_titles"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"task_summary_titles_enabled": True},
+                      headers=FUSED).json()
+    assert body["task_summary_titles"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["task_summary_titles_enabled"] is True
+    assert prefs_mod.task_summary_titles_enabled() is True
+    bad = client.put("/api/prefs", json={"task_summary_titles_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "task_summary_titles_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"task_summary_titles_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.task_summary_titles_enabled() is False
+
+
+def test_claude_strict_mcp_defaults_on_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Lean sessions are the default: only a stored `false` turns them off."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["claude_strict_mcp"] == {"enabled": True}
+    assert prefs_mod.claude_strict_mcp_enabled() is True
+    body = client.put("/api/prefs", json={"claude_strict_mcp_enabled": False},
+                      headers=FUSED).json()
+    assert body["claude_strict_mcp"]["enabled"] is False
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["claude_strict_mcp_enabled"] is False
+    assert prefs_mod.claude_strict_mcp_enabled() is False
+    bad = client.put("/api/prefs", json={"claude_strict_mcp_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "claude_strict_mcp_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}),
+                                     encoding="utf-8")
+    assert prefs_mod.claude_strict_mcp_enabled() is True
+
+
 def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert (
@@ -1612,3 +1621,76 @@ def test_put_rejects_bad_auto_download_updates(tmp_path, monkeypatch):
         "/api/prefs", json={"auto_download_updates": "yes"}, headers=FUSED
     ).status_code == 400
     assert not (home / "prefs.json").exists()
+
+
+def test_low_impact_toggle_runs_the_owner_hook_after_the_write(tmp_path, monkeypatch):
+    """`index_low_impact_enabled` flips the watcher ownership (server/
+    index_owner.py) after prefs.json is written, with the stored value; other
+    prefs never call it."""
+    from fused_render.server import index_owner
+
+    client, home = _client(tmp_path, monkeypatch)
+    seen = []
+
+    def hook(enabled):
+        stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+        seen.append((enabled, stored["index_low_impact_enabled"]))
+
+    monkeypatch.setattr(index_owner, "on_flag_changed", hook)
+    client.put("/api/prefs", json={"index_low_impact_enabled": True}, headers=FUSED)
+    client.put("/api/prefs", json={"index_low_impact_enabled": False}, headers=FUSED)
+    client.put("/api/prefs", json={"indexing_enabled": True}, headers=FUSED)
+    assert seen == [(True, True), (False, False)]
+
+
+def test_low_impact_toggle_on_a_test_app_starts_nothing(tmp_path, monkeypatch):
+    """No lifespan ran, so no watcher and no waiter: the real hook is a no-op."""
+    from fused_render.server import index_owner
+
+    client, _home = _client(tmp_path, monkeypatch)
+    assert client.put("/api/prefs", json={"index_low_impact_enabled": True},
+                      headers=FUSED).status_code == 200
+    assert not index_owner.waiter_running()
+    client.put("/api/prefs", json={"index_low_impact_enabled": False}, headers=FUSED)
+
+
+# -- dev runs default indexing OFF (2026-10-16) ----------------------------------
+
+def test_a_dev_run_defaults_indexing_off_until_opted_in(tmp_path, monkeypatch):
+    monkeypatch.delenv(prefs_mod.INDEXING_ENV, raising=False)
+    client, home = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_RENDER_DEV", "1")
+    assert prefs_mod.is_dev_run() is True
+    # No stored preference: a dev.sh server does not index the home dir.
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is False
+    # Opting in through Preferences stores the key, which outranks the dev default.
+    assert client.put("/api/prefs", json={"indexing_enabled": True}, headers=FUSED).json()[
+        "indexing"
+    ]["enabled"] is True
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is True
+    # And off stays off, dev or not.
+    assert client.put("/api/prefs", json={"indexing_enabled": False}, headers=FUSED).json()[
+        "indexing"
+    ]["enabled"] is False
+
+
+def test_a_packaged_run_is_unaffected_by_the_dev_default(tmp_path, monkeypatch):
+    monkeypatch.delenv(prefs_mod.INDEXING_ENV, raising=False)
+    monkeypatch.delenv("FUSED_RENDER_DEV", raising=False)
+    client, _home = _client(tmp_path, monkeypatch)
+    assert prefs_mod.is_dev_run() is False
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is True
+
+
+@pytest.mark.parametrize("raw,expect", [("1", True), ("yes", True), ("", True),
+                                        ("0", False), ("off", False), ("False", False)])
+def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
+        tmp_path, monkeypatch, raw, expect):
+    client, _home = _client(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_RENDER_DEV", "1")
+    monkeypatch.setenv(prefs_mod.INDEXING_ENV, raw)
+    assert prefs_mod.indexing_override() is expect
+    assert client.get("/api/prefs").json()["indexing"]["enabled"] is expect
+    # A stored preference does not beat the process-level switch.
+    client.put("/api/prefs", json={"indexing_enabled": not expect}, headers=FUSED)
+    assert prefs_mod.indexing_enabled() is expect

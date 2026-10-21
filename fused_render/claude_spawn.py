@@ -86,8 +86,27 @@ def record_session_when_ready(agent, run_id: str, on_tick=None) -> None:
 
 def spawn_helper(target: str, prompt: str, permission_mode: str,
                  session_id: str = "", model: str = "", effort: str = "",
-                 extra_read_dirs: list[str] | None = None) -> dict:
+                 extra_read_dirs: list[str] | None = None,
+                 backend: str = "", bot: str = "",
+                 isolate_mcp: bool = False) -> dict:
     """Start a session in-process; return `agent._start`'s result dict.
+
+    `backend` ("claude" | "copilot" | "") is which agent hosts the session
+    (docs/COPILOT_BACKEND.md D2). A resume runs on the session's own backend
+    whatever this says; on a fresh chat `_start` reads "" as Claude, NOT as the
+    Preferences default — so the scheduler, which pins an entry's agent at
+    create, always passes it. Always passed as a keyword, so agent.py's
+    `_start` must accept `backend=`.
+
+    `bot` is the id of the bot whose task this is ("" for everything else),
+    and the one thing it changes is the Claude switch: a bot's Claude task
+    runs with Claude switched off in Preferences (D17, owner Q7 — Bots are
+    not gated by it). ALWAYS passed as a keyword too, so `_start` must accept
+    `bot=` — the two land together.
+
+    `isolate_mcp` starts the session lean (`--strict-mcp-config`: no user MCP
+    servers or connectors) whatever the Preferences default says. Forwarded
+    ONLY when true, so a fake `_start` without the kwarg keeps working.
 
     `session_id` rides through because a scheduled message may target an
     EXISTING conversation ("" is a fresh one, which is all the apps API ever
@@ -106,7 +125,9 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
     try:
         return agent._start(target, prompt, session_id, model, effort,
                             permission_mode=permission_mode,
-                            extra_read_dirs=list(extra_read_dirs or []) or None)
+                            extra_read_dirs=list(extra_read_dirs or []) or None,
+                            backend=backend or "", bot=bot or "",
+                            **({"isolate_mcp": True} if isolate_mcp else {}))
     except FileNotFoundError as exc:
         if "claude CLI not found" in str(exc):
             return {"error":

@@ -416,8 +416,10 @@ def test_the_gap_reason_names_the_blocker_for_THIS_machine_not_offering_zero(mon
     `offering[0]`'s reason unconditionally therefore named `_cuda`'s "needs an
     NVIDIA GPU" on an Intel Mac, which is true of that row and useless to the
     reader: the actual reason nothing here can read
-    `nomic-ai/nomic-embed-text-v1.5` is `onnx-embed`'s own gate — no macOS
-    x86_64 `onnxruntime` wheel — and that is the sentence this machine needs.
+    `nomic-ai/nomic-embed-text-v1.5` was `onnx-embed`'s own gate — no macOS
+    x86_64 `onnxruntime` wheel — and is now `registry.local_ai_disabled`,
+    which every row reports first on an Intel Mac. Either way it is the one
+    Apple Silicon sentence this machine needs, never the NVIDIA one.
 
     `nomic-ai/nomic-embed-text-v1.5` is curated on `onnx-embed` (see
     `catalog.py`'s suggestion list), so it is offered by all three hardware

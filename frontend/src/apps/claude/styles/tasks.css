@@ -1,9 +1,10 @@
 /* The background-tasks strip (SPEC T-5, ui/TasksPanel.tsx).
 
    It rides the COMPOSER'S column, like `.c-schedblock` above it: same 720px
-   measure and 20px gutter, so it reads as a lid on the box rather than a band
-   across the pane. Collapsed it is one line; opened, the rows cap at a third of
-   the pane and scroll — the transcript above keeps the rest. */
+   measure and 20px gutter. A plain text row with no border or fill, on the
+   head or the opened list. Collapsed it is one line; opened, the rows sit
+   under the head, cap at a third of the pane and scroll — the transcript
+   above keeps the rest. */
 .chat-root .chat-tasks {
   flex-shrink: 0;
   max-width: 720px;
@@ -20,17 +21,13 @@
   width: 100%;
   min-width: 0;
   padding: 5px 10px;
-  border: 1px solid var(--c-border);
-  border-radius: 12px;
-  background: var(--c-surface);
+  border: 0;
+  border-radius: 0;
+  background: none;
   color: var(--c-dim);
   font: inherit;
   text-align: left;
   cursor: pointer;
-}
-.chat-root .chat-tasks.is-open .chat-tasks-head {
-  border-radius: 12px 12px 0 0;
-  border-bottom-color: transparent;
 }
 .chat-root .chat-tasks-head:hover {
   color: var(--c-fg);
@@ -55,12 +52,10 @@
 .chat-root .chat-tasks-list,
 .chat-root .chat-tasks-empty {
   margin: 0;
-  padding: 4px 10px 8px;
+  padding: 2px 10px 8px;
   list-style: none;
-  border: 1px solid var(--c-border);
-  border-top: 0;
-  border-radius: 0 0 12px 12px;
-  background: var(--c-surface);
+  border: 0;
+  background: none;
   max-height: 33vh;
   overflow-y: auto;
 }

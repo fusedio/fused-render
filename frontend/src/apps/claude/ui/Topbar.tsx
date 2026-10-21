@@ -52,7 +52,7 @@ import {
 // look like two different objects on two surfaces three pixels apart, and made
 // waiting look like failing.
 import { QueueCaptionText, StatusIcon } from "@shell/ScheduleTaskViews";
-import { TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
+import { TaskPeekAgent, TaskPeekProject, TaskPeekWho } from "@shell/TaskPeekWho";
 import { shortTaskId } from "@shell/tasks-lib";
 import "../styles/composer.css";
 // The skeleton below wears the landing list's own placeholder bar
@@ -60,7 +60,8 @@ import "../styles/composer.css";
 // here so the rule travels with the component that spends it rather than by
 // luck of what else the bundle happened to pull in.
 import "../styles/home.css";
-import { ClaudeMark } from "./ClaudeMark";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { useAgent } from "./agent-context";
 import { knownTaskId } from "./Kebab";
 
 export interface TopbarProps {
@@ -145,6 +146,10 @@ export function Topbar({
   worktree,
   worktreeHint,
 }: TopbarProps) {
+  // THE AGENT'S NAME AND MARK (D18): the conversation's own, off the context.
+  // Above every early return: a header that moves from the fallback to the
+  // task branch (the row lands after the first frame) keeps one hook count.
+  const agent = useAgent();
   // Null on every row that is not waiting in a line, which is the common case.
   const line = queue ? queueCaption(queue) : null;
   // ONE ROW FOR THE RING AND THE WORDS (Bugbot, PR #1194, eighth round). The
@@ -192,6 +197,7 @@ export function Topbar({
             row puts it, rather than at the far end of the header. */}
         {line ? <QueuedCaption line={line} /> : null}
         <TaskPeekProject task={who} {...(home ? { home } : {})} />
+        <TaskPeekAgent task={who} />
         {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
             the ring says running or not, and "resumes 4:00 AM" is the one fact
             about this conversation the ring cannot carry. */}
@@ -243,7 +249,6 @@ export function Topbar({
   const label =
     shortTaskId(taskId || knownTaskId(sessionId) || "") ||
     (sessionId ? sessionId.slice(0, 8) : "");
-
   return (
     <div className={"c-topbar" + (line ? " is-queued" : "")}>
       {/* THE RING TAKES THE MARK'S SEAT rather than sitting beside it: the line
@@ -256,9 +261,9 @@ export function Topbar({
           <StatusIcon status="queued" />
         </span>
       ) : (
-        <ClaudeMark className="c-spark" />
+        <AgentMark backend={agent.backend} className="c-spark" />
       )}
-      <span className="c-tb-title">Claude</span>
+      <span className="c-tb-title">{agent.label}</span>
       {line ? <QueuedCaption line={line} /> : null}
       <span className="c-tb-file" title={subtitle || undefined}>
         {subtitle ?? ""}

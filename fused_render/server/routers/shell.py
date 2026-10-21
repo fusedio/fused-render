@@ -70,7 +70,7 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # and Help › Setup wizard is an ordinary link. A refresh mid-wizard stays on it.
 @router.get("/onboarding")
 # Canvases (legacy-workbench local development): the listing page and the
-# per-canvas workspace (/canvases/<name>, matched by the wildcard below).
+# per-canvas workspace (/canvases/<env>/<name>, served below).
 @router.get("/canvases")
 # Bots (frontend apps/bots, backend fused_render/bots, docs/bots.md): the
 # browser-bots page. The selected bot and the pages inside it are SUB-PATHS
@@ -95,8 +95,23 @@ def shell_bots_page(path: str, shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 
+# The canvas workspace is `/canvases/<env>/<name>` (frontend
+# apps/canvases/api.ts canvasNameFromPath): the environment is a path segment
+# because the clone is one on disk (`~/Fused/canvas/<env>/<name>`), and a prod
+# and an unstable canvas may be open at once. The one-segment form is still
+# served so a stale bookmark lands on the shell's "Unrecognized URL" page
+# (owner: no redirect to the default environment) instead of a bare 404.
 @router.get("/canvases/{name}")
-def shell_canvas_workspace(name: str, shell_path: str = Depends(get_shell_path)):
+@router.get("/canvases/{env}/{name}")
+def shell_canvas_workspace(name: str, env: str = "", shell_path: str = Depends(get_shell_path)):
+    return FileResponse(shell_path)
+
+
+# The canvas PROJECT page, `/canvases-project/<env>/<name>?_tab=` (frontend
+# shell/CanvasPage.tsx, canvasProjectFromPath): the tabbed, read-only view of
+# one canvas, a separate route from the editor above (owner, 2026-10-20).
+@router.get("/canvases-project/{env}/{name}")
+def shell_canvas_project(env: str, name: str, shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 

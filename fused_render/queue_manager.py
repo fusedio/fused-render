@@ -5,7 +5,8 @@ doors, the listing and the event transport build against.
 
 Vocabulary: a *folder* is `project_queue.queue_key(target)`; a *task key* is
 the Tasks page key (a session id, or ``pending:<entry id>``). The index is a
-rebuildable pointer table persisted in STATE_DIR as ``queue_index.json``.
+rebuildable pointer table persisted in ``tasks_store.duties_dir()`` (STATE_DIR,
+nested per branch ref) as ``queue_index.json``.
 
 **Nothing here polls and nothing here reads a registry.** State moves only on the
 events below, and the three facts the manager cannot derive — how to start a
@@ -435,7 +436,7 @@ class QueueManager:
         and the next transaction would persist `{}` over whatever was
         really on disk. Treated the same as corrupt/unparseable: the None
         sentinel, not an empty default."""
-        path = os.path.join(tasks_store.STATE_DIR, INDEX_FILE)
+        path = os.path.join(tasks_store.duties_dir(), INDEX_FILE)
         try:
             f = open(path, "r", encoding="utf-8")
         except FileNotFoundError:
@@ -511,7 +512,7 @@ class QueueManager:
         flock-protected reload for anything that mutates. A missing file
         compares equal to a `self._loaded_stat` of None, so "nothing there
         yet" never forces a reload on every call."""
-        current = _stat_tuple(os.path.join(tasks_store.STATE_DIR, INDEX_FILE))
+        current = _stat_tuple(os.path.join(tasks_store.duties_dir(), INDEX_FILE))
         if current == self._loaded_stat:
             return
         loaded = self._load()
@@ -520,7 +521,9 @@ class QueueManager:
 
     def _write_locked(self) -> None:
         """Write `self._state` to disk. The caller already holds
-        `tasks_store.locked(INDEX_FILE)` — via `_locked_state` or `_txn`,
+        `tasks_store.locked(INDEX_FILE)` (a lock file at baseline `STATE_DIR`,
+        shared by every branch — over-serialising, never wrong) — via
+        `_locked_state` or `_txn`,
         the only two places this is called — so this never acquires the
         lock itself; `flock` is per open file description, not reentrant,
         and a second acquire from the same process would block forever.
@@ -537,10 +540,10 @@ class QueueManager:
         # `forced` is a set in memory and a sorted list on disk — the only
         # field of the index that is not already json.
         snapshot["forced"] = sorted(self._state.get("forced") or ())
-        path = os.path.join(tasks_store.STATE_DIR, INDEX_FILE)
+        path = os.path.join(tasks_store.duties_dir(), INDEX_FILE)
         tmp_path = path + f".tmp-{os.getpid()}"
         try:
-            os.makedirs(tasks_store.STATE_DIR, exist_ok=True)
+            os.makedirs(tasks_store.duties_dir(), exist_ok=True)
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, indent=2, ensure_ascii=False)
                 f.flush()
@@ -610,6 +613,15 @@ class QueueManager:
         Best-effort at every step. A state dir that will not rename keeps the
         file, and the next load re-runs an idempotent migration (`setdefault`
         on the answer, the standing line checked before an insert)."""
+        # `STATE_DIR`, not `duties_dir()`: this is the pre-queue file an older
+        # build wrote at baseline, and `project_queue.read_legacy_held_answers`
+        # (`tasks_store.load_state`) reads it from there. BASELINE ONLY: a
+        # branch manager that consumed it would carry those decisions into
+        # its own index and rename the file out from under the baseline
+        # manager they belong to (CodeRabbit, PR #1697).
+        from fused_render._branch import branch_ref  # noqa: PLC0415
+        if branch_ref():
+            return
         path = os.path.join(tasks_store.STATE_DIR, LEGACY_ANSWERS_FILE)
         if not os.path.exists(path):
             return
@@ -2387,7 +2399,7 @@ def reset_for_tests(manager: QueueManager | None = None) -> None:
 # ----------------------------------------------------------- machine duties
 
 
-# The lease file's name under `tasks_store.STATE_DIR` (B2). Not `INDEX_FILE`
+# The lease file's name under `tasks_store.duties_dir()` (B2). Not `INDEX_FILE`
 # or anything else this module already locks — a duties winner and a `_txn`
 # writer are unrelated critical sections and must never share a lock name,
 # or one would block on the other for no reason.

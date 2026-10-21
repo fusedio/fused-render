@@ -47,6 +47,21 @@ export function rewriteLegacyUrl(url: string): string {
   // here because the alternative is carrying a dead URL shape forever.
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
+  // The Claude Config panel is the Claude Code group of Preferences
+  // (2026-10-20); the retired /claude-md page folded into the panel before
+  // that. `?cctab=<section>` becomes the group's `?s=` highlight, so a link
+  // into the panel's MCP tab still lands on the MCP block. Kept for good:
+  // the server's jobs and notifications (claude_install.py, server/ai.py)
+  // name this page, and a running older build keeps writing it.
+  if (p === "/claude-config" || p === "/claude-md") {
+    const params = new URLSearchParams(q.startsWith("?") ? q.slice(1) : q);
+    const tab = params.get("cctab");
+    params.delete("cctab");
+    params.set("tab", "claude");
+    const s = claudeConfigSetting(tab);
+    if (s) params.set("s", s);
+    return "/preferences?" + params.toString();
+  }
   // `/bots?bot=<id>` → `/bots/<id>` (2026-10-14; the path shape is owned by
   // apps/bots/routes.ts, which the platform may not import, so the rule is
   // spelled here beside the other legacy shapes). Kept for good, unlike the
@@ -66,6 +81,30 @@ export function rewriteLegacyUrl(url: string): string {
     }
   }
   return url;
+}
+
+// The panel's section ids → the Preferences row they are now (settings/registry).
+function claudeConfigSetting(tab: string | null): string | null {
+  switch (tab) {
+    case "plugins":
+    case "marketplaces":
+      return "claude-plugins";
+    case "memory":
+      return "claude-memory";
+    case "skills":
+      return "claude-skills";
+    case "statusline":
+      return "claude-statusline";
+    case "mcp":
+      return "claude-mcp";
+    case "preferences":
+      return "claude-catalog";
+    case "history":
+    case "profiles":
+      return "claude-history";
+    default:
+      return null;
+  }
 }
 
 // Rewritten in place at module init — before IS_EMBED is computed, so a
@@ -743,19 +782,22 @@ export function spaLinkProps(
   };
 }
 
-export function navigateUrl(url: string, opts?: { isDir?: boolean }): void {
+export function navigateUrl(url: string, opts?: { isDir?: boolean; replace?: boolean }): void {
   // Like navigate(), but preserves the full url (incl. query string) — used
   // when opening a bookmark, whose url carries saved view params. Callers
   // that know the target's kind (e.g. Home's post-create hop into the app
   // folder's chat) pass the same isDir nav hint navigate() takes, so the
   // destination paints the right scaffold instead of the file one.
+  // `replace` swaps the current history entry instead of adding one (in-page
+  // tab switches, where Back should leave the page); the nav event still fires.
   const state = opts && typeof opts.isDir === "boolean" ? { fsDir: opts.isDir } : null;
   // Stored urls (bookmarks, recents) may predate the
   // /explorer prefix rename; an in-app push skips the module-init rewrite, so
   // map here or the dispatcher won't recognize the path.
   const href = rewriteLegacyUrl(url);
   guarded(() => {
-    pushHistory(state, href);
+    if (opts?.replace) history.replaceState(state ?? history.state, "", href);
+    else pushHistory(state, href);
     notifyNavigate();
   });
 }

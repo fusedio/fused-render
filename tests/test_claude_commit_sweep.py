@@ -83,7 +83,7 @@ def test_a_later_clean_turn_is_swept_too_not_just_the_first(agent, run_dir, tmp_
     the sweep; turn two's own uncommitted work is left behind forever."""
     target = str(tmp_path / "app.txt")
     calls = []
-    agent._commit_turn = lambda file, message: calls.append((file, message))
+    agent._commit_turn = lambda file, message, backend="": calls.append((file, message))
 
     _write(run_dir, [_user_row("turn one"), _text_row("ok"), _result_row()])
     _setup(agent, run_dir, target)
@@ -112,7 +112,7 @@ def test_a_later_clean_turn_is_swept_too_not_just_the_first(agent, run_dir, tmp_
 def test_an_errored_turn_is_not_swept(agent, run_dir, tmp_path):
     target = str(tmp_path / "app.txt")
     calls = []
-    agent._commit_turn = lambda file, message: calls.append((file, message))
+    agent._commit_turn = lambda file, message, backend="": calls.append((file, message))
 
     _write(run_dir, [_user_row("turn one"), _text_row("ok"), _result_row()])
     _setup(agent, run_dir, target, alive=False)

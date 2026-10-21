@@ -4,7 +4,13 @@
 // (T:11901-11912, 12171-12176):
 //
 //   this chat's RECORD  >  seed param  >  the GLOBAL pair / detected
-//                        >  prefs default  >  constant
+//                        >  constant
+//
+// T ranked a "prefs default" between detection and the constant. That rank is
+// gone with fused-render's own `default_model` preference: the GLOBAL pair
+// above IS the user's default model (Claude Config › Model edits it), and a
+// second, lower-ranked default was a setting that only spoke when the first
+// said nothing.
 //
 // "seed param" and not "URL param" since 2026-09-21: a `?model=`/`?effort=`
 // counts only when a HOST stated it (ChatMount's props, into a per-mount memory
@@ -30,20 +36,33 @@
 // set a value matching no option, which renders as a blank pill (fitSelect
 // returns early with no `selectedOptions[0]`) and is also what reaches the CLI.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getPrefs, readChatSettings, recordChatSettings } from "@platform/lib/api";
+import { readChatSettings, recordChatSettings } from "@platform/lib/api";
 import {
   getClaudeDefaults,
   readClaudeDefaults,
   subscribeClaudeDefaults,
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
-import { listedModelIn } from "@platform/lib/model-vocab";
+import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
+import {
+  capsOf,
+  defaultModelOf,
+  effortsOf,
+  isBackendEnabled,
+  modelsOf,
+  useAgentBackends,
+} from "@platform/lib/agent-backends";
 import { runAgent } from "../protocol/agent";
 import type { DefaultsResponse, PermissionMode } from "../protocol/types";
 import type { ParamsStore } from "../params/store";
 import { useChatParams } from "../params/useChatParams";
 
 /** `claude --model`'s vocabulary, one entry per model (T:11823).
+ *
+ *  THE STATIC CLAUDE ROW since the agent catalog (docs/COPILOT_BACKEND.md
+ *  D11): the live lists are `modelsOf(backend)` / `effortsOf(backend)` off
+ *  `platform/lib/agent-backends`, and these constants are what every reader
+ *  sees before the catalog lands and what the Claude row says once it has.
  *
  *  A pinned full id ("claude-fable-5-1") used to lead this list, above the
  *  floating alias for the same model. It named the same thing twice, so the
@@ -75,6 +94,11 @@ export const PERMISSION_LABELS: Record<PermissionMode, string> = {
   acceptEdits: "auto-accept edits",
   auto: "Claude decides",
 };
+/** The same labels with the AGENT named in the one that names it ("Copilot
+ *  decides", D18). The Claude row is `PERMISSION_LABELS` byte for byte. */
+export function permissionLabelsFor(agent: string): Record<PermissionMode, string> {
+  return agent === "Claude" ? PERMISSION_LABELS : { ...PERMISSION_LABELS, auto: `${agent} decides` };
+}
 /** The DISTINGUISHING word of each label, never a truncation — for the pill
  *  only, and only when the row has run out of width (T:11858-11870). The menu
  *  always spells the sentences out. */
@@ -112,31 +136,27 @@ function pick(list: readonly string[], want: string, fallback: string): string {
  *  option that offers it first. Normalising here rather than at each call site
  *  is what makes a legacy `claude-fable-5-1` — in a record, a param or a
  *  transcript — a Fable pill everywhere at once. */
-function pickModel(want: string): string {
-  return listedModelIn(want, MODELS) || DEFAULT_MODEL;
+function pickModel(want: string, list: readonly string[] = MODELS, fallback = DEFAULT_MODEL): string {
+  return listedModelIn(want, list) || fallback;
 }
 
-/** The same fold for an answer that is VALIDATED rather than resolved — the
- *  `defaults` read, this chat's record, the prefs default. "" for anything this
- *  build does not offer, which is precisely "no opinion" and leaves the rank
- *  below it speaking. */
-function listedModel(value: string | null | undefined): string {
-  return listedModelIn(value, MODELS);
-}
-
-/** `curModel()` (T:11901), with the chat's own record ahead of it.
+/** `curModel()` (T:11901), with the chat's own record ahead of it and T's
+ *  prefs rank removed (see the header).
  *
  *  `recorded` is LAST in the list and FIRST in the ranking, deliberately: the
- *  three below it are T's own order and are pinned by tests that quote it, so
+ *  two below it are T's own order and are pinned by tests that quote it, so
  *  the new rank is appended rather than threaded through them. See the header
  *  for why a record outranks a param. */
 export function resolveModel(
   param?: string,
   detected?: string,
-  pref?: string,
   recorded?: string,
+  /** The AGENT's list and its default (D11) — the Claude constants when
+   *  absent, which is every caller that predates the catalog. */
+  list: readonly string[] = MODELS,
+  fallback = DEFAULT_MODEL,
 ): string {
-  return pickModel(recorded || param || detected || pref || DEFAULT_MODEL);
+  return pickModel(recorded || param || detected || fallback, list, fallback);
 }
 /** `curEffort()` (T:11905) — prefs never reach effort, only detection does.
  *  `recorded` leads, exactly as it does for the model above. */
@@ -144,12 +164,10 @@ export function resolveEffort(
   param?: string,
   detected?: string,
   recorded?: string,
+  list: readonly string[] = EFFORTS,
 ): string {
-  return pick(
-    EFFORTS,
-    recorded || param || detected || DEFAULT_EFFORT,
-    DEFAULT_EFFORT,
-  );
+  const fallback = list.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : list[0] || DEFAULT_EFFORT;
+  return pick(list, recorded || param || detected || fallback, fallback);
 }
 /** `syncSelects`'s permission branch (T:12171). */
 export function resolvePermission(param?: string): PermissionMode {
@@ -162,6 +180,17 @@ export interface ComposerDefaults {
   model: string;
   effort: string;
   permission: PermissionMode;
+  /**
+   * WHICH AGENT THE NEXT TURN RUNS ON (docs/COPILOT_BACKEND.md D2/D18): the
+   * session's own, once the wire has named it (`ChatState.backend`, handed in
+   * as `sessionBackend`), else the `backend` param — the Agent pill's pick for
+   * a chat that has no session yet — else the catalog's default. The model
+   * and effort lists are THIS agent's (`modelsOf`/`effortsOf`), so a value the
+   * other agent recorded folds to this one's default rather than a blank pill.
+   */
+  backend: string;
+  /** The session has a turn: the agent is a fact, and the pill fixes on it. */
+  backendFixed: boolean;
   /** The pane param AND this chat's record — never localStorage (03 §F) — or,
    *  for a chat with no session and no host seed, this mount's own `local`
    *  state (2026-10-01): there is no conversation to record against yet, and
@@ -178,8 +207,11 @@ export interface ComposerDefaults {
   setModel(value: string): void;
   setEffort(value: string): void;
   setPermission(value: PermissionMode): void;
+  /** The Agent pill's pick — a PARAM only (the first send records it per
+   *  session, `agent._start`), and refused once `backendFixed`. */
+  setBackend(value: string): void;
   /** Every best-effort read has landed (or failed) — the record, detection and
-   *  the prefs. The "Fix with AI" boot branch awaits this before its automatic
+   *  the global pair. The "Fix with AI" boot branch awaits this before its automatic
    *  send (T:12619, 12635), so the record read is IN it: an automatic send is
    *  the one send a human cannot hold back, and it must not launch on a value
    *  the record was about to overturn. */
@@ -205,7 +237,7 @@ export interface ComposerDefaults {
 
 /**
  * The three pills' resolved values, kept in step with the params store.
- * Detection (`defaults`) and the prefs read are both best-effort and both end
+ * Detection (`defaults`) and the global read are both best-effort and both end
  * in a re-resolve, so whichever lands second simply re-renders the same
  * ranking (T:12608-12645).
  */
@@ -213,13 +245,35 @@ export function useComposerDefaults(
   file: string | null,
   params: ParamsStore,
   hostSeeded = false,
+  /** `ChatState.backend` — the conversation's own agent, when the wire has
+   *  said; "" otherwise. Outranks the param and never moves (D2). */
+  sessionBackend = "",
 ): ComposerDefaults {
   const snapshot = useChatParams(params);
+  // ── WHICH AGENT, and therefore WHICH LISTS ────────────────────────────────
+  // Subscribed so a Preferences switch or the catalog's first read re-resolves
+  // the pills; a `backend` param naming a switched-off agent is ignored rather
+  // than offered (D17).
+  const catalog = useAgentBackends();
+  // THE CONVERSATION'S OWN AGENT, from the first source that has said: the
+  // wire (`sessionBackend`), this chat's record or `defaults` answer
+  // (`knownBackend`, below), or — for a chat WITH a session — the host's
+  // seed (`ChatMount backend`, the task row's). All three are facts about
+  // the session, so they count even for an agent switched off (D17: the
+  // chat still reads, named as what it is). Only a NEW chat's pick is
+  // checked against the switches.
+  const [knownBackend, setKnownBackend] = useState("");
+  const hasSession = !!snapshot.session_id;
+  const ownBackend = sessionBackend || knownBackend || (hasSession ? snapshot.backend || "" : "");
+  const paramBackend = snapshot.backend && isBackendEnabled(snapshot.backend) ? snapshot.backend : "";
+  const backend = ownBackend || paramBackend || catalog.default;
+  const models = modelsOf(backend);
+  const efforts = effortsOf(backend);
+  const fallbackModel = defaultModelOf(backend);
   const [detected, setDetected] = useState<{ model: string; effort: string }>({
     model: "",
     effort: "",
   });
-  const [pref, setPref] = useState("");
   // WHAT THE APP ITSELF WROTE DOWN for this conversation — the record that
   // outranks everything else here (see the header). It arrives off its OWN
   // read (`GET /api/tasks/settings`, one JSON file, milliseconds) rather than
@@ -232,7 +286,6 @@ export function useComposerDefaults(
     effort: "",
   });
   const [detectionReady, setDetectionReady] = useState(false);
-  const [prefsReady, setPrefsReady] = useState(false);
   // THE FAST HALF, and the one the pills actually wait on. See `pillsReady`.
   const [recordReady, setRecordReady] = useState(false);
 
@@ -350,6 +403,7 @@ export function useComposerDefaults(
     // one can leave it standing under the new session (Bugbot, PR #1226): the
     // pills go back to the wash and paint this chat's own record, or "".
     setRecorded({ model: "", effort: "" });
+    setKnownBackend("");
     setRecordReady(false);
     // THE LOCAL PICK FOLLOWS EXACTLY ONE TRANSITION: "no session" → "the id
     // this chat was just given". A fresh chat (back to "") opens on the global
@@ -366,14 +420,14 @@ export function useComposerDefaults(
       .then((rec) => {
         if (!live) return;
         const picked = pickedSinceRead.current;
+        // Stored NORMALISED, validated at resolve time against the AGENT's
+        // list (below): the list depends on which agent this chat runs on,
+        // and that can be learned after this read lands.
         setRecorded({
-          model: picked.model ?? listedModel(rec?.model),
-          effort:
-            picked.effort ??
-            (rec && EFFORTS.includes(rec.effort as (typeof EFFORTS)[number])
-              ? rec.effort
-              : ""),
+          model: picked.model ?? normalizeModel(rec?.model),
+          effort: picked.effort ?? (rec?.effort || ""),
         });
+        if (rec?.backend) setKnownBackend((b) => b || rec.backend!);
       })
       .catch(() => {
         // Best-effort, like every other read here: a record we could not fetch
@@ -402,12 +456,12 @@ export function useComposerDefaults(
         if (!live) return;
         const d = out as DefaultsResponse;
         setDetected({
-          model: d ? listedModel(d.model) : "",
-          effort:
-            d && EFFORTS.includes(d.effort as (typeof EFFORTS)[number])
-              ? d.effort
-              : "",
+          model: d ? normalizeModel(d.model) : "",
+          effort: d?.effort || "",
         });
+        // The conversation's agent off its record (§8) — only when there IS
+        // a conversation: the folder-wide answer names no one's.
+        if (sessionId && d?.backend) setKnownBackend((b) => b || d.backend!);
         // Validated against the same two lists, and for the same reason: a
         // record naming something this build does not offer renders as a blank
         // pill. An agent that predates the field simply has none, which reads
@@ -421,11 +475,8 @@ export function useComposerDefaults(
         // from erasing it a second time.
         const rec = d?.recorded;
         const picked = pickedSinceRead.current;
-        const recModel = rec ? listedModel(rec.model) : "";
-        const recEffort =
-          rec && EFFORTS.includes(rec.effort as (typeof EFFORTS)[number])
-            ? rec.effort
-            : "";
+        const recModel = rec ? normalizeModel(rec.model) : "";
+        const recEffort = rec?.effort || "";
         setRecorded((prev) => ({
           model: picked.model ?? (prev.model || recModel),
           effort: picked.effort ?? (prev.effort || recEffort),
@@ -447,23 +498,6 @@ export function useComposerDefaults(
     // and it is one cheap read of one transcript's tail.
   }, [file, sessionId]);
 
-  useEffect(() => {
-    let live = true;
-    void getPrefs()
-      .then((p) => {
-        const m = listedModel(p.model?.default);
-        if (live && m) setPref(m);
-      })
-      .catch(() => {
-        // Same footing as detection.
-      })
-      .finally(() => {
-        if (live) setPrefsReady(true);
-      });
-    return () => {
-      live = false;
-    };
-  }, []);
 
   // ── WHEN A `?model=`/`?effort=` STILL COUNTS ──────────────────────────────
   //
@@ -501,18 +535,30 @@ export function useComposerDefaults(
   // the first send is about to write, so it has to outrank the global and the
   // reads, and it has to keep answering across the seconds between the CLI
   // reporting a session id and that session's record read landing.
+  // VALIDATED AGAINST THIS AGENT'S LIST, rank by rank, so a value the list
+  // does not hold leaves the rank below it speaking (what `listedModel` did
+  // per read before the list depended on the agent). Only the PARAM folds to
+  // the default instead — see `resolveModel`'s header.
+  const lm = (v: string) => listedModelIn(v, models);
+  const le = (v: string) => (efforts.includes(v) ? v : "");
   const model = resolveModel(
     paramModel,
-    globModel || detected.model,
-    pref,
-    recorded.model || local.model,
+    lm(globModel) || lm(detected.model),
+    lm(recorded.model) || lm(local.model),
+    models,
+    fallbackModel,
   );
   const effort = resolveEffort(
     paramEffort,
-    globEffort || detected.effort,
-    recorded.effort || local.effort,
+    le(globEffort) || le(detected.effort),
+    le(recorded.effort) || le(local.effort),
+    efforts,
   );
-  const permission = resolvePermission(snapshot.permission);
+  // An agent with no plan mode (§7 `plan_mode`) never shows "plan": the pill
+  // has no such row for it, and the send would be refused.
+  const resolvedPermission = resolvePermission(snapshot.permission);
+  const permission =
+    resolvedPermission === "plan" && !capsOf(backend).plan_mode ? DEFAULT_PERMISSION : resolvedPermission;
 
   // ── WHEN A PILL MAY SHOW ITS VALUE ────────────────────────────────────────
   //
@@ -523,8 +569,8 @@ export function useComposerDefaults(
   //   * a record for this field, or a `?model=`/`?effort=` the host seeded —
   //     both outrank every read that is still out, so the field is settled the
   //     moment the (fast) record read has answered;
-  //   * neither — then the next rank down is detection, and for the model the
-  //     prefs default behind it, so the slow reads have to land first.
+  //   * neither — then the next rank down is detection, so the slow read has
+  //     to land first.
   //
   // An unlisted param is settled too, and deliberately: `resolveModel` folds it
   // to the constant rather than falling through, so nothing pending speaks for
@@ -532,16 +578,22 @@ export function useComposerDefaults(
   //
   // THE GLOBAL READ IS A THIRD WAY TO SETTLE, and for a brand-new chat it is
   // the usual one: it is fast, and it outranks both slow reads. A global that
-  // answers "" for a field settles nothing — the ranks below it are detection
-  // and the prefs, and those are still out.
+  // answers "" for a field settles nothing — the rank below it is detection,
+  // and that is still out.
+  //
+  // ASKED OF THE LISTED VALUES (`lm`/`le`), the same ones the resolve above
+  // ranks by: a record naming a model THIS agent does not list speaks for
+  // nothing there, so it must not settle the pill either — it would paint the
+  // fallback, then flip when a slow read landed, and an early send would carry
+  // the fallback. The PARAM stays raw, per the note above.
   const recordAnswered = recordReady;
   const modelSettled =
     recordAnswered &&
-    (!!recorded.model || !!local.model || !!paramModel || !!globModel ||
-      (globalReady && detectionReady && prefsReady));
+    (!!lm(recorded.model) || !!lm(local.model) || !!paramModel || !!lm(globModel) ||
+      (globalReady && detectionReady));
   const effortSettled =
     recordAnswered &&
-    (!!recorded.effort || !!local.effort || !!paramEffort || !!globEffort ||
+    (!!le(recorded.effort) || !!le(local.effort) || !!paramEffort || !!le(globEffort) ||
       (globalReady && detectionReady));
   const pillsReady = modelSettled && effortSettled;
 
@@ -593,11 +645,30 @@ export function useComposerDefaults(
     [params],
   );
 
+  // THE AGENT PICK IS A PARAM, NOT A RECORD: the first send records it per
+  // session (`agent._start`), and until then the pill's own word is the only
+  // place it lives. The local model/effort picks go with it — they were picks
+  // from the other agent's menu.
+  const setBackend = useCallback(
+    (value: string) => {
+      if (ownBackend || !isBackendEnabled(value)) return;
+      setLocal({ model: "", effort: "" });
+      // …and a "plan" pick goes too where the new agent has no plan mode: the
+      // send reads the param itself, and would ask for a mode it refuses.
+      const dropPlan = params.get("permission") === "plan" && !capsOf(value).plan_mode;
+      params.set({ backend: value, ...(dropPlan ? { permission: null } : {}) }, { history: "replace" });
+    },
+    [params, ownBackend],
+  );
+
   return useMemo(
     () => ({
       model,
       effort,
       permission,
+      backend,
+      backendFixed: !!ownBackend,
+      setBackend,
       setModel: (value: string) => {
         if (localPick) {
           pickLocal({ model: value });
@@ -616,13 +687,13 @@ export function useComposerDefaults(
       },
       setPermission: (value: PermissionMode) =>
         params.set({ permission: value }),
-      ready: detectionReady && prefsReady && recordReady && globalReady,
+      ready: detectionReady && recordReady && globalReady,
       pillsReady,
       modelSettled,
       effortSettled,
     }),
-    [model, effort, permission, params, record, localPick, pickLocal,
-     detectionReady, prefsReady, recordReady, globalReady, pillsReady,
-     modelSettled, effortSettled],
+    [model, effort, permission, backend, ownBackend, setBackend, params, record,
+     localPick, pickLocal, detectionReady, recordReady, globalReady,
+     pillsReady, modelSettled, effortSettled],
   );
 }

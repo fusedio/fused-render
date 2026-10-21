@@ -12,9 +12,21 @@
 // its own — only "Custom (cron)…" reveals one extra input.
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
+import { Dropdown, popStyle } from "./Dropdown";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import {
-  readClaudeDefaults, subscribeClaudeDefaults,
+  getClaudeDefaults, readClaudeDefaults, subscribeClaudeDefaults,
 } from "@platform/lib/claude-defaults";
+import {
+  agentLabel,
+  agentNamed,
+  capsOf,
+  defaultModelOf,
+  isBackendEnabled,
+  isForeignModel,
+  isUnlistedEffort,
+  useAgentBackends,
+} from "@platform/lib/agent-backends";
 import { Modal } from "@platform/ui/modal/Modal";
 import {
   cancelScheduledMessage,
@@ -23,6 +35,7 @@ import {
   getTasks,
   listDir,
   rawUrl,
+  readChatSettings,
   scheduleMessage,
   statPath,
   uploadTaskShot,
@@ -79,13 +92,14 @@ import {
 export { joinDraft, splitDraft } from "@platform/lib/drafts";
 import { notify } from "@platform/lib/notifications";
 import {
-  TASK_EFFORTS,
   TASK_MODELS,
   chatPaneUrl,
   describeRepeats,
   describeRule,
   explorerUrl,
   repeatChoicesFor,
+  taskEffortsOf,
+  taskModelsOf,
   taskRunLabel,
   taskRunOptions,
 } from "./schedule-lib";
@@ -124,13 +138,16 @@ export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
 // newest first, five shown. It draws on two sources — the app-wide one the home
 // page reads (see the section below) and this form's own memory of folders
 // picked in the browser or saved on a task, which is what the rest of THIS
-// section is. That second half lives in localStorage so "the folder I always
-// schedule against" survives reloads.
-// try/catch throughout: storage can be denied (private mode), and a corrupt
-// value must read as "no recents", never crash the modal (Bugbot, PR #538
-// pattern).
-const RECENTS_KEY = "fused-render:recent-paths";
+// section is. That second half is the layout document's `recentPaths`
+// (platform/lib/ui-layout.ts, D1386) so "the folder I always schedule against"
+// survives reloads AND relaunches — it was the localStorage key
+// `fused-render:recent-paths` until the desktop app's port walk (a new origin,
+// so empty storage, on most relaunches) was found resetting it. A corrupt value
+// must still read as "no recents", never crash the modal (Bugbot, PR #538
+// pattern), hence the filter on read.
 const RECENTS_SHOWN = 5;
+/** The document keeps eight (the server's cap); five are shown. */
+const RECENTS_KEPT = 8;
 
 /** The `projects` prop's default, hoisted so it is the SAME array every render
  *  — a fresh `[]` in the signature would rebuild the rows memo on every
@@ -264,26 +281,24 @@ export function folderFieldRows({
 }
 
 
+function recentsOf(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((p): p is string => typeof p === "string" && p !== "") : [];
+}
+
 function readRecents(): string[] {
-  try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(RECENTS_KEY) ?? "[]");
-    return Array.isArray(parsed)
-      ? parsed.filter((p): p is string => typeof p === "string" && p !== "")
-      : [];
-  } catch {
-    return [];
-  }
+  return recentsOf(getUiLayout().recentPaths);
 }
 
 function rememberRecent(path: string) {
   const p = path.trim();
   if (!p) return;
-  try {
-    const next = [p, ...readRecents().filter((r) => r !== p)].slice(0, 8);
-    localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
-  } catch {
-    // Storage denied — recents just don't persist.
-  }
+  // "This folder first, then the rest" — idempotent, so ui-layout's replay onto
+  // the server's copy keeps another window's recents behind it.
+  patchUiLayout((d) => {
+    const prev = recentsOf(d.recentPaths);
+    if (prev[0] === p) return d;
+    return { ...d, recentPaths: [p, ...prev.filter((r) => r !== p)].slice(0, RECENTS_KEPT) };
+  });
 }
 
 // ---- The APP's recents, which are the ones a person means ------------------
@@ -448,15 +463,6 @@ const ICON_CHEVRON = (
   </svg>
 );
 
-// lucide "chevron-down", at the size the app's native selects draw their own
-// (fields.css) — the mark that says "this opens a list", on every control that
-// does.
-const ICON_CHEVRON_DOWN = (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <polyline points="6 9 12 15 18 9" />
-  </svg>
-);
 
 // lucide "trash-2", at the footer buttons' glyph scale. Carries the destructive
 // reading before the label is read, and stays through both press states so the
@@ -807,269 +813,9 @@ function ExplorerPanel({
   );
 }
 
-// ---- Fixed-position dropdowns ---------------------------------------------
-// Every dropdown in this modal is position:fixed, measured off its trigger:
-// the modal body scrolls (`.deploy-body { overflow-y: auto }`), and an
-// absolutely-positioned panel gets CLIPPED at its edge — the month grid
-// shipped cut off mid-row (Akshil, 2026-08-16 screenshot). Fixed escapes the
-// clip; when the viewport below the trigger is shorter than the panel, it
-// opens upward instead.
-/**
- * HOW TALL A LIST-SHAPED PANEL MAY GET, and the gap it keeps off the window's
- * edges. The Tasks page's own popovers already answer this — `POP_MAX_HEIGHT`
- * in ScheduleTaskViews, with the same reasoning: a column of twenty-eight is
- * not a menu, it is a page. Same number, so the two lists in this app cap alike.
- */
-const POP_MAX_HEIGHT = 320;
-const POP_EDGE = 8;
 
-/**
- * WHAT `position: fixed` IS ACTUALLY MEASURED FROM — the viewport, unless some
- * ancestor is transformed, and in this card one always is.
- *
- * `.modal-dialog.deploy-dialog` carries `transform: scale(.98)` from the open
- * animation, and a transformed element becomes the containing block for every
- * `fixed` descendant. So `top`/`left`/`bottom` are resolved against the CARD
- * while `getBoundingClientRect` answers in VIEWPORT coordinates, and the two
- * have been quietly disagreeing for as long as this function has existed. It
- * went unnoticed because every other menu here is short and opens downward, so
- * the error was a few pixels; a 50-row folder list opening upward put the panel
- * 150px off the top of the window (measured, 2026-09-18).
- *
- * Returns the origin to subtract and the box to fit inside. No transformed
- * ancestor — every other host of this card — answers the viewport, which is what
- * the arithmetic below has always assumed.
- */
-function fixedBox(el: HTMLElement | null): { x: number; y: number; h: number } {
-  for (let node = el?.parentElement ?? null; node; node = node.parentElement) {
-    const cs = getComputedStyle(node);
-    // `""` is what a stand-in stylesheet answers, and it is not a transform —
-    // testing truthiness first keeps a test DOM from naming every ancestor.
-    const transformed = (cs.transform && cs.transform !== "none")
-      || (cs.filter && cs.filter !== "none")
-      || (cs.perspective && cs.perspective !== "none");
-    if (transformed) {
-      const r = node.getBoundingClientRect();
-      return { x: r.left, y: r.top, h: r.height };
-    }
-  }
-  return { x: 0, y: 0, h: window.innerHeight };
-}
 
-function popStyle(
-  el: HTMLElement | null,
-  estHeight: number,
-  matchWidth = false,
-  /**
-   * CAP THE HEIGHT AND LET IT SCROLL, for a panel whose length is the disk's
-   * business rather than the form's (Akshil, 2026-09-18: typing
-   * `/Users/akshilthumar/` listed eight folders and cut off).
-   *
-   * Off by default, because it must be: the date grid, the time list and the
-   * repeat menu are all fixed-length things this function has always placed by
-   * their own height, and capping them would be a change nobody asked for. The
-   * folder list is the one whose content is unbounded.
-   *
-   * The arithmetic is `ScheduleTaskViews.popStyle`'s, which fixed this exact
-   * bug on the project menu ("sliced off at the bottom with a handful of its 28
-   * folders showing"): height is never SET — a two-row list is two rows tall —
-   * only capped, and capped by the room actually there so the panel can never
-   * run off the card or the viewport.
-   */
-  scrolls = false,
-): React.CSSProperties {
-  const r = el?.getBoundingClientRect();
-  if (!r) return {};
-  // BOTH EDGES ARE ALWAYS STATED, and one of them is always `auto`. A panel that
-  // flips up sets `bottom` — and the stylesheet that placed it before this
-  // function existed still says `top: calc(100% + 4px)`, which a `position:
-  // fixed` box resolves too. Two resolved edges do not mean "prefer the inline
-  // one": they mean the height is the distance BETWEEN them, and for a panel
-  // opening upward that distance is negative, so it collapsed to its padding.
-  // Measured on `/Users/akshilthumar/`: a 50-row list 10px tall with 1473px of
-  // scroll inside it. `tasks.css` fixes the same collision on the Tasks
-  // popovers from the stylesheet's side (`top: auto`); doing it here fixes it
-  // for every menu this function places, including the date, time and repeat
-  // menus, which have had the same latent flip-up bug all along.
-  // The box the offsets are resolved against — see `fixedBox`. The ROOM is still
-  // reckoned in viewport terms, because what the reader cares about is whether
-  // the panel is on their screen; only the offsets are converted.
-  const o = fixedBox(el);
-  const s: React.CSSProperties = {
-    position: "fixed", left: r.left - o.x, right: "auto", top: "auto", bottom: "auto",
-  };
-  if (scrolls) {
-    const below = window.innerHeight - r.bottom - 4 - POP_EDGE;
-    const above = r.top - 4 - POP_EDGE;
-    // Flip only when up is genuinely roomier — a panel that jumps above its
-    // trigger to gain twenty pixels is a panel that moved for nothing.
-    const up = above > below && below < POP_MAX_HEIGHT;
-    s.maxHeight = Math.max(120, Math.min(POP_MAX_HEIGHT, up ? above : below));
-    if (up) s.bottom = o.y + o.h - r.top + 4;
-    else s.top = r.bottom + 4 - o.y;
-  } else if (r.bottom + 4 + estHeight > window.innerHeight && r.top - 4 - estHeight > 0) {
-    s.bottom = o.y + o.h - r.top + 4;
-  } else {
-    s.top = r.bottom + 4 - o.y;
-  }
-  // A menu is as wide as the control that opened it — the CSS floor of 180px
-  // made the repeat menu wider than its chip and the recurrence units menu
-  // three times wider than the word it was replacing (audit 2026-08-16). The
-  // 140px is only there so a very narrow trigger still yields a readable list.
-  if (matchWidth) {
-    s.width = r.width;
-    s.minWidth = 140;
-  }
-  return s;
-}
 
-// One custom select for EVERYTHING the form chooses from a list — repeat,
-// permissions, the recurrence dialog's units. The native <select> sat beside
-// the custom date/time/path dropdowns as the one control drawn by the OS
-// (Akshil, 2026-08-16, "custom input for everything").
-function Dropdown({
-  value,
-  options,
-  onPick,
-  ariaLabel,
-  className,
-}: {
-  value: string; // the current choice's LABEL
-  options: { key: string; label: string }[];
-  onPick: (key: string) => void;
-  ariaLabel: string;
-  className?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  // Which option the ARROW KEYS are on. Focus never leaves the trigger — the
-  // menu is a listbox, and a listbox's items are described by
-  // aria-activedescendant, not focused one by one (a Tab through this form
-  // otherwise walked every option of every open menu; audit 2026-08-16). The
-  // options carry tabIndex={-1} for the same reason.
-  const [active, setActive] = useState(-1);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const listId = useId();
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  // Open on the current choice, so the first ArrowDown steps off it.
-  const show = () => {
-    setActive(options.findIndex((o) => o.label === value));
-    setOpen(true);
-  };
-
-  // Keep the active option in view when it is stepped past the panel's edge.
-  useEffect(() => {
-    if (!open) return;
-    menuRef.current
-      ?.querySelector<HTMLElement>(".is-active")
-      ?.scrollIntoView({ block: "nearest" });
-  }, [open, active]);
-
-  const move = (delta: number) => {
-    setActive((i) => {
-      const n = options.length;
-      if (n === 0) return -1;
-      return ((i < 0 ? 0 : i + delta) + n) % n;
-    });
-  };
-
-  return (
-    <div
-      className={"schedule-pop-wrap" + (className ? " " + className : "")}
-      onBlur={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpen(false);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Escape" && open) {
-          e.stopPropagation();
-          setOpen(false);
-          return;
-        }
-        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-          e.preventDefault();
-          if (!open) show();
-          else move(e.key === "ArrowDown" ? 1 : -1);
-          return;
-        }
-        if (!open) return;
-        if (e.key === "Home" || e.key === "End") {
-          e.preventDefault();
-          setActive(e.key === "Home" ? 0 : options.length - 1);
-          return;
-        }
-        if (e.key === "Enter" && active >= 0 && active < options.length) {
-          e.preventDefault();
-          setOpen(false);
-          onPick(options[active].key);
-        }
-      }}
-    >
-      <button
-        ref={btnRef}
-        type="button"
-        className="schedule-when-field schedule-select"
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={open ? listId : undefined}
-        aria-activedescendant={
-          open && active >= 0 ? `${listId}-${active}` : undefined
-        }
-        aria-label={ariaLabel}
-        onClick={() => (open ? setOpen(false) : show())}
-      >
-        <span className="schedule-select-label">{value}</span>
-        {/* A DRAWN mark, not a "▾". The text triangle was a 10px glyph in a
-            32px chip: a flex box centres the glyph's LINE BOX, and where the
-            triangle's ink sits inside that box is the font's business — in the
-            UI stack it rides high in the em square, so the caret hung near the
-            top-right corner of the control instead of on the label's centre
-            line (Akshil, 2026-08-18 screenshot). An SVG has no baseline and no
-            font fallback; centred in a fixed square it lands on the middle of
-            the chip in every theme and on every machine. Same mark as the
-            native selects elsewhere in the app draw (fields.css) and as the
-            card's own disclosure. */}
-        <span className="schedule-select-caret" aria-hidden="true">
-          {ICON_CHEVRON_DOWN}
-        </span>
-      </button>
-      {open && (
-        <div
-          ref={menuRef}
-          id={listId}
-          className="schedule-pop schedule-pop--menu"
-          role="listbox"
-          aria-label={ariaLabel}
-          style={popStyle(btnRef.current, options.length * 34 + 10, true)}
-          onMouseDown={(e) => e.preventDefault()}
-          onMouseLeave={() => setActive(-1)}
-        >
-          {options.map((o, i) => (
-            <button
-              key={o.key}
-              id={`${listId}-${i}`}
-              type="button"
-              role="option"
-              tabIndex={-1}
-              aria-selected={o.label === value}
-              className={
-                "schedule-menu-item" +
-                (o.label === value ? " is-selected" : "") +
-                (i === active ? " is-active" : "")
-              }
-              onMouseEnter={() => setActive(i)}
-              onClick={() => {
-                setOpen(false);
-                onPick(o.key);
-              }}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = [
@@ -1722,6 +1468,18 @@ export function deleteFailureText(err: unknown, series: boolean): string {
 // name is worse than a question when Save then refuses the preview.)
 export const TITLE_PLACEHOLDER = "What should Claude do?";
 
+/** THE AGENT A DRAFT STORES (D2): the card's PICK — "" keeps following the
+ *  default — until a model or effort is stored with it. Those are one agent's
+ *  vocabulary, so the agent they were resolved for is stored beside them;
+ *  otherwise a default that flips later would run `copilot --model sonnet`. */
+export function storedDraftBackend(model: string, effort: string, agent: string, pick: string): string {
+  return model || effort ? agent : pick;
+}
+/** The same question naming the task's AGENT (docs/COPILOT_BACKEND.md D18);
+ *  Claude's is the constant above, byte for byte. */
+export const titlePlaceholderFor = (agent: string) =>
+  agent === "Claude" ? TITLE_PLACEHOLDER : `What should ${agent} do?`;
+
 // And the second field is the OVERFLOW of that question — the constraints, the
 // context, the "start with the parquet path" — never the task again. Both jobs a
 // placeholder can honestly do are in it: which field this is, and that it can be
@@ -2272,6 +2030,9 @@ export function buildSchedulePayload(form: {
   // somebody chose one.
   model: string;
   effort: string;
+  // WHICH AGENT the runs use (docs/COPILOT_BACKEND.md D2). Always sent when
+  // known — the server keeps a continued session's own regardless.
+  backend?: string;
   // A CHAT HANDOFF's session: the conversation the composer was in when it
   // deep-linked here (?new=1&session_id=…). A one-off continues it; a repeat
   // refuses it, because a task that runs every day must not hijack the user's
@@ -2366,6 +2127,7 @@ export function buildSchedulePayload(form: {
     // cancel + re-create instead of quietly reverting to the default.
     ...(form.model ? { model: form.model } : {}),
     ...(form.effort ? { effort: form.effort } : {}),
+    ...(form.backend ? { backend: form.backend } : {}),
     // An edit keeps what it cannot re-ask for — see `continued` above.
     ...(continued ? { session_id: continued } : {}),
     // …and re-states WHERE that id came from, so the re-created entry is still
@@ -2573,6 +2335,8 @@ export interface SeededDraftForm {
   repeat: string | null;
   model: string | null;
   effort: string | null;
+  /** The agent the card picked (D2), or null for "the default". */
+  backend: string | null;
   permission: string | null;
   attachments: { path: string; name: string; kind: "image" | "file" }[] | null;
   newTaskEachRun: boolean | null;
@@ -2649,6 +2413,7 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
     repeat: str("repeat"),
     model: str("model"),
     effort: str("effort"),
+    backend: str("backend"),
     permission: str("permission"),
     attachments: attachments && attachments.length ? attachments : null,
     newTaskEachRun: typeof f.new_task_each_run === "boolean" ? f.new_task_each_run : null,
@@ -2779,7 +2544,7 @@ export default function NewJobModal({
   permissionModes: string[];
   // Folders existing tasks already point at, newest first — the parent reads
   // them off the schedule it has anyway. They pad the dropdown out on a
-  // machine whose localStorage hasn't seen this form yet (QA 2026-08-15 —
+  // machine whose remembered folders are still empty (QA 2026-08-15 —
   // the first open showed nothing but Browse).
   recentTargets?: string[];
   // IS THIS CARD BEING USED TO PLAN? (Akshil, 2026-08-23.) True on the calendar
@@ -3125,9 +2890,30 @@ export default function NewJobModal({
   // so `taskRunOptions` carries it through as its own row and the card shows a
   // reader the CLI's spelling of a model the menu now calls Fable — and writes
   // it back on the next Save.
+  // WHICH AGENT RUNS IT (docs/COPILOT_BACKEND.md D2/D18): the draft's pick,
+  // else the entry's, else "" — "the catalog's default", resolved below so a
+  // Preferences switch reaches a card that has not chosen. A task that
+  // continues a session OPENS on that session's agent (`sessionAgent`, read
+  // once the binding is known), but the picker stays (owner, 2026-10-19: a
+  // dropdown whenever more than one agent is on, else the one that is on).
+  const agents = useAgentBackends();
+  // AN EDIT KEEPS ITS ENTRY'S AGENT: the edit is cancel + re-create, and a
+  // create that names none is pinned to the CURRENT default — so an entry from
+  // before the field (no `backend`) is Claude's, which is all it could be.
+  const [backendPick, setBackendPick] = useState(
+    saved.backend ?? (editing ? editing.backend || "claude" : ""),
+  );
+  /** The agent resolved on the latest render, for the async Claude-default
+   *  reads below, which must not land a Claude pair on another agent's card. */
+  const agentRef = useRef("claude");
+  /** Has the reader picked an agent ON THIS CARD (as opposed to a pick the
+   *  draft or the entry carried in)? What `leavesSession` falls back on while
+   *  the session's own agent is unknown. */
+  const pickedHere = useRef(false);
   const [model, setModel] = useState(() => {
     const stored = saved.model ?? editing?.model ?? "";
-    return listedModelIn(stored, TASK_MODELS.map((o) => o.key)) || normalizeModel(stored);
+    const known = taskModelsOf(saved.backend ?? editing?.backend).map((o) => o.key);
+    return listedModelIn(stored, known.length ? known : TASK_MODELS.map((o) => o.key)) || normalizeModel(stored);
   });
   const [effort, setEffort] = useState(saved.effort ?? editing?.effort ?? "");
   // A FIELD NOBODY CHOSE OPENS ON WHAT THE RUN WILL GET (Akshil, 2026-09-21:
@@ -3145,7 +2931,9 @@ export default function NewJobModal({
     let live = true;
     readClaudeDefaults().then(
       (d) => {
-        if (!live) return;
+        // The GLOBAL pair is Claude's; another agent's card fills from its
+        // own catalog row instead (the effect under `agent` below).
+        if (!live || agentRef.current !== "claude") return;
         setModel((m) => m || d.model);
         setEffort((e) => e || d.effort);
       },
@@ -3174,6 +2962,7 @@ export default function NewJobModal({
   useEffect(() => {
     if (!globalFollower) return;
     return subscribeClaudeDefaults((d) => {
+      if (agentRef.current !== "claude") return;
       if (tookGlobal.current?.model && d.model) setModel(d.model);
       if (tookGlobal.current?.effort && d.effort) setEffort(d.effort);
     });
@@ -3286,7 +3075,7 @@ export default function NewJobModal({
   //     it is what a person means by "recent": the folders they have actually
   //     been working in.
   //  2. this form's own memory — folders picked through Browse or saved on a
-  //     task (localStorage). Kept, not replaced: a folder deliberately chosen
+  //     task (the layout document). Kept, not replaced: a folder deliberately chosen
   //     here may hold no files anyone has opened, so tier 1 would never learn
   //     it.
   //  3. the folders existing tasks point at, as padding on a fresh machine.
@@ -3295,7 +3084,7 @@ export default function NewJobModal({
   // while the modal is up (Browse writes the folder you pick), so a read-once
   // state showed the list as it was BEFORE you went browsing — "I just went
   // through a bunch of folders but recents didn't update" (Akshil, 2026-08-16).
-  // It is a single localStorage hit on a user gesture, so per-open costs nothing.
+  // It is a single in-memory read on a user gesture, so per-open costs nothing.
   const [recentsOpen, setRecentsOpen] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
   // Tier 1 is a fetch, so it is asked for once on mount and held. Exactly as
@@ -3672,6 +3461,7 @@ export default function NewJobModal({
     permission,
     model,
     effort,
+    backend: backendPick,
     // Paths only: a fresh attach reads as dirty from the moment it lands
     // (its path is "" until the upload answers, then a path — both differ
     // from this baseline), which is exactly right — the user added something.
@@ -3697,6 +3487,7 @@ export default function NewJobModal({
     permission !== initial.permission ||
     model !== initial.model ||
     effort !== initial.effort ||
+    backendPick !== initial.backend ||
     images.map((i) => i.path || "pending").join("\n") !== initial.images;
 
   // ---- THE DRAFT (design.md, "New Task modal (task draft)") -----------------
@@ -3788,6 +3579,109 @@ export default function NewJobModal({
     || (chatSessionId ?? "")
     || (saved.sessionId ?? "");
   /**
+   * THE AGENT OF THE SESSION THIS TASK CONTINUES, when it continues one: a
+   * session's agent never changes (D2), so a task that continues it runs on
+   * that agent, and the card OPENS on it. Read off the session's record
+   * (`GET /api/tasks/settings`, §8); "" until it answers, or for a card bound
+   * to nothing. A record from before the field answers "" too, which the
+   * server reads as Claude (`schedule._entry_backend`), so a landed blank is
+   * Claude here as well — otherwise a Copilot default would pair that session
+   * with Copilot and the save would refuse it as a mismatch.
+   *
+   * ONLY A SESSION THE ENTRY WILL ACTUALLY CONTINUE — `buildSchedulePayload`'s
+   * own `continued` rule, restated on the live form: the task's learned thread
+   * unless a repeat mints a fresh session per run, a chat's only while the
+   * task stays a one-off. A card that will start fresh sessions picks freely.
+   */
+  const repeating = repeatOn && repeat !== "none";
+  const carriesLearned = !!learnedSession && !(repeating && newTaskEachRun);
+  const agentSession = carriesLearned
+    ? learnedSession
+    : learnedSession || repeating
+      ? ""
+      : (!learnedSession && editing?.session_id) || boundSessionId;
+  const [sessionAgent, setSessionAgent] = useState(editing?.session_id ? editing.backend ?? "" : "");
+  useEffect(() => {
+    if (!agentSession) return;
+    let live = true;
+    readChatSettings(agentSession).then(
+      (r) => {
+        if (live) setSessionAgent(r.backend || "claude");
+      },
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [agentSession]);
+  // THE RULE (owner, 2026-10-19): the pick while its agent is on, else the
+  // session's agent while THAT is on, else the catalog's default — which is
+  // the one agent that is on when only one is. Nothing on the card can name
+  // an agent that is switched off: it used to (a session's own agent counted
+  // whatever the switch said, and the picker stood down for it), which left a
+  // card opened from a Copilot chat saying "What should Copilot do?" with no
+  // way to change it after Copilot was turned off, and a Create that could
+  // only answer 400.
+  const agent = (backendPick && isBackendEnabled(backendPick) ? backendPick : "")
+    || (sessionAgent && isBackendEnabled(sessionAgent) ? sessionAgent : "")
+    || agents.default;
+  agentRef.current = agent;
+  // DOES THIS TASK STILL CONTINUE ITS SESSION? Only on the session's own
+  // agent: a session belongs to one agent for good (D2), and the server
+  // refuses an entry that binds it to another (`schedule._mismatch`,
+  // `backend_mismatch`). So a card resolved onto another agent — by a pick,
+  // or because the session's agent is off — starts a NEW conversation there,
+  // and says so under the agent line. While the record has not answered (or
+  // never will — a failed read leaves `sessionAgent` ""), an EXPLICIT pick on
+  // this card leaves too (Bugbot, PR #1745): the card cannot tell the pick
+  // from the session's agent, and sending the session with a guessed-right
+  // agent is a coin toss against a 400. A card that continues nothing
+  // (`agentSession` "") is left to the payload's own `continued` rule.
+  const leavesSession = !!agentSession
+    && (sessionAgent ? agent !== sessionAgent : pickedHere.current);
+  const continuesSession = !leavesSession;
+  const runModels = taskModelsOf(agent);
+  const runEfforts = taskEffortsOf(agent);
+  // ANOTHER AGENT'S CARD OPENS ON ITS OWN DEFAULTS: the global pair above is
+  // Claude's, so a Copilot card fills (or corrects) a value its list does not
+  // hold from its catalog row. Waits for the catalog — before it lands every
+  // id reads as the static Claude row.
+  useEffect(() => {
+    if (!agents.loaded) return;
+    // THE OTHER AGENT'S VALUES GO FIRST, whichever agent this is: a draft
+    // stored before its agent was (or a default that has flipped since) can
+    // hold "sonnet" for a Copilot card or "auto" for a Claude one. That model
+    // falls to this agent's default, that effort to none.
+    setModel((m) => (isForeignModel(m, agent) ? defaultModelOf(agent) : m));
+    setEffort((e) => (isUnlistedEffort(e, agent) ? "" : e));
+    if (agent === "claude") return;
+    const models = runModels.map((o) => o.key);
+    const efforts = runEfforts.map((o) => o.key);
+    // An EMPTY value is filled; a value the list does not hold is corrected
+    // only when it came from the Claude global (`tookGlobal`, the race before
+    // the catalog landed). A draft's or an entry's own value is carried
+    // through as `taskRunOptions` carries it, so an edit stays lossless.
+    const took = tookGlobal.current;
+    setModel((m) => (!m || (took?.model && !models.includes(m)) ? defaultModelOf(agent) : m));
+    setEffort((e) =>
+      !e || (took?.effort && !efforts.includes(e))
+        ? efforts.includes("medium") ? "medium" : efforts[0] ?? ""
+        : e);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent, agents.loaded]);
+  const pickBackend = useCallback((value: string) => {
+    if (value === agentRef.current) return;
+    pickedHere.current = true;
+    setBackendPick(value);
+    // The pair was the OTHER agent's; Claude's comes back to the global, and
+    // follows it again until picked (the effect above fills anyone else's).
+    const pair = value === "claude" ? getClaudeDefaults() : null;
+    tookGlobal.current = { model: value === "claude", effort: value === "claude" };
+    setModel(pair?.model ?? "");
+    setEffort(pair?.effort ?? "");
+    if (!capsOf(value).plan_mode) setPermission((p) => (p === "plan" ? "auto" : p));
+  }, []);
+  /**
    * IS THERE ANYTHING IN THIS CARD WORTH KEEPING — words, or files. Nothing
    * else (Akshil, 2026-09-12).
    *
@@ -3832,6 +3726,7 @@ export default function NewJobModal({
       repeat: repeatOn ? repeat : null,
       model,
       effort,
+      backend: storedDraftBackend(model, effort, agent, backendPick),
       permission,
       // Paths only once they exist: a chip whose upload has not answered names
       // no file yet, and a draft holding "" would restore an empty chip.
@@ -3840,7 +3735,13 @@ export default function NewJobModal({
         .map((i) => ({ path: i.path, name: i.name, kind: i.kind })),
       new_task_each_run: repeatOn ? newTaskEachRun : null,
       // WHERE THIS TASK IS GOING, restated on every save — see `boundSessionId`.
-      session_id: boundSessionId,
+      // …and NOWHERE once the card has left that session for another agent
+      // (`continuesSession`): the stored form is what a draft row dragged to In
+      // Progress sends (draft-run.ts `boundDraftPayload`), and it must carry the same
+      // pair the card's own Create would, or the server refuses it as a
+      // `backend_mismatch` (Bugbot, PR #1745). The binding is gone from the
+      // record then, by the reader's own choice of agent.
+      session_id: continuesSession ? boundSessionId : "",
       // THE RULE `repeat` POINTS AT, when the choice is Custom — null the same
       // moment `repeat` itself goes null, so a draft can never say "custom"
       // with nothing behind it (Bugbot, PR #1118; see `TaskDraftForm.custom_rule`).
@@ -3896,6 +3797,7 @@ export default function NewJobModal({
           custom_rule: value.custom_rule,
           model: value.model,
           effort: value.effort,
+          backend: value.backend,
           permission: value.permission,
           target: value.target,
           new_task_each_run: value.new_task_each_run,
@@ -4327,6 +4229,7 @@ export default function NewJobModal({
           permission,
           model,
           effort,
+          backend: agent,
           // The two sources are kept APART here, because the payload treats
           // them oppositely: the task's OWN thread (learned, on the entry)
           // survives a repeat, a CHAT's does not. A one-off entry's stored id
@@ -4335,8 +4238,11 @@ export default function NewJobModal({
           // …and a REOPENED draft's stored binding is the third source, for the
           // card that has no `chatSessionId` because the hop that made it is
           // long over. See `boundSessionId`.
-          sessionId: (!learnedSession && editing?.session_id) || boundSessionId,
-          learnedSessionId: learnedSession,
+          // …NEITHER when the task has left its session for another agent
+          // (`continuesSession`): the server refuses a session bound to an
+          // agent other than its own, so the entry starts a fresh one instead.
+          sessionId: continuesSession ? (!learnedSession && editing?.session_id) || boundSessionId : "",
+          learnedSessionId: continuesSession ? learnedSession : "",
           newTaskEachRun,
           // The task's NUMBER has to survive the re-create an edit is; see
           // `replacesEntryId`. Empty on a new task, which replaces nothing.
@@ -4649,10 +4555,10 @@ export default function NewJobModal({
             ref={titleRef}
             type="text"
             className="new-task-field new-task-title"
-            aria-label="What should Claude do?"
+            aria-label={titlePlaceholderFor(agentLabel(agent))}
             aria-required="true"
             onPaste={pasteFiles}
-            placeholder={TITLE_PLACEHOLDER}
+            placeholder={titlePlaceholderFor(agentLabel(agent))}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             // ENTER CREATES THE TASK; SHIFT+ENTER MOVES DOWN into the
@@ -5301,6 +5207,25 @@ export default function NewJobModal({
             click for the people who want it and nothing at all for the people
             who do not. The row is unchanged — same controls, same rules — it
             has only moved. */}
+        {/* WHO RUNS IT, AND WHERE (D18) — said whenever there is an agent to
+            tell apart, so the card's one hidden choice is never a surprise. */}
+        {agentNamed(agent) && (
+          <span className="field-hint schedule-form-sub new-task-agent">
+            {target.trim()
+              ? `${agentLabel(agent)} will run this task in ${leafOf(target.trim())}`
+              : `${agentLabel(agent)} will run this task`}
+          </span>
+        )}
+        {/* …AND WHAT THAT COSTS when the card came out of another agent's
+            conversation: the task starts a fresh one (see `continuesSession`),
+            which must be said here, before Create, not discovered after. */}
+        {leavesSession && (
+          <span className="field-hint schedule-form-sub new-task-agent">
+            {sessionAgent
+              ? `Starts a new ${agentLabel(agent)} conversation — the ${agentLabel(sessionAgent)} one is not continued.`
+              : `Starts a new ${agentLabel(agent)} conversation — the one this came from is not continued.`}
+          </span>
+        )}
         <details className="schedule-form-more" open={moreOpen}
                  onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
           {/* The disclosure is a QUIET row, not a button: secondary text and a
@@ -5515,6 +5440,21 @@ export default function NewJobModal({
               the details block was flush with the card edge, so the one control
               behind it was the only one in the form that did not line up
               (audit 2026-08-16). */}
+          {/* THE AGENT FIRST (D18), and only while there is a choice: the
+              Permissions, Model and Thinking under it are that agent's. A card
+              out of a session opens on that session's agent and may still
+              pick another — the task then starts fresh there (`continuesSession`). */}
+          {agents.backends.length >= 2 && (
+            <div className="field schedule-form-sub">
+              <span className="field-label">Agent</span>
+              <Dropdown
+                ariaLabel="Agent"
+                value={agentLabel(agent)}
+                options={agents.backends.map((b) => ({ key: b.id, label: b.label }))}
+                onPick={pickBackend}
+              />
+            </div>
+          )}
           <div className="field schedule-form-sub">
             <span className="field-label">Permissions</span>
             <Dropdown
@@ -5524,7 +5464,10 @@ export default function NewJobModal({
               // is said. The raw keys ("acceptEdits") were the server's
               // vocabulary printed at the user (audit 2026-08-16), and an
               // unknown key still shows itself rather than being hidden.
-              options={(permissionModes.length ? permissionModes : ["auto"]).map((m) => ({
+              options={(permissionModes.length ? permissionModes : ["auto"])
+                // No plan mode for an agent without one (§7 `plan_mode`).
+                .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
+                .map((m) => ({
                 key: m,
                 label: permissionLabel(m),
               }))}
@@ -5563,12 +5506,12 @@ export default function NewJobModal({
               <span className="field-label">Model</span>
               <Dropdown
                 ariaLabel="Model"
-                value={taskRunLabel(TASK_MODELS, model)}
+                value={taskRunLabel(runModels, model)}
                 // Same contract as Permissions above: the KEY is submitted, the
                 // label is only how it is said. `taskRunOptions` is what keeps
                 // an unrecognised stored value selectable instead of silently
                 // resetting the task to the default on the next edit.
-                options={taskRunOptions(TASK_MODELS, model)}
+                options={taskRunOptions(runModels, model)}
                 onPick={pickModel}
               />
             </div>
@@ -5581,8 +5524,8 @@ export default function NewJobModal({
               <span className="field-label">Thinking</span>
               <Dropdown
                 ariaLabel="Thinking"
-                value={taskRunLabel(TASK_EFFORTS, effort)}
-                options={taskRunOptions(TASK_EFFORTS, effort)}
+                value={taskRunLabel(runEfforts, effort)}
+                options={taskRunOptions(runEfforts, effort)}
                 onPick={pickEffort}
               />
             </div>

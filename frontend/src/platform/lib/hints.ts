@@ -94,13 +94,17 @@ function hintOf(target: EventTarget | null): Element | null {
  *  A dialog's overlay (`.modal-overlay`, every modal's chassis — Modal.tsx,
  *  FsDialogs) covers the full viewport and owns every point inside it, so once
  *  the walk reaches it the answer is decided: nothing further down the stack —
- *  behind the backdrop — ever gets to caption this pointer. */
+ *  behind the backdrop — ever gets to caption this pointer.
+ *
+ *  A POPOVER THAT IS NOT A MODAL opts in with `data-hint-stop`: the Tasks
+ *  tab editor's + menu hangs over the list, and hovering "PR" in it captioned
+ *  the task row underneath (Akshil, 2026-10-16). Same rule, smaller surface. */
 function hintAt(x: number, y: number, target: EventTarget | null): Element | null {
   if (typeof document.elementsFromPoint !== "function") return hintOf(target);
   for (const node of document.elementsFromPoint(x, y)) {
     const el = node.closest("[data-hint]");
     if (el) return (el.getAttribute("data-hint") || "").trim() ? el : null;
-    if (node.closest(".modal-overlay")) return null;
+    if (node.closest(".modal-overlay, [data-hint-stop]")) return null;
   }
   return null;
 }

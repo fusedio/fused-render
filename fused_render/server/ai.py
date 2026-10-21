@@ -25,7 +25,6 @@ from fused_render.server import ai_metrics
 from fused_render.server.common import (
     AI_PROVIDERS, APPLE_MODELS, _require_fused, ai_result, ai_usage_tokens,
     apple_model_for, provider_of_model)
-from fused_render.shell.prefs import default_model
 from fused_render.supervisor.paths import STRIPPED_ENV_VARS
 
 router = APIRouter()
@@ -69,12 +68,10 @@ router = APIRouter()
 # by default in stream-json mode). See _AiSession.configure.
 _AI_EFFORTS = ("low", "medium", "high", "xhigh")
 _AI_DEFAULT_MODEL = "claude-haiku-5-5"
-# The default-model PREFERENCE (shell/prefs.py) speaks short names, because its
-# other consumer — the claude chat template's model chip — does: one preference
-# cannot have two vocabularies. This relay hands its value to the CLI, which is
+# Callers may name a model by its short name ("opus"), the vocabulary every
+# model picker in the app speaks. This relay hands it to the CLI, which is
 # happier with a full id, so the short→id mapping lives here, at the one call
-# site that needs it, rather than in the pref (which would make the store know
-# about a model catalogue it has no other reason to track).
+# site that needs it.
 #
 # Ids are unsuffixed aliases, not dated snapshots: a dated id pins a model
 # version the user did not choose, and "opus" in the picker meaning last
@@ -1347,12 +1344,12 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
             "bad_request",
             "'model' must be a model id or alias (letters, digits, . _ -)",
             status=400)
-    # Precedence: the caller's explicit model, then the user's preference, then
-    # this relay's own default. Read per request (like the engine pref), so a
-    # change on the Preferences page applies to the next call with no restart.
-    # `default_model` is module-level so the mapping is the only thing between
-    # the pref and argv — an unmapped value falls through to the default rather
-    # than being passed along.
+    # Precedence: the caller's explicit model, then this relay's own default
+    # (haiku). There is no preference in between any more: fused-render's
+    # `default_model` pref is retired, and the user's global Claude model is
+    # deliberately NOT read here — it is what their chats run on (often opus
+    # or fable), and every fused.ai call that names no model is a short utility
+    # completion that would pay that model's latency and cost for nothing.
     # Which tier serves the call (SPEC RH-11, D631). Explicit `provider` pins
     # it; omitted, the model's SHAPE picks it (`_is_local_model`): a repo id
     # or GGUF filename is weights on this machine, anything else a Claude
@@ -1406,11 +1403,11 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
                 _local_unavailable_reason()
                 or "no local text model is available on this machine",
                 status=409)
-    # An explicit short alias ("haiku") resolves through the same table the
-    # pref does, so the mapping stays the one place that says which haiku
-    # "haiku" is — handed raw to the CLI it would mean the CLI's pick instead.
+    # An explicit short alias ("haiku") resolves through the table below, so
+    # the mapping stays the one place that says which haiku "haiku" is —
+    # handed raw to the CLI it would mean the CLI's pick instead.
     model = (_AI_SHORT_MODEL_IDS.get(model, model) if model else None) \
-        or _AI_SHORT_MODEL_IDS.get(default_model()) or _AI_DEFAULT_MODEL
+        or _AI_DEFAULT_MODEL
     # The other direction: a repo id or GGUF filename is not something the
     # Claude CLI can run, and passing it through would surface as the CLI's
     # own "unknown model" a subprocess hop later. Refused here, naming the

@@ -78,7 +78,6 @@ import sys
 import threading
 import time
 import urllib.parse
-import urllib.request
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "fused_approvals"
@@ -112,8 +111,19 @@ SWITCHABLE_MODES = frozenset({"acceptEdits", "auto"})
 # request's own questions and option labels — and why nothing else may carry it.
 ANSWERABLE_TOOL = "AskUserQuestion"
 
-PERM_DIR = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else ""
-STATE_DIR = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else ""
+# `--no-approve` (D4, the Copilot backend): this server is then the PANE tools
+# only — `app_state` and the terminals — and `approve` is neither listed nor
+# served. Copilot asks its client for permissions over ACP, and
+# `copilot_host.py` answers those off the same `perm/` files; a second
+# approval tool on the roster would be one the model could call and nobody
+# would answer. The flag may sit anywhere (agent.py appends it after the
+# dirs) and is stripped before the positional dirs are read, so
+# `argv[1]`/`argv[2]` keep meaning what they always did. Only this exact
+# token: a dir is never mistaken for a flag, whatever it is named.
+NO_APPROVE = "--no-approve" in sys.argv[1:]
+_POSITIONAL = [a for a in sys.argv[1:] if a != "--no-approve"]
+PERM_DIR = os.path.abspath(_POSITIONAL[0]) if len(_POSITIONAL) > 0 else ""
+STATE_DIR = os.path.abspath(_POSITIONAL[1]) if len(_POSITIONAL) > 1 else ""
 
 _stdout_lock = threading.Lock()
 _id_lock = threading.Lock()
@@ -257,6 +267,9 @@ def _post_card_cleared(req_id: str) -> None:
 
 
 def _send_event(url: str, body: dict) -> None:
+    # Lazy: the eager import cost ~10 MB resident in EVERY session's
+    # permission server, and most never send an event.
+    import urllib.request
     try:
         req = urllib.request.Request(
             url, data=json.dumps(body).encode("utf-8"),
@@ -569,6 +582,11 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
                    "%d minutes — treating this as denied." % (WAIT_TIMEOUT // 60))
     elif decision.get("reason") == "cancelled":
         message = "The user cancelled this turn."
+    elif decision.get("reason") == "abandoned":
+        # agent.py latched this when out.jsonl showed the asking scope had
+        # moved on without a result for this call, or the CLI cancelled the
+        # request itself (`_cancel_inflight`). Nobody is at fault.
+        message = "The run moved on before this was answered."
     else:
         message = decision.get("message") or "The user denied this request."
     return {"behavior": "deny", "message": message,
@@ -581,6 +599,73 @@ def _text(payload: dict) -> dict:
     returned an invalid result"; the app-state tool matches it because the
     model reads that text and JSON is the shape it parses best."""
     return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+
+# JSON-RPC id -> card id, for every approval still parked in `_await_decision`.
+# The CLI may cancel a request it stops waiting on (`notifications/cancelled`,
+# MCP's one notification about a request): a subagent told to carry on, a turn
+# interrupted. Before this map that notification was dropped on the floor, the
+# server went on waiting the full hour, and the card read "waiting for you" on
+# every surface for a call the model had already walked away from.
+_INFLIGHT: dict = {}
+_INFLIGHT_LOCK = threading.Lock()
+_RPC = threading.local()
+
+
+def _cancel_inflight(rpc_id) -> bool:
+    """Latch `deny`/`abandoned` on the card the CLI just cancelled; True when a
+    verdict is now on disk (ours or a click that beat us to it).
+
+    Keyed by `str(id)`: the id came in as JSON and goes out in a notification
+    the client builds separately, and `5` and `"5"` name one request."""
+    with _INFLIGHT_LOCK:
+        req_id = _INFLIGHT.get(str(rpc_id))
+    if not req_id:
+        return False
+    res_path = os.path.join(PERM_DIR, req_id + ".res.json")
+    try:
+        fd = os.open(res_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return True  # answered in this very instant; that answer stands
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"decision": "deny", "reason": "abandoned"}, fh)
+    except OSError:
+        try:
+            os.unlink(res_path)  # an empty latch could never be answered
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def _register_inflight(req_id: str):
+    """Put the card under the JSON-RPC id this thread is serving, so a
+    `notifications/cancelled` for that id can end its wait. Returns the key
+    to drop, or None off a serving thread (a direct call in a test).
+
+    Called BEFORE `_post_card_raised`: that is a network round trip, and a
+    cancel arriving inside it would otherwise find nothing to cancel and the
+    card would wait the full hour."""
+    rpc_id = getattr(_RPC, "id", None)
+    if rpc_id is None:
+        return None
+    key = str(rpc_id)
+    with _INFLIGHT_LOCK:
+        _INFLIGHT[key] = req_id
+    return key
+
+
+def _await_approval(req_id: str, key) -> dict:
+    """`_await_decision`, dropping the `_INFLIGHT` entry `key` afterwards."""
+    try:
+        return _await_decision(req_id)
+    finally:
+        if key is not None:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.pop(key, None)
 
 
 def _handle_approve(args: dict) -> dict:
@@ -600,9 +685,10 @@ def _handle_approve(args: dict) -> dict:
     # The card exists now; the wait below can last an hour. Announce it BEFORE
     # blocking, or the queue hears "this task is waiting on a human" only once
     # the human has already answered.
+    key = _register_inflight(req_id)
     _post_card_raised(req_id)
     return _text(_permission_result(tool_name, tool_input,
-                                    _await_decision(req_id)))
+                                    _await_approval(req_id, key)))
 
 
 def _handle_app_state(args: dict) -> dict:
@@ -669,6 +755,7 @@ def _terminal_http(method: str, path: str, body=None):
     """`(status, parsed_json)` for one call to the server. Raises OSError for
     anything that is not an HTTP answer (refused, timeout, bad URL)."""
     import urllib.error
+    import urllib.request  # lazy, see `_send_event`
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
         _terminal_origin() + path, data=data, method=method,
@@ -872,7 +959,7 @@ def _dispatch(method: str, params: dict) -> dict:
         # server cannot serve, and the model would spend a 20-second timeout per
         # turn discovering that. D239: an ordinary folder has no left pane, so
         # `agent.py` spawns us with the perm dir alone.
-        tools = [TOOL_SCHEMA]
+        tools = [] if NO_APPROVE else [TOOL_SCHEMA]
         if STATE_DIR:
             tools.append(APP_STATE_SCHEMA)
         if _terminal_origin():
@@ -880,7 +967,9 @@ def _dispatch(method: str, params: dict) -> dict:
         return {"tools": tools}
     if method == "tools/call":
         name = params.get("name")
-        known = (TOOL_NAME, APP_STATE_TOOL) if STATE_DIR else (TOOL_NAME,)
+        known = () if NO_APPROVE else (TOOL_NAME,)
+        if STATE_DIR:
+            known = known + (APP_STATE_TOOL,)
         if _terminal_origin():
             known = known + TERMINAL_TOOLS
         if name not in known:
@@ -897,6 +986,7 @@ def _dispatch(method: str, params: dict) -> dict:
 
 
 def _serve_request(req_id, method: str, params: dict) -> None:
+    _RPC.id = req_id  # read by _register_inflight on this serving thread
     try:
         _send({"jsonrpc": "2.0", "id": req_id, "result": _dispatch(method, params)})
     except LookupError as exc:
@@ -906,6 +996,8 @@ def _serve_request(req_id, method: str, params: dict) -> None:
         _send({"jsonrpc": "2.0", "id": req_id,
                "error": {"code": -32603, "message": "%s: %s"
                          % (type(exc).__name__, exc)}})
+    finally:
+        _RPC.id = None
 
 
 def main() -> int:
@@ -943,7 +1035,13 @@ def main() -> int:
             continue
         req_id = msg.get("id")
         if req_id is None:
-            continue  # a notification (initialized, cancelled, …) — nothing to answer
+            # A notification: nothing to answer. `cancelled` is the one acted
+            # on — the CLI stopped waiting for a request, so its card is over.
+            if msg.get("method") == "notifications/cancelled":
+                params = msg.get("params")
+                params = params if isinstance(params, dict) else {}
+                _cancel_inflight(params.get("requestId"))
+            continue
         method = msg.get("method") or ""
         params = msg.get("params")
         params = params if isinstance(params, dict) else {}

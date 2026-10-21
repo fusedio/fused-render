@@ -161,18 +161,25 @@
   justify-content: flex-end;
   gap: 0;
   padding: 0 var(--status-bar-gutter) 0 var(--status-bar-start-gutter);
-  /* FIXED 22px, VS Code's own status-bar height (D576, user: "lets follow
-     exactly what vscode is doing for the status bar") — `height`, not
-     `min-height`, because every item is now full-height and nothing inside
-     is allowed to grow the strip. 8px at the ends so the first and last item
-     are not flush against the window edge; NO `gap`, since each item's own
-     5px of side padding is the entire separation and adjacent items touch,
-     which is what VS Code does. */
-  height: 22px;
+  /* FIXED at `--status-bar-h` (explorer.css), VS Code's own status-bar height
+     (D576, user: "lets follow exactly what vscode is doing for the status
+     bar") — `height`, not `min-height`, because every item is now full-height
+     and nothing inside is allowed to grow the strip. 8px at the ends so the
+     first and last item are not flush against the window edge; NO `gap`,
+     since each item's own 5px of side padding is the entire separation and
+     adjacent items touch, which is what VS Code does. */
+  height: var(--status-bar-h);
   color: var(--fg);
   background: var(--bg-alt);
   border-top: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
+}
+/* The full-screen pane overlay (preview.css, explorer.css) is z-index 950 and
+   reaches the window's bottom edge. While one is up, the bar sits above it;
+   960 stays below the modal overlays (1000, 1100), and the bar's `.dl-panel`
+   (2001) still opens above everything. */
+#main:has(.preview-side.maximized, .listing-pane-slot.maximized) > .status-bar {
+  z-index: 960;
 }
 
 /* ---- Terminal drawer (PLAN-status-bar-terminal.md Task 5) ---------------- */
@@ -2222,4 +2229,126 @@ a.sys-link {
   font-weight: 700;
   font-display: block;
   src: url("../assets/fonts/JetBrainsMonoNerdFontMono-Bold.woff2") format("woff2");
+}
+
+/* The System chip's verdict dot. The slot is always there (`is-none` only
+   hides the paint), so the chip's width never changes when a verdict appears. */
+.sc-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.sc-dot.is-none {
+  visibility: hidden;
+}
+
+.sc-dot.is-warn {
+  background: var(--warning);
+}
+
+.sc-dot.is-bad {
+  background: var(--error);
+}
+
+/* The System popover's verdict, Claude line, timeline and key numbers. */
+.sys-reasons {
+  margin: 0 10px 8px;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.sys-reasons li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sys-reason-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.sys-reasons li.is-warn .sys-reason-dot {
+  background: var(--warning);
+}
+
+.sys-reasons li.is-bad .sys-reason-dot {
+  background: var(--error);
+}
+
+.sys-reason {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.sys-reason:hover {
+  text-decoration: underline;
+}
+
+.sys-claude {
+  padding: 0 10px 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.sys-stats {
+  display: flex;
+  gap: 16px;
+  margin: 0 10px 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  text-decoration: none;
+}
+
+.sys-stats:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.sys-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 11px;
+}
+
+.sys-stat-label {
+  color: var(--fg-muted);
+}
+
+.sys-stat-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.sys-stat.is-warn .sys-stat-value {
+  color: var(--warning);
+}
+
+.sys-stat.is-bad .sys-stat-value {
+  color: var(--error);
+}
+
+.sys-record {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.sys-record:disabled {
+  color: var(--fg-muted);
+  cursor: default;
 }

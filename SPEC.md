@@ -249,7 +249,7 @@ const { text, usage, response, provider } = await fused.ai.text({
   pinned id under a different `provider` is a 400 in both directions. A tier is an
   **engine family**, not a privacy class: `local` and `apple` (Apple's on-device models,
   macOS 26+) both keep the prompt on the machine. The three omitted-`model` cases: no
-  `provider` → Claude, the user's default-model preference or haiku; `"claude"` →
+  `provider` → Claude on haiku (the default-model preference was retired, D1381); `"claude"` →
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
   `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
@@ -1238,7 +1238,9 @@ never imports server).
   returns the same shape. An unknown engine value,
   or a body naming no known preference → 400; the file merges
   (future prefs are new keys, not new files).
-- **PF-1b** `default_model` is the user's preferred Claude model as a **short
+- **PF-1b** *(Retired 2026-10-19, D1381: the pref, its GET/PUT keys and its
+  control are gone; the global Claude model in `~/.claude/settings.json` is the
+  one default, and fused.ai falls back to haiku.)* `default_model` was the user's preferred Claude model as a **short
   name** — `""` (unset), `fable`, `opus`, `sonnet` or `haiku`, the claude
   template's own selector vocabulary; anything else → 400, and a hand-edited
   unknown value in the file reads as unset. Two consumers rank it identically:
@@ -1414,7 +1416,9 @@ in-app affordance to gate.
 - **PF-9** The page is split into tabs, active tab in the URL
   (default clean-URL tab is **Render preferences** —
   Logs/Execution engine/Tour, unchanged).
-- **PF-9a** (D403) The **AI** tab, `?tab=ai`, holds **Default model** (PF-1b)
+- **PF-9a** *(Superseded 2026-10-19 by D1381's grouped page: `?tab=ai` is the
+  AI & agents group; Default model is retired, Hugging Face moved to Accounts.)*
+  (D403) The **AI** tab, `?tab=ai`, held **Default model** (PF-1b)
   and **Hugging Face** (PF-1c–PF-1f). Neither is about rendering — the same
   reason the engine picker left this page for /ai-models — and on the Render
   tab a reader after either one read past four sections answering a different
@@ -11127,8 +11131,8 @@ manifest is the entire contract between them.
   sense of one.
 - **MC-7** **AI curation is a PROPOSAL and an optional one, and it names
   `sonnet`.** The model choice is deliberate rather than inherited: omitting
-  `model` resolves to the user's default-model preference (Haiku where they have
-  none), and this is the panel's one hard reasoning task — read a folder's
+  `model` resolves to the relay's haiku (the default-model preference was
+  retired, D1381), and this is the panel's one hard reasoning task — read a folder's
   signatures and its page's call sites, then decide which entrypoints deserve to
   be tools and which of their parameters the page has already fixed. A weaker
   model answers with one tool per function and nothing pinned, i.e. the curation
@@ -12244,3 +12248,123 @@ disk and leaves only inside a zip the user chooses to send (D421's posture).
 workers; the 6-connection cap itself and OpenBot's `HEAD` poll; App Nap; the
 ~40 fork-path spawns; a JSONL app log (SV-3); pruning claude run dirs and
 capping template `daemon.log`.
+
+---
+
+## 51. Code Editor — CodeMirror 6 as an IDE Buffer (D1375)
+
+The `code` view (`fused_render/templates/code/template.html`) is the editor
+behind every source/config/text binding in `registry.json`. It is CodeMirror 6
+from the shared vendored bundle (`/template-assets/codemirror.bundle.js`,
+built from `scripts/vendor-codemirror/entry.js`); nothing in it is a
+hand-rolled editor. The save contract (autosave, optimistic mtime lock,
+conflict banner, `__fusedFlushEdits`, read-only lock — D37, RO-5) is
+unchanged by this section.
+
+- **CE-1 Languages.** One `LANGUAGES` table drives both detection and the
+  status-bar picker. A whole-basename match (`Dockerfile`, `CMakeLists.txt`,
+  `.env`, `.zshrc`, …) outranks the last extension; unknown → Plain Text.
+  First-class Lezer grammars: Python, JavaScript/JSX, TypeScript/TSX, JSON
+  (+ JSONC, JSON Lines), HTML, CSS/SCSS/Sass/Less, XML (svg, plist, kml,
+  gpx, …), Markdown, YAML, SQL. Legacy (CM5) stream modes, wrapped on first
+  use: TOML, INI/properties, shell, PowerShell, Dockerfile, diff, C, C++,
+  C#, Java, Kotlin, Scala, Dart, Objective-C, Swift, Go, Rust, Groovy,
+  Ruby, Lua, Perl, R, Julia, Haskell, LaTeX, Nginx, CMake, Protobuf. C-family,
+  Go and Rust ride the legacy modes deliberately: their Lezer packages are
+  ~300 KB minified together in a bundle the markdown and notebook views also
+  load. `tsconfig*.json`, `jsconfig*.json`, `.vscode/*.json` and
+  devcontainer files open as JSONC so a valid commented config is never
+  flagged.
+- **CE-2 Editing.** `basicSetup` (line numbers, folding, bracket matching and
+  auto-close, multiple cursors / rectangular selection, search & replace
+  `Mod-F`, go-to-line `Mod-Alt-G`, toggle comment `Mod-/`, history,
+  highlight-selection-matches, autocompletion) plus: Tab / Shift-Tab indent
+  and dedent (an open completion takes Tab first; Escape then Tab leaves the
+  editor), indentation guides, buffer-word completion for every grammar
+  without a completion source of its own.
+- **CE-3 Status bar.** Under the buffer: problems (only for languages with a
+  validator; click opens the lint panel, `Mod-Shift-M`), `Ln N, Col M`
+  (VS Code counting: 1-based, tabs to the next tab stop, `(k selected)` /
+  `(k selections)`; click = go to line), indentation, line endings,
+  language, word wrap (`Alt-Z`, remembered per browser), and Format where
+  available. Every control reconfigures the running view through a
+  `Compartment` — never a rebuild, which would lose undo history, caret and
+  scroll.
+- **CE-4 Indentation.** Detected from the file: tab-led lines outvoting
+  space-led ones means tabs; otherwise the most common step between
+  consecutive indented lines (2/4/8). A file with nothing indented takes the
+  language's default (Python 4, web/data formats 2, Go tabs, else 4).
+- **CE-5 Line endings are preserved.** The buffer is LF-only inside the
+  editor; the file's ending (mostly-CRLF → CRLF, mixed files settle on the
+  majority) is applied only when bytes leave it, via
+  `doc.sliceString(0, len, sep)`. The old template wrote `doc.toString()`,
+  which always joins with `"\n"`, so CRLF files silently became LF on their
+  first save. **Rejected:** `EditorState.lineSeparator = "\r\n"` — CodeMirror
+  then splits inserted text on that exact string only, so an LF paste (every
+  macOS/Linux clipboard) stays one line holding raw `"\n"`s and is written
+  back as bare LFs. Switching LF/CRLF in the status bar is an edit (dirty →
+  autosave), and a switch that lands during an in-flight write keeps the
+  buffer dirty.
+- **CE-6 Validation only where a real validator exists.** JSON
+  (`jsonParseLinter`), JSON Lines (per-record `JSON.parse`, capped at 100
+  problems), XML (the browser's own `DOMParser`; line/column read from the
+  libxml2 or Gecko phrasing). Empty buffers are never flagged. **Rejected:** a
+  "syntax error" linter over Lezer error nodes for every grammar — Lezer is
+  error-tolerant by design, and on this repo's own valid sources it reported
+  error nodes in ~46% of `.tsx` and ~10% of `.py` files.
+- **CE-7 Format (JSON / JSON Lines, `Shift-Alt-F`).** Re-indents with the
+  buffer's indent unit (JSON Lines: each record compacted to one line) by
+  walking tokens and copying every string and literal verbatim — never
+  `JSON.parse` → `JSON.stringify`, which rewrites values (`1.0` → `1`, `1e3`
+  → `1000`, integers past 2^53 rounded). Invalid JSON is refused with a
+  status message, never half-formatted.
+- **CE-8 Tests.** `tests/test_code_template.py` executes the template's
+  helpers against the committed bundle via
+  `scripts/vendor-codemirror/code-editor-probe.mjs` (node only — no
+  `node_modules`): every listed language builds from the shipped bundle,
+  detection, indentation, CRLF round-trip (including an LF paste into a CRLF
+  file), Format's verbatim literals, the JSONL linter.
+
+## 52. Browser Storage Policy — Signals, Caches and Hand-offs Only (D1386)
+
+Every fact the user would miss across a relaunch lives behind an API; the
+browser's `localStorage` / `sessionStorage` is never the record. The desktop
+app's port walk (a new origin per launch) is why this is a correctness rule
+and not a sync nicety.
+
+- **BS-1 Allowed uses.** (a) Cross-window SIGNALS — a stamp other documents
+  hear through the `storage` event and answer with a refetch
+  (`CHAT_ACTIVITY_KEY`, `fused-render:jobs-ping`, `fused-render:current-apps-changed`,
+  the restart stamp, presence). (b) CACHES of server-owned state (terminal pty
+  ids checked against `GET /api/terminal`, hub pool state). (c) PER-TAB
+  hand-offs in `sessionStorage` (armed bookmark, pending Claude ask, chat seed,
+  explorer clipboard, list expansion / selection). (d) Pre-paint per-browser
+  display choice: theme and theme preset (D134), read synchronously before React
+  exists. `tests/test_browser_storage_allowlist.py` lists the files allowed to
+  touch storage in code, each with its category; a new storage use anywhere
+  else fails the suite.
+- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`
+  (`POST /api/current-apps/order`). Notifications seen/dismissed =
+  `notifications.json` (`GET`/merge-`POST /api/notifications/state`). Tasks
+  done-and-seen = `__seen_done__` in tasks `read.json`, carried by
+  `/api/tasks/pulse`, replaced by `POST /api/tasks/seen`. Bot unread baseline =
+  `seen_seq` on the bot (`POST /api/bots/{id}/seen`). Bots page switches and the
+  Tasks tab row = `prefs.json` keys (`bots_autostage`, `bots_sounds`,
+  `bots_clear_enabled`, `tasks_view_tabs`). Marketplace Python ack =
+  `marketplace/acks.json`. Durable layout = `ui_layout.json`
+  (`GET`/`PUT /api/ui-layout`, whole-document, last write wins): sidebar
+  width/fold, both sidebar section folds, explorer companion shut/width/
+  full-screen, per-folder listing sort, Tasks view / calendar range,
+  New-task recent folders. Board lanes and group folds stay per-tab
+  sessionStorage (in-page memory).
+- **BS-3 Boot.** `main.tsx` hydrates the layout document and the notifications
+  record in parallel with `/api/config`, bounded at 2 s, BEFORE the first
+  render; stores read synchronously from the cache afterwards and write through
+  to the server (debounced whole-document PUT for the layout; immediate POSTs
+  elsewhere). A failed write keeps the cache; nothing persists from an effect
+  keyed on polled data — only from the user's gesture.
+- **BS-4 Import.** On first load of this build, each old key still present is
+  pushed through its new write path once and removed. No server marker.
+- **BS-5 Out of scope.** Template-side keys written by page HTML (photos
+  roots, autocad recents) — no page-level pref API exists yet. LAN phone
+  per-bot seen baseline (per-device origin by nature).

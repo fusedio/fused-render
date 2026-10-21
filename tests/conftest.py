@@ -58,6 +58,10 @@ os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
 # Tests describe Fused Render; a stale fused_render/_baked_flavor.py from a
 # local bot DMG build must not flip them (port 1777 assertions, startup set).
 os.environ.setdefault("FUSED_RENDER_FLAVOR", "render")
+# export_app_env() starts a probe that runs the developer's real login shell
+# (login_path.py); no test should ever spawn it. test_login_path.py clears this
+# for the one test that exercises start().
+os.environ.setdefault("FUSED_RENDER_NO_LOGIN_PATH", "1")
 
 
 # What the warm fixture's project folder declares (SPEC PY-16 — the environment
@@ -272,6 +276,17 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_ORIGIN",
                 # thread (canvases._kick_workbench_skills), so a leak here would
                 # also arrive at an unpredictable moment in a later test.
                 "FUSED_RENDER_WORKBENCH_PLUGIN_DIR")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_session_count(monkeypatch):
+    """The Claude session cap counts live hosts under the REAL runs tree, which
+    on a developer machine with ten chats open would hold every scheduler test.
+    No agent module means nothing is running; `tests/test_session_cap.py` and
+    the cap tests stand their own agent in."""
+    from fused_render import session_cap
+
+    monkeypatch.setattr(session_cap, "_agent", lambda: None)
 
 
 @pytest.fixture(autouse=True)

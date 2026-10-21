@@ -10,17 +10,24 @@
 // Platform-level because three surfaces make this hop — the Home hero after
 // scaffolding, the app page's Migrate button, and the explorer topbar's — and
 // an app may not import another app (check-boundaries).
+//
+// `backend` names the agent the run is on ("copilot") so the pane seeds its
+// agent from the URL (ClaudeChat's boot reads `backend`) and never draws
+// Claude's controls for a frame before the session record answers. Omitted
+// for Claude and for "", the pane's own default.
 import { urlForFsPath } from "@platform/lib/router";
-import type { DefaultModel, SessionEffort } from "@platform/lib/api";
+import type { SessionEffort } from "@platform/lib/api";
 
 export function appLandingUrl(
   entryHtml: string,
   runId: string,
-  model: DefaultModel = "",
+  model: string = "",
   effort: SessionEffort = "",
+  backend: string = "",
 ): string {
   const params = new URLSearchParams({ _side: "claude", run: runId });
   if (model) params.set("model", model);
   if (effort) params.set("effort", effort);
+  if (backend && backend !== "claude") params.set("backend", backend);
   return urlForFsPath(entryHtml, "?" + params.toString());
 }

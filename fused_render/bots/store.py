@@ -31,7 +31,7 @@ def write_json_atomic(path: str, obj) -> None:
     failed with FileNotFoundError after the winner had renamed it."""
     tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(obj, f)
         os.replace(tmp, path)
     finally:
@@ -57,7 +57,7 @@ def events_path(bid: str) -> str:
 
 def read_meta(bid: str) -> dict:
     """bot.json; raises OSError / ValueError like OpenBot `_read_meta`."""
-    with open(meta_path(bid)) as f:
+    with open(meta_path(bid), encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -158,7 +158,7 @@ def usage_log(bid, model, origin, task, ok, name=None, cost=None, input_tokens=N
     path = _bpaths.usage_path()
     with _usage_lock:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(ev) + "\n")
         _usage_cache = (0.0, None)
         _usage_gen += 1
@@ -173,7 +173,7 @@ def usage_failures(bid: str, now: float | None = None) -> list[dict]:
     keep_from = now - USAGE_KEEP_DAYS * 86400
     out = []
     try:
-        with open(_bpaths.usage_path()) as f:
+        with open(_bpaths.usage_path(), encoding="utf-8") as f:
             for line in f:
                 try:
                     ev = json.loads(line)
@@ -210,7 +210,7 @@ def usage_dismiss_failure(bid: str, ts: float) -> bool:
     hit = False
     with _usage_lock:
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 lines = f.readlines()
         except FileNotFoundError:
             return False
@@ -229,7 +229,7 @@ def usage_dismiss_failure(bid: str, ts: float) -> bool:
             out.append(line)
         if hit:
             tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.writelines(out)
             os.replace(tmp, path)
             _usage_cache = (0.0, None)
@@ -266,7 +266,7 @@ def usage_summary(now: float | None = None) -> dict:
     with _usage_lock:
         gen = _usage_gen
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     try:
                         ev = json.loads(line)
@@ -282,7 +282,7 @@ def usage_summary(now: float | None = None) -> dict:
             pass
         if stale > USAGE_PRUNE_AT:  # prune old lines now and then; the file is append-only otherwise
             tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.writelines(json.dumps(ev) + "\n" for ev in rows)
             os.replace(tmp, path)
     live = set(list_ids())

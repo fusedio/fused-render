@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -44,7 +45,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from fused_render import session_liveness, tasks_store
+from fused_render import claude_health, session_liveness, tasks_store
+from fused_render.agent_backends import roots
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _require_fused
 
@@ -52,12 +54,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# CLAUDE_CONFIG_DIR wins where set (same rule as user_plugin.py, the claude
-# template agent's CLAUDE_DIR, and templates/shared/file_history.py's
-# config_dir()) — duplicated locally rather than imported cross-package, same
-# posture as those sites.
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+# Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
+# `agent_roots.claude_dir`), module-level because the tests of this router
+# and of `routers/tasks` patch it at a tmp dir. Every scan here walks
+# `projects_roots()`, which puts fused's own Copilot root beside it
+# (docs/COPILOT_BACKEND.md D3): same bucket layout, same row shape, so a
+# Copilot session is a session on every one of these surfaces.
+CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
+
+
+def projects_roots() -> list[tuple[str, str]]:
+    """`[(backend, projects dir), ...]` — Claude's (as patched) and Copilot's."""
+    return roots.projects_roots(PROJECTS_DIR)
 
 # Mutable session state (custom names, triage). The retired bundled sessions
 # inbox app wrote these files too, so existing state carries over. Mirrors
@@ -95,8 +104,10 @@ def _session_cwd(jsonl_path: str) -> str | None:
 @router.get("/api/claude-sessions")
 def api_claude_sessions():
     latest: dict[str, float] = {}
-    if os.path.isdir(PROJECTS_DIR):
-        for jsonl_path in glob.glob(os.path.join(PROJECTS_DIR, "*", "*.jsonl")):
+    for _backend, root in projects_roots():
+        if not os.path.isdir(root):
+            continue
+        for jsonl_path in glob.glob(os.path.join(root, "*", "*.jsonl")):
             cwd = _session_cwd(jsonl_path)
             if not cwd or not os.path.isdir(cwd):
                 continue
@@ -139,8 +150,17 @@ def _transcripts_newest_first() -> list[tuple[float, str]]:
     per name (~2x on this machine's 292-transcript store).
     """
     candidates: list[tuple[float, str]] = []
+    for _backend, root in projects_roots():
+        _scan_root(root, candidates)
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return candidates
+
+
+def _scan_root(root: str, candidates: list[tuple[float, str]]) -> None:
+    """One root's `(mtime, path)` pairs appended onto `candidates` — the
+    walk `_transcripts_newest_first` describes, per root."""
     try:
-        with os.scandir(PROJECTS_DIR) as projects:
+        with os.scandir(root) as projects:
             for project in projects:
                 try:
                     if not project.is_dir():
@@ -158,10 +178,8 @@ def _transcripts_newest_first() -> list[tuple[float, str]]:
                 except OSError:
                     continue
     except OSError:
-        # No projects dir (or it is not a directory): no sessions, not an error.
-        return candidates
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return candidates
+        # No projects dir (or it is not a directory): nothing from this root.
+        return
 
 
 @router.get("/api/claude-sessions/home")
@@ -492,8 +510,10 @@ def api_claude_session_summaries():
     triage = _load_state("triage.json")
     now = datetime.now(timezone.utc).timestamp()
     sessions = []
-    if os.path.isdir(PROJECTS_DIR):
-        for jsonl_path in glob.glob(os.path.join(PROJECTS_DIR, "*", "*.jsonl")):
+    for _backend, root in projects_roots():
+        if not os.path.isdir(root):
+            continue
+        for jsonl_path in glob.glob(os.path.join(root, "*", "*.jsonl")):
             row = _summarize(jsonl_path, now, names, triage)
             if row is not None:
                 sessions.append(row)
@@ -761,6 +781,10 @@ _RECAP_MAX_CHARS = 400
 # difference between a late recap and a hung fetch.
 _RECAP_TIMEOUT = 25.0
 
+# How long a run killed at `_RECAP_TIMEOUT` gets to be collected
+# (`_recap_reap`) before the request answers without it.
+_RECAP_REAP_TIMEOUT = 5.0
+
 # The CLI's interrupt marker, written as a USER row with a real uuid — the
 # frontend's `INTERRUPT_MARK` (protocol/wire.ts), and the two must stay in step.
 # Kept out of the tail for two reasons: it is not prose the reader said, and a
@@ -958,13 +982,28 @@ def _recap_plain(text: str, titles: bool | None = None) -> str:
     return out[:_RECAP_MAX_CHARS]
 
 
+def _recap_backend(agent, file: str, session_id: str, transcript: str = "") -> str:
+    """Which agent owns the session being recapped — the root a named
+    `transcript` sits under when the Tasks worker has the file, else the
+    agent module's own ladder (`_backend_for_session`: the record, then the
+    root its transcript sits under, then Claude), walked over the same roots
+    `_history` reads."""
+    if transcript and os.path.isfile(transcript):
+        return agent._transcript_backend(transcript)
+    return agent._backend_for_session(session_id, agent._workdir(file),
+                                      hint=agent._session_backend(session_id))
+
+
 class _NothingToRecap(Exception):
     """An ended turn whose transcript holds no assistant prose at all."""
 
 
 def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
-                    ended: bool = False) -> str:
+                    ended: bool = False, backend: str = "claude") -> str:
     """Read the transcript, run the one-shot CLI, return the recap or "".
+
+    A COPILOT session is recapped by Copilot (`_recap_copilot`) from the same
+    tail; everything below is the Claude run.
 
     `--no-session-persistence` is the load-bearing flag: this run mints a
     session id of its own and must leave no `.jsonl` behind, or every recap
@@ -988,10 +1027,14 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
     requires it whenever `--output-format stream-json` is used (exits 1
     without it, same rule `ai.py`'s `_ai_cmd` documents).
 
-    `cwd` is the target's own working directory when there is one, and a temp
-    directory otherwise. It genuinely does not matter — a fresh session with no
-    tools cannot look at the filesystem — but a cwd that does not exist fails
-    the spawn itself, so the fallback is not optional.
+    NO `cwd`, AND `close_fds=False` (`claude_health.SUBPROCESS_KWARGS`): either
+    a `cwd=` or the default `close_fds=True` makes CPython fork()+exec instead
+    of posix_spawn, and a fork with libproj resident in the server dies SIGSEGV
+    before exec (D277/D292). A run with no tools never looks at the
+    filesystem — but the CLI still LOADS config from its cwd, which is now
+    the server's: `--setting-sources=` skips user/project/local settings
+    (hooks, CLAUDE.md) and `--strict-mcp-config` with no `--mcp-config`
+    leaves no MCP servers, so nothing of that folder reaches the run.
     """
     # `transcript`, when the Tasks worker has it, is read directly: the listing
     # already knows the file, and a task whose folder is gone cannot be found
@@ -1007,9 +1050,8 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         if ended:
             raise _NothingToRecap
         return ""
-    workdir = agent._workdir(file)
-    if not os.path.isdir(workdir):
-        workdir = tempfile.gettempdir()
+    if backend == "copilot":
+        return _recap_copilot(agent, tail, titles)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": _recap_prompts(titles)[1] % tail}]}})
@@ -1018,19 +1060,96 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
          "--input-format", "stream-json",
          "--max-turns", "1", "--tools", "", "--model", "haiku",
          "--output-format", "stream-json", "--verbose",
+         # NOTHING FROM THE SERVER'S CWD: with no `cwd=` (the fork rule) the
+         # run sits in the server's own folder, whose settings hooks,
+         # `.mcp.json` and CLAUDE.md would otherwise load. Single-token
+         # equals form, as `server/ai.py`'s relay spells it.
+         "--setting-sources=", "--strict-mcp-config",
          "--system-prompt", _recap_prompts(titles)[0]],
-        cwd=workdir, env=agent._spawn_env(), stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-        encoding="utf-8", errors="replace")
+        env=agent._spawn_env(), stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        **claude_health.SUBPROCESS_KWARGS)
     try:
         stdout, _ = proc.communicate(input=message + "\n", timeout=_RECAP_TIMEOUT)
     except subprocess.TimeoutExpired:
         # Killed rather than left to finish: the answer is already unwanted, and
         # an abandoned `claude` would keep burning tokens for nobody.
-        proc.kill()
-        proc.communicate()
+        _recap_reap(proc)
         return ""
     return _recap_result(stdout, titles) if proc.returncode == 0 else ""
+
+
+def _recap_reap(proc) -> None:
+    """Kill a recap run that overran and collect it — BOUNDED too: a child
+    that ignores SIGKILL's pipe close (a grandchild still holding stdout)
+    would otherwise hang the request past the timeout this exists to keep.
+    Giving up here leaves a zombie at worst; the request still answers."""
+    proc.kill()
+    try:
+        proc.communicate(timeout=_RECAP_REAP_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        logger.warning("a killed recap run (pid %s) did not exit in %ss",
+                       proc.pid, _RECAP_REAP_TIMEOUT)
+
+
+#: The one tool a Copilot recap may use — a name no tool has. Verified live
+#: against copilot 1.0.98 (2026-10-16): `--available-tools=` with an EMPTY
+#: value is ignored and the run keeps every tool (it ran `cat` on a probe
+#: file), while an allowlist naming only a tool that does not exist leaves the
+#: model with none (no tool definitions in the session's events, and a prompt
+#: asking it to read a file got "I don't have a tool available").
+_COPILOT_RECAP_NO_TOOLS = "fused_recap_no_tools"
+
+_COPILOT_SESSION_ID_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _recap_copilot(agent, tail: str, titles: bool | None = None) -> str:
+    """The Copilot twin of the Claude run: one shot (`-p` mode, entered by a
+    prompt on stdin), silent (`-s`: the reply only, no stats), no tools
+    (`_COPILOT_RECAP_NO_TOOLS`), no repo instructions and no built-in MCP
+    servers, nothing it could stop to ask. Copilot has no `--system-prompt`,
+    so the system text leads the same user message the Claude run sends.
+
+    Copilot has no `--no-session-persistence` either: every run is a session
+    under `~/.copilot/session-state/<id>/`, which `copilot --resume` lists. So
+    the id is MINTED here (`--session-id`) and that one directory is removed
+    afterwards, whatever the outcome — verified live to leave nothing else
+    under session-state. (Copilot's own `session-store.db` index still gets
+    a row for the run; that file is Copilot's, and is not edited from here.)
+
+    The tail travels over stdin, never argv — the same rule as the Claude
+    run, and so does the spawn rule (no Popen `cwd`, `close_fds=False`). The
+    CLI is pointed at the temp dir with its own `-C` instead: a folder it
+    already trusts, so no trust question can stall a one-shot run. Every
+    failure is "", as there."""
+    import uuid
+
+    from fused_render import copilot_health
+
+    sid = str(uuid.uuid4())
+    state_dir = os.path.join(copilot_health.config_dir(), "session-state")
+    system, template = _recap_prompts(titles)
+    prompt = system + "\n\n" + template % tail
+    try:
+        proc = subprocess.Popen(
+            [agent._copilot_bin(), "-s", "--no-auto-update", "--model", "auto",
+             f"--available-tools={_COPILOT_RECAP_NO_TOOLS}",
+             "--no-custom-instructions", "--disable-builtin-mcps",
+             "--no-ask-user", "--session-id", sid,
+             "-C", tempfile.gettempdir()],
+            env=agent._spawn_env(backend="copilot"),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, **claude_health.SUBPROCESS_KWARGS)
+        try:
+            stdout, _ = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _recap_reap(proc)
+            return ""
+        return _recap_plain(stdout, titles) if proc.returncode == 0 else ""
+    finally:
+        if _COPILOT_SESSION_ID_RE.fullmatch(sid):
+            shutil.rmtree(os.path.join(state_dir, sid), ignore_errors=True)
 
 
 def _stored_recap(session_id: str, for_uuid: str,
@@ -1120,11 +1239,33 @@ def _recap(agent, file: str, session_id: str, for_uuid: str,
             hit = _recap_cached(key)
         return hit if hit is not None else ""
 
+    # THE SESSION'S AGENT, AND ITS SWITCH (D17), asked only on a MISS: a
+    # cached recap is a string already computed and serving it spawns
+    # nothing, while a miss would run that agent — which an agent switched off
+    # in Preferences never does. A refusal is NOT stored, so the recap comes
+    # back the moment the agent is switched on again; the key is released and
+    # any waiter reads "" off the empty cache.
+    try:
+        backend = _recap_backend(agent, file, session_id, transcript)
+        from fused_render.agent_backends import registry
+        allowed = registry.is_enabled(backend)
+    except Exception:  # noqa: BLE001 — see NOTHING HERE RAISES above
+        logger.warning("could not resolve the agent for a recap of %s",
+                       session_id, exc_info=True)
+        backend, allowed = "", False
+    if not allowed:
+        with _recap_lock:
+            done = _recap_inflight.pop(key, None)
+        if done is not None:
+            done.set()
+        return ""
+
     text = ""
     empty = False
     try:
         try:
-            text = _recap_generate(agent, file, session_id, transcript, ended)
+            text = _recap_generate(agent, file, session_id, transcript, ended,
+                                   backend)
         except _NothingToRecap:
             empty = True
         except Exception:  # noqa: BLE001 — see NOTHING HERE RAISES above
@@ -1201,6 +1342,38 @@ def api_claude_session_recap(file: str, session_id: str, for_uuid: str):
             "at": datetime.now(timezone.utc).isoformat()}
 
 
+@router.get("/api/claude-sessions/headsup")
+def api_claude_session_headsup(run_id: str = ""):
+    """The heads-up card state for one live run: `idle`,
+    `checking`, or `note` with the card. Polled by the chat while a turn runs;
+    the poll itself decides when a side check is due (`claude_agent.headsup`).
+    Same 400/503 posture as the recap above."""
+    from fused_render.claude_agent import headsup
+    from fused_render.server.routers import tasks as _tasks
+
+    agent = _tasks._agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503,
+                            detail="the claude agent module did not load")
+    if not run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+    return headsup.poll(agent, run_id)
+
+
+class _HeadsupDismiss(BaseModel):
+    run_id: str
+    id: str
+    answer: str = "dismiss"
+
+
+@router.post("/api/claude-sessions/headsup/dismiss")
+def api_claude_session_headsup_dismiss(body: _HeadsupDismiss):
+    from fused_render.claude_agent import headsup
+
+    headsup.dismiss(body.run_id, body.id, body.answer)
+    return {"ok": True}
+
+
 @router.get("/api/claude-sessions/liveness")
 def api_claude_session_liveness(path: str):
     """`(mtime, size, running)` for ONE transcript file — the cheapest possible
@@ -1245,8 +1418,9 @@ def api_claude_session_liveness(path: str):
     a chat can be open on a session whose first turn is still being written, and
     the watch's next lap is the natural place to notice that it now is."""
     resolved = os.path.realpath(path or "")
-    root = os.path.realpath(PROJECTS_DIR)
-    if not resolved.startswith(root + os.sep) or not resolved.endswith(".jsonl"):
+    inside = any(resolved.startswith(os.path.realpath(root) + os.sep)
+                 for _b, root in projects_roots())
+    if not inside or not resolved.endswith(".jsonl"):
         raise HTTPException(status_code=400, detail="not a session transcript")
     try:
         stat = os.stat(resolved)

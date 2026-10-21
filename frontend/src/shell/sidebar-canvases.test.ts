@@ -17,17 +17,18 @@ const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
 const STORE = readFileSync(join(SHELL, "../apps/canvases/logged-in.ts"), "utf8");
 const PAGE = readFileSync(join(SHELL, "../apps/canvases/Canvases.tsx"), "utf8");
 const FLAG = readFileSync(join(SHELL, "../apps/canvases/feature-flag.ts"), "utf8");
-const PREFS_PAGE = readFileSync(join(SHELL, "Preferences.tsx"), "utf8");
+const PREFS_PAGE = readFileSync(join(SHELL, "settings/toggles.tsx"), "utf8");
 const APP = readFileSync(join(SHELL, "App.tsx"), "utf8");
 
 describe("the sidebar's Canvases entry", () => {
   it("is 'Canvases' in the sidebar and 'Workbench Canvases' on the page", () => {
-    // The menu item, the expanded row and the collapsed rail's tooltip: three
-    // sites, one destination, so a reader who found it in one place recognises
-    // it in the others. Anchored on the `label:`/`label=` forms because the bare
-    // word also appears as a route, a CSS class and a component name.
+    // The settings-menu item is the ONE nav site left (owner, 2026-10-20: the
+    // primary row and the rail icon are gone — the Canvases SECTION lists the
+    // canvases and its "+ Canvas" row opens the catalog). Anchored on the
+    // `label:` form because the bare word also appears as a route, a CSS
+    // class and a component name.
     const named = SIDEBAR.match(/label(?::|=)\s*"Canvases"/g) ?? [];
-    expect(named.length).toBe(3);
+    expect(named.length).toBe(1);
     // Nav says the short name — it sits under Home/Tasks, where "Workbench" was
     // the longest label in the rail for the least product meaning. The PAGE
     // carries the qualified name instead, so the destination still says which
@@ -36,24 +37,23 @@ describe("the sidebar's Canvases entry", () => {
     expect(PAGE).toMatch(/<h1 className="canvases-title">Workbench Canvases<\/h1>/);
   });
 
-  it("shows the row and the rail icon behind the SAME gate", () => {
-    // A row that exists until you collapse the sidebar is a destination people
-    // lose — both halves are gated, or neither should be. The gate is the
-    // conjunction (D427): the feature is offered AND there is an account.
+  it("shows the Canvases section behind the feature-and-account gate, and no nav row", () => {
+    // The gate is the conjunction (D427): the feature is offered AND there is
+    // an account. It now guards the Canvases SECTION (the desk's canvas half,
+    // CurrentAppsSection); there is no primary row and no rail icon any more.
     expect(SIDEBAR).toMatch(/const canvasesLoggedIn = useCanvasesLoggedIn\(\)/);
     expect(SIDEBAR).toMatch(/const canvasesEnabled = useCanvasesFeature\(\)/);
     expect(SIDEBAR).toMatch(
       /const canvasesInNav = canvasesEnabled && canvasesLoggedIn/
     );
-    // The rail entry, spread in conditionally.
-    expect(SIDEBAR).toMatch(/\.\.\.\(canvasesInNav\s*\n?\s*\?/);
-    // The expanded row.
-    expect(SIDEBAR).toMatch(/\{canvasesInNav && \(\s*\n\s*<NavItem/);
+    expect(SIDEBAR).toMatch(/\{canvasesInNav && <CurrentAppsSection section="canvases" \/>\}/);
+    expect(SIDEBAR).not.toMatch(/id="canvases-link"/);
+    expect(SIDEBAR).not.toMatch(/key: "canvases"/);
   });
 
   it("hides BOTH entry points when the feature is off, without touching the routes", () => {
     // The preference is over the entry points, not the pages: /canvases and
-    // /canvases/<name> keep answering a deep link or a bookmark exactly as they
+    // /canvases/<env>/<name> keep answering a deep link or a bookmark exactly as they
     // do signed out, so the flag never strands an open workspace. Nothing in
     // App.tsx's routing consults it.
     expect(APP).not.toMatch(/canvasesEnabled|useCanvasesFeature/);
@@ -69,7 +69,7 @@ describe("the sidebar's Canvases entry", () => {
   it("reads the feature flag from prefs, one fetch plus a publish", () => {
     // No poll, unlike sign-in: this pref can only change on the Preferences
     // page of this app, and that page hands the new value over so the row
-    // appears with the checkbox instead of on the next navigation.
+    // appears with the switch instead of on the next navigation.
     expect(FLAG).toMatch(/export function publishCanvasesEnabled/);
     expect(FLAG).toMatch(/getPrefs(Shared)?\(\)/);
     expect(FLAG).not.toMatch(/setTimeout|setInterval/);
@@ -87,18 +87,11 @@ describe("the sidebar's Canvases entry", () => {
     expect(FLAG).toMatch(/useState\(enabled === true\)/);
   });
 
-  it("lights on the list page only, not inside a canvas", () => {
-    // /canvases/<name> is a workspace you opened, not the list page — Home's
-    // reasoning, and the reason this is equality rather than a prefix test.
-    expect(SIDEBAR).toMatch(/const canvasesActive = pathname === "\/canvases"/);
-    expect(SIDEBAR).not.toMatch(/pathname\.startsWith\("\/canvases/);
-  });
-
-  it("keeps the menu entry but stops it lighting the Preferences trigger too", () => {
-    // Both asks stay true: the menu still lists the destination by name, and
-    // the trigger does not light beside an already-lit primary row.
+  it("keeps the menu entry, which lights the Preferences trigger on the catalog", () => {
+    // The menu still lists the destination by name; with no primary row to
+    // clash with, the trigger lights on /canvases like any other menu page.
     expect(SIDEBAR).toMatch(/\{ href: "\/canvases", label: "Canvases"/);
-    expect(SIDEBAR).toMatch(/!\(canvasesInNav && e\.href === "\/canvases"\)/);
+    expect(SIDEBAR).not.toMatch(/canvasesActive/);
   });
 
   it("probes sign-in through the standalone module, not the app barrel", () => {
@@ -146,8 +139,12 @@ function status(over: Partial<CanvasesStatus>): CanvasesStatus {
     logged_in: true,
     creds_stamp: null,
     login_in_flight: false,
-    workbench_base_url: "https://www.fused.io",
-    canvases_dir: "/Users/x/.fused-render/canvases",
+    workbench_env: "prod",
+    locked: false,
+    envs: {
+      unstable: { base_url: "https://unstable.fused.io", canvases_dir: "/Users/x/Fused/canvas/unstable", cloned_count: 0 },
+      prod: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/prod", cloned_count: 0 },
+    },
     ...over,
   };
 }

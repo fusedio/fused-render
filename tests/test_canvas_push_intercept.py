@@ -20,14 +20,20 @@ import pytest
 
 from fused_render import _canvas_push, fusedcli
 
+# The environment the `root` fixture's clones belong to, and the other one.
+ENV, OTHER_ENV = "unstable", "prod"
+
 
 @pytest.fixture()
 def root(tmp_path, monkeypatch):
-    """A canvases root with one clone in it."""
+    """ENV's clone folder (`<base>/<env>`), with one clone in it.
+    FUSED_RENDER_CANVASES_DIR is the BASE above every environment's folder."""
     canvases = tmp_path / "canvases"
-    (canvases / "alpha").mkdir(parents=True)
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
-    return canvases
+    monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
+    root = canvases / ENV
+    (root / "alpha").mkdir(parents=True)
+    return root
 
 
 # -- the matcher ---------------------------------------------------------------
@@ -120,13 +126,23 @@ def test_everything_else_falls_through(args):
 
 
 def test_the_clone_root_must_be_exactly_one_segment_under_the_root(root):
-    assert _canvas_push._clone_name(str(root / "alpha")) == "alpha"
+    env = ENV
+    assert _canvas_push._clone_name(str(root / "alpha")) == ("alpha", env)
+    # The OTHER environment's clone is a clone too (its push is routed to
+    # that environment's manager); an unknown segment in the environment
+    # position is not.
+    other = OTHER_ENV
+    (root.parent / other / "beta").mkdir(parents=True)
+    assert _canvas_push._clone_name(str(root.parent / other / "beta")) == ("beta", other)
+    (root.parent / "staging" / "gamma").mkdir(parents=True)
+    assert _canvas_push._clone_name(str(root.parent / "staging" / "gamma")) is None
     # A subdirectory of a clone is a different push (different content), and
     # the canvases root itself is not a canvas.
     (root / "alpha" / "sub").mkdir()
     assert _canvas_push._clone_name(str(root / "alpha" / "sub")) is None
     assert _canvas_push._clone_name(str(root)) is None
     assert _canvas_push._clone_name(str(root.parent / "elsewhere")) is None
+    assert _canvas_push._clone_name(str(root.parent)) is None
 
 
 # -- the request ---------------------------------------------------------------
@@ -139,8 +155,8 @@ class _Server:
         self.status, self.body = status, body if body is not None else {}
         self.calls = []
 
-    def __call__(self, origin, name):
-        self.calls.append((origin, name))
+    def __call__(self, origin, name, env):
+        self.calls.append((origin, name, env))
         return self.status, self.body
 
 
@@ -161,7 +177,7 @@ def test_a_clone_push_is_sent_to_the_server(root, monkeypatch):
     code, out, err = _intercept(
         ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 0, err
-    assert server.calls == [("http://127.0.0.1:9999", "alpha")]
+    assert server.calls == [("http://127.0.0.1:9999", "alpha", ENV)]
     assert "alpha" in out
     assert err == ""
 
@@ -174,7 +190,7 @@ def test_a_relative_target_resolves(root, monkeypatch):
     code, _, err = _intercept(["workbench", "canvas", "push", "."],
                               monkeypatch, server)
     assert code == 0, err
-    assert server.calls == [("http://127.0.0.1:9999", "alpha")]
+    assert server.calls == [("http://127.0.0.1:9999", "alpha", ENV)]
 
 
 def test_a_validation_failure_reaches_the_session_verbatim(root, monkeypatch):
@@ -261,8 +277,10 @@ def test_the_cli_env_carries_the_marker(root):
     validate, the shims — and none of them may be intercepted."""
     from fused_render import canvases
 
-    env = canvases._cli_env(fusedcli.FusedCli(command=["fused"], external=False))
+    env = canvases._cli_env(fusedcli.FusedCli(command=["fused"], external=False), OTHER_ENV)
     assert env[_canvas_push.INTERNAL_ENV] == "1"
+    # The canvas's own env, never the preference: both envs sync at once.
+    assert env["FUSED_ENV"] == OTHER_ENV
 
 
 def test_a_busy_refusal_reads_as_retryable_not_as_a_broken_canvas(root, monkeypatch):
@@ -286,6 +304,61 @@ def test_no_server_origin_falls_through(root, monkeypatch):
                             monkeypatch, server, origin=None)
     assert code is None
     assert server.calls == []
+
+
+def test_a_clone_of_the_other_environment_is_refused_on_every_fall_through(root, monkeypatch):
+    """A FUSED_ENV naming the other environment (an explicit `FUSED_ENV=x
+    fused ...`, or the wrapper's default when run outside the clone) must
+    never reach the raw CLI with a clone: no origin, `--canvas` naming
+    another canvas, and an unreachable server — the three shapes that fall
+    through — all refuse."""
+    env, other = ENV, OTHER_ENV
+    clone = root.parent / other / "alpha"
+    clone.mkdir(parents=True)
+    monkeypatch.setenv("FUSED_ENV", env)
+    cases = [
+        (["workbench", "canvas", "push", str(clone)], None, _Server(200, {"ok": True})),
+        (["workbench", "canvas", "push", str(clone), "--canvas", "zeta"],
+         "http://127.0.0.1:9999", _Server(200, {"ok": True})),
+        (["workbench", "canvas", "push", str(clone)], "http://127.0.0.1:9999",
+         _Server(None, {})),
+    ]
+    for args, origin, server in cases:
+        code, _, err = _intercept(args, monkeypatch, server, origin=origin)
+        assert code == 1, (args, origin)
+        assert other in err and env in err
+        # The remedy names the clone's own env, not a Preferences switch.
+        assert f"FUSED_ENV={other}" in err and "Preferences" not in err
+
+
+def test_a_mismatched_fused_env_still_posts_when_the_server_takes_it(root, monkeypatch):
+    """With a server to take it, FUSED_ENV is irrelevant: the push is routed
+    by the clone's own env to that environment's manager. Refusing first
+    would turn away a push that was never at risk."""
+    clone = root.parent / OTHER_ENV / "alpha"
+    clone.mkdir(parents=True)
+    monkeypatch.setenv("FUSED_ENV", ENV)
+    server = _Server(200, {"ok": True})
+    code, _, _ = _intercept(["workbench", "canvas", "push", str(clone)], monkeypatch, server)
+    assert code == 0
+    assert [c[1:] for c in server.calls] == [("alpha", OTHER_ENV)]
+
+
+def test_a_clone_of_either_environment_routes_to_the_server_with_its_env(root, monkeypatch):
+    """No FUSED_ENV (a bare shell), or FUSED_ENV matching the clone (the
+    wrapper inside it): the push goes to the server naming the clone's env,
+    which picks that environment's manager — prod's and unstable's `alpha`
+    are two canvases."""
+    other_clone = root.parent / OTHER_ENV / "alpha"
+    other_clone.mkdir(parents=True)
+    monkeypatch.delenv("FUSED_ENV", raising=False)
+    server = _Server(200, {"ok": True})
+    code, _, _ = _intercept(["workbench", "canvas", "push", str(other_clone)], monkeypatch, server)
+    assert code == 0
+    monkeypatch.setenv("FUSED_ENV", ENV)
+    code, _, _ = _intercept(["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+    assert code == 0
+    assert [c[1:] for c in server.calls] == [("alpha", OTHER_ENV), ("alpha", ENV)]
 
 
 def test_a_push_outside_the_canvases_root_falls_through(root, monkeypatch, tmp_path):
@@ -362,7 +435,7 @@ def test_post_push_reports_a_real_socket_timeout_distinctly(monkeypatch):
     monkeypatch.setattr(_canvas_push, "_HTTP_TIMEOUT_S", 0.3)
     try:
         status, body = _canvas_push._post_push(
-            "http://127.0.0.1:%d" % httpd.server_port, "alpha")
+            "http://127.0.0.1:%d" % httpd.server_port, "alpha", ENV)
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -380,7 +453,7 @@ def test_post_push_falls_through_on_a_genuine_connect_failure():
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()  # nothing listens here now
-    status, body = _canvas_push._post_push("http://127.0.0.1:%d" % port, "alpha")
+    status, body = _canvas_push._post_push("http://127.0.0.1:%d" % port, "alpha", ENV)
     assert status is None, (status, body)
 
 
@@ -444,7 +517,7 @@ def test_the_shim_intercepts_before_dispatching_to_the_real_cli(root, tmp_path):
         env = dict(os.environ)
         repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env["PYTHONPATH"] = os.pathsep.join([str(stub), repo])
-        env["FUSED_RENDER_CANVASES_DIR"] = str(root)
+        env["FUSED_RENDER_CANVASES_DIR"] = str(root.parent)
         env["FUSED_RENDER_ORIGIN"] = "http://127.0.0.1:%d" % port
 
         done = subprocess.run(
@@ -507,8 +580,11 @@ def test_the_guard_header_constant_matches_the_server(root):
 
 def test_the_canvases_root_rule_matches_canvases_py(root):
     """_canvas_push duplicates the rule to keep FastAPI off the CLI's startup
-    path; this is what keeps the copy honest."""
+    path; this is what keeps the copy honest — the base, and the environment
+    choices that name the folder under it."""
     from fused_render import canvases
 
-    assert _canvas_push.canvases_root() == canvases.canvases_root()
+    assert _canvas_push.canvases_base() == canvases.canvases_base()
+    assert _canvas_push._ENVS == fusedcli.WORKBENCH_ENV_CHOICES
+    assert str(root) == canvases.canvases_root(ENV)
     _ = json

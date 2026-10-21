@@ -15,6 +15,8 @@ import type { BoardColumn } from "./schedule-lib";
 import {
   laneCountLabel,
   laneSplitAt,
+  LIST_MEMORY_KEY,
+  listMemoryKey,
   LANE_SPLIT_LABEL,
   messageState,
   ALL_MESSAGES,
@@ -36,7 +38,25 @@ import {
   CARD_LANES,
   cardKey,
   cardsForTasks,
+  BASE_VIEWS,
+  DEFAULT_VIEW_TABS,
+  GROUP_VIEWS,
   TASK_VIEWS,
+  flattenGroups,
+  groupOfView,
+  groupRows,
+  activityAt,
+  defaultViewFacets,
+  LANES_BUT_ARCHIVE,
+  groupFoldKeys,
+  openOnFirstVisit,
+  parseSeededViews,
+  parseViewFilters,
+  seedCollapsedGroups,
+  groupSize,
+  parseViewTabs,
+  prOfTask,
+  prRefOf,
   canRunNow,
   cancelIntent,
   carryMarkToHeld,
@@ -48,6 +68,7 @@ import {
   dropAction,
   dropLanes,
   filterTasks,
+  emptyTasksLabel,
   filtersForView,
   firstLine,
   groupByColumn,
@@ -70,6 +91,7 @@ import {
   isExpandable,
   isFailedTask,
   needsAttention,
+  attentionCaption,
   isMessageRunning,
   isRunningNow,
   isRunningIn,
@@ -150,6 +172,14 @@ import {
   cardTitleLine,
   INTERRUPTED_REPLY,
   recapTitlesOn,
+  BACKGROUND_LABEL,
+  inFlight,
+  taskMatches,
+  boardLane,
+  jobBadge,
+  jobCountLabel,
+  liveJobRow,
+  liveJobs,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -1109,6 +1139,89 @@ describe("needsAttention", () => {
   });
 });
 
+describe("attentionCaption", () => {
+  // What a waiting row is waiting on (Akshil, 2026-10-18: "Task shows me
+  // blocked but not what it is blocked on"). One sentence, drawn on the List
+  // row, the Board card and the Cards wall, and said by the ring.
+  const waiting = (over: Partial<Task>) => task({ status: "needs_attention", ...over });
+
+  it("names the tool and what it wants on a permission card", () => {
+    expect(attentionCaption(waiting({
+      blocked_reason: "permission",
+      attention: { tool: "Bash", summary: "List live Claude registry rows" },
+    }))).toBe("Waiting on your approval · Bash: List live Claude registry rows");
+    // Either half alone when the other is empty, and the bare clause on neither.
+    expect(attentionCaption(waiting({
+      blocked_reason: "permission", attention: { tool: "Bash", summary: "" },
+    }))).toBe("Waiting on your approval · Bash");
+    expect(attentionCaption(waiting({
+      blocked_reason: "permission", attention: { tool: "", summary: "rm -rf build" },
+    }))).toBe("Waiting on your approval · rm -rf build");
+    expect(attentionCaption(waiting({
+      blocked_reason: "permission", attention: { tool: "", summary: "" },
+    }))).toBe("Waiting on your approval");
+  });
+
+  it("keeps the summary on one short line", () => {
+    const long = "echo " + "x".repeat(200);
+    const out = attentionCaption(waiting({
+      blocked_reason: "permission",
+      attention: { tool: "Bash", summary: "  cd a &&\n  " + long },
+    }));
+    expect(out.startsWith("Waiting on your approval · Bash: cd a && echo x")).toBe(true);
+    expect(out.endsWith("…")).toBe(true);
+    expect(out).not.toMatch(/\n|  /);
+    expect(out.length).toBeLessThan(120);
+  });
+
+  it("prints the question on a question card, never the tool's name", () => {
+    expect(attentionCaption(waiting({
+      blocked_reason: "question",
+      attention: { tool: "AskUserQuestion", summary: "Which branch should I use?" },
+    }))).toBe("Waiting on your answer · Which branch should I use?");
+    expect(attentionCaption(waiting({
+      blocked_reason: "question", attention: { tool: "AskUserQuestion", summary: "" },
+    }))).toBe("Waiting on your answer");
+  });
+
+  it("says nothing without `attention`, off the waiting status, or for another reason", () => {
+    // An older server: no field, no caption, nothing breaks.
+    const bare = waiting({ blocked_reason: "permission" });
+    delete (bare as Partial<Task>).attention;
+    expect(attentionCaption(bare)).toBe("");
+    expect(attentionCaption(waiting({ blocked_reason: "permission", attention: null }))).toBe("");
+    // The status decides, as it does for needsAttention.
+    expect(attentionCaption(task({
+      status: "in_progress",
+      blocked_reason: "permission",
+      attention: { tool: "Bash", summary: "ls" },
+    }))).toBe("");
+    // "failed", "usage_limit" and "" keep their own (or no) caption.
+    for (const reason of ["failed", "usage_limit", ""] as const) {
+      expect(attentionCaption(task({
+        status: reason === "" ? "needs_attention" : "blocked",
+        blocked_reason: reason,
+        attention: { tool: "Bash", summary: "ls" },
+      }))).toBe("");
+    }
+  });
+
+  it("is drawn on all three surfaces and said by their rings", () => {
+    const VIEWS_SRC = readFileSync(join(SHELL, "ScheduleTaskViews.tsx"), "utf8");
+    const CARDS_SRC = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
+    expect(VIEWS_SRC.match(/const asking = attentionCaption\(task\);/g)).toHaveLength(2);
+    // The caption spends the row's press like the limit's and the job badge's
+    // (CodeRabbit, #1741): a click on it opens the chat, never a dead run of px.
+    expect(VIEWS_SRC).toContain('<span className="tasks-row-queue" data-hint={asking} {...pressRow}>');
+    expect(VIEWS_SRC).toContain('{asking && <span className="tasks-card-queue">{asking}</span>}');
+    expect(VIEWS_SRC).toContain('<StatusIcon status="needs_attention" label={asking || undefined} />');
+    expect(VIEWS_SRC.match(/label=\{asking \|\| undefined\}/g)).toHaveLength(2);
+    expect(CARDS_SRC).toContain("const asking = attentionCaption(task);");
+    expect(CARDS_SRC).toContain('{asking && <span className="task-card-limit">{asking}</span>}');
+    expect(CARDS_SRC).toContain("label={asking || undefined}");
+  });
+});
+
 // ---- drag --------------------------------------------------------------------
 
 /** An upcoming task holding `pending` messages at the given epoch-second times,
@@ -1980,7 +2093,7 @@ describe("filingIntent", () => {
     expect(a.title).toBe("Unarchive");
   });
 
-  it("offers nothing while a run is in flight — the ONLY null now", () => {
+  it("offers nothing while a run is STREAMING — the ONLY null now", () => {
     // In Progress is Claude's output. The card cannot leave that lane by any
     // gesture, and the button asks the same question the drop does.
     expect(filingIntent(task({ status: "in_progress" }))).toBe(null);
@@ -1989,6 +2102,17 @@ describe("filingIntent", () => {
     for (const status of ["upcoming", "done", "archived", FAILED] as const) {
       expect(filingIntent(task({ status }))).not.toBe(null);
     }
+  });
+
+  it("offers Archive, and only Archive, on a run parked on a card", () => {
+    // Akshil, 2026-10-19. The parked run is the in-flight state that never
+    // ends on its own; the server stops it and files it. In Progress stays
+    // locked: a drag cannot answer the card.
+    const parked = task({ status: "needs_attention" });
+    expect(dropLanes(parked)).toEqual(["archived"]);
+    expect(isDraggable(parked)).toBe(true);
+    expect(filingIntent(parked)?.kind).toBe("archive");
+    expect(dropAction(parked, "in_progress")).toBe(null);
   });
 
   it("offers Archive on a task with no session at all", () => {
@@ -2337,7 +2461,7 @@ describe("the unread mark", () => {
     // held thread), so the ring hollows on the row's own press rather than on the
     // next poll — the same number that used to feed the dot.
     expect(ROW).toMatch(
-      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s*\/>/,
+      /<StatusIcon\s+status=\{taskColumn\(task\)\}\s+failed=\{ringFailed\(task\)\}\s+label=\{asking \|\| undefined\}\s+unread=\{unread > 0\}\s+count=\{unread\}\s+draftHeld=\{draftRing\(task\) && !heldInPeek\}\s+background=\{liveJobRow\(task\)\}\s*\/>/,
     );
     // Nothing trails the title any more: the ring leads the row, the title
     // follows, and the next thing is the live ping.
@@ -2380,11 +2504,12 @@ describe("the unread mark", () => {
     );
     expect(head).toContain("<IdChip");
     expect(head).toContain(": failedOffLane && <StatusIcon status={lane} failed />}");
-    // TWO, and both are the same exception: the ring is drawn when the card's
-    // status is not the lane it sits under — once for a broken run filed
-    // elsewhere, once for a waiting one drawn inside Blocked. One of the two
-    // arms renders, never both (they are the arms of one ternary).
-    expect((CARD.match(/<StatusIcon/g) ?? []).length).toBe(2);
+    // THREE, and all are the same exception: the ring is drawn when the card's
+    // status is not all its lane says — a broken run filed elsewhere, a waiting
+    // one drawn inside Blocked, and a finished card with a live background job
+    // drawn In Progress (tasks-lib.liveJobRow). One arm renders, never two (one
+    // ternary chain).
+    expect((CARD.match(/<StatusIcon/g) ?? []).length).toBe(3);
     // The SAME mark this page already uses one level down, so a card and an unread
     // message row make the same claim the same way.
     expect(TASKS_CSS).toMatch(
@@ -2831,10 +2956,15 @@ describe("the board card's status ring", () => {
     // the flag that repaints a Done ring red). A second inline reading of
     // `task.failed` here is how the card and the List row would drift apart.
     expect(CARD).toContain(": failedOffLane && <StatusIcon status={lane} failed />}");
+    // …and the third card whose ring says what its lane does not: a finished
+    // turn with a live background job, drawn In Progress (tasks-lib.liveJobRow)
+    // — the blue "Background" ring.
+    expect(CARD).toContain(": jobs\n              ? <StatusIcon status={status} background />");
     // The waiting card's own ring, by the same rule: its status and its lane are
     // two different facts (Needs attention, drawn under Blocked), which is
     // exactly the condition the ring is drawn for.
-    expect(CARD).toContain('<StatusIcon status="needs_attention" />');
+    // It says WHAT it is waiting on when the server named it (attentionCaption).
+    expect(CARD).toContain('<StatusIcon status="needs_attention" label={asking || undefined} />');
     expect(CARD).toContain("<IdChip");
     const card = VIEWS.slice(VIEWS.indexOf("function TaskCard("));
     expect(card).toContain('isFailedTask(task) && lane !== "blocked"');
@@ -4271,7 +4401,7 @@ describe("the archive action", () => {
     // up whenever it is empty.
     expect(card).toContain(
       "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
-      + "        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (",
+      + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     expect(card).toContain('className="tasks-card-acts"');
     expect(TASKS_CSS).toMatch(/\.tasks-card-acts\s*\{[^}]*position: absolute/);
@@ -4477,18 +4607,17 @@ describe("the archive action", () => {
 // that nothing about it is red until it is pointed at.
 
 describe("the delete affordance", () => {
-  it("refuses exactly the lanes the server refuses, in the server's words", () => {
-    // in_progress AND the needs_attention turn parked on a permission card: a
-    // guard that read only `in_progress` would offer to erase a transcript a
-    // waiting `claude --resume` still has open.
+  it("refuses exactly the lane the server refuses, in the server's words", () => {
+    // in_progress ONLY. The needs_attention turn parked on a permission card
+    // is deletable (Akshil, 2026-10-19): the server stops that run itself
+    // before taking the row, so the trash stays live and the dialog opens.
     expect(eraseBlocked(task({ status: "in_progress" }))).toBe(true);
-    expect(eraseBlocked(task({ status: "needs_attention" }))).toBe(true);
-    for (const status of ["upcoming", "blocked", "done", "archived"] as const) {
+    expect(eraseBlocked(task({ status: "needs_attention" }))).toBe(false);
+    for (const status of ["upcoming", "queued", "blocked", "done", "archived"] as const) {
       expect(eraseBlocked(task({ status }))).toBe(false);
     }
-    // The same lanes `inFlight` names, spelled once — not a second list that
-    // could drift from it.
-    expect(LIB).toContain("return inFlight(taskColumn(task));");
+    // One lane, spelled once — NOT `inFlight`, which names both.
+    expect(LIB).toContain('return taskColumn(task) === "in_progress";');
     // And the hint is the refusal's own first clause, so the caption and the
     // 409 cannot promise different reasons.
     expect(ERASE_BLOCKED_HINT).toBe("Stop the run first");
@@ -4534,7 +4663,7 @@ describe("the delete affordance", () => {
     expect(at).toBeGreaterThan(0);
     // GATED on `gone` (Akshil, 2026-09-07): a task that still opens is archived.
     expect(head.slice(del, at)).toContain("{gone && (");
-    expect(head).toContain("{(filing || explorer || gone) && (");
+    expect(head).toContain("{(filing || explorer || gone || jobs) && (");
     // Trash, then Archive, then the folder (Akshil: "left-side of the archive button").
     expect(head.indexOf("ICON_TRASH")).toBeLessThan(head.indexOf("ICON_ARCHIVE"));
     expect(head.indexOf("ICON_ARCHIVE")).toBeLessThan(head.indexOf("ICON_FOLDER"));
@@ -4580,7 +4709,7 @@ describe("the delete affordance", () => {
     // The strip is drawn for a gone folder even with nothing to file.
     expect(VIEWS_SRC).toContain(
       "{((peekOn && page) || file || folderMissing || (hasDraft(task) && !heldInPeek)\n"
-      + "        || canForceStart(task) || (SHOW_ROW_ACTIONS && run)) && (",
+      + "        || canForceStart(task) || jobs || (SHOW_ROW_ACTIONS && run)) && (",
     );
     // And the foot is back to the sentence alone — no trash before it there.
     const foot = VIEWS_SRC.slice(
@@ -5598,7 +5727,7 @@ describe("the folder chip on a row and a card", () => {
     // Both views ask the ONE helper, of the set they are drawing, and neither
     // re-derives it per row: a chip that every visible row repeats is noise on the
     // busiest end of the row.
-    expect(VIEWS).toContain("const showProject = useMemo(() => spansProjects(tasks), [tasks]);");
+    expect(VIEWS).toContain('() => groupBy !== "project" && (spansProjects(tasks) || pinnedKey !== ""),');
     expect((VIEWS.match(/spansProjects\(tasks\)/g) ?? []).length).toBe(2);
     expect(ROW).toContain("{showProject && (");
     expect(CARD).toContain("{showProject && (");
@@ -6450,6 +6579,95 @@ describe("filtersForView — the calendar's Archive facet (2026-08-20)", () => {
     const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
     const out = filterTasks(tasks, filtersForView(f, "calendar"));
     expect(out.map((t) => t.key)).toEqual(["a", "b"]);
+  });
+});
+
+describe("the grouped lists start with every lane but Archive ticked (2026-10-17, synced 2026-10-19)", () => {
+  // Time / Project / PR are the List cut into sections about live work, and
+  // "in group by time, project and pr can we not show archived tasks, unless
+  // selected in status" (Akshil). Since 2026-10-19 the status menu SHOWS it:
+  // a grouped tab's facets start as every lane but Archive (defaultViewFacets)
+  // and the query is exactly what is ticked — filtersForView no longer rewrites
+  // an empty list on those views.
+  const tasks = [
+    task({ key: "a", task_id: "TASK-001", title: "Upcoming thing", status: "upcoming" }),
+    task({ key: "b", task_id: "TASK-002", title: "Archived thing", status: "archived" }),
+    task({ key: "c", task_id: "TASK-003", title: "Done thing", status: "done" }),
+    task({ key: "d", task_id: "TASK-004", title: "Queued thing", status: "queued" }),
+    // A draft row (lane Upcoming) and a parked run (lane Blocked) both stay.
+    task({ key: "e", task_id: "", title: "Draft thing", status: "upcoming", kind: "draft", draft: null }),
+    task({ key: "f", task_id: "TASK-006", title: "Parked thing", status: "needs_attention" }),
+  ];
+
+  it("starts a grouped tab on every lane but Archive, ticked; the others on nothing", () => {
+    for (const view of GROUP_VIEWS) {
+      const f = defaultViewFacets(view);
+      expect(f.statuses).toEqual(LANES_BUT_ARCHIVE);
+      expect(f.statuses).not.toContain("archived");
+      expect(f.statuses.length).toBe(BOARD_LANES.length - 1);
+      expect(f.projects).toEqual([]);
+      const out = filterTasks(tasks, filtersForView({ ...EMPTY_FILTERS, ...f }, view));
+      expect(out.map((t) => t.key)).toEqual(["a", "c", "d", "e", "f"]);
+    }
+    for (const view of BASE_VIEWS) expect(defaultViewFacets(view)).toEqual({ statuses: [], projects: [] });
+  });
+
+  it("the query is what is ticked — an emptied list means everything, Archive included", () => {
+    for (const view of [...GROUP_VIEWS, ...BASE_VIEWS]) {
+      expect(filtersForView(EMPTY_FILTERS, view)).toBe(EMPTY_FILTERS);
+      expect(filterTasks(tasks, filtersForView(EMPTY_FILTERS, view)).map((t) => t.key)).toEqual(
+        ["a", "b", "c", "d", "e", "f"],
+      );
+    }
+  });
+
+  it("shows archived rows once Archive is ticked, alone or with others", () => {
+    for (const view of GROUP_VIEWS) {
+      const alone = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+      expect(filtersForView(alone, view)).toBe(alone);
+      expect(filterTasks(tasks, filtersForView(alone, view)).map((t) => t.key)).toEqual(["b"]);
+      const withDone = { ...EMPTY_FILTERS, statuses: ["done" as const, "archived" as const] };
+      expect(filterTasks(tasks, filtersForView(withDone, view)).map((t) => t.key)).toEqual(["b", "c"]);
+    }
+  });
+});
+
+describe("emptyTasksLabel — the grouped archived-only empty state (2026-10-17)", () => {
+  const ARCHIVE_HINT = "Only archived tasks here. Tick Archive under Status to see them.";
+  const NO_MATCH = "Nothing matches these filters.";
+
+  it("names the hidden Archive lane on a grouped view on its starting facets", () => {
+    for (const view of GROUP_VIEWS) {
+      const f = { ...EMPTY_FILTERS, ...defaultViewFacets(view) };
+      expect(emptyTasksLabel(view, f, 3, false)).toBe(ARCHIVE_HINT);
+      expect(emptyTasksLabel(view, f, 3, true)).toBe(ARCHIVE_HINT);
+      // Order of the ticks is not a filter.
+      expect(emptyTasksLabel(view, { ...f, statuses: [...f.statuses].reverse() }, 3, false)).toBe(ARCHIVE_HINT);
+      // Nothing ticked at all is the reader's own doing — and shows Archive anyway.
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, false)).toBe(NO_MATCH);
+    }
+  });
+
+  it("blames the filter once one is on, grouped or not", () => {
+    const withProject = { ...EMPTY_FILTERS, projects: ["/p"] };
+    const withSearch = { ...EMPTY_FILTERS, search: "x" };
+    const withStatus = { ...EMPTY_FILTERS, statuses: ["done" as const] };
+    for (const view of [...GROUP_VIEWS, ...BASE_VIEWS]) {
+      for (const f of [withProject, withSearch, withStatus]) {
+        expect(emptyTasksLabel(view, f, 3, false)).toBe(NO_MATCH);
+      }
+    }
+  });
+
+  it("never offers the Archive hint on List, Board, Cards or Calendar", () => {
+    for (const view of BASE_VIEWS) expect(emptyTasksLabel(view, EMPTY_FILTERS, 3, false)).toBe(NO_MATCH);
+  });
+
+  it("says there are no tasks at all when the scope is empty, whatever the view", () => {
+    for (const view of [...GROUP_VIEWS, ...BASE_VIEWS]) {
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 0, true)).toBe("No tasks for this app yet.");
+      expect(emptyTasksLabel(view, EMPTY_FILTERS, 0, false)).toMatch(/^No tasks yet\./);
+    }
   });
 });
 
@@ -7594,7 +7812,7 @@ describe("which board lanes are rolled up", () => {
 
   it("is decided by laneRolledUp on the board, which stores only the toggle", () => {
     expect(LANES).toContain("laneRolledUp(col.key, lane.length, choices, peeked)");
-    // The peek is component state and is persisted NOWHERE — not localStorage,
+    // The peek is component state and is persisted NOWHERE — not the layout document,
     // not the URL — so a remount (every navigation back to this page) starts the
     // board with none.
     expect(LANES).toContain("const [peeked, setPeeked] = useState<Set<BoardLane>>(() => new Set());");
@@ -7604,7 +7822,7 @@ describe("which board lanes are rolled up", () => {
     const toggle = LANES.slice(LANES.indexOf("const toggleLane = (key: BoardLane"));
     const body = toggle.slice(0, toggle.indexOf("\n  };"));
     expect(body).toContain("if ((byLane.get(key)?.length ?? 0) === 0) {");
-    expect(body.indexOf("setPeeked(")).toBeLessThan(body.indexOf("localStorage.setItem"));
+    expect(body.indexOf("setPeeked(")).toBeLessThan(body.indexOf("writeLaneChoices("));
     // And the peek is dropped while the lane has cards, so a column that fills
     // and drains comes back rolled up rather than answering an older emptiness.
     expect(LANES).toContain("const next = new Set([...cur].filter((key) => (byLane.get(key)?.length ?? 0) === 0));");
@@ -7613,7 +7831,7 @@ describe("which board lanes are rolled up", () => {
     expect(VIEWS).not.toContain('new Set<BoardColumn>(["archived"])');
     // What is written is the RESULT of the press, for that one lane.
     expect(LANES).toContain("const next = { ...cur, [key]: !nowCollapsed };");
-    expect(LANES).toContain("localStorage.setItem(LANE_CHOICE_KEY");
+    expect(LANES).toContain("writeLaneChoices(next);");
   });
 });
 
@@ -7675,7 +7893,7 @@ describe("what the List remembers between visits", () => {
     expect(open.slice(0, open.indexOf("\n  };"))).toContain("onSelect(task.key);");
     // Stored beside the scroll and the open rows, in the same sessionStorage
     // row, so all three are restored by the one read on mount.
-    expect(LIST).toContain("const memory = useRef<ListMemory>(readListMemory());");
+    expect(LIST).toContain("const memory = useRef<ListMemory>(readListMemory(memoryKey));");
     // THE SAME FILL AS HOVER, and nothing else. The first cut used
     // `--row-bg-active` plus a 2px accent rule, which on a page whose accent is
     // a bright lime made one row in ninety look like a dialog's default button
@@ -7698,16 +7916,22 @@ describe("what the List remembers between visits", () => {
   it("restores the open rows and the scroll from THIS tab only", () => {
     // sessionStorage: "where I was a moment ago" is true for this sitting, and a
     // week-old offset restored into different rows is a surprise, not a memory.
-    expect(VIEWS).toContain("sessionStorage.getItem(LIST_MEMORY_KEY)");
-    expect(VIEWS).toContain("sessionStorage.setItem(LIST_MEMORY_KEY");
-    expect(VIEWS).not.toContain("localStorage.getItem(LIST_MEMORY_KEY)");
+    expect(VIEWS).toContain("sessionStorage.getItem(key)");
+    expect(VIEWS).toContain("sessionStorage.setItem(key, JSON.stringify(memory))");
+    expect(VIEWS).not.toContain("localStorage.getItem(key)");
+    // One row per list view: the plain List keeps the original key, each
+    // grouped view its own, and the page mounts one TaskList per view.
+    expect(LIST).toContain("const memoryKey = listMemoryKey(groupBy);");
+    expect(listMemoryKey(null)).toBe(LIST_MEMORY_KEY);
+    expect(new Set(GROUP_VIEWS.map(listMemoryKey)).size).toBe(GROUP_VIEWS.length);
+    expect(GROUP_VIEWS.map(listMemoryKey)).not.toContain(LIST_MEMORY_KEY);
     expect(LIST).toContain("new Set(memory.current.expanded)");
     // The list's own scroller, not the window's — which is also why this cannot
     // fight the chat's msg-anchor scroll on the other page.
     // `data-fit` rides a conditional spread — it exists only while the side
     // peek's flag is on (shell/task-peek-flag.ts), so an opted-out page renders
     // the scroller exactly as it always did.
-    expect(LIST).toContain('<div\n        className="tasks-list"\n        ref={listRef}');
+    expect(LIST).toContain('<div\n        className={"tasks-list" + (groups ? " is-grouped" : "")}\n        ref={listRef}');
     expect(LIST).toContain('{...(peekOn ? { "data-fit": fit.level } : {})}');
     expect(LIST).toContain("onScroll={onScroll}");
     expect(LIST).toContain("el.scrollTop = top;");
@@ -8044,15 +8268,16 @@ describe("the two filter menus", () => {
     expect(SCHEDULE_CSS).not.toContain("schedule-tv-pop-check");
     // Every row of BOTH menus wears the same class for the same fact.
     expect((VIEWS.match(/"schedule-tv-pop-item" \+ \(/g) ?? []).length).toBe(3);
-    // …and the aria is unchanged by any of it: Status is many, Project is one.
+    // …and the aria says what each is: Status is pressed lanes, Project is
+    // ticked folders — several at once since 2026-10-19 (Akshil: "make it
+    // multi-select"), so the rows are checkboxes, not radios.
     expect(VIEWS).toContain("aria-pressed={on}");
-    // Two ROWS wear the role (the attribute is followed by a line break; the
-    // radiogroup's own arrow-key walk names it inside a selector string, which
-    // is not markup).
-    expect((VIEWS.match(/role="radio"\n/g) ?? []).length).toBe(2);
-    // …inside a group, because a radio outside a radiogroup is a role with
-    // nothing to belong to — no set, no "3 of 7", and no name for the facet.
-    expect(VIEWS).toContain('role="radiogroup" aria-label="Project"');
+    expect((VIEWS.match(/role="checkbox"\n/g) ?? []).length).toBe(2);
+    expect(VIEWS).not.toContain('role="radio"\n');
+    // …inside a named group, so the facet still has a name.
+    expect(VIEWS).toContain('role="group" aria-label="Project"');
+    // The trigger spells the chosen folders out on hover.
+    expect(VIEWS).toContain('hint={filters.projects.length ? filters.projects.map((p) => basename(p)).join("\\n") : undefined}');
   });
 
   it("lights it with the LIST ROW'S OWN tokens, a rung above its hover", () => {
@@ -8083,16 +8308,19 @@ describe("the tasks toolbar", () => {
     // Icon AND label. An icon-only switcher for the page's most central control
     // trades recognition for guessing (design-principles §4), and three short words
     // of near-identical weight were a block of text you had to read.
-    for (const [icon, label] of [
-      ["ICON_VIEW_LIST", "List"],
-      ["ICON_VIEW_BOARD", "Board"],
-      ["ICON_VIEW_CALENDAR", "Calendar"],
+    // Since the tab editor (2026-10-16) the row is drawn from `tabs`, one button
+    // per view name, each pairing the view's glyph (VIEW_ICONS) with its word
+    // (VIEW_LABELS) — the pairing is unchanged, it is just said once.
+    expect(PAGE).toMatch(
+      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">\{VIEW_LABELS\[v\]\}<\/span>/,
+    );
+    for (const [view, icon] of [
+      ["list", "ICON_VIEW_LIST"],
+      ["board", "ICON_VIEW_BOARD"],
+      ["cards", "ICON_VIEW_CARDS"],
+      ["calendar", "ICON_VIEW_CALENDAR"],
     ]) {
-      // The word is in a `.schedule-fit-lbl` span so a narrow toolbar can fold
-      // it to the glyph alone (shell/row-fit.ts); the pairing is unchanged.
-      expect(PAGE).toMatch(
-        new RegExp(`\\{${icon}\\}\\s*\\n\\s*<span className="schedule-fit-lbl">${label}</span>`),
-      );
+      expect(PAGE).toContain(`${view}: ${icon},`);
     }
     // Drawn by the same helper as every other glyph on the page, so the switcher
     // cannot drift to a second icon size — they are exported from the file that
@@ -8422,12 +8650,16 @@ describe("sortForList: the page's one order", () => {
     // `now` is a dep since 2026-09-15 — half of what `sortForList` decides is "is
     // this scheduled for LATER", which goes stale with the clock and nothing else.
     expect(VIEWS).toContain(
-      "const rows = useMemo(() => sortForList(tasks, now), [tasks, now]);",
+      "const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);",
     );
+    // The plain List draws straight off that order, with nothing between the
+    // rows. The grouped views (Time / Project / PR, 2026-10-16) are the one
+    // OPT-IN exception: a reader who put a grouped tab on the row asked for the
+    // cut, and `rows` is still the sorted list, flattened in section order.
+    expect(VIEWS).toContain('<div className="tasks-list-frame">{rows.map(rowAt)}</div>');
+    expect(VIEWS).toContain("groupBy ? groupRows(sorted, groupBy, home, now) : null");
     // The index rides along ONLY so the row can take its React key from
-    // `taskListKeys` (the queue's identity rule); the rows themselves are still
-    // drawn straight off the sorted list, in its order, with nothing between them.
-    expect(VIEWS).toContain("{rows.map((task, ix) => (");
+    // `taskListKeys` (the queue's identity rule).
     expect(VIEWS).toContain("key={rowKeys[ix]}");
   });
 });
@@ -8983,12 +9215,17 @@ describe("the Cards view's frame", () => {
   });
 
   it("is the fourth segment of the switcher, and the page renders it", () => {
-    expect(SCHEDULED).toContain('data-view="cards"');
     // Cards sits BEFORE the calendar, in the switcher and in TASK_VIEWS alike
-    // (Akshil, 2026-09-03).
-    expect(SCHEDULED.indexOf('data-view="cards"')).toBeLessThan(SCHEDULED.indexOf('data-view="calendar"'));
-    expect(TASK_VIEWS).toEqual(["list", "board", "cards", "calendar"]);
-    expect(SCHEDULED).toContain('pickView("cards")');
+    // (Akshil, 2026-09-03). The switcher maps DEFAULT_VIEW_TABS in order.
+    expect(BASE_VIEWS.indexOf("cards")).toBeLessThan(BASE_VIEWS.indexOf("calendar"));
+    // The four the page always had lead TASK_VIEWS and ARE the default row;
+    // the three grouped lists (Time / Project / PR, 2026-10-16) follow.
+    expect(TASK_VIEWS.slice(0, 4)).toEqual(["list", "board", "cards", "calendar"]);
+    // List and Board only, by default (Akshil, 2026-10-16); the rest are a `+` away.
+    expect(DEFAULT_VIEW_TABS).toEqual(["list", "board"]);
+    // The switcher draws its row from `tabs` (one button per view name), so
+    // the literal per-view button is gone; the VIEW_ICONS map names every view.
+    expect(SCHEDULED).toContain("cards: ICON_VIEW_CARDS");
     expect(SCHEDULED).toContain('view === "cards" ? (');
     // The same filtered set every other view is handed.
     expect(SCHEDULED).toContain("<TaskCards");
@@ -9944,10 +10181,11 @@ describe("the folder chip as a filter tag", () => {
     // the stop the tag would do both.
     const chip = VIEWS.slice(VIEWS.indexOf("export function IdentityChip"));
     expect(chip.slice(0, chip.indexOf("\n}\n"))).toContain("e.stopPropagation();");
-    // It REPLACES the project selection rather than widening it, and pressing
-    // the pinned one again lets it go: the chip stays on screen wearing the
+    // It TOGGLES its folder in the set (multi-select since 2026-10-19), and
+    // pressing a pinned one lets it go: the chip stays on screen wearing the
     // state, so it has to be the way back out too.
-    expect(SCHEDULED).toContain("f.projects.length === 1 && f.projects[0] === project");
+    expect(SCHEDULED).toContain("f.projects.includes(project)");
+    expect(SCHEDULED).toContain("? f.projects.filter((p) => p !== project)");
     expect(SCHEDULED).toContain("pinnedProjects={filters.projects}");
   });
 
@@ -11120,6 +11358,34 @@ describe("the optimistic queue claim", () => {
   });
 });
 
+describe("cardTitleLine — summary-only titles (title_mode: summary)", () => {
+  const base = {
+    title: "Fix login\nsecond line",
+    last_message: { text: "newest message" },
+    last_reply: "Fixed it.",
+    status: "done",
+    recap: { text: "haiku recap", for_uuid: "u1" },
+  };
+
+  it("titles by `title` even with a message, a reply and a recap present", () => {
+    expect(cardTitleLine({ ...base, title_mode: "summary" })).toEqual({
+      text: "Fix login", said: false, kind: "title", hint: "Fix login\nsecond line",
+    });
+  });
+
+  it("an empty title falls through to the old rules", () => {
+    expect(cardTitleLine({ ...base, title: "", title_mode: "summary" }).kind).toBe("recap");
+    expect(
+      cardTitleLine({ title: "", last_message: { text: "hi" }, title_mode: "summary" }).kind,
+    ).toBe("said");
+  });
+
+  it("without title_mode the old behaviour is unchanged", () => {
+    expect(cardTitleLine(base).kind).toBe("recap");
+    expect(cardTitleLine({ ...base, recap: undefined }).kind).toBe("said");
+  });
+});
+
 describe("cardTitleLine — task recaps (prefs task_recap.enabled)", () => {
   const base = {
     title: "ai title",
@@ -11196,5 +11462,313 @@ describe("cardTitleLine — reply fallback is plain words", () => {
     });
     expect(cardTitleLine({ status: "done", recap: null, last_reply: "## 1.  Done   it" }).text)
       .toBe("1. Done it");
+  });
+});
+
+
+// ---- the view tab editor (Akshil, 2026-10-16) ---------------------------------
+
+describe("view tab editor: keyboard reorder", () => {
+  it("moves a focused chip one slot with Alt+←/→, focus following it", () => {
+    // CodeRabbit (#1704) asked for a non-drag reorder; Akshil chose a shortcut
+    // over visible move buttons — the row is a short-lived editing strip.
+    const ed = SCHEDULED.slice(SCHEDULED.indexOf("function ViewTabsEditor("));
+    const body = ed.slice(0, ed.indexOf("\n}\n"));
+    expect(body).toContain('title="Drag or Alt+←/→ to reorder"');
+    expect(body).toContain('aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"');
+    expect(body).toContain('if (!e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;');
+    expect(body).toContain('nudge(v, e.key === "ArrowLeft" ? -1 : 1);');
+    // Clamped at the ends, and the moved chip's pick takes focus again.
+    expect(body).toContain("Math.min(tabs.length - 1, Math.max(0, from + by))");
+    expect(body).toContain('.schedule-view-chip[data-view="${view}"] .schedule-view-chip-pick');
+  });
+});
+
+describe("parseViewTabs", () => {
+  it("falls back to the default row on nothing, junk or an empty list", () => {
+    expect(parseViewTabs(null)).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs("")).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs("not json")).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs('{"a":1}')).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs("[]")).toEqual(DEFAULT_VIEW_TABS);
+    expect(parseViewTabs('["nope"]')).toEqual(DEFAULT_VIEW_TABS);
+  });
+  it("keeps only names TASK_VIEWS knows, once each, in the stored order", () => {
+    expect(parseViewTabs('["pr","list","pr","bogus","time"]')).toEqual(["pr", "list", "time"]);
+  });
+  it("names the three grouped lists and nothing else as groups", () => {
+    for (const v of GROUP_VIEWS) expect(groupOfView(v)).toBe(v);
+    for (const v of BASE_VIEWS) expect(groupOfView(v)).toBeNull();
+    expect(TASK_VIEWS).toEqual([...BASE_VIEWS, ...GROUP_VIEWS]);
+    for (const v of DEFAULT_VIEW_TABS) expect(BASE_VIEWS).toContain(v);
+  });
+});
+
+describe("groupRows", () => {
+  const NOW = Date.parse("2026-10-16T15:00:00");
+  const sec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  // No messages, so the row's own stamp (taskWhen) is `last_active` — the one
+  // clock these fixtures set.
+  const row = (over: Partial<Task>): Task => task({ messages: [], ...over }, 0);
+  const rows: Task[] = [
+    row({ key: "a", project: "/Users/me/b", title: "Fix #1203", last_active: sec("2026-10-16T09:00:00") }),
+    row({ key: "b", project: "/Users/me/a", title: "see https://github.com/x/y/pull/77", last_active: sec("2026-10-15T09:00:00") }),
+    row({ key: "c", project: "", title: "plain", last_active: sec("2026-10-12T09:00:00") }),
+    row({ key: "d", project: "/Users/me/a", title: "PR 1203 follow-up", last_active: sec("2026-09-01T09:00:00") }),
+  ];
+  it("by time: newest bucket first, rows in their list order inside", () => {
+    const g = groupRows(rows, "time", "", NOW);
+    expect(g.map((x) => x.label)).toEqual(["Today", "Yesterday", "This week", "Earlier"]);
+    expect(g.map((x) => x.rows.map((r) => r.key))).toEqual([["a"], ["b"], ["c"], ["d"]]);
+  });
+  it("by time: the last sixty minutes are their own bucket, ahead of Today", () => {
+    const g = groupRows(
+      [row({ key: "h", last_active: Math.floor(NOW / 1000) - 20 * 60 }), rows[0]!],
+      "time", "", NOW,
+    );
+    expect(g.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([["Last hour", ["h"]], ["Today", ["a"]]]);
+  });
+  it("by time: a run scheduled for later is Later, whatever it last did", () => {
+    const g = groupRows(
+      [row({ key: "z", status: "upcoming", next_run: Math.floor(NOW / 1000) + 3600, next_run_entry: "e1", last_active: sec("2026-10-16T09:00:00") })],
+      "time", "", NOW,
+    );
+    expect(g.map((x) => x.label)).toEqual(["Later"]);
+  });
+  it("by project: the folder worked in most recently first, the folderless last (Akshil, 2026-10-19)", () => {
+    // ~/b's one row moved today; ~/a's newest moved yesterday.
+    const g = groupRows(rows, "project", "/Users/me", NOW);
+    // The folder's NAME on the heading, its path under ~ as the tooltip, the
+    // full path for the + (Akshil, 2026-10-19).
+    expect(g.map((x) => x.label)).toEqual(["b", "a", "No folder"]);
+    expect(g.map((x) => x.hint ?? null)).toEqual(["~/b", "~/a", null]);
+    expect(g.map((x) => x.folder ?? null)).toEqual(["/Users/me/b", "/Users/me/a", null]);
+    expect(g[1]?.rows.map((r) => r.key)).toEqual(["b", "d"]);
+    expect(g.map((x) => x.recentAt)).toEqual([
+      sec("2026-10-16T09:00:00"), sec("2026-10-15T09:00:00"), sec("2026-10-12T09:00:00"),
+    ]);
+  });
+  it("by project: a run still ahead is not activity — the folder sorts by what it last did", () => {
+    const g = groupRows(
+      [
+        row({ key: "cron", project: "/Users/me/z", status: "upcoming", next_run: Math.floor(NOW / 1000) + 7 * 86400, next_run_entry: "e1", last_active: sec("2026-09-01T09:00:00") }),
+        rows[0]!,
+      ],
+      "project", "/Users/me", NOW,
+    );
+    expect(g.map((x) => x.label)).toEqual(["b", "z"]);
+    expect(activityAt(g[1]!.rows[0]!, NOW)).toBe(sec("2026-09-01T09:00:00"));
+  });
+  it("activityAt takes the newer of the row's stamp and last_active (CodeRabbit, #1756)", () => {
+    // A run behind it, then a message since: the message is the activity.
+    const t = task({
+      key: "r",
+      status: "done",
+      messages: [msg({ message_id: "MSG-r", state: "sent", ran_at: sec("2026-10-10T09:00:00"), at: sec("2026-10-10T09:00:00") })],
+      last_active: sec("2026-10-16T09:00:00"),
+    }, 0);
+    expect(taskWhen(t, NOW).at).toBe(sec("2026-10-10T09:00:00"));
+    // A pending entry's due time rides `last_active`; a future one is NO activity.
+    const due = task({ key: "f", status: "upcoming", messages: [], last_active: Math.floor(NOW / 1000) + 7200 }, 0);
+    expect(activityAt(due, NOW)).toBe(0);
+    expect([...openOnFirstVisit(groupRows([{ ...due, project: "/later" }], "project", "", NOW), "project", NOW)]).toEqual([]);
+    expect(activityAt(t, NOW)).toBe(sec("2026-10-16T09:00:00"));
+  });
+  it("by PR: repositories and pull requests newest activity first, the number breaking a tie", () => {
+    const pr = (key: string, n: number, repo: string, iso: string) =>
+      row({ key, title: `PR #${n}`, repo, last_active: sec(iso) });
+    const g = groupRows(
+      [
+        pr("p1", 10, "x/old", "2026-10-16T08:00:00"),
+        pr("p2", 99, "x/new", "2026-10-16T14:00:00"),
+        pr("p3", 100, "x/new", "2026-10-10T14:00:00"),
+        pr("p4", 5, "x/new", "2026-10-16T14:00:00"),
+      ],
+      "pr", "", NOW,
+    );
+    expect(g.map((x) => x.label)).toEqual(["x/new", "x/old"]);
+    expect(g[0]?.groups?.map((x) => x.label)).toEqual(["#99", "#5", "#100"]);
+    expect(g[0]?.recentAt).toBe(sec("2026-10-16T14:00:00"));
+  });
+  it("by PR: repository first, then pull request, each heading linked (Akshil, 2026-10-16)", () => {
+    // a + d name #1203 in a folder whose remote the server read; b carries a
+    // full GitHub link to another repo; c names no PR.
+    const g = groupRows(rows.map((r) => (r.key === "c" || r.key === "b" ? r : { ...r, repo: "fusedio/fused-render" })), "pr", "", NOW);
+    expect(g.map((x) => x.label)).toEqual(["fusedio/fused-render", "x/y", "No PR"]);
+    expect(g[0]?.groups?.map((x) => [x.label, x.href, x.rows.map((r) => r.key)])).toEqual([
+      ["#1203", "https://github.com/fusedio/fused-render/pull/1203", ["a", "d"]],
+    ]);
+    expect(g[1]?.groups?.map((x) => [x.label, x.href])).toEqual([["#77", "https://github.com/x/y/pull/77"]]);
+    expect(g[2]?.rows.map((r) => r.key)).toEqual(["c"]);
+    // The flat order the List draws, repositories A→Z and PRs highest first.
+    expect(flattenGroups(g).map((r) => r.key)).toEqual(["a", "d", "b", "c"]);
+    expect(groupSize(g[0]!)).toBe(2);
+  });
+  it("by PR: a folder with no GitHub remote files its PRs under Unknown repository, unlinked", () => {
+    const g = groupRows(rows, "pr", "", NOW);
+    expect(g.map((x) => x.label)).toEqual(["x/y", "Unknown repository", "No PR"]);
+    expect(g[1]?.groups?.map((x) => [x.label, x.href ?? null])).toEqual([["#1203", null]]);
+  });
+  it("opens Later / Last hour / Today on a first visit to Time, folds the rest", () => {
+    const g = groupRows(
+      [row({ key: "h", last_active: Math.floor(NOW / 1000) - 20 * 60 }), ...rows],
+      "time", "", NOW,
+    );
+    expect([...openOnFirstVisit(g, "time", NOW)]).toEqual(["time:Last hour", "time:Today"]);
+    const seeded = seedCollapsedGroups(new Set(["time:Today", "other:x"]), g, "time", NOW);
+    expect([...seeded].sort()).toEqual(["other:x", "time:Earlier", "time:This week", "time:Yesterday"]);
+  });
+  it("opens the folders and pull requests touched in the last day on a first visit", () => {
+    const p = groupRows(rows, "project", "/Users/me", NOW);
+    expect([...openOnFirstVisit(p, "project", NOW)]).toEqual(["project:/Users/me/b"]);
+    // Exactly a day old is still open; a second more is not.
+    const edge = [
+      row({ key: "e1", project: "/e1", last_active: Math.floor(NOW / 1000) - 86400 }),
+      row({ key: "e2", project: "/e2", last_active: Math.floor(NOW / 1000) - 86401 }),
+    ];
+    expect([...openOnFirstVisit(groupRows(edge, "project", "", NOW), "project", NOW)]).toEqual(["project:/e1"]);
+    // PR: the repo opens with its recent PR; its older PRs stay folded.
+    const pr = groupRows(
+      [
+        row({ key: "p1", title: "PR #1", repo: "x/y", last_active: sec("2026-10-16T14:00:00") }),
+        row({ key: "p2", title: "PR #2", repo: "x/y", last_active: sec("2026-10-01T14:00:00") }),
+        row({ key: "p3", title: "PR #3", repo: "x/z", last_active: sec("2026-10-01T14:00:00") }),
+      ],
+      "pr", "", NOW,
+    );
+    expect([...openOnFirstVisit(pr, "pr", NOW)]).toEqual(["pr:repo:x/y", "pr:pr:x/y#1"]);
+    expect([...seedCollapsedGroups(new Set(), pr, "pr", NOW)].sort()).toEqual(["pr:pr:x/y#2", "pr:pr:x/z#3", "pr:repo:x/z"]);
+    expect(groupFoldKeys(pr, "pr")).toEqual(["pr:repo:x/y", "pr:pr:x/y#1", "pr:pr:x/y#2", "pr:repo:x/z", "pr:pr:x/z#3"]);
+  });
+  it("reads the seeded views and the per-tab facets out of untrusted stores", () => {
+    expect([...parseSeededViews('["time","nope","pr"]')]).toEqual(["time", "pr"]);
+    expect(parseSeededViews("{").size).toBe(0);
+    expect(parseSeededViews(null).size).toBe(0);
+    expect(parseViewFilters(JSON.stringify({
+      board: { statuses: ["in_progress", "bogus"], projects: ["/a", 3] },
+      project: { statuses: [], projects: [] },
+      nope: { statuses: ["done"] },
+      list: "junk",
+    }))).toEqual({
+      board: { statuses: ["in_progress"], projects: ["/a"] },
+      // Kept empty: on a grouped view that is a choice, not an absence.
+      project: { statuses: [], projects: [] },
+    });
+    expect(parseViewFilters("{")).toEqual({});
+    expect(parseViewFilters("[]")).toEqual({});
+  });
+  it("prRefOf: a GitHub link names its own repo, a bare number takes the folder's", () => {
+    expect(prRefOf(row({ title: "https://github.com/a/b/pull/12", repo: "c/d" }))).toEqual({ number: 12, repo: "a/b" });
+    expect(prRefOf(row({ title: "fix #34", repo: "c/d" }))).toEqual({ number: 34, repo: "c/d" });
+    expect(prRefOf(row({ title: "fix #34" }))).toEqual({ number: 34, repo: null });
+    expect(prRefOf(row({ title: "nothing" }))).toBeNull();
+  });
+  it("reads a PR out of the latest message too", () => {
+    expect(prOfTask(row({ title: "x", last_message: { role: "assistant", text: "opened #99", at: 1 } }))).toBe(99);
+    expect(prOfTask(row({ title: "nothing here" }))).toBeNull();
+  });
+  it("names a PR, not any number near a hash (review, 2026-10-16)", () => {
+    // A title ending in "PR" must not borrow the next field's leading number.
+    expect(prOfTask(row({ title: "merge the PR", description: "1. Done it" }))).toBeNull();
+    // One digit after a bare # is a step or a colour, not a pull request.
+    expect(prOfTask(row({ title: "Step #2 of the plan, colour #000" }))).toBeNull();
+    // A named PR wins over an earlier bare number.
+    expect(prOfTask(row({ title: "Issue #55 blocks PR #1203" }))).toBe(1203);
+  });
+});
+
+// ---- a finished turn whose chat still holds a live background job ----------
+
+describe("a live background job under a finished turn", () => {
+  const held = (n: number, run = "r-1") => ({
+    count: n,
+    run_id: run,
+    jobs: Array.from({ length: n }, (_, i) => ({
+      id: `b${i + 1}`,
+      title: i === 0 ? "npm run dev" : "",
+    })),
+  });
+
+  it("reads the server's field, and nothing on an older server or an empty list", () => {
+    expect(liveJobs(task({ background_jobs: held(1) }))).toEqual(held(1));
+    expect(liveJobs(task({}))).toBeNull();
+    expect(liveJobs(task({ background_jobs: null }))).toBeNull();
+    expect(liveJobs(task({ background_jobs: { count: 0, run_id: "r", jobs: [] } }))).toBeNull();
+  });
+
+  it("is ONE rule — a `done` status with a live job — for the ring, the lane and the badge", () => {
+    expect(liveJobRow(task({ status: "done", background_jobs: held(1) }))).toBe(true);
+    // In Progress is already "going"; a blocked or parked row has its own story.
+    for (const status of ["in_progress", FAILED, "needs_attention", "upcoming", "archived"]) {
+      const t = task({ status, background_jobs: held(1) } as Partial<Task>);
+      expect(liveJobRow(t)).toBe(false);
+      expect(jobBadge(t)).toBeNull();
+    }
+    expect(liveJobRow(task({ status: "done" }))).toBe(false);
+  });
+
+  it("counts in words and names each job on hover, by its id when it has no description", () => {
+    expect(jobCountLabel(1)).toBe("1 job running");
+    expect(jobCountLabel(2)).toBe("2 jobs running");
+    const badge = jobBadge(task({ background_jobs: held(2, "run-9") }))!;
+    expect(badge.text).toBe("2 jobs running");
+    expect(badge.hint).toBe("Still running in the background:\nnpm run dev\nb2");
+    // Exactly what Stop hands the agent's `task_stop`, once per job.
+    expect(badge.runId).toBe("run-9");
+    expect(badge.jobIds).toEqual(["b1", "b2"]);
+    expect(BACKGROUND_LABEL).toBe("Background");
+  });
+
+  it("is DRAWN In Progress — and is still a finished task to every other rule", () => {
+    const t = task({ status: "done", background_jobs: held(1) });
+    expect(boardLane(t)).toBe("in_progress");
+    expect(boardLane(task({ status: "done" }))).toBe("done");
+    // The status is untouched: Bots' build watch, the status toasts and the
+    // queue's "folder busy" all read it, and the turn IS over.
+    expect(taskColumn(t)).toBe("done");
+    expect(inFlight(taskColumn(t))).toBe(false);
+  });
+
+  it("sorts among the running rows by the In Progress rule, above the queued half, and leaves Done", () => {
+    const at = 1_700_000_000;
+    const row = (key: string, status: string, ago: number, extra: Partial<Task> = {}) =>
+      task({
+        key,
+        status,
+        last_active: at - ago,
+        messages: [msg({ ran_at: at - ago, at: at - ago })],
+        ...extra,
+      } as Partial<Task>);
+    const map = groupByColumn(
+      [
+        row("done-new", "done", 10),
+        row("job-old", "done", 300, { background_jobs: held(1) }),
+        row("running", "in_progress", 100),
+        row("job-new", "done", 50, { background_jobs: held(1) }),
+        row("waiting", "queued", 5, { queue_position: 0 }),
+      ],
+      (at + 100) * 1000,
+    );
+    expect(map.get("in_progress")!.map((t) => t.key)).toEqual(["job-new", "running", "job-old", "waiting"]);
+    expect(map.get("done")!.map((t) => t.key)).toEqual(["done-new"]);
+    // The List and Recent chats read the same order (`sortForList`).
+    expect(sortForList(
+      [row("done-new", "done", 10), row("job", "done", 300, { background_jobs: held(1) })],
+      (at + 100) * 1000,
+    ).map((t) => t.key)).toEqual(["job", "done-new"]);
+  });
+
+  it("is counted apart in the In Progress header when anything is queued", () => {
+    const bg = task({ key: "bg", status: "done", background_jobs: held(1) });
+    const run = task({ key: "run", status: "in_progress" });
+    const q = task({ key: "q", status: "queued", queue_position: 0 } as Partial<Task>);
+    expect(laneCountLabel("in_progress", [run, bg, q])).toBe("1 running · 1 queued · 1 background");
+    expect(laneCountLabel("in_progress", [run, bg])).toBe("2");
+  });
+
+  it("answers the In Progress tick of the Status filter, not the Done one", () => {
+    const t = task({ status: "done", background_jobs: held(1) });
+    expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["in_progress"] })).toBe(true);
+    expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["done"] })).toBe(false);
   });
 });

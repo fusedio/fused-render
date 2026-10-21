@@ -72,7 +72,7 @@ dependencies = [
     # deploy, share and MCP features need on top. The version must match that
     # extra's pin (tests/test_bundle_contents.py checks it), so the base
     # engine and the full one are the same build.
-    "fused==2.9.3b10",
+    "fused==2.9.3b11",
 ]
 
 [project.optional-dependencies]
@@ -299,7 +299,7 @@ hf = [
 # WARNS on an unknown extra, so tests/test_bundle_contents.py checks that every
 # extra named here is one the installed `fused` provides.
 fused = [
-    'fused[aws,mcp]==2.9.3b10 ; python_version >= "3.11"',
+    'fused[aws,mcp]==2.9.3b11 ; python_version >= "3.11"',
     'anthropic>=0.40.0 ; python_version >= "3.11"',
     # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1). fused-render
     # does not use cryptography itself, but `pyjwt[crypto]` from both
@@ -310,9 +310,22 @@ fused = [
     # the version those packages need.
     'cryptography<=48.0.1 ; python_version >= "3.11" and sys_platform == "darwin" and platform_machine == "x86_64"',
 ]
-# Every feature extra. What `fused-render serve` (the desktop file explorer)
-# requires, and what every packaged build and `[dev]` include.
+# The middle ground: what `fused-render serve` (the file explorer) needs, and
+# nothing more. Lights up the explorer (search, the index, Repos, previews, the
+# Hugging Face login) plus deploy, share and MCP. Leaves out only `[desktop]`
+# (zeroconf, pyobjc, dbus-fast: LAN discovery, screen capture, pasteboard;
+# ~36 MB, platform-native wheels), which serve degrades without.
+# Sizes: base ~59 MB, `[cli]` ~290 MB, `[all]` ~325 MB.
+# pillow is listed because the thumbnail route (server/routers/fs_read.py)
+# imports PIL unguarded and `[desktop]` only installs it on Linux.
+cli = [
+    "pillow",
+    "fused-render[index,data,hf,fused]",
+]
+# `[cli]` plus the native desktop integrations; every packaged build and `[dev]`
+# include it. pillow is repeated because `[desktop]` only brings it on Linux.
 all = [
+    "pillow",
     "fused-render[index,data,desktop,hf,fused]",
 ]
 # ---------------------------------------------------------------------------

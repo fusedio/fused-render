@@ -26,6 +26,10 @@ export interface StatusChipProps {
   onClick: () => void;
   /** The longer form for screen readers, e.g. "Models, 2 loaded". */
   ariaLabel?: string;
+  /** A small status dot after the label. `none` reserves its width without
+   *  painting it, so the chip does not jump when the dot appears. Omit it and
+   *  the chip has no dot slot at all. */
+  dot?: "none" | "warn" | "bad";
 }
 
 export default function StatusChip({
@@ -38,6 +42,7 @@ export default function StatusChip({
   title,
   onClick,
   ariaLabel,
+  dot,
 }: StatusChipProps) {
   const indeterminate = progress === null;
   const width = typeof progress === "number" ? `${Math.round(progress * 100)}%` : undefined;
@@ -56,6 +61,7 @@ export default function StatusChip({
       title={title}
     >
       <span className="dl-summary">{label}</span>
+      {dot !== undefined && <span className={`sc-dot is-${dot}`} aria-hidden="true" />}
       {count > 0 && <span className="sc-num">{count}</span>}
       {progress !== undefined && (
         <span className="sc-progress" aria-hidden="true">

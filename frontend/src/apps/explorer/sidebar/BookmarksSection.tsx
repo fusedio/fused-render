@@ -48,6 +48,8 @@ import {
   useArmedVersion,
 } from "@platform/lib/hooks";
 import { splitShellSearch } from "@platform/lib/layout-codec";
+import { setSidebarSectionOpen, useSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
+import SectionFold from "@platform/ui/sidebar/SectionFold";
 
 // The fs path a bookmark targets, decoded from its explorer url (same rule as
 // the hover card). Used for the tooltip. The bare legacy
@@ -72,10 +74,6 @@ function bookmarkDropPath(url: string): string | null {
   const isView = [VIEW_PREFIX, "/view/"].some((p) => pathname.startsWith(p));
   return isView ? bookmarkFsPath(url) : null;
 }
-
-// Whole-section fold flag (see the heading in BookmarksSection) — sidebar
-// layout, so it lives beside the sidebar's own localStorage state.
-const BOOKMARKS_COLLAPSED_KEY = "fused-render:bookmarks-collapsed";
 
 // Leaf bookmarks at every depth — the collapsed heading's count pill, same
 // signal as the Recents heading's.
@@ -366,17 +364,15 @@ export default function BookmarksSection() {
   // component already rendered — so the armed store notifies separately.
   useArmedVersion();
 
-  // Whole-section fold, like the Recents heading. Local to this machine
-  // (localStorage) rather than the bookmark store — it is sidebar layout,
-  // not bookmark data.
-  const [sectionCollapsed, setSectionCollapsed] = useState(
-    () => localStorage.getItem(BOOKMARKS_COLLAPSED_KEY) === "1"
-  );
-  const toggleSectionCollapsed = () => {
-    const next = !sectionCollapsed;
-    localStorage.setItem(BOOKMARKS_COLLAPSED_KEY, next ? "1" : "0");
-    setSectionCollapsed(next);
-  };
+  // Whole-section fold. The sidebar's sections are an accordion (one open at
+  // a time, platform/ui/sidebar/sidebar-accordion.ts); the flag is the
+  // `bookmarksCollapsed` field of the server-held layout document (ui-layout.ts,
+  // D1386) — sidebar layout, not bookmark data. It was the localStorage key
+  // `fused-render:bookmarks-collapsed` until the desktop app's port walk (a new
+  // origin, so empty storage, on most relaunches) was found resetting it;
+  // ui-layout.ts imports that key once.
+  const sectionCollapsed = !useSidebarSectionOpen("favourites");
+  const toggleSectionCollapsed = () => setSidebarSectionOpen("favourites", sectionCollapsed);
   // Shares the sidebar's free height with Projects (equal halves, each its own
   // scroll; a short or folded one yields its remainder) — the hook writes the
   // content-height cap flexbox needs. Rows live in the body wrapper it
@@ -438,8 +434,7 @@ export default function BookmarksSection() {
       // Unfold to reveal the row the user just created; the effect re-runs
       // once the rows have mounted and scrolls then.
       pendingScrollId.current = id;
-      localStorage.setItem(BOOKMARKS_COLLAPSED_KEY, "0");
-      setSectionCollapsed(false);
+      setSidebarSectionOpen("favourites", true);
       return;
     }
     pendingScrollId.current = null;
@@ -1028,16 +1023,19 @@ export default function BookmarksSection() {
               <span className="sidebar-count-chip recents-count">{countBookmarks(items)}</span>
             )}
           </div>
-          {!sectionCollapsed && pins.length > 0 && (
-            <div className="sidebar-pinned">{pins.map(renderPinned)}</div>
+          {pins.length > 0 && (
+            <SectionFold open={!sectionCollapsed}>
+              <div className="sidebar-pinned">{pins.map(renderPinned)}</div>
+            </SectionFold>
           )}
         </div>
-        {!sectionCollapsed &&
-          (items.length === 0 ? (
+        <SectionFold open={!sectionCollapsed}>
+          {items.length === 0 ? (
             <div className="sidebar-empty">No favourites yet</div>
           ) : (
             renderItems(treeItems, null)
-          ))}
+          )}
+        </SectionFold>
       </div>
       <div id="bookmark-tooltip" ref={tooltipRef} style={hover ? { display: "block" } : undefined}>
         {hover && <TooltipContent bookmark={hover.bookmark} missing={isBookmarkMissing(hover.bookmark.id)} />}

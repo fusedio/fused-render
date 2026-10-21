@@ -167,11 +167,11 @@ def _check_port_free(port: int) -> None:
 def _require_serve_extras() -> None:
     """Exit with the install line when this install lacks what `serve` needs.
 
-    `serve` is the whole desktop file explorer, and nearly every panel of it
-    stands on some extra (search and Repos on `[index]`, Preferences' Hugging
-    Face login on `[hf]`, deploy/share/MCP on
-    `[fused]`). Booting it on the base install would open a shell that errors
-    in half its tabs, so it refuses up front and says what to install.
+    `serve` is the file explorer, and its panels stand on `[index]` (search,
+    Repos), `[data]`, `[hf]` (Preferences' Hugging Face login) and `[fused]`
+    (deploy/share/MCP), which is what `[cli]` installs. Booting it on the base
+    install would open a shell that errors in half its tabs, so it refuses up
+    front and says what to install. `[desktop]` is optional.
     `fused-render open` is the command the base install is for.
     """
     from fused_render import extras
@@ -179,15 +179,26 @@ def _require_serve_extras() -> None:
     missing = extras.missing_for_serve()
     if missing:
         raise SystemExit(
-            "fused-render serve needs the full install; this one is missing "
+            "fused-render serve needs at least `[cli]`; this install is missing "
             f"{', '.join(f'[{m}]' for m in missing)}.\n"
-            f"  {extras.install_hint('all')}\n"
+            f"  {extras.install_hint('cli')}\n"
+            "or [all] for native desktop integrations\n"
             "The base install runs one app: fused-render open <github-url or path>"
         )
 
 
 def _run_serve(args: argparse.Namespace) -> None:
     _require_serve_extras()
+    from fused_render import extras
+
+    optional = extras.optional_missing_for_serve()
+    if optional:
+        print(
+            f"fused-render: running without {', '.join(f'[{m}]' for m in optional)}"
+            " — native desktop integrations (LAN discovery, screen capture,"
+            f" pasteboard) are off ({extras.install_hint('all')})",
+            file=sys.stderr,
+        )
     import uvicorn
 
     from fused_render.server import create_app
@@ -237,9 +248,15 @@ def _run_serve(args: argparse.Namespace) -> None:
     # the first-run strip's GET is a disk read rather than a login-shell spawn.
     # Same placement rule as the showcase refresh above: an entry point, never
     # create_app, so importing the server in a test probes nothing.
-    from fused_render import claude_health
+    # Each agent's probe follows its Preferences switch (D17): a disabled
+    # agent is never probed, so a machine with no Copilot never spawns one.
+    from fused_render import claude_health, copilot_health
+    from fused_render.agent_backends import registry as _agent_registry
 
-    claude_health.warm_in_background()
+    if _agent_registry.is_enabled("claude"):
+        claude_health.warm_in_background()
+    if _agent_registry.is_enabled("copilot"):
+        copilot_health.warm_in_background()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 

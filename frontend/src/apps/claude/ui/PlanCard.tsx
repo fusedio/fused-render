@@ -40,6 +40,7 @@ import { PlanModal } from "./PlanModal";
  *  approved" over a decision the CLI has not seen would be claiming the work had
  *  started. */
 import { answerHeld, queuedAnswerText } from "./PermCard";
+import { useAgent } from "./agent-context";
 
 export interface PlanCardProps {
   row: PermissionRow;
@@ -51,6 +52,7 @@ export interface PlanCardProps {
 }
 
 export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
+  const agent = useAgent();
   const [note, setNote] = useState("");
   const [sent, setSent] = useState(false);
   const [threw, setThrew] = useState("");
@@ -120,7 +122,7 @@ export function PlanCard({ row, pickerMode, onDecide }: PlanCardProps) {
 
   return (
     <div className={cn("turn", "perm", "plan", resolved && "resolved")} data-perm-id={row.id}>
-      <div className="perm-head">{resolved ? "Claude had a plan" : "Claude has a plan"}</div>
+      <div className="perm-head">{resolved ? `${agent.label} had a plan` : `${agent.label} has a plan`}</div>
       {/* THE EXPLICIT AFFORDANCE (D890) — a sibling of `.perm-head`, not a
           child of it: `.perm-head`'s OWN text is pinned verbatim by
           `cards.test.tsx` ("Claude had/has a plan"), so a caption living

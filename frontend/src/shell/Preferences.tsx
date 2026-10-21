@@ -1,2153 +1,462 @@
-// Preferences page (SPEC §20) — the `/view/_prefs` sentinel route, entered
-// from the sidebar's bottom-left gear. Its tabs (D125), the count deliberately
-// not stated here since it has been wrong three times:
-//   Render preferences — Appearance, Call log (capture/redaction/retention for
-//     fused_render/calls.py), Accessibility, and Canvases (the feature switch
-//     the shell's Canvases entry points read — D427). Always present; the
-//     default (clean URL). No Tour button — the tour still runs itself on a
-//     first visit (App.tsx's maybeAutoStartTour); it is onboarding, not a
-//     preference. The app's OWN log is not here either: it is disposable
-//     temp-dir output (D68) reached from the desktop tray's "Open app logs", and a
-//     second "Logs" heading next to the Call log section only ever read as the
-//     call log's own settings.
-//   AI — Default model (which Claude model the chat and fused.ai reach for when
-//     nothing else has said) and Hugging Face (signing in to the Hub for model
-//     downloads — and NOT a preference: the token belongs to huggingface_hub,
-//     which stores it, so that section talks to /api/hf/* and holds no state of
-//     this page's). Both moved off the Render tab (D403): neither is about
-//     rendering, which is the same reason inference engines left this page
-//     entirely, and a reader looking for either was reading past four sections
-//     that answer a different question. Grouped rather than each given a tab
-//     because they are one question asked twice — which model, and with whose
-//     credentials.
-//   Fused account — sign in and out of the `fused login` provider Share and
-//     Canvases run on (shell/FusedAccountSection). Its own tab, not a section
-//     on Render or AI: the account is neither a rendering preference nor a
-//     model choice, and before it existed the only sign-in/out UI sat on the
-//     Canvases page behind that feature's flag (D427), so with the flag off
-//     there was no way to see which account this machine was on, or leave it.
-// **Inference engines used to be a tab here and is not any more** — it is the
-// Engines tab of /ai-models (shell/AiModelsEngines.tsx). It was the one control
-// on this page about MODELS rather than about rendering, and every consequence
-// of changing it — which cached models can be loaded, what their engine tags
-// say, what Discover suggests — is on that page, where the question it answers
-// is actually asked. `/preferences?tab=engines` is rewritten to the new url in
-// `platform/lib/router.rewriteLegacyUrl`, so an old bookmark still lands on the
-// control rather than on this page's default tab.
-// Deliberately NOT a third tab: the Claude Config panel (apps/claude_config)
-// briefly sat here, and a settings page hosting a second settings app — with
-// its own section nav and scroll containers — inside one of its tabs never read
-// as one page. It has its own sidebar routes now (shell/GlobalSidebar).
-// The active tab lives in the URL (`?tab=indexing`), same pattern as
-// Templates' bindings/library tabs.
-// Template bindings live in the dedicated /view/_templates view.
-import { useCallback, useEffect, useState } from "react";
-import {
-  buildDiagnostics,
-  fetchDiagnosticsPlan,
-  fetchServerHealth,
-  getConfig,
-  getJson,
-  getPrefs,
-  putCallsEnabled,
-  putCallsParamsMode,
-  putCallsRetentionDays,
-  cancelHfLogin,
-  getHfAuth,
-  hfLogout,
-  putAppSharingEnabled,
-  putCanvasesEnabled,
-  putLivePreviewsEnabled,
-  putMonitorEnabled,
-  putMarketplaceEnabled,
-  putGithubLinkEnabled,
-  putContribFlag,
-  putMenubarPinEnabled,
-  putNativeWindowsEnabled,
-  putGitAutoSyncEnabled,
-  putAutoDownloadUpdates,
-  putProjectQueueEnabled,
-  putTaskRecapTitlesEnabled,
-  putTaskNotifyTerminalSessionsEnabled,
-  putLanEnabled,
-  putLauncherHotkey,
-  putLauncherRowModifier,
-  postLauncherSuspend,
-  getLanPairToken,
-  getLanDevices,
-  revokeLanDevice,
-  revokeAllLanDevices,
-  putDefaultModel,
-  putReaderEnabled,
-  startHfLogin,
-} from "@platform/lib/api";
-import type { DiagnosticsPlan, DiagnosticsResult } from "@platform/lib/api";
-import { copyToClipboard } from "@platform/lib/clipboard";
-import { formatBytes } from "@platform/lib/sysmon";
-import qrcode from "qrcode-generator";
-import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
-import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
-import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
-import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
-import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
-import { effectiveContribFlags, publishContribFlags } from "@platform/lib/contrib-flags";
-import { publishProjectQueueEnabled, publishTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
-import type { CallsParamsMode, ContribPrefs, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
-import { IS_QUERY_EMBED, navigate, navigateUrl } from "@platform/lib/router";
-import { displayName, isBot } from "@platform/lib/flavor";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { publishTaskNotifyTerminalSessions } from "./task-notify-terminal-flag";
-import { SkeletonLines } from "@platform/ui/Skeleton";
-import { THEME_PRESETS, useThemePref, useThemePreset } from "@platform/lib/theme";
-import { IndexingPanel } from "@shell/Indexing";
-import { FusedAccountSection } from "@shell/FusedAccountSection";
-import { checkNowLabel, updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/update-status";
-import { useManualUpdateCheck } from "@platform/lib/update-check";
-
-type PrefsTab = "render" | "ai" | "indexing" | "lan" | "account";
-
-// The one section on this page that is deliberately NOT server-backed. Every
-// other control here round-trips /api/prefs (shell/prefs.py); Appearance is
-// per-browser-profile localStorage["fused-render:theme"] by decision — SPEC §30
-// AP-1 / D134 — so a browser tab and the desktop window can legitimately hold
-// different choices, and there is no server store to keep in sync. Writes are
-// synchronous, hence no busy/locked/error plumbing.
-function AppearanceSection() {
-  const [pref, setPref] = useThemePref();
-  const [preset, setPreset] = useThemePreset();
-  return (
-    <section className="prefs-section">
-      <h2>Appearance</h2>
-      <p className="deploy-muted">
-        Light or dark for this app. Stored in this browser profile, so each browser and the
-        desktop window remember their own choice. Applies immediately.
-      </p>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name="appearance"
-          checked={pref === "system"}
-          onChange={() => setPref("system")}
-        />
-        <span>
-          <b>System</b> — follows your desktop appearance, including a scheduled day/night
-          switch.
-        </span>
-      </label>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name="appearance"
-          checked={pref === "light"}
-          onChange={() => setPref("light")}
-        />
-        <span>
-          <b>Light</b> — always light, whatever your desktop is set to.
-        </span>
-      </label>
-      <label className="prefs-radio">
-        <input
-          type="radio"
-          name="appearance"
-          checked={pref === "dark"}
-          onChange={() => setPref("dark")}
-        />
-        <span>
-          <b>Dark</b> — always dark, whatever your desktop is set to.
-        </span>
-      </label>
-      <h2>Theme</h2>
-      <p className="deploy-muted">
-        Colour palette for the app shell. Works with every appearance above: each theme has a
-        light and a dark variant. Pages you open keep following light or dark only.
-      </p>
-      {THEME_PRESETS.map((p) => (
-        <label className="prefs-radio" key={p.id}>
-          <input
-            type="radio"
-            name="theme-preset"
-            checked={preset === p.id}
-            onChange={() => setPreset(p.id)}
-          />
-          <span>
-            <b>{p.label}</b>
-          </span>
-        </label>
-      ))}
-    </section>
-  );
-}
-
-// SPEC-update-notifications.md: the manual "is there something new?" check
-// used to live on `UpdateBadge` (deleted, sidebar row above Settings) next to
-// the install button. Splitting the UI in two ("Activity = progress,
-// Notifications = decisions") left this check with nowhere to live but here —
-// it is neither progress nor a decision, just a question a person asks once
-// in a while. The DECISION that follows an answer (download it? restart for
-// it?) is `UpdateNotifier`'s job now; this section only ever fires the check
-// and reports what it learned, never a download/restart button of its own.
-function UpdatesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const status = useUpdateStatus();
-  const [autoBusy, setAutoBusy] = useState(false);
-  const [autoError, setAutoError] = useState<string | null>(null);
-  // Default OFF: absence (an older server) reads as off.
-  const autoDownload = prefs.update?.auto_download === true;
-  const toggleAutoDownload = async () => {
-    if (autoBusy) return;
-    setAutoBusy(true);
-    setAutoError(null);
-    try {
-      onChange(await putAutoDownloadUpdates(!autoDownload));
-    } catch (e) {
-      setAutoError((e as Error).message);
-    } finally {
-      setAutoBusy(false);
-    }
-  };
-  const [version, setVersion] = useState<string | null>(null);
-  // The press itself — phase and the carried-over settle rules — is the
-  // shared hook (platform/lib/update-check.ts), the same one the status bar's
-  // Updates chip (shell/UpdatesDock.tsx) runs.
-  const { phase, check } = useManualUpdateCheck(status);
-
-  useEffect(() => {
-    let cancelled = false;
-    void getConfig().then((c) => {
-      if (!cancelled) setVersion(c.version);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // `status === null` means one of two different things (finding #6, code
-  // review), and the old code could not tell them apart:
-  //   1. An unpackaged dev run with no mac.DEV_MANAGER_ENV, or a non-mac
-  //      build — genuinely no updater, forever.
-  //   2. `useUpdateStatus()` simply has not heard back from its first
-  //      `/api/config` poll yet — its `getSnapshot` starts at `null` and
-  //      only flips once that request resolves.
-  // The deleted `UpdateBadge.tsx` handled this with its own `if (!status)
-  // return null` — render NOTHING during the unknown window. Porting the
-  // section onto local state lost that: `hasUpdater = status !== null`
-  // read case 2 as case 1, so every packaged build flashed "Updates aren't
-  // managed from inside the app on this build" — a false claim — for the
-  // length of that first request, on every single visit to this tab.
-  // `awaitingFirstStatus` distinguishes "haven't heard yet" (render
-  // nothing) from "heard, and there is nothing" (say so) by reusing
-  // `version`'s own one-shot `getConfig()` fetch above as the "have we
-  // heard back at all" signal, rather than adding a second `useState` for
-  // the same fact.
-  const awaitingFirstStatus = status === null && version === null;
-  const hasUpdater = status !== null;
-
-  return (
-    <section className="prefs-section">
-      <h2>Updates</h2>
-      <p className="deploy-muted">{version ? `Running v${version}.` : " "}</p>
-      {awaitingFirstStatus ? null : hasUpdater ? (
-        // UPDATE_RELEVANT GATE (finding #2, code review): the deleted
-        // `UpdateBadge` only ever rendered this button INSIDE
-        // `if (!updateRelevant(status))` — an update already found,
-        // installing, installed or failed is a DECISION, and
-        // `UpdateNotifier`'s own notification is what is asking it; this
-        // row's job is only the idle "is there something new?" question, so
-        // it must get out of the way rather than contradict that
-        // notification with "Up to date" at the same instant.
-        updateRelevant(status) ? (
-          <p className="deploy-muted">{updateLabel(status)}</p>
-        ) : (
-          <div className="prefs-actions">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={phase === "checking"}
-              onClick={() => void check()}
-            >
-              {checkNowLabel(phase, version)}
-            </button>
-          </div>
-        )
-      ) : (
-        <p className="deploy-muted">
-          Updates aren&rsquo;t managed from inside the app on this build.
-        </p>
-      )}
-      {hasUpdater && (
-        <>
-          <label className="prefs-radio">
-            <input
-              type="checkbox"
-              checked={autoDownload}
-              disabled={autoBusy}
-              onChange={toggleAutoDownload}
-            />
-            <span>
-              <b>Automatically download updates</b>
-              <span className="deploy-muted">
-                {" "}
-                When a new version is found it downloads in the background; you still
-                choose when to restart.
-              </span>
-            </span>
-          </label>
-          {autoError && <ErrorBanner>{autoError}</ErrorBanner>}
-        </>
-      )}
-    </section>
-  );
-}
-
-function ReaderToggle({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.reader.enabled;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await putReaderEnabled(!enabled));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Reader (listen to files)</b>. Adds a Reader mode to text files and PDFs that reads
-          them aloud.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </>
-  );
-}
-
-function AccessibilitySection({
-  prefs,
-  onChange,
-}: {
-  prefs: Prefs;
-  onChange: (p: Prefs) => void;
-}) {
-  return (
-    <section className="prefs-section">
-      <h2>Accessibility</h2>
-      <ReaderToggle prefs={prefs} onChange={onChange} />
-    </section>
-  );
-}
-
-// Canvases: off by default, and this is the only place it can be turned on
-// (D427). One section rather than a tab — a tab for one checkbox is a tab a
-// reader opens once — and it sits on this tab because "which of this app's
-// features do I want" is the question this tab already answers twice
-// (Reader above, call recording below).
-function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.canvases.enabled;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putCanvasesEnabled(!enabled);
-      onChange(next);
-      // The sidebar is mounted beside this page and reads the same flag from
-      // its own store; hand it the fresh answer so the row and the Settings
-      // entry appear (or go) with the checkbox rather than on the next
-      // navigation. See @apps/canvases/feature-flag for why it is a publish and
-      // not a poll.
-      publishCanvasesEnabled(next.canvases.enabled);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Canvases</h2>
-      <p className="deploy-muted">
-        Canvases are Fused Workbench canvases opened locally: a listing of the canvases on your
-        account and a per-canvas workspace with the live workbench embedded, editing the same
-        UDFs. Off by default — turn it on and it appears in the sidebar (once you are signed in to
-        Fused) and in this Settings menu.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Show Canvases</b> in the sidebar and the Settings menu.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Phone: a mirror of Super Bot's Settings > Phone (docs/bots.md §10) for the
-// user who looks under Preferences for "connect my phone". One row, state and
-// a door — the setup itself (Full Disk Access, Messages, the number, the test
-// text) lives on the bot, since the number is also Super Bot's identity on the
-// phone and the people it may text sit beside it. `/bots?phone=1` opens that
-// tab once the Bots page knows Super Bot (apps/bots/App.tsx).
-interface PhoneState { super_id?: string | null; enabled?: boolean; handle?: string; running?: boolean; error?: string }
-function PhoneSection() {
-  const [st, setSt] = useState<PhoneState | null>(null);
-  useEffect(() => {
-    let alive = true;
-    getJson<PhoneState>("/api/bots/imessage")
-      .then((s) => alive && setSt(s))
-      .catch(() => alive && setSt({}));
-    return () => {
-      alive = false;
-    };
-  }, []);
-  const on = !!st?.enabled && !!st?.handle;
-  const line = !st ? "…"
-    : !st.super_id ? "Super Bot is not set up yet."
-    : on ? `Texting Super Bot from ${st.handle}${st.running ? "" : st.error ? ` · ${st.error}` : " · starting…"}`
-    : st.handle ? `Off · ${st.handle} is remembered.`
-    : "Off.";
-  return (
-    <section className="prefs-section">
-      <h2>Phone</h2>
-      <p className="deploy-muted">
-        Text Super Bot from your phone: texts from your number become tasks, replies come back as texts, and approvals
-        stay on this Mac. Set up under Super Bot&apos;s settings.
-      </p>
-      <p className="deploy-muted">{line}</p>
-      <div className="prefs-actions">
-        <button type="button" className="btn btn-secondary" disabled={!st?.super_id} onClick={() => navigateUrl("/bots?phone=1")}>
-          {on ? "Phone settings" : "Connect your phone"}
-        </button>
-      </div>
-    </section>
-  );
-}
-
-// App sharing: the unified Share sheet (public link + .fused file) in place of
-// the plain Export / Download action on every app surface. Off by default, and
-// this is the only place it can be turned on. Same one-checkbox section shape
-// as Canvases above, same publish-after-PUT so the surfaces already mounted
-// (the sidebar's app page, an /apps grid in a split) flip with the checkbox.
-function AppSharingSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.app_sharing.enabled;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putAppSharingEnabled(!enabled);
-      onChange(next);
-      publishAppSharingEnabled(next.app_sharing.enabled);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>App sharing</h2>
-      <p className="deploy-muted">
-        Share an app as a public link on your Fused account, or as a <code>.fused</code> file,
-        from one Share button. Off by default — every app surface then offers the plain Export
-        that saves the <code>.fused</code> file to Downloads.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Enable Fused app sharing</b> — replace Export with a Share button offering a public
-          link or a file.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// GitHub link: a third card in the Share sheet that copies a udf.ai link
-// installing the app straight from its GitHub repo. Off by default; same
-// one-checkbox shape and publish-after-PUT as App sharing above. Only visible
-// in the sheet, so it does nothing while App sharing is off.
-function GithubLinkSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.github_link?.enabled === true;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putGithubLinkEnabled(!enabled);
-      onChange(next);
-      publishGithubLinkEnabled(next.github_link?.enabled === true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>GitHub link sharing</h2>
-      <p className="deploy-muted">
-        Share an app whose folder is its own GitHub repository as a link that installs it
-        straight from GitHub. Offered in the Share sheet once everything is pushed. Off by default.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Enable GitHub link</b> — add a GitHub link option to the Share sheet.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Community (preview): the GitHub contribution loop's five phase switches
-// (docs/CONTRIB_LOOP.md §1), one row each, in the order they build on each
-// other. Shown AS SET (the raw prefs), never greyed out: a switch whose
-// prerequisite is off can still be ticked, and its row says what it is
-// waiting for instead — the reader may be turning them on bottom-up, and a
-// disabled box would hide that the click would have counted. Same
-// publish-after-PUT as the sections above (contrib-flags.ts), so the cards
-// and the share sheet already mounted follow the switch.
-const CONTRIB_ROWS: {
-  key: keyof ContribPrefs;
-  name: string;
-  line: string;
-  needs: (keyof ContribPrefs)[];
-}[] = [
-  {
-    key: "sources",
-    name: "Where apps come from",
-    line: "Cards and app pages say whether an app is yours or follows someone else's, and Share offers its GitHub link.",
-    needs: [],
-  },
-  {
-    key: "changes",
-    name: "Your changes",
-    line: "Edits to someone else's app are kept as your changes on top of theirs, and you can propose them to the author.",
-    needs: ["sources"],
-  },
-  {
-    key: "inbox",
-    name: "Proposals inbox",
-    line: "Changes people propose to your apps show up on the app, with a safety review, to try, accept or decline.",
-    needs: ["sources"],
-  },
-  {
-    key: "loop",
-    name: "Merged proposals",
-    line: "Once the author accepts your change, your copy goes back to following theirs and you're credited.",
-    needs: ["changes", "inbox"],
-  },
-  {
-    key: "remix",
-    name: "Remix",
-    line: "Publish your changed version as an app of your own, credited to the original.",
-    needs: ["changes"],
-  },
-];
-
-function CommunitySection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState<keyof ContribPrefs | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const raw = prefs.contrib;
-  const effective = effectiveContribFlags(raw);
-  const rowOf = (k: keyof ContribPrefs) => CONTRIB_ROWS.find((r) => r.key === k);
-  // The switches that are actually OFF somewhere under `key` — Merged
-  // proposals ticked with everything but Where apps come from names that
-  // one, not the two ticked rows it holds back in turn.
-  const offUnder = (key: keyof ContribPrefs): (keyof ContribPrefs)[] => {
-    const out: (keyof ContribPrefs)[] = [];
-    for (const n of rowOf(key)?.needs ?? []) {
-      for (const k of raw?.[n] === true ? offUnder(n) : [n]) if (!out.includes(k)) out.push(k);
-    }
-    return out;
-  };
-
-  const toggle = async (key: keyof ContribPrefs) => {
-    if (busy) return;
-    setBusy(key);
-    setError(null);
-    try {
-      const next = await putContribFlag(key, raw?.[key] !== true);
-      onChange(next);
-      publishContribFlags(next.contrib);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Community (preview)</h2>
-      <p className="deploy-muted">
-        Improve apps people share with you and send the changes back, all through your own GitHub
-        account. Each part turns on separately while it is being tried out. Off by default.
-      </p>
-      {CONTRIB_ROWS.map((row) => {
-        const on = raw?.[row.key] === true;
-        // Named only while this row is ticked but held back — an unticked
-        // row has nothing to wait for yet.
-        const missing = on && !effective[row.key] ? offUnder(row.key) : [];
-        return (
-          <label className="prefs-radio" key={row.key}>
-            <input
-              type="checkbox"
-              checked={on}
-              disabled={busy !== null}
-              onChange={() => void toggle(row.key)}
-            />
-            <span>
-              <b>{row.name}</b>
-              <span className="deploy-muted"> {row.line}</span>
-              {missing.length > 0 && (
-                <span className="prefs-contrib-needs">
-                  Needs {missing.map((k) => rowOf(k)?.name ?? k).join(" and ")} to be on.
-                </span>
-              )}
-            </span>
-          </label>
-        );
-      })}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Thumbnails: whether the /apps cards and the explorer's bookmark, recent and
-// folder cards may render the live app in a scaled iframe — the body of a card
-// with no preview.png, and the hover swap on one that has it. OFF by default;
-// the checkbox is worded the way the reader thinks of it ("hide"), so checked
-// means the stored `live_previews_enabled` is not TRUE — the inversion lives
-// in this one component and the positive `enabled` flows everywhere else.
-// Same one-checkbox section shape and publish-after-PUT as App sharing above,
-// so a grid already mounted in a split swaps its iframes for stills and marks
-// the moment the checkbox settles. `?.enabled === true` because the key is
-// optional on the wire (an older server) and absence means off.
-function LivePreviewsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.live_previews?.enabled === true;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putLivePreviewsEnabled(!enabled);
-      onChange(next);
-      publishLivePreviewsEnabled(next.live_previews?.enabled === true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Thumbnails</h2>
-      <p className="deploy-muted">
-        With live previews on, app and bookmark cards show the live page in their thumbnail when
-        there is no <code>preview.png</code>, and swap it in on hover when there is one. Each live
-        thumbnail is a whole page booting in the background, so they are off by default.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={!enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Hide live previews in thumbnails</b> — show only authored stills; a card without one
-          gets a placeholder image, and hovering never loads the app.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Monitor: the status bar's System chip (this app's CPU and memory) and the
-// /monitor process page behind its "Open Monitor". Off by default, and this is
-// the only place it can be turned on. Same one-checkbox section shape and
-// publish-after-PUT as App sharing above, so the chip appears in the bar the
-// moment the checkbox settles. `?.enabled === true` because the key is optional
-// on the wire (an older server) and absence means off.
-function MonitorSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.monitor?.enabled === true;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putMonitorEnabled(!enabled);
-      onChange(next);
-      publishMonitorEnabled(next.monitor?.enabled === true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Monitor</h2>
-      <p className="deploy-muted">
-        A System chip in the status bar shows what fused-render and the processes it runs cost in
-        CPU and memory, with a Monitor page listing them live. Off by default.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Enable the process Monitor</b> — show the System chip and the Monitor page.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Marketplace: the sidebar's Marketplace row and the /marketplace pages (a
-// store of community apps, installed into <workspace>/app). Off by
-// default, and this is the only place it can be turned on. Same one-checkbox
-// shape and publish-after-PUT as Monitor above, so the sidebar row appears the
-// moment the checkbox settles. `?.enabled === true` because the key is
-// optional on the wire (an older server) and absence means off.
-function MarketplaceSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const enabled = prefs.marketplace?.enabled === true;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putMarketplaceEnabled(!enabled);
-      onChange(next);
-      publishMarketplaceEnabled(next.marketplace?.enabled === true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Marketplace</h2>
-      <p className="deploy-muted">
-        Browse and install community apps from the Fused app gallery, right from the sidebar. Off
-        by default.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Enable Marketplace</b> — show the Marketplace in the sidebar to discover, install and
-          update community apps.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Diagnostics (SPEC §50): one button that zips logs, crash reports, memory
-// samples and the open-apps list to the Desktop, for a bug report. The plan
-// line (what the zip WOULD hold) is read on mount — cheap — so the reader
-// knows the size before pressing; the build itself can take up to a minute.
-// What it leaves OUT is stated up front because that is what decides whether
-// someone is willing to attach it to an issue.
-// WINDOW PRESETS, not a date picker. A reporter knows "a few minutes ago" or
-// "all day", never a clock time, and a wrong guess under-collects — so the
-// choices are the ones people actually say. The bulky collectors (calls
-// store, index runs, claude err logs, system log) honour the window; the
-// small join keys (session logs, crash files, outages, resources, state) are
-// always included regardless. `sinceS` is the absolute epoch the server
-// expects; "since app started" reads it off /api/health.
-type DiagnosticsWindow = "30m" | "2h" | "boot" | "24h";
-const DIAGNOSTICS_WINDOWS: { key: DiagnosticsWindow; label: string }[] = [
-  { key: "30m", label: "Last 30 minutes" },
-  { key: "2h", label: "Last 2 hours" },
-  { key: "boot", label: "Since the app started" },
-  { key: "24h", label: "Last 24 hours" },
-];
-
-function diagnosticsSince(win: DiagnosticsWindow, startedAt: number | null): number | undefined {
-  const now = Date.now() / 1000;
-  switch (win) {
-    case "30m":
-      return now - 30 * 60;
-    case "2h":
-      return now - 2 * 3600;
-    case "24h":
-      return now - 24 * 3600;
-    case "boot":
-      return startedAt ?? undefined;
-  }
-}
-
-function DiagnosticsSection() {
-  const [plan, setPlan] = useState<DiagnosticsPlan | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<DiagnosticsResult | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [win, setWin] = useState<DiagnosticsWindow>("2h");
-  // The macOS unified log is the ONE slow collector (15-45 s, a fixed scan
-  // cost per hour of window). Off here by default; the menu-bar item and
-  // the CLI keep it on, because a reporter's bundle is the one that has to
-  // carry the jetsam evidence.
-  const [systemLog, setSystemLog] = useState(false);
-  const [startedAt, setStartedAt] = useState<number | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    fetchServerHealth()
-      .then((h) => alive && setStartedAt(h.started_at))
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    setPlan(null);
-    fetchDiagnosticsPlan(diagnosticsSince(win, startedAt))
-      .then((p) => alive && setPlan(p))
-      // The plan is a nicety: without it the button still works.
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [win, startedAt]);
-
-  const save = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    setResult(null);
-    setCopied(false);
-    try {
-      setResult(
-        await buildDiagnostics({
-          since_s: diagnosticsSince(win, startedAt),
-          system_log: systemLog,
-        }),
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const copyPath = async () => {
-    if (result && (await copyToClipboard(result.path))) setCopied(true);
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Diagnostics</h2>
-      <p className="deploy-muted">
-        Logs, crash reports, memory samples and the list of open apps, zipped to your Desktop. No
-        chat transcripts, credentials or mount passwords.
-      </p>
-      <div className="prefs-radio-group" role="radiogroup" aria-label="Diagnostics window">
-        {DIAGNOSTICS_WINDOWS.map((w) => (
-          <label key={w.key} className="prefs-radio">
-            <input
-              type="radio"
-              name="diagnostics-window"
-              id={`diagnostics-window-${w.key}`}
-              checked={win === w.key}
-              disabled={busy || (w.key === "boot" && startedAt === null)}
-              onChange={() => setWin(w.key)}
-            />
-            <span>{w.label}</span>
-          </label>
-        ))}
-      </div>
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          id="diagnostics-system-log"
-          checked={systemLog}
-          disabled={busy}
-          onChange={() => setSystemLog((v) => !v)}
-        />
-        <span>
-          <b>Include the macOS system log</b> — memory kills and App Nap events. Adds 15–45
-          seconds.
-        </span>
-      </label>
-      <p className="deploy-muted">
-        {plan
-          ? `${plan.files} ${plan.files === 1 ? "file" : "files"} · ${formatBytes(plan.bytes)} · ${plan.crash_reports} ${plan.crash_reports === 1 ? "crash report" : "crash reports"}`
-          : "Measuring…"}
-      </p>
-      <div className="prefs-actions">
-        <button type="button" className="btn btn-secondary" disabled={busy} onClick={save}>
-          {busy ? "Collecting…" : "Save diagnostics…"}
-        </button>
-        {busy && (
-          <span className="deploy-muted">
-            {systemLog ? "Reading the system log… 15–45 seconds" : "Collecting…"}
-          </span>
-        )}
-      </div>
-      {result && (
-        <div className="prefs-actions" style={{ marginTop: 8 }}>
-          <span className="deploy-muted">
-            Saved {formatBytes(result.bytes)} to{" "}
-            <code style={{ wordBreak: "break-all" }}>{result.path}</code>
-          </span>
-          <button type="button" className="btn btn-secondary" onClick={copyPath}>
-            {copied ? "Copied" : "Copy path"}
-          </button>
-        </div>
-      )}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// The project queue: one task in progress per folder. Off by default, and this
-// is the only place it turns on. Same one-checkbox section shape as the two
-// above.
+// Preferences page (SPEC §20) — `/preferences`, entered from the sidebar's
+// Settings menu. Framed inside the Bots page under Fused Bot (`?embed=1`,
+// apps/bots/components/PrefsPanel.tsx).
 //
-// ITS OWN SECTION, not a box inside a chat setting: the queue's most visible
-// half IS the chat — a send into a busy folder gets a Queued chip instead of a
-// run — but the switch also governs Run now, the scheduler's own dispatch and
-// the Tasks board's Queued lane. A control filed under a feature it is not part
-// of is a control nobody finds again when they go looking for the thing it
-// actually does. (A "Native chat" switch used to sit above this; the React
-// chat is the only chat now, and the switch and its pref are gone.)
-function ProjectQueueSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // `=== true`: OPT-IN, so a server that predates the field is a server with no
-  // queue.
-  const enabled = prefs.queue?.enabled === true;
+// A LEFT NAV OF GROUPS UNDER THE SIDEBAR'S OWN HEADINGS, A SEARCH BOX OVER
+// ALL OF THEM, AND ONE ROW PER SETTING. What the sections and groups are,
+// which row is in which, and the words search finds each by all live in
+// `settings/registry.ts`; the control behind each row is in the `settings/`
+// file named for its group, mapped by `settings/controls.tsx`. This file only
+// lays them out.
+//
+// The Claude Code group (settings/claude.tsx) is the former Claude Config
+// panel: its sections are BLOCKS — a card each, not a row — and the rows of
+// settings.json come from a catalog fetched at mount, spliced in after the
+// registry's catalog row so the nav count, the search and the page agree.
+//
+// It replaced five tabs, the first of which ("Render preferences") had grown
+// to twenty sections in the order their flags shipped, with no way to search.
+// The audit and the design are claude.ai/artifact/NdzDR2rpNpFU3yBgQd5sJk.
+// Four controls left the page then: the menu bar's pinned-file view (retired
+// for the Dock), Updates' "Check now" (the status bar's Updates chip asks
+// it), the Super Bot phone mirror (its setup is in the bot's own settings),
+// and the default Claude model (Claude Config's Model is the one value every
+// surface reads; a pointer row leads there).
+//
+// THE URL: `?tab=<group>` picks the group (absent = General). The four ids an
+// old tab used — ai, indexing, lan, account — kept their names so existing
+// links land; `?tab=render` reads as General. Switching group REPLACES the
+// history entry (not pushes), so Back leaves Preferences instead of walking
+// back through every tab visited. `?s=<setting id>` opens that
+// setting's group and highlights it; `?q=` is the search, kept in the URL with
+// replaceState so a reload or a copied link keeps it without each keystroke
+// becoming a history entry.
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ChevronRight,
+  Search,
+  SlidersHorizontal,
+  Sparkles,
+  SquareTerminal,
+  ListChecks,
+  LayoutGrid,
+  FolderSearch,
+  ToggleRight,
+  Wifi,
+  Plug,
+  Wrench,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+import { useClaudeConfigStatus } from "@apps/claude_config/available";
+import { getPrefs, type Prefs } from "@platform/lib/api";
+import { IS_QUERY_EMBED, navigateUrl } from "@platform/lib/router";
+import { isBot } from "@platform/lib/flavor";
+import { isMac } from "@platform/lib/platform";
+import { cn } from "@platform/lib/utils";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { SkeletonLines } from "@platform/ui/Skeleton";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
+import {
+  groupOf,
+  navSections,
+  resolveGroup,
+  sectionsOf,
+  visibleGroups,
+  visibleSettings,
+  type GroupId,
+  type SettingEntry,
+} from "./settings/registry";
+import {
+  ClaudeConfigProvider,
+  ClaudeGitChip,
+  ClaudePrefRow,
+  isClaudePref,
+  useClaudePrefEntries,
+  useClaudeSectionLayout,
+} from "./settings/claude";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/shadcn/ui/collapsible";
+import { searchSettings, tokenize } from "./settings/search";
+import { CONTROLS } from "./settings/controls";
+import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
+import { IndexStateProvider } from "./settings/indexing";
 
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putProjectQueueEnabled(!enabled);
-      onChange(next);
-      // Published, not just saved: the chat's
-      // send path reads this flag from a module cache that is otherwise only
-      // refreshed by a mount, and a composer already on screen would keep
-      // admitting (or not admitting) by the old answer until a navigation.
-      publishProjectQueueEnabled(next.queue?.enabled === true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Project queue</h2>
-      <p className="deploy-muted">
-        Keep one task running per folder. Anything else asked for in that folder —
-        a chat message, Run now, a scheduled message coming due — waits its turn
-        and starts the moment the folder frees, instead of running alongside. A
-        waiting task reads <b>Queued</b> on the Tasks page, and you can send it to
-        the front of the line without interrupting anything.
-      </p>
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          checked={enabled}
-          disabled={busy}
-          onChange={toggle}
-        />
-        <span>
-          <b>Project queue</b> (one task at a time per folder).
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Task recaps: a short haiku recap of every finished turn titles its Tasks row.
-// Opt-in, the queue section's shape, because it spends a haiku call per turn.
-function TaskRecapSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // `=== true`: OPT-IN, so a server that predates the field has no recaps.
-  const enabled = prefs.task_recap?.enabled === true;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putTaskRecapTitlesEnabled(!enabled);
-      onChange(next);
-      publishTaskRecapTitlesEnabled(next.task_recap?.enabled === true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Task recaps</h2>
-      <p className="deploy-muted">
-        Title each task with a short AI recap of its last turn (runs haiku after every finished turn).
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Task recaps</b> (opt-in beta).
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// App git auto-sync (default ON, an opt-OUT): the app's own commits are pushed
-// to the remote and a behind repo is fast-forwarded when an app opens. Off is
-// the earlier behaviour: the Update card and the manual git flows only.
-function GitAutoSyncSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // `!== false`: absence (an older server) reads as the default, ON.
-  const enabled = prefs.git?.auto_sync !== false;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await putGitAutoSyncEnabled(!enabled));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Git sync</h2>
-      <p className="deploy-muted">
-        Push the commits the app makes itself (after a Claude turn, or when an app
-        is created, moved or deleted) and bring in newer commits when you open an
-        app. Only the default branch is synced, only by fast-forward, and nothing
-        is merged or forced. If it cannot, you get a notification.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Automatically pull and push app changes</b>
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// A finished-task notification is scoped to sessions started from
-// fused-render's own Claude template (2026-09-18 fix — the reported bug: a
-// plain `claude` session typed by hand in a terminal, nothing to do with
-// fused-render, raising a fused-render "Finished" notice). This is the
-// opt-BACK-in for an interactive terminal session too — default off, same
-// one-checkbox section shape as Native chat above.
-function TaskNotifyTerminalSection({
-  prefs,
-  onChange,
-}: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // `?? false`: a server that predates the switch sends nothing, which is off
-  // — both the pref's own default and the behaviour this branch shipped.
-  const enabled = prefs.task_notify?.terminal_sessions ?? false;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await putTaskNotifyTerminalSessionsEnabled(!enabled);
-      onChange(next);
-      // Published so useTaskStatusNotify picks it up on its next tick rather
-      // than on a reload — the same hand-over the switches above make.
-      publishTaskNotifyTerminalSessions(next.task_notify?.terminal_sessions === true);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Tasks: notify when terminal sessions finish</h2>
-      <p className="deploy-muted">
-        {displayName()} can&rsquo;t always tell every headless Claude session apart from its own — this
-        also raises finished-task notifications for a Claude session you started by hand in a
-        terminal.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Notify when terminal sessions finish</b> — off by default, so a plain{" "}
-          <code>claude</code> session you started yourself stays quiet.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Local-network sharing (lan.py): off by default, this is the only place it
-// turns on. Same one-checkbox section shape as Canvases above. While the
-// listener is up it shows the QR code a phone scans to pair (the ONLY way in —
-// no PIN, no approval dialog), and the devices that have, with revoke.
-// Native windows (macOS: fused_render/mac_window.py; Linux: the WebKitGTK window
-// host, fused_render/supervisor/_linux/window_host.py): the shell in the app's
-// own windows instead of browser tabs. On by default; this is the only place
-// it turns off, and it applies live — on, the next open is a window; off, every
-// window closes and opens go back to the browser. The launcher below is not
-// behind it. Rendered only where the running app can honour it
-// (`prefs.native_windows.available`).
-function NativeWindowsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const nw = prefs.native_windows;
-  if (!nw || !nw.available) return null;
-  const enabled = nw.enabled;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await putNativeWindowsEnabled(!enabled));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Native windows</h2>
-      <p className="deploy-muted">
-        Open {displayName()} in its own windows instead of browser tabs, with native window
-        controls. An app opened from the launcher gets a window of its own. On by default. Turning it off closes the open windows and the app
-        opens everything in your default browser instead.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Use native windows</b> instead of browser tabs.
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Menu bar (macOS): what a click on the status item shows. The menu-bar Dock
-// (fused_render/menubar_dock.py: a tray of your apps — bots in Fused Bot —
-// with Dock-style pins) is the default; the older pinned-file popover
-// (menubar_pin.py) stays behind this one checkbox. Applied live: the running
-// app re-points the status item, nothing restarts. Rendered only where the
-// running app installed the hook (`prefs.menubar.available`).
-function MenubarSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const mb = prefs.menubar;
-  if (!mb || !mb.available) return null;
-  const pin = mb.pin_enabled;
-
-  const toggle = async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await putMenubarPinEnabled(!pin));
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Menu bar</h2>
-      <p className="deploy-muted">
-        Clicking the {displayName()} icon in the menu bar drops a Dock of your{" "}
-        {isBot() ? "bots" : "apps"}: the ones you keep there, then the ones you used
-        last. Right-click a tile to keep it, drag the separator to resize. Right-click the icon for
-        the app menu.
-      </p>
-      <label className="prefs-radio">
-        <input type="checkbox" checked={pin} disabled={busy} onChange={toggle} />
-        <span>
-          <b>Show a pinned file instead</b>
-          <br />
-          <span className="deploy-muted">
-            The older menu-bar view: one file of your choice, rendered live in a popover, with the
-            app actions in a bar beneath it.
-          </span>
-        </span>
-      </label>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// Shortcuts: the macOS launcher (fused_render/launcher_panel.py) — the
-// global hotkey that drops the Search Apps panel, and the modifier that with
-// a digit opens the Nth recently opened app from anywhere. Rendered only when the server
-// says the launcher exists on this platform (`prefs.launcher.available`).
-// The copy follows the FLAVOR (isBot(), as the Menu bar section above): under
-// Fused Bot the panel searches bots, and these two are the `bot_launcher_*`
-// prefs — independent of Render's, defaults ⌥⇧Space / ⌥⇧ (Render: ⌥Space /
-// ⌥). The PUT wire keys stay `launcher_hotkey` / `launcher_row_modifier`
-// either way; the server stores them under the flavor's own keys.
-// The hotkey is RECORDED, not typed: click the keycap, press the combination,
-// and the browser's `KeyboardEvent.code` becomes the spec — what maps to a
-// Carbon keycode without caring about the keyboard layout. The bind happens
-// on the app's main thread a tick after the PUT, so the response's `bound`
-// is the previous state; the section re-reads shortly after.
-const ROW_MODIFIERS: { spec: string; label: string; title: string }[] = [
-  { spec: "alt", label: "⌥", title: "Option" },
-  { spec: "cmd", label: "⌘", title: "Command" },
-  { spec: "ctrl", label: "⌃", title: "Control" },
-  { spec: "alt+cmd", label: "⌥⌘", title: "Option-Command" },
-  { spec: "ctrl+alt", label: "⌃⌥", title: "Control-Option" },
-  // Fused Bot's default (launcher.BOT_DEFAULT_ROW_MODIFIER): one modifier more
-  // than Render's ⌥ so the two apps' row shortcuts both bind side by side. In
-  // the list so the control marks it and can restore it; canonical spelling
-  // (hotkey.MODIFIER_ORDER: ctrl, alt, shift, cmd) or it never reads as "on".
-  { spec: "alt+shift", label: "⌥⇧", title: "Option-Shift" },
-];
-const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock", "Fn"]);
-const REBIND_REREAD_MS = 400;
-
-function ShortcutsSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const launcher = prefs.launcher;
-  const [recording, setRecording] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [hint, setHint] = useState<string | null>(null);
-
-  const reread = useCallback(() => {
-    // The app rebinds on its main thread after the PUT returned; pick up the
-    // real `bound` state once it has.
-    window.setTimeout(() => {
-      getPrefs().then(onChange).catch(() => undefined);
-    }, REBIND_REREAD_MS);
-  }, [onChange]);
-
-  useEffect(() => {
-    if (!recording) return;
-    // The live bindings are Carbon's, not the page's: with them up, the
-    // combination being recorded would open the panel or an app instead
-    // of arriving here. Suspended for the recording, restored on its end —
-    // whichever way it ends (a key, Esc, unmount).
-    postLauncherSuspend(true).catch(() => undefined);
-    const onKey = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === "Escape") {
-        setRecording(false);
-        setHint(null);
-        return;
-      }
-      if (MODIFIER_KEYS.has(e.key)) return; // wait for the key itself
-      const mods: string[] = [];
-      if (e.ctrlKey) mods.push("ctrl");
-      if (e.altKey) mods.push("alt");
-      if (e.shiftKey) mods.push("shift");
-      if (e.metaKey) mods.push("cmd");
-      if (!mods.length) {
-        setHint("Add ⌥ ⌘ ⌃ or ⇧…");
-        return;
-      }
-      setRecording(false);
-      setHint(null);
-      setBusy(true);
-      setError(null);
-      putLauncherHotkey(mods.concat([e.code]).join("+"))
-        .then((next) => {
-          onChange(next);
-          reread();
-        })
-        .catch((err) => setError((err as Error).message))
-        .finally(() => setBusy(false));
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      postLauncherSuspend(false).catch(() => undefined);
-    };
-  }, [recording, onChange, reread]);
-
-  if (!launcher || !launcher.available) return null;
-
-  const setModifier = async (spec: string) => {
-    if (busy || spec === launcher.row_modifier) return;
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await putLauncherRowModifier(spec));
-      reread();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const bot = isBot();
-  const unbound = launcher.bound === false;
-  const rowsUnbound = launcher.pinned_bound === false;
-  return (
-    <section className="prefs-section">
-      <h2>Shortcuts</h2>
-      <p className="deploy-muted">
-        {bot
-          ? "The launcher is a search panel over your bots, on a global shortcut. It opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and the menu-bar item as Search Bots."
-          : "The launcher is a search panel over every app on this machine, on a global shortcut. It opens over any app; ↑↓ select, ↩ opens, esc closes. The same panel is in the View menu and the menu-bar item as Search Apps."}
-      </p>
-      <div className="prefs-shortcuts">
-        <div className="prefs-shortcut-row">
-          <div className="prefs-shortcut-label">
-            <b>Open the search</b>
-            <span className={unbound ? "prefs-shortcut-warn" : undefined}>
-              {unbound
-                ? `Could not bind ${launcher.display} — another app may own it. Pick a different shortcut.`
-                : "Click the key, then press the new shortcut. Esc cancels."}
-            </span>
-          </div>
-          <button
-            type="button"
-            className={"prefs-keycap" + (recording ? " rec" : "")}
-            disabled={busy}
-            onClick={() => {
-              setRecording(true);
-              setHint("Press keys…");
-            }}
-            title="Click, then press the new shortcut"
-          >
-            {recording ? hint ?? "Press keys…" : launcher.display || launcher.hotkey}
-          </button>
-        </div>
-        <div className="prefs-shortcut-row">
-          <div className="prefs-shortcut-label">
-            <b>{bot ? "Open the Nth bot" : "Open the Nth app"}</b>
-            <span className={rowsUnbound ? "prefs-shortcut-warn" : undefined}>
-              {rowsUnbound
-                ? `Some of ${launcher.row_modifier_display}1–9 could not be bound system-wide — another app may own them.`
-                : bot
-                  ? "Hold this and press 1–9 to open the Nth bot in the search's list — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."
-                  : "Hold this and press 1–9 to open the Nth app in the search's list — your recently opened apps, newest first, then the sidebar's Projects — or, once you type, the Nth result. 0 opens the home window. ⌥ takes ¡™£… away from typing."}
-            </span>
-          </div>
-          <div className="prefs-seg" role="radiogroup" aria-label="Row shortcut modifier">
-            {ROW_MODIFIERS.map((m) => (
-              <button
-                key={m.spec}
-                type="button"
-                title={m.title}
-                className={m.spec === launcher.row_modifier ? "on" : undefined}
-                disabled={busy}
-                onClick={() => void setModifier(m.spec)}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  // What the click asked for, held until the PUT answers. Turning sharing on
-  // binds the listener, issues a certificate and announces two mDNS names
-  // before the response comes back — a couple of seconds in which the old
-  // code left the checkbox sitting unchecked, which read as a dead page.
-  const [pending, setPending] = useState<boolean | null>(null);
-  const busy = pending !== null;
-  const [error, setError] = useState<string | null>(null);
-  const lan = prefs.lan;
-  const enabled = lan?.enabled ?? false;
-  const running = enabled && !!lan?.running;
-  // Enough of the listener is up to pair a device: the http one (browsers and
-  // the app) or, on its own, the https one (the app alone).
-  const pairable = enabled && ((running && !!lan?.url) || !!lan?.https_url);
-  const [devices, setDevices] = useState<LanDevice[]>(lan?.devices ?? []);
-
-  const toggle = async () => {
-    if (busy) return;
-    const want = !enabled;
-    setPending(want);
-    setError(null);
-    try {
-      const next = await putLanEnabled(want);
-      onChange(next);
-      setDevices(next.lan?.devices ?? []);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setPending(null);
-    }
-  };
-
-  // While the QR is on screen, watch for the phone to pair: the list grows,
-  // and the spent code is replaced with a fresh one (tokens are single-use).
-  useEffect(() => {
-    if (!pairable) return;
-    let alive = true;
-    const tick = async () => {
-      try {
-        const { devices: next } = await getLanDevices();
-        if (!alive) return;
-        setDevices((prev) => (prev.length === next.length && prev.every((d, i) => d.id === next[i].id) ? prev : next));
-      } catch {
-        /* the next tick retries */
-      }
-    };
-    const id = window.setInterval(tick, 3000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, [pairable]);
-
-  const revoke = async (id: string | null) => {
-    setError(null);
-    try {
-      const { devices: next } = id ? await revokeLanDevice(id) : await revokeAllLanDevices();
-      setDevices(next);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
-
-  return (
-    <section className="prefs-section">
-      <h2>Share on local network</h2>
-      <p className="deploy-muted">
-        Open your apps — everything under <code>~/Fused</code> and every linked folder — from a
-        phone on the same Wi-Fi. Only devices you pair by scanning the code below get in; a paired
-        device can open and run those apps and read or change their files, and nothing else on this
-        computer is reachable. Plain http: on iPhone the live microphone and clipboard paste stay off,
-        and on an open (password-less) network the pairing cookie travels in the clear.
-      </p>
-      {/* The box follows the click, not the round trip — `pending` is what was
-          asked for and the line below says the work is still going. */}
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          checked={pending ?? enabled}
-          disabled={busy}
-          aria-busy={busy}
-          onChange={toggle}
-        />
-        <span>
-          <b>Share my apps</b> on this network.
-        </span>
-      </label>
-      {busy && (
-        <p className="lan-working" role="status">
-          <span className="lan-spinner" aria-hidden="true" />
-          {pending
-            ? "Starting the listener and announcing this computer on the Wi-Fi…"
-            : "Stopping and taking this computer off the Wi-Fi…"}
-        </p>
-      )}
-      {/* A code as long as SOMETHING is listening: with the http listener down
-          but https up, a browser cannot get in but the iPhone app still pairs
-          (the code names https then — /api/lan/pair-token decides). */}
-      {pairable && (
-        <LanPairing url={lan!.url ?? lan!.https_url!} deviceCount={devices.length} />
-      )}
-      {pairable && (
-        <LanDevices devices={devices} onRevoke={revoke} />
-      )}
-      {enabled && !lan?.running && lan?.https_url && (
-        <ErrorBanner>
-          {`Browsers can't reach this computer${lan.error ? `: ${lan.error}` : " (the http listener is down)"}. ` +
-            "The iPhone app can still pair with the code above."}
-        </ErrorBanner>
-      )}
-      {enabled && !lan?.running && !lan?.https_url && (
-        <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>
-      )}
-      {/* The listener can be up while a piece of it failed — zeroconf missing
-          (no render.fused.local name), no network address, or the https
-          listener down. Those must not hide behind a working QR. */}
-      {enabled && lan?.running && lan.error && (
-        <ErrorBanner>{`Sharing, but: ${lan.error}`}</ErrorBanner>
-      )}
-      {enabled && lan?.running && !lan.error && lan.tls_error && (
-        <ErrorBanner>{`The app's https listener is down (browsers unaffected): ${lan.tls_error}`}</ErrorBanner>
-      )}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
-}
-
-// The QR code: a pairing URL good for five minutes and ONE device. A new one
-// replaces it the moment a pairing lands (the device count changes — the
-// section polls it) and when the old one runs out.
-function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) {
-  const [svg, setSvg] = useState<string | null>(null);
-  const [ipUrl, setIpUrl] = useState<string | null>(null);
-  // Why there is no code, when there is none. An empty paper square said the
-  // same thing as one still being minted — and the mint can now answer 503
-  // (nothing is listening), which is worth reading.
-  const [problem, setProblem] = useState<string | null>(null);
-  const [nonce, setNonce] = useState(0);
-
-  useEffect(() => {
-    setNonce((n) => n + 1);
-  }, [deviceCount]);
-
-  useEffect(() => {
-    let alive = true;
-    let timer: number | null = null;
-    setProblem(null);
-    getLanPairToken()
-      .then((t) => {
-        if (!alive) return;
-        const qr = qrcode(0, "M");
-        qr.addData(t.url);
-        qr.make();
-        setSvg(qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true }));
-        setIpUrl(t.ip_url);
-        // Rotate just before the server forgets this one.
-        timer = window.setTimeout(() => alive && setNonce((n) => n + 1), Math.max(5, t.ttl_s - 5) * 1000);
-      })
-      .catch((e) => {
-        if (!alive) return;
-        setSvg(null);
-        setProblem((e as Error).message || "No pairing code — the listener did not answer.");
-      });
-    return () => {
-      alive = false;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [nonce]);
-
-  return (
-    <div className="lan-pair">
-      <div className="lan-pair-qr" aria-label="Pairing QR code" aria-busy={!svg && !problem}>
-        {svg ? (
-          <span dangerouslySetInnerHTML={{ __html: svg }} />
-        ) : problem ? null : (
-          <span className="lan-spinner lan-spinner-qr" aria-hidden="true" />
-        )}
-      </div>
-      <div className="lan-pair-text">
-        {problem && <ErrorBanner>{problem}</ErrorBanner>}
-        <p>
-          <b>Scan from the Fused Render app</b> (or the iPhone's Camera app — not the Control Center
-          scanner, whose in-app browser can't pair Safari). Each code pairs one device; a new code
-          appears right after, and every five minutes. A paired phone then opens{" "}
-          <a href={url} target="_blank" rel="noreferrer">{url}</a>.
-        </p>
-        <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
-          New code
-        </button>
-        {ipUrl && (
-          <p className="deploy-muted" style={{ marginTop: 8 }}>
-            If the phone can't resolve the name, open this once instead:{" "}
-            <code style={{ wordBreak: "break-all" }}>{ipUrl}</code>
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function agoLabel(ts: number): string {
-  const s = Math.max(0, Date.now() / 1000 - ts);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return `${Math.floor(s / 86400)} d ago`;
-}
-
-function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id: string | null) => void }) {
-  if (!devices.length) {
-    return <p className="deploy-muted">No paired devices yet.</p>;
-  }
-  return (
-    <div className="lan-devices">
-      <div className="lan-devices-head">
-        <b>Paired devices</b>
-        <button type="button" className="btn btn-secondary" onClick={() => onRevoke(null)}>
-          Forget all
-        </button>
-      </div>
-      <ul>
-        {devices.map((d) => (
-          <li key={d.id}>
-            <span className="lan-device-name">{d.name}</span>
-            <span className="deploy-muted">
-              paired {agoLabel(d.paired_at)} · seen {agoLabel(d.last_seen)}
-            </span>
-            <button type="button" className="btn btn-secondary" onClick={() => onRevoke(d.id)}>
-              Revoke
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-// Human labels for the short model names the server accepts. Keyed off the
-// server's `choices` list rather than hardcoding the options, so the page can
-// never offer a value a PUT would reject — an unknown name still renders (as
-// itself) instead of vanishing from a control the user has one of selected.
-const MODEL_LABELS: Record<string, string> = {
-  "": "Automatic",
-  fable: "Fable",
-  opus: "Opus",
-  sonnet: "Sonnet",
-  haiku: "Haiku (fastest)",
+const GROUP_ICONS: Record<GroupId, LucideIcon> = {
+  general: SlidersHorizontal,
+  features: ToggleRight,
+  ai: Sparkles,
+  claude: SquareTerminal,
+  tasks: ListChecks,
+  apps: LayoutGrid,
+  indexing: FolderSearch,
+  lan: Wifi,
+  integrations: Plug,
+  advanced: Wrench,
 };
 
-function ModelSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <section className="prefs-section">
-      <h2>Default model</h2>
-      <p className="deploy-muted">
-        Which Claude model this app reaches for when nothing else has said. It preselects the
-        chat's model chip and picks the model behind <code>fused.ai</code>. A model chosen in a
-        chat, or one a page passes to <code>fused.ai</code> itself, still wins — this only
-        answers when nobody asked. <b>Automatic</b> leaves each to its own default.
-      </p>
-      <div className="prefs-field">
-        <label>
-          Model{" "}
-          <select
-            value={prefs.model.default}
-            disabled={busy}
-            onChange={async (e) => {
-              const next = e.target.value as Prefs["model"]["default"];
-              setBusy(true);
-              setError(null);
-              try {
-                onChange(await putDefaultModel(next));
-              } catch (err) {
-                setError((err as Error).message);
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {prefs.model.choices.map((m) => (
-              <option key={m} value={m}>
-                {MODEL_LABELS[m] ?? m}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
-  );
+const FLASH_MS = 1800;
+
+/** The Claude Code group's sections in the order this visit opens them in. */
+function claudeSections<T extends { section: string }>(
+  sections: T[],
+  layout: { order: (names: readonly string[]) => string[] },
+): T[] {
+  const order = layout.order(sections.map((s) => s.section));
+  return [...sections].sort((a, b) => order.indexOf(a.section) - order.indexOf(b.section));
 }
 
-// Signing in to Hugging Face (server/routers/hf_auth.py, D402).
-//
-// **No token passes through this component in either direction.** The button
-// starts huggingface_hub's own device-code login; the user authorizes on
-// huggingface.co; hf stores the result — with a refresh token it renews itself —
-// and every consumer (model downloads inside a worker, the Discover search)
-// reads it back through `get_token()`. So there is no box to paste a secret
-// into, nothing to mask, and nothing for this page to persist. Someone who
-// needs a specific fine-grained token exports HF_TOKEN instead, which hf reads
-// ahead of its own store and which this section reports as being in force.
-//
-// The page POLLS while a login is pending rather than holding a request open:
-// the thing being waited for is a person going to another tab, which can take
-// as long as it takes, and hf's device code lives for ~15 minutes.
-function HuggingFaceSection() {
-  const [auth, setAuth] = useState<HfAuth | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function urlWith(edit: (p: URLSearchParams) => void): string {
+  const params = new URLSearchParams(location.search);
+  edit(params);
+  const search = params.toString();
+  return location.pathname + (search ? "?" + search : "");
+}
 
-  useEffect(() => {
-    let alive = true;
-    getHfAuth()
-      .then((a) => alive && setAuth(a))
-      .catch((e) => alive && setError((e as Error).message));
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  // One poll loop, armed only while a login is actually in flight — a settings
-  // page must not sit on a timer for a flow nobody started.
-  const pending = auth?.pending ?? null;
-  useEffect(() => {
-    if (!pending) return;
-    let alive = true;
-    const id = setInterval(() => {
-      getHfAuth()
-        .then((a) => alive && setAuth(a))
-        .catch(() => undefined); // a blip mid-login is not worth a banner
-    }, 2000);
-    return () => {
-      alive = false;
-      clearInterval(id);
-    };
-  }, [pending !== null]);
-
-  const act = async (fn: () => Promise<HfAuth>) => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setAuth(await fn());
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const locked = auth?.forcedByVar != null;
-  return (
-    <section className="prefs-section">
-      <h2>Hugging Face</h2>
-      <p className="deploy-muted">
-        Sign in to download AI models. Without an account the Hub serves this machine
-        anonymously, meaning a lower rate limit, slower downloads, and no access to gated or
-        private repos. Signing in hands the token to <code>huggingface_hub</code>, which stores
-        it the same way <code>hf auth login</code> does.
-      </p>
-      {!auth && !error && <SkeletonLines rows={2} label="Loading Hugging Face status" />}
-      {auth && (
-        <>
-          {auth.pending ? (
-            <div className="prefs-field">
-              <p>
-                <a
-                  className="btn btn-primary hf-authorize-link"
-                  href={auth.pending.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Authorize on huggingface.co
-                </a>
-              </p>
-              {/* The code is shown as well as embedded in that link: the link
-                  carries it, but the Hub asks for confirmation, and somebody who
-                  opened the page in a different browser needs to type it. */}
-              <p className="deploy-muted">
-                Waiting for you to authorize. If asked for a code, enter{" "}
-                <code>{auth.pending.userCode}</code>. This code expires in{" "}
-                {Math.max(1, Math.round(auth.pending.secondsLeft / 60))} min.
-              </p>
-              <div className="prefs-actions">
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={busy}
-                  onClick={() => void act(cancelHfLogin)}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="prefs-actions">
-              {auth.signedIn ? (
-                <>
-                  <span>
-                    Signed in{auth.account ? <> as <b>{auth.account}</b></> : null}
-                  </span>
-                  <button
-                    type="button"
-                    className="btn btn-danger-text"
-                    disabled={busy || locked}
-                    onClick={() => void act(hfLogout)}
-                  >
-                    Log out
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={busy || locked}
-                  onClick={() => void act(() => startHfLogin())}
-                >
-                  Log in to Hugging Face
-                </button>
-              )}
-            </div>
-          )}
-          {/* No sentence under EITHER ordinary state, because the controls
-              already are the state: "Signed in as X" beside a Log out button
-              says it, and so does a bare Log in button — and the paragraph
-              above already says what anonymous costs, so repeating it here was
-              the same fact twice, shorter. The one case that needs words is the
-              one no control can show: a variable overriding hf's store, where
-              the button is present and would change nothing. */}
-          {locked && (
-            <div className="deploy-muted">
-              Using the token in <code>{auth.forcedByVar}</code> from this app&apos;s
-              environment — hf reads that ahead of its own store, so signing in here would
-              change nothing until the variable is removed.
-            </div>
-          )}
-          {/* The last attempt's failure: denied, expired, or the network. Kept
-              until the next attempt replaces it, so a login that failed while
-              the user was authorizing in another tab can still say why. */}
-          {auth.error && <ErrorBanner>{auth.error}</ErrorBanner>}
-        </>
+function Section({
+  title,
+  entries,
+  prefs,
+  onChange,
+  collapsible,
+}: {
+  title: string;
+  entries: readonly SettingEntry[];
+  prefs: Prefs;
+  onChange: (p: Prefs) => void;
+  /** An accordion (the Claude Code group): the title is the toggle. */
+  collapsible?: { open: boolean; onToggle: () => void };
+}) {
+  // A block is its section's only entry: the card is the block, captioned
+  // with the file it edits. In search results (SettingsViewContext.tokens)
+  // the block's control is a pointer row and the card is an ordinary one.
+  const block = entries.find((e) => e.block) ?? null;
+  const searching = useContext(SettingsViewContext).tokens !== null;
+  const card = (
+    <div className={cn("settings-card", block && !searching && "settings-card-block")}>
+      {block && !searching && (
+        <div className="settings-block-caption">
+          <code>{block.description}</code>
+          {block.readOnly && <Badge variant="secondary">read-only</Badge>}
+        </div>
       )}
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
+      {entries.map((e) => {
+        if (isClaudePref(e)) return <ClaudePrefRow key={e.id} entry={e} />;
+        const Control = CONTROLS[e.id as keyof typeof CONTROLS];
+        return <Control key={e.id} prefs={prefs} onChange={onChange} />;
+      })}
+    </div>
   );
-}
-
-// The retention window as the "Currently keeping ..." line says it, matching
-// the select's own option labels so the forced value reads like a choice.
-function describeRetention(days: number): string {
-  if (days === 0) return "until the size cap";
-  return days === 1 ? "1 day" : `${days} days`;
-}
-
-function CallLogSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const calls = prefs.calls;
-  // Same shape as the Engine section's `locked`: a non-null raw env value means
-  // the process overrides the pref, so the control is shown but not actionable.
-  // Non-null is the server's assertion that the variable is actually IN FORCE,
-  // not merely set — it withholds the value when the writer ignores it (an empty
-  // or non-numeric retention window, say). So never re-derive this from the
-  // value's shape here: a client-side "is it a number?" check is the second copy
-  // of a rule the writer already owns, and lockout is what it costs to get wrong.
-  const enabledLocked = calls.enabled_forced_by !== null;
-  const retentionLocked = calls.retention_forced_by !== null;
-
-  const apply = async (fn: () => Promise<Prefs>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      onChange(await fn());
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
+  if (!collapsible) {
+    return (
+      <section className="settings-section" aria-label={title}>
+        <h3 className="settings-section-title">{title}</h3>
+        {card}
+      </section>
+    );
+  }
   return (
-    <section className="prefs-section">
-      <h2>Call log</h2>
-      <p className="deploy-muted">
-        Records every API call your pages make — each <code>runPython</code>, <code>readFile</code>,{" "}
-        <code>stat</code> and <code>writeFile</code>, with its duration, result size, output and
-        any traceback. A page with recorded calls gains a <b>Calls</b> view mode showing charts and
-        a per-target breakdown; <code>fused-render calls</code> reads the same log from a terminal.
-      </p>
-      {/* The checkbox shows the STORED pref and the muted line below shows what
-          is actually in force, exactly as the Engine section does: the control
-          reflects the choice you made (and what a PUT round-trips), the line
-          reports reality. They diverge whenever FUSED_RENDER_CALLS wins, and
-          the control is disabled then so the discrepancy can't be acted on. */}
-      <label className="prefs-radio">
-        <input
-          type="checkbox"
-          checked={calls.enabled}
-          disabled={busy || enabledLocked}
-          onChange={() => apply(() => putCallsEnabled(!calls.enabled))}
-        />
-        <span>
-          <b>Record API calls</b> made by pages rendered in this app.
-        </span>
-      </label>
-      <div className="deploy-muted">
-        Currently <b>{calls.effective_enabled ? "recording" : "not recording"}</b>
-        {enabledLocked && (
-          <>
-            {" "}
-            — locked by <code>FUSED_RENDER_CALLS={calls.enabled_forced_by}</code> for this process;
-            the checkbox applies once the variable is removed.
-          </>
-        )}
-      </div>
-      <div className="prefs-field">
-        <label>
-          Parameters{" "}
-          {/* Gated on what is actually recording, not on the stored pref —
-              otherwise an env-forced off state leaves these live, and an
-              env-forced on state greys them out while calls are landing. */}
-          <select
-            value={calls.params}
-            disabled={busy || !calls.effective_enabled}
-            onChange={(e) => apply(() => putCallsParamsMode(e.target.value as CallsParamsMode))}
-          >
-            <option value="full">Record values</option>
-            <option value="keys">Record names only</option>
-            <option value="off">Record nothing</option>
-          </select>
-        </label>
-        <p className="deploy-muted">
-          A run's parameters are usually the whole repro, so they are recorded by default — they
-          are already visible in the URL. Switch to names-only if a page passes a secret as a
-          parameter.
-        </p>
-      </div>
-      <div className="prefs-field">
-        <label>
-          Keep for{" "}
-          <select
-            value={String(calls.retention_days)}
-            disabled={busy || !calls.effective_enabled || retentionLocked}
-            onChange={(e) => apply(() => putCallsRetentionDays(Number(e.target.value)))}
-          >
-            <option value="1">1 day</option>
-            <option value="7">7 days</option>
-            <option value="14">14 days</option>
-            <option value="90">90 days</option>
-            <option value="0">Until the size cap</option>
-          </select>
-        </label>
-        {retentionLocked && (
-          <p className="deploy-muted">
-            Currently keeping <b>{describeRetention(calls.effective_retention_days)}</b> — locked by{" "}
-            <code>FUSED_RENDER_CALLS_RETENTION_DAYS={calls.retention_forced_by}</code> for this
-            process; the choice above applies once the variable is removed.
-          </p>
-        )}
-      </div>
-      <p className="deploy-muted">
-        Stored at <code>{calls.dir}</code>
-        {calls.dir_exists ? "." : " — no calls recorded yet, so the folder does not exist."}
-      </p>
-      {/* Navigates IN-APP, not to the OS file manager: the explorer is how you
-          reach the Calls view — open the folder, click a .calls.jsonl, and it
-          renders in the same viewer the mode switcher offers.
-
-          Disabled until the store exists: the writer creates it on its first
-          append, so browsing beforehand navigates to a path that fails to stat
-          — an error card where the answer is simply "nothing has run yet",
-          which is also the answer to "why has no page got a Calls mode?". */}
-      <button
-        type="button"
-        disabled={!calls.dir_exists}
-        title={calls.dir_exists ? undefined : "No calls have been recorded yet"}
-        onClick={() => navigate(calls.dir, { isDir: true })}
-      >
-        Browse call logs
-      </button>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </section>
+    <Collapsible
+      open={collapsible.open}
+      onOpenChange={collapsible.onToggle}
+      render={<section className="settings-section settings-section-collapsible" aria-label={title} />}
+    >
+      <h3 className="settings-section-title">
+        <CollapsibleTrigger className="settings-section-toggle">
+          <ChevronRight aria-hidden="true" className="settings-section-chevron" />
+          {title}
+          {!block && <span className="settings-section-count">{entries.length}</span>}
+        </CollapsibleTrigger>
+      </h3>
+      <CollapsibleContent>{card}</CollapsibleContent>
+    </Collapsible>
   );
 }
+
+// The last answer, kept across the remount every group switch is (see
+// `showGroup`), so the next group paints at once instead of behind a skeleton.
+// The mount still re-reads; this is only what it shows meanwhile.
+let lastPrefs: Prefs | null = null;
+// Bumped by every write a control's PUT answers — MODULE-wide, not per mount,
+// because a PUT pressed just before a group switch answers into the page that
+// was unmounted. A mount's GET that a write has overtaken is older than that
+// write, so it is dropped and the write (in `lastPrefs`) painted instead.
+let writeGen = 0;
 
 export default function Preferences() {
-  const [prefs, setPrefs] = useState<Prefs | null>(null);
+  // The Claude Code group's store wraps the page: the catalog rows it holds
+  // are part of the entry list (search included), and the git chip in the
+  // group's head reads the same epoch its blocks bump.
+  // null until the probe answers: the page waits for it (with the prefs GET
+  // it waits for anyway) rather than resolve `?tab=claude` to General for a
+  // moment and then flip — every job and notification link into the group
+  // lands on a cold cache.
+  const claudeConfig = useClaudeConfigStatus();
+  return (
+    <ClaudeConfigProvider available={claudeConfig === true}>
+      <PreferencesPage claudeConfig={claudeConfig} />
+    </ClaudeConfigProvider>
+  );
+}
+
+function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
+  const [prefs, setPrefsState] = useState<Prefs | null>(lastPrefs);
+  // STABLE: it is every control's `onChange`, and an effect that depends on it
+  // (the hotkey recorder suspends the global shortcuts for as long as it runs)
+  // must not be torn down by an unrelated re-render of this page.
+  const setPrefs = useCallback((p: Prefs) => {
+    writeGen += 1;
+    lastPrefs = p;
+    setPrefsState(p);
+  }, []);
   const [error, setError] = useState<string | null>(null);
+  const params = new URLSearchParams(location.search);
+  const [query, setQueryState] = useState(() => params.get("q") ?? "");
+  const [flash, setFlash] = useState<string | null>(() => params.get("s"));
+  const searchRef = useRef<HTMLInputElement>(null);
+  const bot = isBot();
 
   useEffect(() => {
     let alive = true;
+    const asked = writeGen;
     getPrefs()
-      .then((p) => alive && setPrefs(p))
+      .then((p) => {
+        if (!alive) return;
+        if (writeGen === asked) lastPrefs = p;
+        setPrefsState(lastPrefs);
+      })
       .catch((e) => alive && setError((e as Error).message));
     return () => {
       alive = false;
     };
   }, []);
 
-  // Requested tab lives in the URL (`?tab=indexing`) — bookmarkable.
-  const requested = new URLSearchParams(location.search).get("tab");
-  // `?tab=engines` never reaches here: `rewriteLegacyUrl` sends it to
-  // /ai-models?tab=engines before this page renders, which is why an unknown
-  // tab falling back to "render" is not the answer for that one — a bookmark
-  // pointing at the engine picker should land ON the engine picker.
-  // FUSED BOT (platform/lib/flavor) has no file index, no LAN sharing and no
-  // Fused account to sign into (Share and Canvases are Render's): those tabs
-  // go, and a `?tab=` naming one lands on the first tab rather than on an
-  // empty panel. The Render tab also sheds the sections that are only about
-  // Render's own features, below.
-  const bot = isBot();
-  const tab: PrefsTab =
-    requested === "indexing" && !bot ? "indexing"
-    : requested === "ai" ? "ai"
-    : requested === "lan" && !bot ? "lan"
-    : requested === "account" && !bot ? "account"
-    : "render";
-  const setTab = (next: PrefsTab) => {
-    const params = new URLSearchParams(location.search);
-    if (next === "render") params.delete("tab");
-    else params.set("tab", next);
-    const search = params.toString();
-    navigateUrl(location.pathname + (search ? "?" + search : ""));
+  const tokens = useMemo(() => tokenize(query), [query]);
+  const searching = tokens.length > 0;
+  // The catalog is read with the page, not when its group opens: the nav's
+  // count for Claude Code is every row (Akshil, 2026-10-20: "keep it as 83"),
+  // so the page waits for the rows the way it waits for the prefs GET.
+  const { rows: claudeRows, ready: claudeReady } = useClaudePrefEntries(claudeConfig === true);
+  const loaded = prefs !== null && claudeConfig !== null && claudeReady;
+  const entries = useMemo(() => {
+    if (!prefs || claudeConfig === null) return [];
+    const base: SettingEntry[] = visibleSettings({ prefs, bot, mac: isMac, claudeConfig });
+    // The settings.json rows follow the catalog row that introduces them.
+    const at = base.findIndex((e) => e.id === "claude-catalog");
+    return at === -1 ? base : [...base.slice(0, at + 1), ...claudeRows, ...base.slice(at + 1)];
+  }, [prefs, bot, claudeConfig, claudeRows]);
+  const groups = useMemo(() => visibleGroups(entries), [entries]);
+  const sections = useMemo(() => navSections(groups), [groups]);
+  const byId = (id: string) => entries.find((e) => e.id === id);
+  const claudeLayout = useClaudeSectionLayout();
+
+  // Scroll a jumped-to row into view, light it briefly, then let it go — once
+  // the row IS on the page: a settings.json row is not until its catalog has
+  // loaded, and a timer started at mount would have cleared the highlight
+  // before then. Re-run as the entry list grows for the same reason. (The
+  // blocks above a row fetch their own lists and grow after this scroll; a
+  // deep link into a late row can land a little short. Accepted.)
+  useEffect(() => {
+    if (!flash || !prefs) return;
+    // A row inside a closed Claude section: open it, then land on the row.
+    const target = byId(flash);
+    if (target?.group === "claude" && !claudeLayout.isOpen(target.section)) {
+      claudeLayout.ensureOpen(target.section);
+      return;
+    }
+    const el = document.getElementById(rowId(flash));
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    const t = window.setTimeout(() => setFlash(null), FLASH_MS);
+    return () => window.clearTimeout(t);
+  }, [flash, prefs !== null, entries.length, claudeLayout]);
+
+  const setQuery = (q: string) => {
+    setQueryState(q);
+    history.replaceState(history.state, "", urlWith((p) => (q ? p.set("q", q) : p.delete("q"))));
   };
 
+  // A navigation, so App.tsx remounts this page (it is keyed on the nav
+  // epoch): what the next mount should highlight travels in `?s=`, not in
+  // state that is about to be thrown away.
+  const showGroup = (group: GroupId, highlight: string | null = null) => {
+    navigateUrl(
+      urlWith((p) => {
+        p.delete("q");
+        if (highlight) p.set("s", highlight);
+        else p.delete("s");
+        if (group === "general") p.delete("tab");
+        else p.set("tab", group);
+      }),
+      { replace: true },
+    );
+  };
+
+  // `?s=` names a setting: its group wins over `?tab=`. A settings.json row
+  // (`claude-pref:…`) is in `entries` only once its catalog has loaded; until
+  // then `?tab=claude` — which every link to one of them also carries — is
+  // what decides.
+  const deep = byId(params.get("s") ?? "");
+  const current: GroupId = deep ? deep.group : resolveGroup(params.get("tab"), groups);
+
+  const hits = useMemo(() => searchSettings(entries, tokens), [entries, tokens]);
+  const view: SettingsView = {
+    tokens: searching ? tokens : null,
+    flashId: flash,
+    jump: (id) => {
+      // A settings.json row is not in `entries` until its catalog has loaded —
+      // from AI & agents the store is still asleep — but its group is known,
+      // and the mount that follows highlights the row once it exists (the
+      // flash effect waits for it).
+      const group = byId(id)?.group ?? (isClaudePref({ id } as SettingEntry) ? "claude" : undefined);
+      if (group) showGroup(group, id);
+    },
+  };
+
+  // Pointer rows count: they are rows a reader can find and follow, and the
+  // counts must mean the same thing with and without a search — every row,
+  // the Claude Code group's catalog rows included (the page waits for them).
+  const navCount = (g: GroupId) => (searching ? hits : entries).filter((e) => e.group === g).length;
+
+  const head = searching
+    ? hits.length
+      ? `${hits.length} ${hits.length === 1 ? "setting matches" : "settings match"} “${query.trim()}”`
+      : `No settings match “${query.trim()}”`
+    : groupOf(current).label;
+  const blurb = searching
+    ? hits.length
+      ? "Change them right here, or follow the path above one to see it in its group."
+      : "Try another word — dark, hotkey, token, wifi, queue, model."
+    : groupOf(current).blurb;
+
   return (
-    <div className="prefs-page">
-      {/* Page names itself — the topbar that used to carry "Preferences" is
-          gone (settings pages render chrome-free). */}
-      {/* Framed inside the Bots page's Preferences panel (`?embed=1`,
-          apps/bots/components/PrefsPanel.tsx) the panel's own top bar
-          carries the title; a second heading here read as a repeat. */}
-      {!IS_QUERY_EMBED && <h1 className="prefs-title">Preferences</h1>}
+    <div className="settings-page">
+      <div className="settings-header">
+        {/* Framed inside the Bots page's panel the panel's own bar carries
+            the title; a second heading here read as a repeat. */}
+        {!IS_QUERY_EMBED && <h1 className="settings-title">Preferences</h1>}
+        {prefs && (
+          <div className="settings-search" role="search">
+            <Search aria-hidden="true" className="settings-search-icon" />
+            <Input
+              ref={searchRef}
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && query) {
+                  // Spent here: framed in the Bots page, a document-level Esc
+                  // closes the whole panel (PrefsPanel), and clearing a search
+                  // is not a request to leave.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setQuery("");
+                }
+              }}
+              placeholder={`Search ${entries.length} settings`}
+              aria-label="Search settings"
+              className="settings-search-input"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {query && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Clear search"
+                className="settings-search-clear"
+                onClick={() => {
+                  setQuery("");
+                  searchRef.current?.focus();
+                }}
+              >
+                <X />
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!prefs && !error && <SkeletonLines rows={4} label="Loading preferences" />}
-      {prefs && (
-        <>
-          <div className="prefs-tabs">
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "render" ? " active" : "")}
-              onClick={() => setTab("render")}
-            >
-              {bot ? "Bot preferences" : "Render preferences"}
-            </button>
-            {/* AI — which model, and with whose credentials (D403). Named for
-                the subject rather than for the two controls in it, so adding a
-                third does not rename the tab. */}
-            <button
-              type="button"
-              className={"prefs-tab" + (tab === "ai" ? " active" : "")}
-              onClick={() => setTab("ai")}
-            >
-              AI
-            </button>
-            {/* Indexing — the file index behind the explorer's search. The TAB
-                is always present (under Render) — a user looking for "why is
-                search finding/missing this" has nowhere else to go — even
-                though indexing itself now has an opt-out toggle inside it
-                (`indexing_enabled`): the panel is where that answer lives,
-                on or off. */}
-            {!bot && (
-              <button
-                type="button"
-                className={"prefs-tab" + (tab === "indexing" ? " active" : "")}
-                onClick={() => setTab("indexing")}
-              >
-                Indexing
-              </button>
-            )}
-            {/* Render local network — sharing apps with phones on the Wi-Fi
-                (lan.py): the switch, the pairing QR and the paired devices.
-                Its own tab because pairing is a task you come here to DO with
-                a phone in hand, not a setting you glance at. */}
-            {!bot && (
-              <button
-                type="button"
-                className={"prefs-tab" + (tab === "lan" ? " active" : "")}
-                onClick={() => setTab("lan")}
-              >
-                Render local network
-              </button>
-            )}
-            {/* Fused account — sign in/out for Share and Canvases. See the
-                header comment for why it is a tab of its own. */}
-            {!bot && (
-              <button
-                type="button"
-                className={"prefs-tab" + (tab === "account" ? " active" : "")}
-                onClick={() => setTab("account")}
-              >
-                Fused account
-              </button>
-            )}
-          </div>
-          <div className="prefs-tabpanel">
-            {tab === "render" && (
-              <>
-                <AppearanceSection />
-                <NativeWindowsSection prefs={prefs} onChange={setPrefs} />
-                <MenubarSection prefs={prefs} onChange={setPrefs} />
-                <ShortcutsSection prefs={prefs} onChange={setPrefs} />
-                <UpdatesSection prefs={prefs} onChange={setPrefs} />
-                <CallLogSection prefs={prefs} onChange={setPrefs} />
-                <AccessibilitySection prefs={prefs} onChange={setPrefs} />
-                {/* Render-only features: Fused Bot has no canvases, no app
-                    sharing, no app git, no live previews — and its Bots switch
-                    is forced on by the server, so a toggle here would be a lie.
-                    Tasks DO exist in bot, so the queue and terminal-notify
-                    switches stay; so does the process Monitor (2026-10-08): the
-                    status bar's System chip renders under Fused Bot too, and
-                    this is the only switch for it. */}
-                {!bot && <CanvasesSection prefs={prefs} onChange={setPrefs} />}
-                {!bot && <AppSharingSection prefs={prefs} onChange={setPrefs} />}
-                {!bot && <GithubLinkSection prefs={prefs} onChange={setPrefs} />}
-                {!bot && <CommunitySection prefs={prefs} onChange={setPrefs} />}
-                <ProjectQueueSection prefs={prefs} onChange={setPrefs} />
-                <TaskRecapSection prefs={prefs} onChange={setPrefs} />
-                {!bot && <GitAutoSyncSection prefs={prefs} onChange={setPrefs} />}
-                <TaskNotifyTerminalSection prefs={prefs} onChange={setPrefs} />
-                {!bot && <LivePreviewsSection prefs={prefs} onChange={setPrefs} />}
-                <MonitorSection prefs={prefs} onChange={setPrefs} />
-                {!bot && <MarketplaceSection prefs={prefs} onChange={setPrefs} />}
-                <PhoneSection />
-                <DiagnosticsSection />
-              </>
-            )}
-            {tab === "lan" && !bot && <LanSection prefs={prefs} onChange={setPrefs} />}
-            {tab === "ai" && (
-              <>
-                <ModelSection prefs={prefs} onChange={setPrefs} />
-                <HuggingFaceSection />
-              </>
-            )}
-            {tab === "indexing" && !bot && <IndexingPanel prefs={prefs} onChange={setPrefs} />}
-            {tab === "account" && !bot && <FusedAccountSection />}
-          </div>
-        </>
+      {!loaded && !error && <SkeletonLines rows={4} label="Loading preferences" />}
+      {prefs && loaded && (
+        <div className="settings-body">
+          <nav className="settings-nav" aria-label="Preference groups">
+            {sections.map(({ section, groups: inSection }) => (
+              <div key={section.id} className="settings-nav-section" role="group" aria-label={section.label}>
+                <div className="settings-nav-heading" aria-hidden="true">
+                  {section.label}
+                </div>
+                {inSection.map((g) => {
+                  const Icon = GROUP_ICONS[g.id];
+                  const active = !searching && g.id === current;
+                  const n = navCount(g.id);
+                  return (
+                    <Button
+                      key={g.id}
+                      variant="ghost"
+                      aria-current={active ? "page" : undefined}
+                      className={cn("settings-nav-item", active && "is-active", searching && n === 0 && "is-dim")}
+                      onClick={() => showGroup(g.id)}
+                    >
+                      <Icon data-icon="inline-start" aria-hidden="true" />
+                      <span className="settings-nav-label">{g.label}</span>
+                      {(searching || n > 0) && <span className="settings-nav-count">{n}</span>}
+                    </Button>
+                  );
+                })}
+              </div>
+            ))}
+          </nav>
+          <main className="settings-main">
+            <div className="settings-head">
+              <div className="settings-head-row">
+                <h2>
+                  {head}
+                  {!searching && groupOf(current).badge && (
+                    <Badge variant="outline" className="settings-badge-beta">
+                      {groupOf(current).badge}
+                    </Badge>
+                  )}
+                </h2>
+                {!searching && current === "claude" && (
+                  <ClaudeGitChip onOpen={() => claudeLayout.ensureOpen("History")} />
+                )}
+              </div>
+              <p>{blurb}</p>
+            </div>
+            <SettingsViewContext.Provider value={view}>
+              <IndexStateProvider>
+                {searching
+                  ? groups
+                      .filter((g) => hits.some((e) => e.group === g.id))
+                      .map((g) => (
+                        <Section
+                          key={g.id}
+                          title={g.label}
+                          entries={hits.filter((e) => e.group === g.id)}
+                          prefs={prefs}
+                          onChange={setPrefs}
+                        />
+                      ))
+                  : current === "claude"
+                    ? claudeSections(sectionsOf(entries, current), claudeLayout).map((s) => (
+                        <Section
+                          key={s.section}
+                          title={s.section}
+                          entries={s.entries}
+                          prefs={prefs}
+                          onChange={setPrefs}
+                          collapsible={{ open: claudeLayout.isOpen(s.section), onToggle: () => claudeLayout.toggle(s.section) }}
+                        />
+                      ))
+                    : sectionsOf(entries, current).map((s) => (
+                        <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
+                      ))}
+              </IndexStateProvider>
+            </SettingsViewContext.Provider>
+          </main>
+        </div>
       )}
     </div>
   );

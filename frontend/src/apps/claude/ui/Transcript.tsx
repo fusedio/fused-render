@@ -6,13 +6,16 @@
 // being the element the browser actually scrolls.
 //
 // Three rules, and each exists because the obvious version of it leaked:
-//   * follow is GESTURE-based and threshold-free for wheel and touch. A 20px
-//     drag stays inside any "near bottom" window, so geometry read the touch as
-//     re-arming the follow it was trying to break;
-//   * a scroll CLAMP is not a gesture. The tail shrinks all the time (a chip
-//     resolving to a smaller image, the working line leaving at run end), and
-//     reading the browser's clamp as "the reader moved up" was the other way
-//     the follow died mid-turn;
+//   * the follow flag moves ONLY on the reader's gesture, and the gesture says
+//     which way: a wheel/touch/key UP drops it with no distance threshold (a
+//     20px drag stays inside any "near bottom" window, so geometry read the
+//     touch as re-arming the follow it was trying to break); DOWN re-arms it
+//     inside the near-bottom window;
+//   * a scroll event with no gesture behind it is not the reader. The tail
+//     shrinks all the time (a chip resolving to a smaller image, the working
+//     line leaving at run end), the port grows and shrinks with the composer,
+//     and WebKit snaps sub-pixel offsets — reading any of those clamps as "the
+//     reader moved up" was the way the follow died mid-turn;
 //   * growth is OBSERVED, not announced. Most of what lands in a live turn
 //     grows AFTER the append that scrolled — a chip that expands when its
 //     output arrives, a code block growing as the highlighter runs, a picture
@@ -45,6 +48,44 @@ import "../styles/transcript.css";
 
 /** T:12754 — how close to the tail re-arms the follow. */
 const NEAR_BOTTOM_PX = 60;
+/** How long after a wheel tick or a scroll key the scroll events it produces
+ *  are still the reader's. A trackpad keeps sending wheel events through its
+ *  momentum, so the window only has to outlast the gap between a tick and the
+ *  scroll event it causes — generous, because under streaming load that event
+ *  can land a few frames late, and a late event dropped here is a reader at the
+ *  tail whose follow never came back. */
+const GESTURE_MS = 400;
+/** …and after a finger lifts: touch momentum scrolls for a second or more with
+ *  no further touch event to extend the window. */
+const TOUCH_MS = 1500;
+/** How many frames a follow write is retried before the port is taken at its
+ *  word — enough for WebKit to settle a composer-driven resize, few enough
+ *  that a reader who is being held off the tail by something else is not
+ *  fought over. */
+const SETTLE_FRAMES = 4;
+/** The pinned card's ceiling is the port's measured height, as a custom
+ *  property (`.chat-tailpin.is-pinned { max-height: var(--c-port-h) }`) —
+ *  measured rather than said in CSS as `100cqh`, because making the port a
+ *  size container is what lost WebKit the scroll offset (styles/transcript.css).
+ *  A port with no layout yet (0px) keeps the fallback: a set variable would
+ *  otherwise pin the card to nothing. `style` is absent on a stub port. */
+function portHeight(wrap: HTMLDivElement): void {
+  if (!wrap.style) return;
+  const h = wrap.clientHeight;
+  if (h > 0) wrap.style.setProperty("--c-port-h", h + "px");
+  else wrap.style.removeProperty("--c-port-h");
+}
+/** The keys that scroll a focused port, and which way. */
+const KEY_DIR: Record<string, number> = {
+  ArrowUp: -1,
+  PageUp: -1,
+  Home: -1,
+  ArrowDown: 1,
+  PageDown: 1,
+  End: 1,
+  // Not Space: on a focused button or link in the log it is a click, and
+  // reading it as a scroll down would overwrite a flick up's direction.
+};
 /** T:12848 — long enough to be seen after the scroll settles, short enough that
  *  it is plainly a flare and not a mode. */
 export const ANCHOR_FLARE_MS = 1600;
@@ -82,6 +123,8 @@ export interface TranscriptProps {
   /** A queued / not-sent bubble was clicked: pull it back into the box
    *  (`TurnProps.onPullPending`). */
   onPullPending?: (key: string) => void;
+  /** "Fork from here" on a user turn (`TurnProps.onFork`). */
+  onFork?: (key: string) => void;
   /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
   onOpenShot?: (shot: Viewable) => void;
   /** "preview" / "app" — the word a receipt's nouns use (`PaneState.paneNoun`). */
@@ -136,6 +179,7 @@ export const Transcript = memo(function Transcript({
   onAnchorSpent,
   onShowSent,
   onPullPending,
+  onFork,
   onOpenShot,
   paneNoun,
   what,
@@ -148,6 +192,8 @@ export const Transcript = memo(function Transcript({
   const port = useRef<HTMLDivElement>(null);
   const log = useRef<HTMLDivElement>(null);
   const followTail = useRef(true);
+  /** Filled by the gesture effect: forgets the gesture window in flight. */
+  const clearGesture = useRef<(() => void) | null>(null);
   const [flare, setFlare] = useState<string | null>(null);
   // Keyed by the anchor it was spent on, not a boolean: the chat does not
   // remount between two task-list clicks, and a latch that never re-armed made
@@ -156,96 +202,262 @@ export const Transcript = memo(function Transcript({
   const stopSettle = useRef<(() => void) | null>(null);
 
   // ── the follow flag and the gestures that move it ────────────────────────
+  //
+  // ONE RULE (Akshil 2026-10-19, "the scroll inside claude chat is completely
+  // broken"): the flag moves ONLY on the reader's own gesture, and the gesture
+  // says which way. Everything else that fires a scroll event — our own
+  // `scrollTop = scrollHeight`, the browser clamping the offset because the
+  // log got shorter or the port taller, WebKit snapping a sub-pixel offset back
+  // to the pixel below it — is not the reader and leaves the flag exactly where
+  // it was.
+  //
+  // The version before this read the DIRECTION off the scroll event itself
+  // (`top < lastTop - 1` = "they moved up") and then needed a special case for
+  // every clamp that looked like a move: the fold shrinking the log, the
+  // composer folding after a send, the same clamp seen a frame late. It still
+  // lost one: in WebKit (the desktop app) the first streamed line overflows the
+  // port by a fraction of a pixel, our write lands `scrollTop` on 2, the engine
+  // snaps it to 0 a frame later, and that 2px "move up" turned the follow off
+  // for the rest of the run — the reader then watched the reply stream below a
+  // port that never moved, and every unconditional write (a card opening, the
+  // run settling) read as a jump "to a different place". Chromium never snaps,
+  // which is why the same build looked fine in a browser.
+  //
+  // So the direction comes from the gesture, and the scroll event only applies
+  // it: within a short window after a wheel tick / touch move / scroll key, or
+  // while the pointer is down on the scrollbar, a scroll event re-reads the
+  // flag — UP is "let me read" and drops it with no distance threshold (a 20px
+  // flick must not be out-raced by the next frame's write), DOWN re-arms it
+  // once the reader is inside `NEAR_BOTTOM_PX` of the tail. Rubber-banding off
+  // the bottom edge bounces the offset back UP, but it does so after a wheel
+  // DOWN, so it re-arms rather than disarms. Outside a gesture the event is
+  // ignored. That is the same model the bots thread uses (a geometry read on
+  // the reader's scroll), with the gesture gate added because a reply streams
+  // here token by token and a clamp per token was the thing killing the follow.
   useEffect(() => {
     const wrap = port.current;
     if (!wrap) return;
     const nearBottom = () =>
       wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < NEAR_BOTTOM_PX;
-    // A wheel/trackpad flick upward is an unambiguous "let me read", so it
-    // drops the follow with NO distance threshold — that is what makes it
-    // impossible for the next frame's write to out-race the gesture.
-    const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) followTail.current = false;
+    const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+    /** The scroll events until this instant are the reader's. */
+    let gestureUntil = 0;
+    /** Which way the reader is going: -1 up (reading), +1 down (catching up). */
+    let gestureDir = 0;
+    /** The pointer is down on the scrollbar (a press on the port's own box, not
+     *  on anything in it): every scroll event until it lifts is the reader's,
+     *  and the bar has no direction of its own so it is read off the move. */
+    let barDrag = false;
+    let lastTop = wrap.scrollTop;
+    const gesture = (dir: number, ms: number) => {
+      gestureDir = dir;
+      gestureUntil = now() + ms;
+      // Up is answered on the spot, so no write can land between the gesture
+      // and the scroll event it produces. Down AT the tail is answered on the
+      // spot too (CodeRabbit, PR #1748): a reader clamped onto the bottom by
+      // a shrink has nowhere to scroll, so the wheel tick produces no scroll
+      // event for `onScroll` to re-arm on — the gesture itself is the answer.
+      if (dir < 0) followTail.current = false;
+      else if (nearBottom()) followTail.current = true;
     };
-    // A finger dragging DOWN scrolls the content up: the same "let me read", and
-    // tracked across touchmove rather than read off the scrollport, because
-    // asking geometry here re-introduced exactly that race.
+    // A gesture the PINNED CARD owns is not the transcript's (CodeRabbit, PR
+    // #1748): wheel and touch bubble up from `.chat-tailpin.is-pinned`, whose
+    // own scroller answers them (`overscroll-behavior: contain` stops the
+    // chaining, not the event), and a flick up inside the card must not drop
+    // the follow of the reply behind it.
+    const ownedByPin = (target: EventTarget | null) => {
+      const box = pin.current;
+      // Optional reads: the pin is a bare stub in a suite.
+      return (
+        !!box &&
+        !!box.classList?.contains?.("is-pinned") &&
+        typeof Node !== "undefined" &&
+        target instanceof Node &&
+        !!box.contains?.(target)
+      );
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY === 0 || ownedByPin(e.target)) return;
+      barDrag = false; // a wheel means the bar was let go, whatever we missed
+      gesture(e.deltaY < 0 ? -1 : 1, GESTURE_MS);
+    };
+    // Lent to the effects that re-arm the follow on their own authority (a
+    // send, an open card): the gesture window they interrupt must not disarm
+    // it again on the scroll event their own write produces.
+    clearGesture.current = () => {
+      gestureDir = 0;
+      gestureUntil = 0;
+      barDrag = false;
+    };
+    // A finger dragging DOWN scrolls the content up: the same "let me read".
+    // Tracked across touchmove rather than read off the scrollport, and the
+    // window after the finger lifts is long because momentum keeps scrolling
+    // in the finger's direction well after the last touch event.
+    // `touchY` is the anchor the NEXT move is measured from, and it only moves
+    // once a move has registered, so a slow drag of a pixel per event still
+    // adds up to a gesture (threshold-free in effect, 2px of jitter aside).
     let touchY: number | null = null;
+    let touchMoved = false;
     const onTouchStart = (e: TouchEvent) => {
-      touchY = e.touches[0] ? e.touches[0].clientY : null;
+      touchY = ownedByPin(e.target) ? null : e.touches[0] ? e.touches[0].clientY : null;
+      touchMoved = false;
+      barDrag = false;
+      // A fresh finger carries no direction: a tap after an earlier drag up
+      // must not re-open that drag's window.
+      gestureDir = 0;
     };
     const onTouchMove = (e: TouchEvent) => {
       const y = e.touches[0] ? e.touches[0].clientY : null;
-      if (y !== null && touchY !== null && y > touchY + 2) followTail.current = false;
-      touchY = y;
+      if (y !== null && touchY !== null && Math.abs(y - touchY) > 2) {
+        gesture(y > touchY ? -1 : 1, TOUCH_MS);
+        touchMoved = true;
+        touchY = y;
+      }
     };
-    // Everything else that moves the scrollport — scrollbar drag, keyboard, a
-    // scrollIntoView, our own writes. `lastTop`/`lastHeight` tell a reader
-    // moving UP apart from the browser CLAMPING scrollTop because the content
-    // got shorter; a clamp is not a gesture.
-    //
-    // …AND A SHRINK RE-ARMS NOTHING EITHER (Akshil 2026-09-15). A fold makes
-    // `.chat-log` SHORTER — the wall that folds behind the newest reply when a
-    // conversation is opened loses several screenfuls at once, and one click on
-    // a mark can lose a screenful — and a reader parked 200px up was suddenly
-    // within `NEAR_BOTTOM_PX` of a tail that had moved up to meet them. Geometry read that as "they are at the bottom", re-armed
-    // the follow, and the very next write yanked them to the tail of a
-    // conversation they were reading the middle of. Both halves of this branch
-    // are therefore gated on `h >= lastHeight`: a shrink is not a gesture in
-    // either direction. A reader who WAS following is untouched — the flag is
-    // already true and nothing here turns it off — so the fold still carries
-    // them down with the new reply.
-    let lastTop = 0;
-    let lastHeight = 0;
+    const onTouchEnd = () => {
+      touchY = null;
+      if (touchMoved && gestureDir) gestureUntil = now() + TOUCH_MS;
+    };
+    // The keyboard scrolls the port only when focus is in it and not in a
+    // field; a key that moves the view is a gesture like any other.
+    const onKeyDown = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      const dir = KEY_DIR[e.key];
+      if (dir) gesture(dir, GESTURE_MS);
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target === wrap) barDrag = true;
+    };
+    const onPointerUp = () => {
+      barDrag = false;
+    };
+    // A release the document never saw (the pointer left the window, the
+    // window lost focus mid-drag) would leave `barDrag` stuck, and the drag
+    // branch below would then read every clamp as a move — the bug class this
+    // effect exists to kill. Any wheel or touch clears it too (above).
+    const win = typeof window === "undefined" ? null : window;
+    win?.addEventListener("blur", onPointerUp);
     const onScroll = () => {
       const top = wrap.scrollTop;
-      const h = wrap.scrollHeight;
-      if (h >= lastHeight) {
-        if (top < lastTop - 1) followTail.current = false;
-        else if (nearBottom()) followTail.current = true;
-      }
+      const moved = top - lastTop;
       lastTop = top;
-      lastHeight = h;
+      if (barDrag) {
+        if (moved < 0) followTail.current = false;
+        else if (nearBottom()) followTail.current = true;
+        return;
+      }
+      if (now() > gestureUntil) {
+        // A clamp, a snap, or our own write. A pinned reader who is no longer
+        // on the tail after one of those was moved by the browser, not by
+        // themselves (the composer's measuring collapse, above): put them back.
+        // Bounded by the same budget as the write's own retries, or a WebKit
+        // snap that fires a scroll event per frame would keep this armed for
+        // as long as the reply streams.
+        if (followTail.current && !atTail() && settleTries < SETTLE_FRAMES) armSettle();
+        return;
+      }
+      if (gestureDir < 0) followTail.current = false;
+      else if (nearBottom()) followTail.current = true;
+    };
+    // …AND AGAIN NEXT FRAME (the bots thread's `pinToEnd`, threadDom.ts).
+    // WebKit clamps a `scrollTop` written inside a ResizeObserver callback
+    // against the scrollable range of the PREVIOUS layout: the composer grows
+    // a line, the port shrinks by it, this observer fires with the new numbers
+    // in hand — and the write lands on the old maximum, which is where the
+    // reader already is, so nothing moves and the reply's last line sits
+    // behind the composer (Akshil 2026-10-19: "when I do multi-line it jumps
+    // the content up and down every time I do a new line"). The next frame's
+    // write sees the settled range. Still behind the flag, so a wheel up in
+    // between wins.
+    //
+    // AND UNTIL IT STICKS, a few frames at most: the composer's auto-grow
+    // measures itself by collapsing to `height: auto` for one forced layout,
+    // which makes the port momentarily taller and clamps the offset DOWN by
+    // the lines the box gave up — and WebKit then takes a frame or two before a
+    // write against the restored range lands where it should.
+    // 2px of slack: sub-pixel layout rounds the three numbers separately.
+    const atTail = () => wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight <= 2;
+    let settle = 0;
+    let settleTries = 0;
+    const armSettle = () => {
+      if (settle || typeof requestAnimationFrame === "undefined") return;
+      settle = requestAnimationFrame(() => {
+        settle = 0;
+        if (!followTail.current) return;
+        wrap.scrollTop = wrap.scrollHeight;
+        if (!atTail() && ++settleTries < SETTLE_FRAMES) armSettle();
+      });
     };
     const followBottom = () => {
-      if (followTail.current) wrap.scrollTop = wrap.scrollHeight;
+      if (!followTail.current) return;
+      wrap.scrollTop = wrap.scrollHeight;
+      settleTries = 0;
+      armSettle();
     };
-    // Lent to the schedule banner, which must ask the flag rather than write
-    // `scrollTop` itself (see `followRef`).
+    // Lent to the schedule banner and the run's settle, which must ask the
+    // flag rather than write `scrollTop` themselves (see `followRef`).
     if (followRef) followRef.current = followBottom;
     wrap.addEventListener("wheel", onWheel, { passive: true });
     wrap.addEventListener("touchstart", onTouchStart, { passive: true });
     wrap.addEventListener("touchmove", onTouchMove, { passive: true });
+    wrap.addEventListener("touchend", onTouchEnd, { passive: true });
+    wrap.addEventListener("touchcancel", onTouchEnd, { passive: true });
+    wrap.addEventListener("keydown", onKeyDown);
+    wrap.addEventListener("pointerdown", onPointerDown);
+    const doc = typeof document === "undefined" ? null : document;
+    doc?.addEventListener("pointerup", onPointerUp, true);
+    doc?.addEventListener("pointercancel", onPointerUp, true);
     wrap.addEventListener("scroll", onScroll, { passive: true });
     // Belt and braces for the one growth a ResizeObserver can miss: a replaced
     // element that reserves its box up front paints into a box that never
     // changes size, and any LAYOUT its load shifts may land in the frame the
     // observer already answered. `load` does not bubble, hence the capture.
     wrap.addEventListener("load", followBottom, true);
-    // Writing scrollTop cannot resize anything, so this observer cannot
-    // re-enter itself.
+    // Growth is OBSERVED, not announced: most of what lands in a live turn
+    // grows AFTER the append that scrolled (a chip expanding, a code block as
+    // the highlighter runs, a picture once it loads). Writing scrollTop cannot
+    // resize anything, so this observer cannot re-enter itself.
     const grown =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(followBottom);
     if (grown && log.current) grown.observe(log.current);
-    // AND THE SCROLLPORT ITSELF, not only the log (#10). The landing bottom-
-    // anchor fires when the turns are laid out — and on a history landing with
-    // attachment chips the COMPOSER is still growing under it, so the port lost
-    // 66px of height a frame later and the conversation came to rest that far
-    // short of the bottom. The log never changed size, so the observer above
-    // never heard about it. The port shrinking IS the growth, seen from the
-    // other side; the flag decides what to do about it exactly as before, so a
-    // reader who has scrolled up is not moved by a chip mounting.
+    // AND THE SCROLLPORT ITSELF, not only the log (#10). The composer growing
+    // under a pinned log (a multi-line draft, the card unfolding on focus) is
+    // the port shrinking — the same growth seen from the other side — and the
+    // log never changed size, so the observer above never hears about it. The
+    // flag decides what to do about it exactly as before, so a reader who has
+    // scrolled up is not moved by the composer.
     if (grown) grown.observe(wrap);
+    // THE PINNED CARD'S CEILING follows the port (`portHeight`, above).
+    const sized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => portHeight(wrap));
+    if (sized) sized.observe(wrap);
     return () => {
+      if (settle && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(settle);
+      sized?.disconnect();
       wrap.removeEventListener("wheel", onWheel);
       wrap.removeEventListener("touchstart", onTouchStart);
       wrap.removeEventListener("touchmove", onTouchMove);
+      wrap.removeEventListener("touchend", onTouchEnd);
+      wrap.removeEventListener("touchcancel", onTouchEnd);
+      wrap.removeEventListener("keydown", onKeyDown);
+      wrap.removeEventListener("pointerdown", onPointerDown);
+      doc?.removeEventListener("pointerup", onPointerUp, true);
+      doc?.removeEventListener("pointercancel", onPointerUp, true);
+      win?.removeEventListener("blur", onPointerUp);
       wrap.removeEventListener("scroll", onScroll);
       wrap.removeEventListener("load", followBottom, true);
       grown?.disconnect();
       if (followRef) followRef.current = null;
+      clearGesture.current = null;
     };
   }, [followRef]);
+  // The first measurement lands BEFORE the first paint (Bugbot, PR #1748): the
+  // observer above is armed from an effect, which runs after the frame a
+  // restored session with an open card is painted in, and that frame drew the
+  // pin at the `100vh` fallback — taller than a cards-wall tile or Peek.
+  useLayoutEffect(() => {
+    if (port.current) portHeight(port.current);
+  }, []);
 
   // A new turn is the reader asking for the tail again: sending re-arms the
   // follow that scrolling up turned off, so the answer to what they just asked
@@ -255,6 +467,10 @@ export const Transcript = memo(function Transcript({
   const userTurns = state.turns.filter((t) => t.role === "user").length;
   useLayoutEffect(() => {
     followTail.current = true;
+    // …and the gesture that turned it off is spent (CodeRabbit, PR #1748): a
+    // send inside a flick's window would otherwise see this write's own scroll
+    // event, read it as the flick, and drop the follow of the reply just asked for.
+    clearGesture.current?.();
     if (port.current) port.current.scrollTop = port.current.scrollHeight;
   }, [userTurns]);
   useLayoutEffect(() => {
@@ -729,6 +945,7 @@ export const Transcript = memo(function Transcript({
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
                   {...(onPullPending ? { onPullPending } : {})}
+                  {...(onFork ? { onFork } : {})}
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}
                   {...(paneNoun ? { paneNoun } : {})}

@@ -49,11 +49,14 @@ import os
 from datetime import datetime, timezone
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.agent_backends import roots
 
-# CLAUDE_CONFIG_DIR wins where set — same rule (and same deliberate local
-# duplication) as server/routers/claude_sessions.py, user_plugin.py and the
-# claude template's CLAUDE_DIR.
-CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+# Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
+# `agent_roots.claude_dir`), module-level for the tests that patch it; the
+# listing walks `roots.projects_roots(PROJECTS_DIR)`, so a Copilot transcript
+# is read too (it never carries an Artifact tool_use — caps.artifacts is off
+# for that backend — but one glob rule for every reader beats a special case).
+CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 
 # Substring screens applied to a raw line BEFORE json.loads. Cheap enough to run
@@ -368,10 +371,11 @@ def list_artifacts() -> list[dict]:
     degrades to what it could see and never fails."""
     merged: dict[str, dict] = {}
     seen: set[str] = set()
-    for jsonl_path in sorted(glob.glob(os.path.join(PROJECTS_DIR, "*", "*.jsonl"))):
-        seen.add(os.path.abspath(jsonl_path))
-        for record in _transcript_artifacts(jsonl_path):
-            _absorb(merged, record)
+    for _backend, root in roots.projects_roots(PROJECTS_DIR):
+        for jsonl_path in sorted(glob.glob(os.path.join(root, "*", "*.jsonl"))):
+            seen.add(os.path.abspath(jsonl_path))
+            for record in _transcript_artifacts(jsonl_path):
+                _absorb(merged, record)
     # pop(), not del: two overlapping listings can both see the same stale key,
     # and the second del would KeyError. FastAPI serves sync routes from a
     # threadpool, so overlapping is normal, not exotic.

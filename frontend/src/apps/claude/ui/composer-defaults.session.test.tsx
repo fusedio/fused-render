@@ -465,6 +465,25 @@ test("a field the record left empty waits for the slow read", async () => {
   expect([box.pills!.model, box.pills!.effort]).toEqual(["haiku", "max"]);
 });
 
+test("a record naming a model this agent does not list does NOT settle the pill", async () => {
+  // Validated at resolve time, so it must be validated at settle time too: an
+  // unlisted record speaks for nothing, and settling on it painted the fallback
+  // and then flipped when detection landed (and an early send carried the
+  // fallback).
+  const wire = reads({
+    fast: { model: "gpt-5.4", effort: "ultra" },
+    slow: { model: "opus", effort: "max" },
+    holdSlow: true,
+  });
+  const box = await mount(createMemoryParamsStore({ session_id: "sess-a" }));
+  expect(box.pills!.modelSettled).toBe(false);
+  expect(box.pills!.effortSettled).toBe(false);
+  expect(box.pills!.pillsReady).toBe(false);
+  await wire.landSlow();
+  expect(box.pills!.pillsReady).toBe(true);
+  expect([box.pills!.model, box.pills!.effort]).toEqual(["opus", "max"]);
+});
+
 test("a seeded param settles its pill without waiting for the slow read", async () => {
   // The rank below a record is the URL param, and nothing still in flight can
   // outrank it — so a deep-linked chat with no record of its own paints at once

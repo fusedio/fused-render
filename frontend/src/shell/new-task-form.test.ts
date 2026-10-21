@@ -2211,12 +2211,12 @@ describe("a draft remembers the conversation it is a message to", () => {
     // In the BODY rather than beside it: `from_chat_key` is a side effect (it
     // makes the server delete something) and is spent once, where this is plain
     // state and is restated on every save.
-    expect(s).toContain("      session_id: boundSessionId,");
+    expect(s).toContain('      session_id: continuesSession ? boundSessionId : "",');
     const body = s.slice(
       s.indexOf("const draftBody: TaskDraftForm | null ="),
       s.indexOf("const chatKeySpent = useRef(false);"),
     );
-    expect(body).toContain("session_id: boundSessionId,");
+    expect(body).toContain('session_id: continuesSession ? boundSessionId : "",');
   });
 
   test("a reopened draft's Schedule payload carries it", () => {
@@ -2224,7 +2224,7 @@ describe("a draft remembers the conversation it is a message to", () => {
     // `|| chatSessionId || ""`, and a reopened card has no `chatSessionId` —
     // the hop that made it is long over.
     expect(src()).toContain(
-      "sessionId: (!learnedSession && editing?.session_id) || boundSessionId,",
+      'sessionId: continuesSession ? (!learnedSession && editing?.session_id) || boundSessionId : "",',
     );
   });
 

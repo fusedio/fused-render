@@ -250,7 +250,7 @@ export const CHAT_ENTRY_ORIGIN = "chat";
  *  `queuedEntryId` is the third, optional half: a chat with no session yet is
  *  opened by the entry it is waiting as. Never both — a session outranks it, and
  *  a chat that has one has nothing left to open by entry. */
-export function chatUrl(target: string, sessionId: string, queuedEntryId = ""): string {
+export function chatUrl(target: string, sessionId: string, queuedEntryId = "", backend = ""): string {
   const encoded = target
     .replace(/^\/+/, "")
     .split("/")
@@ -261,7 +261,12 @@ export function chatUrl(target: string, sessionId: string, queuedEntryId = ""): 
     !sessionId && queuedEntryId
       ? `&${QUEUED_PARAM}=${encodeURIComponent(queuedEntryId)}`
       : "";
-  return `/explorer/view/${encoded}?_side=claude&session_id=${encodeURIComponent(sessionId)}${queued}`;
+  // `backend` BEFORE `session_id`, never after: `chatPaneUrl` strips a trailing
+  // empty `&session_id=` to spell the no-session door, and a param behind it
+  // would hide the tail it looks for. Only a NEW chat needs naming — a session
+  // carries its own agent (D2).
+  const agent = !sessionId && backend ? `&backend=${encodeURIComponent(backend)}` : "";
+  return `/explorer/view/${encoded}?_side=claude${agent}&session_id=${encodeURIComponent(sessionId)}${queued}`;
 }
 
 /** WHAT JOINS THE TWO HALVES. A pipe and not a `·`: the middot is this page's

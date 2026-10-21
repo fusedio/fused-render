@@ -68,7 +68,7 @@ interface ClaudeRow {
 // WHO is signed in, when the CLI said. "as <email> · <org> (<plan>)" for a
 // claude.ai login, "Using an API key" for a key, the generic line otherwise —
 // so the green check names the account it is vouching for.
-function signedInHint(h: ClaudeHealth): string {
+export function signedInHint(h: ClaudeHealth): string {
   const a = h.account;
   if (h.signed_in !== true || !a) return "Uses your existing Claude subscription — no key to paste.";
   if (a.method === "apiKey") return "Using an API key from the environment (ANTHROPIC_API_KEY).";

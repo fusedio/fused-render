@@ -41,7 +41,7 @@ export type SettingsTab = "general" | "permissions" | "browser" | "skills" | "ro
 
 export interface BotSettingsProps {
   bot: Bot;
-  /** The section to open on (Preferences' Phone row and the seeded greeting ask for "phone"). */
+  /** The section to open on (the seeded greeting asks for "phone"). */
   tab?: string;
   onClose: (v: BotDialogValue | null) => void;
 }
@@ -55,7 +55,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   // What the dialog opened with (OpenBot's botDialog arguments).
   const [init] = useState(() => ({
     name: bot.name, model: bot.model || "sonnet", effort: bot.effort || "low", instructions: bot.instructions || "", memory: bot.memory || "",
-    approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", encrypt: !!bot.encrypt,
+    approval: bot.approval || "ask", buildAccess: bot.build_access || "scoped", terminal: bot.terminal === true, encrypt: !!bot.encrypt,
     maxSteps: bot.max_steps ? String(bot.max_steps) : "",
     imessage: bot.imessage || "", imessageEnabled: !!bot.imessage_enabled, imessageTo: bot.imessage_to || "",
     superAccess: bot.super_access || "ask", trustedApps: bot.trusted_apps || [], allowRules: bot.allow_rules || [],
@@ -70,9 +70,12 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [memory, setMemory] = useState(init.memory);
   const [approval, setApproval] = useState<string>(init.approval);
   const [buildAccess, setBuildAccess] = useState<string>(init.buildAccess);
+  // The Terminal row shows for every bot except Super Bot, which has Bash.
+  const terminalFeature = !isSuper;
+  const [terminal, setTerminal] = useState(init.terminal);
   const [superAccess, setSuperAccess] = useState<string>(init.superAccess);
   const [encrypt, setEncrypt] = useState(init.encrypt);
-  // Page-wide prefs (localStorage, every bot): they apply at once, not on Save.
+  // Page-wide prefs (server prefs `bots_*`, every bot; store.ts hydrateBotsPrefs, D1386): they apply at once, not on Save.
   const [autoOpen, setAutoOpen] = useState(autoStage);
   const [sounds, setSoundsState] = useState(soundsOn);
   const [clearBtn, setClearBtn] = useState(clearContextOn);
@@ -103,7 +106,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const holdFor = (open: boolean) => { if (open) busy.current = true; else window.setTimeout(() => { busy.current = false; }, 0); };
 
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
-  const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, encrypt, profile, maxSteps,
+  const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, ...(terminalFeature ? { terminal } : {}), encrypt, profile, maxSteps,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
     kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, folders,
     allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
@@ -248,12 +251,24 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                     </NativeSelect>
                   </Row>
                 ) : null}
+                {terminalFeature ? (
+                  <Row title="Terminal"
+                    text={bot.terminal_needs_claude ? "Needs a Claude model: the steps engine cannot use a terminal." : "Lets it run commands in its own terminal (you watch it live beside the browser). Every command asks unless you approved it forever."}
+                    htmlFor="bmterminal">
+                    <NativeSelect className="w-full" id="bmterminal" value={terminal ? "on" : "off"} disabled={!!bot.terminal_needs_claude}
+                      onChange={(e) => setTerminal(e.target.value === "on")}>
+                      <NativeSelectOption value="off">Off</NativeSelectOption>
+                      <NativeSelectOption value="on">On</NativeSelectOption>
+                    </NativeSelect>
+                  </Row>
+                ) : null}
                 {allowRules.length ? (
-                  <Row title="Approved forever" text="Answers you gave with “Approve, don't ask again” on a card. Remove one and the bot asks again next time." stack>
+                  <Row title="Approved forever" text="Calls this bot makes without asking: ones you approved with “Approve, don't ask again” on a card, and ones its preset pre-approved. Remove one and the bot asks again next time." stack>
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmforever">
                       {allowRules.map((r) => (
                         <div key={`${r.kind}:${r.key}`} className="flex items-center gap-2.5 px-3 py-1.5 text-sm">
                           <span className="min-w-0 flex-1 truncate">{r.label || r.key}</span>
+                          {r.source ? <span className="shrink-0 text-xs text-muted-foreground">{`from the ${r.source} preset`}</span> : null}
                           <Button variant="ghost" size="icon-xs" aria-label="Ask again" title="Ask again" className="text-muted-foreground hover:text-destructive"
                             onClick={() => setAllowRules((cur) => cur.filter((x) => !(x.kind === r.kind && x.key === r.key)))}><Trash2Icon /></Button>
                         </div>

@@ -666,12 +666,17 @@ def test_speech_to_text_prefers_MLX_on_a_mac_and_CTranslate2_everywhere_else(
     resolved = registry.for_capability(registry.SPEECH_TO_TEXT)
     assert resolved is not None and resolved.code == "mlx-whisper"
 
-    for system, machine in (("Linux", "x86_64"), ("Darwin", "x86_64")):
-        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
-        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
-        resolved = registry.for_capability(registry.SPEECH_TO_TEXT)
-        assert resolved is not None and resolved.code == "faster-whisper", (
-            f"{system}/{machine} lost speech to text")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    resolved = registry.for_capability(registry.SPEECH_TO_TEXT)
+    assert resolved is not None and resolved.code == "faster-whisper", (
+        "linux/x86_64 lost speech to text")
+
+    # Intel Macs are the exception by decision, not by wheel: every local
+    # runner is off there (`registry.local_ai_disabled`), CTranslate2 included.
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    assert registry.for_capability(registry.SPEECH_TO_TEXT) is None
+    assert registry.unavailable_reason(registry.SPEECH_TO_TEXT) == registry.LOCAL_AI_DISABLED_REASON
 
 
 def test_image_generation_takes_MFLUX_on_apple_silicon_and_diffusers_elsewhere(
@@ -1392,7 +1397,9 @@ def test_llamacpp_texts_platform_gate_matches_its_published_wheel_tags(monkeypat
     ):
         monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
         monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
-        status = registry.by_code("llamacpp-text").available()
+        # The row's OWN gate: on an Intel Mac `available()` answers
+        # `local_ai_disabled` first, which would hide the tag-set claim.
+        status = registry.by_code("llamacpp-text")._available()
         assert status.ok is False, (system, machine)
         assert needle in status.reason, (system, machine, status.reason)
 
@@ -2697,7 +2704,7 @@ def test_the_mflux_runner_BOUNDS_mflux():
     declared = projectenv.dependencies_of(runner.folder)
     bounds = [d for d in declared if d.replace(" ", "").startswith("mflux")]
     assert bounds, f"mflux is not declared at all: {declared}"
-    assert bounds[0].replace(" ", "") == "mflux>=0.19,<0.20", bounds
+    assert bounds[0].replace(" ", "") == "mflux>=0.23,<0.24", bounds
 
 
 #: Runner dependencies allowed to stay open-ended, and what each one buys by it.
@@ -2717,7 +2724,6 @@ def test_the_mflux_runner_BOUNDS_mflux():
 UNBOUNDED_RUNNER_DEPENDENCIES = {
     "huggingface-hub": "a download client; it fetches weights, it does not run them",
     "psutil": "reads RSS for the memory column and nothing else",
-    "pillow": "writes the PNG",
     "sentencepiece": "a tokenizer file format, fixed by the checkpoints that use it",
     "protobuf": "sentencepiece's on-disk format, same argument",
     "jinja2": (

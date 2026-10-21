@@ -36,8 +36,7 @@ for an app whose folder is its own pushed GitHub repo — opt-in, default off;
 see ``github_link_enabled``),
 the five **contrib_*_enabled** phase switches of the GitHub contribution loop
 (opt-in, default off; see ``CONTRIB_PREF_KEYS`` and ``fused_render.contrib.flags``),
-**default_model** (the preferred Claude model as a short
-name, unset by default; see ``default_model``), **indexing_enabled** (whether
+**indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
 and the **execution engine** for /api/run:
 
@@ -70,6 +69,7 @@ X-Fused guard and the small env-var effective-engine mirror are duplicated
 locally like shell/bookmarks.py's guard is.
 """
 import os
+import re
 import threading
 
 from fastapi import APIRouter, Body, Header
@@ -90,14 +90,14 @@ VALID_ENGINES = ("builtin", "fused")
 #: a runner named "auto" and be dropped as unknown.
 AUTO_ENGINE = "auto"
 VALID_CALLS_PARAMS = ("full", "keys", "off")
-# The default-model preference's value set. SHORT NAMES, not API model ids, and
-# `""` — unset — is a first-class member rather than an absence: it is what the
-# page's "Automatic" option writes, and it means "let each consumer keep its own
-# default" (see default_model). The names are the claude template's own selector
-# list (frontend/src/apps/claude composer MODELS) — the pref has to speak the same
-# vocabulary as the control it presets, and the CLI those names reach accepts
-# them as aliases. The relay (server/ai.py) wants a full API id instead, so the
-# short→id mapping lives THERE, in one place, next to the caller that needs it.
+# The Claude model SHORT NAMES a session or task may be started with — not API
+# model ids — with `""` a first-class member meaning "no flag, keep the
+# session's own default". The claude template's own selector list (frontend/
+# src/apps/claude composer MODELS) and the CLI's aliases. Once also the value
+# set of a `default_model` preference, retired with its Preferences control:
+# the global model is `model` in ~/.claude/settings.json (server/ai.py
+# `default_model`). The relay wants a full API id, so the short→id mapping
+# lives THERE, in one place, next to the caller that needs it.
 VALID_DEFAULT_MODELS = ("", "fable", "opus", "sonnet", "haiku")
 DEFAULT_CALLS_RETENTION_DAYS = 14
 #: How long a resident local model may sit idle before the reaper unloads it
@@ -189,7 +189,7 @@ def canvases_enabled() -> bool:
     entry.
 
     A SWITCH OVER THE ENTRY POINTS, NOT A ROUTE GUARD: `/canvases` and
-    `/canvases/<name>` keep answering while this is off, the same way the
+    `/canvases/<env>/<name>` keep answering while this is off, the same way the
     signed-out state has always left them reachable and let the page explain
     itself. A deep link, a bookmark, or a workspace someone still has open is
     not what a reader turning this off asked to lose; the nav entries for a
@@ -197,19 +197,6 @@ def canvases_enabled() -> bool:
     reads as off, so an existing install — signed in or not — has to opt in.
     """
     return read_prefs().get("canvases_enabled") is True
-
-
-def menubar_pin_enabled() -> bool:
-    """Whether the macOS status item shows the PINNED-FILE popover
-    (menubar_pin.py) instead of the menu-bar Dock (menubar_dock.py).
-
-    The Dock is the default (owner's call, 2026-10-08): a stored `true` is
-    the only way back to the pin, same idiom as `canvases_enabled`. Read at
-    launch (app.py `_kickoff`) and applied live by `PUT /api/prefs` through
-    `window_policy.native_hooks["menubar_apply"]` when the running app has
-    installed it.
-    """
-    return read_prefs().get("menubar_pin_enabled") is True
 
 
 def native_windows_enabled() -> bool:
@@ -435,6 +422,69 @@ def task_recap_titles_enabled() -> bool:
     return read_prefs().get("task_recap_titles_enabled") is True
 
 
+def task_summary_titles_enabled() -> bool:
+    """Whether Tasks rows are titled ONLY by the server's stable `title` (a
+    user-set title, else Claude Code's `ai-title` summary, else the first
+    line of the first message) — never by the newest message, the haiku
+    recap or Claude's reply (default off; only a stored `true` is on).
+    Rows then carry `title_mode: "summary"`; the key is absent when off."""
+    return read_prefs().get("task_summary_titles_enabled") is True
+# ---- moved off localStorage (D1386) -----------------------------------------
+#
+# The four below were browser localStorage keys until D1386. localStorage is
+# per ORIGIN, and the desktop app walks ports 1777..1787 then an ephemeral one
+# (shell/onboarding.py) — so a relaunch on another port is a new origin with
+# empty storage and every one of these silently fell back to its default. The
+# client imports its old key once (push here, then remove it) and reads them
+# off `/api/prefs` from then on.
+
+#: Tasks-page view tab ids: short lower-case identifiers (the client's
+#: `TasksView` names). Unknown-but-well-formed ids are kept — the client drops
+#: what it does not know, so a newer client's tab survives an older server.
+_TASKS_VIEW_TAB_RE = re.compile(r"^[a-z_]{1,24}$")
+MAX_TASKS_VIEW_TABS = 8
+
+
+def bots_autostage() -> bool:
+    """"Open the browser when a bot needs me": a bot-initiated hand-over on
+    the selected bot opens the Bots page's Stage by itself (default ON — only
+    a stored ``false`` turns it off). Was localStorage
+    ``browser-bot.autostage``."""
+    return read_prefs().get("bots_autostage") is not False
+
+
+def bots_sounds() -> bool:
+    """Whether a hand-over plays the Bots page's chime (default ON — only a
+    stored ``false`` turns it off). Was localStorage ``browser-bot.sounds``."""
+    return read_prefs().get("bots_sounds") is not False
+
+
+def bots_clear_enabled() -> bool:
+    """Whether the bot chat header shows its Clear context button (a feature
+    flag, default OFF — only a stored ``true`` turns it on). Was localStorage
+    ``browser-bot.clear``."""
+    return read_prefs().get("bots_clear_enabled") is True
+
+
+def tasks_view_tabs() -> list[str]:
+    """The Tasks page's chosen view tabs, in order. ``[]`` — unset, empty or
+    unreadable — means "the client's defaults"; never raises."""
+    value = read_prefs().get("tasks_view_tabs")
+    if not isinstance(value, list):
+        return []
+    tabs = [t for t in value if isinstance(t, str) and _TASKS_VIEW_TAB_RE.fullmatch(t)]
+    return list(dict.fromkeys(tabs))[:MAX_TASKS_VIEW_TABS]
+
+
+def claude_strict_mcp_enabled() -> bool:
+    """Whether chat and Tasks-page Claude sessions start lean —
+    `--strict-mcp-config`, so the user's own MCP servers and claude.ai
+    connectors are not launched (about 220 MB less per session; enabled
+    plugins' MCP servers are kept). Default ON: only a stored `false` turns it
+    off. `claude_agent/agent.py::_strict_mcp_pref` reads the same key."""
+    return read_prefs().get("claude_strict_mcp_enabled") is not False
+
+
 def lan_enabled() -> bool:
     """Whether the user's apps (everything under ~/Fused plus linked folders)
     are shared with the local network (default off — opt-in). The switch
@@ -445,23 +495,53 @@ def lan_enabled() -> bool:
     return read_prefs().get("lan_enabled") is True
 
 
-def default_model() -> str:
-    """The user's preferred Claude model, as a short name — `""` when unset.
+#: The two agent switches (D17, docs/COPILOT_BACKEND.md). Claude Code is on
+#: unless a stored `false` turns it off; Copilot is off unless a stored `true`
+#: turns it on. Asymmetric defaults on purpose — "Claude by default" is the
+#: owner's rule — and `put_prefs` refuses the write that would clear both.
+AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled"}
+VALID_DEFAULT_BACKENDS = ("claude", "copilot")
 
-    One preference, two consumers, and neither is allowed to be the authority
-    on it: the fused.ai relay (server/ai.py, which maps the short name to the
-    full API id it hands the CLI) and the claude chat template (which uses it
-    to preselect its model chip). Both rank it the same way — an EXPLICIT
-    choice always wins, this is the next-best answer, and each keeps its own
-    hardcoded fallback beneath it — so the pref changes what happens when
-    nobody asked for a model, never what happens when somebody did.
 
-    An unknown value reads as unset, exactly like `selected_engine`'s: prefs.json
-    is a plain file a user may hand-edit, and the one thing that must not happen
-    is an arbitrary string reaching a subprocess argv.
-    """
-    value = read_prefs().get("default_model")
-    return value if value in VALID_DEFAULT_MODELS else ""
+def backend_enabled(backend: str) -> bool:
+    """Whether `backend` ("claude" | "copilot") may start chats and tasks.
+    Unknown backend reads as off. See `agent_backends.registry.enabled_ids`
+    for the never-empty guarantee this feeds."""
+    key = AGENT_BACKEND_KEYS.get(backend)
+    if key is None:
+        return False
+    value = read_prefs().get(key)
+    if backend == "claude":
+        return value is not False
+    return value is True
+
+
+def claude_enabled() -> bool:
+    return backend_enabled("claude")
+
+
+def copilot_enabled() -> bool:
+    return backend_enabled("copilot")
+
+
+def default_backend() -> str:
+    """The agent new chats and tasks start from, as stored — `"claude"` when
+    unset or junk. Whether it is ENABLED is the registry's question
+    (`agent_backends.registry.default_id`), which re-points to an enabled one."""
+    value = read_prefs().get("default_backend")
+    return value if value in VALID_DEFAULT_BACKENDS else "claude"
+
+
+def _agents_state() -> dict:
+    """`{"claude": bool, "copilot": bool, "default": id}` for `GET /api/prefs`.
+    Imported lazily: the registry reads this module for the switches. The
+    REGISTRY's answer, not the raw switches: a hand-edited prefs.json that
+    turns both off reads as Claude on there, and this page must agree."""
+    from fused_render.agent_backends import registry
+
+    return {"claude": registry.is_enabled("claude"),
+            "copilot": registry.is_enabled("copilot"),
+            "default": registry.default_id()}
 
 
 def inference_engines() -> dict:
@@ -526,15 +606,43 @@ def _valid_engine_choice(capability: str, code: str) -> str | None:
     return None
 
 
+#: Process-level switch for file indexing, same shape as `FUSED_RENDER_CALLS`
+#: (calls.enabled_override): unset → the preference decides; an off-word
+#: ("0", "false", "no", "off") forces indexing off; any other value forces it
+#: on. The force-ON side exists for dev runs, which default OFF (below).
+INDEXING_ENV = "FUSED_RENDER_INDEXING"
+
+
+def indexing_override() -> bool | None:
+    raw = os.environ.get(INDEXING_ENV)
+    if raw is None:
+        return None
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def is_dev_run() -> bool:
+    """A `scripts/dev.sh` server (it exports FUSED_RENDER_DEV=1; nothing in a
+    packaged app ever sets it — routers/config.py reports the same bit as
+    `dev`). pytest does not set it, so test defaults are untouched."""
+    return os.environ.get("FUSED_RENDER_DEV") == "1"
+
+
 def indexing_enabled() -> bool:
-    """Whether background file-index scanning may run at all (default ON).
+    """Whether background file-index scanning may run at all (default ON
+    for the installed app, default OFF for a dev run).
 
     Mirrors `calls_enabled()`'s idiom: absence and any non-`false` stored
     value both read as enabled, so a preference file that predates this
-    setting — every existing install — keeps scanning exactly as before. No
-    env override, unlike `calls_enabled`'s `FUSED_RENDER_CALLS`: there is no
-    operational reason to force this off outside the app the way there is
-    for the call log.
+    setting — every existing install — keeps scanning exactly as before.
+
+    Dev runs (`is_dev_run`) default OFF with NO stored preference: every
+    worktree server used to watch the whole home dir and compact the index
+    alongside the installed app, which is what put a 10-core Mac at load
+    ~500 and the desktop app past its boot cutoff (2026-10-16 diagnostics).
+    A dev server that needs the index opts in — Preferences → Indexing
+    (stores `indexing_enabled: true`) or `FUSED_RENDER_INDEXING=1` for the
+    process — and the stored preference still wins over the dev default, so
+    a developer who turned it on stays on across restarts.
 
     Turning this off does not delete the on-disk index or stop
     `/api/index/rank` from answering it — only new scans are refused. Every
@@ -543,7 +651,13 @@ def indexing_enabled() -> bool:
     per call, same as `reader_enabled`, so a toggle applies to the very next
     one with no server restart.
     """
-    return read_prefs().get("indexing_enabled") is not False
+    override = indexing_override()
+    if override is not None:
+        return override
+    stored = read_prefs().get("indexing_enabled")
+    if stored is None and is_dev_run():
+        return False
+    return stored is not False
 
 
 def git_auto_sync_enabled() -> bool:
@@ -565,6 +679,22 @@ def auto_download_updates_enabled() -> bool:
     user-initiated either way: this only moves "available" to "installed".
     """
     return read_prefs().get("auto_download_updates") is True
+
+
+def index_low_impact_enabled() -> bool:
+    """Whether the file index runs in *low-impact* mode (default OFF — opt-in
+    like `task_recap_titles_enabled`).
+
+    On, the index trades freshness for a quiet machine: one watcher owner per
+    Mac (a machine-wide lease the installed :1777 app wins), longer and
+    load-aware rescan floors, one scan worker at a time at a lower priority,
+    watcher events dropped for search-hidden dot-folders and the app's own
+    support dir, the startup scan deferred until after the server is ready,
+    and compaction rewriting only the touched partitions. Read per call —
+    the gate acts on the next trigger, no restart needed, except the worker
+    which receives it through its run spec (`index/runner.py`).
+    """
+    return read_prefs().get("index_low_impact_enabled") is True
 
 
 def ranked_search_enabled() -> bool:
@@ -615,6 +745,18 @@ def calls_retention_days() -> int:
     if isinstance(value, int) and 0 <= value <= 3_650:
         return value
     return DEFAULT_CALLS_RETENTION_DAYS
+
+
+DEFAULT_CLAUDE_MAX_CONCURRENT_SESSIONS = 10
+
+
+def claude_max_concurrent_sessions() -> int:
+    """How many Claude sessions may run at once before the scheduler queues the
+    rest (default 10). 0 = unlimited. Read by `session_cap.cap`."""
+    value = read_prefs().get("claude_max_concurrent_sessions")
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 64:
+        return value
+    return DEFAULT_CLAUDE_MAX_CONCURRENT_SESSIONS
 
 
 def ai_idle_unload_minutes() -> int:
@@ -722,6 +864,18 @@ def _lan_status() -> dict:
         return {"running": False, "url": None, "error": str(e)}
 
 
+def _workbench_state() -> dict:
+    # Imported here, not at module top: fusedcli is the heavier module and
+    # calls.py imports prefs on a hot path.
+    from fused_render import fusedcli
+
+    return {
+        "env": fusedcli.workbench_env(),
+        "locked": fusedcli.workbench_env_locked(),
+        "choices": list(fusedcli.WORKBENCH_ENV_CHOICES),
+    }
+
+
 def _prefs_response() -> dict:
     return {
         "engine": engine_state(),
@@ -759,19 +913,18 @@ def _prefs_response() -> dict:
             "loop": contrib_loop_enabled(),
             "remix": contrib_remix_enabled(),
         },
+        # The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
+        # catalog's initial pick, the `fused` wrapper outside a clone, share
+        # uploads. Canvases carry their own env, so writing it (PUT below)
+        # touches no sync manager. `locked` means FUSED_RENDER_WORKBENCH_ENV
+        # pins it for the process.
+        "workbench": _workbench_state(),
         # Whether the macOS app opens the shell in native windows rather than
         # browser tabs (default ON, opt-out). `available` says whether THIS
         # process can honour it — the packaged macOS app installs the hook; a
         # `fused-render serve` or another platform has no windows to offer, so
         # the Preferences section stays hidden there.
         "native_windows": _native_windows_state(),
-        # An app clicked inside a native window opens in the explorer view
-        # instead of its embed (opt-in, default off).
-        # Which surface the macOS status item shows: the menu-bar Dock
-        # (default) or the pinned-file popover (`menubar_pin_enabled`, opt-in).
-        # `available` is the same test as the windows above: this process is
-        # the macOS app (the hook is installed), not a `fused-render serve`.
-        "menubar": _menubar_state(),
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
@@ -794,19 +947,29 @@ def _prefs_response() -> dict:
         # Whether finished turns are recapped by haiku and the Tasks rows
         # titled by it (opt-in beta, `task_recap_titles_enabled`).
         "task_recap": {"enabled": task_recap_titles_enabled()},
+        # Summary-only Tasks titles (`task_summary_titles_enabled`).
+        "task_summary_titles": {"enabled": task_summary_titles_enabled()},
+        # Lean Claude sessions (`claude_strict_mcp_enabled`, default on).
+        "claude_strict_mcp": {"enabled": claude_strict_mcp_enabled()},
+        # The Bots page's three switches and the Tasks page's view tabs —
+        # localStorage until D1386 (see the readers' section comment).
+        "bots": {"autostage": bots_autostage(), "sounds": bots_sounds(),
+                 "clear_enabled": bots_clear_enabled()},
+        "tasks_view_tabs": tasks_view_tabs(),
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
         "lan": {"enabled": lan_enabled(), **_lan_status()},
-        # The default Claude model, as a short name; "" = unset (each consumer
-        # keeps its own default). `choices` ships the value set with the value
-        # so the Preferences page renders the options the server will accept
-        # rather than a second copy of this list that can drift from it.
-        "model": {"default": default_model(), "choices": list(VALID_DEFAULT_MODELS)},
+        # The two agent switches and the agent new chats/tasks start from
+        # (docs/COPILOT_BACKEND.md D17). `default` is the EFFECTIVE one — the
+        # stored choice re-pointed to an enabled agent by the registry — so
+        # the page never shows a default that is switched off.
+        "agents": _agents_state(),
         # Whether background file-index scanning may run (default ON), and
         # whether index-backed search orders hits by relevance score (default
         # ON — D720; off is `depth ASC, rel ASC` instead of scored).
-        "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled()},
+        "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled(),
+                     "low_impact": index_low_impact_enabled()},
         # Whether app-made git commits are auto-pushed and behind repos are
         # auto fast-forwarded on app open (default ON).
         "git": {"auto_sync": git_auto_sync_enabled()},
@@ -832,6 +995,7 @@ def _prefs_response() -> dict:
             **_calls_store(),
             **_calls_effective(),
         },
+        "claude_sessions": {"max_concurrent": claude_max_concurrent_sessions()},
         # How long an idle local AI model stays resident before the reaper
         # unloads it (SPEC AI-13). Same store/effective/forced_by shape as
         # `calls` above, minus a separate `_store()` helper — there is no
@@ -860,13 +1024,6 @@ def _native_windows_state() -> dict:
     # default `lambda: True` keeps that platform's behavior exactly as before.
     available = "apply" in hooks and hooks.get("usable", lambda: True)()
     return {"enabled": native_windows_enabled(), "available": available}
-
-
-def _menubar_state() -> dict:
-    from fused_render import window_policy
-
-    return {"pin_enabled": menubar_pin_enabled(),
-            "available": "menubar_apply" in window_policy.native_hooks}
 
 
 def _launcher_state() -> dict:
@@ -1074,21 +1231,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     status_code=409,
                 )
             changed = True
-        if "menubar_pin_enabled" in body:
-            value = body.get("menubar_pin_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'menubar_pin_enabled' must be a boolean"}, status_code=400)
-            prefs["menubar_pin_enabled"] = value
-            storage.write_json(_path(), prefs)
-            # Live, like the windows: the app re-points the status item at
-            # the other surface (app.py `_apply_menubar`). Returns None
-            # (queues main-thread work); nothing to roll back.
-            from fused_render import window_policy
-
-            apply_menubar = window_policy.native_hooks.get("menubar_apply")
-            if apply_menubar is not None:
-                apply_menubar(value)
-            changed = True
         if "task_notify_terminal_sessions" in body:
             value = body.get("task_notify_terminal_sessions")
             if not isinstance(value, bool):
@@ -1110,6 +1252,39 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["task_recap_titles_enabled"] = value
             changed = True
+        if "task_summary_titles_enabled" in body:
+            value = body.get("task_summary_titles_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'task_summary_titles_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["task_summary_titles_enabled"] = value
+        for key in ("bots_autostage", "bots_sounds", "bots_clear_enabled"):
+            if key in body:
+                value = body.get(key)
+                if not isinstance(value, bool):
+                    return JSONResponse({"error": f"'{key}' must be a boolean"},
+                                        status_code=400)
+                prefs[key] = value
+                changed = True
+        if "tasks_view_tabs" in body:
+            value = body.get("tasks_view_tabs")
+            if (not isinstance(value, list) or len(value) > MAX_TASKS_VIEW_TABS
+                    or not all(isinstance(t, str) and _TASKS_VIEW_TAB_RE.fullmatch(t)
+                               for t in value)):
+                return JSONResponse(
+                    {"error": "'tasks_view_tabs' must be a list of at most "
+                              f"{MAX_TASKS_VIEW_TABS} tab ids ([a-z_], 1-24 chars)"},
+                    status_code=400)
+            # Order kept, repeats dropped; [] stores "use the defaults".
+            prefs["tasks_view_tabs"] = list(dict.fromkeys(value))
+            changed = True
+        if "claude_strict_mcp_enabled" in body:
+            value = body.get("claude_strict_mcp_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'claude_strict_mcp_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["claude_strict_mcp_enabled"] = value
+            changed = True
         if "lan_enabled" in body:
             value = body.get("lan_enabled")
             if not isinstance(value, bool):
@@ -1118,16 +1293,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             # listener either): known key, nothing stored, `lan.apply` below skipped.
             if not _flavor.is_bot():
                 prefs["lan_enabled"] = value
-            changed = True
-        if "default_model" in body:
-            value = body.get("default_model")
-            if value not in VALID_DEFAULT_MODELS:
-                return JSONResponse(
-                    {"error": "'default_model' must be one of: "
-                              + ", ".join(repr(v) for v in VALID_DEFAULT_MODELS)},
-                    status_code=400,
-                )
-            prefs["default_model"] = value
             changed = True
         if "engines" in body:
             # A MAP, applied key by key onto whatever is stored — the page changes
@@ -1178,6 +1343,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["ranked_search_enabled"] = value
             changed = True
+        if "index_low_impact_enabled" in body:
+            value = body.get("index_low_impact_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'index_low_impact_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["index_low_impact_enabled"] = value
+            changed = True
         if "git_auto_sync_enabled" in body:
             value = body.get("git_auto_sync_enabled")
             if not isinstance(value, bool):
@@ -1216,6 +1388,15 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 )
             prefs["calls_retention_days"] = value
             changed = True
+        if "claude_max_concurrent_sessions" in body:
+            value = body.get("claude_max_concurrent_sessions")
+            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 64:
+                return JSONResponse(
+                    {"error": "'claude_max_concurrent_sessions' must be an integer between 0 and 64"},
+                    status_code=400,
+                )
+            prefs["claude_max_concurrent_sessions"] = value
+            changed = True
         if "ai_idle_unload_minutes" in body:
             value = body.get("ai_idle_unload_minutes")
             if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1_440:
@@ -1224,6 +1405,25 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     status_code=400,
                 )
             prefs["ai_idle_unload_minutes"] = value
+            changed = True
+        if "workbench_env" in body:
+            # Only the DEFAULT environment (see `_workbench_state`): no canvas
+            # follows it, so there is nothing to stop first. Refused while
+            # the env var pins it, since the write would change nothing.
+            from fused_render import fusedcli
+
+            value = body.get("workbench_env")
+            if value not in fusedcli.WORKBENCH_ENV_CHOICES:
+                return JSONResponse(
+                    {"error": "'workbench_env' must be one of: "
+                              + ", ".join(fusedcli.WORKBENCH_ENV_CHOICES)},
+                    status_code=400)
+            if fusedcli.workbench_env_locked():
+                return JSONResponse(
+                    {"error": f"the environment is pinned by {fusedcli.WORKBENCH_ENV_VAR}; "
+                              "unset it to use the preference"},
+                    status_code=423)
+            prefs["workbench_env"] = value
             changed = True
         launcher_rebind: str | None = None
         launcher_changed = False
@@ -1253,6 +1453,43 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": f"'launcher_row_modifier': {exc}"}, status_code=400)
             prefs[launcher.row_modifier_key()] = value  # flavor's key, as above
             changed = launcher_changed = True
+        if any(k in body for k in ("claude_enabled", "copilot_enabled", "default_backend")):
+            # THE THREE AGENT KEYS TOGETHER (D17, invariant 11). Each is applied
+            # onto the merged record first and the RESULT is judged, so one PUT
+            # that turns Claude off and Copilot on in the same body is fine,
+            # while one that would leave both off is refused whole — there is
+            # no "no agent" state. `default_backend` naming an agent that ends
+            # up off is re-pointed to the one that is on, in the same write,
+            # so a reader never finds a default nothing can honour.
+            for key in ("claude_enabled", "copilot_enabled"):
+                if key in body:
+                    value = body.get(key)
+                    if not isinstance(value, bool):
+                        return JSONResponse({"error": f"'{key}' must be a boolean"},
+                                            status_code=400)
+                    prefs[key] = value
+            if "default_backend" in body:
+                value = body.get("default_backend")
+                if value not in VALID_DEFAULT_BACKENDS:
+                    return JSONResponse(
+                        {"error": "'default_backend' must be one of: "
+                                  + ", ".join(repr(v) for v in VALID_DEFAULT_BACKENDS)},
+                        status_code=400)
+                prefs["default_backend"] = value
+            # The same defaults `backend_enabled` reads: Claude on unless
+            # stored False, Copilot off unless stored True.
+            on = {"claude": prefs.get("claude_enabled") is not False,
+                  "copilot": prefs.get("copilot_enabled") is True}
+            if not any(on.values()):
+                return JSONResponse(
+                    {"error": "turn on the other agent first"}, status_code=400)
+            wanted = prefs.get("default_backend")
+            if wanted not in VALID_DEFAULT_BACKENDS:
+                wanted = "claude"
+            if not on[wanted]:
+                prefs["default_backend"] = next(
+                    b for b in VALID_DEFAULT_BACKENDS if on[b])
+            changed = True
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
@@ -1264,16 +1501,30 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
+                          "'task_summary_titles_enabled', "
+                          "'claude_strict_mcp_enabled', "
+                          "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
+                          "'tasks_view_tabs', "
                           "'lan_enabled', "
-                          "'default_model', 'indexing_enabled', 'ranked_search_enabled', "
+                          "'claude_enabled', 'copilot_enabled', "
+                          "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
+                          "'index_low_impact_enabled', "
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "
                           "'calls_params', 'calls_retention_days', "
-                          "'ai_idle_unload_minutes', 'launcher_hotkey' and/or "
+                          "'claude_max_concurrent_sessions', "
+                          "'ai_idle_unload_minutes', 'workbench_env', 'launcher_hotkey' and/or "
                           "'launcher_row_modifier')"},
                 status_code=400,
             )
         storage.write_json(_path(), prefs)
+    if "workbench_env" in body:
+        # AFTER the write: the wrapper bakes workbench_env() in as the
+        # FUSED_ENV a session's `fused` defaults to outside a clone, and it
+        # reads the stored preference.
+        from fused_render import fusedcli
+
+        fusedcli.export_fused_cli_env()
     if launcher_changed:
         # AFTER the write, like `lan_enabled`: the app rebinds from the
         # stored preference on its main thread a tick later, so the
@@ -1297,6 +1548,16 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             index_watch.resume()
         else:
             index_watch.pause()
+    if "index_low_impact_enabled" in body:
+        # AFTER the write: the owner waiter, the watcher child spec and the
+        # rescan queue all read the flag back from the stored preference.
+        # On: compete for the machine-wide watcher lease (stopping this
+        # process's free-running watcher until it wins); off: give the lease
+        # back and run the watcher as before. A no-op on a server that never
+        # started the watcher. Lazy import, same cycle as above.
+        from fused_render.server import index_owner
+
+        index_owner.on_flag_changed(bool(prefs.get("index_low_impact_enabled")))
     if "lan_enabled" in body and not _flavor.is_bot():
         # AFTER the write, like `engines` below: the listener follows the stored
         # preference, and a failure to bind is reported in the response's

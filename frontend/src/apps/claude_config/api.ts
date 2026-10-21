@@ -430,8 +430,17 @@ export interface CliResult extends OkResult {
   stderr?: string;
 }
 
+export type McpListResult = OkResult & {
+  servers?: McpServer[];
+  stale?: boolean;
+  checkedAt?: number;
+};
+
 export const mcp = {
-  list: () => callModule<OkResult & { servers?: McpServer[] }>("mcp", { action: "list" }),
+  // Without `fresh` the server may answer from its cache at once (`stale`);
+  // `fresh: true` waits for a real `claude mcp list` (~10 s).
+  list: (opts?: { fresh?: boolean }) =>
+    callModule<McpListResult>("mcp", { action: "list", ...(opts?.fresh ? { fresh: true } : {}) }),
   login: (name: string) =>
     callModule<OkResult & { launched?: boolean }>("mcp", { action: "login", name }),
   logout: (name: string) => callModule<CliResult>("mcp", { action: "logout", name }),

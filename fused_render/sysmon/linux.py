@@ -167,3 +167,10 @@ def host_cpu_ticks() -> tuple[int, int, int] | None:
         nums.append(0)
     user, nice, system, idle, iowait, irq, softirq, steal = nums
     return user + nice, system + irq + softirq, sum(nums)
+
+
+def cwd(pid: int) -> str | None:
+    try:
+        return os.readlink(f"/proc/{int(pid)}/cwd")
+    except OSError:
+        return None

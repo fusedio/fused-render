@@ -40,12 +40,14 @@ import {
   discardDraft,
   ICON_ARCHIVE,
   ICON_OPEN_FOLDER_PATH,
+  ICON_STOP,
   ICON_TRASH,
   ICON_UNARCHIVE,
   OPEN_DOOR_LABEL,
   DraftChip,
   IdentityChip,
   StatusIcon,
+  StopJobButton,
 } from "./ScheduleTaskViews";
 import { EraseTaskModal } from "./EraseTaskModal";
 import {
@@ -59,6 +61,8 @@ import {
   ERASE_BLOCKED_HINT,
   emptyPaneFailed,
   draftRing,
+  jobBadge,
+  liveJobRow,
   emptyPaneText,
   eraseBlocked,
   filingIntent,
@@ -70,9 +74,11 @@ import {
   taskColumn,
   taskHref,
   usageLimitCaption,
+  attentionCaption,
   taskWhen,
   tildePath,
   cardTitleLine,
+  pageDoorLabel,
 } from "./tasks-lib";
 import { MISSING_FOLDER_TOAST, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import {
@@ -83,6 +89,7 @@ import {
   usePeekedKey,
 } from "./task-peek-store";
 import { useTaskHeadline } from "./TaskPeekWho";
+import { TaskAgentMark } from "./ScheduleTaskViews";
 import { useMarginWheel } from "./useMarginWheel";
 
 /** What the page says when there is nothing to draw — the Board's own words,
@@ -522,6 +529,13 @@ function TaskCard({
   /** "Usage limit · resumes 4:00 AM" on a session the plan's window stopped, ""
    *  on every other card. */
   const limit = usageLimitCaption(task);
+  /** A live background job under this finished card (tasks-lib.jobBadge): the
+   *  List row's badge words under the title, and its Stop among the doors —
+   *  the same rule and the same words on all three views. */
+  const jobs = limit ? null : jobBadge(task);
+  /** "Waiting on your approval · Bash: rm -rf build" on a card parked on a
+   *  card, "" on every other — never beside `limit`, a row has one reason. */
+  const asking = attentionCaption(task);
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
   // THE DELETE DOOR, on EVERY card (design.md §2's open question, answered:
@@ -529,10 +543,10 @@ function TaskCard({
   // List's trash is on a folder-missing row because that row has nothing else
   // left, which is a fact about that row and not about the verb).
   //
-  // Its guard is the server's own (tasks-lib.eraseBlocked): a run in flight —
-  // in_progress OR a needs_attention turn parked on a permission card — cannot
-  // have its transcript pulled out from under it, so the door greys and its
-  // hint says the only thing that would help. Disabled means the dialog never
+  // Its guard is the server's own (tasks-lib.eraseBlocked): a streaming run
+  // cannot have its transcript pulled out from under it, so the door greys and
+  // its hint says the only thing that would help. A needs_attention turn
+  // parked on a card is NOT greyed — the server stops that run itself. Disabled means the dialog never
   // opens, so nobody reads the refusal for the first time inside a confirmation.
   const [erasing, setErasing] = useState(false);
   /** One discard at a time: the trash above stays down while its DELETE is out,
@@ -630,12 +644,15 @@ function TaskCard({
           <StatusIcon
             status={taskColumn(task)}
             failed={ringFailed(task)}
+            label={asking || undefined}
             draftHeld={draftRing(task) && !heldInPeek}
+            background={liveJobRow(task)}
           />
           {/* The id keeps the List row's muted skin whatever the title row below
               shows. It was lifted to bold + full fg while that row was the
               conversation's last message (design.md §A); Akshil (2026-09-14)
               took the emphasis back out — one weight for the id everywhere. */}
+          <TaskAgentMark backend={task.backend} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* The same relative unit every task row on this page prints, from the
               same function — so a card and its row agree about when this last
@@ -702,6 +719,14 @@ function TaskCard({
             waiting for a clock, and names the clock. Nothing at all on every
             other card. */}
         {limit && <span className="task-card-limit">{limit}</span>}
+        {jobs && (
+          <span className="task-card-limit tasks-job-badge" data-hint={jobs.hint}>
+            {jobs.text}
+          </span>
+        )}
+        {/* …and what a waiting card is waiting on, in the same line's skin
+            (`attentionCaption`): the List row's and the Board card's words. */}
+        {asking && <span className="task-card-limit">{asking}</span>}
         {/* Inside the head (so hovering them keeps the head hovered) but not OF
             it: a press here stops before the head's onClick, so a door never
             also opens the popup. Keys are already the head's concern only when
@@ -715,7 +740,7 @@ function TaskCard({
 
             Drawn only when it has a door to hold (a card with nothing to file,
             a folder that opens, and a folder that is not gone has none). */}
-        {(filing || explorer || gone) && (
+        {(filing || explorer || gone || jobs) && (
         <span className="task-card-doors" data-hint="" onClick={(e) => e.stopPropagation()}>
           {/* DISCARD THE UNSENT WORDS — the List row's and the Board card's own
               trash, on this wall too (design "one record", §5: the same actions
@@ -768,6 +793,15 @@ function TaskCard({
             {ICON_TRASH}
           </button>
           )}
+          {jobs && (
+            <StopJobButton
+              badge={jobs}
+              taskId={task.task_id}
+              className="task-card-door"
+              disabled={acting}
+              icon={ICON_STOP}
+            />
+          )}
           {filing && (
             <button
               type="button"
@@ -786,8 +820,8 @@ function TaskCard({
               // the folder in a tab — the rule every row on this page follows.
               className={"task-card-door" + (peekOn ? " task-card-door--page" : "")}
               href={explorer}
-              data-hint={`Open in Explorer — ${tildePath(task.target || task.project, home)}`}
-              aria-label="Open in Explorer"
+              data-hint={`${pageDoorLabel(task)} — ${tildePath(task.target || task.project, home)}`}
+              aria-label={pageDoorLabel(task)}
               onClick={(e) => {
                 if (opensElsewhere(e)) return;
                 e.preventDefault();
@@ -805,7 +839,7 @@ function TaskCard({
               }
               aria-disabled="true"
               data-hint={MISSING_FOLDER_TOAST}
-              aria-label="Open in Explorer — folder deleted"
+              aria-label={`${pageDoorLabel(task)} — folder deleted`}
               onClick={toastMissingFolder}
             >
               {peekOn ? OPEN_DOOR_LABEL : ICON_FOLDER}
@@ -821,6 +855,7 @@ function TaskCard({
           <ChatMount
             file={task.target || task.project}
             sessionId={task.session_id}
+            backend={task.backend}
             chatOnly
             compact
             paramsSource="memory"
@@ -945,7 +980,8 @@ function TaskPeek({
     <Modal
       title={
         <span className="task-peek-title">
-          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} />
+          <StatusIcon status={taskColumn(task)} failed={ringFailed(task)} background={liveJobRow(task)} />
+          <TaskAgentMark backend={task.backend} />
           <span className="tasks-id tasks-id--task">{shortTaskId(task.task_id)}</span>
           {/* Shrink-to-fit, so the hint rides the WORDS and not the empty run
               of head to their right (Akshil, 2026-09-05). */}
@@ -1022,7 +1058,7 @@ function TaskPeek({
               }}
             >
               {ICON_FOLDER}
-              Open in Explorer
+              {pageDoorLabel(task)}
             </a>
           )}
           {gone && (
@@ -1030,12 +1066,12 @@ function TaskPeek({
               type="button"
               className="btn btn-secondary modal-head-act"
               aria-disabled="true"
-              aria-label="Open in Explorer — folder deleted"
+              aria-label={`${pageDoorLabel(task)} — folder deleted`}
               data-hint={MISSING_FOLDER_TOAST}
               onClick={toastMissingFolder}
             >
               {ICON_FOLDER}
-              Open in Explorer
+              {pageDoorLabel(task)}
             </button>
           )}
         </>
@@ -1057,6 +1093,7 @@ function TaskPeek({
         <ChatMount
           file={task.target || task.project}
           sessionId={task.session_id}
+          backend={task.backend}
           chatOnly
           peek
           paramsSource="memory"

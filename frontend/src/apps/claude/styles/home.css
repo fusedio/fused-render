@@ -98,6 +98,12 @@
   flex-shrink: 0;
   vertical-align: -0.12em;
 }
+/* `AgentMark word`: the mark and the agent's name as one unit. */
+.c-agentmark-word {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+}
 .c-home-sub {
   color: var(--c-faint);
   font-size: 12.5px;

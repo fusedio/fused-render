@@ -43,7 +43,7 @@
 // its chips get a larger label, and it is what the calendar OPENS on: four
 // readable columns starting at today beat seven cramped ones starting at a
 // Monday that may be behind you. Which range is up is remembered, so that
-// default only ever applies to a reader who has not chosen — see RANGE_KEY.
+// default only ever applies to a reader who has not chosen — see `tasks.calRange`.
 //
 // QUEUED work — past due and waiting to be claimed — has no strip across the top
 // of the grid. It is a MESSAGE, its siblings are already listed in the task's
@@ -110,6 +110,7 @@ import {
   runScheduledNow,
 } from "@platform/lib/api";
 import type { ScheduledMessage, Task, TaskMessage } from "@platform/lib/api";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import { navigateUrl } from "@platform/lib/router";
 import {
   assignLanes,
@@ -118,7 +119,6 @@ import {
   folderHref,
   groupScheduled,
   dayKey,
-  DEFAULT_RANGE,
   initialRange,
   firstLine,
   isProjectedId,
@@ -173,13 +173,14 @@ import {
   SHOW_PAGE_DOOR,
   taskHref,
   taskRunIntent,
+  pageDoorLabel,
 } from "./tasks-lib";
 import type { TaskRunIntent } from "./tasks-lib";
 import { shortTaskId } from "@platform/lib/task-id";
 // The Board's own status ring, reused rather than re-drawn: one vocabulary means
 // one glyph too, so a Done row in the popover is the same mark as a Done card on
 // the board — red on Blocked, and dashed (below) when it is only projected.
-import { StatusIcon } from "./ScheduleTaskViews";
+import { StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
 import {
   PEEK_OPEN_CLASS,
   peekItemProps,
@@ -202,9 +203,12 @@ const SNAP_MIN = 30;
 // Which range is up, remembered across visits — a person who plans four days at
 // a time plans four days at a time every time. A FIRST visit opens on the 4-day
 // range (schedule-lib.DEFAULT_RANGE); a remembered Week is never stamped over,
-// which is the same contract `fused-render:scheduled-view` has for the List /
-// Board / Calendar switch this toggle now sits beside.
-const RANGE_KEY = "fused-render:scheduled-cal-range";
+// which is the same contract the remembered view has for the List / Board /
+// Calendar switch this toggle now sits beside. Both live in the layout
+// document's `tasks` (platform/lib/ui-layout.ts, D1386) — this one as
+// `tasks.calRange`, the localStorage key `fused-render:scheduled-cal-range`
+// until the desktop app's port walk (a new origin, so empty storage, on most
+// relaunches) was found resetting it. TasksSkeleton reads the same field.
 
 // Small stroke icons, the GlobalSidebar recipe (16px, stroke=currentColor) at
 // button scale. Inline rather than a library — these are the page's whole
@@ -762,6 +766,7 @@ function ChipPopover({
           style={{ ["--chip" as string]: `var(--task-c${chip.colour})` }}
           aria-hidden="true"
         />
+        <TaskAgentMark backend={task.backend} />
         <span className="schedule-cal-pop-id">{shortTaskId(task.task_id)}</span>
         {/* No ↻ glyph beside the id any more (Akshil, 2026-08-19). It was
             decorative by its own admission — the recurrence is spelled out in
@@ -894,7 +899,7 @@ function ChipPopover({
         {SHOW_PAGE_DOOR && threadHref && (
           <button type="button" className="btn btn-secondary"
                   onClick={() => navigateUrl(threadHref)}>
-            {ICON_INBOX} Open in Explorer
+            {ICON_INBOX} {pageDoorLabel(task)}
           </button>
         )}
         {/* LAST in the row, and secondary like its neighbours, because it must
@@ -957,18 +962,10 @@ export default function ScheduleCalendar({
   /** Opens the New task modal on an existing entry (a rule, or a one-off). */
   onEditEntry?: (entryId: string) => void;
 }) {
-  const [range, setRange] = useState<CalendarRange>(() => {
-    // localStorage can THROW (private mode, locked-down webviews) and this runs
-    // during first render — a preference must never cost the page. WHICH range a
-    // given stored value means is schedule-lib.initialRange's answer and is
-    // tested there; a store that cannot be read is the same situation as an
-    // empty one, so both land on the same default.
-    try {
-      return initialRange(localStorage.getItem(RANGE_KEY));
-    } catch {
-      return DEFAULT_RANGE;
-    }
-  });
+  // WHICH range a given stored value means is schedule-lib.initialRange's
+  // answer and is tested there; nothing stored and junk stored land on the same
+  // default.
+  const [range, setRange] = useState<CalendarRange>(() => initialRange(getUiLayout().tasks?.calRange));
   const [start, setStart] = useState(() => rangeStart(new Date(), range));
   const [openChip, setOpenChip] = useState<{ chip: CalendarChip; x: number; y: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -983,11 +980,7 @@ export default function ScheduleCalendar({
     // starts on the day you were already looking at. Today is what snaps back.
     setStart((s) => rangeStart(s, next));
     setOpenChip(null);
-    try {
-      localStorage.setItem(RANGE_KEY, next);
-    } catch {
-      // A blocked store forgets the choice; the switch itself still happens.
-    }
+    patchUiLayout((d) => (d.tasks?.calRange === next ? d : { ...d, tasks: { ...d.tasks, calRange: next } }));
   };
 
   const days = useMemo(() => rangeDays(start, range), [start, range]);

@@ -819,47 +819,35 @@ def _set_models(proc):
     return [c for c in proc.controls if c["subtype"] == "set_model"]
 
 
-def test_relay_uses_the_default_model_pref_when_the_call_names_none(monkeypatch):
-    # The pref is a SHORT name (shell/prefs.py); the CLI wants an id, and the
-    # mapping lives here so the two consumers of the pref can't disagree on it.
-    monkeypatch.setattr(_server_ai, "default_model", lambda: "opus")
-    fake = _cli_ok(monkeypatch, turns=[_result_lines()])
-    _relay({"prompt": "one"})
-    proc, = fake.procs
-    assert _set_models(proc)[0]["model"] == _server_ai._AI_SHORT_MODEL_IDS["opus"]
-
-
-def test_relay_falls_back_to_the_hardcoded_default_while_the_pref_is_unset(monkeypatch):
-    monkeypatch.setattr(_server_ai, "default_model", lambda: "")
+def test_relay_uses_its_own_default_when_the_call_names_none(monkeypatch):
+    # No preference sits between the caller and the relay's haiku: the retired
+    # `default_model` pref is gone, and the user's global Claude model (their
+    # CHAT model, often opus or fable) is deliberately not read — every
+    # model-less fused.ai call is a short utility completion.
     fake = _cli_ok(monkeypatch, turns=[_result_lines()])
     _relay({"prompt": "one"})
     proc, = fake.procs
     assert _set_models(proc)[0]["model"] == _server_ai._AI_DEFAULT_MODEL
+    src = open(_server_ai.__file__, encoding="utf-8").read()
+    assert "_global_defaults" not in src
 
 
-def test_relay_an_explicit_model_outranks_the_pref(monkeypatch):
-    # The pref changes what happens when nobody asked for a model, never what
-    # happens when somebody did — a caller that names one still gets it.
-    monkeypatch.setattr(_server_ai, "default_model", lambda: "haiku")
+def test_relay_an_explicit_model_is_used(monkeypatch):
     fake = _cli_ok(monkeypatch, turns=[_result_lines()])
     _relay({"prompt": "one", "model": "claude-opus-4-8"})
     proc, = fake.procs
     assert _set_models(proc)[0]["model"] == "claude-opus-4-8"
 
 
-def test_relay_ignores_a_pref_value_it_has_no_id_for(monkeypatch):
-    # Belt-and-braces against the two lists drifting apart: a short name the
-    # mapping doesn't know falls through to the hardcoded default rather than
-    # reaching argv as an unmapped string.
-    monkeypatch.setattr(_server_ai, "default_model", lambda: "nonesuch")
+def test_relay_maps_an_explicit_short_name_to_its_id(monkeypatch):
     fake = _cli_ok(monkeypatch, turns=[_result_lines()])
-    _relay({"prompt": "one"})
+    _relay({"prompt": "one", "model": "opus"})
     proc, = fake.procs
-    assert _set_models(proc)[0]["model"] == _server_ai._AI_DEFAULT_MODEL
+    assert _set_models(proc)[0]["model"] == _server_ai._AI_SHORT_MODEL_IDS["opus"]
 
 
-def test_every_valid_pref_short_name_maps_to_an_id(monkeypatch):
-    # The pref's value set and the relay's mapping are two lists that must
+def test_every_valid_short_name_maps_to_an_id(monkeypatch):
+    # The short-name set and the relay's mapping are two lists that must
     # cover each other; "" is the unset member and deliberately has no id.
     from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 

@@ -87,7 +87,7 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
         role: "error" as const,
         key: "h:" + i,
         text: t.text || "",
-        kind: troubleFromMessage(t.text || "", true).kind,
+        kind: troubleFromMessage(t.text || "", true, undefined, resp.backend).kind,
         ...(t.quota ? { quota: t.quota } : {}),
       };
     }

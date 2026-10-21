@@ -128,16 +128,21 @@ def _prune_pin(root: str) -> int:
 
 
 def _prune_current_apps(root: str) -> int:
+    # Under current_apps' own lock (D1386) — see app_state_move: the desk has
+    # concurrent read-modify-writers now (a drag, every listing's `observe`).
+    from fused_render import current_apps
+
     path = os.path.join(storage.home_dir(), "current_apps.json")
-    data = storage.read_json(path)
-    apps = data.get("apps") if isinstance(data, dict) else None
-    if not isinstance(apps, list):
-        return 0
-    kept = [a for a in apps if not (isinstance(a, dict) and _is_under(a.get("path"), root))]
-    dropped = len(apps) - len(kept)
-    if dropped:
-        data["apps"] = kept
-        storage.write_json(path, data)
+    with current_apps._LOCK:
+        data = storage.read_json(path)
+        apps = data.get("apps") if isinstance(data, dict) else None
+        if not isinstance(apps, list):
+            return 0
+        kept = [a for a in apps if not (isinstance(a, dict) and _is_under(a.get("path"), root))]
+        dropped = len(apps) - len(kept)
+        if dropped:
+            data["apps"] = kept
+            storage.write_json(path, data)
     return dropped
 
 

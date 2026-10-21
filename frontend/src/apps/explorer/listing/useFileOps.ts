@@ -5,6 +5,7 @@
 // undo stack are module-level stores (lib/fs-clipboard, lib/fs-undo) — all three
 // survive this component's per-folder remount, which a move can cause mid-flight
 // by spring-loading a crumb.
+import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useRef, useState } from "react";
 import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import {
@@ -112,6 +113,10 @@ export function useFileOps({
   // Same reasoning: read once here, not inside fileGroups/folderGroups (plain
   // closures rebuilt per call, not renders of their own).
   const canRun = useCanRunInTerminal();
+  // "Open in Claude" FOLLOWS THE CLAUDE SWITCH (docs/COPILOT_BACKEND.md D17):
+  // with Claude Code turned off in Preferences the terminal door to it goes
+  // too. Subscribed so a flip repaints; the menus read it when they open.
+  useAgentBackends();
   // The open context menu (position + items) and the open modal, both local to
   // this folder view.
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null);
@@ -885,12 +890,12 @@ export function useFileOps({
       "separator",
       { label: "Copy Path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(row.path) },
       { label: "Reveal in Finder", icon: MenuIcons.reveal, onClick: () => doReveal(row.path) },
-      {
+      ...(isBackendEnabled("claude") ? [{
         label: canRun ? "Open in Claude" : "Copy Claude session command",
         icon: MenuIcons.openWith,
         onClick: () => doOpenInClaude(row.path, row.isDir, row.parentDir),
-      },
-      ...(canRun
+      }] : []),
+      ...(canRun && isBackendEnabled("claude")
         ? [
             {
               label: "Copy Claude session command",
@@ -937,12 +942,12 @@ export function useFileOps({
       ],
       copy: [
         { label: "Copy path", icon: MenuIcons.copyPath, onClick: () => doCopyPath(dir) },
-        {
+        ...(isBackendEnabled("claude") ? [{
           label: canRun ? "Open in Claude" : "Copy Claude session command",
           icon: MenuIcons.openWith,
           onClick: () => doOpenInClaude(dir, true, dir),
-        },
-        ...(canRun
+        }] : []),
+        ...(canRun && isBackendEnabled("claude")
           ? [
               {
                 label: "Copy Claude session command",

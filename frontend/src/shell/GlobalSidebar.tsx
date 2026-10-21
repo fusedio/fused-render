@@ -36,7 +36,6 @@ import { appPageUrl, appPathFromPath, type CurrentApp } from "@shell/current-app
 import { railExtras } from "@shell/sidebar-rail-lib";
 import { displayName, isBot } from "@platform/lib/flavor";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
-import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
@@ -72,21 +71,6 @@ const BOTS_ICON = (
     <path d="M20 14h2" />
     <path d="M15 13v2" />
     <path d="M9 13v2" />
-  </svg>
-);
-
-// Sliders — the Claude Config app is a settings panel over ~/.claude.
-const CLAUDE_CONFIG_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <line x1="4" y1="21" x2="4" y2="14" />
-    <line x1="4" y1="10" x2="4" y2="3" />
-    <line x1="12" y1="21" x2="12" y2="12" />
-    <line x1="12" y1="8" x2="12" y2="3" />
-    <line x1="20" y1="21" x2="20" y2="16" />
-    <line x1="20" y1="12" x2="20" y2="3" />
-    <line x1="1" y1="14" x2="7" y2="14" />
-    <line x1="9" y1="8" x2="15" y2="8" />
-    <line x1="17" y1="16" x2="23" y2="16" />
   </svg>
 );
 
@@ -467,11 +451,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // Up/Down step through the Projects + Bookmarks rows (sidebarArrowNav.ts).
   useSidebarArrowNav();
 
-  // No builtin-mount gate any more: the entries they guarded (Inbox, App
-  // Basics) are gone from the sidebar — the learn content ships as a community
-  // app now. The sessions route and its mount are untouched.
-  const claudeConfigAvailable = useClaudeConfigAvailable();
-
   // A model resident in memory is the one piece of app state that costs
   // something while you are not looking at it — surfaced as a dot on the
   // AI Models row itself now that it is primary nav.
@@ -515,10 +494,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // through a different door, not a second destination (apps/bots/routes.ts).
   const botsActive = isBotsPath(pathname);
   const tasksActive = pathname === "/tasks";
-  // Exact, for the reason Home is: /canvases/<name> is a workspace you opened,
-  // not the list page, and lighting the row while you are inside a canvas reads
-  // as two selections.
-  const canvasesActive = pathname === "/canvases";
   // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
   // through a different tab, not a second destination, so every one of the five
   // lights the row. (The bare prefix is redirected to the default tab before
@@ -664,15 +639,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       </>
     ) : undefined;
 
-  // Everything that is not primary nav lives in the bottom menu for now:
-  // the former sidebar entries (Config), then the settings
-  // pages. Same gates as before — an entry a machine can't use stays hidden.
-  const menuEntries: (PrefsMenuEntry | "separator")[] = [
-    ...(claudeConfigAvailable
-      ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
-      : []),
-  ];
-  if (claudeConfigAvailable) menuEntries.push("separator");
+  // Everything that is not primary nav lives in the bottom menu for now: the
+  // settings pages. Same gates as before — an entry a machine can't use stays
+  // hidden. Claude Config is no longer an entry: it is the Claude Code group
+  // of Preferences (2026-10-20), reached through that row.
+  const menuEntries: (PrefsMenuEntry | "separator")[] = [];
   // Templates are the Render app's own concern; Fused Bot's menu skips
   // straight to Preferences (Canvases is already off above).
   if (!bot) {
@@ -740,7 +711,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the feature off it is in NEITHER, so a deep link to /canvases lights
   // nothing here — the entry is not in the list to be matched.
   const prefsActive = menuEntries.some(
-    (e) => e !== "separator" && e.href === pathname && !(canvasesInNav && e.href === "/canvases")
+    (e) => e !== "separator" && e.href === pathname
   );
 
   // Owned here, not inside either trigger, because the popover must stay
@@ -838,19 +809,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       active: tasksActive,
       badge: tasksDot,
     },
-    // Same gate and same order as the expanded row below — a row that exists
-    // only until you collapse the sidebar is a destination people lose.
-    ...(canvasesInNav
-      ? [
-          {
-            key: "canvases",
-            label: "Canvases",
-            icon: CANVASES_ICON,
-            href: "/canvases",
-            active: canvasesActive,
-          },
-        ]
-      : []),
+    // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
+    // the canvases, and its "+ Canvas" row is the door to the catalog.
     ...(bot
       ? []
       : [
@@ -952,15 +912,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             extra={tasksDot}
             trailing={tasksTrailing}
           />
-          {canvasesInNav && (
-            <NavItem
-              href="/canvases"
-              id="canvases-link"
-              label="Canvases"
-              icon={CANVASES_ICON}
-              active={canvasesActive}
-            />
-          )}
+          {/* No Canvases row (owner, 2026-10-20): the Canvases section below
+              is the listing, its "+ Canvas" row the way to the catalog. */}
           {!bot && (
             <NavItem
               href={AI_MODELS_HOME}
@@ -991,6 +944,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             in a "+ New app" row. Neither under Fused Bot: a bot's apps are
             listed by the bot, and there is no file tree to bookmark into. */}
         {!bot && <CurrentAppsSection />}
+        {/* Canvases (2026-10-20): the clones on this machine, under Projects,
+            behind the primary row's own gate — the feature on AND an account
+            behind it (a clone with no login has no page that works). */}
+        {canvasesInNav && <CurrentAppsSection section="canvases" />}
         {!bot && <BookmarksSection />}
         <div className="sidebar-section sidebar-settings">
           <UpdateCard />

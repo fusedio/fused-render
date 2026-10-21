@@ -4,7 +4,7 @@
 // avatar", the shape claude.ai / v0 / ChatGPT all settled on).
 import { memo, useId, useMemo } from "react";
 
-import { SquareTerminal } from "lucide-react";
+import { SquareTerminal, Undo2 } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { parseTerminalAsk } from "@platform/lib/terminalFocus";
 
@@ -16,7 +16,8 @@ import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound, type Annot
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
-import { ClaudeMark } from "./ClaudeMark";
+import { AgentMark } from "@platform/ui/AgentMark";
+import { useAgent } from "./agent-context";
 import { MarkdownView } from "./MarkdownView";
 import { Receipts } from "./Receipts";
 import { SegmentView } from "./SegmentView";
@@ -94,6 +95,10 @@ export interface TurnProps {
    *  (`UserTurn.pending`): the line goes back into the box to edit — Claude
    *  Code's ↑, as a click. One callback for the log, keyed by the turn. */
   onPullPending?: (key: string) => void;
+  /** "Fork from here" on a sent user turn: park it and everything after it and
+   *  re-ask it in the composer. Passed only for a Claude chat that is idle;
+   *  absent, no button is drawn. One callback for the log, keyed by the turn. */
+  onFork?: (key: string) => void;
   /** The chat's working directory, threaded down to `SegmentView`/`ToolChip`/
    *  `MarkdownView` so a shell fence's or a Bash chip's "run" button `cd`'s
    *  there first. */
@@ -118,8 +123,10 @@ export const Turn = memo(function Turn({
   onToggleCollapse,
   pendingCard,
   onPullPending,
+  onFork,
   cwd,
 }: TurnProps) {
+  const agent = useAgent();
   // BEFORE the early returns below: a hook may not sit behind one, and the id
   // is only used on the assistant branch (see `bodyId`).
   const uid = useId();
@@ -189,6 +196,20 @@ export const Turn = memo(function Turn({
             <span className="turn-stamp" {...(stampTitle(ts) ? { "data-hint": stampTitle(ts)! } : {})}>
               {stamp}
             </span>
+          ) : null}
+          {/* FORK FROM HERE — a SIBLING before the bubble, never inside it: the
+              re-attach probe matches `.user .bubble`'s text. Only a message the
+              transcript knows (uuid) and this page has really sent. */}
+          {turn.uuid && !pending && onFork ? (
+            <button
+              type="button"
+              className="turn-fork"
+              aria-label="Fork from here"
+              data-hint="Fork from here"
+              onClick={() => onFork(turn.key)}
+            >
+              <Undo2 size={13} aria-hidden="true" />
+            </button>
           ) : null}
         {/* WHAT THE BUBBLE SAYS. An annotated send reads as the comments the
             reader wrote on the picture: the typed words first when there are
@@ -349,7 +370,7 @@ export const Turn = memo(function Turn({
           disabled={!foldable}
           onClick={foldable ? () => onToggleCollapse!(turn.key) : undefined}
         >
-          <ClaudeMark size={0.95} />
+          <AgentMark backend={agent.backend} size={0.95} />
         </button>
         <span className="body" id={bodyId}>
           {/* Never both: the text segments join back to exactly the flat

@@ -113,6 +113,8 @@ dependencies = [
     "ltx-core-mlx",
     "ltx-pipelines-mlx",
     "imageio-ffmpeg>=0.5,<1",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
     "huggingface_hub",
     "psutil",
 ]

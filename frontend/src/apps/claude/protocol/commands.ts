@@ -106,9 +106,27 @@ export function filterCommands<T extends { name: string }>(list: readonly T[], q
   return prefix.concat(inner);
 }
 
-/** The folder's command list (`commands {file}`). Throws on a handler error. */
-export async function fetchCommands(file: string, opts: RunOpts = {}): Promise<CommandsResponse> {
-  const out = await runAgent("commands", { file }, opts);
+/** Whose menu: the chat's session when it has one, else the agent a new chat
+ *  will start on (D11). */
+export interface CommandsScope {
+  sessionId?: string;
+  backend?: string;
+}
+
+/** The folder's command list (`commands {file}`), for the agent `scope` names
+ *  — the session's own when there is one, else the new chat's `backend`, else
+ *  Claude's. Throws on a handler error. */
+export async function fetchCommands(
+  file: string,
+  opts: RunOpts = {},
+  scope: CommandsScope = {},
+): Promise<CommandsResponse> {
+  const who = scope.sessionId
+    ? { session_id: scope.sessionId }
+    : scope.backend
+      ? { backend: scope.backend }
+      : {};
+  const out = await runAgent("commands", { file, ...who }, opts);
   if (!out || ("error" in out && out.error)) {
     throw new Error(("error" in (out ?? {}) && (out as { error: string }).error) || "no command list");
   }

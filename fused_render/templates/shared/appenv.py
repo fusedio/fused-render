@@ -105,7 +105,8 @@ def workbench_plugin_dir() -> str | None:
 
     This value being SET is not permission to pass it: the skills are for canvas
     clones only, so the caller must also check the target against
-    `canvases_root()` — see `claude_agent/agent.py:_plugin_argv`. Absent
+    `canvases_root()` — or Fused Web's own `~/Fused/canvas` — see
+    `claude_agent/agent.py:_in_workbench_root`. Absent
     means "no validated clone on disk" (never fetched, fetch failed, or git is
     missing) — no flag, and the clone's CLAUDE.md degrades to the folder's own
     conventions. Decided by the server
@@ -115,34 +116,31 @@ def workbench_plugin_dir() -> str | None:
 
 
 def canvases_root() -> str:
-    """Where canvas clones live (`~/.fused-render/canvases`, or the flavor's own
-    home) — the fact a template needs to answer "is this target a canvas
-    clone?", which is what gates the workbench skills above.
+    """Where canvas clones live — `~/Fused/canvas`, the BASE above every
+    environment's clone folder (`~/Fused/canvas/<env>/<name>`, owner
+    2026-10-20) — the fact a template needs to answer "is this target a canvas
+    clone?", which is what gates the workbench skills above. The base and not
+    one environment's folder on purpose: a clone of either environment is a
+    canvas clone, and a session spawned on it wants the same skills.
 
     The server exports the already-resolved answer (`FUSED_RENDER_CANVASES_DIR`,
-    from `canvases.canvases_root()`). Deliberately a DUPLICATED rule rather than
+    from `canvases.canvases_base()`). Deliberately a DUPLICATED rule rather than
     an import — templates must not import `fused_render` (SPEC PY-15) — and the
-    fallback is therefore character-for-character what `canvases.canvases_root()`
-    (via `shell.storage.base_home_dir()`) and `_canvas_push.canvases_root()` use:
-    `FUSED_RENDER_HOME` if set, else `~/.fused-render`, plus `canvases` —
-    deliberately NOT through `home_dir()` above.
-
-    That looks wrong beside every other helper in this module and is not: canvas
-    clones are the one thing the app does not nest per branch, so resolving this
-    through `home_dir()` (which layers branch nesting on top of
-    `FUSED_RENDER_HOME_DIR`) would answer `<home>/branches/<ref>/canvases` on a
-    branch build while the server kept its clones unnested, under the flavor's
-    base home. The disagreement would not raise anything — `_in_canvases_root`
-    would simply say "not a canvas" for a real clone, and the gate's default
-    answer is to withhold the workbench skills, so the failure would be
-    silent. If the server's rule ever gains branch nesting, this string moves
-    with it (a test pins the two together).
+    fallback is therefore character-for-character what `canvases.canvases_base()`
+    (via `shell.seed.fused_dir()`) and `_canvas_push.canvases_base()` use:
+    `FUSED_RENDER_DIR` if set, else `~/Fused`, plus `canvas`. Not through
+    `home_dir()` above: clones live in the user's Fused workspace, not the
+    app's home, and are never nested per branch. The disagreement would not
+    raise anything — `_in_canvases_root` would simply say "not a canvas" for a
+    real clone, and the gate's default answer is to withhold the workbench
+    skills, so the failure would be silent (a test pins the copies together).
     """
     override = os.environ.get("FUSED_RENDER_CANVASES_DIR")
     if override:
         return override
-    base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
-    return os.path.join(base, "canvases")
+    fused_dir = os.path.abspath(os.path.expanduser(
+        os.environ.get("FUSED_RENDER_DIR") or "~/Fused"))
+    return os.path.join(fused_dir, "canvas")
 
 
 def fused_cli_dir() -> str | None:

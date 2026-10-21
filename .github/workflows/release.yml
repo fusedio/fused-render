@@ -250,6 +250,158 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" "$DMG_PATH" "$WHL_PATH" --clobber
 
+  # FusedRender.app for Intel Macs: the render job above with
+  # FUSED_RENDER_ARCH=x86_64 on an Intel runner. A plain copy, like the bot job
+  # below. Not wired into publish-download-page or bump-homebrew yet: the Intel
+  # DMG ships through the GitHub Release, S3 and its own update manifest only,
+  # and the cask still installs the arm64 DMG. What differs, and why:
+  #   - macos-15-intel: build_dmg.sh cannot cross-compile (py2app bundles the
+  #     interpreter it runs under, pip picks wheels for that interpreter's
+  #     arch), so the build runs natively on Intel. No Xcode 26 step: the
+  #     x86_64 build ships no Apple helper (build_dmg.sh step 4e) — the apple
+  #     tier and every local AI runner are off on Intel (ai/registry.py
+  #     `local_ai_disabled`). Step 4f still holds the bundle to minos 13.0.
+  #   - DMG only: the wheel is pure Python and identical; the render job
+  #     uploads it.
+  #   - Its own update manifest, fused-render-macos-x86_64/latest.json, which
+  #     update/mac.py polls when the app runs as x86_64. The two manifests are
+  #     signed with the same key and context; each names its own DMG.
+  # FusedBot has no Intel build.
+  build-sign-notarize-release-intel:
+    needs: prepare-release
+    if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
+    runs-on: macos-15-intel
+    permissions:
+      contents: write # needed to attach the DMG to a GitHub Release
+      id-token: write # needed to assume the AWS role via OIDC
+    env:
+      RELEASE_TAG: ${{ needs.prepare-release.outputs.tag }}
+      KEYCHAIN_PATH: ${{ github.workspace }}/ci-signing.keychain-db
+      NOTARY_PROFILE: ci-notary
+      AWS_DEFAULT_REGION: us-west-2
+      S3_BUCKET: fused-render
+      CDN_DOMAIN: d2ic19jpchjovp.cloudfront.net
+      CLOUDFRONT_DISTRIBUTION_ID: E393B7TS7Y3EDS
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # build_dmg.sh bundles a python.org-style FRAMEWORK python from
+      # /Library/Frameworks (step 1) and refuses Homebrew's for a release.
+      # setup-python's macOS 3.12 is normally that framework; if this image's
+      # is not, install python.org's universal2 3.12 pkg (3.12.10 is the last
+      # 3.12 with a binary installer) so step 1 has one.
+      - name: Ensure a python.org framework Python 3.12
+        run: |
+          set -euo pipefail
+          FW=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12
+          if [[ ! -x "$FW" ]] || [[ -z "$("$FW" -c 'import sysconfig; print(sysconfig.get_config_var("PYTHONFRAMEWORK") or "")')" ]]; then
+            curl -fsSL "https://www.python.org/ftp/python/3.12.10/python-3.12.10-macos11.pkg" -o "$RUNNER_TEMP/python.pkg"
+            sudo installer -pkg "$RUNNER_TEMP/python.pkg" -target /
+          fi
+          "$FW" -c 'import platform, sys; print(sys.version, platform.machine())'
+
+      # build_dmg.sh copies the host's uv INTO the bundle (D176); on this Intel
+      # runner setup-uv installs an x86_64 uv, which step 4d-bis checks.
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Import signing cert + notary credentials into ephemeral keychain
+        env:
+          CODESIGN_CERT_P12: ${{ secrets.CODESIGN_CERT_P12 }}
+          CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          NOTARY_API_KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+
+          CERT_PATH="$RUNNER_TEMP/codesign-cert.p12"
+          echo "$CODESIGN_CERT_P12" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 14400 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          # Without this, codesign blocks on a keychain-access UI prompt that
+          # can never be answered in CI (see docs/signing.md's CI notes).
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          API_KEY_PATH="$RUNNER_TEMP/notary-api-key.p8"
+          printf '%s' "$NOTARY_API_KEY_P8" > "$API_KEY_PATH"
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --key "$API_KEY_PATH" --key-id "$NOTARY_API_KEY_ID" --issuer "$NOTARY_API_ISSUER_ID" \
+            --keychain "$KEYCHAIN_PATH"
+          rm -f "$API_KEY_PATH"
+
+          rm -f "$CERT_PATH"
+
+      - name: Build, sign, notarize, staple DMG
+        env:
+          FUSED_RENDER_CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          FUSED_RENDER_CODESIGN_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
+          FUSED_RENDER_NOTARY_PROFILE: ${{ env.NOTARY_PROFILE }}
+          FUSED_RENDER_ARCH: x86_64
+        run: bash scripts/build_dmg.sh
+
+      - name: Delete ephemeral keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::926411091187:role/github_fused_render_role
+          role-session-name: GithubFusedRenderReleaseIntel
+          aws-region: us-west-2
+
+      - name: Upload DMG to S3
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null; then
+            curl -fsSL "https://awscli.amazonaws.com/AWSCLIV2.pkg" -o "$RUNNER_TEMP/AWSCLIV2.pkg"
+            sudo installer -pkg "$RUNNER_TEMP/AWSCLIV2.pkg" -target /
+          fi
+          DMG_PATH="$(ls dist/*-x86_64.dmg)"
+          # FusedRender-<version>-x86_64.dmg -> <version>
+          VERSION="$(basename "$DMG_PATH" .dmg | sed -E 's/^FusedRender-//; s/-x86_64$//')"
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
+
+      # Before the manifest, unlike the arm64 job: the manifest writes a NEW
+      # prefix (fused-render-macos-x86_64/), and if the CI role's IAM policy
+      # (terraform iam_github.tf in the application repo) does not cover it yet,
+      # that step fails — the Release attachment must not hang on it.
+      - name: Upload DMG to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber
+
+      - name: Publish signed macOS (Intel) update manifest
+        env:
+          FUSED_RENDER_UPDATE_SIGNING_KEY: ${{ secrets.FUSED_RENDER_UPDATE_SIGNING_KEY }}
+          MACOS_PREFIX: fused-render-macos-x86_64
+        run: |
+          set -euo pipefail
+          uv run --no-project --with cryptography \
+            scripts/generate_update_manifest.py \
+            "$VERSION" "$DMG_PATH" "https://${CDN_DOMAIN}/fused-render-dmgs" \
+            dist/macos-x86_64-latest.json
+          aws s3 cp dist/macos-x86_64-latest.json "s3://${S3_BUCKET}/${MACOS_PREFIX}/latest.json" \
+            --cache-control no-cache
+
+      - name: Invalidate CloudFront
+        run: |
+          set -euo pipefail
+          aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/fused-render-dmgs/*" "/fused-render-macos-x86_64/*"
+
   # FusedBot.app: the same repo, build script and signing path with
   # FUSED_RENDER_FLAVOR=bot (fused_render/_flavor.py) — its own bundle id,
   # icon, URL scheme, S3 prefixes and update manifest. A plain copy of the

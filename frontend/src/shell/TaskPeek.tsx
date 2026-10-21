@@ -62,7 +62,8 @@ import { useChatTemplates } from "./TaskCards";
 // The header's identity block — status ring, number, title, project — lives in
 // its own module because the native chat's top line draws the SAME block for the
 // task behind the conversation it is showing (see that file's note).
-import { TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
+import { TaskPeekAgent, TaskPeekProject, TaskPeekWho, useTaskHeadline } from "./TaskPeekWho";
+import { agentLabel, agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { PEEK_HEAD_DROPS, useStripFit } from "./row-fit";
 import {
   PREVIEW_KEY_STEP,
@@ -86,6 +87,7 @@ import {
   filingIntent,
   SHOW_PAGE_DOOR,
   taskHref,
+  pageDoorLabel,
 } from "./tasks-lib";
 import { useTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
@@ -420,6 +422,8 @@ export function TaskPeek({
   const key = usePeekedKey();
   const anchor = usePeekAnchor();
   const canRun = useCanRunInTerminal();
+  // The terminal rows follow the agent's switch (D17); subscribed so a flip repaints.
+  useAgentBackends();
   // The peek's recap fold exists only with the Tasks recap titles on: off, the
   // peek's chat is exactly what it was before them.
   const recapOn = useTaskRecapTitlesEnabled();
@@ -961,20 +965,27 @@ export function TaskPeek({
     if (!task) return [];
     const items: MenuEntry[] = [];
     if (SHOW_PAGE_DOOR && page && headFit >= PEEK_HEAD_DROPS.length) {
-      items.push({ label: "Open in Explorer", icon: ICON_OPEN_DOOR, onClick: openAsPage });
+      items.push({ label: pageDoorLabel(task), icon: ICON_OPEN_DOOR, onClick: openAsPage });
       items.push("separator");
     }
     if (SHOW_PAGE_DOOR && gone) {
       items.push({
-        label: "Open in Explorer",
+        label: pageDoorLabel(task),
         icon: ICON_OPEN_DOOR,
         disabled: true,
         onClick: () => notify({ title: MISSING_FOLDER_TOAST, tone: "error" }),
       });
       items.push("separator");
     }
+    // NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): both terminal rows
+    // hand the task to that agent's CLI. Same rule as the Explorer's item.
+    if (!isBackendOff(task.backend)) {
     items.push({
-      label: "Continue this task in terminal",
+      // The agent's word once there is more than one to name (D18): the
+      // command handed over is that agent's own `--resume`.
+      label: agentNamed(task.backend)
+        ? `Continue with ${agentLabel(task.backend)} in terminal`
+        : "Continue this task in terminal",
       icon: ICON_TERMINAL,
       // No session and no template means there is no command to hand over —
       // said by the row rather than by a toast after the press.
@@ -991,6 +1002,7 @@ export function TaskPeek({
         disabled: !terminalHere || !task.session_id,
         onClick: () => void copyTerminalCommand(),
       });
+    }
     }
     if (filing) {
       items.push({
@@ -1150,6 +1162,7 @@ export function TaskPeek({
                   The whole argument, and the markup, are in `TaskPeekWho.tsx`
                   now — the chat's header draws this same chip. */}
               <TaskPeekProject task={task} home={home} />
+              <TaskPeekAgent task={task} />
               {/* "↗ OPEN" — a WORD behind a MARK (design.md, Polish batches 4
                   and 5). The folder glyph it replaced was the page's one door
                   picture, which is a good rule everywhere except beside a
@@ -1166,8 +1179,8 @@ export function TaskPeek({
                 <a
                   className="task-side-peek-open"
                   href={page}
-                  aria-label="Open in Explorer"
-                  data-hint="Open in Explorer"
+                  aria-label={pageDoorLabel(task)}
+                  data-hint={pageDoorLabel(task)}
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
@@ -1313,6 +1326,9 @@ export function TaskPeek({
                 // chat's model.
                 model={task.model}
                 effort={task.effort}
+                // …and WHICH AGENT, for the same window (D2): the header, the
+                // placeholder and the pills name it before the history lands.
+                backend={task.backend}
                 // ONE TURN TO LAND ON, when the press that opened this was a
                 // message row rather than a task row (task-peek-store
                 // `PeekState.anchor`). Absent, the conversation opens where a

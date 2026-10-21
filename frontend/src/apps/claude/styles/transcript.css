@@ -29,15 +29,17 @@
      drawn, and it applies to `overflow: hidden` too — a hidden scroll container
      is still a scroll container — so the lock costs the column nothing. */
   scrollbar-gutter: stable;
-  /* A SIZE CONTAINER, for one rule: the sticky tail's ceiling (R2-4) is "most
-     of the scrollport", and there is no other way to say that in CSS. `vh` is
-     the wrong unit here — this box is 380px tall in a cards-wall tile and a
-     third of a screen in Peek, and a viewport fraction is a promise about
-     neither — while a percentage would resolve against `.chat-log`, whose
-     height is its content. Safe on this element specifically because its own
-     height comes from the flex line (`flex: 1` is basis 0) and never from what
-     it contains, which is exactly what `contain: size` asserts. */
-  container-type: size;
+  /* NOT A SIZE CONTAINER (Akshil 2026-10-19, "the scroll inside claude chat is
+     completely broken"). This box used to carry `container-type: size` so the
+     pinned card's ceiling below could be written as `100cqh`, and in WebKit —
+     the desktop app — a scroll container that is also a size container LOSES
+     ITS SCROLL OFFSET when its content is rewritten: the streaming reply
+     replaces its own markup every frame, and a reader parked in the middle of
+     the conversation was thrown to the very top of it mid-reply, with no
+     script writing `scrollTop` at all. Chromium is unaffected, which is why
+     the bug never showed in a browser. The ceiling is now measured instead:
+     `Transcript` writes the port's height to `--c-port-h` from the same
+     ResizeObserver that keeps a pinned log pinned. */
 }
 .chat-root .chat-logwrap::-webkit-scrollbar {
   width: 8px;
@@ -171,6 +173,44 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .chat-root .turn.user .turn-stamp {
+    transition: none;
+  }
+}
+/* FORK FROM HERE: a small icon button in the left lane, just before the bubble.
+   Its net flex size is zero (20px wide, minus 24px and plus 4px of margin), so
+   the bubble does not move and the row does not grow; the glyph hangs into the
+   lane. Hover-revealed like the stamp, and shown on keyboard focus too. */
+.chat-root .turn.user .turn-fork {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  margin: 0 4px 0 -24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: var(--c-faint);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 90ms ease-out, color 90ms ease-out;
+}
+.chat-root .turn.user:hover .turn-fork,
+.chat-root .turn.user .turn-fork:focus-visible {
+  opacity: 1;
+}
+.chat-root .turn.user .turn-fork:hover,
+.chat-root .turn.user .turn-fork:focus-visible {
+  color: var(--c-fg);
+}
+.chat-root .turn.user .turn-fork:focus-visible {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .turn.user .turn-fork {
     transition: none;
   }
 }
@@ -828,8 +868,12 @@
      scroller there is (`.chat-logwrap.is-locked` below).
      `overscroll-behavior: contain` so reaching the end of the card does not
      hand the wheel on to the transcript behind it — the reader would lose the
-     card they were reading. */
-  max-height: 100cqh;
+     card they were reading.
+     `--c-port-h` is the scrollport's own height, measured (see the note at
+     `.chat-logwrap` above for why it is not `100cqh`). `vh` is the wrong unit
+     here — this box is 380px tall in a cards-wall tile and a third of a screen
+     in Peek — so the fallback is only for a port that has never been measured. */
+  max-height: var(--c-port-h, 100vh);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -2434,6 +2478,16 @@
   padding: 6px 10px;
   text-align: left;
   vertical-align: top;
+  /* NOT the body's `word-break: break-word`. A cell inherits it from the
+     assistant body, and under auto table layout that makes every cell's
+     min-content width ONE CHARACTER — so when the row is over-constrained the
+     browser pays for the long column by squeezing a short one down to "Ar /
+     ea", "Pi / pe / lin / e" (the first-column collapse of 2026-10-18). With
+     normal breaking a cell can get no narrower than its longest word, the
+     columns share the width by their content, and a table that is still too
+     wide scrolls in `.md-tablewrap`, which is what the wrapper is for. */
+  word-break: normal;
+  overflow-wrap: normal;
 }
 .chat-root .assistant th,
 .chat-root .perm .plan-body th {
@@ -2652,4 +2706,76 @@
   border-radius: 4px;
   background: var(--c-surface);
   color: var(--c-fg-strong);
+}
+
+/* ── heads-up note (side-check suggestion, drawn in the recap slot) ─────── */
+/* An aside in the recap's register: reading size, dim text, a faint left rule
+   as the only chrome. No plate, no accent (a warning gets no colour either),
+   and the actions are small outlined buttons, also with no accent, so they
+   read as clickable without competing with the reply. */
+.chat-root .headsup {
+  margin: 6px 0;
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--c-border);
+  font-size: var(--c-fs-read);
+  line-height: var(--c-lh-read);
+  color: var(--c-dim);
+}
+.chat-root .headsup .headsup-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.chat-root .headsup .headsup-tag {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--c-faint);
+}
+.chat-root .headsup .headsup-title {
+  font-weight: 500;
+  color: var(--c-fg);
+}
+.chat-root .headsup .headsup-bullets {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  color: var(--c-dim);
+}
+.chat-root .headsup .headsup-bullets li {
+  margin: 2px 0;
+}
+.chat-root .headsup .headsup-bullet p {
+  margin: 0;
+}
+.chat-root .headsup .headsup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.chat-root .headsup .headsup-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 2px 10px;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--c-dim);
+  cursor: pointer;
+}
+.chat-root .headsup .headsup-btn:hover {
+  border-color: var(--c-border-strong);
+  color: var(--c-fg);
+  background: var(--c-card-bg-2);
+}
+.chat-root .headsup .headsup-btn.primary {
+  color: var(--c-fg);
+  border-color: var(--c-border-strong);
+}
+.chat-root .headsup .headsup-btn:focus-visible {
+  outline: 1px solid var(--c-border-strong);
+  outline-offset: 2px;
+  border-radius: 3px;
 }

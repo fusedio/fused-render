@@ -79,6 +79,9 @@ export {
   useComposerDefaults,
 } from "./composer-defaults";
 export type { ComposerDefaults } from "./composer-defaults";
+export { permissionLabelsFor } from "./composer-defaults";
+export { AgentSelect, fixedAgentTitle } from "./AgentSelect";
+export { AgentProvider, useAgent } from "./agent-context";
 export {
   ago,
   draftHref,
@@ -202,6 +205,10 @@ export { SentPopBody } from "./SentPop";
 export type { SentPopProps } from "./SentPop";
 export { RecapFold } from "./RecapFold";
 export type { RecapFoldProps } from "./RecapFold";
+export { HeadsUp } from "./HeadsUp";
+export type { HeadsUpProps } from "./HeadsUp";
+export { useHeadsUp, countUserTurns } from "./useHeadsUp";
+export type { HeadsUpApi, HeadsUpNote } from "./useHeadsUp";
 export { useAwayRecap, AWAY_MS, MAX_FAILURES } from "./useAwayRecap";
 export type { AwayRecapOptions, AwayRecapResult } from "./useAwayRecap";
 export { CommandMenu, MENU_MAX_ROWS, acceptText, menuKey, menuQuery } from "./CommandMenu";

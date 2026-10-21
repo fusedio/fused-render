@@ -133,14 +133,19 @@ def _lane(loops: "weakref.WeakKeyDictionary", width: int) -> asyncio.Semaphore:
     return sem
 
 
+# Lane widths, shared by the semaphores below and `lane_stats`.
+INTERACTIVE_LANE_WIDTH = 2
+QUERY_LANE_WIDTH = 1
+
+
 def _interactive_read_concurrency() -> asyncio.Semaphore:
     """The `rank`/`search`/`stats` lane. See the block comment above."""
-    return _lane(_interactive_lane_loops, 2)
+    return _lane(_interactive_lane_loops, INTERACTIVE_LANE_WIDTH)
 
 
 def _query_read_concurrency() -> asyncio.Semaphore:
     """The `query`/`ask` (caller-authored SQL) lane. See the block comment above."""
-    return _lane(_query_lane_loops, 1)
+    return _lane(_query_lane_loops, QUERY_LANE_WIDTH)
 
 
 # --- Dedicated thread pool for index reads (SPEC-index-search-wedge.md item 3) ---
@@ -189,6 +194,41 @@ ABANDON_S = 15.0
 # thread actually finishes, whenever that turns out to be.
 _abandoned_reads: "set" = set()
 
+# Wall time of the last 503 either path above answered (pool exhausted, or a
+# read that timed out), for `lane_stats`. Bookkeeping only.
+_last_503_at: float | None = None
+_LANE_WIDTHS = (("interactive", _interactive_lane_loops, INTERACTIVE_LANE_WIDTH),
+                ("query", _query_lane_loops, QUERY_LANE_WIDTH))
+
+
+def lane_stats() -> dict:
+    """What the Monitor's Overview shows for the index read lanes: per lane its
+    width, how many reads hold a permit and how many wait for one; the dedicated
+    pool's size and queue; abandoned reads; the last 503. Read-only — does not
+    create a lane or touch behaviour. Call it on the event-loop thread: the
+    semaphores are per loop (`_lane`), and an unknown loop reads as idle."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    lanes = {}
+    for name, loops, width in _LANE_WIDTHS:
+        sem = loops.get(loop) if loop is not None else None
+        value = getattr(sem, "_value", width) if sem is not None else width
+        waiters = getattr(sem, "_waiters", None) if sem is not None else None
+        lanes[name] = {"width": width, "in_use": max(0, width - value),
+                       "waiting": sum(1 for w in (waiters or ()) if not w.cancelled())}
+    queue = getattr(_INDEX_READ_POOL, "_work_queue", None)
+    return {
+        "lanes": lanes,
+        "in_use": sum(l["in_use"] for l in lanes.values()),
+        "waiting": sum(l["waiting"] for l in lanes.values()),
+        "abandoned": len(_abandoned_reads),
+        "pool_size": _INDEX_READ_POOL_SIZE,
+        "pool_queued": queue.qsize() if queue is not None else None,
+        "last_503_at": _last_503_at,
+    }
+
 
 def _index_pool_exhausted() -> bool:
     """True once every `_INDEX_READ_POOL` thread is tied up by abandoned work.
@@ -215,6 +255,8 @@ def _pool_exhausted_response(op: str, q: str, root: str) -> JSONResponse:
     (review finding D). One shared body/log line for all three
     `/api/index/{stats,search,rank}` routes, so a reader sees the same shape
     for the same condition regardless of which route hit it."""
+    global _last_503_at
+    _last_503_at = time.time()
     logger.error(
         "index %s: read pool exhausted (%d/%d abandoned reads); refusing "
         "%r under %s", op, len(_abandoned_reads), _INDEX_READ_POOL_SIZE, q, root)
@@ -279,6 +321,8 @@ async def _bounded_index_read(op: str, cancel_token: CancelToken, log_q: str,
         logger.warning(
             "index %s: %r under %s timed out after %.1fms waiting for the "
             "worker; abandoning it", op, log_q, log_root, elapsed_ms)
+        global _last_503_at
+        _last_503_at = time.time()
         _abandoned_reads.add(fut)
         fut.add_done_callback(_reap_abandoned)
         return None, JSONResponse(status_code=503,
@@ -392,6 +436,75 @@ def run_startup_scan(start_dir: str | None = None) -> None:
 async def startup_scan(start_dir: str | None = None) -> None:
     """The create_app hook. Off the event loop because it touches the disk."""
     await asyncio.to_thread(run_startup_scan, start_dir)
+
+
+#: Low-impact indexing: how long after the app reports ready the deferred
+#: startup scan waits before it starts.
+DEFERRED_STARTUP_DELAY_S = 15.0
+#: ...and the most it waits for the "startup finished" signal at all.
+DEFERRED_STARTUP_READY_TIMEOUT_S = 600.0
+
+
+#: Set by the app's shutdown (`stop_deferred_startup_scan`) so a deferred
+#: scan still waiting exits instead of scanning on a dying server. Cleared
+#: by `start_deferred_startup_scan`, i.e. at each startup.
+_deferred_stop = threading.Event()
+
+
+def run_deferred_startup_scan(start_dir, ready, *,
+                              delay_s: float = DEFERRED_STARTUP_DELAY_S,
+                              wait=None, stop_event=None,
+                              ready_timeout_s: float =
+                              DEFERRED_STARTUP_READY_TIMEOUT_S) -> None:
+    """The low-impact startup scan, off the boot path: wait for `ready` (a
+    `threading.Event` the lifespan sets once every startup handler
+    finished), then `delay_s` more, then scan and warm.
+
+    It runs whether or not this process owns the index watcher: the index
+    store is per branch, so a server that skipped it would never refresh its
+    own store. Only the watcher is owner-gated (server/index_owner.py).
+
+    Exits without scanning when `stop_event` (the module's, by default) is
+    set — the server is shutting down — or when `ready` never came (a
+    startup handler raised, so the lifespan never finished). Never raises."""
+    stop = stop_event or _deferred_stop
+    try:
+        if not ready.wait(ready_timeout_s):
+            logger.warning("index: deferred startup scan skipped (startup "
+                           "did not finish within %.0f s)", ready_timeout_s)
+            return
+        if stop.is_set():
+            return
+        if wait is not None:
+            wait(delay_s)
+        else:
+            stop.wait(delay_s)
+        if stop.is_set():
+            return
+        run_startup_scan(start_dir)
+        if stop.is_set():
+            return
+        startup_warm()
+    except Exception:  # noqa: BLE001 - a background thread must not raise
+        logger.exception("deferred startup index scan failed")
+
+
+def start_deferred_startup_scan(start_dir, ready) -> threading.Thread:
+    _deferred_stop.clear()
+    t = threading.Thread(target=run_deferred_startup_scan,
+                         args=(start_dir, ready),
+                         name="index-startup-deferred", daemon=True)
+    t.start()
+    return t
+
+
+def stop_deferred_startup_scan() -> None:
+    """The shutdown hook: a deferred scan still waiting exits. Idempotent."""
+    _deferred_stop.set()
+
+
+def reset_deferred_for_tests() -> None:
+    _deferred_stop.clear()
 
 
 # ------------------------------------------------------------- startup warm

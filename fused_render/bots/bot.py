@@ -207,7 +207,7 @@ def _artifacts_root() -> str:
 # and feature without paying for the text on ordinary browsing steps. `@APPS_ROOT@`
 # is substituted when the prompt is built (app_guide()), so FUSED_RENDER_DIR applies.
 APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its own settings and its own Chrome unless it was made to share another bot's logins):
-- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Steps per task (the tool-call cap of one task: 200 by default, Super Bot 1000, blank keeps the default), applies from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
+- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Steps per task (the tool-call cap of one task: 200 by default, Super Bot 1000, blank keeps the default), applies from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; an approval card can also offer "Approve, don't ask again" (plain commands and repeatable actions only, never for chaining, redirects or `$(…)`), and those rules are listed under Settings › Permissions › "Approved forever", where "Ask again" removes one; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
@@ -215,7 +215,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path. FOLDERS (when present) are the user's own folders they let you READ (`ls`, `find`, `readfile` with a path); you cannot write, move or delete anything there, and no other path on this Mac is readable.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready, and a card when one is stuck (Claude waits for an OK or an answer, fails, or hits its usage limit) whose button opens it under Builds. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
-- Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click. The Marketplace (Preferences > Marketplace, off by default) is a catalog of community apps: when it is on, `marketplace_search` finds one and `marketplace_install` installs it under @APPS_ROOT@/<slug> behind an approval card, every time; an installed one is in APPS like any other app.
+- Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click. The Marketplace (Preferences › Optional features, off by default) is a catalog of community apps: when it is on, `marketplace_search` finds one and `marketplace_install` installs it under @APPS_ROOT@/<slug> behind an approval card, every time; an installed one is in APPS like any other app.
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
 - App skills: an app that ships a SKILL.md (marked [py] in APPS) tells you what each of its .py files does and how to call it; the `py` action runs one (its main(**args), exactly as the app's page would run it). Skills load only when needed: apps you built this task and apps the task names are mounted under APP SKILLS; `py` with an app and no file loads any other. Apps you build get a SKILL.md as part of the build; an older app without one can get it from an update build. Your own builds run at once; other apps' files ask the user first, showing the file's line from its SKILL.md.
 - Bots list: New bot, search, pin or hide a bot (pinned first, then bots waiting on the user, then most recent); "Clone" makes a new bot on your logins (sharing them, not a copy) with your memory, instructions and skills; "Delete" removes a bot, and its logins unless another bot shares them. The Usage button shows model calls per hour, day and bot. Other local scripts can hand you tasks through botsend.py; they show up as normal tasks.
@@ -514,6 +514,23 @@ def is_super(meta) -> bool:
     return (meta or {}).get("kind") == "super"
 
 
+#: Guards a bot's lazy terminal creation (two tools racing must share one shell).
+_TERMINAL_LOCK = threading.Lock()
+#: Pagers would block a bot's `gh`/`git` on a "(END)" prompt it cannot see.
+TERMINAL_ENV = {"PAGER": "cat", "GH_PAGER": "cat", "GIT_PAGER": "cat"}
+
+
+def close_all_terminals() -> None:
+    """Close every bot-owned pty. Bots recreate a session lazily on their
+    next terminal tool call."""
+    from fused_render import pty_session
+
+    with _TERMINAL_LOCK:  # a creation holding the lock finishes first (and is killed here)
+        for sess in pty_session.REGISTRY.list():
+            if (sess.owner or "").startswith(pty_session.BOT_OWNER_PREFIX):
+                sess.kill()
+
+
 def super_id():
     """Super Bot's id when one exists, else None (one per install)."""
     for o in _list_ids():
@@ -529,6 +546,7 @@ MEMORY_LINES_HINT = 200  # Bot.MEMORY_LINES, visible to the class-body prompt st
 
 
 class Bot:
+    _terminal_id = None  # id of this bot's live pty (terminal_session); class default for __new__-built test bots
     deleted = False  # class default: a Bot built with __new__ (tests) still has it; delete() sets the instance flag
 
     def __init__(self, bid):
@@ -1875,6 +1893,8 @@ class Bot:
         return {**meta, "id": self.id, "seq": self.seq, "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
+                "terminal_id": self.terminal_id(), "terminal_available": _tools_mod().terminal_enabled(self),
+                "terminal_needs_claude": not is_super(meta) and _engine_for(meta) != "agent",
                 "memory": self.memory() if detail else None,
                 "skills": self.skills() if detail else None, "learning": self.learning,
                 "shot": f"/api/bots/{self.id}/shot" if shot_ts else None,
@@ -2749,12 +2769,54 @@ class Bot:
         except Exception as e:  # noqa: BLE001
             self.emit("error", f"Could not put the browser to sleep: {e}")
 
+    # -- terminal (docs §16) ----------------------------------------------------
+    def terminal_id(self):
+        """Id of this bot's live terminal session, else None."""
+        from fused_render import pty_session
+
+        sid = self._terminal_id
+        sess = pty_session.REGISTRY.get(sid) if sid else None
+        return sid if sess is not None and sess.alive else None
+
+    def terminal_session(self):
+        """This bot's pty session: created on first use in the bot's own folder,
+        reused across tasks, recreated if the shell died. Owned `bot:<id>`, so
+        the user's drawer never lists it. None when the bot is deleted or the terminal is off.
+        Raises SessionLimitError at the bot cap."""
+        from fused_render import pty_session
+
+        with _TERMINAL_LOCK:
+            # Re-checked under the lock so a creation racing delete / opt-out / the pref kill switch makes nothing.
+            if getattr(self, "deleted", False) or not _tools_mod().terminal_enabled(self):
+                return None
+            sid = self._terminal_id
+            sess = pty_session.REGISTRY.get(sid) if sid else None
+            if sess is None or not sess.alive:
+                # Only a shell with completion markers (zsh/bash) works for terminal_run: the user's own wins.
+                shells = tuple(x for x in (os.environ.get("SHELL"),)
+                               if x and os.path.basename(x) in ("zsh", "bash")) + ("/bin/zsh", "/bin/bash")
+                sess = pty_session.REGISTRY.create(cwd=self.dir, owner=f"{pty_session.BOT_OWNER_PREFIX}{self.id}",
+                                                   env=dict(TERMINAL_ENV), shells=shells)
+                self._terminal_id = sess.id
+            return sess
+
+    def close_terminal(self):
+        """Kill this bot's terminal, if it has one (shutdown, delete, opt-out)."""
+        from fused_render import pty_session
+
+        with _TERMINAL_LOCK:
+            sid, self._terminal_id = self._terminal_id, None
+        sess = pty_session.REGISTRY.get(sid) if sid else None
+        if sess is not None:
+            sess.kill()
+
     def shutdown(self, browser=True, seal=None):
         """Stop the task and (by default) the whole browser process. `delete()` and
         `set_browser` pass browser=False: this bot leaves (its windows close, Chrome
         quits only if that left it empty) and the other bots keep theirs. `seal=False`
         when the profile folder is removed next (nothing to seal)."""
         self.stop()
+        self.close_terminal()
         if self.thread:
             self.thread.join(5)
         if browser:
@@ -4296,6 +4358,7 @@ def clone(src_id, name="", share=True):
     meta = {"id": bid, "browser_id": src.browser_id if share else bid, "name": name or f"{src.meta.get('name', 'Bot')} copy", "model": src.meta.get("model", DEFAULT_MODEL),
             "effort": src.meta.get("effort", DEFAULT_EFFORT), "instructions": src.meta.get("instructions", ""),
             "approval": src.meta.get("approval", "ask"), "build_access": src.meta.get("build_access", "scoped"),
+            "terminal": src.meta.get("terminal") is True,
             "trusted_apps": apptools.clean_trusted_apps(src.meta.get("trusted_apps")),
             "allow_rules": _tools_mod().clean_allow_rules(src.meta.get("allow_rules")),
             "folders": clean_folders(src.meta.get("folders")),

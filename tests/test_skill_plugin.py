@@ -989,30 +989,32 @@ def test_appenv_canvases_root_matches_the_servers_own(monkeypatch, tmp_path):
     same folder or the feature breaks in a different place each time.
     """
     import fused_render.canvases as canvases_mod
-    from fused_render import _canvas_push
+    from fused_render import _canvas_push, fusedcli
 
     appenv = _load_appenv()
 
-    # 1. Exported (the production path): all three read the var.
+    # 1. Exported (the production path): all three read the var. The template
+    # and the shim see the BASE (`~/Fused/canvas`); the server's own
+    # `canvases_root(env)` is each environment's folder under it.
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(tmp_path / "cans"))
     assert appenv.canvases_root() == str(tmp_path / "cans")
-    assert canvases_mod.canvases_root() == appenv.canvases_root()
-    assert _canvas_push.canvases_root() == appenv.canvases_root()
+    assert canvases_mod.canvases_base() == appenv.canvases_root()
+    assert _canvas_push.canvases_base() == appenv.canvases_root()
+    for env in fusedcli.WORKBENCH_ENV_CHOICES:
+        assert canvases_mod.canvases_root(env) == os.path.join(appenv.canvases_root(), env)
 
     # 2. Unexported (a standalone template, or a server whose export regressed):
     # the fallbacks must still land on the same folder. Deliberately with
-    # FUSED_RENDER_HOME/HOME_DIR pointed elsewhere: canvas clones follow the
-    # flavor's own home (FUSED_RENDER_HOME), not the branch-nested one
-    # (FUSED_RENDER_HOME_DIR) that `home_dir()` above would answer (#1443) — so
-    # this is exactly the case that used to diverge, with appenv still resolving
-    # through the hardcoded `~/.fused-render/canvases` after the server started
-    # following the flavor's home instead.
+    # FUSED_RENDER_HOME/HOME_DIR pointed elsewhere: canvas clones live in the
+    # user's Fused workspace (FUSED_RENDER_DIR, `shell/seed.py:fused_dir`), not
+    # in the app's home, branch-nested or not.
     monkeypatch.delenv("FUSED_RENDER_CANVASES_DIR")
     monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(tmp_path / "branchhome"))
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "otherhome"))
-    assert appenv.canvases_root() == canvases_mod.canvases_root()
-    assert appenv.canvases_root() == _canvas_push.canvases_root()
-    assert appenv.canvases_root() == str(tmp_path / "otherhome" / "canvases")
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "ws"))
+    assert appenv.canvases_root() == canvases_mod.canvases_base()
+    assert appenv.canvases_root() == _canvas_push.canvases_base()
+    assert appenv.canvases_root() == str(tmp_path / "ws" / "canvas")
 
 
 def test_the_gate_normalizes_before_comparing(tmp_path, monkeypatch):
@@ -1045,6 +1047,61 @@ def test_the_gate_normalizes_before_comparing(tmp_path, monkeypatch):
     assert not agent._in_canvases_root(str(tmp_path / "canvases-evil" / "x.py"))
 
 
+def test_fused_web_canvas_root_is_a_second_gate_root(tmp_path, monkeypatch):
+    """Fused Web keeps its OWN local canvas clones at `~/Fused/canvas/<name>`
+    (each with its own `canvas.toml`) — never under the canvases-clones root
+    agent.py already knows, since those tasks go through `fused.tasks.create`
+    rather than a canvas push. That folder is a SECOND gate root, additive
+    with the first: a target inside either gets the workbench plugin."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    canvases = tmp_path / "canvases"
+    canvases.mkdir()
+    agent = _load_agent()
+    monkeypatch.setattr(agent, "_skill_plugin_dir", lambda: "/a/own")
+    monkeypatch.setattr(agent, "_workbench_plugin_dir", lambda: "/b/workbench")
+    monkeypatch.setattr(agent, "_canvases_root", lambda: str(canvases))
+    own = ["--plugin-dir", "/a/own"]
+    both = ["--plugin-dir", "/a/own", "--plugin-dir", "/b/workbench"]
+
+    fused_web = home / "Fused" / "canvas" / "my_canvas"
+    fused_web.mkdir(parents=True)
+    assert agent._plugin_argv(str(fused_web / "canvas.toml")) == both
+    assert agent._skill_plugin_roots(str(fused_web)) == ["/a/own", "/b/workbench"]
+
+    # The existing canvases root still works alongside it.
+    (canvases / "c1").mkdir()
+    assert agent._plugin_argv(str(canvases / "c1")) == both
+
+    # Elsewhere under ~/Fused, and a sibling merely starting with "canvas",
+    # are NOT inside — same commonpath rule as the canvases-root gate.
+    other = home / "Fused" / "other"
+    other.mkdir(parents=True)
+    assert agent._plugin_argv(str(other)) == own
+    evil = home / "Fused" / "canvas-evil" / "x"
+    evil.mkdir(parents=True)
+    assert agent._plugin_argv(str(evil)) == own
+
+    # A symlink standing in for part of the path (the macOS `/tmp` vs
+    # `/private/tmp` case the canvases-root gate already handles) still
+    # resolves via realpath to the same canonical clone.
+    home_link = tmp_path / "home_link"
+    os.symlink(home, home_link)
+    via_link = home_link / "Fused" / "canvas" / "my_canvas" / "canvas.toml"
+    assert agent._plugin_argv(str(via_link)) == both
+
+    # Resolved at CALL time (os.path.expanduser), not import time: moving HOME
+    # after the module is loaded changes the answer.
+    home2 = tmp_path / "home2"
+    (home2 / "Fused" / "canvas" / "other_canvas").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home2))
+    assert agent._plugin_argv(
+        str(home2 / "Fused" / "canvas" / "other_canvas" / "canvas.toml")) == both
+    # The first HOME's clone no longer resolves under the new HOME.
+    assert agent._plugin_argv(str(fused_web / "canvas.toml")) == own
+
+
 def test_the_server_exports_the_root_before_serving():
     """The vars have to be set before any child is spawned, or a session
     inherits nothing — same contract as every other FUSED_RENDER_* export."""
@@ -1074,6 +1131,80 @@ def test_both_canvas_entry_points_fetch_and_neither_can_fail_over_it():
     assert "except Exception" in helper
     assert "daemon=True" in helper
     assert "acquire(blocking=False)" in helper
+
+
+# -- Fused Web's `~/Fused/canvas` also kicks the fetch --------------------------
+#
+# The gate (agent._in_workbench_root) recognizes `~/Fused/canvas` as a second
+# root, but recognizing the path is not enough: `_workbench_plugin_dir()`
+# answers None until SOMETHING has fetched the clone, and the only callers of
+# that fetch were fused-render's own canvases page (the /clone route and the
+# watcher a canvas open starts). A user who only uses Fused Web — tasks started
+# with `fused.tasks.create` against `~/Fused/canvas/<name>`, never opening a
+# canvas in fused-render — had no clone and so no workbench skills despite
+# passing the gate. `skill_plugin.in_fused_web_canvas_root` below is the ONE
+# containment rule server code shares for "is this a Fused Web canvas target",
+# so `api_task_create` and server startup can each kick the same best-effort
+# fetch without re-deriving the rule.
+
+def test_in_fused_web_canvas_root_matches_target_inside_and_rejects_sibling(
+        tmp_path, monkeypatch):
+    """Same shape as `agent._in_fused_web_canvas_root`, deliberately: a target
+    inside `~/Fused/canvas` is in, a sibling that merely starts with the same
+    letters (`canvas-evil`) or a target elsewhere under `~/Fused` is not, and
+    the root is read from HOME at CALL time so a test (or a real HOME change)
+    is honored rather than frozen at import."""
+    from fused_render import skill_plugin
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    assert skill_plugin.fused_web_canvas_root() == str(home / "Fused" / "canvas")
+
+    inside = home / "Fused" / "canvas" / "my_canvas" / "sub" / "x.py"
+    inside.parent.mkdir(parents=True)
+    inside.write_text("x")
+    assert skill_plugin.in_fused_web_canvas_root(str(inside))
+    assert skill_plugin.in_fused_web_canvas_root(
+        str(home / "Fused" / "canvas" / "my_canvas"))
+
+    evil = home / "Fused" / "canvas-evil" / "x"
+    evil.mkdir(parents=True)
+    assert not skill_plugin.in_fused_web_canvas_root(str(evil))
+    other = home / "Fused" / "other"
+    other.mkdir(parents=True)
+    assert not skill_plugin.in_fused_web_canvas_root(str(other))
+    assert not skill_plugin.in_fused_web_canvas_root("")
+
+    # Moving HOME mid-process changes the answer — resolved at call time.
+    home2 = tmp_path / "home2"
+    (home2 / "Fused" / "canvas" / "other_canvas").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home2))
+    assert skill_plugin.in_fused_web_canvas_root(
+        str(home2 / "Fused" / "canvas" / "other_canvas"))
+    assert not skill_plugin.in_fused_web_canvas_root(str(inside))
+
+
+def test_task_create_and_startup_also_kick_the_fetch_for_fused_web():
+    """The review finding this closes: the gate recognizing `~/Fused/canvas`
+    was not enough while nothing but the canvases page ever fetched the clone.
+    `api_task_create` (Fused Web's `fused.tasks.create` entry point) and server
+    startup (covering a `~/Fused/canvas` folder that already exists when the
+    process comes up) must each kick the same best-effort fetch."""
+    tasks_src = open(os.path.join(REPO_ROOT, "fused_render", "server",
+                                  "routers", "tasks.py"), encoding="utf-8").read()
+    route = tasks_src[tasks_src.index("def api_task_create"):]
+    route = route[:route.index("\n@router")]
+    assert "_kick_workbench_skills()" in route
+    assert "in_fused_web_canvas_root" in route
+
+    app_src = open(os.path.join(REPO_ROOT, "fused_render", "server", "app.py"),
+                  encoding="utf-8").read()
+    start = app_src.index("async def _startup_kick_fused_web_workbench_skills")
+    handler = app_src[start:start + 2000]
+    assert "_kick_workbench_skills()" in handler
+    assert "fused_web_canvas_root" in handler
 
 
 # -- retiring the legacy `fused@fused-marketplace` plugin ----------------------

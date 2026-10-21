@@ -1702,3 +1702,101 @@ def test_refresh_over_the_api_reports_a_fetch_failure_rather_than_500(
     body = r.json()
     assert body["ok"] is False
     assert "kept existing catalog" in body["error"]
+
+
+# -- mcp list: cached instantly, refreshed in the background --------------------
+# `claude mcp list` health-checks every server (~11 s), so the tab gets the last
+# answer at once (`stale`) and asks again with `fresh`.
+
+_MCP_LINE = "srv: https://x.test/mcp (HTTP) - ✓ Connected\n"
+
+
+@pytest.fixture()
+def mcp_cache(tmp_path, monkeypatch):
+    from fused_render.claude_config import mcp as mcp_mod
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "mcp-home"))
+    mcp_mod._wait_idle()
+    yield mcp_mod
+    mcp_mod._wait_idle()
+
+
+def _count_cli(monkeypatch, stdout=_MCP_LINE, ok=True, delay=0.0):
+    import threading as _t
+    import time as _time
+
+    calls = []
+    lock = _t.Lock()
+
+    def fake(*args, timeout=25):
+        with lock:
+            calls.append(args)
+        _time.sleep(delay)
+        return {"ok": ok, "stdout": stdout, "stderr": "" if ok else "boom"}
+
+    monkeypatch.setattr(lib, "claude_cli", fake)
+    return calls
+
+
+def test_mcp_list_without_a_cache_blocks_and_writes_it(client, mcp_cache, monkeypatch):
+    calls = _count_cli(monkeypatch)
+    body = _post(client, "mcp", action="list").json()
+    assert body["ok"] and body["stale"] is False and body["servers"][0]["name"] == "srv"
+    assert len(calls) == 1
+    assert mcp_cache._read_cache()["servers"][0]["name"] == "srv"
+
+
+def test_mcp_list_with_a_cache_returns_stale_at_once_and_refreshes_once(
+        client, mcp_cache, monkeypatch):
+    _count_cli(monkeypatch)
+    _post(client, "mcp", action="list")
+    calls = _count_cli(monkeypatch, stdout="other: https://y.test/mcp (HTTP) - ✓ Connected\n")
+    body = _post(client, "mcp", action="list").json()
+    assert body["ok"] and body["stale"] is True
+    assert body["servers"][0]["name"] == "srv" and isinstance(body["checkedAt"], float)
+    mcp_cache._wait_idle()
+    assert len(calls) == 1
+    assert mcp_cache._read_cache()["servers"][0]["name"] == "other"
+
+
+def test_mcp_list_fresh_single_flights_concurrent_calls(client, mcp_cache, monkeypatch):
+    import threading
+
+    calls = _count_cli(monkeypatch, delay=0.3)
+    results = []
+
+    def go():
+        results.append(mcp_cache.main(action="list", fresh=True))
+
+    threads = [threading.Thread(target=go) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls) == 1
+    assert [r["stale"] for r in results] == [False, False]
+    assert mcp_cache.main(action="list", fresh="true")["stale"] is False
+
+
+@pytest.mark.parametrize("action,extra", [
+    ("add", {"json": "{}"}), ("remove", {}), ("logout", {})])
+def test_mcp_changes_drop_the_cache_on_success_only(
+        client, mcp_cache, monkeypatch, action, extra):
+    _count_cli(monkeypatch)
+    _post(client, "mcp", action="list")
+    assert mcp_cache._read_cache() is not None
+    _count_cli(monkeypatch, ok=False)
+    _post(client, "mcp", action=action, name="srv", **extra)
+    assert mcp_cache._read_cache() is not None, "a failed change keeps the cache"
+    _count_cli(monkeypatch, ok=True)
+    _post(client, "mcp", action=action, name="srv", **extra)
+    assert mcp_cache._read_cache() is None
+
+
+def test_mcp_failed_refresh_leaves_the_cache_alone(client, mcp_cache, monkeypatch):
+    _count_cli(monkeypatch)
+    _post(client, "mcp", action="list")
+    _count_cli(monkeypatch, ok=False)
+    body = _post(client, "mcp", action="list", fresh=True).json()
+    assert body == {"ok": False, "error": "boom"}
+    assert mcp_cache._read_cache()["servers"][0]["name"] == "srv"

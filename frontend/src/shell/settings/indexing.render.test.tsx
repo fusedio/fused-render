@@ -1,0 +1,188 @@
+// The "Rank results by relevance" row (D720): renders, reflects the persisted value, writes
+// on change via a real PUT /api/prefs, and publishes the new value into the
+// module-level cache the explorer's two search boxes read
+// (ranked-search-pref.ts) — same coverage shape as the pref-threading tests
+// in listing/useListingSearch.render.test.ts, but for the control itself.
+//
+// A stubbed `globalThis.fetch`, not `mock.module` — `putRankedSearchEnabled`
+// is a thin fetch wrapper (api.ts), and `mock.module` replacing the whole
+// module process-wide is exactly the pitfall FilesHome.render.test.tsx's own
+// header comment documents; this file needs only the one PUT intercepted.
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { createElement } from "react";
+import type { Prefs } from "@platform/lib/api";
+import { Switch } from "@platform/shadcn/ui/switch";
+import { LowImpactControl as LowImpactToggle, RankedSearchControl as RankedSearchToggle } from "@shell/settings/indexing";
+
+// The row's control is the shadcn Switch; its props are what the reader sees
+// (checked, disabled) and what a click calls (onCheckedChange).
+const sw = (box: ReactTestRenderer) => box.root.findByType(Switch);
+const press = (box: ReactTestRenderer) => sw(box).props.onCheckedChange(!sw(box).props.checked);
+
+function fakePrefs(ranked: boolean): Prefs {
+  return { indexing: { enabled: true, ranked } } as unknown as Prefs;
+}
+
+const realFetch = globalThis.fetch;
+let putCalls: { body: unknown }[] = [];
+let putResponseRanked = false;
+
+function fakeFetch(url: string | URL, init?: RequestInit): Promise<Response> {
+  const u = String(url);
+  if (u.startsWith("/api/prefs") && init?.method === "PUT") {
+    putCalls.push({ body: JSON.parse(String(init.body)) });
+    return Promise.resolve(
+      new Response(JSON.stringify(fakePrefs(putResponseRanked)), { status: 200 }),
+    );
+  }
+  throw new Error("Indexing.render.test.tsx: unexpected fetch " + u);
+}
+
+beforeEach(() => {
+  putCalls = [];
+  putResponseRanked = false;
+  globalThis.fetch = fakeFetch as typeof fetch;
+});
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+async function mount(prefs: Prefs, onChange: (p: Prefs) => void) {
+  let box!: ReactTestRenderer;
+  await act(async () => {
+    box = create(createElement(RankedSearchToggle, { prefs, onChange }));
+  });
+  return box;
+}
+
+describe("Rank results by relevance", () => {
+  test("renders checked when the preference is ranked (the default)", async () => {
+    const box = await mount(fakePrefs(true), () => {});
+    expect(sw(box).props.checked).toBe(true);
+    await act(async () => box.unmount());
+  });
+
+  test("renders unchecked when the persisted preference is unranked", async () => {
+    const box = await mount(fakePrefs(false), () => {});
+    expect(sw(box).props.checked).toBe(false);
+    await act(async () => box.unmount());
+  });
+
+  test("clicking writes ranked_search_enabled=false and hands the parent the new Prefs", async () => {
+    putResponseRanked = false;
+    let latest: Prefs | null = null;
+    const box = await mount(fakePrefs(true), (p) => {
+      latest = p;
+    });
+    await act(async () => press(box));
+    expect(putCalls).toHaveLength(1);
+    expect(putCalls[0].body).toEqual({ ranked_search_enabled: false });
+    expect((latest as unknown as Prefs | null)?.indexing.ranked).toBe(false);
+    await act(async () => box.unmount());
+  });
+
+  test("clicking again from unranked writes ranked_search_enabled=true", async () => {
+    putResponseRanked = true;
+    const box = await mount(fakePrefs(false), () => {});
+    await act(async () => press(box));
+    expect(putCalls).toHaveLength(1);
+    expect(putCalls[0].body).toEqual({ ranked_search_enabled: true });
+    await act(async () => box.unmount());
+  });
+
+  test("the toggle publishes into the shared preference cache the search boxes read",
+    async () => {
+      putResponseRanked = false;
+      const box = await mount(fakePrefs(true), () => {});
+      const { useRankedSearchEnabled, publishRankedSearchEnabled } =
+        await import("@apps/explorer/lib/ranked-search-pref");
+      // Known starting state, independent of whatever an earlier test file in
+      // this same bun process last published (the cache is module-level).
+      publishRankedSearchEnabled(true);
+      let reader!: ReactTestRenderer;
+      function Reader() {
+        return createElement("span", { "data-ranked": useRankedSearchEnabled() });
+      }
+      await act(async () => {
+        reader = create(createElement(Reader));
+      });
+      expect(reader.root.findByType("span").props["data-ranked"]).toBe(true);
+
+      await act(async () => press(box));
+
+      expect(reader.root.findByType("span").props["data-ranked"]).toBe(false);
+      await act(async () => {
+        box.unmount();
+        reader.unmount();
+      });
+    });
+});
+
+function lowImpactPrefs(lowImpact: boolean, enabled = true): Prefs {
+  return { indexing: { enabled, ranked: true, low_impact: lowImpact } } as unknown as Prefs;
+}
+
+describe("Low-impact indexing", () => {
+  async function mountLow(prefs: Prefs, onChange: (p: Prefs) => void) {
+    let box!: ReactTestRenderer;
+    await act(async () => {
+      box = create(createElement(LowImpactToggle, { prefs, onChange }));
+    });
+    return box;
+  }
+
+  test("renders unchecked by default and enabled", async () => {
+    const box = await mountLow(lowImpactPrefs(false), () => {});
+    expect(sw(box).props.checked).toBe(false);
+    expect(sw(box).props.disabled).toBe(false);
+    await act(async () => box.unmount());
+  });
+
+  test("clicking writes index_low_impact_enabled=true and re-renders checked", async () => {
+    const fetchSaved = globalThis.fetch;
+    globalThis.fetch = ((url: string | URL, init?: RequestInit) => {
+      putCalls.push({ body: JSON.parse(String(init?.body)) });
+      return Promise.resolve(
+        new Response(JSON.stringify(lowImpactPrefs(true)), { status: 200 }),
+      );
+    }) as typeof fetch;
+    try {
+      let current = lowImpactPrefs(false);
+      let box!: ReactTestRenderer;
+      const render = () =>
+        createElement(LowImpactToggle, {
+          prefs: current,
+          onChange: (p: Prefs) => {
+            current = p;
+            box.update(render());
+          },
+        });
+      await act(async () => {
+        box = create(render());
+      });
+      await act(async () => press(box));
+      expect(putCalls).toHaveLength(1);
+      expect(putCalls[0].body).toEqual({ index_low_impact_enabled: true });
+      expect(sw(box).props.checked).toBe(true);
+      await act(async () => box.unmount());
+    } finally {
+      globalThis.fetch = fetchSaved;
+    }
+  });
+
+  test("is disabled while indexing itself is off", async () => {
+    const box = await mountLow(lowImpactPrefs(false, false), () => {});
+    expect(sw(box).props.disabled).toBe(true);
+    await act(async () => box.unmount());
+  });
+});
+
+// The index status line's scanning arithmetic (the reused-vs-files fold) used to
+// be covered here by mounting the whole panel — moved to a pure test over
+// `scanningLine` in indexing-lib.test.ts (D736). Mounting IndexingPanel pulls
+// in `useIndexStatus`'s polling effect, and on CI (never locally, since the
+// leak's source only fails to parse here) a prior test file's un-flushed
+// `subscribeFda` passive effect was committing during this file's `act()`
+// flush and calling `window.setTimeout` in this DOM-free render-test
+// environment — unrelated to the arithmetic these tests exist to check.

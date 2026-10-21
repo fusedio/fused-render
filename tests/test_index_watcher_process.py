@@ -341,3 +341,33 @@ def test_a_real_change_arrives_from_the_real_watcher(tmp_path):
     finally:
         stop.set()
         source.close()
+
+
+def test_the_low_impact_pruner_does_not_plan_dot_folders(tmp_path):
+    """Under the flag the watcher child drops dot-leading folders below the
+    root (search hides them), so the Linux plan never watches them."""
+    _tree(tmp_path, ".hidden/deep", "docs")
+    on = Pruner(str(tmp_path), IgnoreRules([]), low_impact=True)
+    off = Pruner(str(tmp_path), IgnoreRules([]))
+    assert not on.kept(norm(str(tmp_path / ".hidden")))
+    assert off.kept(norm(str(tmp_path / ".hidden")))
+    assert on.kept(norm(str(tmp_path / "docs")))
+
+
+def test_the_low_impact_watcher_child_runs_niced(tmp_path, monkeypatch):
+    """`main` lowers its CPU priority under the flag, on top of the I/O
+    policy."""
+    from fused_render.index import watcher, worker
+
+    niced = []
+    monkeypatch.setattr(watcher.os, "nice", lambda n: niced.append(n))
+    monkeypatch.setattr(worker, "_set_background_io_policy", lambda: None)
+    monkeypatch.setattr(watcher.threading, "Thread",
+                        lambda *a, **k: type("T", (), {"start": lambda s: None})())
+    monkeypatch.setattr(watcher, "serve", lambda root, pruner, out: 0)
+    for flag, want in ((True, [10]), (False, [])):
+        niced.clear()
+        spec = {"root": str(tmp_path), "ignore": [], "index_dir": None,
+                "low_impact": flag}
+        assert watcher.main([json.dumps(spec)]) == 0
+        assert niced == want

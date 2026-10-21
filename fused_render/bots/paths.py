@@ -164,7 +164,7 @@ def migrate_layout() -> int:
         else:
             # Nothing left of the old layout: mark it so this never runs again (a pass that moved something runs
             # once more at the next boot, in case an occupied destination left a source behind).
-            with open(os.path.join(base, _LAYOUT_DONE), "w") as f:
+            with open(os.path.join(base, _LAYOUT_DONE), "w", encoding="utf-8") as f:
                 f.write("1\n")
     except Exception:  # noqa: BLE001
         log.exception("bots layout: migration failed (continuing with what moved)")

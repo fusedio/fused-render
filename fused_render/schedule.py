@@ -107,7 +107,8 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from fused_render import _startonce, claude_spawn, cron, recur, tasks_store
+from fused_render import (_startonce, claude_spawn, cron, recur, session_cap,
+                          tasks_store)
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -687,6 +688,19 @@ def _release_folder(manager, task_key: str) -> None:
                      exc_info=True)
 
 
+class BackendRefused(ValueError):
+    """`create` refusing a message over its AGENT (D2/D17): switched off, the
+    wrong agent for the session it names, or a permission mode that agent
+    cannot run. A `ValueError` so every caller's existing 400 still catches
+    it; `body` is the full refusal (`error`, `reason`, `backend`) — the same
+    shape `registry.disabled_error` and `routers/claude_agent` answer — for a
+    router that hands the page something it can act on."""
+
+    def __init__(self, body: dict):
+        super().__init__(str(body.get("error") or "backend refused"))
+        self.body = dict(body)
+
+
 class SpawnBusy(Exception):
     """`dispatch_entry` refusing to start a turn that cannot go RIGHT NOW, where
     the reason is a wait rather than a verdict: the conversation already has a
@@ -753,6 +767,8 @@ def dispatch_entry(entry_id: str, now: datetime | None = None) -> dict | None:
     if (session and _session_live(session, now)
             and not _verdict_echo(session, entries, now)):
         raise SpawnBusy(f"{entry_id}: session {session} has a live turn")
+    if session_cap.held(entry, session):
+        raise SpawnBusy(f"{entry_id}: at the session cap")
     claimed = _claim(entry_id, now, resolved)
     if claimed is None:
         return None  # cancelled or claimed in the window since the read above
@@ -1527,8 +1543,27 @@ def create(target: str, message: str, due=None, session_id: str = "",
            immediate=None, images=None, attachments=None,
            create_target: bool = False,
            model: str = "", effort: str = "", priority=None,
-           follow_of: str = "", origin: str = "", bot: str = "") -> dict:
+           follow_of: str = "", origin: str = "", bot: str = "",
+           backend: str = "", strict_mcp: bool = False) -> dict:
     """Validate and store one scheduled message; return the stored entry.
+
+    `backend` — "claude" | "copilot" | "" — is which agent runs the turn (D2),
+    stored beside `model`/`effort` and handed to `spawn_helper` by `_send`.
+    PINNED HERE, never left for send time: "" is resolved now and the entry
+    stores the answer, so a task scheduled today runs tomorrow on the agent the
+    user saw in the modal, not whatever the Preferences default is when it
+    fires. A `session_id`'s owner (`session_owner`) comes first — an explicit
+    `backend` naming another agent is refused when the record or transcript
+    root says otherwise (invariant 8), and a blank takes the owner, Claude
+    when nothing says. A `follow_of` leader's agent is held the same way.
+    Otherwise "" is `registry.default_id()`. An unknown id is a `ValueError` (the router's
+    400); every other refusal about the agent is a `BackendRefused` carrying
+    the full body — switched OFF in Preferences (D17, request-level gate; the
+    scheduler's own tick refuses the same entry again at send time, because
+    the toggle can flip between the two), the wrong agent for the session,
+    or `permission_mode="plan"` on an agent with no plan mode. An entry stored before the field existed has no
+    `backend` key and reads as Claude (`_entry_backend`), never as the
+    default of the day.
 
     `title` and `description` are the user's own words about the work, both
     optional and both stored as given. An empty `title` is not a missing value
@@ -1731,6 +1766,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # what happened — where a refusal here would report a policy the caller
         # did not set as if the date were malformed.
 
+    from fused_render.agent_backends import registry as _registry
+    backend = str(backend or "").strip()
+    if backend and not _registry.is_known(backend):
+        raise ValueError("backend: expected one of "
+                         + ", ".join(repr(b) for b in _registry.ORDER))
     mode = permission_mode or _SCHEDULED_PERMISSION_MODE
     if mode not in PERMISSION_MODES:
         raise ValueError(f"permission_mode: expected one of {PERMISSION_MODES}")
@@ -1746,10 +1786,58 @@ def create(target: str, message: str, due=None, session_id: str = "",
     follow_of = str(follow_of or "").strip()
     if follow_of:
         with _lock:
-            known = any(str(e.get("id") or "") == follow_of for e in _read())
-        if not known:
+            leader = next((e for e in _read()
+                           if str(e.get("id") or "") == follow_of), None)
+        if leader is None:
             raise ValueError(
                 f"follow_of: no scheduled message with id {follow_of!r}")
+        # A follower is the next line of its leader's conversation, so it
+        # goes to the leader's agent — and naming another one is refused the
+        # way a session's mismatch is (below): one conversation, one agent.
+        leads = _entry_backend(leader)
+        if backend and backend != leads:
+            raise _mismatch(leads, "this conversation")
+        backend = leads
+
+    # THE PIN (see the docstring): resolved once, here, and stored. A session
+    # already belongs to an agent (invariant 8) and its owner comes FIRST: a
+    # caller naming another agent is refused rather than stored, because the
+    # entry would then say one agent while `agent._start` resumed on the other
+    # and the send gate checked the wrong switch. Refused only on EVIDENCE
+    # (`session_owner`: a record or a transcript root) — a session nothing has
+    # recorded yet, a Copilot run seconds old, is not "Claude's" just because
+    # Claude is what a blank reads as; that fallback only fills a blank.
+    # Anything else takes the Preferences default, which is enabled by
+    # construction.
+    if session_id:
+        owner = session_owner(session_id, target)
+        if owner and backend and backend != owner:
+            raise _mismatch(owner, "this session")
+        backend = backend or owner or _registry.DEFAULT
+    # BOTS RUN ON CLAUDE (owner Q7): a bot's task never takes the Preferences
+    # default, and naming another agent for one is refused — `_bot_exempt`'s
+    # pass through the Claude switch is only ever a Claude pass.
+    if str(bot or "").strip():
+        if backend and backend != _registry.CLAUDE.id:
+            raise BackendRefused({"error": "bots run on Claude",
+                                  "reason": "unsupported", "backend": backend})
+        backend = _registry.CLAUDE.id
+    backend = backend or _registry.default_id()
+    if not _registry.is_enabled(backend) and not _bot_exempt(backend, bot):
+        raise BackendRefused(_registry.disabled_error(backend))
+    # Plan mode needs a plan card to approve, which only some agents have
+    # (§7 caps.plan_mode) — refused here in the words `routers/claude_agent`
+    # uses, rather than failing at send time with nobody watching.
+    if mode == "plan" and not _registry.get(backend).caps.plan_mode:
+        raise BackendRefused({
+            "error": f"plan mode is not available for {_registry.get(backend).label}",
+            "reason": "unsupported", "backend": backend})
+    # A model another agent offers fails only when the turn spawns, with
+    # nobody watching (a scheduled task) — refused here instead, the same
+    # rule the pickers apply (`registry.foreign_model_error`).
+    foreign = _registry.foreign_model_error(backend, model)
+    if foreign is not None:
+        raise BackendRefused(foreign)
 
     # No vocabulary check: the one word anything writes is "chat" (the chat
     # admission), and a store that refused an unknown one would be this layer
@@ -1792,6 +1880,8 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # now carries the choice across instead of quietly dropping it.
         "model": str(model or ""),
         "effort": str(effort or ""),
+        # Which agent (D2) — see the docstring; resolved and validated above.
+        "backend": backend,
         # The user's own words, both optional and both "" by default. Read
         # through `_text` because the router hands this module the request body
         # unvalidated, exactly as it does for every other field here.
@@ -1917,6 +2007,10 @@ def create(target: str, message: str, due=None, session_id: str = "",
         entry["origin"] = origin
     if bot:
         entry["bot"] = bot
+    if strict_mcp:
+        # Run lean (`--strict-mcp-config`), whatever the Preferences default is
+        # — App Doctor's tasks. Written only when true, like `bot`.
+        entry["strict_mcp"] = True
     if spec is not None:
         # The first run of the series, kept where materialization cannot move
         # it — see the docstring. Every occurrence is "the anchor plus k steps",
@@ -2767,7 +2861,9 @@ def _host_send(entry: dict) -> dict | None:
 
     An `{"error": …}` back — the host died between `_live_host` and the write —
     is None, and the caller spawns: the host is gone, so there is nothing to
-    race, and the message is owed either way.
+    race, and the message is owed either way. The one error that is NOT is a
+    `backend_disabled` refusal: the host is alive, so it is returned as is and
+    `_send` fails the entry with it rather than spawning beside it.
 
     **The entry is marked `host_sent`**, because what this returns is not a run
     of ours: the run id is the CHAT'S session host, shared with the page, and a
@@ -2812,6 +2908,13 @@ def _host_send(entry: dict) -> dict | None:
         return None
     if isinstance(res, dict) and res.get("sent"):
         return {"run_id": run_id}
+    if isinstance(res, dict) and res.get("reason") == "backend_disabled":
+        # THE HOST IS ALIVE AND ITS AGENT IS SWITCHED OFF (D17): the refusal
+        # is the answer, handed back for `_send` to fail the entry with. None
+        # here would mean "no host" and the caller would spawn — a second CLI
+        # on a session whose host is still up, the one thing this path exists
+        # to prevent.
+        return res
     return None
 
 
@@ -2837,6 +2940,61 @@ def _ungranted_dirs(agent, run_id: str, entry: dict) -> int:
     return len([d for d in (shots_dir(),) if d not in granted])
 
 
+def _entry_backend(entry: dict) -> str:
+    """The agent an entry runs on: its stored `backend`, and Claude for an
+    entry written before the field existed — every one of those is a Claude
+    entry, so it is NOT re-resolved to the Preferences default of the day."""
+    from fused_render.agent_backends import roots
+    value = str(entry.get("backend") or "").strip()
+    return value if value in roots.BACKENDS else roots.DEFAULT_BACKEND
+
+
+def _bot_exempt(backend: str, bot) -> bool:
+    """A BOT's Claude task passes the Claude switch (D17, owner Q7: Bots are
+    not gated by it — they keep using Claude, and the toggle copy says so).
+    Claude only: a bot's build is pinned to Claude (`/api/tasks/create`), so
+    a bot entry naming another agent gets no pass and meets the gate as
+    anything else would. Used by both gates, `create` and `_send`."""
+    return backend == "claude" and bool(str(bot or "").strip())
+
+
+def _mismatch(owner: str, what: str) -> "BackendRefused":
+    """The refusal for naming an agent other than the one `what` belongs to."""
+    from fused_render.agent_backends import registry
+    return BackendRefused({
+        "error": f"{what} belongs to {registry.get(owner).label}",
+        "reason": "backend_mismatch", "backend": owner})
+
+
+def session_owner(session_id: str, target: str = "") -> str:
+    """The agent the EVIDENCE says owns `session_id`: the session-settings
+    record, else the root its transcript sits under — and "" when there is
+    neither, which is a session nothing has started yet. An id that is not a
+    plain name is never globbed for. `create` and `/api/tasks/settings` refuse
+    a mismatch only against a non-empty answer; `create` fills a blank
+    `backend` from it, with Claude standing in for "no evidence" (every
+    session that predates the field is a Claude one).
+
+    `target` (the entry's file or folder) names the BUCKET to try first —
+    `find_transcript`'s exact `<root>/<munge(workdir)>/<sid>.jsonl` stat under
+    each root — so the hot paths that reach `create` (queue admit, a task's
+    send, `/api/schedule`, the limit comeback, the New task card) answer a
+    pre-record session with a stat or two instead of a glob over every
+    bucket. The glob stays as the fallback, for a session filed elsewhere."""
+    from fused_render.agent_backends import roots
+    sid = str(session_id or "").strip()
+    hint = tasks_store.session_backend(tasks_store.settings_state(), sid)
+    if hint or sid in ("", ".", "..") or not all(
+            c.isalnum() or c in "-_." for c in sid):
+        return hint
+    workdir = ""
+    if target:
+        path = os.path.abspath(os.path.expanduser(str(target)))
+        workdir = path if os.path.isdir(path) else os.path.dirname(path)
+    found = roots.find_transcript(sid, workdir or None)
+    return found[0] if found else ""
+
+
 def _send(entry: dict) -> None:
     """Spawn one claimed entry's session and record the outcome.
 
@@ -2850,7 +3008,20 @@ def _send(entry: dict) -> None:
     scheduled message that failed is exactly the thing the user needs to be able
     to read afterwards."""
     host_sent = False
+    # THE SCHEDULER'S OWN GATE (D17, invariant 10): an entry whose agent has
+    # been switched off since it was stored is an error on the entry, reason
+    # "<Label> disabled", and NOTHING is spawned — not a host send either, since
+    # a disabled agent's sessions are read-only. One funnel, so `tick`,
+    # `dispatch_entry`, `run_now` and a re-send all meet it. Inside the `try`:
+    # every send reads prefs.json here now, and an unreadable one is this
+    # entry's failure, not the tick's.
+    from fused_render.agent_backends import registry as _registry
+    backend = _entry_backend(entry)
     try:
+        if (not _registry.is_enabled(backend)
+                and not _bot_exempt(backend, entry.get("bot"))):
+            _fail(entry, f"{_registry.get(backend).label} disabled")
+            return
         res = _host_send(entry)
         host_sent = res is not None
         if res is None:
@@ -2861,12 +3032,24 @@ def _send(entry: dict) -> None:
             # send without images keeps the exact call shape it has always had.
             attachments = ({"extra_read_dirs": [shots_dir()]}
                            if _stored_attachments(entry) else {})
+            if entry.get("template_id") or entry.get("strict_mcp"):
+                # A recurring occurrence (nobody is watching it) or an entry
+                # that asked for it runs lean; passed only when true so the
+                # plain call shape is unchanged.
+                attachments["isolate_mcp"] = True
+            # `backend` ALWAYS rides, never "": `_start` reads "" on a fresh
+            # chat as Claude, not as the Preferences default, so the entry's
+            # pinned agent has to be said out loud every time.
             res = claude_spawn.spawn_helper(
                 entry["target"], _composed(entry),
                 entry.get("permission_mode")
                 or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "",
                 model=str(entry.get("model") or ""),
                 effort=str(entry.get("effort") or ""),
+                backend=backend,
+                # A bot's Claude task passes the Claude switch in `_start`
+                # too, as it did at the gate above (`_bot_exempt`).
+                bot=str(entry.get("bot") or ""),
                 **attachments)
     except Exception as exc:  # noqa: BLE001 — the reason belongs on the entry
         _fail(entry, f"failed to start session: {exc}")
@@ -3848,6 +4031,9 @@ def _materialize(now: datetime) -> None:
                 # the default (bugbot, PR #968).
                 "model": str(entry.get("model") or ""),
                 "effort": str(entry.get("effort") or ""),
+                # …and the agent with them (D2): a template's runs are that
+                # template's runs, on the agent it was set up with.
+                "backend": _entry_backend(entry),
                 # The user's words travel with every run, like the message and
                 # the target: an occurrence is that template's run, so a list
                 # showing occurrences must be able to name it without going back
@@ -4329,6 +4515,12 @@ def tick(now: datetime | None = None) -> list[dict]:
             if left:
                 held_soon.append(left)
             continue
+        by_entry = next((e for e in entries if str(e["id"]) == entry_id), None)
+        if by_entry is not None and session_cap.held(by_entry, session):
+            # At the cap: left PENDING, like a busy session, and the next
+            # `exited` event (or the 30-second poll) tries again.
+            logger.debug("holding %s: at the session cap", entry_id)
+            continue
         entry = _claim(entry_id, now, resolved)
         if entry is None:
             continue  # cancelled in the window between the sweep and the claim
@@ -4748,7 +4940,10 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
         # Same rule for the bot that asked (Bugbot, PR #1646): a re-ask of a
         # bot's build is still that bot's task, and the fresh id matches
         # nothing else the bot recorded.
-        bot=str(original.get("bot") or ""))
+        bot=str(original.get("bot") or ""),
+        # And the agent (D2): a re-ask goes to the agent that was asked —
+        # Claude for an original that predates the field, never the default.
+        backend=_entry_backend(original))
     # Provenance, and the ONLY link between the two rows — the original is not
     # written to, so without this nothing records that the second message is a
     # re-ask of the first. Written after creation rather than threaded through

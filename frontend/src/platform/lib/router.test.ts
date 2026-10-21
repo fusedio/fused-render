@@ -13,6 +13,8 @@ installDomShim();
 
 const {
   navigate,
+  navigateUrl,
+  NAV_EVENT,
   navigateToJobPage,
   isJobPageRoute,
   rewriteLegacyUrl,
@@ -253,6 +255,26 @@ test("legacy view/embed prefixes gain the /explorer namespace", () => {
   );
 });
 
+test("the Claude Config panel is the Claude Code group of Preferences", () => {
+  expect(rewriteLegacyUrl("/claude-config")).toBe("/preferences?tab=claude");
+  expect(rewriteLegacyUrl("/claude-md")).toBe("/preferences?tab=claude");
+  // A section becomes the row to open and highlight; the rest of the query rides along.
+  const row = (tab: string) => rewriteLegacyUrl(`/claude-config?cctab=${tab}`);
+  expect(row("plugins")).toBe("/preferences?tab=claude&s=claude-plugins");
+  expect(row("marketplaces")).toBe("/preferences?tab=claude&s=claude-plugins");
+  expect(row("memory")).toBe("/preferences?tab=claude&s=claude-memory");
+  expect(row("skills")).toBe("/preferences?tab=claude&s=claude-skills");
+  expect(row("statusline")).toBe("/preferences?tab=claude&s=claude-statusline");
+  expect(row("mcp")).toBe("/preferences?tab=claude&s=claude-mcp");
+  expect(row("preferences")).toBe("/preferences?tab=claude&s=claude-catalog");
+  expect(row("history")).toBe("/preferences?tab=claude&s=claude-history");
+  expect(row("profiles")).toBe("/preferences?tab=claude&s=claude-history");
+  expect(row("claudemd")).toBe("/preferences?tab=claude");
+  expect(rewriteLegacyUrl("/claude-config?cctab=profiles&embed=1")).toBe("/preferences?embed=1&tab=claude&s=claude-history");
+  expect(rewriteLegacyUrl("/claude-md?cctab=mcp")).toBe("/preferences?tab=claude&s=claude-mcp");
+  expect(rewriteLegacyUrl("/preferences?tab=claude")).toBe("/preferences?tab=claude");
+});
+
 test("legacy settings sentinels map to their plain routes", () => {
   expect(rewriteLegacyUrl("/view/_home")).toBe("/apps");
   expect(rewriteLegacyUrl("/view/_prefs")).toBe("/preferences");
@@ -330,7 +352,8 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
   test("a known shell route goes through navigateUrl untouched", () => {
     expect(pushedJobPage("/ai-models/local").url).toBe("/ai-models/local");
     expect(pushedJobPage("/ai-models/benchmark").url).toBe("/ai-models/benchmark");
-    expect(pushedJobPage("/claude-config").url).toBe("/claude-config");
+    // The panel's route is a legacy one now: it lands on its Preferences group.
+    expect(pushedJobPage("/claude-config").url).toBe("/preferences?tab=claude");
     expect(pushedJobPage("/preferences").url).toBe("/preferences");
     expect(pushedJobPage("/preferences?tab=indexing").url).toBe("/preferences?tab=indexing");
   });
@@ -594,5 +617,63 @@ describe("pushHistory in a foreign embed", () => {
     }
     expect(mod.IS_FOREIGN_EMBED).toBe(false);
     expect(calls(mod)).toEqual(["replace /x"]);
+  });
+});
+
+describe("navigateUrl replace keeps entry state", () => {
+  test("replace:true without isDir passes the current history.state through", () => {
+    const hist = globalThis.history as unknown as {
+      state: unknown;
+      replaceState: (...a: unknown[]) => void;
+    };
+    const prevReplace = hist.replaceState;
+    const prevState = hist.state;
+    const seen: unknown[] = [];
+    hist.state = { fusedActiveTab: "x", fsDir: true };
+    hist.replaceState = (s) => void seen.push(s);
+    const prevDispatch = window.dispatchEvent;
+    window.dispatchEvent = (() => true) as typeof window.dispatchEvent;
+    try {
+      navigateUrl("/preferences?tab=ai", { replace: true });
+      expect(seen).toEqual([{ fusedActiveTab: "x", fsDir: true }]);
+      navigateUrl("/preferences?tab=ai", { replace: true, isDir: false });
+      expect(seen[1]).toEqual({ fsDir: false });
+    } finally {
+      window.dispatchEvent = prevDispatch;
+      hist.replaceState = prevReplace;
+      hist.state = prevState;
+    }
+  });
+});
+
+describe("navigateUrl replace option", () => {
+  test("replace:true calls replaceState, never pushState, and still fires the nav event", () => {
+    const hist = globalThis.history as unknown as {
+      pushState: (...a: unknown[]) => void;
+      replaceState: (...a: unknown[]) => void;
+    };
+    const prevPush = hist.pushState;
+    const prevReplace = hist.replaceState;
+    const calls: string[] = [];
+    hist.pushState = (_s, _t, u) => void calls.push("push:" + u);
+    hist.replaceState = (_s, _t, u) => void calls.push("replace:" + u);
+    // The shim's addEventListener is a no-op, so observe dispatchEvent itself.
+    let navEvents = 0;
+    const prevDispatch = window.dispatchEvent;
+    window.dispatchEvent = ((e: Event) => {
+      if (e.type === NAV_EVENT) navEvents++;
+      return true;
+    }) as typeof window.dispatchEvent;
+    try {
+      navigateUrl("/preferences?tab=ai", { replace: true });
+      expect(calls).toEqual(["replace:/preferences?tab=ai"]);
+      expect(navEvents).toBe(1);
+      navigateUrl("/preferences?tab=lan");
+      expect(calls).toEqual(["replace:/preferences?tab=ai", "push:/preferences?tab=lan"]);
+    } finally {
+      window.dispatchEvent = prevDispatch;
+      hist.pushState = prevPush;
+      hist.replaceState = prevReplace;
+    }
   });
 });

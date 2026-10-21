@@ -208,9 +208,11 @@ def _is_loadable(root: str, expected=()) -> bool:
 # tombstoned with an `.orphaned_at` marker the scan knew nothing about, and the
 # plugin the user removed came back. Second, discovery made the root a fact about
 # the MACHINE, which invited handing it to every session; these skills belong to
-# canvas clones alone (the gate lives in `claude_agent/agent.py:_plugin_argv`,
-# which is where the target path is known). A clone we fetch is the opposite on
-# both counts: its presence means we put it there, and its lifetime is ours.
+# canvas clones alone — this server's own under `_canvases_root()`, or Fused
+# Web's local ones under `~/Fused/canvas` (the gate lives in
+# `claude_agent/agent.py:_in_workbench_root`, which is where both target paths
+# are known). A clone we fetch is the opposite on both counts: its presence
+# means we put it there, and its lifetime is ours.
 #
 # Rejected: `claude plugin install` (or a marketplace add). It would work, and it
 # would load the workbench skills into EVERY `claude` on the machine — including
@@ -234,8 +236,10 @@ WORKBENCH_PLUGIN_SRC_ENV = "FUSED_RENDER_WORKBENCH_PLUGIN"
 # The skills a clone session is actually told to load — the evidence that a
 # candidate root is the plugin we mean and not a same-named stub, and the reason
 # `_is_loadable` takes an `expected` list at all.
-WORKBENCH_SKILLS = ("canvas-toml", "fused-udfs", "json-ui-schemas", "fused-cli",
-                    "canvas-comments")
+WORKBENCH_SKILLS = ("canvas-toml", "fused-udfs", "json-ui-schemas",
+                    "html-template-nodes", "fused-workbench-cli",
+                    "canvas-comments", "fused-runtime", "fused-h3",
+                    "fused-integrations")
 
 # HTTPS, never SSH: a shipping user has no SSH key and no reason to have one, and
 # an `ssh://` remote would fail on exactly the machines this feature exists for.
@@ -271,6 +275,56 @@ WORKBENCH_RETRY_S = 60
 # and bookkeeping of ours has no business being in a tree something else parses
 # (and would show up as an untracked file the refresh has to reason about).
 _WORKBENCH_STAMP_SUFFIX = ".fetched"
+
+
+def fused_web_canvas_root() -> str:
+    """`~/Fused/canvas` — Fused Web's (the sandbox/showcase app, a separate
+    codebase) own local canvas-clones folder, `~/Fused/canvas/<name>`. Since
+    2026-10-20 this server's own clones live UNDER it too, one folder per
+    environment (`~/Fused/canvas/<env>/<name>`, `canvases.canvases_base()`),
+    so the two gate roots coincide by default; a Fused Web canvas literally
+    named `prod` or `unstable` would collide with those folders — accepted.
+    Fused Web's tasks start via `fused.tasks.create` (routers/tasks.py
+    `api_task_create`) rather than a canvas push, so a target under here never
+    passes through `canvases.py` at all — but a session spawned against it
+    still has a canvas.toml CLAUDE.md naming the same `workbench:*` skills, and
+    `claude_agent/agent.py:_in_workbench_root` already gates `--plugin-dir` on
+    this path as a second root alongside `canvases_root()`.
+
+    Resolved at CALL time (`os.path.expanduser`, not module-import time), like
+    every other HOME-relative path in this app, so a test can monkeypatch HOME
+    and a real HOME change mid-process is honored.
+
+    DELIBERATELY DUPLICATED by `claude_agent.agent._fused_web_canvas_root`: that
+    module is a template (SPEC PY-15) and must not import `fused_render`, so it
+    keeps its own copy of this path and the containment rule below — the same
+    deliberate duplication `appenv.canvases_root` documents against
+    `canvases.canvases_root`."""
+    return os.path.expanduser(os.path.join("~", "Fused", "canvas"))
+
+
+def in_fused_web_canvas_root(target: str) -> bool:
+    """Whether `target` is inside `fused_web_canvas_root()`.
+
+    The ONE containment rule server-side code shares for "is this a Fused Web
+    canvas target" — `api_task_create` and the server-startup kick both call
+    this rather than re-deriving it. Same four-step rule as
+    `claude_agent.agent._path_is_inside` (abspath + realpath + normcase +
+    commonpath), so both sides of the gate fail the same way under the same
+    four conditions: a relative path, a symlinked component, a case-only
+    difference, and a sibling that merely starts with the same characters
+    (`~/Fused/canvas-evil` is NOT inside `~/Fused/canvas`). A path that cannot
+    be resolved at all is treated as OUTSIDE."""
+    if not target:
+        return False
+    try:
+        root = os.path.normcase(os.path.realpath(
+            os.path.abspath(fused_web_canvas_root())))
+        path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
+        return os.path.commonpath([root, path]) == root
+    except (OSError, ValueError):
+        return False
+
 
 # Bounded, because both run on a request path. A shallow clone of a handful of
 # markdown files is a second or two on any working network; these are the "the

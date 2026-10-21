@@ -11,6 +11,7 @@ import type {
   TaskMessage,
 } from "@platform/lib/api";
 import { chatUrl } from "@platform/lib/queue";
+import { backendOf } from "@platform/lib/agent-backends";
 
 export function formatDue(iso: string): string {
   const d = new Date(iso);
@@ -1939,9 +1940,10 @@ export function popoverPos(
 // almost every task, so it has to be a real, re-selectable option rather than a
 // state the user can only get back to by cancelling the card.
 //
-// KEPT IN SYNC BY HAND with the chat picker's MODELS/EFFORTS in
-// apps/claude/ui/composer-defaults.ts: this one carries the card's labels, that
-// one only the keys. If you add a model, add it in both places.
+// THE STATIC CLAUDE ROW since the agent catalog (docs/COPILOT_BACKEND.md D11):
+// the card reads `taskModelsOf(backend)` / `taskEffortsOf(backend)` below, off
+// the server's registry, and these two are what the Claude row says before the
+// catalog lands (and what the tests pin).
 //
 // ONE ROW PER MODEL. A pinned full id ("claude-fable-5-1") used to sit above the
 // alias that names the same model, offered as the way to hold a repeating task
@@ -1972,6 +1974,22 @@ export const TASK_EFFORTS: readonly { key: string; label: string }[] = [
   { key: "xhigh", label: "Extra high" },
   { key: "max", label: "Max" },
 ];
+
+// The catalog's efforts are bare ids; the card's words for the ones it knows.
+const EFFORT_WORDS: Record<string, string> = Object.fromEntries(
+  TASK_EFFORTS.map((o) => [o.key, o.label]),
+);
+
+/** One agent's models as the card lists them, in the registry's order. */
+export function taskModelsOf(backend: string | null | undefined): { key: string; label: string }[] {
+  return backendOf(backend).models.map((m) => ({ key: m.id, label: m.label }));
+}
+
+/** One agent's efforts, labelled the card's way; an id it has no word for
+ *  is said as itself. */
+export function taskEffortsOf(backend: string | null | undefined): { key: string; label: string }[] {
+  return backendOf(backend).efforts.map((e) => ({ key: e, label: EFFORT_WORDS[e] ?? e }));
+}
 
 // How one stored value is SAID — the list's label if it has one, else the value
 // itself. An entry can hold a model this build has never heard of, and showing

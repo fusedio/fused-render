@@ -61,9 +61,10 @@ export interface Config {
   /** "Fused Render" / "Fused Bot" — the brand as copy shows it. */
   display_name?: string;
   // No claude_config gate here any more: the Claude Config app stopped being a
-  // mounted html+py app and became native React over its own server bridge, so
-  // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
-  // in apps/claude_config), not a mount record.
+  // mounted html+py app and became native React over its own server bridge
+  // (the Claude Code group of Preferences), so its availability is
+  // GET /api/claude-config/status (useClaudeConfigStatus in
+  // apps/claude_config), not a mount record.
 }
 
 export interface FsEntry {
@@ -470,7 +471,12 @@ export interface ClaudeHealth {
   /** Who, when signed in: the CLI's own `authMethod` ("claude.ai", "console",
       "apiKey", …) plus the claude.ai account's email / org / plan when it has
       one. An env token with no CLI answer reports as an API key. null when
-      there is nothing to say. Read by the setup wizard's "Signed in" row. */
+      there is nothing to say. Read by the setup wizard's "Signed in" row.
+
+      The COPILOT snapshot (`/api/copilot/health`, D10) says one of three:
+      "copilot" (its own `copilot login`), "gh" (a `gh auth login` token the
+      app hands it) or "token" (a token already in the environment) — worded
+      by `agentAccountLine` in platform/lib/claude-health. */
   account: {
     method: string | null;
     email: string | null;
@@ -588,6 +594,12 @@ export interface ClaudeLoginStatus {
   started_at: number | null;
   /** The child's own diagnosis when a sign-in ended without signing in. */
   error: string | null;
+  /** A DEVICE-CODE sign-in's two facts (Copilot, docs/COPILOT_BACKEND.md D10):
+   *  the code to type and the page to type it on. Meaningful ONLY while
+   *  `in_flight` — the record keeps the last flow's after it ends, so a reader
+   *  must never show it otherwise. Absent for Claude, whose browser sign-in
+   *  needs no code. */
+  detail?: { code: string; url: string } | null;
 }
 
 /** Start a browser sign-in. The CLI opens the page and completes on its own
@@ -604,6 +616,97 @@ export function getClaudeLogin(): Promise<ClaudeLoginStatus> {
 export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boolean }> {
   return postJson<ClaudeLoginStatus & { canceled: boolean }>(
     "/api/claude/login/cancel", {});
+}
+
+// -- The same five doors, PER AGENT (docs/COPILOT_BACKEND.md D10) -----------
+//
+// `/api/copilot/{health, health/refresh, install, login, login/cancel}` answer
+// the same bodies as the Claude ones above, so one set of functions keyed on
+// the backend id serves both — `useAgentSetup(backend)` in claude-setup.ts is
+// the caller. The Claude-named functions stay for every reader that predates
+// the second agent. `link-path` and `doctor` are Claude-only (no Copilot twin
+// in the contract) and are not generalised.
+
+function agentRoute(backend: string, tail: string): string {
+  return `/api/${backend === "copilot" ? "copilot" : "claude"}/${tail}`;
+}
+
+export function getAgentHealth(backend: string): Promise<ClaudeHealth> {
+  return getJson<ClaudeHealth>(agentRoute(backend, "health"));
+}
+
+export function refreshAgentHealth(backend: string): Promise<ClaudeHealth> {
+  return postJson<ClaudeHealth>(agentRoute(backend, "health/refresh"), {});
+}
+
+export function startAgentInstall(
+  backend: string,
+  action: "install" | "update" = "install",
+): Promise<ClaudeInstallStatus> {
+  return postJson<ClaudeInstallStatus>(agentRoute(backend, "install"), { action });
+}
+
+export function getAgentInstall(backend: string): Promise<ClaudeInstallStatus> {
+  return getJson<ClaudeInstallStatus>(agentRoute(backend, "install"));
+}
+
+export function startAgentLogin(backend: string): Promise<ClaudeLoginStatus> {
+  return postJson<ClaudeLoginStatus>(agentRoute(backend, "login"), {});
+}
+
+export function getAgentLogin(backend: string): Promise<ClaudeLoginStatus> {
+  return getJson<ClaudeLoginStatus>(agentRoute(backend, "login"));
+}
+
+export function cancelAgentLogin(backend: string): Promise<ClaudeLoginStatus & { canceled: boolean }> {
+  return postJson<ClaudeLoginStatus & { canceled: boolean }>(
+    agentRoute(backend, "login/cancel"), {});
+}
+
+// -- The agent catalog (GET /api/agent-backends, D11) -------------------------
+//
+// What each agent CAN do and which models/efforts/modes it offers, stated by
+// the server's registry rather than hand-synced here. `backends` holds only
+// the ENABLED ones (D17), in order; `all` every one, disabled included, for the
+// Preferences switches. Read through platform/lib/agent-backends, which caches
+// and subscribes; nothing else should call this directly.
+
+export interface AgentCaps {
+  plan_mode: boolean;
+  live_model_switch: boolean;
+  live_mode_switch: boolean;
+  snapshots: boolean;
+  artifacts: boolean;
+  worktrees: boolean;
+  bg_tasks: boolean;
+  ask_user: boolean;
+  terminal_mirror: boolean;
+  mid_turn_messages: boolean;
+}
+
+export interface AgentBackendRow {
+  id: string;
+  /** "Claude" / "Copilot" — the word every surface names the agent by. */
+  label: string;
+  enabled: boolean;
+  models: { id: string; label: string }[];
+  default_model: string;
+  efforts: string[];
+  modes: string[];
+  caps: AgentCaps;
+  /** The agent's health snapshot, same keys as `/api/<agent>/health`; null
+   *  when the catalog was built without one. */
+  health: ClaudeHealth | null;
+}
+
+export interface AgentCatalog {
+  backends: AgentBackendRow[];
+  default: string;
+  all: AgentBackendRow[];
+}
+
+export function getAgentBackends(): Promise<AgentCatalog> {
+  return getJson<AgentCatalog>("/api/agent-backends");
 }
 
 /** `claude doctor` on demand — what the CLI thinks of its own installation. */
@@ -1252,7 +1355,8 @@ export function thumbUrl(fsPath: string, size = 160): string {
 // Bookmark store (server-side, ~/.fused-render/bookmarks.json). The tree shape
 // is BookmarkItem[] (lib/bookmarks.ts); kept as unknown[] here so api.ts has no
 // dependency on the bookmark data layer. `exists` is false only until the file
-// is first written — the shell's one-time localStorage-import gate. `missing`
+// is first written (D104 deleted the localStorage import that once keyed on
+// it; nothing reads it for that now). `missing`
 // is a side-channel, recomputed fresh on every GET: bookmark ids whose target
 // is confirmed gone from disk — display-only, never written back through PUT.
 export interface BookmarksResult {
@@ -1396,6 +1500,26 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
+  // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
+  // shell/prefs.py; off by default). Optional: absent reads as off.
+  task_summary_titles?: { enabled: boolean };
+  // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
+  // default). Optional: absent (older server) reads as on.
+  claude_strict_mcp?: { enabled: boolean };
+  // Concurrent Claude session cap (`claude_max_concurrent_sessions`; default
+  // 10, 0 = unlimited). Optional: absent (older server) reads as 10.
+  claude_sessions?: { max_concurrent: number };
+  /** Page-wide Bots switches (shell/prefs.py `bots_autostage`, `bots_sounds`,
+   *  `bots_clear_enabled`). Server-side since 2026-10-18 (D1386): they used to
+   *  be per-browser localStorage flags, which the desktop app's port walk
+   *  (a new origin per launch) silently reset. Optional because a server that
+   *  predates them sends nothing — the client applies the defaults (on, on, off). */
+  bots?: { autostage: boolean; sounds: boolean; clear_enabled: boolean };
+  /** The Tasks switcher's own row of view tabs (shell/prefs.py
+   *  `tasks_view_tabs`; the four defaults when absent or empty). Validated
+   *  server-side as short identifiers only — the client still filters against
+   *  tasks-lib.TASK_VIEWS, the one place a view NAME is decided. */
+  tasks_view_tabs?: string[];
   /** Whether a task on the Tasks page opens in a side panel beside the list
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
    *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
@@ -1438,12 +1562,6 @@ export interface Prefs {
     // list shows and can revoke.
     devices: LanDevice[];
   };
-  // The default Claude model, as one of the claude template's own short names
-  // — "" means unset, and each consumer keeps its own default (the fused.ai
-  // relay's haiku, the chat template's sonnet). `choices` is the server's own
-  // value set, shipped with the value so the page renders exactly what a PUT
-  // will accept rather than a second copy that can drift.
-  model: { default: DefaultModel; choices: DefaultModel[] };
   // The app call log (fused_render/calls.py): capture state, how much of a
   // run's params is kept, retention window, and where the store lives.
   calls: CallsPrefs;
@@ -1462,7 +1580,9 @@ export interface Prefs {
   // whether index-backed search ORDERS its hits by relevance score at all —
   // off means `/api/index/rank?ranked=false`'s shallowest-then-alphabetical
   // order instead (`ranked_search_enabled` server-side).
-  indexing: { enabled: boolean; ranked: boolean };
+  // `low_impact` (default OFF) is the quiet-on-a-busy-Mac mode
+  // (`index_low_impact_enabled` server-side).
+  indexing: { enabled: boolean; ranked: boolean; low_impact?: boolean };
   // App git auto-sync (default ON; fused_render/shell/prefs.py's
   // `git_auto_sync_enabled`). OPTIONAL: an older server answers without it.
   git?: { auto_sync: boolean };
@@ -1481,11 +1601,19 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
-  // macOS status item: the menu-bar Dock (fused_render/menubar_dock.py, the
-  // default) or the pinned-file popover (menubar_pin.py; `pin_enabled`,
-  // opt-in). `available` is false off macOS and under `fused-render serve`,
-  // where the section is not rendered. OPTIONAL like `launcher`.
-  menubar?: { pin_enabled: boolean; available: boolean };
+  // The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
+  // catalog's initial pick, the `fused` wrapper's env outside a canvas clone,
+  // share uploads' target. Canvases carry their own env, so this is a plain
+  // pref: written by PUT /api/prefs `{workbench_env}` (putWorkbenchEnv).
+  // `locked` = FUSED_RENDER_WORKBENCH_ENV pins it (the PUT answers 423).
+  // OPTIONAL: an older server answers without it.
+  workbench?: { env: string; locked: boolean; choices: string[] };
+  // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
+  // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
+  // one new chats and tasks open on. The server refuses a PUT that would turn
+  // the last one off (400 "turn on the other agent first"). OPTIONAL: an older
+  // server answers without it, and the reader treats absence as Claude only.
+  agents?: { claude: boolean; copilot: boolean; default: string };
 }
 
 export interface LauncherPrefs {
@@ -1692,16 +1820,19 @@ export function getPrefsShared(): Promise<Prefs> {
   return p;
 }
 
-export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { engine });
-}
-
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
 }
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+/** The default Fused environment (`prefs.workbench.env`). 400 outside
+ *  `unstable` / `prod`, 423 while FUSED_RENDER_WORKBENCH_ENV pins it. The
+ *  server re-exports the `fused` wrapper so its default follows. */
+export function putWorkbenchEnv(env: "unstable" | "prod"): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { workbench_env: env });
 }
 
 /** The launcher's panel shortcut, as a `hotkey.py` spec (`"alt+space"`,
@@ -1725,12 +1856,6 @@ export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
 
 export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
-}
-
-/** The macOS status item's surface: `true` = the pinned-file popover, `false` (the default) = the menu-bar Dock.
- *  Applied live by the running app (the status item is re-pointed; nothing restarts). */
-export function putMenubarPinEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { menubar_pin_enabled: enabled });
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
@@ -1769,8 +1894,100 @@ export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { project_queue_enabled: enabled });
 }
 
+export function putTaskSummaryTitlesEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_summary_titles_enabled: enabled });
+}
+
+export function putClaudeStrictMcpEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { claude_strict_mcp_enabled: enabled });
+}
+
+export function putClaudeMaxConcurrentSessions(max: number): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { claude_max_concurrent_sessions: max });
+}
+
 export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_recap_titles_enabled: enabled });
+}
+
+/** One PUT per Bots page-wide switch (`Prefs.bots`). */
+export function putBotsPref(
+  key: "bots_autostage" | "bots_sounds" | "bots_clear_enabled",
+  on: boolean,
+): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { [key]: on });
+}
+
+/** The Tasks switcher's tab row (`Prefs.tasks_view_tabs`). */
+export function putTasksViewTabs(tabs: string[]): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { tasks_view_tabs: tabs });
+}
+
+// ---- UI layout (shell/ui_layout.py, ~/.fused-render/ui_layout.json) ---------
+// The per-machine layout the shell used to keep in a dozen localStorage keys
+// (D1386): sidebar width and fold, the two sidebar section folds, the explorer
+// companion pane's shut/width/full-screen, per-folder listing sort, the Tasks
+// page's view / calendar range / board lanes / group folds, and the New task
+// form's recent folders. Whole-document, last-write-wins (home_layout.py's
+// posture). `exists` false = never written: the client then seeds from its
+// defaults (and, once, from whatever the old localStorage keys still hold).
+export interface UiLayoutDoc {
+  v: 1;
+  sidebar?: { width: number; collapsed: boolean };
+  bookmarksCollapsed?: boolean;
+  currentAppsCollapsed?: boolean;
+  /** The sidebar's Canvases section fold (the desk's canvas half). */
+  canvasesCollapsed?: boolean;
+  explorerSide?: { hidden?: boolean; width?: number | null; maximized?: boolean };
+  /** canonical fs path → "?sort=..&order=.." (platform/lib/viewstate.ts). */
+  viewState?: Record<string, string>;
+  tasks?: {
+    view?: string;
+    calRange?: string;
+  };
+  recentPaths?: string[];
+}
+
+export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
+  return getJson<{ exists: boolean; layout: UiLayoutDoc | null }>("/api/ui-layout");
+}
+
+export function putUiLayout(layout: UiLayoutDoc): Promise<{ ok: boolean }> {
+  return putJson<{ ok: boolean }>("/api/ui-layout", layout);
+}
+
+// ---- Notifications panel state (shell/notifications.py) ---------------------
+// Seen keys + first-seen clock (shell/notifications-seen-store.ts) and the two
+// dismissal maps (repo rows, waiting-task rows) that RepoUpdatesDock kept in
+// localStorage until D1386. GET is the whole record; POST is a MERGE: `seen`
+// unions, `firstSeenAt` keeps the earlier stamp, the dismissal maps take the
+// posted value per id. The server prunes to 30 days / 500 keys on every write.
+export interface NotificationsState {
+  seen: string[];
+  firstSeenAt: Record<string, number>;
+  repoDismissed: Record<string, string>;
+  attentionDismissed: Record<string, string>;
+}
+
+export function getNotificationsState(): Promise<NotificationsState> {
+  return getJson<NotificationsState>("/api/notifications/state");
+}
+
+export function mergeNotificationsState(
+  patch: Partial<NotificationsState>,
+): Promise<NotificationsState> {
+  return postJson<NotificationsState>("/api/notifications/state", patch);
+}
+
+// ---- Marketplace "Before you install" acknowledgements ----------------------
+// Slugs whose Python warning the user accepted (apps/marketplace/install-flow).
+// `~/.fused-render/marketplace/acks.json` since D1386.
+export function getMarketplaceAcks(): Promise<{ slugs: string[] }> {
+  return getJson<{ slugs: string[] }>("/api/marketplace/acks");
+}
+
+export function ackMarketplacePython(slug: string): Promise<{ ok: boolean; slugs: string[] }> {
+  return postJson<{ ok: boolean; slugs: string[] }>("/api/marketplace/ack", { slug });
 }
 
 export interface LanDevice {
@@ -1837,8 +2054,18 @@ export function putRankedSearchEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { ranked_search_enabled: enabled });
 }
 
-export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { default_model: model });
+export function putIndexLowImpactEnabled(value: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { index_low_impact_enabled: value });
+}
+
+/** One agent's switch (D17). The server answers 400 with its own sentence
+ *  when this would turn the last enabled agent off; the caller shows it. */
+export function putAgentEnabled(backend: string, enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { [`${backend}_enabled`]: enabled });
+}
+
+export function putDefaultBackend(backend: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { default_backend: backend });
 }
 
 // One capability's inference engine. A MAP rather than a pair, because the
@@ -3087,6 +3314,10 @@ export interface CurrentAppEntry {
    *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
    *  and by nothing done to the tasks. */
   unread?: boolean;
+  /** This row is a canvas CLONE (`~/Fused/canvas/<env>/<name>`): the sidebar
+   *  lists it in its Canvases section, not Projects, and the row opens the
+   *  canvas's project page. Null / absent for an app folder. */
+  canvas?: { env: string; name: string } | null;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
@@ -3105,6 +3336,18 @@ export interface OpenCurrentAppResult {
 
 export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
   return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
+}
+
+/** The user dragged a Projects row: `paths` is the whole visible list, top
+ *  first, and the SERVER's `apps` array becomes that order (D1386 — the order
+ *  lives in current_apps.json, not in this browser). Unknown paths are ignored;
+ *  live apps the list does not name keep their place ABOVE the named ones (the
+ *  tab that dragged did not have them, so its arrangement says nothing about
+ *  where they go). Answers with the table as it now stands. */
+export function setCurrentAppsOrder(
+  paths: string[],
+): Promise<{ ok: boolean; apps: CurrentAppEntry[] }> {
+  return postJson<{ ok: boolean; apps: CurrentAppEntry[] }>("/api/current-apps/order", { paths });
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
@@ -3246,12 +3489,18 @@ export type SessionEffort = "" | "low" | "medium" | "high" | "xhigh" | "max";
 export function createApp(
   name: string,
   prompt: string,
-  model: DefaultModel = "",
+  // The chosen agent's model id — Claude's `DefaultModel`, or another
+  // agent's own catalog id ("auto", "gpt-5.4"); the server checks it against
+  // that agent's row.
+  model: string = "",
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "" for the
+  // catalog's default (docs/COPILOT_BACKEND.md D17).
+  backend: string = "",
 ): Promise<NewAppResult> {
-  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort, images });
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort, images, backend });
 }
 
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------
@@ -3410,6 +3659,15 @@ export interface TaskMessage {
   immediate?: boolean;
 }
 
+/** `Task.background_jobs` — the jobs a live session host is still holding
+ *  for a chat whose reply is over. `title` is the CLI's own description ("" when
+ *  it sent none). */
+export interface TaskBackgroundJobs {
+  count: number;
+  run_id: string;
+  jobs: Array<{ id: string; title: string }>;
+}
+
 export interface Task {
   key: string;
   task_id: string; // TASK-003 — numbered per project, allocated once, never reused
@@ -3422,6 +3680,13 @@ export interface Task {
   // the tasks page should open app by default"). Optional: pulse rows and older
   // fixtures do not carry it, and a missing value reads as "not an app".
   entry?: string;
+  /** The canvas this task is on — a clone under `~/Fused/canvas/<env>/
+   *  <name>` (`file` "" = the canvas chat) or one of its top-level node
+   *  files — stamped by the server (routers/tasks.py `_task_canvas`), null
+   *  for every other row. The door lands on the canvas page, node selected,
+   *  chat on the task's session, instead of the clone in the explorer.
+   *  Optional: pulse rows and older fixtures do not carry it. */
+  canvas?: { env: "unstable" | "prod"; name: string; file: string } | null;
   session_id: string; // "" until the first run
   // How the transcript's own session ENTERED — "cli" for an interactive
   // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic
@@ -3441,6 +3706,11 @@ export interface Task {
    *  from the disk — answered by the build, which stats every target anyway,
    *  so no window has to stat it again (2026-10-09). */
   folder_missing?: boolean;
+  /** The GitHub `owner/repo` the folder's `origin` points at, "" when it is
+   *  not a GitHub checkout — stamped by the server (routers/tasks.py
+   *  `_repo_slug`) for the PR view's repository groups and their links.
+   *  Optional: older servers and pulse rows do not carry it. */
+  repo?: string;
   /** A short digest of the row's content, stamped by the server. The 20 s
    *  floor read keeps the row object it already holds when the digest reads
    *  the same (tasksPulse.reuseUnchangedRows). */
@@ -3478,6 +3748,10 @@ export interface Task {
    */
   model: string;
   effort: string;
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" (docs/COPILOT_BACKEND.md
+   *  D2), chosen at the first turn and immutable. Optional: an older server
+   *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
+  backend?: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
   // read this rather than each deriving a column from the newest message.
   //
@@ -3599,6 +3873,9 @@ export interface Task {
    *  `task_recap.enabled` is on — the client reads the key's presence as
    *  the flag, so flag-off rows title exactly as before. */
   recap?: { text: string; for_uuid: string } | null;
+  /** "summary" when prefs `task_summary_titles.enabled` is on: the row is
+   *  titled by `title` alone. ABSENT otherwise. */
+  title_mode?: "summary";
   /**
    * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
    * (or absent, on an older server) when there is none.
@@ -3641,6 +3918,15 @@ export interface Task {
   // whenever nothing is waiting.
   attention?: { tool: string; summary: string } | null;
   live: boolean;
+  // A live session host is still holding BACKGROUND WORK for this chat — a
+  // `run_in_background` Bash, a background Agent, a Monitor
+  // (routers/tasks.py `_hosted_runs`). A badge, never a status: the reply may
+  // be over and that work may never end (a dev server), so the STATUS stays
+  // `done`; the UI draws the row In Progress with a blue ring (tasks-lib
+  // `liveJobRow` / `boardLane`). `run_id` + `jobs[].id` are what the agent's
+  // `task_stop` action takes. null when nothing is held; absent on an older
+  // server.
+  background_jobs?: TaskBackgroundJobs | null;
   unread: number;
   // WHEN THIS TASK BEGAN, epoch seconds — the EARLIEST clock the server has for
   // it: the scheduled entry's `created`, else the transcript's first record
@@ -3788,6 +4074,8 @@ export type TaskPulseTask = Pick<
   | "next_run_entry"
   | "next_run_repeats"
   | "entrypoint"
+  | "backend"
+  | "canvas"
 >;
 
 /** The model / thinking a NEW task opens on: the global Claude preference
@@ -3842,8 +4130,21 @@ export function getTaskChanges(
   );
 }
 
-export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
-  return getJson<{ tasks: TaskPulseTask[] }>("/api/tasks/pulse");
+/** The sidebar's "done & unread" dismissals: task key → the `last_active` of
+ *  the done row the user has already seen (shell/tasks-lib `TasksSeen`).
+ *  Server-side in tasks `read.json` since D1386; rides along with the pulse so
+ *  the dot and its dismissal arrive in ONE answer. Absent from a server that
+ *  predates it. */
+export type TasksSeenMap = Record<string, number>;
+
+export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[]; seen?: TasksSeenMap }> {
+  return getJson<{ tasks: TaskPulseTask[]; seen?: TasksSeenMap }>("/api/tasks/pulse");
+}
+
+/** Replace the seen map (the sidebar computes the whole next map on a /tasks
+ *  visit — `seenAfterVisit` — so this is a PUT-shaped POST, not a merge). */
+export function putTasksSeen(seen: TasksSeenMap): Promise<{ ok: boolean; seen: TasksSeenMap }> {
+  return postJson<{ ok: boolean; seen: TasksSeenMap }>("/api/tasks/seen", { seen });
 }
 
 // ---- the project queue (prefs `queue.enabled`) --------------------------------
@@ -4221,8 +4522,10 @@ export function markWholeTaskRead(
 // composer's constants speaking, and the two cases are the same fact here.
 export function readChatSettings(
   sessionId: string,
-): Promise<{ model: string; effort: string }> {
-  return getJson<{ model: string; effort: string }>(
+): Promise<{ model: string; effort: string; backend?: string }> {
+  // `backend` (docs/COPILOT_BACKEND.md §8): the agent the record names; absent
+  // on an older server.
+  return getJson<{ model: string; effort: string; backend?: string }>(
     `/api/tasks/settings?session_id=${encodeURIComponent(sessionId)}`,
   );
 }
@@ -5477,8 +5780,9 @@ export interface AiProviderModel {
 /** The `provider: "apple"` tier as the catalog reports it. */
 export interface AiAppleProvider {
   available: boolean;
-  /** `loading` = the OS is still fetching Apple's model; a wait, not a refusal. */
-  state: "available" | "loading" | "unavailable";
+  /** `loading` = the OS is still fetching Apple's model; a wait, not a refusal.
+   *  `disabled` = on-device AI is switched off on this machine (Intel Macs). */
+  state: "available" | "loading" | "unavailable" | "disabled";
   reason: string | null;
   /** False on a machine whose class rules the tier out (Linux, Intel): the
    *  reason is then not something a user can act on, so a picker stays quiet. */
@@ -5490,17 +5794,25 @@ export interface AiAppleProvider {
   models: AiProviderModel[];
 }
 
+/** The `provider: "local"` tier as a whole. `disabled` on an Intel Mac, where
+ *  every runner is off; per-capability availability lives in `capabilities[]`. */
+export interface AiLocalProvider {
+  available: boolean;
+  state: "available" | "disabled";
+  reason: string | null;
+}
+
 export function getAiCatalog(): Promise<{
   capabilities: AiCatalogCapability[];
   /** Optional: an older server does not send it. */
   unsupported?: AiUnsupportedModel[];
   /** Optional: an older server does not send it. */
-  providers?: { apple?: AiAppleProvider };
+  providers?: { apple?: AiAppleProvider; local?: AiLocalProvider };
 }> {
   return getJson<{
     capabilities: AiCatalogCapability[];
     unsupported?: AiUnsupportedModel[];
-    providers?: { apple?: AiAppleProvider };
+    providers?: { apple?: AiAppleProvider; local?: AiLocalProvider };
   }>("/api/ai/catalog");
 }
 
@@ -5945,14 +6257,9 @@ export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
 // utility completions (e.g. naming a new app from its prompt on Home), not for
 // anything conversational.
 //
-// No `model` is sent, deliberately: the server resolves one from the user's
-// default-model preference and falls back to haiku when that is unset. A model
-// named here would outrank the preference (that is the relay's precedence
-// rule), so every one of these call sites must keep NOT naming one for the
-// preference to mean anything.
-// `model` is a full id or a short alias ("haiku"); omitted, the relay follows
-// the user's default-model preference, which is the right answer for a chat
-// and the wrong one for a two-word utility call — pin those.
+// `model` is a full id or a short alias ("haiku"); omitted, the relay uses its
+// own default, haiku — the right size for these utility calls. It never follows
+// the user's chat model.
 export function aiComplete(
   prompt: string,
   systemPrompt?: string,
@@ -6042,6 +6349,8 @@ export interface ScheduledMessage {
   // on the first edit.
   model?: string;
   effort?: string;
+  /** The agent the entry's runs use (D2); absent on an older server. */
+  backend?: string;
   state: ScheduledState;
   created: string;
   fired: string;
@@ -6174,6 +6483,10 @@ export function scheduleMessage(body: {
   // model; see the note at the create endpoint.
   model?: string;
   effort?: string;
+  // WHICH AGENT the entry's runs use (docs/COPILOT_BACKEND.md D2). The server
+  // refuses one switched off in Preferences (400) and, for an entry that
+  // continues a session, keeps the session's own.
+  backend?: string;
   // All three are omitted rather than sent empty: blank means "no opinion", and
   // for `title` that is a meaningful answer — the server names the task itself.
   title?: string;

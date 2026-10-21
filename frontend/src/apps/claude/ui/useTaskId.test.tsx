@@ -308,8 +308,8 @@ test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () =>
   // this menu owns no vocabulary of the annotation subsystem's.
   expect(src).toContain("locked?: boolean");
   expect(src).toContain("lockedReason?: string");
-  const items = src.split("<DropdownMenuItem").slice(3);
-  expect(items).toHaveLength(2); // Archive and Delete; the terminal/copy items are neither
+  const items = src.split("<DropdownMenuItem").slice(4);
+  expect(items).toHaveLength(2); // Archive and Delete; full screen and the terminal/copy items are neither
   for (const item of items) {
     const head = item.slice(0, item.indexOf("</DropdownMenuItem>"));
     // A run is still named first — it is the refusal the reader cannot lift
@@ -413,4 +413,9 @@ test("hides Continue in terminal and Archive while the chat is queued", () => {
     '    inChat && !state.sessionId && (sched.rec?.status === "queued" || !!leaderId);',
   );
   expect(chat.slice(chat.indexOf("<Kebab"))).toContain("queued={queuedChat}");
+  // An open card on a RUNNING turn lifts `running`'s hold on Archive/Delete
+  // (Akshil, 2026-10-19); a stopping turn's card does not.
+  expect(chat.slice(chat.indexOf("<Kebab"))).toContain(
+    'asking={!!openCards && state.status === "running"}',
+  );
 });

@@ -107,6 +107,12 @@ def platform_problem() -> str | None:
     frameworks and is only ever spawned past this gate)."""
     if sys.platform != "darwin":
         return "the apple provider runs Apple's on-device models and needs macOS"
+    from fused_render.ai import registry
+    disabled = registry.local_ai_disabled()
+    if disabled:
+        # Intel: the same sentence every local runner reports, and the
+        # catalog's `state: "disabled"` keys off it (ai_runtime._apple_catalog).
+        return disabled
     if platform.machine() != "arm64":
         return "the apple provider needs Apple Silicon (this Mac is Intel)"
     major = _macos_major()

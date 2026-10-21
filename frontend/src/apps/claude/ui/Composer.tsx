@@ -54,9 +54,11 @@ import {
 import { MODEL_LABELS, PERMISSION_SHORT } from "./composer-defaults";
 import { ContextMeter } from "./ContextMeter";
 import { contextInput, warnLine } from "./context-window";
+import { AgentSelect } from "./AgentSelect";
 import { EffortSelect } from "./EffortSelect";
 import { ModelSelect } from "./ModelSelect";
 import { PermissionSelect } from "./PermissionSelect";
+import { agentLabel, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { copyToTaskShots, SchedButton } from "./SchedButton";
 import { outboxHint } from "./outbox";
 
@@ -64,6 +66,10 @@ import { outboxHint } from "./outbox";
  *  who is being replied to; the landing one names the errand. */
 export const CHAT_PLACEHOLDER = "Reply to Claude…";
 export const HOME_PLACEHOLDER = "Ask Claude…";
+/** The same two, naming the AGENT (docs/COPILOT_BACKEND.md D18). The Claude
+ *  row is the constant above, byte for byte. */
+export const chatPlaceholderFor = (agent: string) => `Reply to ${agent}…`;
+export const homePlaceholderForAgent = (agent: string) => `Ask ${agent}…`;
 
 /** The disabled Send's tooltip when the caller hands no reason (P4R1-2). The
  *  real sentence is `schedBlockReason`'s, threaded through `blockedReason`; this
@@ -86,6 +92,11 @@ export interface ComposerControls {
   model: string;
   effort: string;
   permission: PermissionMode;
+  /** The agent pill (D18). Absent = Claude, and no pill: every host that
+   *  states its own pair (tests, the cards wall) predates the second agent. */
+  backend?: string;
+  backendFixed?: boolean;
+  setBackend?(value: string): void;
   setModel(value: string): void;
   setEffort(value: string): void;
   setPermission(value: PermissionMode): void;
@@ -269,6 +280,10 @@ export interface ComposerCardProps {
    *  Code's "Press up to edit queued messages". Answers the words, or null when
    *  nothing is parked. */
   onPullQueued?(): string | null;
+  /** THIS SESSION'S OWN PROMPTS, oldest first — Claude Code's prompt history.
+   *  ↑ on the first line of the box recalls the newest, ↑ again the one
+   *  before; ↓ walks forward and, past the newest, hands the draft back. */
+  history?: readonly string[];
   /** Notes or pictures alone are sendable, with no words at all (T:17903). */
   hasAttachments?: boolean;
   /**
@@ -301,6 +316,10 @@ export interface ComposerCardProps {
   /** A pending scheduled message closes the composer (`schedBlocked`, PR4). */
   blocked?: boolean;
   blockedPlaceholder?: string;
+  /** ONE LINE UNDER THE BOX while `blocked`, for a block the placeholder
+   *  cannot say alone — "Copilot is turned off in Preferences." plus the link
+   *  (D17). The schedule's block has its own card and passes nothing. */
+  blockedNote?: React.ReactNode;
   /** WHY the box is shut, for the calendar button's tooltip and spoken name —
    *  ONE sentence with one author, so a reader refused by the button reads the
    *  same words as the card six pixels above it (T:17232-17250). */
@@ -547,11 +566,13 @@ export function ComposerCard({
   queuedCount,
   notSentCount,
   onPullQueued,
+  history,
   hasAttachments,
   hasAttachmentsNow,
   attachPending,
   blocked,
   blockedPlaceholder,
+  blockedNote,
   blockedReason,
   navLocked,
   navLockedReason,
@@ -800,6 +821,15 @@ export function ComposerCard({
    * release the latch and wave the other, still-stale, half through.
    */
   const spent = useRef<BoxShape | null>(null);
+  // WHERE THE ↑/↓ WALK STANDS in `history` (null = not walking) and the words
+  // the box held before the first ↑, for ↓ to hand back. Refs, not state: a
+  // keystroke reads and moves them in the same tick, and nothing renders off
+  // them. A new prompt landing in `history` ends the walk (effect below).
+  const histIdx = useRef<number | null>(null);
+  const histDraft = useRef("");
+  useEffect(() => {
+    histIdx.current = null;
+  }, [history?.length]);
   const draftKeyRef = useRef(draftKey);
   draftKeyRef.current = draftKey;
   const discardAttachments = useRef(onDiscardAttachments);
@@ -1175,7 +1205,15 @@ export function ComposerCard({
         // 2026-09-17): stated on every change, written when the window loses
         // focus, when the page goes, and when this composer unmounts — never
         // 600 ms after a keystroke. One rule for every composer.
-        draftSyncer(draftKeyRef.current).setText(value.text, value.attachments, undefined, {
+        // WHILE ↑ IS WALKING HISTORY the box shows a recalled prompt, but the
+        // DRAFT on the record stays the words the walk took the box from: a
+        // tab switch mid-walk must not file an old prompt over an unsent
+        // line. The recalled line becomes the draft the moment the reader
+        // edits it (`onChange` ends the walk and the next change states it).
+        // Only the record's words: `textRef` stays the box's truth for the
+        // send latch and the seed GET (Bugbot, PR #1686).
+        const words = histIdx.current === null ? value.text : histDraft.current;
+        draftSyncer(draftKeyRef.current).setText(words, value.attachments, undefined, {
           defer: true,
         });
         return;
@@ -1749,6 +1787,9 @@ export function ComposerCard({
     // Words going back INTO the box, so the stale-render latch stands down for
     // them exactly as it does for a keystroke (`spent`).
     spent.current = null;
+    // …and they are the reader's: a ↑ walk in progress ends here rather than
+    // letting a later ↓ replace the handed-back line with the pre-walk draft.
+    histIdx.current = null;
     const back = restore.text;
     // A single newline, and only when there is something to join to: a press
     // must never eat words the reader is still typing.
@@ -1806,6 +1847,9 @@ export function ComposerCard({
     textRef.current = "";
     dirtyRef.current = !hasSessionRef.current && trayDraftRef.current.length > 0;
     episode.current += 1;
+    // A send ends the ↑ walk, even one whose words match the last prompt
+    // (which adds no row to `history`, so the length effect would not notice).
+    histIdx.current = null;
     setText("");
     grow();
   }, [grow]);
@@ -1827,6 +1871,31 @@ export function ComposerCard({
         } catch {
           /* a box that cannot place a caret still has the words */
         }
+      }
+    },
+    [boxRef, grow],
+  );
+
+  // A recalled prompt lands like typed words (the stale-render latch stands
+  // down, the box grows) with the caret at its end, as Claude Code places it.
+  const recall = useCallback(
+    (words: string) => {
+      spent.current = null;
+      typedRef.current = true;
+      setHelpOpen(false);
+      setMenuIdx(0);
+      // A recalled `/compact` is a line to resend, not a query: the command
+      // menu stays shut for it (and so keeps its hands off ↑/↓), exactly as
+      // after an Esc — until the reader edits the line.
+      setMenuDismissed(words);
+      setText(words);
+      grow();
+      const box = boxRef.current;
+      if (!box) return;
+      try {
+        box.setSelectionRange?.(words.length, words.length);
+      } catch {
+        /* a box that cannot place a caret still has the words */
       }
     },
     [boxRef, grow],
@@ -1900,6 +1969,9 @@ export function ComposerCard({
     // save as an unfinished task (`spent`).
     spent.current = boxShape(textRef.current, trayDraftRef.current.length);
     textRef.current = "";
+    // A SEND ENDS THE ↑ WALK: the recalled line went out, and ↓ has no draft
+    // to hand back into an empty box.
+    histIdx.current = null;
     // BOTH MIRRORS, not just the words (Bugbot 4036328238). The tray mirror used
     // to be left holding the spent chips until a render replaced it — and the
     // latch, doing its job, is exactly what stops a stale render replacing it.
@@ -2022,16 +2094,60 @@ export function ComposerCard({
       // ↑ IN AN EMPTY BOX PULLS THE NEWEST PARKED LINE BACK — Claude Code's
       // "Press up to edit queued messages". Only with nothing typed: in a box
       // with words, ↑ is the caret's.
-      if (ev.key === "ArrowUp") {
-        if (!onPullQueued || !((queuedCount ?? 0) + (notSentCount ?? 0)) || text.trim()) return;
-        const back = onPullQueued();
-        if (back === null) return;
+      // AN IME'S ARROWS PICK ITS CANDIDATES; a modified arrow (Shift extends a
+      // selection, Alt/Cmd jump) is the caret's. Neither walks anything.
+      const arrowOwned =
+        ev.nativeEvent?.isComposing || ev.shiftKey || ev.altKey || ev.metaKey || ev.ctrlKey;
+      if (ev.key === "ArrowUp" && !arrowOwned) {
+        if (onPullQueued && (queuedCount ?? 0) + (notSentCount ?? 0) > 0 && !text.trim()) {
+          const back = onPullQueued();
+          if (back !== null) {
+            ev.preventDefault();
+            // Words going back INTO the box, so the stale-render latch stands
+            // down for them exactly as for a keystroke (`spent`, the restore
+            // seat's rule).
+            spent.current = null;
+            setText(back);
+            grow();
+            return;
+          }
+        }
+        // ↑ WALKS BACK THROUGH THIS SESSION'S OWN PROMPTS — Claude Code's
+        // prompt history. From an EMPTY box at once; from a box with words only
+        // with the caret at the very start, so inside a draft ↑ is the caret's
+        // — and on the first visual row the browser's own ↑ puts the caret at
+        // the start, so a wrapped line costs one extra press and never a
+        // mis-recall. No "first logical line" test: a soft-wrapped line has
+        // rows the text has no newline for. ONCE WALKING (words untouched
+        // since the recall), ↑/↓ keep walking wherever the caret is: a
+        // recalled multi-line message must not trap the arrows. Any edit ends
+        // the walk (`onChange`) and the arrows are the caret's again.
+        if (!history?.length) return;
+        const at = histIdx.current;
+        const caret = ev.currentTarget?.selectionStart ?? 0;
+        if (at === null && text && caret !== 0) return;
+        const next = at === null ? history.length - 1 : at - 1;
         ev.preventDefault();
-        // Words going back INTO the box, so the stale-render latch stands down
-        // for them exactly as for a keystroke (`spent`, the restore seat's rule).
-        spent.current = null;
-        setText(back);
-        grow();
+        if (next < 0) return;
+        if (at === null) histDraft.current = text;
+        histIdx.current = next;
+        recall(history[next]);
+        return;
+      }
+      // ↓ WALKS FORWARD AGAIN, and past the newest prompt hands back the
+      // draft ↑ took the box from. Only while walking: an idle box's ↓ is
+      // nobody's, and a caret anywhere in a recalled line still walks.
+      if (ev.key === "ArrowDown" && !arrowOwned) {
+        const at = histIdx.current;
+        if (at === null || !history) return;
+        ev.preventDefault();
+        if (at + 1 < history.length) {
+          histIdx.current = at + 1;
+          recall(history[at + 1]);
+        } else {
+          histIdx.current = null;
+          recall(histDraft.current);
+        }
         return;
       }
       if (ev.key !== "Enter") return;
@@ -2047,7 +2163,7 @@ export function ComposerCard({
       ev.preventDefault();
       submit(undefined, ev.ctrlKey && !ev.metaKey);
     },
-    [submit, onPullQueued, queuedCount, notSentCount, text, grow, menuOpen, menuActive, menuRows, menuQ, pickCommand],
+    [submit, onPullQueued, queuedCount, notSentCount, text, grow, history, recall, menuOpen, menuActive, menuRows, menuQ, pickCommand],
   );
 
   const draft = useCallback(() => text, [text]);
@@ -2058,6 +2174,10 @@ export function ComposerCard({
 
   const count = queued?.length ?? 0;
   const collapsed = variant === "chat" && !active && !blocked;
+  // WHICH AGENT THE BOX SPEAKS TO (D18): the pill's answer, else the catalog's
+  // default. Subscribed, so the first read and a Preferences switch repaint.
+  const agents = useAgentBackends();
+  const agentWord = agentLabel(controls.backend || agents.default);
 
   return (
     <>
@@ -2115,7 +2235,7 @@ export function ComposerCard({
             aria-hidden={!collapsed}
             data-testid="composer-meta"
           >
-            <span>{MODEL_LABELS[controls.model] ?? controls.model}</span>
+            <span>{modelLabelsOf(controls.backend)[controls.model] ?? MODEL_LABELS[controls.model] ?? controls.model}</span>
             <span className="c-composer-meta-dot" aria-hidden="true" />
             <span>{controls.effort}</span>
           </div>
@@ -2139,8 +2259,8 @@ export function ComposerCard({
                 ? // `homePlaceholderFor` names the KIND once the pane has decided
                   // it ("Ask Claude about this project…"); the markup's own
                   // kind-free wording stands until then (T:5392).
-                  placeholder || HOME_PLACEHOLDER
-                : CHAT_PLACEHOLDER
+                  placeholder || homePlaceholderForAgent(agentWord)
+                : chatPlaceholderFor(agentWord)
           }
           spellCheck={false}
           // AND GRAMMARLY OFF, all three spellings, exactly as T:4156-4157 and
@@ -2167,6 +2287,9 @@ export function ComposerCard({
             // as the one that predates the clear.
             spent.current = null;
             typedRef.current = true;
+            // Editing a recalled line makes it the reader's: the walk is over,
+            // and the next ↑ starts again from the newest prompt.
+            histIdx.current = null;
             setText(value);
             setHelpOpen(false);
             setMenuIdx(0);
@@ -2226,6 +2349,8 @@ export function ComposerCard({
               : `${count} follow-ups are queued for this turn.`}
           </div>
         ) : null}
+        {/* THE AGENT IS OFF (D17): the placeholder says so; this is the link. */}
+        {blocked && blockedNote ? <div className="c-queued c-blocked-note">{blockedNote}</div> : null}
         {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding,
             as against the follow-ups above that the run's host already has.
             Drawn whatever the queue flag says — these are not the project
@@ -2240,17 +2365,30 @@ export function ComposerCard({
             untouched, so the fit ladder still measures it. */}
         <div className="c-composer-tools">
         <div className="c-composer-row" ref={rowRef}>
+          {/* THE AGENT PILL LEADS (D18), and only while there is a choice: with
+              one agent switched on the word is said by the header, the
+              placeholder and every card instead. */}
+          {controls.setBackend && agents.backends.length >= 2 ? (
+            <AgentSelect
+              value={controls.backend || agents.default}
+              onChange={controls.setBackend}
+              fixed={!!controls.backendFixed}
+            />
+          ) : null}
           <ModelSelect
+            backend={controls.backend}
             value={controls.model}
             onChange={controls.setModel}
             loading={controls.ready === false}
           />
           <EffortSelect
+            backend={controls.backend}
             value={controls.effort}
             onChange={controls.setEffort}
             loading={controls.ready === false}
           />
           <PermissionSelect
+            backend={controls.backend}
             value={controls.permission}
             onChange={controls.setPermission}
             compact={fit !== "full"}

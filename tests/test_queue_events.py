@@ -219,6 +219,41 @@ def test_the_host_announces_a_second_turn_on_the_same_session(
     assert len(posts.wait_for("turn_ended", 2)) == 2
 
 
+def test_the_host_posts_turn_started_when_the_cli_reopens_a_turn(
+        monkeypatch, posts, host_run):
+    """The other edge (T329, 2026-10-20): turn rows after a `result` row are
+    the CLI waking itself for another turn — a subagent hand-back, a task
+    notification — that no page sent and no busy-kept registry row is
+    rewritten for. Announced once per reopen, with the same `at` and `pid`
+    the end carries, so `tasks_watch` can order the two."""
+    host = _load("session_host")
+    _drive_host(monkeypatch, host, host_run,
+                [(True, False), (False, False), (False, False),
+                 (True, False), (True, False), (False, False)])
+
+    started = posts.wait_for("turn_started")
+    assert len(started) == 1, "the open turn was announced on every tick"
+    body = started[0]["body"]
+    assert body["run_id"] == "20260917-120000-abcd"
+    assert body["session_id"] == "sess-1"
+    assert isinstance(body["at"], float)
+    assert abs(body["at"] - time.time()) < 5.0
+    assert body["pid"] == 4242
+    assert len(posts.wait_for("turn_ended", 2)) == 2
+
+
+def test_the_runs_first_turn_is_not_announced_as_started(
+        monkeypatch, posts, host_run):
+    """The first turn is the page's own send — marked by the page, registered
+    by the CLI. Only a REOPEN is news nobody else has."""
+    host = _load("session_host")
+    _drive_host(monkeypatch, host, host_run,
+                [(True, False), (True, False), (False, False)])
+
+    posts.wait_for("exited")
+    assert posts.of_kind("turn_started") == []
+
+
 def test_the_host_posts_exited_with_the_childs_return_code(
         monkeypatch, posts, host_run):
     host = _load("session_host")
@@ -785,6 +820,48 @@ def test_card_events_do_not_mark_tasks_watch(client, flag, manager):
                 json={"kind": "card_raised", "run_id": "r3",
                       "session_id": "sess-3"})
     assert not tasks_watch.is_turn_ended("sess-3")
+
+
+@pytest.mark.parametrize("flag_on", [True, False])
+def test_turn_started_reopens_the_turn_for_tasks_watch_and_skips_the_manager(
+        client, flag, manager, flag_on):
+    """`turn_started` is the listing's fact alone (module docstring): it
+    reaches `tasks_watch.mark_turn_started` with its `at` and `pid`, flag on
+    or off, and the manager never hears of it."""
+    flag(flag_on)
+    tasks_watch.reset()
+    at = time.time() - 30.0
+    client.post("/api/tasks/queue/event", headers=HEADERS,
+                json={"kind": "turn_ended", "run_id": "r1",
+                      "session_id": "sess-real", "at": at})
+    assert tasks_watch.is_turn_ended("sess-real")
+    r = client.post("/api/tasks/queue/event", headers=HEADERS,
+                    json={"kind": "turn_started", "run_id": "r1",
+                          "session_id": "sess-real", "at": at + 1.0, "pid": 77})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert not tasks_watch.is_turn_ended("sess-real")
+    assert tasks_watch._reopened["sess-real"] == pytest.approx(at + 1.0)
+    assert manager.calls == ([("turn_ended", "sess-real", "r1")] if flag_on else [])
+
+
+@pytest.mark.parametrize("kind", ["turn_ended", "turn_started"])
+def test_a_non_finite_at_falls_back_to_server_now(client, flag, manager, kind):
+    """JSON `Infinity` parses as a float that no later event could ever
+    beat — a session pinned Done, or In Progress, for good."""
+    flag(False)
+    tasks_watch.reset()
+    before = time.time()
+    # Raw body: Python's json module emits `Infinity`, which the server's
+    # parser accepts as a float — exactly the value the guard is for.
+    r = client.post("/api/tasks/queue/event",
+                    headers=dict(HEADERS, **{"Content-Type": "application/json"}),
+                    content='{"kind": "%s", "run_id": "r1", '
+                            '"session_id": "sess-inf", "at": Infinity}' % kind)
+    after = time.time()
+    assert r.status_code == 200
+    stamps = tasks_watch._ended if kind == "turn_ended" else tasks_watch._reopened
+    assert before <= stamps["sess-inf"] <= after
 
 
 def test_turn_ended_resolves_the_task_key_from_the_run_dir_even_flag_off(

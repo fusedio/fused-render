@@ -1,8 +1,9 @@
 /* ---- /monitor — whole-machine process monitor (shell/monitor) -----------
    The settings pages' density (13px body, 12px secondary, --border hairlines,
-   --bg-alt cards) on a page that fills #content top to bottom: meters and
+   --bg-alt cards) on a page that fills #content top to bottom. On Processes, meters and
    toolbar stay put, the TABLE scrolls on its own, and the selection dock sits
-   under it so choosing rows never moves the rows under the pointer. Every
+   under it so choosing rows never moves the rows under the pointer; Overview
+   and Network instead scroll as one page. Every
    colour is a token (tests/test_theme.py), so light and dark both repaint. */
 .monitor-page {
   flex: 1 1 auto;
@@ -180,6 +181,9 @@
 .monitor-chart {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
+  /* The row must be pinned to the fixed height: an auto row takes the svg's
+     viewBox aspect height (width / 6), so a wide card overflowed the box. */
+  grid-template-rows: minmax(0, 1fr);
   gap: 6px;
   height: 120px;
   /* Room for the top label's half-height above the plot. */
@@ -209,6 +213,7 @@
 .monitor-plot {
   position: relative;
   min-width: 0;
+  min-height: 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -477,7 +482,8 @@ th[aria-sort="descending"] .monitor-sort {
   background: rgba(var(--accent-rgb), 0.18);
 }
 
-.monitor-c-num {
+.monitor-c-num,
+.monitor-table th.monitor-c-num {
   text-align: right;
 }
 
@@ -863,4 +869,727 @@ th[aria-sort="descending"] .monitor-sort {
 .monitor-off {
   padding: 24px;
   font-size: 13px;
+}
+
+/* ---- tabs: Overview / Network / Processes ---- */
+.monitor-head-tabs {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.monitor-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.monitor-tab-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+
+.monitor-tab-btn:hover {
+  color: var(--fg);
+}
+
+.monitor-tab-btn.is-on {
+  color: var(--fg);
+  background: var(--row-bg-selected);
+  border-color: var(--monitor-hairline);
+}
+
+.monitor-tab-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.monitor-tab {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+/* Overview and Network scroll as a whole page (header included), so the
+   scrollbar sits at the pane edge, not at the 1280px column's edge.
+   Processes keeps the fixed page where only its table scrolls. */
+.monitor-page.is-page-scroll {
+  overflow-y: auto;
+  padding-bottom: 24px;
+}
+
+.monitor-tab-scroll {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.monitor-tab-sub {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.monitor-claudeline {
+  margin: 0;
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.monitor-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  gap: 12px;
+}
+
+.monitor-split > .monitor-table-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.monitor-name-open {
+  cursor: pointer;
+}
+
+.monitor-name-open:hover {
+  text-decoration: underline;
+}
+
+.monitor-name-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---- process detail drawer ---- */
+.monitor-drawer {
+  flex: 0 0 320px;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--monitor-hairline);
+  border-radius: 10px;
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.monitor-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.monitor-drawer-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.monitor-drawer-figures,
+.monitor-drawer-note {
+  margin: 6px 0 0;
+  color: var(--fg-muted);
+}
+
+.monitor-drawer-list {
+  margin: 10px 0 0;
+}
+
+.monitor-drawer-list dt {
+  margin-top: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-faint);
+}
+
+.monitor-drawer-list dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.monitor-drawer-mono,
+.monitor-list-mono,
+.monitor-net-route {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+}
+
+/* ---- Network tab ---- */
+.monitor-sec-title {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--fg);
+}
+
+/* Dashboard tabs: a readable column, left-aligned (Processes keeps full width). */
+.monitor-overview,
+.monitor-net {
+  width: 100%;
+  max-width: 1280px;
+}
+
+/* Overview: the flex gap alone spaces blocks (24px); blocks add no margins of their own. */
+.monitor-overview {
+  gap: 24px;
+}
+
+.monitor-net-sec {
+  flex: 0 0 auto;
+  margin-top: 24px;
+}
+
+.monitor-net-sec:first-child {
+  margin-top: 0;
+}
+
+.monitor-overview .monitor-tiles,
+.monitor-overview .monitor-lists {
+  margin-top: 0;
+}
+
+.monitor-net .monitor-net-strip {
+  margin-top: 24px;
+}
+
+.monitor-overview > .monitor-net-note {
+  margin: 0;
+  color: var(--fg-faint);
+}
+
+.monitor-net-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.monitor-net-strip {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.monitor-net-stat {
+  padding: 0;
+}
+
+.monitor-net-stat-label,
+.monitor-net-stat-sub {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.monitor-net-stat.is-warn .monitor-net-stat-value {
+  color: var(--warning);
+}
+
+.monitor-net-conn.is-warn .monitor-card-figure {
+  color: var(--warning);
+}
+
+.monitor-net-held {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.monitor-net-stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-net-table-wrap {
+  flex: 0 0 auto;
+  max-height: 240px;
+  min-height: 0;
+}
+
+.monitor-net-list {
+  max-height: 340px;
+}
+
+.monitor-net-table td,
+.monitor-net-table th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-net-table {
+  table-layout: auto;
+}
+
+/* Numeric columns hug their content so the Route column takes the slack. */
+.monitor-net-table th.monitor-c-num,
+.monitor-net-table td.monitor-c-num {
+  width: 1%;
+  padding-left: 20px;
+  white-space: nowrap;
+}
+
+.monitor-group-row {
+  cursor: pointer;
+}
+
+.monitor-req-row.is-open td {
+  color: var(--warning);
+}
+
+.monitor-req-row.is-bad td {
+  color: var(--error);
+}
+
+.monitor-net-filters {
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.monitor-net-input {
+  width: 140px;
+}
+
+.monitor-net-min {
+  width: 80px;
+}
+
+.monitor-net-select {
+  width: 120px;
+}
+
+/* ---- Overview tab ---- */
+.monitor-reasons {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.monitor-reasons li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.monitor-reason-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.monitor-reasons li.is-ok {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.monitor-reasons li.is-ok .monitor-reason-dot {
+  background: var(--success);
+}
+
+.monitor-verdict-summary {
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+.monitor-reasons li.is-warn .monitor-reason-dot {
+  background: var(--warning);
+}
+
+.monitor-reasons li.is-bad .monitor-reason-dot {
+  background: var(--error);
+}
+
+.monitor-reasons a {
+  color: var(--accent);
+}
+
+.monitor-list a.monitor-crash-link:link,
+.monitor-list a.monitor-crash-link:visited,
+.monitor-list a.monitor-crash-link:active {
+  color: inherit;
+  text-decoration: none;
+}
+
+.monitor-list a.monitor-crash-link:hover {
+  text-decoration: underline;
+}
+
+.monitor-list-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-crash-meta {
+  color: var(--fg-muted);
+}
+
+.monitor-reasons a {
+  text-decoration: none;
+}
+
+.monitor-reasons a:hover {
+  text-decoration: underline;
+}
+
+.monitor-verdict-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.monitor-verdict-actions .monitor-btn {
+  height: 26px;
+}
+
+.monitor-recording-link {
+  font-size: 12px;
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+
+.monitor-recording-link:hover {
+  text-decoration: underline;
+}
+
+.monitor-list a.monitor-list-text:link,
+.monitor-list a.monitor-list-text:visited,
+.monitor-recordings-folder:link,
+.monitor-recordings-folder:visited {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.monitor-list a.monitor-list-text:hover,
+.monitor-recordings-folder:hover {
+  text-decoration: underline;
+}
+
+.monitor-recordings-folder {
+  display: inline-block;
+  margin-top: 8px;
+}
+
+.monitor-tiles {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.monitor-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  color: var(--fg);
+  text-decoration: none;
+  background: var(--monitor-glass);
+  border: 1px solid var(--monitor-hairline);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 1px 2px var(--shadow-sm);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+}
+
+.monitor-tile:hover {
+  border-color: var(--fg-muted);
+}
+
+.monitor-tile-button {
+  appearance: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.monitor-tile:hover .monitor-tile-title {
+  color: var(--fg);
+}
+
+.monitor-tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.monitor-tile-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.monitor-tile-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.monitor-tile-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.monitor-tile.is-warn .monitor-tile-dot {
+  background: var(--warning);
+}
+
+.monitor-tile.is-bad .monitor-tile-dot {
+  background: var(--error);
+}
+
+.monitor-tile.is-unavailable .monitor-tile-dot {
+  background: var(--fg-faint);
+}
+
+.monitor-tile.is-warn .monitor-tile-value {
+  color: var(--warning);
+}
+
+.monitor-tile.is-bad .monitor-tile-value {
+  color: var(--error);
+}
+
+.monitor-tile-value {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.monitor-tile.is-unavailable .monitor-tile-value {
+  color: var(--fg-faint);
+  font-weight: 400;
+}
+
+.monitor-tile-base {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.monitor-lists {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.monitor-list-card {
+  padding: 10px 12px;
+  background: var(--monitor-glass);
+  border: 1px solid var(--monitor-hairline);
+  border-radius: 10px;
+  box-shadow:
+    inset 0 1px 0 var(--glass-highlight),
+    0 1px 2px var(--shadow-sm);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  backdrop-filter: blur(16px) saturate(1.4);
+  min-width: 0;
+}
+
+.monitor-list-card .monitor-sec-title {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.monitor-list li.monitor-list-target {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.monitor-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+.monitor-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-list-empty,
+.monitor-list-num {
+  color: var(--fg-muted);
+}
+
+/* ---- stacked timeline (Overview) ---- */
+.monitor-more {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.monitor-more:hover {
+  text-decoration: underline;
+}
+
+.monitor-more:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.monitor-tl-row {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.monitor-tl-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.monitor-tl-now {
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+
+.monitor-tl-plot {
+  position: relative;
+  min-width: 0;
+}
+
+.monitor-tl-plot .sys-spark {
+  display: block;
+  width: 100%;
+}
+
+.monitor-tl-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--warning);
+  pointer-events: auto;
+}
+
+.monitor-tl-mark.is-outage {
+  background: var(--error);
+}
+
+@media (max-width: 900px) {
+  .monitor-net-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .monitor-drawer {
+    flex-basis: 240px;
+  }
+}
+
+.monitor-net-err {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
+
+/* ---- Overview chart cards (the Processes card form, as links) ---- */
+.monitor-overview-window {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 -16px; /* 24px flex gap - 16px = 8px to the card grid */
+}
+
+.monitor-overview-window .monitor-sec-title {
+  margin: 0;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+.monitor-overview-cards {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 899px) {
+  .monitor-overview-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.monitor-overview-card {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.monitor-overview-card:hover {
+  border-color: var(--fg-muted);
+}
+
+.monitor-overview-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.monitor-overview-card.is-warn .monitor-card-figure {
+  color: var(--warning);
+}
+
+.monitor-overview-card.is-bad .monitor-card-figure {
+  color: var(--error);
 }

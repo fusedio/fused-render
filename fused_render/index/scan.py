@@ -316,6 +316,16 @@ def _scan_dirs_threaded(dirs):
 
 # ------------------------------------------------------------------- the run
 
+# Low-impact indexing's ceiling on scan pool processes.
+LOW_IMPACT_MAX_POOL_WORKERS = 4
+
+
+def pool_workers(cfg, low_impact: bool = False) -> int:
+    """Process-pool size for a scan: `cfg.nproc`, at most
+    LOW_IMPACT_MAX_POOL_WORKERS under low-impact indexing."""
+    return min(cfg.nproc, LOW_IMPACT_MAX_POOL_WORKERS) if low_impact else cfg.nproc
+
+
 def _emit(f, **ev):
     ev["ts"] = round(time.time(), 3)
     f.write(json.dumps(ev) + "\n")
@@ -335,6 +345,9 @@ def run_scan(run_dir: str) -> None:
     with open(os.path.join(run_dir, "spec.json")) as f:
         spec = json.load(f)
     cfg = IndexConfig.from_dict(spec.get("config") or {})
+    # Low-impact indexing arrives through the spec (runner.start), never from
+    # prefs.json: this process reads nothing but its run dir.
+    low_impact = spec.get("low_impact") is True
     guard = MountGuard()
     rules = cfg.rules
     root = spec["root"]
@@ -506,7 +519,8 @@ def run_scan(run_dir: str) -> None:
 
         if hint is not None:
             summary = _run_fsevents(cfg, rules, guard, root, hint, cache, sink,
-                                    ev, cancel_flag, devs, t0, pa, pq, root_dev)
+                                    ev, cancel_flag, devs, t0, pa, pq, root_dev,
+                                    low_impact=low_impact)
             if (summary is not None and not hint_is_supplied
                     and fs_id0 is not None and fs_uuid):
                 # Trap (c): only a hint that came from REPLAYING the journal
@@ -588,7 +602,7 @@ def run_scan(run_dir: str) -> None:
             # future raises BrokenProcessPool, which the handler below turns
             # into a `failed` run_end; a later scan redoes the work.
             ex = concurrent.futures.ProcessPoolExecutor(
-                max_workers=cfg.nproc, mp_context=ctx,
+                max_workers=pool_workers(cfg, low_impact), mp_context=ctx,
                 initializer=_child_init,
                 initargs=(run_dir, not incremental))
             try:
@@ -632,7 +646,7 @@ def run_scan(run_dir: str) -> None:
         keys = subtree_n = None
         summary = compact(cfg, root, shards_dir, pa, pq,
                           emit=lambda **e: _emit(ev, **e),
-                          cancel_flag=cancel_flag)
+                          cancel_flag=cancel_flag, low_impact=low_impact)
         if summary is None:  # cancelled at the store lock (delete raced us)
             _emit(ev, type="run_end", msg="cancelled",
                   summary={"dirs": totals["dirs"], "files": totals["files"]})
@@ -653,7 +667,7 @@ def run_scan(run_dir: str) -> None:
 
 
 def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
-                  devs, t0, pa, pq, root_dev=None):
+                  devs, t0, pa, pq, root_dev=None, low_impact=False):
     """The FSEvents fast path: visit ONLY the dirs the OS journal reports and
     account explicitly for everything it didn't (specs/scan-incremental.md §4).
     Returns the run summary, or None when the run was cancelled (the caller
@@ -767,7 +781,8 @@ def _run_fsevents(cfg, rules, guard, root, hint, cache, sink, ev, cancel_flag,
     cache.clear()
     children = scanned = dead = keys = stack = deleted = None
     summary = compact(cfg, root, sink.shards_dir, pa, pq,
-                      emit=lambda **e: _emit(ev, **e), cancel_flag=cancel_flag)
+                      emit=lambda **e: _emit(ev, **e), cancel_flag=cancel_flag,
+                      low_impact=low_impact)
     if summary is None:  # cancelled at the store lock (delete raced the scan)
         _emit(ev, type="run_end", msg="cancelled",
               summary={"dirs": totals["dirs"], "files": totals["files"]})

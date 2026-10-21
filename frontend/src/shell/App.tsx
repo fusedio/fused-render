@@ -4,8 +4,8 @@
 //   "/explorer"              -> file-explorer homepage (FilesHome)
 //   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
 //   "/explorer/embed/<path>" -> chrome-free embed variant
-//   "/claude-config"         -> Claude config panel (native, no mount)
-//   "/claude-md"             -> legacy; redirects into the Claude config panel
+//   "/claude-config"         -> legacy; the Claude Code group of Preferences
+//   "/claude-md"             -> legacy; same (platform/lib/router rewrites both)
 //   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
 //                             bare "/ai-models" redirects to the default tab
 //   "/preferences|/templates" -> settings pages
@@ -31,6 +31,9 @@ import {
 } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
+// The route parser, not the barrel: api.ts is already in the main bundle (the
+// sidebar's sign-in probe imports it); the barrel would pull the sub-app in.
+import { ENV_LABELS, canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
 import {
   appIconUrl,
   getAppIcon,
@@ -96,7 +99,6 @@ import Panel from "@apps/explorer/Panel";
 import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
 import Home from "@shell/Home";
-import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import {
   AI_MODELS_PREFIX,
   DEFAULT_TAB,
@@ -112,7 +114,7 @@ let autoShowDecided = false;
 // Route-gated surfaces, lazy-loaded: none of these render on the front door
 // (the explorer route above stays eager), only once a route nobody may ever
 // visit this session is actually opened — the settings pages, the AI Models
-// page, the app-builder hub, the Claude Config panel, and the bookmark-open
+// page, the app-builder hub, and the bookmark-open
 // redirector. Splitting them out of the main chunk is what fixes vite's
 // "chunks larger than 500 kB" build warning without just raising the limit.
 const Preferences = lazy(() => import("@shell/Preferences"));
@@ -151,9 +153,6 @@ function tasksScopeFromUrl(): TasksScope | undefined {
 }
 const AppPage = lazy(() => import("@shell/AppPage"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
-const ClaudeConfig = lazy(() =>
-  import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
-);
 // Canvases (legacy-workbench local development): the listing and the
 // per-canvas workspace with the embedded live workbench.
 const Canvases = lazy(() =>
@@ -162,6 +161,10 @@ const Canvases = lazy(() =>
 const CanvasWorkspace = lazy(() =>
   import("@apps/canvases").then((m) => ({ default: m.CanvasWorkspace })),
 );
+// The canvas PROJECT page (shell/CanvasPage.tsx, /canvases-project/…): the
+// workbench framed read-only in an Overview tab beside the shell's Tasks and
+// Files pages. The editor above is a separate route (owner, 2026-10-20).
+const CanvasPage = lazy(() => import("@shell/CanvasPage"));
 // Bots (ported from FusedBot): browser bots, each driving its own Chrome
 // window. The page carries its own scoped stylesheet in the lazy chunk.
 const Bots = lazy(() => import("@apps/bots").then((m) => ({ default: m.Bots })));
@@ -485,28 +488,6 @@ function FusedFileView({ fsPath }: { fsPath: string }) {
   );
 }
 
-// /claude-config: the native Claude Config panel — no mount, no StatView; the
-// availability gate mirrors the sidebar entry's, so a direct URL hit while
-// ~/.claude is absent shows an honest empty state instead of a dead panel.
-function ClaudeConfigView() {
-  const available = useClaudeConfigAvailable();
-  return (
-    <div id="content">
-      <div className="cc-page">
-        {available ? (
-          <Suspense fallback={<RouteFallback />}>
-            <ClaudeConfig />
-          </Suspense>
-        ) : (
-          <div className="preview-resolving">
-            No Claude Code configuration found (~/.claude).
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function App({ config }: { config: Config }) {
   // …and only while the feature is on (shell/task-peek-flag.ts): off, the epoch
   // is judged on the whole URL, which is what it did before any of this.
@@ -714,13 +695,6 @@ export default function App({ config }: { config: Config }) {
     history.replaceState(null, "", onboardingUrl(config.onboarding?.stages));
   }
   autoShowDecided = true;
-  // Legacy: the CLAUDE.md explorer ("MD Files") was deleted from the Config
-  // panel in round 2, so the old page URL folds into the panel's default tab
-  // (same render-time rewrite as "/" above) rather than 404ing on someone's
-  // bookmark.
-  if (location.pathname === "/claude-md") {
-    history.replaceState(null, "", "/claude-config");
-  }
   // The AI Models page names each of its five tabs in the path now, and the
   // default is a name like the rest rather than the absence of one — so the
   // bare prefix redirects to it (same render-time rewrite as "/" above). The
@@ -782,7 +756,6 @@ export default function App({ config }: { config: Config }) {
   useEffect(() => {
     if (isHome || isExplorerHome) setSideTab(null);
   }, [isHome, isExplorerHome]);
-  const isClaudeConfig = pathname === "/claude-config";
   // Canvases: the listing plus the parameterized workspace route. The name is
   // constrained to the CLI's own canvas-name alphabet, so the match below is
   // also the validation.
@@ -792,8 +765,12 @@ export default function App({ config }: { config: Config }) {
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
   const isBots = isBotsPath(pathname);
-  const canvasWorkspaceName =
-    /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname)?.[1] ?? null;
+  // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
+  // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
+  // branch below, deliberately unredirected.
+  const canvasWorkspace = canvasNameFromPath(pathname);
+  // `/canvases-project/<env>/<name>`: the tabbed, read-only project page.
+  const canvasProject = canvasProjectFromPath(pathname);
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
   // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
   // folders live anywhere on disk — through GET /api/apps/linked-path, one async
@@ -824,10 +801,10 @@ export default function App({ config }: { config: Config }) {
     appPagePath !== null ||
     isExplorerHome ||
     isHome ||
-    isClaudeConfig ||
     isCanvases ||
     isBots ||
-    canvasWorkspaceName !== null;
+    canvasWorkspace !== null ||
+    canvasProject !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Behind the Marketplace flag (see isFusedInstallView). While the flag is
   // still unknown (`null`, one prefs read) the route HOLDS rather than paint
@@ -862,14 +839,14 @@ export default function App({ config }: { config: Config }) {
                         ? "Home"
                         : isExplorerHome
                           ? "File Explorer"
-                          : isClaudeConfig
-                            ? "Claude Config"
-                            : isCanvases
+                          : isCanvases
                               ? "Workbench Canvases"
                               : isBots
                                 ? "Bots"
-                              : canvasWorkspaceName
-                                ? `Canvas: ${canvasWorkspaceName}`
+                              : canvasWorkspace
+                                ? `Canvas: ${canvasWorkspace.name} · ${ENV_LABELS[canvasWorkspace.env]}`
+                              : canvasProject
+                                ? `Canvas: ${canvasProject.name} · ${ENV_LABELS[canvasProject.env]}`
                                 : fsPath
                                   ? undefined
                                   : null,
@@ -989,13 +966,13 @@ export default function App({ config }: { config: Config }) {
           <div className="monitor-off deploy-muted">
             The Monitor is off. Turn it on under{" "}
             <a
-              href="/preferences"
+              href="/preferences?s=monitor"
               onClick={(e) => {
                 e.preventDefault();
-                navigateUrl("/preferences");
+                navigateUrl("/preferences?s=monitor");
               }}
             >
-              Preferences › Monitor
+              Preferences › Optional features
             </a>
             .
           </div>
@@ -1019,13 +996,13 @@ export default function App({ config }: { config: Config }) {
           <div className="monitor-off deploy-muted">
             The Marketplace is off. Turn it on under{" "}
             <a
-              href="/preferences"
+              href="/preferences?s=marketplace"
               onClick={(e) => {
                 e.preventDefault();
-                navigateUrl("/preferences");
+                navigateUrl("/preferences?s=marketplace");
               }}
             >
-              Preferences › Marketplace
+              Preferences › Optional features
             </a>
             .
           </div>
@@ -1059,16 +1036,36 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
-  } else if (canvasWorkspaceName !== null) {
-    // Canvas workspace: the embedded workbench + sync strip. Keyed on the
-    // canvas name (not epoch): the page holds a live iframe and a token
-    // handshake, and its only same-route churn is its own sync poll.
+  } else if (canvasWorkspace !== null) {
+    // Canvas editor: the embedded workbench beside the Claude chat, under the
+    // sync strip. Keyed on the canvas's identity, (env, name) (not epoch): the
+    // page holds a live iframe and a token handshake, and its only same-route
+    // churn is its own sync poll.
     main = (
       <div id="content">
         <Suspense fallback={<RouteFallback />}>
           <CanvasWorkspace
-            key={canvasWorkspaceName}
-            name={canvasWorkspaceName}
+            key={`${canvasWorkspace.env}/${canvasWorkspace.name}`}
+            env={canvasWorkspace.env}
+            name={canvasWorkspace.name}
+          />
+        </Suspense>
+      </div>
+    );
+  } else if (canvasProject !== null) {
+    // The canvas project page (shell/CanvasPage.tsx): the workbench framed
+    // read-only in an Overview tab, its tasks in a Tasks tab, the clone's
+    // files in a Files tab. Keyed on (env, name) (not epoch): the tab is a
+    // query param, so switching it is a navigation, and a remount would
+    // reload the workbench frame — seconds of boot — to change tabs. A
+    // different canvas still mounts fresh.
+    main = (
+      <div id="content">
+        <Suspense fallback={<RouteFallback />}>
+          <CanvasPage
+            key={`${canvasProject.env}/${canvasProject.name}`}
+            env={canvasProject.env}
+            name={canvasProject.name}
           />
         </Suspense>
       </div>
@@ -1141,9 +1138,6 @@ export default function App({ config }: { config: Config }) {
         <FilesHome key={epoch} config={config} />
       </div>
     );
-  } else if (isClaudeConfig) {
-    // Claude Config panel — native, no mount (see ClaudeConfigView).
-    main = <ClaudeConfigView key={epoch} />;
   } else if (!fsPath) {
     main = (
       <>

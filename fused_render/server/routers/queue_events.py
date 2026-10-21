@@ -9,6 +9,16 @@ spawned and does not otherwise talk to:
   `out.jsonl` every tick for its own reap timer.
 * `exited`     — the CLI process is gone (its own exit, or the host's idle
   reap). Seen by the same loop, on its way out.
+* `turn_started` — turn rows landed AFTER a `result` row: the CLI picked up
+  another turn on the same held-open stdin — a page-sent follow-up, or one it
+  woke itself for (a subagent hand-back, a task notification) that no page
+  sent. Seen by the same loop, the other edge of `turn_ended`. For the Tasks
+  listing only (`tasks_watch.mark_turn_started`, T329). The manager is NOT
+  told — a known limit, not a claim: `turn_ended` already released the folder,
+  and a self-woken turn may write into a tree the pump has since handed to
+  the next queued task. That gap predates this event (the turn ran either
+  way; the listing just said Done); re-owning the folder is the manager's
+  own change to make, with the project queue flag, and is not attempted here.
 * `card_raised` — a permission card was parked, so the task is waiting on a
   human and is no longer the one *running*. Seen by `permission_server.py` the
   instant it writes the request file, long before the page polls it.
@@ -51,27 +61,31 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 
 from fastapi import APIRouter, Body, Header
 from fastapi.concurrency import run_in_threadpool
 
-from fused_render import project_queue, queue_manager, tasks_watch
+from fused_render import project_queue, queue_manager, schedule, tasks_watch
 from fused_render.server.common import _error, _require_fused
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# The four the transport sends. An unknown kind is a 400 and not a shrug: it
+# The five the transport sends. An unknown kind is a 400 and not a shrug: it
 # means a template and this file have drifted apart, which is a bug worth
 # seeing rather than an event worth dropping.
-KINDS = ("turn_ended", "exited", "card_raised", "card_cleared")
+KINDS = ("turn_ended", "exited", "turn_started", "card_raised", "card_cleared")
 
 # The two that say a TURN is over. `tasks_watch.mark_turn_ended` is resolved
 # and called for these before the flag gate below — see the endpoint.
 _TURN_OVER_KINDS = ("turn_ended", "exited")
+# The one that says a turn is OPEN AGAIN — `tasks_watch.mark_turn_started`,
+# the same way, and nothing for the manager (module docstring).
+_TURN_START_KINDS = ("turn_started",)
 
 
 def _task_key(run_id: str) -> str:
@@ -165,7 +179,7 @@ async def api_tasks_queue_event(payload: dict | None = Body(default=None),
     # off the run dir here too when the body did not carry a session id, same
     # fallback the manager dispatch uses below, so a host that could not read
     # `meta.json` when it looked still gets the listing fix.
-    if kind in _TURN_OVER_KINDS:
+    if kind in _TURN_OVER_KINDS or kind in _TURN_START_KINDS:
         if not task_key:
             task_key = await run_in_threadpool(_task_key, run_id)
         if task_key:
@@ -180,14 +194,27 @@ async def api_tasks_queue_event(payload: dict | None = Body(default=None),
                 at = float(at)
             except (TypeError, ValueError):
                 at = time.time()
+            if not math.isfinite(at):
+                # JSON `Infinity` would be a stamp nothing could ever beat —
+                # a session pinned Done or In Progress for good.
+                at = time.time()
             # `pid` is the CLI the host was holding — the event is news about
             # THAT process, not every process on the session (a resumed run
             # can be live beside an old host still idling toward its reap).
             # Absent from an old host's body, which keeps the unscoped stamp.
             pid = body.get("pid")
             pid = pid if type(pid) is int and pid > 0 else None
-            await run_in_threadpool(tasks_watch.mark_turn_ended, task_key,
-                                    run_id, at, pid)
+            mark = (tasks_watch.mark_turn_started if kind in _TURN_START_KINDS
+                    else tasks_watch.mark_turn_ended)
+            await run_in_threadpool(mark, task_key, run_id, at, pid)
+    if kind == "exited":
+        # A host ending frees a slot under the session cap; ring the scheduler
+        # so a held task starts now rather than at the next 30s poll. Not gated
+        # on the project-queue flag: the cap works with it off.
+        await run_in_threadpool(schedule.wake)
+    if kind in _TURN_START_KINDS:
+        # The listing's fact only: whoever owned the folder still does.
+        return {"ok": True}
 
     if not await run_in_threadpool(project_queue.enabled):
         return {"ok": True, "ignored": True}

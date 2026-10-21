@@ -605,12 +605,16 @@ export interface GitStatusState {
 // page's "Uncommitted changes" card (which acts on it). A hook rather than a
 // component because those two render the same fact completely differently, and
 // the thing worth sharing is the fetch — one status call per epoch, no more.
-export function useGitStatus(epoch: number): GitStatusState {
+export function useGitStatus(epoch: number, enabled = true): GitStatusState {
   const [status, setStatus] = useState<cc.GitStatus | null>(null);
   const [failed, setFailed] = useState(false);
   const [n, setN] = useState(0);
 
   useEffect(() => {
+    // `enabled` false = no ~/.claude on this machine (the Preferences page
+    // mounts the provider either way): nothing to ask, and a 4xx here would
+    // paint "Status unknown" for a repo that does not exist.
+    if (!enabled) return;
     let alive = true;
     cc.gitOps.status().then(
       (s) => {
@@ -627,7 +631,7 @@ export function useGitStatus(epoch: number): GitStatusState {
     return () => {
       alive = false;
     };
-  }, [epoch, n]);
+  }, [epoch, n, enabled]);
 
   return { status, failed, recheck: useCallback(() => setN((v) => v + 1), []) };
 }

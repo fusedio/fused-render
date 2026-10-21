@@ -172,7 +172,14 @@ def test_recap_comes_back_capped_with_the_turn_it_is_about(
     # --verbose or the CLI exits 1.
     assert argv[argv.index("--output-format") + 1] == "stream-json"
     assert "--verbose" in argv
-    tail = "User: make the tests pass\n\nAssistant: " + "x" * 900
+    # Nothing from the server's cwd (no `cwd=`, the fork rule): no settings
+    # sources (hooks, CLAUDE.md) and no MCP servers. Verified live: without
+    # these, a CLAUDE.md in the cwd steered the recap and the user's and the
+    # folder's MCP servers loaded, tools and all, despite `--tools ""`.
+    assert "--setting-sources=" in argv
+    assert "--strict-mcp-config" in argv
+    assert "--mcp-config" not in argv
+    tail ="User: make the tests pass\n\nAssistant: " + "x" * 900
     prompt = _prompt(call)
     assert prompt == recap_mod._RECAP_PROMPT % tail
     assert "<transcript>\n" + tail + "\n</transcript>" in prompt
@@ -360,6 +367,183 @@ def test_two_copies_of_a_folder_do_not_share_one_recap(
         "the second file must not be answered out of the first file's cache")
 
 
+# ------------------------------------------------------- the session's agent
+
+# A `copilot` stand-in: records argv and stdin, creates the session-state dir
+# its `--session-id` names (as the real CLI does), and prints plain text — `-s`
+# output is the reply alone.
+_COPILOT_STUB = """#!{python}
+import json
+import os
+import sys
+
+stdin_data = sys.stdin.read()
+argv = sys.argv[1:]
+with open(os.environ["RECAP_STUB_CALLS"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(dict(argv=argv, stdin=stdin_data)) + "\\n")
+sid = argv[argv.index("--session-id") + 1]
+os.makedirs(os.path.join(os.environ["COPILOT_HOME"], "session-state", sid))
+sys.stdout.write("Copilot's recap, long enough to count as one.\\n")
+"""
+
+
+@pytest.fixture
+def copilot_cli(tmp_path, monkeypatch, calls):
+    home = tmp_path / "copilot-home"
+    (home / "session-state").mkdir(parents=True)
+    monkeypatch.setenv("COPILOT_HOME", str(home))
+    bin_dir = tmp_path / "copilot-bin"
+    bin_dir.mkdir()
+    path = bin_dir / "copilot"
+    path.write_text(_COPILOT_STUB.format(python=sys.executable))
+    path.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_COPILOT_BIN", str(path))
+    return home
+
+
+def _switches(monkeypatch, **on):
+    from fused_render.agent_backends import registry
+    monkeypatch.setattr(registry, "is_enabled", lambda b: on.get(b, False))
+
+
+def test_a_claude_session_recaps_nothing_with_claude_switched_off(
+        client, project, calls, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    _switches(monkeypatch, copilot=True)
+    assert _get(client, target).json()["text"] == ""
+    assert _spawns(calls) == []
+
+
+def test_a_cached_recap_is_served_without_asking_the_agent_gate(
+        client, project, calls, monkeypatch):
+    """The cache first, the agent and its switch only on a miss: serving a
+    string already computed spawns nothing, so there is nothing to gate. A
+    refusal on a miss is not cached, so switching back on recaps again."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    assert _get(client, target).json()["text"]
+    assert len(_spawns(calls)) == 1
+    monkeypatch.setattr(recap_mod, "_recap_backend",
+                        lambda *a: pytest.fail("a cache hit asked the gate"))
+    assert _get(client, target).json()["text"]
+    assert len(_spawns(calls)) == 1
+    # A miss with Claude off: "" and no spawn — and nothing stored for it.
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "claude")
+    _switches(monkeypatch, copilot=True)
+    assert _get(client, target, for_uuid="u-2").json()["text"] == ""
+    assert len(_spawns(calls)) == 1
+    _switches(monkeypatch, claude=True)
+    assert _get(client, target, for_uuid="u-2").json()["text"]
+    assert len(_spawns(calls)) == 2
+
+
+def test_a_copilot_session_recaps_nothing_with_copilot_switched_off(
+        client, project, calls, copilot_cli, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "copilot")
+    _switches(monkeypatch, claude=True)
+    assert _get(client, target).json()["text"] == ""
+    assert _spawns(calls) == []
+
+
+def test_a_copilot_session_is_recapped_by_copilot_with_no_tools(
+        client, project, calls, copilot_cli, monkeypatch):
+    target, write = project
+    write(("user", "make the tests pass"), ("assistant", "they pass now"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "copilot")
+    _switches(monkeypatch, claude=True, copilot=True)
+    assert _get(client, target).json()["text"] == (
+        "Copilot's recap, long enough to count as one.")
+    call, = _spawns(calls)
+    argv = call["argv"]
+    # No tools: an allowlist naming a tool that does not exist (an EMPTY
+    # `--available-tools=` keeps every tool — verified live).
+    assert f"--available-tools={recap_mod._COPILOT_RECAP_NO_TOOLS}" in argv
+    assert "--available-tools=" not in argv
+    assert "-s" in argv and "--no-ask-user" in argv
+    # The tail over stdin, never argv; the system text leads it.
+    tail = "User: make the tests pass\n\nAssistant: they pass now"
+    assert call["stdin"] == (recap_mod._RECAP_SYSTEM + "\n\n"
+                             + recap_mod._RECAP_PROMPT % tail)
+    assert not any("make the tests pass" in a for a in argv)
+    # The run's own session is gone: nothing for `copilot --resume` to list.
+    assert os.listdir(copilot_cli / "session-state") == []
+
+
+def test_the_recap_asks_the_agent_module_whose_session_it_is(agent, tmp_path):
+    target = tmp_path / "t"
+    target.mkdir()
+    assert recap_mod._recap_backend(agent, str(target), SESSION) == "claude"
+
+
+class _FakeProc:
+    returncode = 0
+
+    def __init__(self, out):
+        self._out = out
+
+    def communicate(self, input=None, timeout=None):
+        return self._out, None
+
+
+@pytest.mark.parametrize("backend", ["claude", "copilot"])
+def test_both_recap_spawns_keep_the_posix_spawn_rule(
+        project, agent, monkeypatch, backend):
+    """No `cwd`, `close_fds=False`, no session/preexec hooks: any of those makes
+    CPython fork()+exec, and a fork with libproj resident in the server dies
+    SIGSEGV before exec (D277/D292)."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    seen = []
+    text = "the recap, long enough to count as one"
+
+    def fake_popen(argv, **kw):
+        seen.append(kw)
+        return _FakeProc(_ok(text) if backend == "claude" else text)
+
+    monkeypatch.setattr(recap_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    assert recap_mod._recap_generate(agent, target, SESSION, backend=backend) == text
+    kw, = seen
+    assert "cwd" not in kw
+    assert kw["close_fds"] is False
+    assert "start_new_session" not in kw and "preexec_fn" not in kw
+    for key, value in recap_mod.claude_health.SUBPROCESS_KWARGS.items():
+        assert kw[key] == value
+
+
+class _HungProc:
+    """Overruns the recap timeout, and then will not be collected either."""
+    pid = 4242
+    returncode = None
+
+    def __init__(self):
+        self.killed = False
+        self.timeouts = []
+
+    def communicate(self, input=None, timeout=None):
+        self.timeouts.append(timeout)
+        raise recap_mod.subprocess.TimeoutExpired("x", timeout)
+
+    def kill(self):
+        self.killed = True
+
+
+@pytest.mark.parametrize("backend", ["claude", "copilot"])
+def test_a_killed_recap_run_that_will_not_exit_cannot_hang_the_request(
+        project, agent, monkeypatch, backend):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    proc = _HungProc()
+    monkeypatch.setattr(recap_mod.subprocess, "Popen", lambda argv, **kw: proc)
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    assert recap_mod._recap_generate(agent, target, SESSION, backend=backend) == ""
+    assert proc.killed
+    assert proc.timeouts == [recap_mod._RECAP_TIMEOUT, recap_mod._RECAP_REAP_TIMEOUT]
 # ------------------------------------- task recap titles (task_recap_titles_enabled)
 
 def test_the_prompt_asks_for_at_most_seven_words():

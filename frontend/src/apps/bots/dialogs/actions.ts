@@ -9,6 +9,8 @@ import { askConfirm } from "./ask";
  *  with the first-run defaults (ask before risky things, scoped builds, own profile, no encryption). */
 export interface BotDialogValue {
   name: string; model: string; effort: string; instructions: string; memory: string; approval: string; buildAccess: string;
+  /** Settings only: the bot's own Terminal opt-in (undefined = not offered, nothing sent). */
+  terminal?: boolean;
   encrypt: boolean; profile: string; face: Face;
   /** Settings only: steps per task as typed ("" = the default; sent as 0 so the backend drops the override). */
   maxSteps?: string;
@@ -64,7 +66,7 @@ export async function saveSettings(id: string, v: BotDialogValue): Promise<void>
   const encrypt = switched && v.encrypt === !!was?.encrypt ? {} : { encrypt: v.encrypt };
   const rules = v.allowRulesRemoved.length ? { allow_rules_remove: v.allowRulesRemoved } : {};
   await act(() => api.settings(id, { name: v.name, model: v.model, effort: v.effort, instructions: v.instructions, memory: v.memory, approval: v.approval,
-    build_access: v.buildAccess, ...encrypt, ...phone(v), super_access: v.superAccess,
+    build_access: v.buildAccess, ...(v.terminal !== undefined ? { terminal: v.terminal } : {}), ...encrypt, ...phone(v), super_access: v.superAccess,
     ...(v.maxSteps !== undefined ? { max_steps: Number(v.maxSteps) || 0 } : {}),
     trusted_apps: v.trustedApps, folders: v.folders, ...rules }));
   if (v.face && v.kind !== "super") await act(() => api.flag(id, { face: v.face }));

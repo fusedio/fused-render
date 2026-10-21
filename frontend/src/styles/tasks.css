@@ -565,6 +565,16 @@ button.tasks-caret,
   font-weight: 400;
 }
 
+/* The agent's mark beside the id (TaskAgentMark, docs/COPILOT_BACKEND.md D18):
+   the id's muted ink and its size, so it reads as part of the name. */
+.tasks-agent {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
 /* -- Said, not shown ------------------------------------------------------------
    Text that exists for the accessibility tree and not for the eye. This page has
    one user of it and it is the reason the class exists: a board card says unread
@@ -2159,6 +2169,17 @@ button.tasks-caret,
   white-space: nowrap;
 }
 
+/* …EXCEPT THE BACKGROUND-JOB BADGE, WHICH DOES NOT GIVE WAY. The queue
+   sentence yields first because its front survives a cut; "1 job running"
+   means nothing cut, and beside an ordinary prompt-length title the
+   `0 100 auto` above measured a caption like it at 0px — one that almost never
+   shows. So it keeps its width and the TITLE ellipsises instead. The job names
+   are the hint; the Stop is in the hover strip
+   (ScheduleTaskViews.StopJobButton). */
+.tasks-row-queue--bg {
+  flex: 0 0 auto;
+}
+
 .tasks-card-queue {
   /* A LINE OF ITS OWN on the card — the card is a column flex box, so this is a
      row rather than something trailing the title. Wraps freely for the reason
@@ -2866,4 +2887,163 @@ button.tasks-draft-pill.is-on:focus-visible {
    this with it instead of leaving a stale 3px behind. */
 .tasks-row > .tasks-act {
   margin-block: calc((var(--tasks-rail-w) - 22px) / 2);
+}
+
+/* ---- the grouped lists (Time / Project / PR, 2026-10-16) ---------------------
+   The scroller loses its one border and each section draws its own frame under
+   a small heading — the Board's lane headers, laid down a column. */
+.schedule-page .schedule-main > .tasks-list.is-grouped {
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.tasks-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.tasks-group-head {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* The all-toggle sits at the far end: space-between, not an auto margin —
+     the row tests hold this sheet to ONE auto margin, the task row's. */
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+}
+/* The heading IS the fold's button: chevron, word, count. Reset, then the
+   heading's own type, so it reads as a heading that happens to press. */
+.tasks-group-toggle,
+.prefs-section .tasks-group-toggle {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px 2px 2px;
+  border-radius: 4px;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.tasks-group-toggle:hover,
+.tasks-group-toggle:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.tasks-group-toggle:focus-visible {
+  outline: 2px solid var(--accent, currentColor);
+  outline-offset: 1px;
+}
+.tasks-group-toggle > svg {
+  flex: 0 0 auto;
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+.tasks-group[data-collapsed="1"] .tasks-group-toggle > svg {
+  transform: rotate(0deg);
+}
+.tasks-group-count {
+  font-weight: 500;
+  opacity: 0.8;
+}
+/* The Project view's heading is the folder's NAME in the page's own ink
+   (Akshil, 2026-10-19: "the dir name in white"); the count stays muted. */
+.tasks-group[data-by="project"] .tasks-group-name {
+  color: var(--fg);
+}
+/* + New task in this folder: a slot the heading always holds (opacity, never
+   display, so nothing shifts), lit while the pointer is anywhere on the
+   section — its rows included — or the key reaches it. */
+.tasks-group-add,
+.prefs-section .tasks-group-add {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  /* Hidden until the pointer is on the section — its heading or its rows —
+     everywhere (Akshil, 2026-10-19: "only appear when we hover"). */
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.tasks-group:hover > .tasks-group-head .tasks-group-add,
+.tasks-group-add:focus-visible {
+  opacity: 1;
+}
+.tasks-group-add:hover,
+.tasks-group-add:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.tasks-group-add > svg {
+  width: 12px;
+  height: 12px;
+}
+/* A heading's link mark (the PR view): quiet beside the word, lit on hover. */
+.tasks-group-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--fg-muted);
+}
+.tasks-group-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.tasks-group-link:hover,
+.tasks-group-link:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+/* Nested sections (repository → pull requests) step in and read smaller. */
+.tasks-group-children {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 14px;
+}
+.tasks-group[data-depth="1"] .tasks-group-head {
+  font-weight: 500;
+  letter-spacing: 0;
+}
+/* Collapse all / Expand all, at the right end of the FIRST heading's line. */
+.tasks-groups-all,
+.prefs-section .tasks-groups-all {
+  all: unset;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font: inherit;
+  font-weight: 500;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.tasks-groups-all:hover,
+.tasks-groups-all:focus-visible {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.schedule-page .schedule-main > .tasks-list.is-grouped {
+  gap: 12px;
+}
+.tasks-group > .tasks-list-frame {
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
