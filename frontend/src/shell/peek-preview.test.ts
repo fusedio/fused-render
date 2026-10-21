@@ -19,6 +19,7 @@ const {
   PREVIEW_VH,
   PREVIEW_VW,
   appForProject,
+  ensureAppFor,
   ensureApps,
   forgetAppsCache,
   getPreviewHeight,
@@ -330,5 +331,66 @@ describe("the desk's table, cached", () => {
     await ensureApps();
     expect(knownApps()).toEqual([]);
     expect(appForProject("/w/sine", knownApps())).toBeNull();
+  });
+});
+
+describe("the door-time check (ensureAppFor)", () => {
+  const row = { path: "/w/built", name: "built", entry: "/w/built/index.html", exists: true };
+  function stubEnsure(answer: { app: string | null; added: boolean; apps: unknown[] | null }) {
+    const calls: string[] = [];
+    (globalThis as { fetch: unknown }).fetch = (url: string, init?: { body?: string }) => {
+      calls.push(url);
+      const body = url.endsWith("/ensure") ? { ok: true, ...answer } : { apps: [] };
+      void init;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response);
+    };
+    return calls;
+  }
+
+  it("adopts the server's table when the folder turned out to be an app", async () => {
+    const calls = stubEnsure({ app: "/w/built", added: true, apps: [row] });
+    expect(await ensureAppFor("/w/built/sub")).toBe(true);
+    expect(calls.filter((u) => u.endsWith("/ensure")).length).toBe(1);
+    // The fresh table survived the announce (which drops the cache; the shim's
+    // window does not dispatch, so the order of the two is what the live
+    // listener above pins — see `ensureAppFor`).
+    expect(appForProject("/w/built/sub", knownApps())?.name).toBe("built");
+  });
+
+  it("does NOT remember a 'no' — a build still writing its page is a 'yes' later", async () => {
+    let calls = stubEnsure({ app: null, added: false, apps: null });
+    expect(await ensureAppFor("/w/built")).toBe(false);
+    expect(calls.length).toBe(1);
+    calls = stubEnsure({ app: "/w/built", added: true, apps: [row] });
+    expect(await ensureAppFor("/w/built")).toBe(true);
+    expect(calls.length).toBe(1);
+    expect(await ensureAppFor("")).toBe(false);
+  });
+
+  it("an app already on the desk is no change: nothing adopted, nothing announced", async () => {
+    stubEnsure({ app: "/w/built", added: false, apps: null });
+    expect(await ensureAppFor("/w/built")).toBe(false);
+    expect(knownApps()).toBeNull();
+  });
+
+  it("two mounts asking at once share the one request", async () => {
+    const calls = stubEnsure({ app: "/w/built", added: true, apps: [row] });
+    const [a, b] = await Promise.all([ensureAppFor("/w/built"), ensureAppFor("/w/built")]);
+    expect([a, b]).toEqual([true, true]);
+    expect(calls.length).toBe(1);
+  });
+
+  it("a failed ask is a 'no' and the next open may retry", async () => {
+    (globalThis as { fetch: unknown }).fetch = () => Promise.reject(new Error("offline"));
+    expect(await ensureAppFor("/w/built")).toBe(false);
+    const calls = stubEnsure({ app: "/w/built", added: true, apps: [row] });
+    expect(await ensureAppFor("/w/built")).toBe(true);
+    expect(calls.length).toBe(1);
   });
 });

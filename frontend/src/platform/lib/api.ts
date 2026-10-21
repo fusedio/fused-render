@@ -3412,6 +3412,23 @@ export async function removeAppIcon(
   return r.json();
 }
 
+/** The user opened a task or an app page on `path`: if the folder (or an
+ *  ancestor) is an app not on the desk yet, the server puts it there
+ *  (current_apps.py `ensure` — the door-time check that replaced "the tasks
+ *  listing looked once"). `app` is the desk folder, null for a plain project;
+ *  `added` when this call put it there; `apps` is the table after, then. */
+export interface EnsureCurrentAppResult {
+  ok: boolean;
+  app: string | null;
+  /** This call put the row there — the one case there is a change to announce. */
+  added: boolean;
+  apps: CurrentAppEntry[] | null;
+}
+
+export function ensureCurrentApp(path: string): Promise<EnsureCurrentAppResult> {
+  return postJson<EnsureCurrentAppResult>("/api/current-apps/ensure", { path });
+}
+
 /** Put an app folder on the desk by hand — the explorer's "Open in project"
  *  button, ahead of the hop to `/apps/<folder>`. `added` is false when the
  *  row was already there; the sidebar then focuses it rather than inserting. */

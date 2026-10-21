@@ -73,6 +73,7 @@ import {
 } from "react";
 import {
   appIconUrl,
+  ensureCurrentApp,
   getAppEntry,
   getAppIcon,
   statPath,
@@ -102,7 +103,10 @@ import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { notify } from "@platform/lib/notifications";
-import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import {
+  CURRENT_APPS_CHANGED_EVENT,
+  announceCurrentAppsChanged,
+} from "@platform/lib/tasksChanged";
 import { AppDoctorPanel } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
@@ -409,6 +413,16 @@ export default function AppPage({
         // with the card that pictures the app.
         const info = await getAppEntry(dir);
         if (live) setResolved({ kind: "app", entry: info.entry });
+        // THE DOOR-TIME CHECK (current_apps.py `ensure`): an app page opened
+        // from a Bots "ready" link, a Recent, a typed URL — the folder the
+        // tasks listing's one look found empty lands on the desk here. Best
+        // effort, after the page is already resolved: the desk is a side
+        // table and must never gate the app.
+        ensureCurrentApp(dir)
+          .then((r) => {
+            if (r.added) announceCurrentAppsChanged();
+          })
+          .catch(() => {});
       } catch (e) {
         if (live) setResolved({ kind: "error", message: (e as Error).message });
       }
