@@ -3883,6 +3883,9 @@ export interface Task {
    *  The List row prints it after the title; with `recap` present it also
    *  titles a finished turn until the recap lands (tasks-lib `cardTitleLine`). */
   last_reply?: string;
+  /** Every GitHub PR this session touched, oldest first (the server collects
+   *  them from the transcript). `prRefsOf` merges it with what the words name. */
+  prs?: { repo: string; number: number; url: string }[];
   /** The haiku recap of this row's last finished turn (`for_uuid` names the
    *  turn), or null while it has none. ABSENT unless prefs
    *  `task_recap.enabled` is on — the client reads the key's presence as

@@ -38,6 +38,7 @@
 import { RUN_BLOCKED_HINT } from "@platform/lib/task-actions";
 import { EMBED_PREFIX, IS_QUERY_EMBED, VIEW_PREFIX } from "@platform/lib/router";
 import type { Task, TaskBackgroundJobs, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import { prRefsOf, type PrRef } from "@platform/lib/task-prs";
 import { labelForSource } from "@platform/lib/format";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
@@ -6101,41 +6102,11 @@ export function groupSize(g: TaskGroup): number {
   return g.rows.length + (g.groups ?? []).reduce((n, c) => n + groupSize(c), 0);
 }
 
-/** The pull request a task's words name, WITH the repository it is in: the
- *  `owner/repo` out of a GitHub link when the words carry one, else the one the
- *  server read off the task's folder (`Task.repo`), else null. */
-export function prRefOf(task: Task): { number: number; repo: string | null } | null {
-  const text = prText(task);
-  const linked = /github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?\/pull\/(\d{1,6})\b/i.exec(text);
-  if (linked) return { number: Number(linked[2]), repo: linked[1] };
-  const n = prOfTask(task);
-  if (n === null) return null;
-  return { number: n, repo: (task.repo || "").trim() || null };
-}
+export { prKey, prOfTask, prRefsOf, prUrl } from "@platform/lib/task-prs";
+export type { PrRef } from "@platform/lib/task-prs";
 
-/** The pull request a task's words name — "#1234", "PR 1234" or a GitHub
- *  `/pull/1234` link in its title, description or latest message — or null. */
-function prText(task: Task): string {
-  return [
-    task.title,
-    task.description,
-    task.last_message?.text ?? "",
-    task.last_reply ?? "",
-  ].join("\n");
-}
-
-export function prOfTask(task: Task): number | null {
-  const text = prText(task);
-  // Named first ("PR 1203", "PR #1203", a /pull/1203 link), then a bare
-  // "#1203" — two digits, no leading zero, so "#2" in a numbered step and "#000" in a
-  // colour do not become pull requests. `[ \t]*`, never `\s*`: the fields are
-  // joined with newlines, and a title ending in "PR" must not borrow the next
-  // line's leading number (review, 2026-10-16).
-  const named = /(?:\/pull\/|\bPRs?[ \t]*#?[ \t]*)(\d{1,6})\b/i.exec(text);
-  if (named) return Number(named[1]);
-  const bare = /(?<![\w#])#([1-9]\d{1,5})\b/.exec(text);
-  return bare ? Number(bare[1]) : null;
-}
+/** The newest pull request a task is about (`prRefsOf`'s first), or null. */
+export const prRefOf = (task: Task): PrRef | null => prRefsOf(task)[0] ?? null;
 
 /** Which day-bucket a moment falls in, newest first in the order below. */
 const TIME_BUCKETS = ["Later", "Last hour", "Today", "Yesterday", "This week", "Earlier", "No date"] as const;

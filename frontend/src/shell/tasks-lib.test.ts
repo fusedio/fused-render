@@ -56,8 +56,11 @@ import {
   seedCollapsedGroups,
   groupSize,
   parseViewTabs,
+  prKey,
   prOfTask,
   prRefOf,
+  prRefsOf,
+  prUrl,
   canRunNow,
   cancelIntent,
   carryMarkToHeld,
@@ -11736,6 +11739,35 @@ describe("groupRows", () => {
     expect(prRefOf(row({ title: "fix #34", repo: "c/d" }))).toEqual({ number: 34, repo: "c/d" });
     expect(prRefOf(row({ title: "fix #34" }))).toEqual({ number: 34, repo: null });
     expect(prRefOf(row({ title: "nothing" }))).toBeNull();
+  });
+  it("prRefsOf: every PR a task names, newest first", () => {
+    const refs = prRefsOf(row({
+      title: "https://github.com/a/b/pull/12",
+      last_reply: "second: https://github.com/a/b/pull/14 and https://github.com/c/d/pull/3",
+    }));
+    expect(refs.map(prKey)).toEqual(["c/d#3", "a/b#14", "a/b#12"]);
+    expect(prUrl(refs[0])).toBe("https://github.com/c/d/pull/3");
+  });
+  it("prRefsOf: server prs come first (oldest to newest), text adds and dedupes", () => {
+    const refs = prRefsOf(row({
+      prs: [
+        { repo: "a/b", number: 1, url: "https://github.com/a/b/pull/1" },
+        { repo: "a/b", number: 2, url: "https://github.com/a/b/pull/2" },
+      ],
+      title: "see https://github.com/A/B/pull/2 and https://github.com/a/b/pull/5",
+    }));
+    expect(refs.map(prKey)).toEqual(["a/b#5", "a/b#2", "a/b#1"]);
+    expect(refs[1].repo).toBe("a/b");
+  });
+  it("prRefsOf: bare numbers only count when nothing is named, and take the folder's repo", () => {
+    expect(prRefsOf(row({ title: "Issue #55 blocks PR #1203", repo: "c/d" })).map(prKey)).toEqual(["c/d#1203"]);
+    expect(prRefsOf(row({ title: "fix #34", repo: "c/d" })).map(prKey)).toEqual(["c/d#34"]);
+    expect(prRefsOf(row({ title: "fix #34" })).map(prKey)).toEqual(["?#34"]);
+    expect(prRefsOf(row({ title: "nothing" }))).toEqual([]);
+  });
+  it("prRefsOf: a named number already known with a repo is not repeated with the folder's", () => {
+    const refs = prRefsOf(row({ title: "PR #12 https://github.com/a/b/pull/12", repo: "c/d" }));
+    expect(refs.map(prKey)).toEqual(["a/b#12"]);
   });
   it("reads a PR out of the latest message too", () => {
     expect(prOfTask(row({ title: "x", last_message: { role: "assistant", text: "opened #99", at: 1 } }))).toBe(99);
