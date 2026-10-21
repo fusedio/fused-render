@@ -38,6 +38,7 @@ export const LOCAL_COMMANDS: readonly LocalCommand[] = [
   { name: "effort", description: "Set the effort for the next turn", hint: "<low|medium|high|max>" },
   { name: "worktree", description: "Switch to or create a git worktree", hint: "[name]" },
   { name: "tasks", description: "Show agents and shells", hint: "" },
+  { name: "remote-control", description: "Continue this chat from claude.ai or the Claude app", hint: "[name]" },
 ];
 
 const LOCAL_NAMES = new Set(LOCAL_COMMANDS.map((c) => c.name));
