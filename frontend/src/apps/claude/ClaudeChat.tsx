@@ -29,6 +29,7 @@ import {
   useSyncExternalStore,
   type MutableRefObject,
   type ReactElement,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -242,6 +243,11 @@ export interface ClaudeChatProps {
   compact: boolean;
   /** `peek=1` (TaskPeek modal). */
   peek: boolean;
+  /** Draw the slim chat header (worktree menu, hint chip, session id) inside a
+   *  `peek` mount. Ignored without `peek`; compact never draws one. */
+  headerInPeek?: boolean;
+  /** Host-supplied node for the slim header's right-hand seat (a PR chip). */
+  headerExtra?: ReactNode;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's
@@ -356,14 +362,14 @@ function deadline(ms: number): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-function variantOf(p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly">): string {
+function variantOf(p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly" | "headerInPeek">): string {
   return p.compact ? "compact" : p.peek ? "peek" : p.chatOnly ? "chat-only" : "split";
 }
 
 /** The host cuts are CLASSES and not a teardown, exactly as in T (T:1405-1438):
  *  compact / chat-only / peek are host FACTS, decided when the mount was built. */
 function rootClass(
-  p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly">,
+  p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly" | "headerInPeek">,
   extra?: string,
 ): string {
   return [
@@ -371,6 +377,7 @@ function rootClass(
     p.compact ? "chat-compact" : "",
     p.chatOnly ? "chat-only" : "",
     p.peek ? "chat-peek" : "",
+    p.peek && p.headerInPeek ? "chat-peek-head" : "",
     extra ?? "",
   ]
     .filter(Boolean)
@@ -520,6 +527,7 @@ interface ChatBodyProps extends ClaudeChatProps {
 
 function ChatBody(props: ChatBodyProps) {
   const { params, file, chatOnly, compact, peek } = props;
+  const showHead = !compact && (!peek || !!props.headerInPeek);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const columnRef = useRef<HTMLDivElement | null>(null);
   const ownBox = useRef<HTMLTextAreaElement | null>(null);
@@ -3653,7 +3661,7 @@ function ChatBody(props: ChatBodyProps) {
   // menu's own list answers "is this a repo"; `worktreeReady` carries it.
   const worktreeTarget = worktreeMenuTarget(file, pane.noun);
   /** A worktree menu is MOUNTED and has said this folder is in a repo
-   *  (`WorktreeMenu.onReady`). Peek/compact mount none; a non-repo says false. */
+   *  (`WorktreeMenu.onReady`). Compact mounts none, and a peek only with `headerInPeek`; a non-repo says false. */
   const worktreeReady = useRef(false);
   const onWorktreeReady = useCallback((isRepo: boolean) => {
     worktreeReady.current = isRepo;
@@ -4869,7 +4877,7 @@ function ChatBody(props: ChatBodyProps) {
    *  comeback's own POST rings), floored at five seconds. */
   // Only where the header is drawn, and only under the flag: the read is one
   // listing per hook instance, and a cards wall mounts a dozen.
-  const limitWord = useLimitWord(queueOn && !compact && !peek ? taskKey : "");
+  const limitWord = useLimitWord(queueOn && showHead ? taskKey : "");
   /**
    * THE LISTING'S ROW FOR THE CONVERSATION ON SCREEN, for the header
    * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
@@ -4885,13 +4893,14 @@ function ChatBody(props: ChatBodyProps) {
    */
   //
   // AND ONLY WHERE THE HEADER IS DRAWN (2026-09-15). The Topbar this feeds is
-  // taken away by the compact and peek cuts (`{!compact && !peek ? …}` below),
+  // taken away by the compact and peek cuts (`{showHead ? …}` below; a peek that
+  // opts in with `headerInPeek` keeps a slim one),
   // so a cards wall of twelve tiles held twelve subscriptions for a header none
   // of them renders. The rows are one shared feed now, so the cost is no longer
   // twelve sockets — but it is still twelve listings narrowed and twelve
   // re-renders per change for nothing.
   const head = useSessionTask(
-    inChat && !compact && !peek ? (state.sessionId ?? null) : null,
+    inChat && showHead ? (state.sessionId ?? null) : null,
     file,
   );
 
@@ -5144,8 +5153,10 @@ function ChatBody(props: ChatBodyProps) {
             {/* Taken away by the compact and peek cuts: the card's own head and
                 the popup's own head already say which task this is
                 (T:1412-1438). */}
-            {!compact && !peek ? (
+            {showHead ? (
               <Topbar
+                slim={peek}
+                {...(props.headerExtra ? { extra: props.headerExtra } : {})}
                 worktree={worktreeMenu}
                 worktreeHint={
                   <WorktreeHintChip hint={visibleWorktreeHint(state.worktreeHint, state.tasks)} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />

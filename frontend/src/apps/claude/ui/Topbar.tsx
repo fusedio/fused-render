@@ -131,6 +131,15 @@ export interface TopbarProps {
    *  into another worktree (a `git worktree add`, EnterWorktree, an isolated
    *  subagent). Nothing when there is nothing to say. */
   worktreeHint?: ReactNode;
+  /**
+   * THE SLIM LINE (a peek that opts in with `headerInPeek`): only the session
+   * label, the running / limit word, the worktree menu, its hint chip and
+   * `extra`. The mark, title, file and identity block are left out, because the
+   * host's own head (TaskPeek) already names the project and agent.
+   */
+  slim?: boolean;
+  /** The host's node for the slim line's last seat (the Task page's PR chip). */
+  extra?: ReactNode;
 }
 
 export function Topbar({
@@ -145,6 +154,8 @@ export function Topbar({
   queue,
   worktree,
   worktreeHint,
+  slim,
+  extra,
 }: TopbarProps) {
   // THE AGENT'S NAME AND MARK (D18): the conversation's own, off the context.
   // Above every early return: a header that moves from the fallback to the
@@ -152,6 +163,32 @@ export function Topbar({
   const agent = useAgent();
   // Null on every row that is not waiting in a line, which is the common case.
   const line = queue ? queueCaption(queue) : null;
+  if (slim) {
+    const slimLabel =
+      shortTaskId(taskId || knownTaskId(sessionId) || "") ||
+      (sessionId ? sessionId.slice(0, 8) : "");
+    return (
+      <div className="c-topbar c-topbar-slim">
+        {slimLabel ? (
+          <span className="c-session" title={sessionId || undefined}>
+            {slimLabel}
+          </span>
+        ) : null}
+        {status ? (
+          <span className="c-tb-paused" aria-live="polite">
+            {status}
+          </span>
+        ) : running ? (
+          <span className="c-tb-run" aria-live="polite">
+            running
+          </span>
+        ) : null}
+        {worktree}
+        {worktreeHint}
+        {extra ? <span className="c-tb-slim-extra">{extra}</span> : null}
+      </div>
+    );
+  }
   // ONE ROW FOR THE RING AND THE WORDS (Bugbot, PR #1194, eighth round). The
   // identity block came from the SESSION's row (`useSessionTask`) and the
   // caption from the chat's LIVE row (`useSchedule.row`, pending key first) —

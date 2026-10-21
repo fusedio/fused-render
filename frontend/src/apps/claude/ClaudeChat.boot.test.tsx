@@ -599,3 +599,25 @@ test("THE LANDING IS READY WHEN ITS LIST HAS ANSWERED (T:19282-19291)", async ()
   await settle();
   expect(ready).toBe(1);
 });
+
+// THE SLIM HEADER IN A PEEK (headerInPeek): the Task page side peek and peek modal
+// draw the chat worktree seat and session label under the host head. A
+// conversation is up once a session id is on the mount.
+test("a peek with headerInPeek draws the slim top bar; a bare peek and a compact one do not", async () => {
+  const withHead = await mountChat({ peek: true, headerInPeek: true, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(withHead.r, "chat-peek-head").length).toBe(1);
+  expect(byClass(withHead.r, "c-topbar").length).toBe(1);
+  expect(byClass(withHead.r, "c-session").length).toBe(1);
+  // Back / picker / kebab stay the host job in a peek.
+  expect(byClass(withHead.r, "c-anntools").length).toBe(0);
+
+  const bare = await mountChat({ peek: true, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(bare.r, "chat-peek-head").length).toBe(0);
+  expect(byClass(bare.r, "c-topbar").length).toBe(0);
+
+  const compact = await mountChat({ compact: true, peek: true, headerInPeek: true, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(compact.r, "c-topbar").length).toBe(0);
+});
