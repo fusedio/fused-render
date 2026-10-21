@@ -5216,6 +5216,11 @@ export interface TasksPulse {
    *  is its own hue and its own sentence ("1 waiting for you"): "running" is a
    *  thing to leave alone, and this is a thing to go and do. */
   attention: number;
+  /** Tasks in the Blocked lane proper — a run that broke or hit a limit. Not in
+   *  `running` (no turn in flight) and not in `attention` (nothing to answer);
+   *  the sidebar's "N blocked" is `attention + blocked`, so the word names the
+   *  whole Blocked lane (Akshil, 2026-10-21). */
+  blocked: number;
   /** Tasks WAITING on their folder (the project queue). Counted APART from
    *  `running` and never inside it: a queued task has no turn in flight, no
    *  process and nothing to watch — the rail's yellow would be a lie about it —
@@ -5233,6 +5238,7 @@ export interface TasksPulse {
 export const EMPTY_TASKS_PULSE: TasksPulse = {
   running: 0,
   attention: 0,
+  blocked: 0,
   queued: 0,
   doneUnread: 0,
   unseen: 0,
@@ -5242,6 +5248,7 @@ export const EMPTY_TASKS_PULSE: TasksPulse = {
 export function tasksPulse(tasks: TaskPulseTask[], seen: TasksSeen): TasksPulse {
   let running = 0;
   let attention = 0;
+  let blocked = 0;
   let queued = 0;
   let doneUnread = 0;
   let unseen = 0;
@@ -5265,15 +5272,20 @@ export function tasksPulse(tasks: TaskPulseTask[], seen: TasksSeen): TasksPulse 
       queued++;
       continue;
     }
+    if (column === "blocked") {
+      blocked++;
+      continue;
+    }
     if (!isDoneUnread(t)) continue;
     doneUnread++;
     if (isUnseenCompletion(t, seen)) unseen++;
   }
-  return { running, attention, queued, doneUnread, unseen };
+  return { running, attention, blocked, queued, doneUnread, unseen };
 }
 
 export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
   return a.running === b.running && a.attention === b.attention
+    && a.blocked === b.blocked
     && a.queued === b.queued
     && a.doneUnread === b.doneUnread && a.unseen === b.unseen;
 }
@@ -5448,7 +5460,9 @@ export function pulseTitle(pulse: TasksPulse): string {
   // FIRST, and ahead of the count it is part of: the tooltip is read left to
   // right, and the one thing in it that asks the reader to act belongs at the
   // start rather than after two facts they can do nothing about.
-  if (pulse.attention > 0) parts.push(attentionLabel(pulse.attention));
+  if (pulse.attention + pulse.blocked > 0) {
+    parts.push(attentionLabel(pulse.attention + pulse.blocked));
+  }
   if (pulse.running > 0) parts.push(runningLabel(pulse.running));
   // AFTER the running count, because that is the order the two happen in: the
   // queued work is what runs when the running work stops.

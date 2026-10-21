@@ -602,7 +602,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the rail's corner is the one place on screen a reader cannot look away from,
   // and nothing there may blink. The words below and the tooltip are unchanged.
   const tasksDot =
-    pulse.attention > 0 ? (
+    pulse.attention + pulse.blocked > 0 ? (
       <span className="sidebar-rail-dot is-attention" title={tasksTip} />
     ) : pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
@@ -617,18 +617,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // kind of fact, not a lookalike. The dot says THAT there is something; the
   // words say how much, and the chip's number is the ungated one (see above).
   const tasksTrailing =
-    pulse.running > 0 || pulse.doneUnread > 0 ? (
+    pulse.running > 0 || pulse.blocked > 0 || pulse.doneUnread > 0 ? (
       <>
         {/* The waiting count SPEAKS INSTEAD of the running one when there is
             one, rather than beside it: they are the same rows counted twice
             (tasks-lib.tasksPulse), and printing "1 waiting for you · 1 running"
             about one task would read as two. The one that asks for something
             wins the words; the total is still in the tooltip. */}
-        {pulse.attention > 0 ? (
+        {pulse.attention + pulse.blocked > 0 ? (
           // Red, like the dot beside it: one state, one colour, on the mark and
           // on the words (Akshil, 2026-09-03: "this should be red as well").
           <span className="sidebar-running is-attention" title={tasksTip}>
-            {attentionLabel(pulse.attention)}
+            {attentionLabel(pulse.attention + pulse.blocked)}
           </span>
         ) : pulse.running > 0 && (
           <span className="sidebar-running" title={tasksTip}>
