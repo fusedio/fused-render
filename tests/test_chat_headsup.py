@@ -211,9 +211,24 @@ def runs(tmp_path):
     return root
 
 
-def _rows(runs, *rows):
+def _rows_raw(runs, *rows):
     (runs / "r1" / "out.jsonl").write_text(
         "".join(json.dumps(r) + "\n" for r in rows))
+
+
+def _rows(runs, *rows):
+    """Write rows, answering every main-thread tool call: a check only fires
+    at a step boundary, so these tests model finished steps."""
+    out = []
+    for r in rows:
+        out.append(r)
+        if r.get("type") == "assistant" and not r.get("parent_tool_use_id"):
+            ids = [b["id"] for b in r["message"]["content"]
+                   if b.get("type") == "tool_use"]
+            if ids:
+                out.append({"type": "user", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": i} for i in ids]}})
+    _rows_raw(runs, *out)
 
 
 def _wait(agent, expect, rid="r1"):
@@ -230,7 +245,7 @@ def gen(monkeypatch):
     calls = []
     answer = {"note": None}
 
-    def fake(agent, run_dir):
+    def fake(agent, run_dir, turn_open=False):
         calls.append(run_dir)
         return answer["note"]
 
@@ -922,3 +937,125 @@ def _launch_run_again(agent, tmp_path):
     import shutil
     shutil.rmtree(os.path.join(agent.RUNS, "r1"))
     return _launch_run(agent, tmp_path)
+
+
+# ------------------------------------------- review-not-redo: turn state, gate
+
+def _use(*ids, **extra):
+    return {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": i, "name": "Bash"} for i in ids]}, **extra}
+
+
+def _res(*ids, **extra):
+    return {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": i, "content": "ok"} for i in ids]},
+        **extra}
+
+
+def _six_done(last_answered):
+    rows = []
+    for i in range(6):
+        rows.append(_use("u%d" % i))
+        if i < 5 or last_answered:
+            rows.append(_res("u%d" % i))
+    return rows
+
+
+def test_prompt_carries_the_dont_race_and_progress_rules():
+    p = headsup.HEADSUP_PROMPT
+    assert "keeps working while you read" in p
+    assert "do not investigate the user's question yourself" in p
+    assert "already discussing with the agent" in p
+    assert "Progress is never a topic" in p
+
+
+def test_build_prompt_open_section_only_when_turn_open():
+    assert headsup._build_prompt([], []) == headsup.HEADSUP_PROMPT
+    assert headsup._build_prompt([], [], turn_open=False) == headsup.HEADSUP_PROMPT
+    text = headsup._build_prompt([], [], turn_open=True)
+    assert text.startswith(headsup.HEADSUP_PROMPT)
+    assert "still working on this turn" in text
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX spawn path")
+@pytest.mark.parametrize("open_turn", [True, False])
+def test_check_prompt_states_whether_the_turn_is_still_open(
+        agent, tmp_path, monkeypatch, open_turn):
+    log = tmp_path / "calls.jsonl"
+    monkeypatch.setenv("HU_CALLS", str(log))
+    monkeypatch.setenv("HU_OUT", "learn: none")
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", write_stub_cli(
+        tmp_path / "bin", _STUB.format(python=sys.executable)))
+    run_dir = _launch_run(agent, tmp_path)
+    rows = _six_done(True) + ([RESULT] if not open_turn else [])
+    with open(os.path.join(run_dir, "out.jsonl"), "w") as fh:
+        fh.write("".join(json.dumps(r) + "\n" for r in rows))
+    assert headsup.poll(agent, "r1")["state"] == "checking"
+    for _ in range(500):
+        if log.exists() and headsup.poll(agent, "r1")["state"] != "checking":
+            break
+        time.sleep(0.02)
+    text = json.loads(json.loads(log.read_text().splitlines()[0])["stdin"]
+                      .strip())["message"]["content"][0]["text"]
+    assert ("still working on this turn" in text) is open_turn
+
+
+def test_poll_passes_turn_open_to_the_worker(runs, monkeypatch):
+    seen = []
+    monkeypatch.setattr(headsup, "generate",
+                        lambda agent, run_dir, turn_open=False:
+                        seen.append(turn_open))
+    agent = FakeAgent(runs)
+    _rows(runs, *_six_done(True))
+    headsup.poll(agent, "r1")
+    _wait(agent, None)
+    assert seen == [True]
+
+
+def test_pending_tools_counts_unanswered_main_thread_calls(tmp_path):
+    d = _out(tmp_path, _use("a"))
+    assert headsup.pending_tools(d) == 1
+    d = _out(tmp_path, _use("a", "b"), _res("a"))
+    assert headsup.pending_tools(d) == 1
+    d = _out(tmp_path, _use("a", "b"), _res("a"), _res("b"))
+    assert headsup.pending_tools(d) == 0
+
+
+def test_pending_tools_ignores_subagent_rows(tmp_path):
+    d = _out(tmp_path, _use("a"), _use("s", parent_tool_use_id="a"),
+             _res("s", parent_tool_use_id="a"), _res("a"))
+    assert headsup.pending_tools(d) == 0
+    d = _out(tmp_path, _use("s", parent_tool_use_id="x"))
+    assert headsup.pending_tools(d) == 0
+
+
+def test_pending_tools_cleared_by_a_result_row(tmp_path):
+    d = _out(tmp_path, _use("a"), RESULT)
+    assert headsup.pending_tools(d) == 0
+
+
+def test_pending_tools_follows_appends_incrementally(tmp_path):
+    d = tmp_path / "run"
+    d.mkdir()
+    out = d / "out.jsonl"
+    out.write_text(json.dumps(_use("a")) + "\n")
+    assert headsup.pending_tools(str(d)) == 1
+    with open(out, "a") as fh:
+        fh.write(json.dumps(_res("a")) + "\n")
+    assert headsup.pending_tools(str(d)) == 0
+    out.write_text(json.dumps(_use("z")) + "\n")  # truncation resets
+    assert headsup.pending_tools(str(d)) == 1
+
+
+def test_poll_waits_for_the_step_to_finish_and_keeps_the_bucket(runs, gen):
+    calls, _ = gen
+    agent = FakeAgent(runs)
+    _rows_raw(runs, *_six_done(False))
+    assert headsup.poll(agent, "r1") == {"state": "idle"}
+    assert headsup.poll(agent, "r1") == {"state": "idle"}
+    assert calls == []
+    assert headsup._state["r1"]["checked"] == set()
+    _rows_raw(runs, *_six_done(True))
+    assert headsup.poll(agent, "r1")["state"] == "checking"
+    _wait(agent, None)
+    assert len(calls) == 1
