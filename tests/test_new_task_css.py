@@ -250,3 +250,14 @@ def test_the_ask_clamps_are_expressed_in_its_own_face():
         assert clamp and ask_size in clamp, (
             f"{prop} on the description must be computed from its own "
             f"{ask_size} face, not from whatever it used to be ({clamp!r})")
+
+
+def test_the_property_pill_row_keeps_its_layout_hooks():
+    # P2: the pills sit in ONE wrapping row, their wrapper is invisible to
+    # layout (it only scopes focus), and the dialog clips its own hairline.
+    css = _source()
+    assert _decl(css, ".nt-pills", "display") == "flex"
+    assert _decl(css, ".nt-pills", "flex-wrap") == "wrap"
+    assert _decl(css, ".nt-pill-wrap", "display") == "contents"
+    assert _decl(css, ".new-task-dialog", "overflow") == "hidden"
+    assert _decl(css, ".new-task-dialog", "position") == "relative"
