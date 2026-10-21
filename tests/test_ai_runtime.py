@@ -2148,8 +2148,9 @@ def test_llamacpp_and_whisper_suggestions_show_snapshot_size_estimates():
         "LFM2.5-1.2B-Instruct-Q4_K_M.gguf": 0.7,
         "Qwen3.5-4B-Q4_K_M.gguf": 2.7,
         "gemma-4-E4B-it-Q4_K_M.gguf": 5.0,
-        "LFM2.5-8B-A1B-Q4_K_M.gguf": 5.2,
         "Qwen3.8-27B-UD-Q3_K_XL.gguf": 13.1,
+        "LFM2.5-24B-A2B-Q4_K_M.gguf": 14.5,
+        "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf": 17.0,
         "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf": 18.6,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
         "Systran/faster-whisper-tiny.en": 0.08,
@@ -2216,9 +2217,13 @@ def test_every_suggestion_list_offers_between_two_and_five_models():
     """
     # SIX, not five, for the two TEXT lists only (SPEC AI-28b): the use-case
     # sections need a code-tuned row (Qwen3-Coder-30B-A3B) and no existing row
-    # was worth cutting for it.
+    # was worth cutting for it. SEVEN since the October 2026 refresh, which
+    # added the two mixture-of-experts rows (Gemma 4 26B-A4B, LFM2.5 24B-A2B)
+    # and retired only one row per list (DECISIONS.md, "Catalog refresh,
+    # October 2026" — a deliberate loosening the owner can revert by cutting
+    # a row and putting this back to 6).
     for code, entries in catalog.SUGGESTIONS.items():
-        cap = 6 if code in ("mlx-text", "llamacpp-text") else 5
+        cap = 7 if code in ("mlx-text", "llamacpp-text") else 5
         assert 2 <= len(entries) <= cap, (
             f"{code} suggests {len(entries)} models "
             f"({[e['id'] for e in entries]}); every engine's list carries two "
@@ -2310,10 +2315,11 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch, tm
     assert text["runner"] == "mlx-text"
     # The namespace set is a PROXY for "these are MLX conversions", and it
     # grows: `prism-ml/` is here for the Bonsai row, because no
-    # `mlx-community/` conversion of it exists. What the assertion is really
+    # `mlx-community/` conversion of it exists, and `LiquidAI/` for the LFM2.5
+    # 24B-A2B row, which Liquid publishes itself. What the assertion is really
     # pinning is the Linux half above — that the two lists are disjoint — so
     # a new publisher belongs here rather than being a reason to weaken it.
-    assert all(m["id"].startswith(("mlx-community/", "prism-ml/"))
+    assert all(m["id"].startswith(("mlx-community/", "prism-ml/", "LiquidAI/"))
                for m in text["models"])
 
 

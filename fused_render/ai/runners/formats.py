@@ -207,6 +207,30 @@ MFLUX_VARIANTS = {
         "config": "flux2_klein_9b",
         "vae": "AutoencoderKLFlux2",
     },
+    # Z-Image Turbo (October 2026 refresh). Distilled, no CFG: `ZImage` zeroes
+    # guidance itself when `ModelConfig.supports_guidance` is False. **No `vae`
+    # key, so no live preview** — its VAE is bit-identical to the FLUX.1 one
+    # (the Fill row's, 260 tensors, max|diff| 0.0), a 16-channel latent, and
+    # `preview.PROJECTIONS["AutoencoderKL"]` is SD1.5's 4-channel fit, which
+    # would project garbage (see `MFLUX_FILL_VARIANTS`).
+    "mflux-community/z-image-turbo-mflux-q4": {
+        "variant": "ZImage",
+        "module": "mflux.models.z_image.variants",
+        "config": "z_image_turbo",
+    },
+    # Qwen-Image 2.1 Turbo. The package `__init__`s under `qwen21/variants`
+    # are empty, so `module` is the full submodule path. No `vae` key: its VAE
+    # is `AutoencoderKLQwenImage`, which `preview.PROJECTIONS` has no row for,
+    # so it gets no preview. `guidance` PINS the value the worker passes —
+    # mflux raises on anything but 1 for the Turbo checkpoint
+    # (`Qwen21TurboScheduler.check_generate`), and a plain request arrives
+    # with the worker's 4.0 default.
+    "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit": {
+        "variant": "QwenImage21",
+        "module": "mflux.models.qwen21.variants.txt2img.qwen_image_21",
+        "config": "qwen_image_21_turbo",
+        "guidance": 1.0,
+    },
 }
 
 #: The EDIT counterpart of `MFLUX_VARIANTS` — one entry per model that also
@@ -277,7 +301,11 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
     # not make the edit recipe raise where the plain row itself would not.
     # `config` stays a hard index: every row in this table names one, and
     # `_build_variant` reads it unconditionally.
-    return {**edit, "config": plain["config"], "vae": plain.get("vae")}
+    recipe = {**edit, "config": plain["config"], "vae": plain.get("vae")}
+    # A no-CFG checkpoint's pin must read the same on both rows.
+    if "guidance" in plain:
+        recipe["guidance"] = plain["guidance"]
+    return recipe
 
 
 #: The INPAINT counterpart (`fused.ai.image({image, mask})`, mflux-only): a
@@ -1184,13 +1212,17 @@ GGUF_RECIPES = {
         "repo": "unsloth/gemma-4-E4B-it-GGUF",
         "file": "gemma-4-E4B-it-Q4_K_M.gguf",
     },
-    "LFM2.5-8B-A1B-Q4_K_M.gguf": {
-        "repo": "LiquidAI/LFM2.5-8B-A1B-GGUF",
-        "file": "LFM2.5-8B-A1B-Q4_K_M.gguf",
-    },
     "Qwen3.8-27B-UD-Q3_K_XL.gguf": {
         "repo": "unsloth/Qwen3.8-27B-GGUF",
         "file": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+    },
+    "LFM2.5-24B-A2B-Q4_K_M.gguf": {
+        "repo": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+        "file": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+    },
+    "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf": {
+        "repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "file": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
     },
     "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf": {
         "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",

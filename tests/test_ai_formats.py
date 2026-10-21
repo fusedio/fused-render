@@ -388,6 +388,31 @@ def test_mflux_needs_the_variant_table_as_well_as_the_layout():
         repo_id=fill, names=set(), dirnames=components, config={}, torch_weights=False)
 
 
+def test_the_z_image_and_qwen_image_rows_name_a_variant_class_and_a_config():
+    """Shape of the two rows added in the October 2026 refresh. Both are
+    distilled no-CFG checkpoints with no `vae` key: Z-Image's 16-channel VAE
+    would be projected through SD1.5's 4-channel `AutoencoderKL` fit, and
+    Qwen-Image's `AutoencoderKLQwenImage` has no row at all. Qwen-Image 2.1
+    Turbo pins `guidance` to 1 because mflux raises on anything else."""
+    from fused_render.ai.runners import preview
+
+    z = formats.MFLUX_VARIANTS["mflux-community/z-image-turbo-mflux-q4"]
+    assert (z["variant"], z["module"], z["config"]) == (
+        "ZImage", "mflux.models.z_image.variants", "z_image_turbo")
+    q = formats.MFLUX_VARIANTS["OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit"]
+    assert (q["variant"], q["module"], q["config"]) == (
+        "QwenImage21", "mflux.models.qwen21.variants.txt2img.qwen_image_21",
+        "qwen_image_21_turbo")
+    assert q["guidance"] == 1.0
+    for row in (z, q):
+        assert "vae" not in row
+    assert "AutoencoderKLQwenImage" not in preview.PROJECTIONS
+    for repo_id in ("mflux-community/z-image-turbo-mflux-q4",
+                    "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit"):
+        assert formats.mflux_native_mode(repo_id) == "generate"
+        assert formats.mflux_edit_recipe(repo_id) is None
+
+
 def test_mflux_edit_recipe_DERIVES_config_and_vae_rather_than_duplicating():
     """`MFLUX_EDIT_VARIANTS` carries only `variant`/`module` — the two facts
     that actually differ between editing and plain generation. `config` and
@@ -406,6 +431,29 @@ def test_mflux_edit_recipe_DERIVES_config_and_vae_rather_than_duplicating():
     # between two copies that happen to still agree.
     assert "config" not in formats.MFLUX_EDIT_VARIANTS[known]
     assert "vae" not in formats.MFLUX_EDIT_VARIANTS[known]
+
+
+def test_mflux_edit_recipe_DERIVES_a_pinned_guidance_only_when_present(monkeypatch):
+    """A no-CFG checkpoint's edit row must carry the same `guidance` pin as
+    its generate row; a row without one gets no key at all."""
+    known = next(iter(formats.MFLUX_VARIANTS))
+    assert "guidance" not in formats.mflux_edit_recipe(known)
+    pinned = dict(formats.MFLUX_VARIANTS[known], guidance=1.0)
+    monkeypatch.setitem(formats.MFLUX_VARIANTS, known, pinned)
+    assert formats.mflux_edit_recipe(known)["guidance"] == 1.0
+
+
+def test_every_pinned_guidance_variant_has_a_catalog_row_seeding_it():
+    """The worker REFUSES a request whose guidance differs from the pin, so
+    the suggested row's `defaults` must seed the pinned value."""
+    from fused_render.ai import catalog
+
+    rows = {r["id"]: r for r in catalog.SUGGESTIONS["mflux-image"]}
+    pinned = {k: v["guidance"] for k, v in formats.MFLUX_VARIANTS.items()
+              if "guidance" in v}
+    assert pinned
+    for repo_id, guidance in pinned.items():
+        assert rows[repo_id]["defaults"]["guidance"] == guidance
 
 
 def test_mflux_edit_recipe_TRACKS_a_change_to_the_plain_rows_config(monkeypatch):
