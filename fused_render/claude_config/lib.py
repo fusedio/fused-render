@@ -718,8 +718,14 @@ def safe_subdir(base: str, slug: str, tail: str = "") -> str:
 
 def reveal(path: str) -> bool:
     """Open a path in the OS file explorer. Best-effort; argv, never a shell
-    string. macOS `open`; falls back to xdg-open on Linux."""
+    string. macOS `open`, `os.startfile` on Windows, else xdg-open."""
     import sys
+    if sys.platform == "win32":
+        try:
+            os.startfile(path)  # type: ignore[attr-defined]
+            return True
+        except OSError:
+            return False
     cmd = ["open"] if sys.platform == "darwin" else ["xdg-open"]
     try:
         subprocess.run([*cmd, path], capture_output=True, timeout=10, **SUBPROCESS_KWARGS)

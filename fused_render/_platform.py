@@ -21,3 +21,4 @@ kill_tree = _mod.kill_tree
 SIGKILL = _mod.SIGKILL
 detach_kwargs = _mod.detach_kwargs
 probe_pid = _mod.probe_pid
+euid = _mod.euid

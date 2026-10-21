@@ -139,3 +139,10 @@ def probe_pid(pid: int) -> None:
             raise ProcessLookupError(pid)
     finally:
         kernel32.CloseHandle(handle)
+
+
+def euid() -> int:
+    """The effective uid, or 0 where the platform has none (Windows): callers
+    use it to give each user a private directory name under the shared temp
+    dir, and Windows' temp dir is already per-user."""
+    return os.geteuid() if hasattr(os, "geteuid") else 0

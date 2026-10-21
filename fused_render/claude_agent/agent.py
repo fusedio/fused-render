@@ -134,7 +134,7 @@ def _runs_root() -> str:
     0700 on it is then simply correct.
     """
     return os.path.join(tempfile.gettempdir(),
-                        "fused_render_claude-%d" % os.geteuid(), "runs")
+                        "fused_render_claude-%d" % _platform.euid(), "runs")
 
 
 RUNS = _runs_root()
