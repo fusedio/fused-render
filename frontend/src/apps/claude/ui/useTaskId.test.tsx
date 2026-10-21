@@ -317,10 +317,14 @@ test("Archive and Delete are refused while a mode owns the page (P3R1-5)", () =>
     // A run is still named first — it is the refusal the reader cannot lift
     // from here — and the lock is the second answer, never a silent no.
     expect(head).toContain("disabled={live || locked}");
-    expect(head).toContain(
-      'title={live ? "Stop the run first" : locked ? lockedReason : undefined}',
-    );
+    // …said IN the label too (platform/lib/task-actions), as the Tasks peek
+    // says it: a menu row's tooltip is not something a reader finds.
+    expect(head).toContain("title={refusal ?? undefined}");
+    expect(head).toContain("blockedActionLabel(");
   }
+  expect(src).toContain(
+    "const refusal = live ? RUN_BLOCKED_HINT : locked ? lockedReason || null : null;",
+  );
   // And the chat hands it the lock the rest of the nav already reads
   // (`annNavLocked`, T:6888) with T's own sentence for it.
   const chat = readFileSync(join(import.meta.dir, "../ClaudeChat.tsx"), "utf8");
@@ -391,13 +395,12 @@ test("still answers the number the listing holds for a pending: key", async () =
 // 2026-09-12).
 test("offers Download transcript on any chat with a task behind it, not the landing page or a queued chat", () => {
   const src = readFileSync(join(import.meta.dir, "Kebab.tsx"), "utf8");
-  // Gated on `hasTask` like Archive: the export route reads the task
-  // listing, so a session it does not know would 404 (CodeRabbit, #1815).
-  const row = src.slice(src.indexOf("{!landing && sessionId && hasTask && !queued ? ("));
-  expect(row.slice(0, row.indexOf("</DropdownMenuItem>"))).toContain('"Download transcript"');
+  expect(src).toContain("const canDownload = !landing && !!sessionId && hasTask && !queued;");
+  const row = src.slice(src.indexOf("{canDownload ? ("));
+  expect(row.slice(0, row.indexOf("</DropdownMenuItem>"))).toContain("TASK_ACTION_LABELS.download");
   expect(src).toContain('await downloadTaskTranscript(sessionId, "md")');
   // Between the terminal items and Archive, the order the Tasks kebab uses.
-  expect(src.indexOf('"Download transcript"')).toBeLessThan(
+  expect(src.indexOf("{canDownload ? (")).toBeLessThan(
     src.indexOf("{!landing && hasTask && !queued ? ("),
   );
 });
@@ -410,14 +413,18 @@ test("hides Continue in terminal and Archive while the chat is queued", () => {
   expect(src).toContain("{!queued ? (");
   const terminal = src.slice(src.indexOf("{!queued ? ("));
   expect(terminal.slice(0, terminal.indexOf("</DropdownMenuItem>"))).toContain(
-    'sessionId ? "Continue in terminal" : "New session in terminal"',
+    "restingTerminal()",
   );
+  expect(src).toContain("terminalActionLabel(agentNamed(agent.backend) ? agent.label : null, !!sessionId)");
   // …Archive takes it as a third condition…
   expect(src).toContain("{!landing && hasTask && !queued ? (");
   // …and Delete does NOT: exactly one item in this menu keeps its old condition.
   expect(src).toContain("{!landing && hasTask ? (");
   const del = src.slice(src.lastIndexOf("{!landing && hasTask ? ("));
-  expect(del.slice(0, del.indexOf("</DropdownMenuItem>"))).toContain("Delete this task");
+  expect(del.slice(0, del.indexOf("</DropdownMenuItem>"))).toContain("TASK_ACTION_LABELS.delete");
+  // Red bin on hover too: without `destructive` the shadcn item repaints every
+  // child in the accent ink when highlighted, and the icon went grey.
+  expect(del.slice(0, del.indexOf("</DropdownMenuItem>"))).toContain('variant="destructive"');
   // And the chat hands the fact down from the row it already reads.
   const chat = readFileSync(join(import.meta.dir, "../ClaudeChat.tsx"), "utf8");
   // A CHAT WITH NO SESSION, and nothing else (🟡 review, 2026-09-12). A real

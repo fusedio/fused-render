@@ -35,6 +35,7 @@
 // This is a presentation of the same data, not a second opinion about it: no
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
+import { RUN_BLOCKED_HINT } from "@platform/lib/task-actions";
 import { EMBED_PREFIX, IS_QUERY_EMBED, VIEW_PREFIX } from "@platform/lib/router";
 import type { Task, TaskBackgroundJobs, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import { labelForSource } from "@platform/lib/format";
@@ -3098,7 +3099,7 @@ export function filingIntent(task: Task): FilingIntent | null {
  *  delete"). Said in the SHORT form on a 24px door, but it is the same sentence
  *  — a control whose caption promises one reason and whose refusal gives another
  *  is the divergence this page's vocabulary is written against. */
-export const ERASE_BLOCKED_HINT = "Stop the run first";
+export const ERASE_BLOCKED_HINT = RUN_BLOCKED_HINT;
 
 /**
  * Whether deleting this task for good must be REFUSED — the client half of the
