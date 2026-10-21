@@ -1,16 +1,16 @@
 {
   "_comment": "The pinned Chromium engine artifact. `engine_version` is OUR wrapper framework's version (bumped on every native change); `cef_version` is the CEF binary distribution it was built against (cef-builds.spotifycdn.com). `sha256`/`size` are filled in by scripts/publish_chromium_engine.sh after the artifact is uploaded to the release named in base_url; null means not published yet, and the preference reports the engine as unavailable. See docs/CHROMIUM_ENGINE.md.",
-  "engine_version": "3",
+  "engine_version": "4",
   "cef_version": "139.0.37+gb457b0b+chromium-139.0.7258.139",
-  "base_url": "https://github.com/fusedio/fused-render/releases/download/chromium-engine-3/",
+  "base_url": "https://github.com/fusedio/fused-render/releases/download/chromium-engine-4/",
   "artifacts": {
     "arm64": {
-      "file": "FusedChromium-3-arm64.zip",
-      "sha256": "e6c117871b183738900e3f6f4d1d18aab76d144687612e9a2a0c7194061c87f5",
-      "size": 123875286
+      "file": "FusedChromium-4-arm64.zip",
+      "sha256": null,
+      "size": null
     },
     "x86_64": {
-      "file": "FusedChromium-3-x86_64.zip",
+      "file": "FusedChromium-4-x86_64.zip",
       "sha256": null,
       "size": null
     }
