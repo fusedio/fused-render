@@ -124,17 +124,8 @@ export function answerAfter(events: BotEvent[], seq: number): BotEvent | null {
   return null;
 }
 
-// agent_engine YES / NO, the words the gate takes as a verdict.
-const YES = /^\s*(y|yes|yep|yeah|ok|okay|sure|approve|approved|go(?!\s+(to|back|on|and)\b)|go ahead|do it|proceed|confirm|allow)\b/i;
-const NO = /^\s*(n|no|nope|deny|denied|stop|don'?t|cancel|skip)\b/i;
-
-/** A settled approval card's caption, from the user line that answered it. */
-export function approvalVerdict(answer: string | null | undefined): "Approved" | "Denied" | null {
-  if (answer == null) return null;
-  if (YES.test(answer)) return "Approved";
-  if (NO.test(answer)) return "Denied";
-  return null;
-}
+// Moved to platform/lib/risk.ts so Bots and the phone share one copy.
+export { approvalVerdict } from "@platform/lib/risk";
 
 /** A multi-select question's answer: the ticked options in their own order,
  *  "A, B"; "None" when nothing is ticked (the desktop's MultiQuestion). */
