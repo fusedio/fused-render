@@ -302,23 +302,6 @@
   align-items: center;
 }
 
-.new-task-write .new-task-title {
-  /* P2: the title is the card's headline — 19px, a step over the 15px ask. */
-  font-size: 19px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  line-height: 1.3;
-  /* One line. `pre` rather than `nowrap` so a pasted value's own spacing is not
-     collapsed on the way in — an <input> strips the newlines either way. */
-  white-space: pre;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* No autogrow and no drag-grow: the height is one line of the 20px face plus
-     the shared padding, and it never changes. */
-  resize: none;
-  flex: none;
-}
-
 /* -- The ask -----------------------------------------------------------------
    SECOND, and deliberately quieter than the title: smaller face, book weight,
    ordinary line height. It is the longer piece of writing of the two, so it
@@ -342,9 +325,9 @@
   line-height: 1.5;
   resize: none;
   overflow-wrap: anywhere;
-  /* Three lines of the face plus the shared padding — half the six the
-     reference image gave it (Akshil, 2026-09-23). Still the slack-taker. */
-  min-height: calc(15px * 1.5 * 5 + 12px);
+  /* Six lines of the face plus the shared padding: the one box is the whole
+     task, so it opens roomy. Still the slack-taker. */
+  min-height: calc(15px * 1.5 * 6 + 12px);
   /* Ten, then it scrolls. */
   max-height: calc(15px * 1.5 * 10 + 12px);
   overflow-y: auto;
@@ -384,11 +367,9 @@
   text-overflow: ellipsis;
 }
 
-.new-task-ask-hint > em {
-  font-style: italic;
-  /* Lighter than the line above it: grey + italic at the same weight read as
-     a smudge (Akshil, 2026-09-24). */
-  font-weight: 100;
+.new-task-ask-hint > small {
+  font-size: 13px;
+  color: var(--fg-faint);
 }
 
 /* -- The past-time note ------------------------------------------------------

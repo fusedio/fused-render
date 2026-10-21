@@ -49,7 +49,6 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _CSS = os.path.join(REPO_ROOT, "frontend", "src", "styles", "new-task.css")
 
 _FIELD = ".new-task-write .new-task-field"
-_TITLE = ".new-task-write .new-task-title"
 _ASK = ".new-task-write .new-task-ask"
 
 
@@ -99,7 +98,7 @@ def _fills(css: str) -> list[tuple[str, str]]:
     return out
 
 
-_SURFACE = ("new-task-field", "new-task-title", "new-task-ask")
+_SURFACE = ("new-task-field", "new-task-ask")
 
 
 def _px(value: str) -> int:
@@ -203,7 +202,7 @@ def test_no_accent_is_painted_on_the_writing_surface_at_all():
     # The broad version of the three above: the surface used to be the one place
     # in the app that wore --accent as chrome rather than as a control's fill.
     css = _source()
-    for selector in (_FIELD, _FIELD + ":focus", _TITLE, _ASK):
+    for selector in (_FIELD, _FIELD + ":focus", _ASK):
         assert "--accent" not in _block(css, selector), (
             f"{selector} paints the accent colour; the writing surface is quiet "
             "now — the accent belongs to the checkboxes and the Save button")
@@ -221,23 +220,6 @@ def test_the_caret_is_whatever_every_other_field_gets():
 
 
 # -- 3. a heading and body text, not two headings -----------------------------
-
-def test_the_description_is_clearly_smaller_than_the_title():
-    css = _source()
-    title = _decl(css, _TITLE, "font-size")
-    ask = _decl(css, _ASK, "font-size")
-    assert title and ask, "both fields declare their own face; one stopped"
-    # Read, not restated: retuning either size keeps this passing as long as the
-    # hierarchy survives. The description is body copy at the same size as the
-    # rest of the form's controls, and the title is a heading a step above it —
-    # #1317 brought the title down to sit with the dialog heading (20px to
-    # 16px), so the gap over the 13px description is now 3px, not the old 7px.
-    # Still more than the smallest step this repo's type scales use elsewhere
-    # (1px), so 3px stays the floor.
-    assert _px(ask) <= _px(title) - 3, (
-        f"the description ({ask}) has to read as body text under the title "
-        f"({title}), not as a second heading")
-
 
 def test_the_ask_clamps_are_expressed_in_its_own_face():
     # The floor and the ceiling are line counts of the description's face, so
