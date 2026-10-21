@@ -531,6 +531,10 @@ export interface ChatController {
   cancelFork(): void;
   /** Stop the live run (T:15870-16023 stopRun). No-op when idle. */
   stopRun(): Promise<void>;
+  /** The Approvals pill changed: when a run is live, switch ITS mode now through
+   *  the `set_mode` action (no message, no turn) and follow the reply into
+   *  `ChatState.permissionMode`. No live run → nothing; the value rides the next send. */
+  applyPermission(mode: PermissionMode): Promise<void>;
 
   /** Permission card (T:13899 buildPermCard → decide). */
   decidePermission(id: string, decision: Decision, scope?: DecisionScope, mode?: SwitchableMode): Promise<void>;

@@ -139,6 +139,7 @@ from starlette.concurrency import run_in_threadpool
 from fused_render import netlog
 from fused_render import (
     app_listing,
+    claude_remote,
     current_apps,
     drafts,
     project_queue,
@@ -6680,6 +6681,9 @@ _VALID_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 _MODEL_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
+_VALID_PERMISSIONS = ("plan", "prompt", "acceptEdits", "auto")
+
+
 class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
@@ -6688,6 +6692,8 @@ class SettingsPatch(BaseModel):
     # starts a conversation; a later POST naming the same value is a no-op and
     # one naming another is refused — the backend never changes (D2).
     backend: str = ""
+    # The Approvals pill: plan | prompt | acceptEdits | auto, "" (not saying).
+    permission: str = ""
 
 
 def _settings_session_id(raw: str) -> str:
@@ -6741,7 +6747,8 @@ def api_task_settings_read(session_id: str = ""):
     # what the RECORD says, and the row (`_row_backend`) is where the root
     # fills the gap for a session that predates the field.
     return {"model": _display_model(model), "effort": effort,
-            "backend": tasks_store.session_backend(state, session_id)}
+            "backend": tasks_store.session_backend(state, session_id),
+            "permission": tasks_store.session_permission(state, session_id)}
 
 
 @router.post("/api/tasks/settings")
@@ -6797,11 +6804,18 @@ def api_task_settings(patch: SettingsPatch,
             model)
         if foreign is not None:
             raise HTTPException(status_code=400, detail=foreign["error"])
-    if not (model or effort or backend):
-        raise HTTPException(status_code=400,
-                            detail="nothing to record (send model, effort or backend)")
+    permission = patch.permission.strip()
+    if permission and permission not in _VALID_PERMISSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid permission {permission!r}: expected one of "
+                   + ", ".join(repr(v) for v in _VALID_PERMISSIONS))
+    if not (model or effort or backend or permission):
+        raise HTTPException(
+            status_code=400,
+            detail="nothing to record (send model, effort, backend or permission)")
     record = tasks_store.record_settings(session_id, model, effort,
-                                         backend=backend)
+                                         backend=backend, permission=permission)
     # THE ROW CARRIES THIS PAIR (`_row_settings`), so the other windows have to
     # be told — the same ring `POST /api/tasks/read` makes for the same reason.
     # A session that is not a task is a key nobody is watching, and the notify
@@ -6810,7 +6824,8 @@ def api_task_settings(patch: SettingsPatch,
     return {"ok": True,
             "model": str(record.get("model") or ""),
             "effort": str(record.get("effort") or ""),
-            "backend": str(record.get("backend") or "")}
+            "backend": str(record.get("backend") or ""),
+            "permission": str(record.get("permission") or "")}
 
 
 # ------------------------------------------------------------------ archiving
@@ -9293,6 +9308,14 @@ def api_task_send(key: str, body: dict = Body(...),
     if refusal is not None:
         return refusal
 
+    delivered = claude_remote.admit([session], _deliver_page_send, key, task, target,
+                                    session, text, model, effort, owner)
+    if delivered == {"error": claude_remote.HELD}:
+        return _error(claude_remote.HELD, status=409)
+    return delivered
+
+
+def _deliver_page_send(key, task, target, session, text, model, effort, owner):
     agent = project_queue.agent_module()
     if agent is not None:
         try:

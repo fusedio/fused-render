@@ -41,7 +41,7 @@ import {
 } from "@platform/lib/api";
 import { capsOf } from "@platform/lib/agent-backends";
 import { chatDraftKey } from "@platform/lib/drafts";
-import { queueEnabled, queueFlagReady } from "../feature-flag";
+import { defaultPermissionNow, narrowPermission, queueEnabled, queueFlagReady } from "../feature-flag";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { AgentError, runAgent } from "./agent";
@@ -180,7 +180,9 @@ function transientPollBudget(err: unknown): number {
   if (err instanceof AgentError) return err.type === "Timeout" || err.type === "NotRun" ? POLL_TIMEOUT_RETRIES : 0;
   return isNetworkFailure(err) ? POLL_NETWORK_RETRIES : 0;
 }
-/** T:11911 — `params.permission || DEFAULT_PERMISSION`. */
+/** The SAFETY fallback for a mangled mode (T:11911): strictest wins. An ABSENT
+ *  `params.permission` is not this — it is the user's default pref
+ *  (`defaultPermissionNow`, "auto" unless changed in Preferences). */
 export const DEFAULT_PERMISSION: PermissionMode = "prompt";
 /** T:16130 — a follow-up waits this long for `sendMessage`'s own `start` to
  *  publish a run id, rather than dropping the message. */
@@ -296,7 +298,7 @@ function emptyState(file: string | null): ChatState {
     skills: [],
     working: null,
     trouble: null,
-    permissionMode: DEFAULT_PERMISSION,
+    permissionMode: defaultPermissionNow(),
     queued: [],
     inbox: [],
     historyLoading: false,
@@ -2412,22 +2414,34 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  (composer-defaults `permission`), so the wire says the same — sent raw,
    *  agent.py refuses the start while the pill shows ask-every-time. */
   const planless = (v: string) => v === "plan" && !capsOf(curBackend()).plan_mode;
-  const curPermission = () => {
-    const v = deps.params.get("permission") || DEFAULT_PERMISSION;
+  /** The mode a send carries: the `permission` param, else the user's default
+   *  pref; a value that is present but not a mode is the strictest one, never
+   *  passed through raw (a mangled param must not buy auto-approval). */
+  const curPermissionMode = (): PermissionMode => {
+    const raw = deps.params.get("permission") || "";
+    const v = raw ? narrowPermission(raw) || DEFAULT_PERMISSION : defaultPermissionNow();
     return planless(v) ? DEFAULT_PERMISSION : v;
   };
-  /** The same read, NARROWED — `ChatState.permissionMode` is a union and the
-   *  param is arbitrary text off a URL. Deliberately separate from
-   *  `curPermission`, which stays a pass-through for every other value: T
-   *  sends `permission_mode` verbatim (T:16128) and agent.py is the thing
-   *  entitled to reject it. */
-  const curPermissionMode = (): PermissionMode => {
-    const v = deps.params.get("permission") || "";
-    if (planless(v)) return DEFAULT_PERMISSION;
-    return v === "plan" || v === "prompt" || v === "acceptEdits" || v === "auto"
-      ? v
-      : DEFAULT_PERMISSION;
-  };
+  const curPermission = (): string => curPermissionMode();
+  /** The Approvals pill changed: apply it to a LIVE run now — no message, no
+   *  turn — through the `set_mode` action. Nothing live means nothing to do
+   *  (the new value rides the next send). `{respawn: true}` (Copilot
+   *  `acceptEdits`) is likewise left for the next send; an error keeps the pill
+   *  as it is. `ChatState.permissionMode` follows the reply. */
+  async function applyPermission(mode: PermissionMode): Promise<void> {
+    if (disposed) return;
+    const runId = activeRun;
+    if (!runId || !narrowPermission(mode)) return;
+    if (planless(mode)) return;
+    try {
+      const res = await run("set_mode", { run_id: runId, permission_mode: mode });
+      if (disposed || activeRun !== runId) return;
+      const applied = "ok" in res && res.ok ? narrowPermission(res.mode) : "";
+      if (applied) setPermissionMode(applied);
+    } catch {
+      // The pill stays; the mode still rides the next send.
+    }
+  }
   /** `"1"` / `"0"` / `""` — see `ChatControllerDeps.hasPane`. The empty string
    *  is not a missing field: agent.py's `main` reads `has_pane == ""` as "the
    *  page has no opinion" and answers with `_has_pane(file)` itself, which is
@@ -4563,6 +4577,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     beginFork,
     cancelFork,
     stopRun,
+    applyPermission,
     decidePermission,
     answerQuestion,
     decidePlan,

@@ -47,6 +47,7 @@ import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
 import type { SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
+import type { PermissionMode } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
@@ -150,6 +151,7 @@ import { takenAskBackend } from "@platform/lib/pending-claude-ask";
 import type { ClassifiedCommand } from "./protocol/commands";
 import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
+import { REMOTE_CONTROL_CONNECTING, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
 import { notify } from "@platform/lib/notifications";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
@@ -3444,8 +3446,33 @@ function ChatBody(props: ChatBodyProps) {
     ],
   );
 
+  const rc = useRemoteControl(state.sessionId ?? "", file ?? "", () => {
+    if (state.sessionId) void controller.refreshHistory(state.sessionId);
+  });
+  const rcAsk = rc.ask;
+  const rcOn = rc.view.state !== "off";
+  const rcLive = rc.view.state === "active";
+  const rcSayRaw = rc.say;
+  const rcSay = useMemo(
+    () =>
+      rcLive
+        ? (text: string) => {
+            if (attach.items.length > 0 || ann.hasSendable()) {
+              notify({ title: "Pictures and notes can't go through Remote Control yet", tone: "error" });
+              strand(text);
+              return;
+            }
+            void rcSayRaw(text).then((sent) => {
+              if (!sent) strand(text);
+            });
+          }
+        : null,
+    [rcLive, rcSayRaw, attach.items.length, ann, strand],
+  );
+  const rcConnecting = rc.view.state === "starting";
   const onSend = useCallback(
     (text: string, opts: SendOptions) => {
+      if (rcSay) return rcSay(text);
       // OPTIMISTIC, and synchronously BEFORE the dispatch — exactly where T puts
       // it (`enterChat()` in the landing form's own `onsubmit`, T:17935, one line
       // ahead of its `sendMessage(message)`). `inChat` is `entered ||
@@ -3461,10 +3488,11 @@ function ChatBody(props: ChatBodyProps) {
       setEntered(true);
       dispatchSend(text, opts, false);
     },
-    [dispatchSend],
+    [dispatchSend, rcSay],
   );
   const onFollowUp = useCallback(
     (text: string) => {
+      if (rcSay) return rcSay(text);
       dispatchSend(
         text,
         {
@@ -3475,7 +3503,7 @@ function ChatBody(props: ChatBodyProps) {
         true,
       );
     },
-    [dispatchSend, defaults.model, defaults.effort, defaults.permission],
+    [dispatchSend, defaults.model, defaults.effort, defaults.permission, rcSay],
   );
   /**
    * STOP MEANS STOP, THE OUTBOX INCLUDED (Akshil's R2-12 rule, kept over Claude
@@ -3685,6 +3713,7 @@ function ChatBody(props: ChatBodyProps) {
       const plan = planLocalCommand(cmd, {
         backend: liveBackend.current,
         worktreeReady: worktreeTarget && worktreeReady.current,
+        hasSession: !!state.sessionId,
       });
       if ("refuse" in plan) {
         // The words stay in the box (`false`), and the reader is told why.
@@ -3709,9 +3738,12 @@ function ChatBody(props: ChatBodyProps) {
         case "tasks":
           onToggleTasks();
           return true;
+        case "remote-control":
+          rcAsk(plan.name);
+          return true;
       }
     },
-    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks],
+    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the
@@ -3821,13 +3853,17 @@ function ChatBody(props: ChatBodyProps) {
       permission: defaults.permission,
       setModel: defaults.setModel,
       setEffort: defaults.setEffort,
-      setPermission: defaults.setPermission,
+      // The pill moves the param/record, AND a live run takes it now (no send).
+      setPermission: (value: PermissionMode) => {
+        defaults.setPermission(value);
+        void controller.applyPermission(value);
+      },
       backend: defaults.backend,
       backendFixed: defaults.backendFixed,
       setBackend: defaults.setBackend,
       ready: defaults.pillsReady,
     }),
-    [defaults],
+    [defaults, controller],
   );
 
   const actions = useMemo(
@@ -4647,13 +4683,13 @@ function ChatBody(props: ChatBodyProps) {
       // worse state than the one this feature prevents.
       // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
       // its own sentence, and the link to the switch under it.
-      blocked: sched.blocked || agentOff,
+      blocked: sched.blocked || agentOff || rcConnecting,
       blockedPlaceholder: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : sched.placeholder,
+        : rcConnecting ? REMOTE_CONTROL_CONNECTING : sched.placeholder,
       blockedReason: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : sched.reason,
+        : rcConnecting ? REMOTE_CONTROL_CONNECTING : sched.reason,
       blockedNote: agentOff ? (
         <>
           {agentLabel(state.backend)} is turned off in Preferences.{" "}
@@ -4661,6 +4697,8 @@ function ChatBody(props: ChatBodyProps) {
             Turn it on
           </a>
         </>
+      ) : rcOn ? (
+        <RemoteControlNote view={rc.view} onStop={rc.stop} />
       ) : undefined,
       // THE FLAG TAKES THE FOLLOW-UP FOOTNOTE AWAY (see `ComposerCardProps`):
       // under the queue this pane says "waiting" about messages that really are,
@@ -4679,6 +4717,8 @@ function ChatBody(props: ChatBodyProps) {
       state.sessionId,
       state.backend,
       agentOff,
+      rc.view,
+      rc.stop,
       state.status,
       state.queued,
       inboxRows,
@@ -4899,6 +4939,7 @@ function ChatBody(props: ChatBodyProps) {
    <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
    <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
+    <RemoteControlConfirm open={rc.asking} onGo={rc.start} onCancel={rc.cancel} />
     <div
       ref={rootRef}
       className={rootClass(

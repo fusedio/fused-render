@@ -632,6 +632,17 @@ class PtySessionRegistry:
                owner: Optional[str] = None,
                env: Optional[dict] = None,
                shells: Optional[tuple] = None) -> PtySession:
+        profile = resolve_profile(cwd=cwd, **({} if shells is None else {"shells": shells}))
+        if profile is None:
+            raise RuntimeError("no usable shell found ($SHELL, /bin/bash, /bin/sh)")
+        if env:
+            profile = dataclasses.replace(profile, env={**profile.env, **env})
+        return self.spawn(integrate(profile), rows=rows, cols=cols, owner=owner)
+
+    def spawn(self, profile: TerminalProfile,
+              rows: Optional[int] = None,
+              cols: Optional[int] = None,
+              owner: Optional[str] = None) -> PtySession:
         with self._lock:
             self._reap_dead_locked()
             is_bot = bool(owner) and owner.startswith(BOT_OWNER_PREFIX)
@@ -641,12 +652,6 @@ class PtySessionRegistry:
             if live >= cap:
                 raise SessionLimitError(
                     f"terminal session cap ({cap}) reached")
-            profile = resolve_profile(cwd=cwd, **({} if shells is None else {"shells": shells}))
-            if profile is None:
-                raise RuntimeError("no usable shell found ($SHELL, /bin/bash, /bin/sh)")
-            if env:
-                profile = dataclasses.replace(profile, env={**profile.env, **env})
-            profile = integrate(profile)
             sid = uuid.uuid4().hex
             session = PtySession(sid, profile, rows=rows, cols=cols, owner=owner)
             self._sessions[sid] = session

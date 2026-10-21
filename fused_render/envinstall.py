@@ -508,6 +508,40 @@ def venv_python_for(project_dir: str) -> str:
     return _venv_python(venv_dir_for(project_dir))
 
 
+def venv_site_packages(python: str) -> str | None:
+    """The `site-packages` of the venv that owns `python`, or None.
+
+    `python` is deliberately NOT realpath'd: a venv interpreter is a symlink to
+    the base interpreter, and resolving it would leave the venv behind. None
+    when there is no `pyvenv.cfg` next to it (a system python fallback).
+    """
+    import glob
+
+    venv = os.path.dirname(os.path.dirname(python))
+    if not os.path.exists(os.path.join(venv, "pyvenv.cfg")):
+        return None
+    for cand in sorted(glob.glob(os.path.join(glob.escape(venv), "lib", "python3.*", "site-packages"))):
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+
+def prefer_venv_site_packages(env: dict, python: str) -> dict:
+    """Make `python`'s own venv packages win over the interpreter's stdlib dir.
+
+    The bundled app's interpreter keeps the app's own packages in its stdlib
+    directory (py2app layout), which precedes a venv's site-packages on
+    `sys.path`; without this the bundle's versions shadow the runner's pins (the
+    Pillow 13 / mflux `numbers._IntegralLike` failure). PYTHONPATH entries come
+    first, so pointing it at the venv fixes the order. Harmless in a dev
+    checkout, where that dir holds only stdlib. Mutates and returns `env`.
+    """
+    site = venv_site_packages(python)
+    if site:
+        env["PYTHONPATH"] = site
+    return env
+
+
 def _venv_python(venv_dir: str) -> str:
     """Where a venv keeps its own interpreter."""
     return os.path.join(venv_dir, "bin", "python")

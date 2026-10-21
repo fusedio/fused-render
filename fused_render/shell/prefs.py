@@ -462,6 +462,17 @@ def claude_strict_mcp_enabled() -> bool:
     return read_prefs().get("claude_strict_mcp_enabled") is not False
 
 
+VALID_CLAUDE_PERMISSIONS = ("plan", "prompt", "acceptEdits", "auto")
+
+
+def claude_default_permission() -> str:
+    """Approvals mode a new Claude chat starts in (`claude_default_permission`
+    pref): plan | prompt | acceptEdits | auto, `"auto"` when unset or junk.
+    `claude_agent/agent.py::_default_permission_pref` reads the same key."""
+    value = read_prefs().get("claude_default_permission")
+    return value if value in VALID_CLAUDE_PERMISSIONS else "auto"
+
+
 def lan_enabled() -> bool:
     """Whether the user's apps (everything under ~/Fused plus linked folders)
     are shared with the local network (default off — opt-in). The switch
@@ -922,6 +933,7 @@ def _prefs_response() -> dict:
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default on).
         "claude_strict_mcp": {"enabled": claude_strict_mcp_enabled()},
+        "claude_default_permission": claude_default_permission(),
         # The Bots page's three switches and the Tasks page's view tabs —
         # localStorage until D1386 (see the readers' section comment).
         "bots": {"autostage": bots_autostage(), "sounds": bots_sounds(),
@@ -1284,6 +1296,15 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["claude_strict_mcp_enabled"] = value
             changed = True
+        if "claude_default_permission" in body:
+            value = body.get("claude_default_permission")
+            if value not in VALID_CLAUDE_PERMISSIONS:
+                return JSONResponse(
+                    {"error": "'claude_default_permission' must be one of: "
+                              + ", ".join(repr(v) for v in VALID_CLAUDE_PERMISSIONS)},
+                    status_code=400)
+            prefs["claude_default_permission"] = value
+            changed = True
         if "lan_enabled" in body:
             value = body.get("lan_enabled")
             if not isinstance(value, bool):
@@ -1498,7 +1519,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
                           "'task_summary_titles_enabled', "
-                          "'claude_strict_mcp_enabled', "
+                          "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
                           "'tasks_view_tabs', "
                           "'lan_enabled', "

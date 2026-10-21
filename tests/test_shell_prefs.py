@@ -1696,6 +1696,23 @@ def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
     assert prefs_mod.indexing_enabled() is expect
 
 
+def test_claude_default_permission_defaults_auto_and_validates(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["claude_default_permission"] == "auto"
+    assert prefs_mod.claude_default_permission() == "auto"
+    body = client.put("/api/prefs", json={"claude_default_permission": "prompt"},
+                      headers=FUSED).json()
+    assert body["claude_default_permission"] == "prompt"
+    assert prefs_mod.claude_default_permission() == "prompt"
+    bad = client.put("/api/prefs", json={"claude_default_permission": "yolo"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "claude_default_permission" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"claude_default_permission": 3}),
+                                     encoding="utf-8")
+    assert prefs_mod.claude_default_permission() == "auto"
+
+
 # -- chromium_windows_enabled (experimental) ----------------------------------------
 
 

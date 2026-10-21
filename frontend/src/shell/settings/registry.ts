@@ -374,6 +374,14 @@ const ENTRIES = [
     keywords: "mcp memory connectors strict lean",
   },
   {
+    id: "claude-default-permission",
+    group: "tasks",
+    section: "Running",
+    label: "Default approvals for new chats",
+    description: "What a new Claude chat starts on: plan first, ask every time, auto-accept edits, or Claude decides. Each chat's own pick still wins and is remembered.",
+    keywords: "approvals permission mode default auto plan ask accept edits",
+  },
+  {
     id: "claude-max-sessions",
     group: "tasks",
     section: "Running",

@@ -48,6 +48,7 @@ from fused_render.server.routers.apps import router as apps_router
 from fused_render.server.routers.app_api import router as app_api_router
 from fused_render.server.routers.background_apps import router as background_apps_router
 from fused_render.server.routers.claude_agent import router as claude_agent_router
+from fused_render.server.routers.claude_remote import router as claude_remote_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.agent_backends import router as agent_backends_router
@@ -996,6 +997,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # actions, the app-entry lookup and the artifacts reads that used to run
     # as one /api/run interpreter per call. X-Fused-guarded like /api/run.
     app.include_router(claude_agent_router)
+    app.include_router(claude_remote_router)
     # Artifacts published from those sessions, recovered from the same
     # transcripts (routers/claude_artifacts.py) — read-only, no auth guard.
     app.include_router(claude_artifacts_router)

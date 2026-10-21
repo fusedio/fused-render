@@ -107,8 +107,8 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from fused_render import (_startonce, claude_spawn, cron, recur, session_cap,
-                          tasks_store)
+from fused_render import (_startonce, claude_remote, claude_spawn, cron, recur,
+                          session_cap, tasks_store)
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -2901,14 +2901,16 @@ def _host_send(entry: dict) -> dict | None:
         # arm (which tree-kills the chat's session); model and permission_mode
         # keep it from queueing a `set_model`/`set_permission_mode` the CLI
         # would apply for the rest of somebody's live session.
-        res = agent._send(run_id, _composed(entry), "", "", "", "")
+        res = claude_remote.admit([session], agent._send, run_id,
+                                  _composed(entry), "", "", "", "")
     except Exception:  # noqa: BLE001 — a host we cannot reach is a spawn
         logger.debug("could not send %s into a live host; spawning instead",
                      entry.get("id"), exc_info=True)
         return None
     if isinstance(res, dict) and res.get("sent"):
         return {"run_id": run_id}
-    if isinstance(res, dict) and res.get("reason") == "backend_disabled":
+    if isinstance(res, dict) and (res.get("reason") == "backend_disabled"
+                                  or res.get("error") == claude_remote.HELD):
         # THE HOST IS ALIVE AND ITS AGENT IS SWITCHED OFF (D17): the refusal
         # is the answer, handed back for `_send` to fail the entry with. None
         # here would mean "no host" and the caller would spawn — a second CLI
