@@ -185,6 +185,9 @@ export default function ListingPreviewPane({
             // site like Preview's two. `noFocus` is about the keyboard staying
             // on the listing, not about the chat being display-only.
             recap
+            // One header row: `← Chats` and the menu ride the identity row, and
+            // the folder name is left off (it is the folder being browsed).
+            mergedHead
             {...(initialAsk ? { initialAsk } : {})}
           />
         ) : (

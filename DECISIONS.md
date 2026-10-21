@@ -7259,3 +7259,8 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **Problem.** The Task side peek and peek modal hid the chat top bar, so the worktree menu, the worktree hint chip and the session id the explorer `_side=claude` sidebar shows were missing.
 - **Decision.** `ClaudeChat`/`ChatMount` take `headerInPeek` (and `headerExtra`). With `peek` it draws `Topbar slim`: session label, running/limit word, worktree menu, hint chip and the host extra seat; the mark, title, file and identity block are left out because TaskPeek already shows them. `.c-anntools` stays hidden in peek. Root gets `chat-peek-head`. The compact cards wall is unchanged so tiles do not each call `/api/claude/worktrees`.
 - **PR chip.** `shell/TaskPrChip` (from `prRefOf`) is passed in as `headerExtra`, since `apps/claude` may not import the shell. Not added to the explorer sidebar for the same reason.
+
+## D1398: Folder-sidebar chat draws one header row (2026-10-21, task-peek-chat-header)
+
+- **Problem.** An open chat in the explorer's folder sidebar stacked the `.c-anntools` strip (`← Chats`, the menu) over the identity `Topbar`, which also printed the folder name the reader is already in.
+- **Decision.** `ClaudeChat`/`ChatMount` take `mergedHead`; `ListingPreviewPane` is the only caller. When it applies (in a chat, head shown, and the strip would hold nothing else: no annotate target, no left-mode picker, no narrow view toggle) the strip is not drawn and `Topbar` gets `lead` (`← Chats`), `tail` (the menu, right end) and `noProject`. Back and menu are one local element each, shared by both placements, so the nav lock and aria wording are unchanged. Otherwise the two-row layout stays.

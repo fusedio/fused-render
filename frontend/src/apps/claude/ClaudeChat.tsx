@@ -249,6 +249,10 @@ export interface ClaudeChatProps {
   headerInPeek?: boolean;
   /** Host-supplied node for the slim header's right-hand seat (a PR chip). */
   headerExtra?: ReactNode;
+  /** Fold `← Chats` and the menu into the identity row (no strip row, no
+   *  folder name) when the strip has no annotate seats. The explorer's folder
+   *  sidebar opts in. */
+  mergedHead?: boolean;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's
@@ -4909,6 +4913,90 @@ function ChatBody(props: ChatBodyProps) {
     file,
   );
 
+  // THE MERGED HEAD (`mergedHead`, the explorer's folder sidebar): when the
+  // strip would hold nothing but `← Chats` and the menu, those two ride the
+  // identity row as its lead and tail instead of a row of their own. Any seat
+  // that has something to say (a target, the picker, the view toggle) keeps
+  // the two-row layout.
+  const mergedHeadRow =
+    !!props.mergedHead &&
+    inChat &&
+    showHead &&
+    !compact &&
+    !peek &&
+    !(annTarget && !props.noAnnTools) &&
+    host !== "anntools" &&
+    !(narrowView.narrow && !props.noAnnTools);
+  // One definition each, placed by the strip or by the merged `Topbar`.
+  const backBtn = (
+        <button
+          type="button"
+          className="c-back"
+          // AND WHY, while it is locked (T:6896 writes exactly this
+          // sentence onto `#back.title` and clears it on unlock). It goes
+          // into the accessible NAME as well as the `title`, because
+          // `disabled` takes the button out of tab order: a hover-only
+          // answer is no answer for a control the keyboard cannot land
+          // on, and a dead way-out that will not say why is the one
+          // refusal face worth spelling twice.
+          aria-label={
+            ann.locked ? "Back to chats — " + NAV_LOCKED_REASON : "Back to chats"
+          }
+          title={ann.locked ? NAV_LOCKED_REASON : undefined}
+          // PR3: locked while a comment round or a walkthrough owns the
+          // page (`useAnnotations().locked`) — leaving mid-round would
+          // orphan the notes. Main moved Back from the top bar into this
+          // strip (P2-1), so the lock moved with it.
+          disabled={ann.locked}
+          aria-disabled={ann.locked ? "true" : "false"}
+          onClick={onBack}
+        >
+          ← Chats
+        </button>
+  );
+  const kebabEl = (
+      <Kebab
+        file={file}
+        sessionId={inChat ? (state.sessionId ?? "") : ""}
+        btnRef={kebabBtn}
+        running={running}
+        // Only a RUNNING turn's hold is lifted by its open card: a
+        // `stopping` turn with a card still painted is a process on its
+        // way out, and the menu waits for it like before.
+        asking={!!openCards && state.status === "running"}
+        landing={!inChat}
+        onErased={onErased}
+        // ARCHIVE LEAVES THROUGH THE SAME DOOR DELETE DOES (Akshil,
+        // 2026-10-14): the task is filed, so the page goes back to the
+        // landing rather than staying on a transcript the reader has just
+        // put away. `onBack`, not `onErased`: the transcript still EXISTS,
+        // so there is no comment mode to tear down ahead of the hop (the
+        // item is greyed while one holds the page anyway), and the
+        // composer's leave guard keeps its say — a Cancel on unsent text
+        // leaves the reader on the filed chat, menu reading "Unarchive",
+        // which is the honest state. The Tasks page's peek is the other
+        // surface and has its own rule (`advancePast` slides to the next
+        // row); this is the chat page's.
+        onArchived={onBack}
+        // PR3: Archive and Delete both carry the reader off this chat,
+        // and a comment round or a walkthrough is about the app beside it
+        // — the same nav lock that greys ← Chats and every recent row
+        // (`annNavLocked`, T:6888/18181/18779).
+        locked={ann.locked}
+        lockedReason={NAV_LOCKED_REASON}
+        // WAITING WORK OFFERS NEITHER A TERMINAL NOR A FILE (Akshil,
+        // 2026-09-12). The row says `queued`, or this conversation is a
+        // message that has never run — either way there is no session to
+        // resume and nothing finished to put away. Delete stays: calling
+        // the message off is exactly what a reader wants here.
+        queued={queuedChat}
+        fullScreen={
+          inSidePane
+            ? { on: sideMaximized, onToggle: () => setSideMaximized(!sideMaximized) }
+            : undefined
+        }
+      />
+  );
   return (
    <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
@@ -4975,7 +5063,7 @@ function ChatBody(props: ChatBodyProps) {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        {!compact && !peek ? inLead(
+        {!compact && !peek && !mergedHeadRow ? inLead(
           // ONE HEADER ROW, WHICH IS WHAT T HAS (T:3934-4010, P2-1). `#anntools`
           // is a real layout row above both views and it carries FIVE things:
           // `← Chats` at its left end, then the picker, the three preview seats,
@@ -4996,32 +5084,7 @@ function ChatBody(props: ChatBodyProps) {
           <div className="c-anntools" ref={stripRef}>
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
-            {inChat ? (
-              <button
-                type="button"
-                className="c-back"
-                // AND WHY, while it is locked (T:6896 writes exactly this
-                // sentence onto `#back.title` and clears it on unlock). It goes
-                // into the accessible NAME as well as the `title`, because
-                // `disabled` takes the button out of tab order: a hover-only
-                // answer is no answer for a control the keyboard cannot land
-                // on, and a dead way-out that will not say why is the one
-                // refusal face worth spelling twice.
-                aria-label={
-                  ann.locked ? "Back to chats — " + NAV_LOCKED_REASON : "Back to chats"
-                }
-                title={ann.locked ? NAV_LOCKED_REASON : undefined}
-                // PR3: locked while a comment round or a walkthrough owns the
-                // page (`useAnnotations().locked`) — leaving mid-round would
-                // orphan the notes. Main moved Back from the top bar into this
-                // strip (P2-1), so the lock moved with it.
-                disabled={ann.locked}
-                aria-disabled={ann.locked ? "true" : "false"}
-                onClick={onBack}
-              >
-                ← Chats
-              </button>
-            ) : null}
+            {inChat && !mergedHeadRow ? backBtn : null}
             {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
                 `margin-left: auto` (T:255-262, chat.css), which is not the same
                 thing: a spacer is a flex ITEM, so it kept its 12px gap even
@@ -5110,47 +5173,7 @@ function ChatBody(props: ChatBodyProps) {
                 the one strip they share), so it never appears out of nowhere on
                 entering a chat. On the landing it is the one item that can mean
                 anything without a session (T:13415). */}
-            <Kebab
-              file={file}
-              sessionId={inChat ? (state.sessionId ?? "") : ""}
-              btnRef={kebabBtn}
-              running={running}
-              // Only a RUNNING turn's hold is lifted by its open card: a
-              // `stopping` turn with a card still painted is a process on its
-              // way out, and the menu waits for it like before.
-              asking={!!openCards && state.status === "running"}
-              landing={!inChat}
-              onErased={onErased}
-              // ARCHIVE LEAVES THROUGH THE SAME DOOR DELETE DOES (Akshil,
-              // 2026-10-14): the task is filed, so the page goes back to the
-              // landing rather than staying on a transcript the reader has just
-              // put away. `onBack`, not `onErased`: the transcript still EXISTS,
-              // so there is no comment mode to tear down ahead of the hop (the
-              // item is greyed while one holds the page anyway), and the
-              // composer's leave guard keeps its say — a Cancel on unsent text
-              // leaves the reader on the filed chat, menu reading "Unarchive",
-              // which is the honest state. The Tasks page's peek is the other
-              // surface and has its own rule (`advancePast` slides to the next
-              // row); this is the chat page's.
-              onArchived={onBack}
-              // PR3: Archive and Delete both carry the reader off this chat,
-              // and a comment round or a walkthrough is about the app beside it
-              // — the same nav lock that greys ← Chats and every recent row
-              // (`annNavLocked`, T:6888/18181/18779).
-              locked={ann.locked}
-              lockedReason={NAV_LOCKED_REASON}
-              // WAITING WORK OFFERS NEITHER A TERMINAL NOR A FILE (Akshil,
-              // 2026-09-12). The row says `queued`, or this conversation is a
-              // message that has never run — either way there is no session to
-              // resume and nothing finished to put away. Delete stays: calling
-              // the message off is exactly what a reader wants here.
-              queued={queuedChat}
-              fullScreen={
-                inSidePane
-                  ? { on: sideMaximized, onToggle: () => setSideMaximized(!sideMaximized) }
-                  : undefined
-              }
-            />
+            {kebabEl}
           </div>
         ) : null}
         {inChat ? (
@@ -5161,6 +5184,7 @@ function ChatBody(props: ChatBodyProps) {
             {showHead ? (
               <Topbar
                 slim={peek}
+                {...(mergedHeadRow ? { lead: backBtn, tail: kebabEl, noProject: true } : {})}
                 {...(props.headerExtra ? { extra: props.headerExtra } : {})}
                 worktree={worktreeMenu}
                 worktreeHint={

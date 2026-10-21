@@ -158,6 +158,8 @@ export interface ChatMountProps {
   headerInPeek?: boolean;
   /** With `headerInPeek`: host node for the slim header's right-hand seat. */
   headerExtra?: ReactNode;
+  /** Fold `← Chats` and the menu into the identity row (folder sidebar). */
+  mergedHead?: boolean;
   /** `session_id` on the frame URL (cards, peek). */
   sessionId?: string;
   /** `run` handed over by a host (the canvas fix run). */
@@ -277,6 +279,7 @@ export function ChatMount(props: ChatMountProps) {
         compact={!!props.compact}
         peek={!!props.peek}
         {...(props.headerInPeek ? { headerInPeek: true } : {})}
+        {...(props.mergedHead ? { mergedHead: true } : {})}
         {...(props.headerExtra ? { headerExtra: props.headerExtra } : {})}
         params={props.paramsSource === "url" ? "url" : memory}
         // WHOSE `?model=`/`?effort=` the composer is looking at. These two props

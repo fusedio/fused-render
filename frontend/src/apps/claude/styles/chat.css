@@ -696,3 +696,34 @@
   color: var(--c-fg);
   border-color: var(--c-border-strong);
 }
+
+/* THE MERGED HEAD (`mergedHead`, the explorer's folder sidebar): `Back` leads
+   the identity row and the menu closes it, so the chat draws one header line.
+   The title gives way first; the two controls never shrink. */
+.chat-root .c-topbar.c-topbar-merged {
+  min-height: 0;
+  padding: 6px 12px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .c-back {
+  padding: 2px 8px;
+  line-height: 1.5;
+}
+.chat-root .c-topbar-merged .task-side-peek-who {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.chat-root .c-topbar-merged .task-side-peek-agent,
+.chat-root .c-topbar-merged .chat-worktree-menu {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .c-tb-tail {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}

@@ -140,6 +140,12 @@ export interface TopbarProps {
   slim?: boolean;
   /** The host's node for the slim line's last seat (the Task page's PR chip). */
   extra?: ReactNode;
+  /** First child of the row, before the identity (the merged head's `← Chats`). */
+  lead?: ReactNode;
+  /** Last child, pushed to the right end (the merged head's menu). */
+  tail?: ReactNode;
+  /** Leave the project name out: the host is already inside that folder. */
+  noProject?: boolean;
 }
 
 export function Topbar({
@@ -156,6 +162,9 @@ export function Topbar({
   worktreeHint,
   slim,
   extra,
+  lead,
+  tail,
+  noProject,
 }: TopbarProps) {
   // THE AGENT'S NAME AND MARK (D18): the conversation's own, off the context.
   // Above every early return: a header that moves from the fallback to the
@@ -222,9 +231,10 @@ export function Topbar({
       // tooltip goes on the line itself rather than on a span of its own, so the
       // header spends no width on a string nobody reads on purpose (T:12700).
       <div
-        className={"c-topbar" + (line ? " is-queued" : "")}
+        className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "")}
         title={sessionId || undefined}
       >
+        {lead}
         {/* THE RING IS INSIDE THIS BLOCK, at the left end, and the row's own
             `status: "queued"` is what draws it dashed (taskColumn → StatusIcon).
             Nothing queued-specific is passed: the peek block already says what
@@ -233,7 +243,7 @@ export function Topbar({
         {/* …AND THE PLACE IN THE LINE TRAILS THE TITLE, exactly where a Tasks
             row puts it, rather than at the far end of the header. */}
         {line ? <QueuedCaption line={line} /> : null}
-        <TaskPeekProject task={who} {...(home ? { home } : {})} />
+        {noProject ? null : <TaskPeekProject task={who} {...(home ? { home } : {})} />}
         <TaskPeekAgent task={who} />
         {/* THE PAUSED WORD STILL LANDS HERE (`status`, platform/lib/usage-limit):
             the ring says running or not, and "resumes 4:00 AM" is the one fact
@@ -249,6 +259,7 @@ export function Topbar({
             drives the composer's stop square; the header defers to the ring. */}
         {worktree}
         {worktreeHint}
+        {tail ? <span className="c-tb-tail">{tail}</span> : null}
       </div>
     );
   }
@@ -269,13 +280,15 @@ export function Topbar({
   // placeholder over a KNOWN state would hide the only answer the header has.
   if (pending && !task && !line) {
     return (
-      <div className="c-topbar" title={sessionId || undefined}>
+      <div className={"c-topbar" + (lead || tail ? " c-topbar-merged" : "")} title={sessionId || undefined}>
+        {lead}
         <span className="c-tb-skel" aria-hidden="true">
           <span className="c-skel-dot" />
           <span className="c-skel-bar is-title" />
         </span>
         {worktree}
         {worktreeHint}
+        {tail ? <span className="c-tb-tail">{tail}</span> : null}
       </div>
     );
   }
@@ -287,7 +300,8 @@ export function Topbar({
     shortTaskId(taskId || knownTaskId(sessionId) || "") ||
     (sessionId ? sessionId.slice(0, 8) : "");
   return (
-    <div className={"c-topbar" + (line ? " is-queued" : "")}>
+    <div className={"c-topbar" + (line ? " is-queued" : "") + (lead || tail ? " c-topbar-merged" : "")}>
+      {lead}
       {/* THE RING TAKES THE MARK'S SEAT rather than sitting beside it: the line
           keeps ONE glyph at its left end, and on a waiting chat the fact worth a
           glyph is that it is waiting — the ✻ names the tool, which the page says
@@ -329,6 +343,7 @@ export function Topbar({
       ) : null}
       {worktree}
       {worktreeHint}
+      {tail ? <span className="c-tb-tail">{tail}</span> : null}
     </div>
   );
 }
