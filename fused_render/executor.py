@@ -400,7 +400,7 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
     request = json.dumps({"path": path, "params": params or {}})
     # A parked `_child.py` the warm-run pool started ahead of time (SPEC PY-20),
     # or None -> the unchanged cold spawn below.
-    spare = warm_run.claim_builtin(sys.executable) if warm_run.enabled() else None
+    spare = warm_run.claim_builtin(sys.executable)
     try:
         proc = _spawn_child(
             [sys.executable, CHILD],

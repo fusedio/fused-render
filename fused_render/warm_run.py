@@ -160,6 +160,18 @@ except OSError:
 _b = subprocess.Popen([sys.executable, "-c", B_BOOT], stdin=subprocess.PIPE,
                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 _real_run = subprocess.run
+# B' booted with this process's environment; the interpreter has already read
+# every PYTHON* setting (PYTHONPATH, PYTHONHOME, PYTHONSAFEPATH, PYTHONIOENCODING,
+# PYTHONDONTWRITEBYTECODE, PYTHONUTF8, PYTHONNOUSERSITE, ...) from it. A runner env
+# that differs in any of them cannot be honoured by the parked B', so that call
+# takes the cold runner.
+_B_STARTUP = {k: v for k, v in os.environ.items() if k.startswith("PYTHON")}
+
+
+def _same_startup(env):
+    return {k: v for k, v in env.items() if k.startswith("PYTHON")} == _B_STARTUP
+
+
 _ALLOWED = {"capture_output", "text", "timeout", "cwd", "env"}
 
 
@@ -169,7 +181,8 @@ def _run(args, **kw):
     if (b is not None and isinstance(args, (list, tuple)) and len(args) >= 2
             and args[0] == sys.executable and os.path.basename(str(args[1])) == "_runner.py"
             and set(kw) <= _ALLOWED and kw.get("capture_output") and kw.get("text")
-            and kw.get("cwd") and kw.get("env") is not None and b.poll() is None):
+            and kw.get("cwd") and kw.get("env") is not None and _same_startup(kw["env"])
+            and b.poll() is None):
         _b = None
         a = list(args)
         msg = json.dumps({"argv": a[1:], "cwd": kw["cwd"], "env": dict(kw["env"])}) + "\n"

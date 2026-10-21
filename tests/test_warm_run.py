@@ -414,3 +414,34 @@ def test_discard_all_hooks(tmp_path):
     prime_builtin(tmp_path)
     engine.invalidate()
     assert wait_until(lambda: not warm_run.spare_pids(), 3)
+
+
+# ---- interpreter start-up settings must match the cold path ----------------------
+
+@requires_fused
+@pytest.mark.parametrize("var,value", [("PYTHONPATH", "/wr-extra-path"), ("PYTHONSAFEPATH", "1")])
+def test_fused_startup_env_difference_falls_back_to_cold(tmp_path, monkeypatch, var, value):
+    """The handler hands the runner an env that differs from the spare's in a
+    setting Python reads at start-up: the warm B' (already booted) cannot honour
+    it, so the call must take the cold runner and see the same sys.path."""
+    from fused.agent_core.backends.local import python_compute
+    monkeypatch.setattr(
+        python_compute, "_RUN_SCRIPT",
+        f"import os\nos.environ[{var!r}] = {value!r}\n" + python_compute._RUN_SCRIPT)
+    path = script(tmp_path, "import sys\ndef main():\n    return [p for p in sys.path if 'wr-extra' in p] + [len(sys.path)]\n", "sp.py")
+    prime_fused(tmp_path)
+    warm = run_f(path)
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "0")
+    cold = run_f(path)
+    assert warm["ok"] and cold["ok"], (warm, cold)
+    assert warm["result"] == cold["result"]
+
+
+def test_builtin_startup_env_change_matches_cold(tmp_path, monkeypatch):
+    path = script(tmp_path, "import sys\ndef main():\n    return [p for p in sys.path if 'wr-extra' in p]\n", "sp.py")
+    prime_builtin(tmp_path)
+    monkeypatch.setenv("PYTHONPATH", "/wr-extra-path")
+    warm = run_b(path)
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "0")
+    cold = run_b(path)
+    assert warm["ok"] and warm["result"] == cold["result"] == ["/wr-extra-path"]
