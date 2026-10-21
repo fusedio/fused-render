@@ -155,6 +155,11 @@ import {
   taskUnread,
   taskUnreadLabel,
   taskWhen,
+  taskWhenFor,
+  createdAt,
+  readTaskSort,
+  writeTaskSort,
+  TASKS_SORT_KEY,
   threadView,
   tildePath,
   toggleExpanded,
@@ -11844,5 +11849,67 @@ describe("a live background job under a finished turn", () => {
     const t = task({ status: "done", background_jobs: held(1) });
     expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["in_progress"] })).toBe(true);
     expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["done"] })).toBe(false);
+  });
+});
+
+describe("Sort by: Created", () => {
+  const T = Date.parse("2026-10-16T15:00:00");
+  const sec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const row = (over: Partial<Task>): Task => task({ messages: [], ...over }, 0);
+  const rows: Task[] = [
+    row({ key: "old", started: sec("2026-10-01T09:00:00"), last_active: sec("2026-10-16T14:50:00") }),
+    row({ key: "new", started: sec("2026-10-15T09:00:00"), last_active: sec("2026-10-02T09:00:00") }),
+    row({ key: "noStart", started: 0, last_active: sec("2026-10-10T09:00:00") }),
+  ];
+  it("createdAt falls back to last_active, then 0", () => {
+    expect(createdAt(rows[0]!)).toBe(sec("2026-10-01T09:00:00"));
+    expect(createdAt(rows[2]!)).toBe(sec("2026-10-10T09:00:00"));
+    expect(createdAt(row({ started: undefined, last_active: 0 }))).toBe(0);
+  });
+  it("sortForList orders by creation, newest first, ties keep input order", () => {
+    expect(sortForList(rows, T, "created").map((t) => t.key)).toEqual(["new", "noStart", "old"]);
+    const tie = [row({ key: "a", started: 100 }), row({ key: "b", started: 100 }), row({ key: "c", started: 100 })];
+    expect(sortForList(tie, T, "created").map((t) => t.key)).toEqual(["a", "b", "c"]);
+  });
+  it("the default argument is today's order", () => {
+    expect(sortForList(rows, T).map((t) => t.key)).toEqual(sortForList(rows, T, "changed").map((t) => t.key));
+  });
+  it("time buckets use the creation time", () => {
+    const g = groupRows(sortForList(rows, T, "created"), "time", "", T, "created");
+    expect(g.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([
+      ["Yesterday", ["new"]],
+      ["This week", ["noStart"]],
+      ["Earlier", ["old"]],
+    ]);
+    const none = groupRows([row({ key: "z", started: 0, last_active: 0 })], "time", "", T, "created");
+    expect(none.map((x) => x.label)).toEqual(["No date"]);
+  });
+  it("project sections order by newest created", () => {
+    const rs = [
+      row({ key: "a", project: "/p/a", started: 100, last_active: 9000 }),
+      row({ key: "b", project: "/p/b", started: 500, last_active: 200 }),
+    ];
+    expect(groupRows(rs, "project", "", T, "created").map((g) => g.label)).toEqual(["b", "a"]);
+  });
+  it("the time cell prints the creation stamp", () => {
+    const w = taskWhenFor(rows[0]!, T, "created");
+    expect(w.kind).toBe("created");
+    expect(w.title.startsWith("Created ")).toBe(true);
+    expect(taskWhenFor(rows[0]!, T).kind).toBe(taskWhen(rows[0]!, T).kind);
+  });
+  it("readTaskSort: garbage and a blocked store give 'changed'", () => {
+    const store = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    };
+    expect(readTaskSort()).toBe("changed");
+    store.set(TASKS_SORT_KEY, "banana");
+    expect(readTaskSort()).toBe("changed");
+    writeTaskSort("created");
+    expect(readTaskSort()).toBe("created");
+    (globalThis as any).localStorage = { getItem: () => { throw new Error("blocked"); } };
+    expect(readTaskSort()).toBe("changed");
+    delete (globalThis as any).localStorage;
   });
 });

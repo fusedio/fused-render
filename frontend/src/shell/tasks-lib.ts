@@ -3811,7 +3811,39 @@ export function laneTime(task: Task, lane: BoardColumn): number | null {
 
 // ---- the time a task ROW prints ----------------------------------------------
 
-export type TaskWhenKind = "next" | "last" | "active" | "none" | "draft";
+export type TaskWhenKind = "next" | "last" | "active" | "none" | "draft" | "created";
+
+/** The Tasks page's "Sort by" setting: today's lane order by last change, or
+ *  one flat list by creation time, newest first. */
+export type TaskSortBy = "changed" | "created";
+
+/** Where the setting is remembered (localStorage: it is a preference). */
+export const TASKS_SORT_KEY = "fused-render:tasks-sort";
+
+export function readTaskSort(): TaskSortBy {
+  try {
+    return localStorage.getItem(TASKS_SORT_KEY) === "created" ? "created" : "changed";
+  } catch {
+    return "changed";
+  }
+}
+
+export function writeTaskSort(v: TaskSortBy): void {
+  try {
+    localStorage.setItem(TASKS_SORT_KEY, v);
+  } catch {
+    // A blocked store forgets the choice; the choice still applies this sitting.
+  }
+}
+
+/** When a task was created, epoch seconds: `started`, falling back to
+ *  `last_active` for rows that carry none (drafts), 0 when neither. */
+export function createdAt(task: Task): number {
+  const s = task.started;
+  if (typeof s === "number" && s > 0) return s;
+  const a = task.last_active;
+  return typeof a === "number" && a > 0 ? a : 0;
+}
 
 /** What a row prints when the task has no timestamp of any kind. An em dash and
  * not a blank: the time is the last cell of every row, so an empty one reads as a
@@ -3967,6 +3999,7 @@ export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
     // map is exhaustive by type and an omission here would be a compile error
     // rather than a missing word.
     draft: "",
+    created: "",
   };
   for (const [kind, at] of order) {
     if (at === null) continue;
@@ -3982,6 +4015,20 @@ export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
     kind: "none",
     text: NO_TIME,
     title: "No recorded activity yet",
+  };
+}
+
+/** The time cell under "Sort by: Created": the creation stamp. "changed"
+ *  is `taskWhen` itself. */
+export function taskWhenFor(task: Task, now: number = Date.now(), sortBy: TaskSortBy = "changed"): TaskWhen {
+  if (sortBy !== "created") return taskWhen(task, now);
+  const at = createdAt(task);
+  if (!at) return taskWhen(task, now);
+  return {
+    at,
+    kind: "created",
+    text: relativeWhen(Math.min(at, now / 1000), now),
+    title: `Created ${messageStamp(at)}`,
   };
 }
 
@@ -4420,7 +4467,14 @@ export const LIST_ORDER: BoardColumn[] = BOARD_COLUMNS.map((c) => c.key);
  * A new array; the input is never mutated (it is the polled list, which React is
  * still holding).
  */
-export function sortForList(tasks: Task[], now: number = Date.now()): Task[] {
+export function sortForList(tasks: Task[], now: number = Date.now(), sortBy: TaskSortBy = "changed"): Task[] {
+  if (sortBy === "created") {
+    // One flat list, newest created first; ties keep the incoming order.
+    return tasks
+      .map((task, index) => ({ task, index, at: createdAt(task) }))
+      .sort((a, b) => b.at - a.at || a.index - b.index)
+      .map((r) => r.task);
+  }
   const byLane = groupByColumn(tasks, now);
   return BOARD_LANES.flatMap((col) => byLane.get(col.key) ?? []);
 }
@@ -6139,10 +6193,10 @@ export function prOfTask(task: Task): number | null {
 /** Which day-bucket a moment falls in, newest first in the order below. */
 const TIME_BUCKETS = ["Later", "Last hour", "Today", "Yesterday", "This week", "Earlier", "No date"] as const;
 
-function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
+function timeBucketOf(task: Task, now: number, sortBy: TaskSortBy = "changed"): (typeof TIME_BUCKETS)[number] {
   // THE ROW'S OWN STAMP (taskWhen) — the moment its time cell prints — so a row
   // reading "2d ago" can never sit under Today.
-  const w = taskWhen(task, now);
+  const w = taskWhenFor(task, now, sortBy);
   if (w.kind === "next") return "Later";
   if (w.kind === "none" || !w.at) return "No date";
   const when = new Date(w.at * 1000);
@@ -6192,7 +6246,15 @@ export const RECENT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
  * last; repositories and their pull requests likewise newest first, with the
  * PR-less rows last.
  */
-export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number = Date.now()): TaskGroup[] {
+export function groupRows(
+  rows: Task[],
+  by: TaskGroupBy,
+  home = "",
+  now: number = Date.now(),
+  sortBy: TaskSortBy = "changed",
+): TaskGroup[] {
+  // Under "created" a section's recency is its newest creation time.
+  const activity = (t: Task) => (sortBy === "created" ? createdAt(t) : activityAt(t, now));
   const groups = new Map<string, TaskGroup>();
   const put = (key: string, label: string, task: Task) => {
     let g = groups.get(key);
@@ -6201,11 +6263,11 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
       groups.set(key, g);
     }
     g.rows.push(task);
-    g.recentAt = Math.max(g.recentAt, activityAt(task, now));
+    g.recentAt = Math.max(g.recentAt, activity(task));
   };
   if (by === "time") {
     for (const task of rows) {
-      const b = timeBucketOf(task, now);
+      const b = timeBucketOf(task, now, sortBy);
       put(b, b, task);
     }
     return TIME_BUCKETS.map((b) => groups.get(b)).filter((g): g is TaskGroup => !!g);
@@ -6261,7 +6323,7 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
     if (list) list.push(task);
     else prs.set(ref.number, [task]);
   }
-  const recentOf = (list: Task[]) => list.reduce((m, t) => Math.max(m, activityAt(t, now)), 0);
+  const recentOf = (list: Task[]) => list.reduce((m, t) => Math.max(m, activity(t)), 0);
   const out: TaskGroup[] = [...repos.keys()]
     .map((repo) => {
       const prs = [...repos.get(repo)!.entries()]
