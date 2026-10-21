@@ -7673,3 +7673,30 @@ Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex
 - **Why v1.1-zh.** One repo covers English and Chinese: 103 voices (3 English, 55 `zf_*`, 45 `zm_*`), the count fixed by `voices.bin` (103 x 510 x 256 float32 = 53,790,720 bytes). v1.0's 53-voice table (`af_heart`, ...) sits higher on the same sherpa docs page and is NOT this model's; the id to name table was taken from the v1.1 page.
 - **Why no `instruct`.** Kokoro has no style prompt. Traits carry `instructable: False` (curated catalog rows too, for a model not yet downloaded), `speech_options` refuses `instruct` for them, and the speech stage hides the Delivery field. Qwen3 traits are unchanged.
 - **Shared code.** The chunker and WAV writer moved to `runners/speech_common.py`, imported by both workers; `mlx_audio_tts` behaves as before.
+## D1411: Catalog refresh, October 2026 (2026-10-22, catalog-refresh-2026-10)
+
+Refreshed the curated suggestions for `mlx-text`, `llamacpp-text` and `mflux-image`. Every new row was downloaded and loaded by the runner's own library before it was listed; nothing was uploaded to the mirror (no S3 credentials here), so the PR body carries the publish commands.
+
+**Rows**
+- `mlx-text`: `prism-ml/Ternary-Bonsai-27B-mlx-2bit` replaced by `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` (8.6GB); `mlx-community/Qwen3.6-27B-OptiQ-4bit` replaced by `mlx-community/Qwen3.8-27B-OptiQ-4bit` (20.7GB); added `LiquidAI/LFM2.5-24B-A2B-MLX-4bit` (13.6GB, LFM Open License v1.0) and `mlx-community/gemma-4-26B-A4B-it-4bit` (15.4GB); removed `mlx-community/Qwen3.5-9B-OptiQ-4bit`. Qwen3-Coder-30B-A3B kept (pinned by tests as the coding row).
+- `llamacpp-text` (SUGGESTIONS and `GGUF_RECIPES`): `LFM2.5-8B-A1B-Q4_K_M.gguf` replaced by `LFM2.5-24B-A2B-Q4_K_M.gguf` (14.5GB); added `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (17.0GB). Qwen3-Coder kept.
+- `mflux-image`: added `mflux-community/z-image-turbo-mflux-q4` (5.9GB, Apache-2.0, 8 steps) and `OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit` (10.6GB, Qwen research license, 8 steps), with `MFLUX_VARIANTS` rows. `recommended` stays on FLUX.2 klein 4B.
+
+**Load gates** (2026-10-22, Apple Silicon; all repos ungated)
+- mlx-vlm 0.7.9 / mlx 0.32.4, through the mlx_text worker's own `load` (with `load_config` and the architecture probe) and `generate` ("Say hello.", 20 tokens): Bonsai-2 27B loaded (`model_type` prism_hadamard_qwen35, answered "Hello! How can I help you today?"); Qwen3.8 27B OptiQ loaded (qwen3_5, same answer); gemma-4 26B-A4B loaded (gemma4, same answer); LFM2.5 24B-A2B loaded (lfm2_moe, answered, with reasoning-style text). So the Bonsai swap went ahead and the OptiQ fallback for LFM was not needed.
+- llama-cpp-python 0.3.29 (the pinned build), `Llama(n_ctx=2048, n_gpu_layers=-1)` + `create_chat_completion(max_tokens=20)`: LFM2.5-24B-A2B-Q4_K_M loaded (`lfm2moe`, answered); gemma-4-26B-A4B-it-UD-Q4_K_M loaded (`gemma4`, answered "Hello! How can I help you today?"). No llama-cpp venv existed under ~/.fused-render/venvs, so the gate used a scratch venv in /tmp (llama-cpp-python==0.3.29 from the maintainer's CPU index) rather than a runner venv.
+- mflux 0.23.0: `ZImage` (`ModelConfig.z_image_turbo`) over the snapshot, 8 steps at 256x256, rendered a clean red apple (std 85.5); `QwenImage21` (`qwen_image_21_turbo`) did the same (std 89.5). The real mflux_image worker (`load` then `generate`, default request) reproduced both images exactly (same std). The worker's stdin/HTTP protocol was not driven; it only runs under the supervisor.
+
+**Z-Image VAE verification: the brief's "write `AutoencoderKL`" was NOT followed.** The Z-Image `vae/0.safetensors` has the same 260 tensors as the FLUX.1 Fill repo's (names differ only by `conv` vs `conv2d` wrapper naming) and is bit-identical (max|diff| 0.0). But the Fill row deliberately carries no `vae` key, because `preview.PROJECTIONS["AutoencoderKL"]` is SD1.5's 4-channel fit and would project a 16-channel latent into garbage. So Z-Image gets no `vae` key and no live preview, same as Fill. Qwen-Image has no `vae` key either (`AutoencoderKLQwenImage` has no PROJECTIONS row).
+
+**Qwen-Image 2.1 Turbo needs pinned guidance.** mflux raises `ValueError` for any guidance other than 1 on the Turbo checkpoint, and the mflux worker defaults to 4.0. The `MFLUX_VARIANTS` row now carries `"guidance": 1.0` and `generate()` lets a recipe's `guidance` override both the default and an explicit request value (new test in test_ai_mflux_worker.py). Z-Image zeroes guidance itself when `supports_guidance` is False, so it needs no pin. The Qwen module path is the full `mflux.models.qwen21.variants.txt2img.qwen_image_21` (the package `__init__`s are empty).
+
+**Deviations**
+- Text-list ceiling raised from 6 to 7 (`test_every_suggestion_list_offers_between_two_and_five_models`): the brief's adds and removes leave `mlx-text` and `llamacpp-text` at seven rows. Reverting means cutting a row per list and setting the test cap back to 6.
+- The Bonsai row keeps `quantization: "Ternary 2-bit"` (not the brief's "MLX 2-bit") so `fit._weight_bytes` still treats it as an unrecognised quant and uses `size_gb`; `tests/test_ai_fit.py` pins that.
+- llamacpp worker tests that loaded `LFM2.5-8B-A1B-Q4_K_M.gguf` now use `LFM2.5-24B-A2B-Q4_K_M.gguf` (the MoE successor, still lfm2moe) rather than the 1.2B row, since they exercise the MoE expert-offload rung.
+- The Bonsai-2 size is the Hub byte sum (8.61GB); the old row's 6.1 was a measured on-disk figure and the new one has not been re-measured.
+
+**Removed ids whose mirror manifests can be cleaned up**: `prism-ml/Ternary-Bonsai-27B-mlx-2bit`, `mlx-community/Qwen3.6-27B-OptiQ-4bit`, `mlx-community/Qwen3.5-9B-OptiQ-4bit`, and the GGUF `LiquidAI/LFM2.5-8B-A1B-GGUF` file `LFM2.5-8B-A1B-Q4_K_M.gguf`.
+
+**Not done**: Kokoro-82M on mlx-audio-tts needs the worker's Qwen3-TTS-only `speech_traits` gate loosened and is a separate PR.
