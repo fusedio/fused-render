@@ -400,6 +400,52 @@ describe("the door-time check (ensureAppFor)", () => {
     expect(calls.length).toBe(1);
   });
 
+  it("an older ask landing after a newer one never writes its stale snapshot", async () => {
+    // A fast task swap: the ask for A goes out, then the ask for B; the server
+    // answered A with a table of [A] and B with [A, B]; A's answer lands LAST.
+    const rowA = { ...row, path: "/w/a", name: "a", entry: "/w/a/index.html" };
+    const rowB = { ...row, path: "/w/b", name: "b", entry: "/w/b/index.html" };
+    const pending: Array<(v: unknown) => void> = [];
+    const reads: string[] = [];
+    (globalThis as { fetch: unknown }).fetch = (url: string, init?: { body?: string }) => {
+      if (url.endsWith("/ensure")) {
+        const path = JSON.parse(init?.body ?? "{}").path as string;
+        const body = path === "/w/a"
+          ? { ok: true, app: "/w/a", added: true, apps: [rowA] }
+          : { ok: true, app: "/w/b", added: true, apps: [rowA, rowB] };
+        return new Promise((resolve) => {
+          pending.push(() =>
+            resolve({
+              ok: true,
+              status: 200,
+              headers: { get: () => "application/json" },
+              json: async () => body,
+              text: async () => JSON.stringify(body),
+            } as unknown as Response),
+          );
+        });
+      }
+      reads.push(url);
+      const body = { apps: [rowA, rowB] };
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response);
+    };
+    const askA = ensureAppFor("/w/a");
+    const askB = ensureAppFor("/w/b");
+    pending[1]!(undefined); // B's answer first — the newest ask, adopted as is
+    await askB;
+    expect(appForProject("/w/b", knownApps())?.name).toBe("b");
+    pending[0]!(undefined); // then A's stale [A] — not written; a re-read instead
+    await askA;
+    expect(reads.length).toBe(1);
+    expect(appForProject("/w/b", knownApps())?.name).toBe("b");
+  });
+
   it("a failed ask is a 'no' and the next open may retry", async () => {
     (globalThis as { fetch: unknown }).fetch = () => Promise.reject(new Error("offline"));
     expect(await ensureAppFor("/w/built")).toBe(false);

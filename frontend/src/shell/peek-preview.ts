@@ -335,6 +335,12 @@ export function appForProject(
 // reload. One ask per open is the cost — one folder check on the server —
 // and two mounts asking at once share the one request (`asking`).
 const asking = new Map<string, Promise<boolean>>();
+// The NEWEST ask wins the cache (CodeRabbit on #1830): two asks for different
+// projects can be in flight at once (a fast task swap), each answered with
+// the table as the server had it THEN, and the older one may land last. An
+// answer that is not the newest never writes its snapshot — it drops the
+// cache and re-reads, which is always current.
+let ensureGen = 0;
 
 /** Ask the desk to adopt `project`'s app if it is one and missing. Resolves to
  *  true when the table changed (and has been replaced + announced). */
@@ -342,19 +348,21 @@ export function ensureAppFor(project: string): Promise<boolean> {
   if (!project) return Promise.resolve(false);
   const pending = asking.get(project);
   if (pending) return pending;
+  const gen = ++ensureGen;
   const ask = ensureCurrentApp(project)
     .then(({ app, added, apps }) => {
       if (!app) return false;
       // Announce FIRST: the module-level listener above drops the cache on
       // the event, and the fresh table must survive it.
       announceCurrentAppsChanged();
-      if (added && apps) {
+      if (added && apps && gen === ensureGen) {
         appsCache = currentApps(apps, []);
         return true;
       }
       // ON THE DESK ALREADY, yet this table had no app for the project: the
-      // cache is stale (another tab added it, or a read from before). Re-read
-      // rather than trust it (CodeRabbit on #1830).
+      // cache is stale (another tab added it, or a read from before). Or a
+      // newer ask went out after this one (`ensureGen`). Either way the
+      // snapshot in hand is not to be trusted: re-read.
       appsCache = null;
       return ensureApps().then(() => true);
     })
@@ -403,6 +411,7 @@ export function resetPeekPreviewForTests(): void {
   appsCache = null;
   appsInFlight = null;
   asking.clear();
+  ensureGen = 0;
   draggedHeight = null;
   listeners.clear();
 }
