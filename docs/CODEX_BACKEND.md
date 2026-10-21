@@ -87,9 +87,16 @@ agent.py:      _HOST_FILES["codex"] = codex_host.py
     enum; answering `approved` to the v2 request reads as a decline —
     verified the hard way.)
   * `item/permissions/requestApproval`, `item/tool/requestUserInput`,
-    `mcpServer/elicitation/request`, `item/tool/call`, `account/chatgptAuthTokens/refresh`
-    and anything else → JSON-RPC error `-32601` (assumed harmless: Codex
-    treats a refused request as declined; `ask_user` stays False).
+    `mcpServer/elicitation/request`, `item/tool/call`, `account/chatgptAuthTokens/refresh`,
+    the v1 `applyPatchApproval`/`execCommandApproval` and anything else →
+    JSON-RPC error `-32601` (assumed harmless: Codex treats a refused
+    request as declined; `ask_user` stays False).
+  * The verified command request offered `availableDecisions: ["accept",
+    {acceptWithExecpolicyAmendment}, "cancel"]` — neither `decline` nor
+    `acceptForSession`. The host sends the contract's words regardless (the
+    schema allows them, and a deny must never become the `cancel` that
+    kills the turn) and logs to stderr when the answer was not on the menu.
+    Whether Codex honours an unoffered `decline` is untested live.
   * "Allow, and accept edits" on an edit card → `acceptForSession` on that
     card (Codex stops asking for that file), never a session-wide switch;
     on a command card → plain `accept`. "Allow, and stop asking" (mode
@@ -123,26 +130,34 @@ agent.py:      _HOST_FILES["codex"] = codex_host.py
   (verified: the turn ends with `turn/completed status: "interrupted"`).
 - **D7** Model and effort are **per turn**: `turn/start {model, effort}`.
   `caps.live_model_switch = True`; `_send` never answers `{respawn: True}`
-  for Codex; a `set_model` control request is stored by the host and used on
-  the next `turn/start` (answered `success`). `_send` keeps writing the new
-  model/effort into `host.json` as it does today.
+  for Codex (not for a model, an effort, a mode or a new attached dir); a
+  model or effort change becomes ONE `set_model` control request carrying
+  both values (the unchanged half filled from `host.json`), which the host
+  stores and uses on the next `turn/start` (answered `success`), and
+  `_send` writes both into `host.json`. (Before this, `_send` never wrote
+  effort: it respawned on an effort change.)
 - **D8** System prompt via `thread/start {developerInstructions: <_appended_prompt(file, pane, "codex")>}`
   (and on `thread/resume`, same field). No plugin dir, no agent file. Pane
   tools (`app_state`, `terminal_*`) via Codex's MCP config as `-c` argv
   overrides on the spawn: `-c mcp_servers.fused_approvals.command="<python>"`,
   `-c mcp_servers.fused_approvals.args=[...]`, `-c mcp_servers.fused_approvals.env={...}`
-  (TOML inline values, built with `json.dumps` — valid TOML for strings,
-  arrays of strings and string-valued tables), ONLY when a pane or terminal
-  origin exists, same condition as `_copilot_argv`'s `--additional-mcp-config`.
-  The tool then reaches the model as MCP server `fused_approvals`, tool
-  `app_state`; the host writes it as `mcp__fused_approvals__app_state`
-  (assumed: the `-c mcp_servers.*` override shape is Codex's documented
-  config, not exercised live here).
+  (TOML inline values: `json.dumps` IS TOML for a string and an array of
+  strings, but NOT for a table — TOML spells `{"k" = "v"}` and Codex 0.163.0
+  rejects the JSON `{"k": "v"}` with "expected a map"; `agent._toml_inline`
+  spells tables key by key, verified with `codex -c … mcp get fused_approvals
+  --json` parsing all three overrides into an enabled stdio server), ONLY
+  when a pane or terminal origin exists, same condition as `_copilot_argv`'s
+  `--additional-mcp-config`. The tool then reaches the model as MCP server
+  `fused_approvals`, tool `app_state`; the host writes it as
+  `mcp__fused_approvals__app_state` (assumed: that the configured server
+  reaches a thread; the config shape is verified).
 - **D9** `extra_read_dirs`/shots → nothing: Codex's `read-only` and
   `workspace-write` sandboxes read the whole filesystem. fused CLI →
   `_fused_cli_dir()` prepended to the spawn's PATH (the same prefix Claude's
-  spawn gets); no allow-list flag exists and none is needed. No terminal
-  mirror.
+  spawn gets); no allow-list flag exists and none is needed, so the prompt
+  note's "a bare `fused` command is pre-approved" clause is dropped for
+  Codex only (`_FUSED_PREAPPROVED`) — under Ask mode the command raises a
+  card like any other. No terminal mirror.
 - **D10** `codex_health.py` + `codex_login.py` + `codex_install.py` +
   `routers/codex_health.py` under `/api/codex/{health, health/refresh,
   install, login, login/cancel, link-path}`, same snapshot keys as
@@ -151,8 +166,14 @@ agent.py:      _HOST_FILES["codex"] = codex_host.py
   → `account/read {refreshToken: false}`; reply `{"account": null,
   "requiresOpenaiAuth": true}` → signed out; `{"account": {"type": "chatgpt",
   "planType": "go", ...}}` → signed in, `account.method = "chatgpt"`;
-  `{"type": "apiKey"}` → `"api_key"` (both verified). No model is spawned and
-  no prompt sent: the probe is free. A probe that times out keeps the
+  `{"type": "apiKey"}` → `"api_key"` (both verified; `requiresOpenaiAuth` is
+  `true` whether or not someone is signed in, so only `account` decides).
+  No model is spawned and no prompt sent: the probe is free. SIGNED-OUT
+  SESSIONS: with an empty `CODEX_HOME`, `thread/start` still succeeds and
+  mints a thread (verified); the refusal only comes when the first turn
+  calls the model, so a signed-out session reads as a session that comes up
+  and whose first turn fails as an API error (D13), never as a handshake
+  failure. A probe that times out keeps the
   previous snapshot's `account` and reports `signed_in: null`. Binary:
   `FUSED_RENDER_CODEX_BIN`, then PATH, then candidates
   `~/.npm-global/bin/codex`, `/opt/homebrew/bin/codex`, `/usr/local/bin/codex`,
@@ -182,7 +203,10 @@ agent.py:      _HOST_FILES["codex"] = codex_host.py
 - **D13** errors: `turn/completed` with `turn.status == "failed"` →
   `assistant` row `isApiErrorMessage: true` carrying `turn.error.message`
   (plus the last `error` notification's message when the turn's own is
-  empty) + `result is_error`. Markers in `Backend.account_error_markers` /
+  empty) + `result is_error`. The `error` notification's shape is
+  `{error: {message, additionalDetails}, willRetry, threadId, turnId}` (the
+  schema's; a flat `{message}` is read too); a `willRetry: true` error is
+  ignored, and the notification alone never ends a turn. Markers in `Backend.account_error_markers` /
   `limit_error_markers` (seeded; see `codex.py`).
 - **D14** item → tool name map (the Claude names the page already renders):
 
@@ -198,8 +222,9 @@ agent.py:      _HOST_FILES["codex"] = codex_host.py
   | `plan`, `functionCallOutput`, `contextCompaction`, `imageView`, `sleep`, others | ignored | — |
 
   Every mapped input also carries `_codex: {type, itemId}` (the `_acp`
-  sidecar's twin; the frontend's `summaries.ts` reads `_acp` only, so this
-  one is for logs and tests).
+  sidecar's twin). The frontend STRIPS `_acp` from chips and cards
+  (`summaries.ts`, `ToolChip.tsx`), so it strips `_codex` the same way —
+  otherwise every Codex tool call would show the sidecar as an extra field.
 - **D15** erase removes the fused transcript + Codex's own rollout file(s)
   `<CODEX_HOME>/sessions/**/rollout-*-<sid>.jsonl` and
   `<CODEX_HOME>/archived_sessions/**/rollout-*-<sid>.jsonl` (glob by the
@@ -272,8 +297,8 @@ reader rules from `copilot_host.py`'s header. Only the left column changes:
 | `turn/completed status:completed` | close the open message; `{type:result, subtype:success, is_error:false, result:<last text>, session_id, usage, stop_reason:"end_turn", num_turns, duration_ms, backend:"codex"}` | `{type:system, subtype:turn_duration, durationMs}` |
 | `turn/completed status:interrupted` | result `subtype:error_during_execution, is_error:true, result:"", stop_reason:"cancelled"` | user row `[Request interrupted by user]` (tasks_store's interrupt mark) + turn_duration |
 | `turn/completed status:failed` / transport death / `error` notification mid-turn | `{type:assistant, isApiErrorMessage:true, message:{content:[{type:text,text:<error>}]}}` then result `is_error:true, stop_reason:"error"` | same assistant row + turn_duration |
-| `thread/tokenUsage/updated` | kept for the next `message_start`/`result` usage (`input_tokens = last.inputTokens`, `output_tokens = last.outputTokens`, `cache_read_input_tokens = last.cachedInputTokens`); `modelContextWindow` → `{type:system, subtype:status, context_window}` INSIDE a turn, and `context_window` on the init row once known | — |
-| `thread/name/updated {name}` | — | `{type:"ai-title", aiTitle}` |
+| `thread/tokenUsage/updated` | kept for the next `message_start`/`result` usage. Codex's `inputTokens` INCLUDES `cachedInputTokens` (verified: 13466 of which 11520 cached), so `input_tokens = last.inputTokens − last.cachedInputTokens`, `cache_read_input_tokens = last.cachedInputTokens`, `output_tokens = last.outputTokens` — the meter's sum then equals Codex's own figure; `modelContextWindow` → `{type:system, subtype:status, context_window}` INSIDE a turn, and `context_window` on the init row once known | — |
+| `thread/name/updated {threadName}` (the schema's field; `name` read too) | — | `{type:"ai-title", aiTitle}` |
 | `turn/interrupt` reply | `{type:control_response, response:{request_id, subtype:success, response:{still_queued:[]}}}` (answered at once, as Copilot's) | — |
 | `set_model` / `set_permission_mode` control requests | `control_response subtype:success` after storing the value | — |
 | `get_task_output` / `stop_task` / others | `control_response subtype:error, error:"unsupported by codex"` | — |
@@ -300,8 +325,9 @@ posts. The app-server exits on stdin EOF (verified) — same reap road.
 COPILOT §6 1–12 hold with "Copilot" read as "Codex", plus:
 
 13. `initialized` is sent after the `initialize` reply and before any other
-    request (the server ignores requests sent earlier — assumed from the
-    protocol; the probe sent it and everything answered).
+    request — the protocol's order. (0.163.0 happens to answer a request
+    sent before it, verified; the fake app-server refuses one, deliberately
+    stricter, so the host can never come to rely on that.)
 14. A permission answer uses ONLY the v2 enums (`accept`, `acceptForSession`,
     `decline`, `cancel`); the v1 words never leave the host.
 15. A model or mode change is applied on the next `turn/start` without a
@@ -407,10 +433,21 @@ true`) and signed in (`type: chatgpt, planType: go`); `model/list` with
 --version` banner; the app-server exits on stdin EOF; `codex exec` one-shot
 reply (`hello from codex`, 1,923 tokens).
 
-Assumed (design absorbs each): `-c mcp_servers.*` overrides reach the
-app-server's thread (D8); `-32601` on `requestUserInput` / `permissions`
-requests is harmless (D4); `untrusted` + `workspace-write` still asks for
-non-trusted commands (D5 acceptEdits); `codex exec` flags for the recap
-(D12); rollout file layout under `archived_sessions` (D15); version floor
-`0.160.0` (D10); `error` notification shape `{message}` (D13); `thread/name/updated`
-params `{threadId, name}`.
+Also verified at build time (2026-10-21): the `-c mcp_servers.*` TOML
+override shape (D8, via `codex mcp get --json`); every `codex exec` flag the
+recap uses exists in `codex exec --help` (D12, help only); the `codex login
+--device-auth` output and `Successfully logged in` (D10, a real login);
+`account/read` signed in through the app's own health route; a signed-out
+`thread/start` succeeding (D10); the whole Tasks flow through the running
+app with a ChatGPT Go account: New task modal → Codex/Ask/GPT-6 Luna/low
+→ "Handled by OpenAI Codex" → two "Codex wants to use Bash" cards
+(approved) → the file changed → `done` → a follow-up turn in the same host
+→ the idle reap (registry empty) → a later message resuming the thread
+(`thread/resume`) in a fresh host → the Tasks list and peek naming Codex.
+
+Assumed (design absorbs each): the configured MCP server reaches a thread
+(D8); `-32601` on `requestUserInput` / `permissions` requests is harmless
+(D4); an unoffered `decline` is honoured (D4); `untrusted` +
+`workspace-write` still asks for non-trusted commands (D5 acceptEdits);
+rollout file layout under `archived_sessions` (D15); version floor
+`0.160.0` (D10); the exact wording of a signed-out turn's error (D13).
