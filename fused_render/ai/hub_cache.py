@@ -1333,7 +1333,7 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     # a Diffusers repo on a Mac whose image engine is MLX FLUX, and a Load there
     # reaches a runner that refuses it by name. That is the exact promise this
     # field exists to stop the page making.
-    # Resolved FOR THIS REPO (D1391): a pin, then the engines that read it, then
+    # Resolved FOR THIS REPO (D1397): a pin, then the engines that read it, then
     # the capability's preference. `resolve_for_loaders`, not `resolve_for_model`,
     # because `meta.loaders` is the evidence being handed in — asking the cache
     # for it again from here would recurse.
@@ -1455,7 +1455,7 @@ class CacheReading(NamedTuple):
     #: EVERY runner code whose format check accepts this snapshot
     #: (`_RepoMeta.loaders`), not only the one `_engine` named: two runners of
     #: one capability can both read a repo (mflux and diffusers on FLUX.2), and
-    #: `registry.resolve_for_model` picks among them (D1391).
+    #: `registry.resolve_for_model` picks among them (D1397).
     loaders: tuple[str, ...] = ()
 
 

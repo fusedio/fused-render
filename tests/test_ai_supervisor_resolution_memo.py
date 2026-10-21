@@ -1,5 +1,5 @@
 """`ready_worker` memoises the per-model engine resolution on the worker, keyed
-on prefs.json's stat and the model's cache-folder signature (D1391)."""
+on prefs.json's stat and the model's cache-folder signature (D1397)."""
 import json
 import os
 

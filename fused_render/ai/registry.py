@@ -48,7 +48,7 @@ will load it (`catalog.py`), and an MLX checkpoint on a Linux machine is a
 download that cannot be used.
 
 **The runner now follows the MODEL, and the preference below is the
-tie-breaker** (D1391). `resolve_for_model(capability, model_id)` is what every
+tie-breaker** (D1397). `resolve_for_model(capability, model_id)` is what every
 caller with a model in hand asks: a per-model pin first (when that runner can
 run here), then the available runners whose format check reads the model's
 cached snapshot — the capability's preference choosing among them, registry
@@ -1923,7 +1923,7 @@ def resolve(capability: str) -> Resolution:
 
 
 def model_pin(model_id: str) -> str:
-    """The user's per-MODEL engine pin (D1391) — `AUTO` when there is none.
+    """The user's per-MODEL engine pin (D1397) — `AUTO` when there is none.
     Read per resolution and defended exactly as `preferred_code` is."""
     try:
         from fused_render.shell import prefs
@@ -1956,7 +1956,7 @@ def _join_reasons(*reasons: str) -> str:
 
 def resolve_for_model(capability: str, model_id: str,
                       pinned: str | None = None) -> Resolution:
-    """Which runner serves `model_id` as `capability` here (D1391).
+    """Which runner serves `model_id` as `capability` here (D1397).
 
     The format classifier (`formats.loaders`, via the cached reading) is the one
     source of which runners can READ a repo, so the runner follows the model
