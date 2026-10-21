@@ -8353,11 +8353,11 @@ describe("the tasks toolbar", () => {
     // Since the tab editor (2026-10-16) the row is drawn from `tabs`, one button
     // per view name, each pairing the view's glyph (VIEW_ICONS) with its word
     // (VIEW_LABELS) — the pairing is unchanged, it is just said once.
+    // …and Calendar's word is followed by the sidebar's Beta chip, INSIDE the
+    // label so it folds away with the word when the toolbar is short on room.
     expect(PAGE).toMatch(
-      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">\s*\{VIEW_LABELS\[v\]\}[\s\S]*?<\/span>/,
+      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">\s*\{VIEW_LABELS\[v\]\}\s*\{v === "calendar" && \(\s*<span className="sidebar-count-chip sidebar-beta-chip schedule-beta-tag">Beta<\/span>\s*\)\}\s*<\/span>/,
     );
-    // Calendar is in beta: its word is followed by the sidebar's Beta chip, inside the label so it folds with it.
-    expect(PAGE).toContain('className="sidebar-count-chip sidebar-beta-chip schedule-beta-tag">Beta</span>');
     for (const [view, icon] of [
       ["list", "ICON_VIEW_LIST"],
       ["board", "ICON_VIEW_BOARD"],
