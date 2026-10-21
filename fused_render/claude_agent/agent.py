@@ -355,14 +355,24 @@ WHOLE_TOOL_GRANTABLE = frozenset({
 #               can still surface for some other tool while planning and stays
 #               fully answerable if one does; only the ExitPlanMode card itself
 #               is the intended way out (see `permChoices`' liveMode guard)
-#   prompt      the CLI default — a card for anything not already allowed
+#   prompt      the CLI's `default` mode — a card for anything not already
+#               allowed. Passed EXPLICITLY as `default`: omitting the flag makes
+#               the CLI inherit the user's settings.json `permissions.defaultMode`
+#               (e.g. "auto"), so the pill said "ask every time" while the run
+#               behaved as "Claude decides". Copilot has no such mode name, so
+#               its boundary normalises `default` back to None (`_backend_mode`).
 #   acceptEdits file edits go through; Bash/web/everything else still cards
 #   auto        the CLI's own classifier auto-approves what it judges safe,
 #               and escalates the rest to a card (it is a broader opt-in, NOT
 #               a blanket one — bypassPermissions is deliberately not offered)
-PERMISSION_MODES = {"plan": "plan", "prompt": None,
+PERMISSION_MODES = {"plan": "plan", "prompt": "default",
                     "acceptEdits": "acceptEdits", "auto": "auto"}
 DEFAULT_PERMISSION_MODE = "prompt"
+
+
+def _backend_mode(backend: str, cli_mode: str | None) -> str | None:
+    """Copilot keeps its historic None for the ask mode (no `default` there)."""
+    return None if backend == "copilot" and cli_mode == "default" else cli_mode
 
 # Modes a card may switch the RUNNING session to, via a `setMode` permission
 # update (the sibling of the `addRules` one "allow all" sends). Only the two
@@ -3942,7 +3952,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # the user picked.
     mode = permission_mode if permission_mode in PERMISSION_MODES \
         else DEFAULT_PERMISSION_MODE
-    cli_mode = PERMISSION_MODES[mode]
+    cli_mode = _backend_mode(backend, PERMISSION_MODES[mode])
 
     # THE SESSION THIS TURN RUNS IN, KNOWN BEFORE THE CLI IS EVEN SPAWNED.
     #
@@ -5016,7 +5026,7 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         if backend == "copilot" and wire_mode == "plan":
             return {"error": "plan mode is not available for Copilot",
                     "reason": "unsupported", "backend": backend}
-        cli_mode = PERMISSION_MODES[wire_mode]
+        cli_mode = _backend_mode(backend, PERMISSION_MODES[wire_mode])
         if cli_mode != host.get("mode", ""):
             if backend == "copilot" and "acceptEdits" in (cli_mode, host.get("mode")):
                 # `acceptEdits` is an argv grant (`--allow-tool write`, D5):
