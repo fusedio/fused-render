@@ -363,7 +363,11 @@ def test_the_echo_is_written_before_the_turn_starts(start, agent):
     s = start(fake_args=["--block-until", gate])
     assert _wait_for(lambda: len(s.out()) >= 1)
     s.say("hi")
-    assert _wait_for(lambda: s.turn_starts())
+    # The fake logs the inbound `turn/start` from its reader thread and the
+    # echo check from its main thread a moment later; wait for the check
+    # itself, or a read between the two writes finds no `echo_seen` entry.
+    assert _wait_for(lambda: s.turn_starts()
+                     and any("echo_seen" in e for e in s.fake()))
     checks = [e for e in s.fake() if "echo_seen" in e]
     assert checks == [{"echo_seen": True, "text": "hi", "t": checks[0]["t"]}]
     echo = [r for r in s.out() if agent._starts_new_turn(r)]
