@@ -11516,6 +11516,9 @@ def _kill_tree(run_dir: str) -> None:
         pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
     except (OSError, ValueError):
         return
+    if _platform.IS_WINDOWS:
+        _platform.kill_tree(pid, signal.SIGTERM)
+        return
     try:
         os.killpg(pid, signal.SIGTERM)  # the CLI's setsid -> pid is pgid
     except ProcessLookupError:
