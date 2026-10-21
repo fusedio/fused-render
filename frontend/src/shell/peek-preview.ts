@@ -386,9 +386,11 @@ export function ensureAppFor(project: string): Promise<boolean> {
         // case the "newer" snapshot is the one that is behind, and this
         // added app would be missing from the desk until the next fresh
         // read. Then it is the re-read below, after all (CodeRabbit on
-        // this PR).
+        // this PR). THE APP'S OWN PATH, not `appForProject`: that one
+        // answers with an ancestor app too, and a parent on the desk is not
+        // the nested app the server just added under it.
         if (adoptedGen > gen
-            && (!added || (appsCache !== null && appForProject(project, appsCache) !== null))) {
+            && (!added || (appsCache !== null && appsCache.some((row) => row.path === app)))) {
           return true;
         }
         announceCurrentAppsChanged();

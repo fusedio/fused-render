@@ -516,6 +516,55 @@ describe("the door-time check (ensureAppFor)", () => {
     expect(appForProject("/w/b", knownApps())?.name).toBe("b");
   });
 
+  it("a parent app on the adopted table does not stand in for the nested app just added", async () => {
+    // Same race, but the newer table holds the PARENT folder's app and the
+    // stale ask added an app NESTED under it. `appForProject` would answer
+    // the parent for the nested project — the guard must look for the added
+    // app's own path, and re-read when it is not there.
+    const parent = { ...row, path: "/w", name: "w", entry: "/w/index.html" };
+    const nested = { ...row, path: "/w/a", name: "a", entry: "/w/a/index.html" };
+    const other = { ...row, path: "/x", name: "x", entry: "/x/index.html" };
+    const pending: Array<(v: unknown) => void> = [];
+    const reads: string[] = [];
+    (globalThis as { fetch: unknown }).fetch = (url: string, init?: { body?: string }) => {
+      if (url.endsWith("/ensure")) {
+        const path = JSON.parse(init?.body ?? "{}").path as string;
+        const body = path === "/w/a"
+          ? { ok: true, app: "/w/a", added: true, apps: [parent, nested, other] }
+          : { ok: true, app: "/x", added: true, apps: [parent, other] };
+        return new Promise((resolve) => {
+          pending.push(() =>
+            resolve({
+              ok: true,
+              status: 200,
+              headers: { get: () => "application/json" },
+              json: async () => body,
+              text: async () => JSON.stringify(body),
+            } as unknown as Response),
+          );
+        });
+      }
+      reads.push(url);
+      const body = { apps: [parent, nested, other] };
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response);
+    };
+    const askA = ensureAppFor("/w/a");
+    const askX = ensureAppFor("/x");
+    pending[1]!(undefined); // X first: adopted, with the parent /w but no /w/a
+    await askX;
+    expect(appForProject("/w/a", knownApps())?.path).toBe("/w"); // the ancestor answers
+    pending[0]!(undefined); // A's answer: /w/a was added, and the adopted table lacks it
+    await askA;
+    expect(reads.length).toBe(1);
+    expect(appForProject("/w/a", knownApps())?.path).toBe("/w/a");
+  });
+
   it("a failed ask is a 'no' and the next open may retry", async () => {
     (globalThis as { fetch: unknown }).fetch = () => Promise.reject(new Error("offline"));
     expect(await ensureAppFor("/w/built")).toBe(false);
