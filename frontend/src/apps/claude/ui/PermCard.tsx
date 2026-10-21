@@ -25,6 +25,8 @@ import { useAgent } from "./agent-context";
 import { CollapsiblePre } from "./CollapsiblePre";
 import { permissionLabelsFor } from "./composer-defaults";
 
+const RISK_LABELS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
+
 export interface PermCardProps {
   row: PermissionRow;
   /** The mode the run is ACTUALLY in, as reported by poll — never the picker's
@@ -102,6 +104,8 @@ function statusFor(
       };
     if (row.scope === "session")
       return { cls: "allow", text: "✓ Allowed — not asking again for " + label + " in this reply" };
+    if (row.scope === "exact")
+      return { cls: "allow", text: "✓ Allowed — this exact command, for the rest of this chat" };
     return { cls: "allow", text: "✓ Allowed" };
   }
   if (row.decision === "expired")
@@ -178,6 +182,17 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
           {pretty}
         </span>
       </div>
+      {/* The model's read, ABOVE the verbatim payload and never instead of it. While
+          it is being written a muted placeholder holds the pill's place; "failed" or
+          absent draws nothing, and the card is exactly what it was. */}
+      {row.severity && row.risk_state === "ready" ? (
+        <div className="perm-risk">
+          <span className={cn("perm-risk-pill", row.severity)}>{RISK_LABELS[row.severity]}</span>
+          {row.risk_summary ? <span className="perm-risk-sum">{row.risk_summary}</span> : null}
+        </div>
+      ) : row.risk_state === "pending" && !resolved ? (
+        <div className="perm-risk pending">Assessing risk…</div>
+      ) : null}
       {sub ? <div className="perm-sub">{sub}</div> : null}
       {/* Verbatim, and NEVER silently truncated: an Allow hands the tool its
           input as it stands, so a card that showed a prefix would ask the user
@@ -194,7 +209,7 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
               key={c.text}
               type="button"
               variant="ghost"
-              className={cn("perm-btn", c.primary && "primary")}
+              className={cn("perm-btn", c.primary && "primary", c.secondary && "perm-link")}
               disabled={posting}
               {...(c.title ? { title: c.title } : {})}
               onClick={() => void send(c.decision, c.scope, c.mode)}

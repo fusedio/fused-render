@@ -2681,6 +2681,31 @@ describe("permission cards: pinned open, parked once answered (T:14665-14775)", 
     expect(row.liveMode).toBe("prompt");
   });
 
+  test("a late risk assessment republishes the open card", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ permissions: [permRow({ risk_state: "pending", severity: "", risk_summary: "" })] })
+          : n === 1
+            ? poll({
+                permissions: [
+                  permRow({ risk_state: "ready", severity: "high", risk_summary: "Deletes everything." }),
+                ],
+              })
+            : poll({ done: true, permissions: [permRow({ decision: "allow", scope: "once" })] }),
+    });
+    const seen: string[] = [];
+    const off = controller.subscribe(() => {
+      const p = controller.getState().permissions[0];
+      if (p) seen.push(String(p.risk_state));
+    });
+    await controller.sendMessage("go");
+    off();
+    expect(seen).toContain("pending");
+    expect(seen).toContain("ready");
+  });
+
   test("open cards sort after parked ones, in request order", async () => {
     const { controller } = makeController({
       start: () => ({ run_id: "r1" }),

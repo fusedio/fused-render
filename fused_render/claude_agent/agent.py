@@ -52,7 +52,7 @@ Actions:
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
-       scope="once"|"session", answers=<json string, AskUserQuestion only>,
+       scope="once"|"session"|"exact", answers=<json string, AskUserQuestion only>,
        custom=<json string, the "Other" text per question, AskUserQuestion only>,
        note=<free text, ExitPlanMode deny only>)
                                       -> {"decided": ..., "decision": ...}

@@ -192,30 +192,40 @@ test("leftoverInput keeps what was not rendered, __proto__ included", () => {
 });
 
 describe("permChoices", () => {
-  test("a file tool gets the whole-tool grant; Bash does not", () => {
+  test("a file tool gets the whole-tool grant; Bash an exact-command grant; others none", () => {
     expect(permChoices({ tool: "Edit" }, "prompt").map((c) => c.text)).toEqual([
-      "Allow",
-      "Allow all Edit in this reply",
-      "Allow, and let Claude decide from here",
+      "Approve",
+      "Always approve",
       "Deny",
-    ]);
-    expect(permChoices({ tool: "Bash" }, "prompt").map((c) => c.text)).toEqual([
-      "Allow",
       "Allow, and let Claude decide from here",
-      "Deny",
     ]);
+    expect(permChoices({ tool: "Edit" }, "prompt")[1]).toMatchObject({ scope: "session" });
+    expect(permChoices({ tool: "Bash" }, "prompt")[1]).toMatchObject({
+      text: "Always approve",
+      scope: "exact",
+    });
+    expect(permChoices({ tool: "WebFetch" }, "prompt").map((c) => c.text)).toEqual([
+      "Approve",
+      "Deny",
+      "Allow, and let Claude decide from here",
+    ]);
+  });
+
+  test("the escalation is a quiet secondary after Deny, never a peer", () => {
+    const last = permChoices({ tool: "Bash" }, "prompt").at(-1);
+    expect(last).toMatchObject({ mode: "auto", secondary: true, primary: false });
   });
 
   test("no escalation when the run is already auto, or still planning", () => {
-    expect(permChoices({ tool: "Bash" }, "auto").map((c) => c.text)).toEqual(["Allow", "Deny"]);
-    expect(permChoices({ tool: "Bash" }, "plan").map((c) => c.text)).toEqual(["Allow", "Deny"]);
+    expect(permChoices({ tool: "WebFetch" }, "auto").map((c) => c.text)).toEqual(["Approve", "Deny"]);
+    expect(permChoices({ tool: "WebFetch" }, "plan").map((c) => c.text)).toEqual(["Approve", "Deny"]);
   });
 
-  test("exactly one primary, and it is Allow/once", () => {
+  test("exactly one primary, and it is Approve/once", () => {
     const choices = permChoices({ tool: "Read" });
     expect(choices.filter((c) => c.primary)).toHaveLength(1);
     expect(choices[0]).toMatchObject({ decision: "allow", scope: "once", mode: "", primary: true });
-    expect(choices[choices.length - 1]).toMatchObject({ decision: "deny", scope: "once" });
+    expect(choices.find((c) => c.decision === "deny")).toMatchObject({ scope: "once" });
   });
 });
 

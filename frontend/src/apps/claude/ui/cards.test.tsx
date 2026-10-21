@@ -138,15 +138,33 @@ test("PermCard offers permChoices in order and sends the click's verdict", async
     />,
   );
   expect(labels(r)).toEqual([
-    "Allow",
-    "Allow all Edit in this reply",
-    "Allow, and let Claude decide from here",
+    "Approve",
+    "Always approve",
     "Deny",
+    "Allow, and let Claude decide from here",
   ]);
   expect(textOf(withClass(r, "perm-head")[0])).toBe("Claude wants to use Edit");
-  press(r, "Allow all Edit in this reply");
+  press(r, "Always approve");
   await act(async () => {});
   expect(sent).toEqual([["req-1", "allow", "session", undefined]]);
+});
+
+test("PermCard shows the model's risk read above the payload, a placeholder while pending", () => {
+  const ready = mount(
+    <PermCard
+      row={row({ severity: "high", risk_summary: "Deletes the build folder.", risk_state: "ready" })}
+      onDecide={noop}
+    />,
+  );
+  expect(textOf(withClass(ready, "perm-risk-pill")[0])).toBe("High risk");
+  expect(String(withClass(ready, "perm-risk-pill")[0].props.className)).toContain("high");
+  expect(textOf(withClass(ready, "perm-risk-sum")[0])).toBe("Deletes the build folder.");
+  const pending = mount(<PermCard row={row({ risk_state: "pending" })} onDecide={noop} />);
+  expect(textOf(withClass(pending, "perm-risk")[0])).toBe("Assessing risk…");
+  for (const state of ["failed", "", undefined] as const) {
+    const r = mount(<PermCard row={row({ risk_state: state })} onDecide={noop} />);
+    expect(withClass(r, "perm-risk")).toHaveLength(0);
+  }
 });
 
 test("PermCard escalation carries the mode; Deny carries neither", async () => {
@@ -177,7 +195,7 @@ test("PermCard puts the buttons back when the send fails — the run is still bl
   const r = mount(
     <PermCard row={row({ tool: "Read", input: { file_path: "/a" } })} onDecide={noop} />,
   );
-  press(r, "Allow");
+  press(r, "Approve");
   await act(async () => {});
   expect(textOf(withClass(r, "perm-status")[0])).toBe("sending…");
   act(() => {
@@ -205,7 +223,7 @@ test("a rejecting onDecide is still handled — a direct caller is not the contr
       }}
     />,
   );
-  press(r, "Allow");
+  press(r, "Approve");
   await act(async () => {});
   expect(textOf(withClass(r, "perm-status")[0])).toBe("Could not send that: bridge is gone");
   expect(all(r, "button").every((b) => !(b.props as Props).disabled)).toBe(true);
@@ -244,7 +262,7 @@ test("PermCard disables every button while the answer is in flight", () => {
       }
     />,
   );
-  press(r, "Allow");
+  press(r, "Approve");
   expect(all(r, "button").every((b) => (b.props as Props).disabled === true)).toBe(true);
   expect(textOf(withClass(r, "perm-status")[0])).toBe("sending…");
   release();
@@ -254,6 +272,7 @@ test("a resolved PermCard is a receipt: past tense, no controls, the landed verd
   const cases: Array<[Partial<PermissionRow>, string]> = [
     [{ decision: "allow" }, "✓ Allowed"],
     [{ decision: "allow", scope: "session" }, "✓ Allowed — not asking again for Edit in this reply"],
+    [{ decision: "allow", scope: "exact" }, "✓ Allowed — this exact command, for the rest of this chat"],
     [{ decision: "allow", mode: "auto" }, "✓ Allowed — approvals set to “Claude decides”"],
     [{ decision: "expired" }, "◦ Unanswered — the reply ended before you decided"],
     [{ decision: "deny" }, "✗ Denied"],

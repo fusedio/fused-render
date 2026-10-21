@@ -39,7 +39,12 @@ export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
 /** The two modes a card may switch INTO (SWITCHABLE_MODES, T:13756). */
 export type SwitchableMode = "acceptEdits" | "auto";
 export type Decision = "allow" | "deny";
-export type DecisionScope = "once" | "session";
+/** "session": every call of this tool for the rest of the chat (file tools only).
+ *  "exact": this exact call (Bash: the command string) for the rest of the chat. */
+export type DecisionScope = "once" | "session" | "exact";
+/** The model-written read of a pending call (agent.py `_risk_fields`). */
+export type RiskSeverity = "low" | "medium" | "high";
+export type RiskState = "" | "pending" | "ready" | "failed";
 /** What lands on disk for a permission row: "" = still open. */
 export type LandedDecision = "" | "allow" | "deny" | "expired";
 
@@ -364,6 +369,12 @@ export interface PermissionRow {
   decision: LandedDecision;
   scope: "" | DecisionScope;
   mode: "" | SwitchableMode;
+  /** The model's severity for this call, "" until `risk_state` is "ready". Optional: an older server sends none. */
+  severity?: "" | RiskSeverity;
+  /** One plain-English sentence on what the call does; "" until ready. */
+  risk_summary?: string;
+  /** "pending" while the assessment runs (the card shows a placeholder), "failed" or "" shows nothing extra. */
+  risk_state?: RiskState;
   /** WHY a deny nobody clicked: "abandoned" (the CLI walked away from the
    *  asking call — a subagent told to carry on; agent.py `_close_abandoned`),
    *  "cancelled" (Stop), "timeout" (the permission server gave up). "" on a
