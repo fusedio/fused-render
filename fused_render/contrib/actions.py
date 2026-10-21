@@ -335,7 +335,8 @@ def _github(f: dict, flags: dict) -> dict:
         sentence = f"This copy is showing a different version of the app than {who}'s usual one"
         sentence += (f", which has {_plural(behind, 'newer change')}." if behind else ".")
         b.add("go-back-main", "Go back to the usual version of this app", primary=True)
-    elif copy.get("needs_merge"):
+    elif copy.get("needs_merge") or (job is not None and job.get("status") == "choice"):
+        # A "choice" job is open (it holds syncs) while it waits for a pick.
         lets_bring_in = False
         nm_files = _strs(copy.get("needs_merge_files"))
         purpose = copy.get("needs_merge_purpose") or "update"
