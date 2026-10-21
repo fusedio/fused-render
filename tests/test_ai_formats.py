@@ -463,6 +463,29 @@ def test_mflux_edit_recipe_DERIVES_config_and_vae_rather_than_duplicating():
     assert "vae" not in formats.MFLUX_EDIT_VARIANTS[known]
 
 
+def test_mflux_edit_recipe_DERIVES_a_pinned_guidance_only_when_present(monkeypatch):
+    """A no-CFG checkpoint's edit row must carry the same `guidance` pin as
+    its generate row; a row without one gets no key at all."""
+    known = next(iter(formats.MFLUX_VARIANTS))
+    assert "guidance" not in formats.mflux_edit_recipe(known)
+    pinned = dict(formats.MFLUX_VARIANTS[known], guidance=1.0)
+    monkeypatch.setitem(formats.MFLUX_VARIANTS, known, pinned)
+    assert formats.mflux_edit_recipe(known)["guidance"] == 1.0
+
+
+def test_every_pinned_guidance_variant_has_a_catalog_row_seeding_it():
+    """The worker REFUSES a request whose guidance differs from the pin, so
+    the suggested row's `defaults` must seed the pinned value."""
+    from fused_render.ai import catalog
+
+    rows = {r["id"]: r for r in catalog.SUGGESTIONS["mflux-image"]}
+    pinned = {k: v["guidance"] for k, v in formats.MFLUX_VARIANTS.items()
+              if "guidance" in v}
+    assert pinned
+    for repo_id, guidance in pinned.items():
+        assert rows[repo_id]["defaults"]["guidance"] == guidance
+
+
 def test_mflux_edit_recipe_TRACKS_a_change_to_the_plain_rows_config(monkeypatch):
     """The drift this derivation makes structurally impossible: editing the
     plain row's `config`/`vae` — the kind of edit a re-fitted preview matrix

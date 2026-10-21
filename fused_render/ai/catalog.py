@@ -971,7 +971,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # `QwenImage21` over the snapshot, 8 steps at 256x256, a clean apple,
         # and the same through the worker's own `load`/`generate`. Distilled
         # and no-CFG: mflux raises on any guidance but 1, so its
-        # `MFLUX_VARIANTS` row pins it. No live preview (see that row).
+        # `MFLUX_VARIANTS` row pins it and the `defaults` below seed it
+        # (the worker refuses any other value). No live preview (see that row).
         {
             "id": "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit",
             "params": "20B",
@@ -982,7 +983,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "The heaviest image model here, and the one to try for "
                     "text drawn inside the picture — under Qwen's research "
                     "license rather than Apache.",
-            "defaults": {"steps": 8},
+            "defaults": {"steps": 8, "guidance": 1.0},
         },
     ],
     # MLX conversions ONLY, and this is the third mutually unloadable Whisper

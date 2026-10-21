@@ -310,7 +310,11 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
     # not make the edit recipe raise where the plain row itself would not.
     # `config` stays a hard index: every row in this table names one, and
     # `_build_variant` reads it unconditionally.
-    return {**edit, "config": plain["config"], "vae": plain.get("vae")}
+    recipe = {**edit, "config": plain["config"], "vae": plain.get("vae")}
+    # A no-CFG checkpoint's pin must read the same on both rows.
+    if "guidance" in plain:
+        recipe["guidance"] = plain["guidance"]
+    return recipe
 
 
 #: The INPAINT counterpart (`fused.ai.image({image, mask})`, mflux-only): a
