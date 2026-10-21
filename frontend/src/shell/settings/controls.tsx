@@ -33,6 +33,7 @@ import {
   TaskRecapsControl,
   TaskSummaryTitlesControl,
   ClaudeStrictMcpControl,
+  ClaudeDefaultPermissionControl,
 } from "./toggles";
 import {
   IndexingControl,
@@ -84,6 +85,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "task-recaps": TaskRecapsControl,
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
+  "claude-default-permission": ClaudeDefaultPermissionControl,
   "claude-max-sessions": ClaudeMaxSessionsControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
