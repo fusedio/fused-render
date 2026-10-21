@@ -28,6 +28,7 @@ pattern, D119) when the preference is first turned on:
 | Preference, status and install/remove routes | `fused_render/shell/prefs.py` (`chromium_windows_enabled`, `/api/prefs/chromium*`) |
 | Preferences row with download progress | `frontend/src/shell/settings/general.tsx` (`ChromiumWindowsControl`) |
 | "Reopen windows" (open windows keep their engine; `stale_windows` counts the ones on the other engine) | `POST /api/prefs/chromium/reopen-windows` → `WindowManager.reopen_all`: close all, one Home window |
+| Updates: an app update with the preference on fetches the engine the new app pins before the swap (`update/mac.py` → `chromium.prefetch_for_bundle`); at start, a missing engine is fetched and older `engine-*` folders are removed (`app.py` → `install` / `prune_others`) | engine updates ride on app updates: bump the CEF pin, build, publish, pin, release the app |
 | The native framework source | `fused_render/chromium/native/` |
 
 Unpacked engines live under `<base home>/chromium/engine-<engine_version>-<arch>/`

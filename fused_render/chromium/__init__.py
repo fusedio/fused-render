@@ -229,6 +229,7 @@ def _run_install(art: Artifact, fetch) -> None:
         _install_sync(art, fetch or _http_fetch)
         logger.info("chromium engine %s (%s) ready at %s",
                     art.engine_version, art.cef_version, dest)
+        prune_others(art)
     except Exception as exc:  # noqa: BLE001 — reported through status()
         logger.warning("chromium engine install failed: %s", exc)
         with _state.lock:
@@ -237,7 +238,66 @@ def _run_install(art: Artifact, fetch) -> None:
         shutil.rmtree(dest, ignore_errors=True)
 
 
-def _install_sync(art: Artifact, fetch) -> None:
+def prune_others(art: Artifact | None = None) -> list[str]:
+    """Delete every unpacked engine that is not ``art``'s (the one the
+    running app's manifest names): each is ~125 MB and nothing loads an
+    engine the manifest does not name. Never called for a prefetched
+    engine — the running app's own engine is still in use."""
+    art = art or artifact()
+    if art is None:
+        return []
+    keep = os.path.basename(engine_dir(art))
+    root = engines_root()
+    gone: list[str] = []
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return gone
+    for name in names:
+        if name.startswith("engine-") and name != keep:
+            shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+            gone.append(name)
+    if gone:
+        logger.info("chromium: removed old engines %s", ", ".join(sorted(gone)))
+    return gone
+
+
+def prefetch_for_bundle(app_dir: str, arch: str | None = None, fetch=None) -> bool:
+    """An app update is about to be installed: fetch the engine ITS manifest
+    pins, so the restart finds it on disk instead of falling back to WebKit
+    until the download the preference would start later finishes. Reads
+    ``<app>/Contents/Resources/lib/python3.*/fused_render/chromium/manifest.json``
+    (the DMG layout). Synchronous, on the caller's thread; returns whether
+    the engine is on disk afterwards. Never prunes: the running app's engine
+    stays in use until the relaunch."""
+    import glob
+
+    pattern = os.path.join(app_dir, "Contents", "Resources", "lib", "python3.*",
+                           "fused_render", "chromium", "manifest.json")
+    paths = sorted(glob.glob(pattern))
+    if not paths:
+        logger.info("chromium prefetch: no manifest under %s", app_dir)
+        return False
+    with open(paths[0], encoding="utf-8") as f:
+        manifest = json.load(f)
+    art = artifact(arch, manifest=manifest)
+    if art is None or not art.published:
+        logger.info("chromium prefetch: engine %s not published", manifest.get("engine_version"))
+        return False
+    if is_ready(art):
+        return True
+    current = artifact(arch)
+    if current is not None and engine_dir(current) == engine_dir(art):
+        # The update pins the engine already installed (or installing).
+        return is_ready(art)
+    logger.info("chromium prefetch: engine %s (%s) for the pending update",
+                art.engine_version, art.cef_version)
+    _install_sync(art, fetch or _http_fetch, progress=lambda *_: None)
+    return is_ready(art)
+
+
+def _install_sync(art: Artifact, fetch, progress=None) -> None:
+    progress = progress or _set_progress
     root = engines_root()
     os.makedirs(root, exist_ok=True)
     dest = engine_dir(art)
@@ -246,11 +306,11 @@ def _install_sync(art: Artifact, fetch) -> None:
     tmpdir = tempfile.mkdtemp(prefix=".download-", dir=root)
     try:
         zip_path = os.path.join(tmpdir, "engine.zip")
-        _set_progress(0.0, "download")
-        fetch(art.url, zip_path, lambda frac: _set_progress(frac * 0.9, "download"))
-        _set_progress(0.9, "verify")
+        progress(0.0, "download")
+        fetch(art.url, zip_path, lambda frac: progress(frac * 0.9, "download"))
+        progress(0.9, "verify")
         verify_artifact(zip_path, art)
-        _set_progress(0.92, "unpack")
+        progress(0.92, "unpack")
         staging = os.path.join(tmpdir, "unpacked")
         safe_extract(zip_path, staging)
         inner = _locate_framework_root(staging)
@@ -258,7 +318,7 @@ def _install_sync(art: Artifact, fetch) -> None:
         os.replace(inner, dest)
         with open(os.path.join(dest, READY_MARKER), "w", encoding="utf-8") as f:
             f.write(art.cef_version + "\n")
-        _set_progress(1.0, "ready")
+        progress(1.0, "ready")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
