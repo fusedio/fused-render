@@ -19,13 +19,22 @@ cold one, nothing more.
 THE FORMAT IS THE CODE THAT DERIVES IT. The facts stored here are whatever
 `_absorb`, `_condense_reply` and `_parse_head` produce, and a code change to
 any of them is a format change nobody should have to remember to version. So
-the table is stamped with a fingerprint — the package version plus the source
-text of those functions, hashed at first use — and dropped whole when it
-differs. One cold build per change to the derivation, never a stale fact
-across one; and the state dir is global (shared by every worktree and the
-installed app), so two checkouts at one version with different `_absorb`s
-cannot read each other's facts either. Where the source is not available
-(a frozen build) the version alone stamps it.
+the file is named by a fingerprint — the package version plus the source
+text of those functions, hashed at first use. One cold build per change to
+the derivation, never a stale fact across one. Where the source is not
+available (a frozen build) the version alone stamps it.
+
+ONE FILE PER STAMP, NOT ONE FILE (2026-10-16 diag bundle). The state dir is
+global — shared by every worktree and the installed app — and it used to
+hold a single `tasks-index.sqlite` stamped in a meta row and dropped whole on
+a mismatch. With the installed app and three dev checkouts running at once
+that was a fight: each server's next save saw a foreign stamp, wiped the
+table and backfilled every transcript, the next server did the same, and the
+logs held one "stamp X → Y, rebuilding" line per few seconds per server (873
+in two hours on one). The installed app then relaunched onto an empty table
+and warmed cold — 154 s on a loaded machine instead of 0.4 s. Now each
+derivation has its own file, nobody deletes anybody else's rows, and a file
+no server has written to in `PRUNE_AFTER_S` is removed at the next warm-up.
 
 SQLite, one table, upserts of the handful of transcripts a build actually
 touched. A JSON blob would be rewritten whole once a second while a session
@@ -46,7 +55,10 @@ from fused_render import __version__, tasks_store
 
 logger = logging.getLogger(__name__)
 
-FILE_NAME = "tasks-index.sqlite"
+FILE_PREFIX = "tasks-index"
+FILE_SUFFIX = ".sqlite"
+# A stamp's file idle this long belongs to a release or a checkout that is gone.
+PRUNE_AFTER_S = 14 * 86400
 
 _LOCK = threading.Lock()
 # path -> size last written, so a build's save touches only what moved.
@@ -89,7 +101,42 @@ def _fingerprint() -> str:
 
 
 def path() -> str:
-    return os.path.join(tasks_store.STATE_DIR, FILE_NAME)
+    return os.path.join(tasks_store.STATE_DIR,
+                        f"{FILE_PREFIX}-{_fingerprint()}{FILE_SUFFIX}")
+
+
+def _prune() -> None:
+    """Remove other stamps' files nobody has written to in `PRUNE_AFTER_S`,
+    the pre-2026-10-16 single `tasks-index.sqlite` included. Age is the
+    newest of the file and its -wal/-shm: in WAL mode a live writer touches
+    the -wal, not the main file, until a checkpoint. A still-running server
+    that has saved nothing in that long can lose its file under it; nothing
+    holds a connection between calls, so its next `save` opens a fresh file
+    (`row is None` in `_connect`, `_saved` cleared) and the save after that
+    backfills, one cold write and never a wrong row."""
+    mine = os.path.basename(path())
+    cutoff = time.time() - PRUNE_AFTER_S
+    try:
+        names = os.listdir(tasks_store.STATE_DIR)
+    except OSError:
+        return
+    for name in names:
+        if (name == mine or not name.startswith(FILE_PREFIX)
+                or not name.endswith(FILE_SUFFIX)):
+            continue
+        base = os.path.join(tasks_store.STATE_DIR, name)
+        newest = 0.0
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                newest = max(newest, os.stat(base + suffix).st_mtime)
+            except OSError:
+                pass
+        if newest and newest < cutoff:
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.remove(base + suffix)
+                except OSError:
+                    pass
 
 
 def _connect() -> sqlite3.Connection:
@@ -106,13 +153,11 @@ def _connect() -> sqlite3.Connection:
     stamp = _fingerprint()
     row = con.execute("SELECT value FROM meta WHERE key='version'").fetchone()
     if row is None or row[0] != stamp:
-        # Somebody else's facts — a previous release, or another checkout
-        # sharing this state dir with a different derivation. Dropped, and
-        # with them this process's memory of what it has written (Bugbot,
-        # #1525): the next `save` then backfills every transcript it holds
-        # rather than the two that moved, so the launch after this one is
-        # warm again. Two checkouts alternating stamps would thrash; that is
-        # logged, and it costs a cold build, never a wrong row.
+        # A fresh file, or (only by hand) somebody else's facts under this
+        # stamp's name. Dropped, and with them this process's memory of what
+        # it has written (Bugbot, #1525): the next `save` then backfills
+        # every transcript it holds rather than the two that moved, so the
+        # launch after this one is warm again.
         if row is not None:
             logger.info("tasks index: stamp %s → %s, rebuilding", row[0], stamp)
         con.execute("DELETE FROM transcripts")
@@ -137,6 +182,10 @@ def seed(scan_cache: dict[str, dict], lock: threading.Lock | None = None) -> tup
     global _enabled
     started = time.monotonic()
     seeded = held = 0
+    try:
+        _prune()
+    except Exception:  # noqa: BLE001 — housekeeping, never a reason to start cold
+        logger.debug("tasks index: prune failed", exc_info=True)
     try:
         with _LOCK:
             con = _connect()
