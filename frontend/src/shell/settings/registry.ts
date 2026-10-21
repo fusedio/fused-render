@@ -555,6 +555,18 @@ const ENTRIES = [
     description: "Adds a Reader mode to text files and PDFs that reads them aloud.",
     keywords: "read aloud speech tts listen accessibility pdf voice",
   },
+  {
+    id: "chromium-windows",
+    group: "features",
+    section: "Windows",
+    label: "Chromium engine for windows",
+    description:
+      "Experimental. New app windows are drawn by Chromium instead of the system WebKit view — faster for heavy apps. Downloads the engine (about 150 MB) once; the menu-bar dock, launcher and pinned popover stay on WebKit.",
+    keywords: "chromium cef webkit engine rendering performance experimental blink",
+    macOnly: true,
+    badge: "Beta",
+    available: ({ prefs }) => !!prefs.chromium_windows?.available,
+  },
 
   // ── Phone & network ──────────────────────────────────────────────────────
   {
