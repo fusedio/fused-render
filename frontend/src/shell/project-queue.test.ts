@@ -453,8 +453,11 @@ describe("the Status filter", () => {
     // the tick — and turning it on brings the running cards and the waiting ones
     // together, which is the only reading that agrees with the board a press
     // takes the reader back to.
-    expect(VIEWS).toContain("const statusColumns = hideArchiveStatus");
-    expect(VIEWS).toContain('? BOARD_LANES.filter((c) => c.key !== "archived")\n    : BOARD_LANES;');
+    expect(VIEWS).toContain("const statusColumns = BOARD_LANES.filter(");
+    // …and the only lanes a view ever withholds are the ones it cannot draw
+    // (Archive on the Calendar, Upcoming on the Cards wall) — never a sharer.
+    expect(VIEWS).toContain('!(hideArchiveStatus && c.key === "archived")');
+    expect(VIEWS).toContain('!(hideUpcomingStatus && c.key === "upcoming")');
     // The MATCH is by lane for the same reason, so a stored `queued` (or
     // `needs_attention`) can never leave a filter applied that no tick shows.
     expect(VIEWS).toContain(
