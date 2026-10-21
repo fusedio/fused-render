@@ -48,6 +48,7 @@ import {
   activityAt,
   defaultViewFacets,
   LANES_BUT_ARCHIVE,
+  LANES_BUT_UPCOMING,
   groupFoldKeys,
   openOnFirstVisit,
   parseSeededViews,
@@ -6609,7 +6610,48 @@ describe("the grouped lists start with every lane but Archive ticked (2026-10-17
       const out = filterTasks(tasks, filtersForView({ ...EMPTY_FILTERS, ...f }, view));
       expect(out.map((t) => t.key)).toEqual(["a", "c", "d", "e", "f"]);
     }
-    for (const view of BASE_VIEWS) expect(defaultViewFacets(view)).toEqual({ statuses: [], projects: [] });
+    for (const view of BASE_VIEWS.filter((v) => v !== "cards")) {
+      expect(defaultViewFacets(view)).toEqual({ statuses: [], projects: [] });
+    }
+  });
+
+  it("starts the Cards wall on every lane it draws (no Upcoming), ticked, so the menu matches the wall", () => {
+    const f = defaultViewFacets("cards");
+    expect(f.statuses).toEqual(LANES_BUT_UPCOMING);
+    expect(f.statuses).not.toContain("upcoming");
+    expect(f.statuses).toContain("archived");
+    const out = filterTasks(tasks, filtersForView({ ...EMPTY_FILTERS, ...f }, "cards"));
+    expect(out.map((t) => t.key)).toEqual(["b", "c", "d", "f"]);
+  });
+
+  it("ignores a stored Upcoming tick on Cards — the row is hidden, so the facet cannot empty the wall", () => {
+    const stale = { ...EMPTY_FILTERS, statuses: ["upcoming" as const] };
+    expect(filtersForView(stale, "cards").statuses).toEqual([]);
+    expect(filterTasks(tasks, filtersForView(stale, "cards")).map((t) => t.key)).toEqual(
+      ["a", "b", "c", "d", "e", "f"],
+    );
+    const mixed = { ...EMPTY_FILTERS, statuses: ["upcoming" as const, "done" as const] };
+    expect(filtersForView(mixed, "cards").statuses).toEqual(["done"]);
+    // The stored value is untouched, and every other view still honours it.
+    expect(stale.statuses).toEqual(["upcoming"]);
+    expect(filtersForView(stale, "list")).toBe(stale);
+    expect(filtersForView(stale, "board")).toBe(stale);
+  });
+
+  it("names the Cards wall's own empty case on its starting facets", () => {
+    const f = { ...EMPTY_FILTERS, ...defaultViewFacets("cards") };
+    expect(emptyTasksLabel("cards", f, 3, false)).toBe(
+      "Nothing has run yet. Cards show conversations; upcoming tasks are on the List.",
+    );
+    expect(emptyTasksLabel("cards", { ...f, search: "x" }, 3, false)).toBe("Nothing matches these filters.");
+    expect(emptyTasksLabel("cards", EMPTY_FILTERS, 3, false)).toBe("Nothing matches these filters.");
+    expect(emptyTasksLabel("cards", f, 0, false)).toBe("No tasks yet. Everything Claude runs for you shows up here.");
+    // A stale Upcoming tick beside the starting lanes is ignored by the query
+    // (filtersForView), so the sentence is judged on the query that ran.
+    const stale = { ...f, statuses: [...f.statuses, "upcoming" as const] };
+    expect(emptyTasksLabel("cards", stale, 3, false)).toBe(
+      "Nothing has run yet. Cards show conversations; upcoming tasks are on the List.",
+    );
   });
 
   it("the query is what is ticked — an emptied list means everything, Archive included", () => {
@@ -9500,7 +9542,8 @@ describe("the Cards view's frame", () => {
     // Akshil, 2026-09-06: "blocked should be clubbed and needs attention". The
     // Status menu offers the Board's lanes, and a stored needs_attention from an
     // older session still means the Blocked lane.
-    expect(VIEWS).toContain("? BOARD_LANES.filter((c) => c.key !== \"archived\")\n    : BOARD_LANES;");
+    expect(VIEWS).toContain('!(hideArchiveStatus && c.key === "archived")');
+    expect(VIEWS).toContain('!(hideUpcomingStatus && c.key === "upcoming")');
     const blocked = task({ key: "s1", status: "blocked" });
     const parked = task({ key: "s2", status: "needs_attention" });
     const running = task({ key: "s3", status: "in_progress" });
