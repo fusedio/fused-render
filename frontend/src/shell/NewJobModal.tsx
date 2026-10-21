@@ -4582,7 +4582,7 @@ export default function NewJobModal({
   // anchor's pattern role is untouched — a monthly rule anchored on a past
   // second Wednesday still means the second Wednesday — which is exactly why
   // the two wordings differ rather than one covering both. See pastNoteFor.
-  const pastNote = pastNoteFor(pickedOk ? picked : null, repeatOn, rule, new Date());
+  const pastNote = pastNoteFor(timePicked && pickedOk ? picked : null, repeatOn, rule, new Date());
 
   // See saveEnabled: Title is the required prose field, and the description is
   // not — a title alone is a whole task, and it is what goes on the wire as the

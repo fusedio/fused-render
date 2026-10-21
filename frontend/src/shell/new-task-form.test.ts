@@ -2865,6 +2865,10 @@ describe("property pills", () => {
     expect(s).toMatch(/saveActionLabel\(\s*(\/\/[^\n]*\n\s*)?timePicked \?/);
   });
 
+  test("the stale-time note ignores the seed when nothing is picked", () => {
+    expect(src()).toMatch(/pastNoteFor\(timePicked && pickedOk \? picked : null,/);
+  });
+
   test("the MODEL pill shows the model alone; Thinking stays in the popover", () => {
     const s = src();
     expect(s).toContain('const modelText = taskRunLabel(runModels, model) || "Default";');
