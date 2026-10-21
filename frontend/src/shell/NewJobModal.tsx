@@ -4211,9 +4211,11 @@ export default function NewJobModal({
       return;
     }
     if (which === "where") {
+      // The input only mounts while the popover is open, so the open has to
+      // come first; the focus's own onFocus repeats it harmlessly.
+      openRecents();
       // The popover opens ON the path: the first thing anyone does there is type
       // or arrow. Next tick, so the input exists to be focused.
-      // The focus opens the recents (onFocus), as the old field did.
       window.setTimeout(() => pathRef.current?.focus(), 0);
     } else if (which === "when") {
       setWhenPane("presets");
