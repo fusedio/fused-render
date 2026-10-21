@@ -62,7 +62,7 @@ import type { TaskPulseTask } from "@platform/lib/api";
 import type { NotificationInput } from "@platform/lib/notifications";
 import { labelForSource } from "@platform/lib/format";
 import { agentLabel, agentNamed } from "@platform/lib/agent-backends";
-import { taskColumn } from "@shell/tasks-lib";
+import { cardTitleLine, taskColumn } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
 
@@ -126,6 +126,13 @@ export function taskDestination(task: TaskPulseTask): string {
  *  exact "index" caption bug `attentionRows`'s own comment names. `project`
  *  names the containing app/folder; `target` is only a fallback for a task
  *  with no project at all. */
+/** The task's name as every Tasks view prints it (recap / reply / newest
+ *  message / title — `cardTitleLine`), not the raw server `title`. */
+function noticeTitle(task: TaskPulseTask): string {
+  const text = cardTitleLine(task).text || task.title || "A task";
+  return text.length > 120 ? text.slice(0, 119).trimEnd() + "…" : text;
+}
+
 function taskCaption(task: TaskPulseTask): string {
   return labelForSource(task.project || task.target);
 }
@@ -239,13 +246,16 @@ export function notificationForTransition(
   if (column === previous) return null;
 
   if (column === "needs_attention") {
-    return { title: `${task.title || "A task"} needs your input` };
+    // Keyed by the task, not the title: the title now follows the newest turn, so
+    // the same task asking twice must still collapse into one row.
+    return { title: `${noticeTitle(task)} needs your input`, familyKey: `task-needs-input:${task.key}` };
   }
   if (previous === "in_progress" && column === "blocked") {
     return {
-      title: `${task.title || "A task"} failed`,
+      title: `${noticeTitle(task)} failed`,
       tone: "error",
       page: taskDestination(task),
+      familyKey: `task-failed:${task.key}`,
     };
   }
   if (previous === "in_progress" && column === "done") {
@@ -312,7 +322,7 @@ export function notificationForTransition(
       normalizedDestination !== "/" &&
       isDestinationOpen(normalizedDestination);
     return {
-      title: titleWithoutCaption(task.title || "A task", caption),
+      title: titleWithoutCaption(noticeTitle(task), caption),
       // "Finished" moves OUT of the title and into `detail` (`.dl-model`,
       // MessageRowView's `secondary`) rather than staying baked into the
       // title string or landing in `status`: `status` is already spoken for

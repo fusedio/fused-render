@@ -20,6 +20,47 @@ function task(over: Partial<TaskPulseTask> = {}): TaskPulseTask {
   } as TaskPulseTask;
 }
 
+describe("notice title", () => {
+  test("names the task by its recap, like the Tasks views", () => {
+    const t = task({
+      status: "done",
+      title: "hi",
+      recap: { text: "Fixed the login redirect", for_uuid: "u1" },
+    });
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("Fixed the login redirect");
+  });
+  test("needs-input uses the newest message when there is no recap", () => {
+    const t = task({
+      status: "needs_attention",
+      title: "hi",
+      last_message: { role: "user", text: "ship the export\nplease", at: 1 },
+    });
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("ship the export needs your input");
+  });
+});
+
+describe("notice title edge cases", () => {
+  test("a renamed task keeps the user's name", () => {
+    const t = task({
+      status: "done",
+      title: "My export",
+      title_source: "renamed",
+      recap: { text: "Fixed the login redirect", for_uuid: "u1" },
+    });
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("My export");
+  });
+  test("a long title is cut to one short line", () => {
+    const t = task({ status: "blocked", last_message: { role: "user", text: "x".repeat(300), at: 1 } });
+    const title = notificationForTransition("in_progress", t, 0)?.title ?? "";
+    expect(title.length).toBeLessThan(140);
+  });
+  test("the same task asking twice shares one family", () => {
+    const a = notificationForTransition("in_progress", task({ status: "needs_attention", key: "k1", title: "a" }), 0);
+    const b = notificationForTransition("in_progress", task({ status: "needs_attention", key: "k1", title: "b" }), 0);
+    expect(a?.familyKey).toBe(b?.familyKey);
+  });
+});
+
 describe("notificationForTransition", () => {
   test("a task's first sighting is never a transition when its happened_at predates the watch start (backfill)", () => {
     // watchStartS is AFTER happened_at (default 0) — this is the ordinary

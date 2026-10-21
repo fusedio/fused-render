@@ -4092,6 +4092,13 @@ export type TaskPulseTask = Pick<
   | "backend"
   | "canvas"
   | "background_jobs"
+  // What the notice titles a task by (tasks-lib `cardTitleLine`) — optional,
+  // each absent with its flag off or on an older server.
+  | "title_source"
+  | "title_mode"
+  | "recap"
+  | "last_reply"
+  | "last_message"
 >;
 
 /** The model / thinking a NEW task opens on: the global Claude preference

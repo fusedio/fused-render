@@ -462,12 +462,15 @@ def test_started_is_the_transcript_head_for_a_task_with_no_entry(
     assert task["started"] == tasks_mod.tasks_store.epoch(T9)
 
 
+BIG_BODY = "a large message body the sidebar must not receive" + " pad" * 400
+
+
 def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         client, projects_dir, state_dir):
     """The sidebar gets the same state without downloading page-only content."""
     _already_using(state_dir)
     _write_transcript(projects_dir, "sess-a", "/home/me/proj", [
-        _user("a large message body the sidebar must not receive", T9),
+        _user(BIG_BODY, T9),
         _assistant("done", T10),
         _ai_title("A page-only title"),
     ])
@@ -509,17 +512,23 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # running, like the Tasks page, and needs the list to know.
         "background_jobs",
     )
+    # What the finished/needs-input notice titles a task by (`cardTitleLine`):
+    # the same fields the Tasks views read, riding only when the row has them.
+    # `last_reply` rides only with recap titles on (`recap` key present).
+    title_fields = ("title_source", "last_message")
     assert pulse == [
-        {field: row[field] for field in pulse_fields}
+        {field: row[field] for field in pulse_fields + title_fields if field in row}
         for row in full
     ]
-    assert set(pulse[0]) == set(pulse_fields)
+    assert set(pulse[0]) == set(pulse_fields) | {f for f in title_fields if f in full[0]}
     # COMPACT IS ABOUT THE HEAVY FIELDS, not about how many there are: what this
     # endpoint exists to leave behind is the parsed transcript — the message
     # previews and the description — never a title of a few dozen characters.
     assert "messages" not in pulse[0]
     assert "description" not in pulse[0]
-    assert "a large message body the sidebar must not receive" not in json.dumps(pulse)
+    # Only a capped first line of the newest message rides (the notice title),
+    # never the body.
+    assert BIG_BODY not in json.dumps(pulse)
     assert len(json.dumps(pulse)) < len(json.dumps(full)) / 2
 
 

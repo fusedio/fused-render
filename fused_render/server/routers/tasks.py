@@ -6241,6 +6241,33 @@ _PULSE_FIELDS = (
 )
 
 
+# What `cardTitleLine` (shell/tasks-lib) reads beyond `title`, so the
+# finished/needs-input notice names a task the way every Tasks view does. Each
+# key is ABSENT on a row whose flag is off (recap, title_mode) — the client
+# reads presence as the flag — so they ride only when the row has them.
+_PULSE_TITLE_FIELDS = ("title_source", "title_mode", "recap", "last_reply", "last_message")
+_PULSE_TEXT_CAP = 400
+
+
+def _pulse_row(row: dict) -> dict:
+    out = {field: row.get(field) for field in _PULSE_FIELDS}
+    for field in _PULSE_TITLE_FIELDS:
+        if field not in row:
+            continue
+        # `last_reply` only titles a row with recap titles on (`cardTitleLine`).
+        if field == "last_reply" and "recap" not in row:
+            continue
+        value = row[field]
+        if field == "last_reply" and isinstance(value, str):
+            value = value[:_PULSE_TEXT_CAP]
+        elif field == "last_message" and isinstance(value, dict):
+            value = {**value, "text": str(value.get("text", ""))[:_PULSE_TEXT_CAP]}
+        elif field == "recap" and isinstance(value, dict):
+            value = {**value, "text": str(value.get("text", ""))[:_PULSE_TEXT_CAP]}
+        out[field] = value
+    return out
+
+
 @router.get("/api/tasks/pulse")
 def api_tasks_pulse():
     """The compact task facts used by the global sidebar's status pulse.
@@ -6258,7 +6285,7 @@ def api_tasks_pulse():
     listing already pays. Server-side since D1386 — see `api_tasks_seen`."""
     return {
         "tasks": [
-            {field: row.get(field) for field in _PULSE_FIELDS}
+            _pulse_row(row)
             for row in _task_rows()
             if row.get("kind") != "draft"
         ],
