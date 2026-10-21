@@ -145,3 +145,111 @@ def test_live_sessions_ignores_a_live_pid_with_a_trailing_result(agent, tmp_path
 
     assert agent._live_run(str(target), "sess-A") == {"run_id": ""}
     assert agent._live_sessions(str(target)) == set()
+
+
+# --------------------------------------------------- incremental fold (host RSS)
+
+
+def _append(run_dir, text):
+    with open(os.path.join(run_dir, "out.jsonl"), "a", encoding="utf-8") as f:
+        f.write(text)
+
+
+_FOLD_ROWS = [
+    _system_init(),
+    {"type": "assistant", "message": {"content": []}},
+    _bg_tasks("t1"),
+    _result(),
+    {"type": "assistant", "parent_tool_use_id": "tu1", "message": {"content": []}},
+    {"type": "system", "subtype": "task_notification", "status": "stopped"},
+]
+
+
+@pytest.mark.parametrize("n", range(len(_FOLD_ROWS) + 1))
+def test_fold_over_prefix_equals_one_shot(agent, tmp_path, n):
+    run_dir = str(tmp_path / "r")
+    _write_rows(run_dir, _FOLD_ROWS[:n])
+    assert agent._turn_state_fold(run_dir, {}) == agent._turn_state(run_dir)
+
+
+@pytest.mark.parametrize("split", range(len(_FOLD_ROWS) + 1))
+def test_fold_in_two_chunks_equals_one_shot(agent, tmp_path, split):
+    run_dir = str(tmp_path / "r")
+    _write_rows(run_dir, _FOLD_ROWS[:split])
+    cursor = {}
+    agent._turn_state_fold(run_dir, cursor)
+    _append(run_dir, "".join(json.dumps(r) + "\n" for r in _FOLD_ROWS[split:]))
+    got = agent._turn_state_fold(run_dir, cursor)
+    _write_rows(str(tmp_path / "one"), _FOLD_ROWS)
+    assert got == agent._turn_state(str(tmp_path / "one"))
+
+
+def test_fold_does_not_consume_half_written_line(agent, tmp_path):
+    run_dir = str(tmp_path / "r")
+    _write_rows(run_dir, [_system_init()])
+    cursor = {}
+    assert agent._turn_state_fold(run_dir, cursor) == (True, False)
+    offset = cursor["offset"]
+    line = json.dumps(_result()) + "\n"
+    _append(run_dir, line[:10])
+    # Not arrived yet: still open, offset unmoved.
+    assert agent._turn_state_fold(run_dir, cursor) == (True, False)
+    assert cursor["offset"] == offset
+    _append(run_dir, line[10:])
+    assert agent._turn_state_fold(run_dir, cursor) == (False, False)
+
+
+def test_one_shot_still_parses_unterminated_complete_last_line(agent, tmp_path):
+    run_dir = str(tmp_path / "r")
+    _write_rows(run_dir, [_system_init()])
+    _append(run_dir, json.dumps(_result()))  # valid JSON, no newline
+    assert agent._turn_state(run_dir) == (False, False)
+    cursor = {}
+    assert agent._turn_state_fold(run_dir, cursor) == (True, False)  # not consumed
+    assert agent._turn_state_fold(run_dir, cursor, partial=True) == (False, False)
+
+
+def test_fold_resets_on_truncation(agent, tmp_path):
+    run_dir = str(tmp_path / "r")
+    _write_rows(run_dir, [_system_init(), _bg_tasks("t1"), _result()])
+    cursor = {}
+    assert agent._turn_state_fold(run_dir, cursor) == (False, True)
+    _write_rows(run_dir, [_system_init()])  # smaller: replaced
+    assert agent._turn_state_fold(run_dir, cursor) == (True, False)
+
+
+def test_fold_missing_file_is_open(agent, tmp_path):
+    run_dir = str(tmp_path / "none")
+    assert agent._turn_state_fold(run_dir, {}) == (True, False)
+
+
+def test_fold_memory_stays_flat_while_file_grows(tmp_path):
+    """The host called the one-shot read on every growth: +50MB on a 7MB file.
+    The fold must not retain or rebuild the file."""
+    import subprocess
+    import sys
+    code = r'''
+import importlib.util, json, os, resource, sys
+spec = importlib.util.spec_from_file_location("a", "fused_render/claude_agent/agent.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+d = sys.argv[1]
+os.makedirs(d, exist_ok=True)
+row = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "x" * 2000}]}}) + "\n"
+path = os.path.join(d, "out.jsonl")
+cursor = {}
+def rss():
+    r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return r / (1024 * 1024) if sys.platform == "darwin" else r / 1024
+with open(path, "w") as f:
+    f.write(json.dumps({"type": "system", "subtype": "init"}) + "\n")
+m._turn_state_fold(d, cursor)
+base = rss()
+for _ in range(50):
+    with open(path, "a") as f:
+        f.write(row * 50)  # ~100KB per round, ~5MB total
+    m._turn_state_fold(d, cursor)
+print(rss() - base)
+'''
+    out = subprocess.run([sys.executable, "-c", code, str(tmp_path / "mem")],
+                         capture_output=True, text=True, check=True).stdout
+    assert float(out.strip()) < 15

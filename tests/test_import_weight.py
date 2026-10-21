@@ -32,6 +32,8 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 # Every top-level import name that is NOT part of the base install
 # (pyproject.toml `dependencies`), by the extra that brings it:
 #   * [index]: duckdb, pyarrow, watchfiles
@@ -194,14 +196,31 @@ def test_routes_without_their_extra_answer_503_naming_it():
     assert replies["embed"]["status"] == 200, replies["embed"]
 
 
-def test_serve_refuses_on_the_base_install_and_names_all():
+def test_serve_refuses_on_the_base_install_and_names_cli():
     result = _run_child(_SERVE_CHILD)
     assert "SERVE_REFUSED:" in result.stdout, (
         f"stdout={result.stdout!r}\nstderr={result.stderr!r}")
     message = result.stdout.split("SERVE_REFUSED:", 1)[1]
-    assert "pip install 'fused-render[all]'" in message
-    for extra in ("index", "desktop", "hf", "fused"):
+    assert "pip install 'fused-render[cli]'" in message
+    assert "or [all]" in message
+    for extra in ("index", "data", "hf", "fused"):
         assert f"[{extra}]" in message
+    # Optional for serve, so never named as missing.
+    assert "[desktop]" not in message.split("or [all]")[0]
+
+
+def test_serve_gate_needs_fused_but_not_desktop(monkeypatch):
+    from fused_render import cli, extras
+
+    present = {"index", "data", "hf", "fused"}
+    monkeypatch.setattr(extras, "available", lambda name: name in present)
+    cli._require_serve_extras()  # desktop absent: starts
+
+    present.discard("fused")
+    with pytest.raises(SystemExit) as exc:
+        cli._require_serve_extras()
+    message = str(exc.value)
+    assert "[cli]" in message and "[fused]" in message
 
 
 def test_serve_starts_when_every_extra_is_installed(monkeypatch):
@@ -209,3 +228,27 @@ def test_serve_starts_when_every_extra_is_installed(monkeypatch):
 
     monkeypatch.setattr(extras, "missing_for_serve", lambda: [])
     cli._require_serve_extras()
+
+
+def _serve_notice(monkeypatch, capsys, missing):
+    import argparse
+
+    from fused_render import cli, extras
+
+    monkeypatch.setattr(extras, "missing_for_serve", lambda: [])
+    monkeypatch.setattr(extras, "optional_missing_for_serve", lambda: missing)
+    # Stop right after the notice: uvicorn is imported next.
+    monkeypatch.setitem(sys.modules, "uvicorn", None)
+    try:
+        cli._run_serve(argparse.Namespace())
+    except ImportError:
+        pass
+    return capsys.readouterr().err
+
+
+def test_serve_notice_names_only_desktop(monkeypatch, capsys):
+    err = _serve_notice(monkeypatch, capsys, ["desktop"])
+    assert "[desktop]" in err and "native desktop integrations" in err
+    assert "deploy/share/MCP" not in err
+    assert "fused-render[all]" in err
+    assert _serve_notice(monkeypatch, capsys, []) == ""

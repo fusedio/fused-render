@@ -355,14 +355,24 @@ WHOLE_TOOL_GRANTABLE = frozenset({
 #               can still surface for some other tool while planning and stays
 #               fully answerable if one does; only the ExitPlanMode card itself
 #               is the intended way out (see `permChoices`' liveMode guard)
-#   prompt      the CLI default — a card for anything not already allowed
+#   prompt      the CLI's `default` mode — a card for anything not already
+#               allowed. Passed EXPLICITLY as `default`: omitting the flag makes
+#               the CLI inherit the user's settings.json `permissions.defaultMode`
+#               (e.g. "auto"), so the pill said "ask every time" while the run
+#               behaved as "Claude decides". Copilot has no such mode name, so
+#               its boundary normalises `default` back to None (`_backend_mode`).
 #   acceptEdits file edits go through; Bash/web/everything else still cards
 #   auto        the CLI's own classifier auto-approves what it judges safe,
 #               and escalates the rest to a card (it is a broader opt-in, NOT
 #               a blanket one — bypassPermissions is deliberately not offered)
-PERMISSION_MODES = {"plan": "plan", "prompt": None,
+PERMISSION_MODES = {"plan": "plan", "prompt": "default",
                     "acceptEdits": "acceptEdits", "auto": "auto"}
 DEFAULT_PERMISSION_MODE = "prompt"
+
+
+def _backend_mode(backend: str, cli_mode: str | None) -> str | None:
+    """Copilot keeps its historic None for the ask mode (no `default` there)."""
+    return None if backend == "copilot" and cli_mode == "default" else cli_mode
 
 # Modes a card may switch the RUNNING session to, via a `setMode` permission
 # update (the sibling of the `addRules` one "allow all" sends). Only the two
@@ -639,6 +649,111 @@ def _backend_enabled(backend: str) -> bool:
     if backend == "claude":
         return claude_on or not copilot_on
     return False
+
+
+def _strict_mcp_pref() -> bool:
+    """Whether chat and Tasks-page sessions start "lean" — with
+    `--strict-mcp-config`, so the user's own MCP servers and claude.ai
+    connectors are not launched (about 220 MB less per session). On unless
+    `claude_strict_mcp_enabled` is stored False in `<home>/prefs.json`;
+    a stdlib read for the same reason as `_backend_enabled`. A missing or
+    unreadable file reads as the default."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        return True
+    return not (isinstance(prefs, dict)
+                and prefs.get("claude_strict_mcp_enabled") is False)
+
+
+def _default_permission_pref() -> str:
+    """The Approvals mode a chat starts in when the page named none: the
+    `claude_default_permission` pref in `<home>/prefs.json`, `"auto"` when
+    unset or junk. A stdlib read like `_strict_mcp_pref` (this module does not
+    import fused_render.shell); `shell/prefs.py::claude_default_permission`
+    reads the same key."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        return "auto"
+    value = prefs.get("claude_default_permission") if isinstance(prefs, dict) else None
+    return value if value in PERMISSION_MODES else "auto"
+
+
+def _plugin_mcp_servers(claude_home: str) -> dict:
+    """MCP servers declared by every ENABLED plugin, keyed the way the CLI keys
+    them (`plugin_<plugin>_<server>`, so tool names stay
+    `mcp__plugin_<plugin>_<server>__*` and the plugins' own hooks keep
+    matching).
+
+    `--strict-mcp-config` drops plugin MCP servers along with the user's, but a
+    lean session must still have them (context-mode above all), so they are
+    re-added to the run's mcp.json by hand. Enabled = `enabledPlugins` in
+    `<claude_home>/settings.json` is True; the install dir comes from
+    `plugins/installed_plugins.json` (the `user`-scope install, else the
+    first); definitions from `.claude-plugin/plugin.json` `mcpServers` (a dict,
+    or a path to a JSON file) else `.mcp.json`. `${CLAUDE_PLUGIN_ROOT}` is
+    expanded in command, args and env values, and exported as an env var.
+    Anything unreadable skips that plugin: this must never fail a spawn."""
+    def load(path):
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def expand(value, root):
+        return value.replace("${CLAUDE_PLUGIN_ROOT}", root) if isinstance(value, str) else value
+
+    out: dict = {}
+    try:
+        enabled = load(os.path.join(claude_home, "settings.json")).get("enabledPlugins")
+        installed = load(os.path.join(claude_home, "plugins", "installed_plugins.json")).get("plugins")
+        if not isinstance(enabled, dict) or not isinstance(installed, dict):
+            return out
+    except (OSError, ValueError, AttributeError):
+        return out
+    for key, on in enabled.items():
+        if on is not True or not isinstance(key, str):
+            continue
+        try:
+            installs = installed.get(key)
+            if not isinstance(installs, list) or not installs:
+                continue
+            pick = next((i for i in installs if isinstance(i, dict) and i.get("scope") == "user"), installs[0])
+            root = pick["installPath"]
+            servers = None
+            try:
+                manifest = load(os.path.join(root, ".claude-plugin", "plugin.json"))
+            except (OSError, ValueError):
+                manifest = {}
+            declared = manifest.get("mcpServers") if isinstance(manifest, dict) else None
+            if isinstance(declared, str):
+                declared = load(os.path.join(root, declared))
+                if isinstance(declared, dict) and isinstance(declared.get("mcpServers"), dict):
+                    declared = declared["mcpServers"]
+            if isinstance(declared, dict):
+                servers = declared
+            else:
+                bare = load(os.path.join(root, ".mcp.json"))
+                servers = bare.get("mcpServers") if isinstance(bare.get("mcpServers"), dict) else bare
+            plugin = key.split("@", 1)[0]
+            found = {}
+            for name, spec in servers.items():
+                if not isinstance(spec, dict):
+                    continue
+                spec = dict(spec)
+                if "command" in spec:
+                    spec["command"] = expand(spec["command"], root)
+                if isinstance(spec.get("args"), list):
+                    spec["args"] = [expand(a, root) for a in spec["args"]]
+                env = {k: expand(v, root) for k, v in (spec.get("env") or {}).items()}
+                env["CLAUDE_PLUGIN_ROOT"] = root
+                spec["env"] = env
+                found[f"plugin_{plugin}_{name}"] = spec
+            out.update(found)
+        except Exception:  # noqa: BLE001 — one bad plugin must not cost the spawn
+            continue
+    return out
 
 
 def _backend_disabled_error(backend: str) -> dict:
@@ -1793,7 +1908,8 @@ def _terminal_tools_supported() -> bool:
     return bool(_origin())
 
 
-def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True) -> str:
+def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
+                      strict: bool = False) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
@@ -1816,7 +1932,12 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True) -> 
     optional fused engine (D69) this module is `exec`'d into a namespace that
     has no `__file__` at all, so reaching for it directly is a NameError for
     anyone with the `fused` extra installed. HERE is resolved once at import,
-    behind the shim at the top of this file that covers both engines."""
+    behind the shim at the top of this file that covers both engines.
+
+    `strict` (a lean session, `--strict-mcp-config`) also writes the enabled
+    plugins' MCP servers (`_plugin_mcp_servers`) next to ours, since strict mode
+    would otherwise drop them; ours wins a key collision. Non-strict runs leave
+    the CLI to load plugin servers itself — adding them would start each twice."""
     path = os.path.join(run_dir, "mcp.json")
     server = os.path.join(HERE, "permission_server.py")
     args = [server, _perm_dir(run_dir)]
@@ -1843,8 +1964,9 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True) -> 
         # must be in THIS dict to reach the server — and absent otherwise,
         # which is what keeps the tools out of the roster.
         server_env["FUSED_RENDER_TERMINAL_ORIGIN"] = _origin()
+    servers = _plugin_mcp_servers(CLAUDE_DIR) if strict else {}
     with _private_open(path) as fh:
-        json.dump({"mcpServers": {PERMISSION_SERVER: {
+        json.dump({"mcpServers": {**servers, PERMISSION_SERVER: {
             # sys.executable, matching how the app spawns every other helper
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
@@ -2000,7 +2122,7 @@ def _session_backend(session_id: str) -> str:
 
 
 def _record_settings(session_id: str, model: str = "", effort: str = "",
-                     backend: str = "") -> None:
+                     backend: str = "", permission: str = "") -> None:
     """Record what this conversation is running with. Best-effort: a store that
     will not open costs a chat its remembered pill, never a send.
 
@@ -2022,7 +2144,9 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
     model = (model or "").strip()
     effort = (effort or "").strip()
     backend = backend if backend in BACKENDS else ""
-    if not session_id or _bad_id(session_id) or not (model or effort or backend):
+    permission = permission if permission in PERMISSION_MODES else ""
+    if not session_id or _bad_id(session_id) \
+            or not (model or effort or backend or permission):
         return   # an id `_defaults` would refuse to read is not worth writing
     path = _state_file(*SESSION_SETTINGS)
     try:
@@ -2044,6 +2168,8 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
                 rec["effort"] = effort
             if backend:
                 rec["backend"] = backend
+            if permission:
+                rec["permission"] = permission
             rec["at"] = time.time()
             state[session_id] = rec
             with open(path, "w", encoding="utf-8") as fh:
@@ -3082,7 +3208,8 @@ _HOST_SPAWN = {"close_fds": False}
 def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
                  session_id: str, model: str, effort: str,
                  extra_read_dirs: list | None, file: str,
-                 new_session_id: str = "", resume_at: str = "") -> list:
+                 new_session_id: str = "", resume_at: str = "",
+                 strict_mcp: bool = False) -> list:
     """The CLAUDE CLI's own argv — everything from the binary down to the
     last `--effort` flag. Pulled out of `_start` so the session host, which
     spawns this SAME process (just kept open on a stdin pipe instead of a
@@ -3102,7 +3229,8 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            # follow-up sent mid-turn actually reached the CLI's own queue
            # rather than landing on a pipe nobody was reading from anymore.
            "--replay-user-messages",
-           "--mcp-config", _write_mcp_config(run_dir, pane),
+           "--mcp-config", _write_mcp_config(run_dir, pane, strict=strict_mcp),
+           *(["--strict-mcp-config"] if strict_mcp else []),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
            # Naming a permission-prompt tool also un-gates AskUserQuestion and
@@ -3758,7 +3886,8 @@ def _start(file: str, message: str, session_id: str, model: str,
            has_pane: bool | None = None,
            extra_read_dirs: list | None = None,
            draft_key: str = "", terminal_hint: str = "",
-           backend: str = "", bot: str = "", fork_at: str = "") -> dict:
+           backend: str = "", bot: str = "", fork_at: str = "",
+           isolate_mcp: bool = False) -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -3808,6 +3937,14 @@ def _start(file: str, message: str, session_id: str, model: str,
         forked_from, fork_parent = session_id, point
         if not fork_parent:
             session_id = ""
+    named_permission = permission_mode if permission_mode in PERMISSION_MODES else ""
+    if not permission_mode:
+        # EMPTY = "the page did not say": the user's default pref. Plan is not
+        # a Copilot mode, so a plan default must not refuse a chat that never
+        # asked for it; it starts as prompt there.
+        permission_mode = _default_permission_pref()
+        if backend == "copilot" and permission_mode == "plan":
+            permission_mode = DEFAULT_PERMISSION_MODE
     if backend == "copilot" and permission_mode == "plan":
         # No plan card to approve on ACP (D12/§7 plan_mode): refused rather
         # than silently downgraded to prompt, which would run edits the user
@@ -3842,7 +3979,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # the user picked.
     mode = permission_mode if permission_mode in PERMISSION_MODES \
         else DEFAULT_PERMISSION_MODE
-    cli_mode = PERMISSION_MODES[mode]
+    cli_mode = _backend_mode(backend, PERMISSION_MODES[mode])
 
     # THE SESSION THIS TURN RUNS IN, KNOWN BEFORE THE CLI IS EVEN SPAWNED.
     #
@@ -3983,7 +4120,12 @@ def _start(file: str, message: str, session_id: str, model: str,
            "new_session_id": new_session_id,
            # WHICH host this is (D2); `argv` beside it for Copilot only — see
            # the build above.
-           "backend": backend}
+           "backend": backend,
+           # Lean session (`--strict-mcp-config`): asked for by the caller
+           # (scheduled runs, canvas agents, App Doctor) or the Preferences
+           # default. Recorded so the heads-up fork rebuilds the SAME argv —
+           # its prompt-cache prefix includes the MCP tool roster.
+           "strict_mcp": bool(isolate_mcp or _strict_mcp_pref())}
     if fork_parent:
         # Read by `_claude_argv` only; the heads-up fork resumes the NEW
         # session by its own id and never re-truncates.
@@ -4050,7 +4192,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # chat's record is written on exactly the condition it always was (a
     # model or an effort to say), not for every Claude session there is.
     _record_settings(new_session_id or session_id, model, effort,
-                     backend if backend == "copilot" else "")
+                     backend if backend == "copilot" else "", named_permission)
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
     # the host's, to reach the CLI's whole process group. Written here, to the
@@ -4353,31 +4495,71 @@ def _turn_state(run_dir: str) -> tuple:
     and "a turn is open" stopped being the same fact the day the host shipped.
     A caller that still wants the raw process check has `_alive`.
     """
-    try:
-        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
-                  errors="replace") as fh:
-            lines = fh.read().splitlines()
-    except FileNotFoundError:
-        lines = []
+    return _turn_state_fold(run_dir, {}, partial=True)
 
-    idle = False
-    tasks = {}
-    for line in lines:
+
+def _turn_state_row(row: dict, state: dict) -> None:
+    """Fold one parsed `out.jsonl` row into `state` (`{"idle": bool, "tasks":
+    dict}`, mutated in place) — the per-row rules `_turn_state` documents."""
+    if row.get("parent_tool_use_id"):
+        return  # a subagent's own row, not the main turn's (see _poll)
+    t = row.get("type")
+    if t == "system" and row.get("subtype") == "background_tasks_changed":
+        arr = row.get("tasks")
+        if isinstance(arr, list):
+            state["tasks"] = {str(x.get("task_id")): True
+                              for x in arr if isinstance(x, dict) and x.get("task_id")}
+    if _not_a_turn_row(row):
+        return
+    state["idle"] = t == "result"
+
+
+def _turn_state_fold(run_dir: str, cursor: dict, partial: bool = False) -> tuple:
+    """`_turn_state`, resumable: `cursor` (`{"offset", "idle", "tasks"}`, a dict
+    the caller owns and this mutates) remembers how far into `out.jsonl` the
+    fold has read, so each call parses only the bytes appended since the last
+    one. The session host calls `_turn_state` every 0.2s whenever the file
+    grew; re-reading and re-parsing a multi-megabyte transcript each time put
+    ~50 MB of garbage into a process that should cost ~65.
+
+    Only newline-terminated lines are consumed (the offset moves past each), so
+    a row still being written is picked up whole on a later call, exactly as if
+    it had not arrived yet. `partial=True` additionally parses a trailing
+    unterminated line WITHOUT consuming it — what the one-shot `_turn_state`
+    has always done. A file shorter than the offset was replaced or truncated:
+    the cursor resets and the fold restarts at byte 0."""
+    cursor.setdefault("offset", 0)
+    cursor.setdefault("idle", False)
+    cursor.setdefault("tasks", {})
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            if os.fstat(fh.fileno()).st_size < cursor["offset"]:
+                cursor.update(offset=0, idle=False, tasks={})
+            fh.seek(cursor["offset"])
+            trailing = b""
+            for raw in fh:
+                if not raw.endswith(b"\n"):
+                    trailing = raw
+                    break
+                cursor["offset"] += len(raw)
+                try:
+                    row = json.loads(raw.decode("utf-8", errors="replace"))
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    _turn_state_row(row, cursor)
+    except FileNotFoundError:
+        trailing = b""
+    idle, tasks = cursor["idle"], cursor["tasks"]
+    if partial and trailing.strip():
         try:
-            row = json.loads(line)
+            row = json.loads(trailing.decode("utf-8", errors="replace"))
         except ValueError:
-            continue  # half-written last line; next read gets it
-        if row.get("parent_tool_use_id"):
-            continue  # a subagent's own row, not the main turn's (see _poll)
-        t = row.get("type")
-        if t == "system" and row.get("subtype") == "background_tasks_changed":
-            arr = row.get("tasks")
-            if isinstance(arr, list):
-                tasks = {str(x.get("task_id")): True
-                         for x in arr if isinstance(x, dict) and x.get("task_id")}
-        if _not_a_turn_row(row):
-            continue
-        idle = t == "result"
+            row = None
+        if isinstance(row, dict):
+            scratch = {"idle": idle, "tasks": tasks}
+            _turn_state_row(row, scratch)
+            idle, tasks = scratch["idle"], scratch["tasks"]
     return not idle, bool(tasks)
 
 
@@ -4752,6 +4934,72 @@ def _live_host(file: str, session_id: str = "",
     return {"run_id": ""}
 
 
+def _set_mode(run_id: str, permission_mode: str) -> dict:
+    """Switch a LIVE session's approvals mode, no message and no turn: the
+    `set_permission_mode` control request the session host drains (also
+    mid-turn). The body `_send` ran inline for a changed pill, extracted so the
+    pill itself can apply at once. Answers `{"error": ...}`, `{"respawn":
+    True}` (Copilot `acceptEdits` is an argv grant: the session is ended and
+    the caller's next send starts it afresh) or `{"ok": True, "mode":
+    page_mode}`. An unknown mode reads as `DEFAULT_PERMISSION_MODE`, as in
+    `_start`."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "no such run"}
+    path = os.path.join(run_dir, "host.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return {"error": "no live session"}
+    if not isinstance(host, dict) or not _pid_alive(str(host.get("pid") or "")):
+        return {"error": "no live session"}
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    backend = _meta_backend(host if host.get("backend") in BACKENDS else meta)
+    # `host.json`'s "mode" is the CLI-wire form (_start's `cli_mode`, e.g.
+    # "acceptEdits"), the same shape `--permission-mode` takes and
+    # `set_permission_mode` answers with — map the incoming page value through
+    # the exact table `_start` uses so the comparison (and the control request
+    # itself, if one is needed) speaks the CLI's spelling and not the page's.
+    page_mode = permission_mode if permission_mode in PERMISSION_MODES \
+        else DEFAULT_PERMISSION_MODE
+    if backend == "copilot" and page_mode == "plan":
+        return {"error": "plan mode is not available for Copilot",
+                "reason": "unsupported", "backend": backend}
+    cli_mode = _backend_mode(backend, PERMISSION_MODES[page_mode])
+    if cli_mode != host.get("mode", ""):
+        if backend == "copilot" and "acceptEdits" in (cli_mode, host.get("mode")):
+            # `acceptEdits` is an argv grant (`--allow-tool write`, D5): it can
+            # neither be added nor taken back from a live process.
+            # prompt<->auto is the host's `allow_all` switch and goes through
+            # the control request below.
+            _cancel(run_id, interrupt_first=False)
+            return {"respawn": True}
+        _write_control_request(run_dir, "set_permission_mode", mode=cli_mode)
+        # TWO WRITERS (the Claude host writes host.json at spawn, the Copilot
+        # host rewrites it after its handshake to add its session id): re-read
+        # just before writing, change only "mode", replace atomically. Gone by
+        # now (the host reaped) -> nothing to record into.
+        try:
+            with open(path, encoding="utf-8") as fh:
+                fresh = json.load(fh)
+            if isinstance(fresh, dict):
+                fresh["mode"] = cli_mode
+                tmp = f"{path}.{os.urandom(4).hex()}.tmp"
+                with _private_open(tmp) as f:
+                    json.dump(fresh, f)
+                os.replace(tmp, path)
+        except (OSError, ValueError):
+            pass
+    return {"ok": True, "mode": page_mode}
+
+
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
          effort: str = "", permission_mode: str = "",
          terminal_hint: str = "") -> dict:
@@ -4860,30 +5108,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         host["model"] = model
         host_changed = True
     if permission_mode:
-        # `host.json`'s "mode" is the CLI-wire form (_start's `cli_mode`,
-        # e.g. "acceptEdits"), the same shape `--permission-mode` takes and
-        # `set_permission_mode` answers with — map the incoming page value
-        # through the exact table `_start` uses so the comparison (and the
-        # control request itself, if one is needed) speaks the CLI's spelling
-        # and not the page's.
-        wire_mode = permission_mode if permission_mode in PERMISSION_MODES \
-            else DEFAULT_PERMISSION_MODE
-        if backend == "copilot" and wire_mode == "plan":
-            return {"error": "plan mode is not available for Copilot",
-                    "reason": "unsupported", "backend": backend}
-        cli_mode = PERMISSION_MODES[wire_mode]
-        if cli_mode != host.get("mode", ""):
-            if backend == "copilot" and "acceptEdits" in (cli_mode, host.get("mode")):
-                # `acceptEdits` is an argv grant (`--allow-tool write`, D5):
-                # it can neither be added nor taken back from a live
-                # process. prompt<->auto is the host's `allow_all` switch
-                # and goes through the control request below.
-                _cancel(run_id, interrupt_first=False)
-                return {"respawn": True}
-            _write_control_request(run_dir, "set_permission_mode",
-                                   mode=cli_mode)
-            host["mode"] = cli_mode
-            host_changed = True
+        res = _set_mode(run_id, permission_mode)
+        if "error" in res or res.get("respawn"):
+            return res
     if host_changed:
         # TWO WRITERS. The Claude host writes host.json once, at spawn; the
         # Copilot host REWRITES it after its handshake, to put Copilot's own
@@ -4897,7 +5124,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
             with open(path, encoding="utf-8") as fh:
                 fresh = json.load(fh)
             if isinstance(fresh, dict):
-                fresh.update({k: host[k] for k in ("model", "mode") if k in host})
+                # Only "model": `_set_mode` persisted the mode itself, and this
+                # send's stale copy of it must not be written back over it.
+                fresh.update({k: host[k] for k in ("model",) if k in host})
                 tmp = f"{path}.{os.urandom(4).hex()}.tmp"
                 with _private_open(tmp) as f:
                     json.dump(fresh, f)
@@ -4914,7 +5143,8 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # (`meta` was read above, for the backend.)
     _record_settings(
         _run_own_session(run_dir, meta) or str(meta.get("resumed_from") or ""),
-        model, effort)
+        model, effort, "",
+        permission_mode if permission_mode in PERMISSION_MODES else "")
     # Marks this message as sent-but-not-yet-echoed, so `_poll` (see its
     # `pending_echo` handling) will not believe a stale trailing `result` in
     # `out.jsonl` means the turn is done: at this exact instant the host may
@@ -11178,6 +11408,24 @@ def main(action: str = "start", file: str = "", message: str = "",
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
                     permission_mode, terminal_hint)
+    if action == "set_mode":
+        # The Approvals pill changed on a live chat: apply it now, with no
+        # message and no turn (`_send` only applies it piggybacked on a send).
+        if not run_id:
+            return {"error": "missing run_id"}
+        res = _set_mode(run_id, permission_mode or mode)
+        if res.get("ok"):
+            run_dir = os.path.join(RUNS, run_id)
+            try:
+                with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                    meta = json.load(fh)
+            except (OSError, ValueError):
+                meta = {}
+            meta = meta if isinstance(meta, dict) else {}
+            _record_settings(_run_own_session(run_dir, meta)
+                             or str(meta.get("resumed_from") or ""),
+                             permission=res["mode"])
+        return res
     if action == "commands":
         # The composer's slash-command menu (SPEC C-2).
         if not file:

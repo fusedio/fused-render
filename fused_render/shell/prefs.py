@@ -28,17 +28,11 @@ offered at all — opt-in, default off; see ``canvases_enabled``),
 Export action — opt-in, default off; see ``app_sharing_enabled``),
 **live_previews_enabled** (whether card thumbnails may render the live app
 in a scaled iframe — opt-in, default off; see ``live_previews_enabled``),
-**chat_headsup_enabled** (whether a running Claude chat gets side-check
-"heads-up" notes above the composer — opt-in, default off; see
-``chat_headsup_enabled``),
 **monitor_enabled** (whether the process Monitor — status-bar System chip
 and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **marketplace_enabled** (whether the Marketplace — sidebar row and the
 /marketplace pages — is offered; opt-in, default off; see
 ``marketplace_enabled``),
-**bot_terminals_enabled** (whether bots you opt in may run commands in their
-own terminal; opt-in, default off, and turning it off closes every bot
-terminal; see ``bot_terminals_enabled``),
 **github_link_enabled** (whether the Share sheet offers a GitHub install link
 for an app whose folder is its own pushed GitHub repo — opt-in, default off;
 see ``github_link_enabled``),
@@ -284,17 +278,6 @@ def live_previews_enabled() -> bool:
     return read_prefs().get("live_previews_enabled") is True
 
 
-def chat_headsup_enabled() -> bool:
-    """Whether a running Claude chat gets heads-up notes (default off — opt-in).
-
-    A side check forks the live session while it works and may put one short
-    card above the composer; each check costs tokens from the user's Claude
-    plan, so only a stored `true` turns it on — a preference file that predates
-    this setting reads as off. Guards `/api/claude-sessions/headsup`.
-    """
-    return read_prefs().get("chat_headsup_enabled") is True
-
-
 def monitor_enabled() -> bool:
     """Whether the process Monitor is offered (default off — opt-in).
 
@@ -329,17 +312,6 @@ def marketplace_enabled() -> bool:
     every install has to opt in.
     """
     return read_prefs().get("marketplace_enabled") is True
-
-
-def bot_terminals_enabled() -> bool:
-    """Whether bots may drive their own terminal (default off — opt-in).
-
-    The global half of two switches: a bot also needs its own `terminal`
-    setting (fused_render/bots/tools.py `terminal_enabled`). It doubles as a
-    kill switch: the PUT that turns it off closes every bot-owned pty. Any
-    non-`true` stored value (missing/legacy) reads as off.
-    """
-    return read_prefs().get("bot_terminals_enabled") is True
 
 
 def github_link_enabled() -> bool:
@@ -484,6 +456,26 @@ def tasks_view_tabs() -> list[str]:
         return []
     tabs = [t for t in value if isinstance(t, str) and _TASKS_VIEW_TAB_RE.fullmatch(t)]
     return list(dict.fromkeys(tabs))[:MAX_TASKS_VIEW_TABS]
+
+
+def claude_strict_mcp_enabled() -> bool:
+    """Whether chat and Tasks-page Claude sessions start lean —
+    `--strict-mcp-config`, so the user's own MCP servers and claude.ai
+    connectors are not launched (about 220 MB less per session; enabled
+    plugins' MCP servers are kept). Default ON: only a stored `false` turns it
+    off. `claude_agent/agent.py::_strict_mcp_pref` reads the same key."""
+    return read_prefs().get("claude_strict_mcp_enabled") is not False
+
+
+VALID_CLAUDE_PERMISSIONS = ("plan", "prompt", "acceptEdits", "auto")
+
+
+def claude_default_permission() -> str:
+    """Approvals mode a new Claude chat starts in (`claude_default_permission`
+    pref): plan | prompt | acceptEdits | auto, `"auto"` when unset or junk.
+    `claude_agent/agent.py::_default_permission_pref` reads the same key."""
+    value = read_prefs().get("claude_default_permission")
+    return value if value in VALID_CLAUDE_PERMISSIONS else "auto"
 
 
 def lan_enabled() -> bool:
@@ -788,6 +780,18 @@ def calls_retention_days() -> int:
     return DEFAULT_CALLS_RETENTION_DAYS
 
 
+DEFAULT_CLAUDE_MAX_CONCURRENT_SESSIONS = 10
+
+
+def claude_max_concurrent_sessions() -> int:
+    """How many Claude sessions may run at once before the scheduler queues the
+    rest (default 10). 0 = unlimited. Read by `session_cap.cap`."""
+    value = read_prefs().get("claude_max_concurrent_sessions")
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 64:
+        return value
+    return DEFAULT_CLAUDE_MAX_CONCURRENT_SESSIONS
+
+
 def ai_idle_unload_minutes() -> int:
     """How long a resident model may sit idle before the reaper unloads it
     (default 5). 0 disables the reaper — see `ai.supervisor.reap_idle`."""
@@ -922,9 +926,6 @@ def _prefs_response() -> dict:
         # (opt-in, default off). Off, every thumbnail is a still or a
         # placeholder mark; see `live_previews_enabled`.
         "live_previews": {"enabled": live_previews_enabled()},
-        # Whether a running Claude chat gets heads-up notes (opt-in, default
-        # off); see `chat_headsup_enabled`.
-        "chat_headsup": {"enabled": chat_headsup_enabled()},
         # Whether the process Monitor (status-bar System chip + /monitor page)
         # is offered (opt-in, default off). Not an API guard; see
         # `monitor_enabled`.
@@ -932,8 +933,6 @@ def _prefs_response() -> dict:
         # Whether the Marketplace (sidebar row + /marketplace pages) is offered
         # (opt-in, default off). Not an API guard; see `marketplace_enabled`.
         "marketplace": {"enabled": marketplace_enabled()},
-        # Whether bots may drive their own terminal (opt-in, default off).
-        "bot_terminals": {"enabled": bot_terminals_enabled()},
         # Whether the Share sheet offers the GitHub install-link card (opt-in,
         # default off). Not an API guard; see `github_link_enabled`.
         "github_link": {"enabled": github_link_enabled()},
@@ -973,6 +972,9 @@ def _prefs_response() -> dict:
         "task_recap": {"enabled": task_recap_titles_enabled()},
         # Summary-only Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
+        # Lean Claude sessions (`claude_strict_mcp_enabled`, default on).
+        "claude_strict_mcp": {"enabled": claude_strict_mcp_enabled()},
+        "claude_default_permission": claude_default_permission(),
         # The Bots page's three switches and the Tasks page's view tabs —
         # localStorage until D1386 (see the readers' section comment).
         "bots": {"autostage": bots_autostage(), "sounds": bots_sounds(),
@@ -1017,6 +1019,7 @@ def _prefs_response() -> dict:
             **_calls_store(),
             **_calls_effective(),
         },
+        "claude_sessions": {"max_concurrent": claude_max_concurrent_sessions()},
         # How long an idle local AI model stays resident before the reaper
         # unloads it (SPEC AI-13). Same store/effective/forced_by shape as
         # `calls` above, minus a separate `_store()` helper — there is no
@@ -1160,7 +1163,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     with _PREFS_LOCK:
         prefs = read_prefs()
         changed = False
-        bot_terminals_off = False
         if "engine" in body:
             engine = body.get("engine")
             if engine not in VALID_ENGINES:
@@ -1193,12 +1195,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'live_previews_enabled' must be a boolean"}, status_code=400)
             prefs["live_previews_enabled"] = value
             changed = True
-        if "chat_headsup_enabled" in body:
-            value = body.get("chat_headsup_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'chat_headsup_enabled' must be a boolean"}, status_code=400)
-            prefs["chat_headsup_enabled"] = value
-            changed = True
         if "monitor_enabled" in body:
             value = body.get("monitor_enabled")
             if not isinstance(value, bool):
@@ -1210,13 +1206,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             if not isinstance(value, bool):
                 return JSONResponse({"error": "'marketplace_enabled' must be a boolean"}, status_code=400)
             prefs["marketplace_enabled"] = value
-            changed = True
-        if "bot_terminals_enabled" in body:
-            value = body.get("bot_terminals_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'bot_terminals_enabled' must be a boolean"}, status_code=400)
-            prefs["bot_terminals_enabled"] = value
-            bot_terminals_off = not value
             changed = True
         if "github_link_enabled" in body:
             value = body.get("github_link_enabled")
@@ -1306,6 +1295,22 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     status_code=400)
             # Order kept, repeats dropped; [] stores "use the defaults".
             prefs["tasks_view_tabs"] = list(dict.fromkeys(value))
+            changed = True
+        if "claude_strict_mcp_enabled" in body:
+            value = body.get("claude_strict_mcp_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'claude_strict_mcp_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["claude_strict_mcp_enabled"] = value
+            changed = True
+        if "claude_default_permission" in body:
+            value = body.get("claude_default_permission")
+            if value not in VALID_CLAUDE_PERMISSIONS:
+                return JSONResponse(
+                    {"error": "'claude_default_permission' must be one of: "
+                              + ", ".join(repr(v) for v in VALID_CLAUDE_PERMISSIONS)},
+                    status_code=400)
+            prefs["claude_default_permission"] = value
             changed = True
         if "lan_enabled" in body:
             value = body.get("lan_enabled")
@@ -1438,6 +1443,15 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 )
             prefs["calls_retention_days"] = value
             changed = True
+        if "claude_max_concurrent_sessions" in body:
+            value = body.get("claude_max_concurrent_sessions")
+            if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 64:
+                return JSONResponse(
+                    {"error": "'claude_max_concurrent_sessions' must be an integer between 0 and 64"},
+                    status_code=400,
+                )
+            prefs["claude_max_concurrent_sessions"] = value
+            changed = True
         if "ai_idle_unload_minutes" in body:
             value = body.get("ai_idle_unload_minutes")
             if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 1_440:
@@ -1534,12 +1548,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
-                          "'engines', 'model_engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'chat_headsup_enabled', 'monitor_enabled', 'marketplace_enabled', 'bot_terminals_enabled', 'github_link_enabled', "
+                          "'engines', 'model_engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
                           "'native_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
                           "'task_summary_titles_enabled', "
+                          "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
                           "'tasks_view_tabs', "
                           "'lan_enabled', "
@@ -1549,6 +1564,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "
                           "'calls_params', 'calls_retention_days', "
+                          "'claude_max_concurrent_sessions', "
                           "'ai_idle_unload_minutes', 'workbench_env', 'launcher_hotkey' and/or "
                           "'launcher_row_modifier')"},
                 status_code=400,
@@ -1561,12 +1577,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         from fused_render import fusedcli
 
         fusedcli.export_fused_cli_env()
-    if bot_terminals_off:
-        # The kill switch: after the write, so a bot that races a new
-        # session sees the pref already off.
-        from fused_render.bots import bot as bots_bot
-
-        bots_bot.close_all_terminals()
     if launcher_changed:
         # AFTER the write, like `lan_enabled`: the app rebinds from the
         # stored preference on its main thread a tick later, so the

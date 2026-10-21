@@ -1525,3 +1525,33 @@ def test_doctor_get_attaches_a_live_fix_all_task_to_every_row(client, workspace,
     body = client.get("/api/apps/doctor", params={"path": str(d)}).json()
     task = {"id": "t9", "state": "sent", "run_id": "r9"}
     assert all(c["task"] == task for c in body["checks"])
+
+
+def test_app_task_strict_mcp_is_stored_only_when_asked(tmp_path, workspace, monkeypatch):
+    calls = []
+
+    def fake_create(*a, **k):
+        calls.append(k)
+        return {"id": "e-1", "run_id": "r-1"}
+
+    monkeypatch.setattr(schedule, "create", fake_create)
+    monkeypatch.setattr(schedule, "run_now", lambda entry_id: None)
+    apps_mod._create_app_task(_an_entry(tmp_path), "hi", strict_mcp=True)
+    apps_mod._create_app_task(_an_entry(tmp_path), "hi")
+    assert calls[0]["strict_mcp"] is True
+    assert "strict_mcp" not in calls[1]
+
+
+def test_doctor_fix_task_is_lean(client, workspace, monkeypatch):
+    d = _app_dir(workspace, "leanfix")
+    seen = {}
+
+    def fake_task(entry_html, prompt, *rest, **kw):
+        seen.update(kw)
+        return {"run_id": "r-1"}, None
+
+    monkeypatch.setattr(apps_mod, "_create_app_task", fake_task)
+    r = client.post("/api/apps/doctor", json={"path": str(d), "check": "readme"},
+                    headers={"X-Fused": "1"})
+    assert r.status_code == 200, r.text
+    assert seen.get("strict_mcp") is True

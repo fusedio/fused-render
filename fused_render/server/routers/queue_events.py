@@ -68,7 +68,7 @@ import time
 from fastapi import APIRouter, Body, Header
 from fastapi.concurrency import run_in_threadpool
 
-from fused_render import project_queue, queue_manager, tasks_watch
+from fused_render import project_queue, queue_manager, schedule, tasks_watch
 from fused_render.server.common import _error, _require_fused
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,11 @@ async def api_tasks_queue_event(payload: dict | None = Body(default=None),
             mark = (tasks_watch.mark_turn_started if kind in _TURN_START_KINDS
                     else tasks_watch.mark_turn_ended)
             await run_in_threadpool(mark, task_key, run_id, at, pid)
+    if kind == "exited":
+        # A host ending frees a slot under the session cap; ring the scheduler
+        # so a held task starts now rather than at the next 30s poll. Not gated
+        # on the project-queue flag: the cap works with it off.
+        await run_in_threadpool(schedule.wake)
     if kind in _TURN_START_KINDS:
         # The listing's fact only: whoever owned the folder still does.
         return {"ok": True}

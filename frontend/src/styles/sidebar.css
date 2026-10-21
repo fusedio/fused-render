@@ -806,9 +806,14 @@ button.sidebar-prefs-trigger {
    the last box inside each section ends 3px short of the section's edge (a
    .bookmark-row's bottom padding, or the collapsed heading's — see
    .recents-heading.collapsed), the nav group above ends 7px short (its last
-   .sidebar-item's), so the margins differ by those 4px to land on one seam:
-   7 + 20 + 6 = 3 + 24 + 6 = 33px from the last box's text to the heading text,
-   the distance the nav→Projects seam always had. */
+   .sidebar-item's), so the margin after the nav group is 4px less than the
+   margin after a section, and every seam lands on one number:
+   7 + 8 + 6 = 3 + 12 + 6 = 21px from the last box's text to the heading text
+   (33px — 20 / 24 — until 2026-10-21, when the owner asked for the sections
+   to sit tighter). Keyed on WHAT PRECEDES the section, not on which section
+   it is: since Canvases sits between Projects and Favourites, "Favourites
+   gets the bigger margin" would leave the Projects→Canvases seam 4px short
+   (owner, 2026-10-21: "spacing is uneven"). */
 .sidebar-current-apps,
 .sidebar-bookmarks {
   flex: 1 1 0;
@@ -816,11 +821,13 @@ button.sidebar-prefs-trigger {
   overflow-y: auto;
   padding: 0;
 }
-.sidebar-current-apps {
-  margin-top: 20px;
-}
+.sidebar-current-apps,
 .sidebar-bookmarks {
-  margin-top: 24px;
+  margin-top: 12px;
+}
+.sidebar-group + .sidebar-current-apps,
+.sidebar-group + .sidebar-bookmarks {
+  margin-top: 8px;
 }
 .sidebar-current-apps > .sidebar-section-body,
 .sidebar-bookmarks > .sidebar-section-body {
@@ -829,7 +836,45 @@ button.sidebar-prefs-trigger {
 .sidebar-bookmarks > .sidebar-section-body {
   display: flex;
   flex-direction: column;
+}
+
+/* The fold (platform/ui/sidebar/SectionFold): a one-row grid whose row goes
+   1fr ↔ 0fr, so the rows' height animates with nothing measured. The inner box
+   must be allowed to shrink (min-height: 0) and must clip (overflow: hidden) or
+   the rows would paint past a 0fr row. Rows stay mounted while folded (inert).
+   The section's max-height follows via useSectionContentCap's ResizeObserver on
+   the body, so the sibling sections take the room frame by frame. Bookmarks'
+   1px row rhythm lives on the inner box (it used to be the body's gap: a gap
+   between the head and a 0fr fold would be a stray 1px under a folded heading)
+   and its pinned block folds the same way inside the sticky head. */
+.sidebar-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 180ms ease;
+}
+.sidebar-fold.collapsed {
+  grid-template-rows: 0fr;
+}
+.sidebar-fold-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.sidebar-bookmarks .sidebar-fold-inner {
+  display: flex;
+  flex-direction: column;
   gap: 1px;
+}
+/* The tree's fold only (the pinned block's, inside the head, keeps its own
+   1px margin): the 1px the body's gap used to put between head and tree. A
+   margin on the first row, not padding on the inner box — padding survives
+   the 0fr row (a folded Favourites stood 1px taller than its heading). */
+.sidebar-bookmarks > .sidebar-section-body > .sidebar-fold > .sidebar-fold-inner > :first-child {
+  margin-top: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-fold {
+    transition: none;
+  }
 }
 
 /* Each section is its own scroll container, so the heading must pin itself or

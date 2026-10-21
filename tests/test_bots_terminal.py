@@ -17,7 +17,6 @@ from fused_render import pty_session
 from fused_render.bots import bot as botmod
 from fused_render.bots import tools
 from fused_render.bots.channels import base as chan
-from fused_render.shell import prefs
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="the pty is POSIX-only")
 
@@ -38,12 +37,7 @@ class TBot(FakeBot):
 
 
 @pytest.fixture
-def pref_on(monkeypatch):
-    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: True)
-
-
-@pytest.fixture
-def tbot(tmp_path, pref_on):
+def tbot(tmp_path):
     b = TBot(tmp_path)
     yield b
     b.close_terminal()
@@ -60,9 +54,6 @@ def test_roster_has_terminal_tools_only_when_every_condition_holds(tbot, monkeyp
     tbot.meta["terminal"] = False                       # the bot's own opt-in
     assert not TERMINAL_NAMES & names(tbot)
     tbot.meta["terminal"] = True
-    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: False)   # the global pref
-    assert not TERMINAL_NAMES & names(tbot)
-    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: True)
     tbot.meta["engine"] = "steps"                       # the steps engine
     assert not TERMINAL_NAMES & names(tbot)
     tbot.meta["engine"] = "agent"
@@ -75,7 +66,7 @@ def test_never_enabled_on_windows(tbot, monkeypatch):
     assert tools.terminal_enabled(tbot) is False
 
 
-def test_terminal_off_by_default_even_when_pref_on(tmp_path, pref_on):
+def test_terminal_off_by_default(tmp_path):
     b = TBot(tmp_path)
     del b.meta["terminal"]
     assert tools.terminal_enabled(b) is False
@@ -155,6 +146,35 @@ def test_forever_rule_shape_and_prefix_cover(tbot):
     assert not tools.forever_match(tbot, tools.forever_rule(tbot, "terminal_run", run("gh pr view 1"), {}))
 
 
+GH_TEMPLATE_CMD = ("gh search prs --author @me --updated \">=2026-10-20\" --limit 100 --json repository,number,title,state,"
+                   "updatedAt --template '{{range .}}{{.repository.nameWithOwner}}#{{.number}} | {{.state}} | "
+                   "{{.updatedAt}} | {{.title}}{{\"\\n\"}}{{end}}'")
+
+
+def test_single_quoted_template_command_can_be_remembered(tbot):
+    assert not tools.has_shell_meta(GH_TEMPLATE_CMD)
+    assert tools.terminal_key(GH_TEMPLATE_CMD) == "gh search prs"
+    rule = tools.forever_rule(tbot, "terminal_run", run(GH_TEMPLATE_CMD), {})
+    assert rule["kind"] == "terminal" and rule["key"] == "gh search prs"
+    assert "shell syntax beyond plain words" not in tools.risk(tbot, "terminal_run", run(GH_TEMPLATE_CMD), {})
+
+
+@pytest.mark.parametrize("cmd", [
+    "ls; rm x", "echo 'a' | sh", "echo 'unterminated", 'echo "unterminated', 'echo "$(id)"', 'echo "a`id`"',
+    'echo "x\\y"', 'echo "!!"', "cat x > y", "echo $(id)", "a 'b'$(c)", "echo 'a\nb'", "echo 'a\x1bb'", "echo 'caf\u00e9'",
+])
+def test_quote_scanner_still_flags_real_shell_syntax(cmd):
+    assert tools.has_shell_meta(cmd)
+
+
+@pytest.mark.parametrize("cmd", [
+    "gh issue list --search 'is:open label:\"bug\"'", 'echo "it\'s"', "jq '.[] | .name' file.json",
+    'gh search prs --updated ">=2026-10-20"',
+])
+def test_quote_scanner_accepts_literal_quoted_text(cmd):
+    assert not tools.has_shell_meta(cmd)
+
+
 def test_describe_shows_the_command(tbot):
     assert tools.describe(tbot, "terminal_run", run("gh pr list"), {}) == "$ gh pr list"
 
@@ -199,28 +219,16 @@ def test_terminal_session_creates_nothing_when_not_allowed(tbot, monkeypatch):
     tbot.deleted = False
     tbot.meta["terminal"] = False                       # opted out
     assert tbot.terminal_session() is None
-    tbot.meta["terminal"] = True
-    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: False)   # pref off
-    assert tbot.terminal_session() is None
     assert tbot.terminal_id() is None
 
 
 def test_close_all_terminals_holds_the_lock(tbot, monkeypatch):
-    import threading
     assert tbot.terminal_session() is not None
     seen = []
     real_list = pty_session.REGISTRY.list
     monkeypatch.setattr(pty_session.REGISTRY, "list", lambda: (seen.append(botmod._TERMINAL_LOCK.locked()), real_list())[1])
     botmod.close_all_terminals()
     assert seen == [True]
-    # a creation blocked on the lock sees the pref off once it gets in
-    out = []
-    with botmod._TERMINAL_LOCK:
-        t = threading.Thread(target=lambda: out.append(tbot.terminal_session()))
-        t.start()
-        monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: False)
-    t.join(10)
-    assert out == [None]
 
 
 def test_bot_shell_is_zsh_or_bash_even_when_shell_is_sh(tbot, monkeypatch):
@@ -239,11 +247,11 @@ def test_terminal_run_turns_no_shell_into_an_error_string(tbot, monkeypatch):
 
 # ---- execute(): refusal and a live pty ------------------------------------------------
 
-def test_pref_off_refuses_every_terminal_tool(tbot, monkeypatch):
-    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: False)
+def test_bot_setting_off_refuses_every_terminal_tool(tbot):
+    tbot.meta["terminal"] = False
     for act in TERMINAL_NAMES:
         _label, out = tools.execute(tbot, act, run("echo hi"), {})
-        assert out == "error: bot terminals are off (Preferences › Optional features, then this bot's settings)"
+        assert out == "error: bot terminals are off (turn on Terminal in this bot's settings)"
     assert tbot.terminal_id() is None  # nothing was spawned
 
 
@@ -280,7 +288,7 @@ def _approval_script(cmd="gh --version"):
     return [{"tool": "terminal_run", "args": {"command": cmd}}, {"result": "ok"}]
 
 
-def test_auto_approval_still_cards_terminal_run(server, fake_cli, monkeypatch, tmp_path, pref_on):
+def test_auto_approval_still_cards_terminal_run(server, fake_cli, monkeypatch, tmp_path):
     bot = TBot(tmp_path)
     bot.meta["approval"] = "auto"
     try:
@@ -295,7 +303,7 @@ def test_auto_approval_still_cards_terminal_run(server, fake_cli, monkeypatch, t
         bot.close_terminal()
 
 
-def test_forever_rule_runs_without_a_card_and_deny_runs_nothing(server, fake_cli, monkeypatch, tmp_path, pref_on):
+def test_forever_rule_runs_without_a_card_and_deny_runs_nothing(server, fake_cli, monkeypatch, tmp_path):
     bot = TBot(tmp_path)
     bot.meta["allow_rules"] = [{"kind": "terminal", "key": "echo covered", "label": "x"}]
     try:
@@ -318,7 +326,7 @@ def test_forever_rule_runs_without_a_card_and_deny_runs_nothing(server, fake_cli
         bot2.close_terminal()
 
 
-def test_outside_task_cards_even_a_covered_command(server, fake_cli, monkeypatch, tmp_path, pref_on):
+def test_outside_task_cards_even_a_covered_command(server, fake_cli, monkeypatch, tmp_path):
     bot = TBot(tmp_path)
     bot.meta["allow_rules"] = [{"kind": "terminal", "key": "echo covered", "label": "x"}]
     bot.task_via = chan.via(chan.PHONE_KIND, "dev1")

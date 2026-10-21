@@ -42,11 +42,15 @@ pip install <wheel-url>
 fused-render open https://github.com/<owner>/<repo>/tree/main/<app>
 ```
 
-The full desktop explorer (`fused-render serve`) needs every feature extra,
-`pip install '<wheel-url>[all]'`; the extras on their own are `[index]` (file
-search), `[data]` (pyarrow for scripts), `[desktop]` (LAN sharing, capture,
-clipboard), `[hf]` (Hugging Face login) and
-`[fused]` (deploy, share, MCP). From a source checkout:
+There are three tiers. The base install runs `fused-render open`. The file
+explorer (`fused-render serve`) needs `pip install '<wheel-url>[cli]'`: search,
+the index, Repos, previews, the Hugging Face login, plus deploy, share and MCP,
+about 230 MB on top of the base. `[all]` adds the native desktop integrations
+(LAN discovery, screen capture, pasteboard); `serve` runs without them and says
+so at startup. The extras on their own are `[index]` (file
+search), `[data]` (pyarrow for scripts), `[hf]` (Hugging Face login),
+`[desktop]` (LAN sharing, capture, clipboard) and `[fused]` (deploy, share,
+MCP). From a source checkout:
 
 ```
 pip install -e '.[all]'
@@ -72,8 +76,8 @@ Home opens on a file search, with everything on this machine below it:
 
 ## Run
 
-The downloaded app opens Home in a browser tab. From a pip install with `[all]`
-it's a command:
+The downloaded app opens Home in a browser tab. From a pip install with `[cli]`
+or `[all]` it's a command:
 
 ```
 fused-render

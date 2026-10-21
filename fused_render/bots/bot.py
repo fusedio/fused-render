@@ -207,7 +207,7 @@ def _artifacts_root() -> str:
 # and feature without paying for the text on ordinary browsing steps. `@APPS_ROOT@`
 # is substituted when the prompt is built (app_guide()), so FUSED_RENDER_DIR applies.
 APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its own settings and its own Chrome unless it was made to share another bot's logins):
-- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Steps per task (the tool-call cap of one task: 200 by default, Super Bot 1000, blank keeps the default), applies from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
+- Settings (menu on the preview pane, or the bot's avatar): name and avatar; Model (Haiku fastest, Sonnet balanced, Opus strongest, Fable most capable, plus Gemma 4B and 12B, local models that run on this Mac) and Effort (low/medium/high/xhigh, how long you think per step), both apply from the next task; Steps per task (the tool-call cap of one task: 200 by default, Super Bot 1000, blank keeps the default), applies from the next task; Instructions (your STANDING INSTRUCTIONS); @SETTINGS_DOORS@Approvals: "Ask before irreversible actions" (default; the gate pauses on risky actions and on upload) or "Never ask"; an approval card can also offer "Approve, don't ask again" (plain commands and repeatable actions only, never for chaining, redirects or `$(…)`), and those rules are listed under Settings › Permissions › "Approved forever", where "Ask again" removes one; Logins: "This bot only" or "Same as <bot>" (bots sharing logins drive one Chrome, each in its own tabs: log in once, all stay in); Browser profile: import one of the user's own Chrome profiles (its logins, cookies, extensions) into your browser; Encrypt browser profile at rest (AES-256 file while Chrome is closed, key in the macOS Keychain); Memory: the user can read and edit your MEMORY there (it caps at 200 notes, then `remember` fails until they trim it).
 - Routines (same menu): scheduled tasks, "Every N minutes" (min 5), "Daily at HH:MM" on chosen weekdays, or "Once at" a date-time. Each can be enabled, disabled, run now or deleted. A run only starts when you are idle; a busy bot skips that slot. A routine pauses itself after 3 failed runs in a row. You cannot create routines yourself: tell the user how to add one.
 - Skills (same menu): the PLAYBOOKS. The user can write one by hand, click "Learn from last task" (the model condenses your last finished task), or you save one with `learn`. Up to 40 per bot; each mounts into your prompt only when one of its trigger words appears in the task.
 - Chat: the user can pause, resume or stop you at any time; a message sent while you work arrives as USER INSTRUCTION and overrides the task; they can reply to or react with an emoji on one of your messages (you see reactions in CONVERSATION SO FAR); they can search the thread; "Export" saves the whole transcript as Markdown. Attaching, pasting or dropping a file on the composer puts it in FILES so you can `upload` it.
@@ -521,11 +521,11 @@ TERMINAL_ENV = {"PAGER": "cat", "GH_PAGER": "cat", "GIT_PAGER": "cat"}
 
 
 def close_all_terminals() -> None:
-    """Close every bot-owned pty (the "Bot terminals" preference's kill
-    switch). Bots recreate a session lazily if the pref is later back on."""
+    """Close every bot-owned pty. Bots recreate a session lazily on their
+    next terminal tool call."""
     from fused_render import pty_session
 
-    with _TERMINAL_LOCK:  # a creation holding the lock finishes first (and is killed here) or sees the pref off
+    with _TERMINAL_LOCK:  # a creation holding the lock finishes first (and is killed here)
         for sess in pty_session.REGISTRY.list():
             if (sess.owner or "").startswith(pty_session.BOT_OWNER_PREFIX):
                 sess.kill()

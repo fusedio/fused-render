@@ -106,7 +106,8 @@ class _HostProc:
 def _argv_from_req(agent, req, run_dir):
     return agent._claude_argv(
         run_dir, req["pane"], req["cli_mode"] or None, req["session_id"],
-        req["model"], req["effort"], req["extra_read_dirs"], req["file"])
+        req["model"], req["effort"], req["extra_read_dirs"], req["file"],
+        strict_mcp=bool(req.get("strict_mcp", False)))
 
 
 # --------------------------------------------------------------- the MCP wire
@@ -2001,7 +2002,8 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
     assert cmd[cmd.index("--permission-prompt-tool") + 1] == tool
     # acceptEdits was only ever there because headless claude could not be
     # asked; with a prompt tool wired up the default (ask) is answerable.
-    assert "--permission-mode" not in cmd
+    # (no mode named: the default pref, "auto" when unset)
+    assert cmd[cmd.index("--permission-mode") + 1] == "auto"
     # A prompt tool un-gates AskUserQuestion and ExitPlanMode in headless mode.
     # Both now render — a question card and a plan card — so nothing is disallowed
     # and the flag is gone rather than passed with an empty value (which the CLI
@@ -2151,14 +2153,14 @@ def test_permission_timeout_is_actually_configurable(tmp_path, monkeypatch, env,
 
 
 @pytest.mark.parametrize("picked,flag", [
-    ("prompt", None),                  # CLI default — a card for everything
+    ("prompt", "default"),             # explicit: omitting inherits settings.json
     ("acceptEdits", "acceptEdits"),    # edits through, Bash/web still card
     ("auto", "auto"),                  # the CLI's classifier judges each one
     ("plan", "plan"),                  # research first, then a plan card
-    ("", None),                        # unset -> strictest
-    ("bypassPermissions", None),       # not on the menu, and not reachable
-    ("dontAsk", None),
-    ("../../etc", None),
+    ("", "auto"),                      # unset -> the default pref ("auto" unless changed)
+    ("bypassPermissions", "default"),  # not on the menu, and not reachable
+    ("dontAsk", "default"),
+    ("../../etc", "default"),
 ])
 def test_the_approvals_mode_reaches_the_cli_and_cannot_be_widened(
         agent, tmp_path, monkeypatch, picked, flag):
@@ -2176,10 +2178,7 @@ def test_the_approvals_mode_reaches_the_cli_and_cannot_be_widened(
     cmd = _argv_from_req(agent, seen["req"],
                          os.path.join(agent.RUNS, run_id))
 
-    if flag is None:
-        assert "--permission-mode" not in cmd
-    else:
-        assert cmd[cmd.index("--permission-mode") + 1] == flag
+    assert cmd[cmd.index("--permission-mode") + 1] == flag
     assert "bypassPermissions" not in cmd
     # the bridge stays wired whatever the mode — whatever is NOT auto-approved
     # still has to be answerable, or it is a silent refusal again
@@ -2480,3 +2479,101 @@ def test_a_cancel_for_an_unknown_request_is_ignored(tmp_path):
         assert not list(perm_dir.glob("*.res.json"))
     finally:
         s.close()
+
+
+def test_permission_server_does_not_import_urllib_request_eagerly():
+    """~10 MB resident per session: `urllib.request` is imported only when an
+    event or terminal call is actually sent."""
+    import subprocess
+    import sys
+    path = os.path.join("fused_render", "claude_agent", "permission_server.py")
+    code = (
+        "import importlib.util, sys\n"
+        "spec = importlib.util.spec_from_file_location('ps_mod', sys.argv[1])\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "print('urllib.request' in sys.modules)\n"
+    )
+    out = subprocess.run([sys.executable, "-c", code, path],
+                         capture_output=True, text=True, check=True).stdout
+    assert out.strip() == "False"
+
+
+# ------------------------------------------------------- lean (strict MCP) runs
+
+def _argv_for(agent, tmp_path, **kw):
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir / "perm", exist_ok=True)
+    return agent._claude_argv(str(run_dir), False, None, "", "", "", None, "/x/f.html", **kw)
+
+
+def test_strict_mcp_flag_follows_the_mcp_config_pair(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    lean = _argv_for(agent, tmp_path, strict_mcp=True)
+    i = lean.index("--mcp-config")
+    assert lean[i + 2] == "--strict-mcp-config"
+    assert "--strict-mcp-config" not in _argv_for(agent, tmp_path)
+
+
+def _start_req(agent, tmp_path, monkeypatch, *, pref, isolate):
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_strict_mcp_pref", lambda: pref)
+    seen = {}
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    kw = {"isolate_mcp": True} if isolate else {}
+    run_id = agent._start(str(target), "hi", "", "", "", **kw)["run_id"]
+    launch = json.load(open(os.path.join(agent.RUNS, run_id, "launch.json")))
+    return seen["req"], launch
+
+
+@pytest.mark.parametrize("pref,isolate,expected", [
+    (False, True, True), (True, True, True), (True, False, True), (False, False, False)])
+def test_start_decides_strict_from_pref_or_isolate(agent, tmp_path, monkeypatch,
+                                                   pref, isolate, expected):
+    req, launch = _start_req(agent, tmp_path, monkeypatch, pref=pref, isolate=isolate)
+    assert req["strict_mcp"] is expected
+    assert launch["strict_mcp"] is expected
+
+
+def test_strict_mcp_pref_reads_prefs_json_and_defaults_on(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_home_dir", lambda: str(tmp_path))
+    assert agent._strict_mcp_pref() is True  # no file
+    (tmp_path / "prefs.json").write_text("{not json")
+    assert agent._strict_mcp_pref() is True
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": False}))
+    assert agent._strict_mcp_pref() is False
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}))
+    assert agent._strict_mcp_pref() is True  # only a stored False turns it off
+
+
+def test_default_permission_pref_reads_prefs_json_and_defaults_auto(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_home_dir", lambda: str(tmp_path))
+    assert agent._default_permission_pref() == "auto"  # no file
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_default_permission": "plan"}))
+    assert agent._default_permission_pref() == "plan"
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_default_permission": "yolo"}))
+    assert agent._default_permission_pref() == "auto"
+
+
+@pytest.mark.parametrize("pref,expected", [
+    ("auto", "auto"), ("prompt", "default"), ("acceptEdits", "acceptEdits"), ("plan", "plan")])
+def test_start_with_empty_permission_uses_the_default_pref(agent, tmp_path, monkeypatch,
+                                                           pref, expected):
+    monkeypatch.setattr(agent, "_default_permission_pref", lambda: pref)
+    _req, launch = _start_req(agent, tmp_path, monkeypatch, pref=True, isolate=False)
+    assert launch["cli_mode"] == expected
+
+
+def test_start_with_unknown_permission_is_prompt_not_the_pref(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_default_permission_pref", lambda: "auto")
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    seen = {}
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    run_id = agent._start(str(target), "hi", "", "", "", "bogus")["run_id"]
+    launch = json.load(open(os.path.join(agent.RUNS, run_id, "launch.json")))
+    assert launch["cli_mode"] == "default"

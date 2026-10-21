@@ -237,6 +237,35 @@ def test_turn_state_is_not_reread_while_out_jsonl_is_unchanged(tmp_path):
         "growth must trigger exactly one re-derive, not one per tick after it"
 
 
+def test_turn_state_uses_the_agents_incremental_fold_with_a_persistent_cursor(tmp_path):
+    """The host's footprint: when the agent offers `_turn_state_fold`, growth
+    must advance ONE cursor kept in the cache, never re-derive from scratch."""
+    host = _load_host()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "out.jsonl").write_text("")
+    seen = []
+
+    class _FakeAgent:
+        @staticmethod
+        def _turn_state(rd):  # pragma: no cover - must not be used
+            raise AssertionError("one-shot read used despite a fold being available")
+
+        @staticmethod
+        def _turn_state_fold(rd, cursor):
+            seen.append(cursor)
+            cursor["n"] = cursor.get("n", 0) + 1
+            return (cursor["n"] < 2, False)
+
+    cache = {}
+    assert host._turn_state_if_grown(_FakeAgent, str(run_dir), cache) == (True, False)
+    assert host._turn_state_if_grown(_FakeAgent, str(run_dir), cache) == (True, False)
+    (run_dir / "out.jsonl").write_text("x\n")
+    assert host._turn_state_if_grown(_FakeAgent, str(run_dir), cache) == (False, False)
+    assert len(seen) == 2 and seen[0] is seen[1] is cache["cursor"]
+    assert {"size", "state"} <= set(cache)
+
+
 # ---------------------------------------------- B8: the pid-file write race
 
 # --------------------------------------------- D686: the drain-before-reap race

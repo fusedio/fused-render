@@ -75,13 +75,40 @@ export function canvasNameFromPath(
  *  environment the canvas came from. */
 export const catalogPath = (env: WorkbenchEnv) => `/canvases?env=${env}`;
 
-/** The canvas page, optionally on one NODE with one CHAT open: `?node=` +
- *  `node_file=` select the node (what CanvasWorkspace's `nodeFromUrl` reads;
- *  the stem is the UDF name, exactly as its `nodeHopFromUrl` derives it) and
- *  `session_id` is the conversation the right pane boots on — the node's
- *  chat when a node is named, the canvas chat otherwise (both read it off
- *  this page's URL). The Tasks page's door on a canvas task is built here
- *  (tasks-lib `taskHref`), so the page's own query grammar has one author. */
+/** The canvas PROJECT page's tabs (`/canvases-project/<env>/<name>`), strip
+ *  order; the first is the default. THE list: the type is derived from it and
+ *  CanvasPage.tsx's `TAB_DEFS` is a Record over that type, so a tab added
+ *  here and forgotten there is a type error (the app page's APP_PAGE_TABS
+ *  pattern, current-apps-lib.ts). Overview is the workbench framed read-only,
+ *  Tasks the Tasks page scoped to the clone, Files the clone's files in their
+ *  templates, Sync the clone's sync panel (the strip, the log, Pull / Hard
+ *  pull, a failed push's detail) — the Overview shows the canvas and nothing
+ *  else (owner, 2026-10-20). No API or Doctor tab: a canvas is not an app
+ *  folder with endpoints to call or a share-readiness to check. */
+export const CANVAS_PAGE_TABS = ["overview", "tasks", "files", "sync"] as const;
+export type CanvasPageTab = (typeof CANVAS_PAGE_TABS)[number];
+export const DEFAULT_CANVAS_PAGE_TAB: CanvasPageTab = CANVAS_PAGE_TABS[0];
+/** The query param naming the tab; absent = the default (the app page's `_tab`). */
+export const CANVAS_PAGE_TAB_PARAM = "_tab";
+
+/** The tab a query names. Missing or unknown falls back to the default
+ *  silently: a stale link opens the page, not an error. */
+export function canvasPageTabFromSearch(search: string): CanvasPageTab {
+  const tab = new URLSearchParams(search).get(CANVAS_PAGE_TAB_PARAM);
+  return tab !== null && (CANVAS_PAGE_TABS as readonly string[]).includes(tab)
+    ? (tab as CanvasPageTab)
+    : DEFAULT_CANVAS_PAGE_TAB;
+}
+
+/** The canvas EDITOR page (`/canvases/<env>/<name>`: the workbench beside
+ *  the Claude chat, sync, the edit workflow), optionally on one NODE with
+ *  one CHAT open: `?node=` + `node_file=` select the node (what
+ *  CanvasWorkspace's `nodeFromUrl` reads; the stem is the UDF name, exactly
+ *  as its `nodeHopFromUrl` derives it) and `session_id` is the conversation
+ *  the right pane boots on — the node's chat when a node is named, the
+ *  canvas chat otherwise (both read it off this page's URL). The Tasks
+ *  page's door on a canvas task is built here (tasks-lib `taskHref`), so the
+ *  page's own query grammar has one author. */
 export function canvasPagePath(
   env: WorkbenchEnv,
   name: string,
@@ -97,6 +124,39 @@ export function canvasPagePath(
   if (opts?.sessionId) q.set("session_id", opts.sessionId);
   const search = q.toString();
   return `/canvases/${env}/${name}` + (search ? "?" + search : "");
+}
+
+/** The canvas PROJECT page (`/canvases-project/<env>/<name>?_tab=`, owner
+ *  2026-10-20): the tabbed, read-only view of one canvas — for visibility,
+ *  not editing. A SEPARATE route from the editor above on purpose: the
+ *  editor's two-pane shape, its sync strip and its edit workflow are the
+ *  owner's and must not be folded into tabs (the first cut did exactly that
+ *  and was reversed). `search`: the current query to carry across a TAB hop
+ *  (a tab's own params — `?view=` on Tasks, `?file=` on Files — ride along
+ *  untouched, the app page's rule); only `_tab` is rewritten, and dropped
+ *  for the default so the default tab has one address. */
+export function canvasProjectPath(
+  env: WorkbenchEnv,
+  name: string,
+  opts?: { tab?: CanvasPageTab; search?: string },
+): string {
+  const q = new URLSearchParams(opts?.search ?? "");
+  if (opts?.tab !== undefined) {
+    if (opts.tab === DEFAULT_CANVAS_PAGE_TAB) q.delete(CANVAS_PAGE_TAB_PARAM);
+    else q.set(CANVAS_PAGE_TAB_PARAM, opts.tab);
+  }
+  const search = q.toString();
+  return `/canvases-project/${env}/${name}` + (search ? "?" + search : "");
+}
+
+/** `/canvases-project/<env>/<name>` → the canvas, or null (same alphabet as
+ *  `canvasNameFromPath`). */
+export function canvasProjectFromPath(
+  pathname: string,
+): { env: WorkbenchEnv; name: string } | null {
+  const match = /^\/canvases-project\/([a-z]+)\/([A-Za-z0-9_]+)$/.exec(pathname);
+  if (!match || !isWorkbenchEnv(match[1])) return null;
+  return { env: match[1], name: match[2] };
 }
 
 const q = (env: WorkbenchEnv, name: string) =>

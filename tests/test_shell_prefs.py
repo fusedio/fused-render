@@ -235,33 +235,10 @@ def test_marketplace_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
     )
 
 
-def test_bot_terminals_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["bot_terminals"]["enabled"] is False
-    assert prefs_mod.bot_terminals_enabled() is False
-    body = client.put("/api/prefs", json={"bot_terminals_enabled": True}, headers=FUSED).json()
-    assert body["bot_terminals"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["bot_terminals_enabled"] is True
-    assert prefs_mod.bot_terminals_enabled() is True
-    (home / "prefs.json").write_text(json.dumps({"bot_terminals_enabled": "yes"}), encoding="utf-8")
-    assert prefs_mod.bot_terminals_enabled() is False
-    assert (
-        client.put("/api/prefs", json={"bot_terminals_enabled": "yes"}, headers=FUSED).status_code
-        == 400
-    )
-
-
-def test_turning_bot_terminals_off_closes_bot_terminals(tmp_path, monkeypatch):
-    from fused_render.bots import bot as bots_bot
-
+def test_removed_always_on_prefs_are_not_in_the_payload(tmp_path, monkeypatch):
     client, _home = _client(tmp_path, monkeypatch)
-    calls = []
-    monkeypatch.setattr(bots_bot, "close_all_terminals", lambda: calls.append(1))
-    client.put("/api/prefs", json={"bot_terminals_enabled": True}, headers=FUSED)
-    assert calls == []
-    client.put("/api/prefs", json={"bot_terminals_enabled": False}, headers=FUSED)
-    assert calls == [1]
+    body = client.get("/api/prefs").json()
+    assert "bot_terminals" not in body and "chat_headsup" not in body
 
 
 def test_put_rejects_empty_body(tmp_path, monkeypatch):
@@ -1595,6 +1572,26 @@ def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, mon
     assert prefs_mod.task_summary_titles_enabled() is False
 
 
+def test_claude_strict_mcp_defaults_on_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Lean sessions are the default: only a stored `false` turns them off."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["claude_strict_mcp"] == {"enabled": True}
+    assert prefs_mod.claude_strict_mcp_enabled() is True
+    body = client.put("/api/prefs", json={"claude_strict_mcp_enabled": False},
+                      headers=FUSED).json()
+    assert body["claude_strict_mcp"]["enabled"] is False
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["claude_strict_mcp_enabled"] is False
+    assert prefs_mod.claude_strict_mcp_enabled() is False
+    bad = client.put("/api/prefs", json={"claude_strict_mcp_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "claude_strict_mcp_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}),
+                                     encoding="utf-8")
+    assert prefs_mod.claude_strict_mcp_enabled() is True
+
+
 def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert (
@@ -1699,7 +1696,7 @@ def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
     assert prefs_mod.indexing_enabled() is expect
 
 
-# -- per-model engine pins (D1391) ----------------------------------------------
+# -- per-model engine pins (D1397) ----------------------------------------------
 #
 # The sibling of the per-capability preference above: `model_engines` maps a
 # cached repo id to a runner code. Same store/validate/degrade rules; what a pin
@@ -1794,3 +1791,18 @@ def test_the_models_block_lists_every_cached_model_with_a_capability(tmp_path, m
     assert [r["id"] for r in rows] == ["acme/chat"]
     assert rows[0]["selected"] == "auto"
     assert rows[0]["choices"], "the same choices the capability row carries"
+def test_claude_default_permission_defaults_auto_and_validates(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["claude_default_permission"] == "auto"
+    assert prefs_mod.claude_default_permission() == "auto"
+    body = client.put("/api/prefs", json={"claude_default_permission": "prompt"},
+                      headers=FUSED).json()
+    assert body["claude_default_permission"] == "prompt"
+    assert prefs_mod.claude_default_permission() == "prompt"
+    bad = client.put("/api/prefs", json={"claude_default_permission": "yolo"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "claude_default_permission" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"claude_default_permission": 3}),
+                                     encoding="utf-8")
+    assert prefs_mod.claude_default_permission() == "auto"

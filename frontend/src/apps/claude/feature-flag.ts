@@ -14,6 +14,7 @@
 import { useEffect, useState } from "react";
 import { getPrefs, getPrefsShared, dropSharedPrefsRead } from "@platform/lib/api";
 import { GATE_FALLBACK_MS } from "@platform/lib/clock";
+import type { PermissionMode } from "./protocol/types";
 
 let reading: Promise<void> | null = null;
 let generation = 0;
@@ -40,15 +41,50 @@ let settledOnce = false;
 let recapTitles = false;
 const recapListeners = new Set<(v: boolean) => void>();
 
-/** The heads-up notes switch (`prefs.chat_headsup.enabled`): opt-in like the
- *  others, read by the same single prefs GET. */
-let headsup = false;
-const headsupListeners = new Set<(v: boolean) => void>();
+/** The four Approvals modes, for narrowing a value off the wire or a URL. */
+const PERMISSION_VALUES: readonly PermissionMode[] = ["plan", "prompt", "acceptEdits", "auto"];
 
-function setHeadsup(next: boolean) {
-  if (headsup === next) return;
-  headsup = next;
-  for (const listener of headsupListeners) listener(next);
+/** `v` when it is one of the four modes, else "". The ONE narrowing the chat
+ *  uses wherever an Approvals value arrives as text (a param, a record, a pref). */
+export function narrowPermission(v: unknown): PermissionMode | "" {
+  return PERMISSION_VALUES.includes(v as PermissionMode) ? (v as PermissionMode) : "";
+}
+
+/** The user's default Approvals mode for new chats (`prefs.claude_default_permission`,
+ *  Preferences > "Default approvals for new chats"). "auto" until the one prefs
+ *  read lands, which is also the server's own default, so a user who never
+ *  touched the setting never sees anything else. Read by the same single GET. */
+let defaultPermission: PermissionMode = "auto";
+const defaultPermissionListeners = new Set<(v: PermissionMode) => void>();
+
+function setDefaultPermission(next: PermissionMode) {
+  if (defaultPermission === next) return;
+  defaultPermission = next;
+  for (const listener of defaultPermissionListeners) listener(next);
+}
+
+/** The default Approvals mode right now — a plain read, like `queueEnabled`. */
+export function defaultPermissionNow(): PermissionMode {
+  return defaultPermission;
+}
+
+/** Hand over a known-fresh answer (the prefs payload a PUT returned). */
+export function publishDefaultPermission(next: unknown) {
+  setDefaultPermission(narrowPermission(next) || "auto");
+}
+
+/** Subscribe to the default Approvals mode; triggers the one prefs read. */
+export function useDefaultPermission(): PermissionMode {
+  const [current, setCurrent] = useState<PermissionMode>(() => defaultPermission);
+  useEffect(() => {
+    defaultPermissionListeners.add(setCurrent);
+    setCurrent(defaultPermission);
+    void read();
+    return () => {
+      defaultPermissionListeners.delete(setCurrent);
+    };
+  }, []);
+  return current;
 }
 
 function setRecapTitles(next: boolean) {
@@ -142,7 +178,8 @@ function read(): Promise<void> {
       // server whose sends are not admitted through anything.
       setQueue(p.queue?.enabled === true);
       setRecapTitles(p.task_recap?.enabled === true);
-      setHeadsup(p.chat_headsup?.enabled === true);
+      // A server that predates the field keeps "auto", the server's default.
+      setDefaultPermission(narrowPermission(p.claude_default_permission) || "auto");
     })
     .catch(() => {
       // A failed read keeps whatever answer the page already has (the default,
@@ -200,19 +237,6 @@ export const QUEUE_FLAG_BROADCAST_KEY = "fused-render:project-queue";
 /** The same announcement for the recap titles switch. */
 export const RECAP_FLAG_BROADCAST_KEY = "fused-render:task-recap-titles";
 
-/** The same announcement for the heads-up notes switch. */
-export const HEADSUP_FLAG_BROADCAST_KEY = "fused-render:chat-headsup";
-
-/** Hand over a known-fresh heads-up answer (a PUT's prefs payload). */
-export function publishChatHeadsupEnabled(next: boolean) {
-  setHeadsup(next);
-  try {
-    localStorage.setItem(HEADSUP_FLAG_BROADCAST_KEY, JSON.stringify({ on: next, at: Date.now() }));
-  } catch {
-    // Storage may be unavailable; the other tabs still re-read on focus.
-  }
-}
-
 /** Hand over a known-fresh recap-titles answer (a PUT's prefs payload). */
 export function publishTaskRecapTitlesEnabled(next: boolean) {
   setRecapTitles(next);
@@ -250,14 +274,6 @@ if (typeof window !== "undefined") {
     if (ev.key !== RECAP_FLAG_BROADCAST_KEY || !ev.newValue) return;
     try {
       setRecapTitles((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
-    } catch {
-      // Malformed: the next focus re-reads.
-    }
-  });
-  window.addEventListener("storage", (ev) => {
-    if (ev.key !== HEADSUP_FLAG_BROADCAST_KEY || !ev.newValue) return;
-    try {
-      setHeadsup((JSON.parse(ev.newValue) as { on?: unknown }).on === true);
     } catch {
       // Malformed: the next focus re-reads.
     }
@@ -304,21 +320,6 @@ export function useTaskRecapTitlesEnabled(): boolean {
   return current;
 }
 
-/** Subscribe to the heads-up notes switch (see `headsup`). Triggers the one
- *  prefs read, like `useProjectQueueEnabled`. */
-export function useChatHeadsupEnabled(): boolean {
-  const [current, setCurrent] = useState<boolean>(() => headsup);
-  useEffect(() => {
-    headsupListeners.add(setCurrent);
-    setCurrent(headsup);
-    void read();
-    return () => {
-      headsupListeners.delete(setCurrent);
-    };
-  }, []);
-  return current;
-}
-
 /** Test-only: how many components are currently subscribed. `bun test` runs
  *  every suite in ONE process, so this Set is shared globally for the run —
  *  a tree a test forgets to unmount leaves its subscription here forever,
@@ -339,5 +340,5 @@ export function resetFlagsForTests() {
   prefsDeadlineMs = GATE_FALLBACK_MS;
   setQueue(false);
   setRecapTitles(false);
-  setHeadsup(false);
+  setDefaultPermission("auto");
 }

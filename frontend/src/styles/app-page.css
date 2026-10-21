@@ -199,10 +199,22 @@
 
 /* The head's buttons: a step up from the `sm` size they are declared with,
    so they hold their own against the two-line title and the 50px mark. */
-.app-page-actions > button {
+.app-page-actions > button,
+.app-page-actions > a.app-page-open {
   height: 36px;
   padding-inline: 14px;
   font-size: 13px;
+}
+/* A button rendered as a real anchor (base-ui `render`, the canvas page's
+   two doors): the page's link styling must not reach it — no underline, no
+   link colour, the button's own text colour and skin. */
+.app-page-actions > a.app-page-open,
+.app-page-actions > a.app-page-open:hover {
+  text-decoration: none;
+  /* The `default` variant's text (tailwind's text-primary-foreground), said
+     with the specificity the page's link rule has — both doors are that
+     variant. */
+  color: var(--primary-foreground);
 }
 
 /* The head's right-hand group: the fused-API "Migrate" button (only when the

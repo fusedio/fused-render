@@ -8,6 +8,7 @@ import {
   putCallsEnabled,
   putCallsParamsMode,
   putCallsRetentionDays,
+  putClaudeMaxConcurrentSessions,
   runIndexQuery,
   type CallsParamsMode,
   type DiagnosticsPlan,
@@ -101,6 +102,36 @@ export function CallParamsControl({ prefs, onChange }: PrefControlProps) {
           ]}
           disabled={busy || !calls.effective_enabled}
           onChange={(v) => void run(() => putCallsParamsMode(v as CallsParamsMode))}
+        />
+      }
+    >
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
+  );
+}
+
+// Tasks past this many running Claude sessions wait in the queue. 0 = no cap.
+export function ClaudeMaxSessionsControl({ prefs, onChange }: PrefControlProps) {
+  const { busy, error, run } = usePrefWrite(onChange);
+  const current = prefs.claude_sessions?.max_concurrent ?? 10;
+  return (
+    <SettingRow
+      id="claude-max-sessions"
+      control={
+        <SettingSelect
+          id="claude-max-sessions"
+          value={String(current)}
+          options={[
+            { key: "4", label: "4" },
+            { key: "6", label: "6" },
+            { key: "8", label: "8" },
+            { key: "10", label: "10" },
+            { key: "12", label: "12" },
+            { key: "16", label: "16" },
+            { key: "0", label: "Unlimited" },
+          ]}
+          disabled={busy}
+          onChange={(v) => void run(() => putClaudeMaxConcurrentSessions(Number(v)))}
         />
       }
     >

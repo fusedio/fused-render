@@ -8,11 +8,9 @@
 import {
   putAppSharingEnabled,
   putCanvasesEnabled,
-  putChatHeadsupEnabled,
   putGitAutoSyncEnabled,
   putGithubLinkEnabled,
   putLivePreviewsEnabled,
-  putBotTerminalsEnabled,
   putMarketplaceEnabled,
   putMonitorEnabled,
   putProjectQueueEnabled,
@@ -20,21 +18,24 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putTaskRecapTitlesEnabled,
   putTaskSummaryTitlesEnabled,
+  putClaudeDefaultPermission,
+  putClaudeStrictMcpEnabled,
 } from "@platform/lib/api";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
-import { publishBotTerminalsEnabled } from "@platform/lib/bot-terminals-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import {
-  publishChatHeadsupEnabled,
+  publishDefaultPermission,
   publishProjectQueueEnabled,
   publishTaskRecapTitlesEnabled,
 } from "@apps/claude/feature-flag";
 import { publishTaskNotifyTerminalSessions } from "../task-notify-terminal-flag";
-import { PrefToggleRow, type PrefControlProps } from "./SettingRow";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { PERMISSION_LABELS } from "@apps/claude/protocol/summaries";
+import { PrefToggleRow, SettingRow, SettingSelect, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
 // ── Tasks ──────────────────────────────────────────────────────────────────
 
@@ -85,18 +86,46 @@ export function TaskSummaryTitlesControl({ prefs, onChange }: PrefControlProps) 
   );
 }
 
-// Heads-up notes: a side check may put one short note above the message box
-// while Claude works. Opt-in: every check spends tokens from the user's plan.
-// `=== true` because a server that predates the field has no notes.
-export function ChatHeadsupControl({ prefs, onChange }: PrefControlProps) {
+// Lean Claude sessions: no user MCP servers / connectors in chat and tasks.
+// ON unless stored false, so `!== false` (an older server has no field).
+export function ClaudeStrictMcpControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
-      id="chat-headsup"
-      checked={prefs.chat_headsup?.enabled === true}
-      put={putChatHeadsupEnabled}
-      after={(next) => publishChatHeadsupEnabled(next.chat_headsup?.enabled === true)}
+      id="claude-strict-mcp"
+      checked={prefs.claude_strict_mcp?.enabled !== false}
+      put={putClaudeStrictMcpEnabled}
       onChange={onChange}
     />
+  );
+}
+
+// The Approvals mode a new chat opens on. A select, not a switch; published so
+// a composer already on screen (and the next send) reads the new default.
+// "auto" when unset (an older server has no field).
+const PERMISSION_CHOICES = ["plan", "prompt", "acceptEdits", "auto"] as const;
+export function ClaudeDefaultPermissionControl({ prefs, onChange }: PrefControlProps) {
+  const { busy, error, run } = usePrefWrite(onChange);
+  const current = prefs.claude_default_permission ?? "auto";
+  return (
+    <SettingRow
+      id="claude-default-permission"
+      control={
+        <SettingSelect
+          id="claude-default-permission"
+          value={PERMISSION_CHOICES.includes(current as (typeof PERMISSION_CHOICES)[number]) ? current : "auto"}
+          options={PERMISSION_CHOICES.map((key) => ({ key, label: PERMISSION_LABELS[key] }))}
+          disabled={busy}
+          onChange={(v) =>
+            void run(
+              () => putClaudeDefaultPermission(v),
+              (next) => publishDefaultPermission(next.claude_default_permission),
+            )
+          }
+        />
+      }
+    >
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
   );
 }
 
@@ -201,18 +230,6 @@ export function MarketplaceControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.marketplace?.enabled === true}
       put={putMarketplaceEnabled}
       after={(next) => publishMarketplaceEnabled(next.marketplace?.enabled === true)}
-      onChange={onChange}
-    />
-  );
-}
-
-export function BotTerminalsControl({ prefs, onChange }: PrefControlProps) {
-  return (
-    <PrefToggleRow
-      id="bot-terminals"
-      checked={prefs.bot_terminals?.enabled === true}
-      put={putBotTerminalsEnabled}
-      after={(next) => publishBotTerminalsEnabled(next.bot_terminals?.enabled === true)}
       onChange={onChange}
     />
   );

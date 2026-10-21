@@ -144,6 +144,7 @@ from fused_render import (
     project_queue,
     queue_manager,
     schedule,
+    session_cap,
     session_liveness,
     skill_plugin,
     tasks_index,
@@ -1983,18 +1984,42 @@ def _queue_lines(tasks: dict[str, dict], now: float,
     they stay in the signature because every caller already holds them and the
     flag-off road (which answers `{}` above) is untouched until PR 3.
     """
-    if not project_queue.enabled():
-        return {}
-    # `peek`, NEVER `get`: a listing must not be the thing that builds the
-    # manager. The build reconciles, and reconciling pumps — so the first GET in
-    # a fresh process would claim the head of every line and rekey the very rows
-    # it was asked to draw. Nothing has queued anything yet in that process, and
-    # `{}` is the true answer (see `queue_manager.peek`).
-    manager = queue_manager.peek()
-    if manager is None:
-        return {}
-    return {task_key: _queue_row(place)
-            for task_key, place in manager.positions().items()}
+    lines: dict[str, dict] = {}
+    if project_queue.enabled():
+        # `peek`, NEVER `get`: a listing must not be the thing that builds the
+        # manager. The build reconciles, and reconciling pumps — so the first GET
+        # in a fresh process would claim the head of every line and rekey the very
+        # rows it was asked to draw. Nothing has queued anything yet in that
+        # process, and `{}` is the true answer (see `queue_manager.peek`).
+        manager = queue_manager.peek()
+        if manager is not None:
+            lines = {task_key: _queue_row(place)
+                     for task_key, place in manager.positions().items()}
+    return _with_cap_waiters(lines, by_id)
+
+
+def _with_cap_waiters(lines: dict[str, dict], by_id: dict | None) -> dict[str, dict]:
+    """Add the tasks the session cap (`session_cap`) is holding back, filed
+    behind each other by due time, in the same shape the manager's rows have.
+    Independent of the project-queue flag; a key already in `lines` keeps the
+    manager's answer. Costs one directory scan, and only when a cap is set."""
+    if not by_id or session_cap.cap() <= 0:
+        return lines
+    from datetime import datetime, timezone
+
+    waiting = session_cap.waiting(list(by_id.values()),
+                                  datetime.now(timezone.utc))
+    ahead = ""
+    out = dict(lines)
+    position = 0
+    for key in waiting:
+        if key in lines:
+            continue
+        position += 1
+        out[key] = _queue_row({"key": key, "position": position,
+                               "ahead_key": ahead, "ahead_names": [ahead] if ahead else []})
+        ahead = key
+    return out
 
 
 def _queue_row(place: dict) -> dict:
@@ -6655,6 +6680,9 @@ _VALID_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 _MODEL_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
+_VALID_PERMISSIONS = ("plan", "prompt", "acceptEdits", "auto")
+
+
 class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
@@ -6663,6 +6691,8 @@ class SettingsPatch(BaseModel):
     # starts a conversation; a later POST naming the same value is a no-op and
     # one naming another is refused — the backend never changes (D2).
     backend: str = ""
+    # The Approvals pill: plan | prompt | acceptEdits | auto, "" (not saying).
+    permission: str = ""
 
 
 def _settings_session_id(raw: str) -> str:
@@ -6716,7 +6746,8 @@ def api_task_settings_read(session_id: str = ""):
     # what the RECORD says, and the row (`_row_backend`) is where the root
     # fills the gap for a session that predates the field.
     return {"model": _display_model(model), "effort": effort,
-            "backend": tasks_store.session_backend(state, session_id)}
+            "backend": tasks_store.session_backend(state, session_id),
+            "permission": tasks_store.session_permission(state, session_id)}
 
 
 @router.post("/api/tasks/settings")
@@ -6772,11 +6803,18 @@ def api_task_settings(patch: SettingsPatch,
             model)
         if foreign is not None:
             raise HTTPException(status_code=400, detail=foreign["error"])
-    if not (model or effort or backend):
-        raise HTTPException(status_code=400,
-                            detail="nothing to record (send model, effort or backend)")
+    permission = patch.permission.strip()
+    if permission and permission not in _VALID_PERMISSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid permission {permission!r}: expected one of "
+                   + ", ".join(repr(v) for v in _VALID_PERMISSIONS))
+    if not (model or effort or backend or permission):
+        raise HTTPException(
+            status_code=400,
+            detail="nothing to record (send model, effort, backend or permission)")
     record = tasks_store.record_settings(session_id, model, effort,
-                                         backend=backend)
+                                         backend=backend, permission=permission)
     # THE ROW CARRIES THIS PAIR (`_row_settings`), so the other windows have to
     # be told — the same ring `POST /api/tasks/read` makes for the same reason.
     # A session that is not a task is a key nobody is watching, and the notify
@@ -6785,7 +6823,8 @@ def api_task_settings(patch: SettingsPatch,
     return {"ok": True,
             "model": str(record.get("model") or ""),
             "effort": str(record.get("effort") or ""),
-            "backend": str(record.get("backend") or "")}
+            "backend": str(record.get("backend") or ""),
+            "permission": str(record.get("permission") or "")}
 
 
 # ------------------------------------------------------------------ archiving

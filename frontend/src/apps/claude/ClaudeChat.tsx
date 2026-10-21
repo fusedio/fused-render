@@ -47,6 +47,7 @@ import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
 import type { SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
+import type { PermissionMode } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
@@ -161,7 +162,6 @@ import { recapAnchor } from "./protocol/recap";
 import {
   queueEnabled,
   queueFlagReady,
-  useChatHeadsupEnabled,
   useProjectQueueEnabled,
   useTaskRecapTitlesEnabled,
 } from "./feature-flag";
@@ -3822,13 +3822,17 @@ function ChatBody(props: ChatBodyProps) {
       permission: defaults.permission,
       setModel: defaults.setModel,
       setEffort: defaults.setEffort,
-      setPermission: defaults.setPermission,
+      // The pill moves the param/record, AND a live run takes it now (no send).
+      setPermission: (value: PermissionMode) => {
+        defaults.setPermission(value);
+        void controller.applyPermission(value);
+      },
       backend: defaults.backend,
       backendFixed: defaults.backendFixed,
       setBackend: defaults.setBackend,
       ready: defaults.pillsReady,
     }),
-    [defaults],
+    [defaults, controller],
   );
 
   const actions = useMemo(
@@ -4810,7 +4814,6 @@ function ChatBody(props: ChatBodyProps) {
   // Heads-up notes (server: claude_agent/headsup.py): a side check polled while
   // a turn runs. Claude chats only. The card clears itself after the reader's
   // next two messages, counted off the transcript's own user rows.
-  const headsupOn = useChatHeadsupEnabled();
   const userTurnCount = useMemo(() => countUserTurns(state.turns), [state.turns]);
   // The heads-up's "Ask in chat" goes through the page's own send path, so the
   // send latch, outbox parking, queue admission and optimistic bubble all apply.
@@ -4825,7 +4828,7 @@ function ChatBody(props: ChatBodyProps) {
   const headsup = useHeadsUp({
     runId: state.runId || state.lastRunId || "",
     running,
-    enabled: headsupOn && inChat && chatBackend === "claude",
+    enabled: inChat && chatBackend === "claude",
     userTurns: userTurnCount,
     controller: headsupSend,
   });

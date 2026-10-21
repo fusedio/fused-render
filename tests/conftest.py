@@ -279,6 +279,17 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_ORIGIN",
 
 
 @pytest.fixture(autouse=True)
+def _no_real_session_count(monkeypatch):
+    """The Claude session cap counts live hosts under the REAL runs tree, which
+    on a developer machine with ten chats open would hold every scheduler test.
+    No agent module means nothing is running; `tests/test_session_cap.py` and
+    the cap tests stand their own agent in."""
+    from fused_render import session_cap
+
+    monkeypatch.setattr(session_cap, "_agent", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_git_auto_sync_threads(monkeypatch):
     """App-made commits and app opens must not spawn real background git
     fetch/push threads in every unrelated test (they would outlive the test's

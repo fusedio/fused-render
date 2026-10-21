@@ -971,6 +971,25 @@ def test_copilot_modes_prompt_auto_switch_live_accept_edits_respawns(agent, tmp_
     assert send_env == ["run-1"]
 
 
+def test_a_claude_switch_back_to_prompt_writes_an_explicit_default(agent, tmp_path, send_env):
+    """prompt must ride as `default`, never None: a None mode left a live
+    session unable to be tightened back to "ask"."""
+    run_dir = _live_run(agent, tmp_path, backend="claude", mode="auto")
+    assert agent._send("run-1", "m", permission_mode="prompt") == {"sent": True}
+    assert _inbox_rows(run_dir)[0]["request"] == {"subtype": "set_permission_mode",
+                                                  "mode": "default"}
+    with open(os.path.join(run_dir, "host.json")) as fh:
+        assert json.load(fh)["mode"] == "default"
+    # A host written before the fix (mode None) is moved to `default` too.
+    with open(os.path.join(run_dir, "host.json")) as fh:
+        host = json.load(fh)
+    host["mode"] = None
+    with open(os.path.join(run_dir, "host.json"), "w") as fh:
+        json.dump(host, fh)
+    assert agent._send("run-1", "m", permission_mode="prompt") == {"sent": True}
+    assert _inbox_rows(run_dir)[-2]["request"]["mode"] == "default"
+
+
 def test_leaving_accept_edits_respawns_and_plan_is_refused(agent, tmp_path, send_env):
     _live_run(agent, tmp_path, mode="acceptEdits")
     assert agent._send("run-1", "m", permission_mode="auto") == {"respawn": True}
@@ -1435,3 +1454,31 @@ def test_the_router_answers_the_handlers_own_refusal_with_400(client, monkeypatc
     r = client.post("/api/claude/agent", headers=FUSED,
                     json={"action": "poll", "run_id": "r"})
     assert r.status_code == 200
+
+
+def test_set_mode_writes_control_request_and_host_json_without_a_turn(agent, tmp_path, send_env):
+    run_dir = _live_run(agent, tmp_path, backend="claude", mode="default")
+    assert agent._set_mode("run-1", "acceptEdits") == {"ok": True, "mode": "acceptEdits"}
+    rows = _inbox_rows(run_dir)
+    assert [r["request"] for r in rows] == [{"subtype": "set_permission_mode",
+                                             "mode": "acceptEdits"}]
+    with open(os.path.join(run_dir, "host.json")) as fh:
+        assert json.load(fh)["mode"] == "acceptEdits"
+    # Already there: no second request.
+    assert agent._set_mode("run-1", "acceptEdits")["ok"] is True
+    assert len(_inbox_rows(run_dir)) == 1
+    assert agent._set_mode("nope", "auto") == {"error": "no such run"}
+
+
+def test_set_mode_copilot_plan_refused_and_accept_edits_respawns(agent, tmp_path, send_env):
+    _live_run(agent, tmp_path, backend="copilot", mode="default")
+    assert agent._set_mode("run-1", "plan")["reason"] == "unsupported"
+    assert agent._set_mode("run-1", "acceptEdits") == {"respawn": True}
+
+
+def test_set_mode_action_records_the_permission(agent, tmp_path, send_env, home):
+    _live_run(agent, tmp_path, backend="claude", mode="default")
+    out = agent.main(action="set_mode", run_id="run-1", permission_mode="auto")
+    assert out == {"ok": True, "mode": "auto"}
+    with open(os.path.join(home["unnested"], *agent.SESSION_SETTINGS)) as fh:
+        assert json.load(fh)[SID_COPILOT]["permission"] == "auto"

@@ -1370,3 +1370,14 @@ def test_update_writes_through_a_tmp_file_and_replace(state_dir, monkeypatch):
     src, dst, body = seen[-1]
     assert src != dst and src.startswith(dst) and "Fixed the login bug" in body
     assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a")["text"]
+
+
+def test_record_settings_round_trips_permission():
+    rec = tasks_store.record_settings("sid-1", permission="acceptEdits")
+    assert rec["permission"] == "acceptEdits"
+    # A later model-only write leaves it; junk is not stored.
+    tasks_store.record_settings("sid-1", model="haiku", permission="bogus")
+    state = tasks_store.settings_state()
+    assert tasks_store.session_permission(state, "sid-1") == "acceptEdits"
+    assert tasks_store.session_settings(state, "sid-1")[0] == "haiku"
+    assert tasks_store.session_permission(state, "nope") == ""
