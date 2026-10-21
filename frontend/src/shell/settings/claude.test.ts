@@ -19,7 +19,7 @@ describe("the settings.json rows", () => {
     ]);
     expect(rows.map((r) => r.section)).toEqual(["Model & reasoning", "Model & reasoning", "Permissions"]);
     for (const r of rows) {
-      expect(r.group).toBe("claude");
+      expect(r.group).toBe("claude-settings");
       expect(isClaudePref(r)).toBe(true);
       expect(r.id.startsWith(CLAUDE_PREF_PREFIX)).toBe(true);
     }
@@ -35,9 +35,13 @@ describe("the settings.json rows", () => {
     expect(find("sonnet")).toEqual(["model"]);
     expect(find("permissions")).toEqual(["permissions.defaultMode"]);
     expect(find("reasoning")).toEqual(["model", "effortLevel"]);
+    // The nav heading over the Settings group, as when they were one group of that name.
+    expect(find("claude code")).toEqual(["model", "effortLevel", "permissions.defaultMode"]);
   });
 
   test("a registry row is not one of them", () => {
-    expect(isClaudePref({ id: "claude-catalog", group: "claude", section: "", label: "", description: "", keywords: "" })).toBe(false);
+    expect(
+      isClaudePref({ id: "claude-catalog", group: "claude-settings", section: "", label: "", description: "", keywords: "" }),
+    ).toBe(false);
   });
 });

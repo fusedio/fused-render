@@ -532,9 +532,35 @@
    HOST draws. The strip and the top bar go; THE COMPOSER STAYS, which is the
    whole difference from compact — answering a question without leaving the wall
    is what the popup exists for (T:1434-1438). */
-.chat-root.chat-peek .c-topbar,
 .chat-root.chat-peek .c-anntools {
   display: none;
+}
+/* A peek that opts in (`headerInPeek`) keeps a slim one-line top bar: worktree
+   menu, hint chip, session id and the host's extra seat. */
+.chat-root.chat-peek:not(.chat-peek-head) .c-topbar {
+  display: none;
+}
+.chat-root.chat-peek-head .c-topbar {
+  min-height: 0;
+  padding: 6px 12px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.chat-root.chat-peek-head .c-topbar .chat-worktree-btn {
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-root.chat-peek-head .c-topbar .chat-worktree-menu {
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.chat-root.chat-peek-head .c-topbar .chat-worktree-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-root.chat-peek-head .c-topbar .c-tb-slim-extra {
+  flex: 0 0 auto;
 }
 /* Same halving as compact, for the same reason: the head above is the host's. */
 .chat-root.chat-peek .chat-log {
@@ -655,4 +681,68 @@
 .chat-root .c-chat.dropping {
   box-shadow: inset 0 0 0 2px var(--c-accent);
   background: color-mix(in srgb, var(--c-accent) 6%, var(--c-panel));
+}
+
+/* The host PR chip (shell/TaskPrChip) in the slim peek header. */
+.chat-root.chat-peek-head .task-pr-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  line-height: 18px;
+  white-space: nowrap;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  color: var(--c-dim);
+  text-decoration: none;
+}
+.chat-root.chat-peek-head .task-pr-chip:hover {
+  color: var(--c-fg);
+  border-color: var(--c-border-strong);
+}
+
+/* THE MERGED HEAD (`mergedHead`, the explorer's folder sidebar): `Back` leads
+   the identity row and the menu closes it, so the chat draws one header line.
+   The title gives way first; the two controls never shrink. */
+.chat-root .c-topbar.c-topbar-merged {
+  min-height: 0;
+  padding: 6px 12px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .c-back {
+  padding: 2px 8px;
+  line-height: 1.5;
+}
+.chat-root .c-topbar-merged .task-side-peek-who {
+  flex: 1 1 0;
+  min-width: 6em;
+  overflow: hidden;
+}
+.chat-root .c-topbar-merged .task-side-peek-agent {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* The pill must shrink with its wrapper, or it overflows onto the hint chip. */
+.chat-root .c-topbar-merged .chat-worktree-menu {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .chat-worktree-menu .chat-worktree-btn {
+  max-width: 100%;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .chat-worktree-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+}
+.chat-root .c-topbar-merged .c-tb-tail {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
