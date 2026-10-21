@@ -350,6 +350,23 @@ def quiet_apptools(monkeypatch):
     monkeypatch.setattr(agent_engine, "RETRY_SLEEP_S", 0.0)
 
 
+RISK = {"value": None}  # what the stubbed model assessment returns (None = the model failed)
+
+
+@pytest.fixture(autouse=True)
+def stub_risk(monkeypatch):
+    """Approval tests never make a real model call: the assessment is a stub."""
+    RISK["value"] = None
+    seen = []
+
+    def fake_assess(tool, tool_input, **kw):
+        seen.append((tool, tool_input))
+        return RISK["value"]
+
+    monkeypatch.setattr(agent_engine.permission_risk, "assess", fake_assess)
+    return seen
+
+
 @pytest.fixture
 def fake_cli(tmp_path, monkeypatch):
     body = f"#!{sys.executable}\nimport runpy\nrunpy.run_path({FAKE!r}, run_name='__main__')\n"
@@ -1567,3 +1584,39 @@ def test_super_bot_may_open_file_urls():
     assert not res.startswith("error")
     tools.execute(bot, "tab", {"tab": "new", "url": "file:///etc/hosts"}, {})
     assert bot.browser.calls == [("goto", "file:///etc/hosts"), ("tab_new", "file:///etc/hosts")]
+
+
+def test_approval_carries_severity_and_risk_summary(server, fake_cli, monkeypatch, stub_risk):
+    RISK["value"] = {"severity": "medium", "summary": "Runs the test suite."}
+    bot = super_bot()
+    t = start(bot, [_perm("Bash", command="make test"), {"result": "ran it"}], monkeypatch)
+    card = bot.wait_event("approval")
+    assert card["severity"] == "medium" and card["risk_summary"] == "Runs the test suite."
+    assert "summary" not in card  # router.render() would swap the card text for it
+    assert card["text"].startswith("About to run `make test`.") and card["detail"] == "run `make test`"
+    assert stub_risk[0] == ("Bash", {"command": "make test"})
+    bot.say("yes")
+    finish(t)
+
+
+def test_approval_omits_risk_fields_when_the_model_fails(server, fake_cli, monkeypatch):
+    RISK["value"] = None
+    bot = super_bot()
+    t = start(bot, [_perm("Bash", command="make test"), {"result": "ran it"}], monkeypatch)
+    card = bot.wait_event("approval")
+    assert "severity" not in card and "risk_summary" not in card
+    bot.say("yes")
+    finish(t)
+
+
+def test_bot_tool_gate_carries_risk(server, fake_cli, monkeypatch, stub_risk):
+    RISK["value"] = {"severity": "low", "summary": "Clicks a button."}
+    bot = FakeBot()
+    t = start(bot, [{"tool": "goto", "args": {"url": "https://shop.test/"}},
+                    {"tool": "click", "args": {"ref": "sb2"}},
+                    {"result": "Bought."}], monkeypatch)
+    ev = bot.wait_event("approval")
+    assert ev["severity"] == "low" and ev["risk_summary"] == "Clicks a button."
+    assert stub_risk[0][0] == "click" and stub_risk[0][1] == {"ref": "sb2"}
+    bot.say("approve")
+    finish(t)

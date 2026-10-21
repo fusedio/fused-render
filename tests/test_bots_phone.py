@@ -16,7 +16,7 @@ import pytest
 from fused_render.bots import agent_engine, apptools, steps_engine, tools
 from fused_render.bots import bot as botmod
 from fused_render.bots import paths as bpaths
-from fused_render.bots import registry
+from fused_render.bots import phone, registry
 
 P = "/api/phone/bots"
 DEV = {"X-Fused-Device": "a1b2c3d4e5f6"}
@@ -476,3 +476,9 @@ def test_forward_refuses_dot_segments(monkeypatch):
     for path in ("/api/phone/bots/../../bots/b1/takeover", "/api/phone/bots/./b1/send", "/api/bots/../bots/b1/tool"):
         assert asyncio.run(go(path)) == 404, path
     assert sent == []
+
+
+def test_phone_event_keeps_the_risk_fields():
+    ev = {"seq": 3, "role": "approval", "text": "About to run `ls`.", "severity": "low", "risk_summary": "Lists files."}
+    out = phone._event("b1", ev)
+    assert out["severity"] == "low" and out["risk_summary"] == "Lists files."

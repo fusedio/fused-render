@@ -3814,7 +3814,39 @@ export function laneTime(task: Task, lane: BoardColumn): number | null {
 
 // ---- the time a task ROW prints ----------------------------------------------
 
-export type TaskWhenKind = "next" | "last" | "active" | "none" | "draft";
+export type TaskWhenKind = "next" | "last" | "active" | "none" | "draft" | "created";
+
+/** The Tasks page's "Sort by" setting: the same status lanes either way, ordered
+ *  inside each by last change or by creation time (newest first). */
+export type TaskSortBy = "changed" | "created";
+
+/** Where the setting is remembered (localStorage: it is a preference). */
+export const TASKS_SORT_KEY = "fused-render:tasks-sort";
+
+export function readTaskSort(): TaskSortBy {
+  try {
+    return localStorage.getItem(TASKS_SORT_KEY) === "created" ? "created" : "changed";
+  } catch {
+    return "changed";
+  }
+}
+
+export function writeTaskSort(v: TaskSortBy): void {
+  try {
+    localStorage.setItem(TASKS_SORT_KEY, v);
+  } catch {
+    // A blocked store forgets the choice; the choice still applies this sitting.
+  }
+}
+
+/** When a task was created, epoch seconds: `started`, falling back to
+ *  `last_active` for rows that carry none (drafts), 0 when neither. */
+export function createdAt(task: Task): number {
+  const s = task.started;
+  if (typeof s === "number" && s > 0) return s;
+  const a = task.last_active;
+  return typeof a === "number" && a > 0 ? a : 0;
+}
 
 /** What a row prints when the task has no timestamp of any kind. An em dash and
  * not a blank: the time is the last cell of every row, so an empty one reads as a
@@ -3970,6 +4002,7 @@ export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
     // map is exhaustive by type and an omission here would be a compile error
     // rather than a missing word.
     draft: "",
+    created: "",
   };
   for (const [kind, at] of order) {
     if (at === null) continue;
@@ -3985,6 +4018,20 @@ export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
     kind: "none",
     text: NO_TIME,
     title: "No recorded activity yet",
+  };
+}
+
+/** The time cell under "Sort by: Created": the creation stamp. "changed"
+ *  is `taskWhen` itself. */
+export function taskWhenFor(task: Task, now: number = Date.now(), sortBy: TaskSortBy = "changed"): TaskWhen {
+  if (sortBy !== "created") return taskWhen(task, now);
+  const at = createdAt(task);
+  if (!at) return taskWhen(task, now);
+  return {
+    at,
+    kind: "created",
+    text: relativeWhen(Math.min(at, now / 1000), now),
+    title: `Created ${messageStamp(at)}`,
   };
 }
 
@@ -4089,6 +4136,7 @@ export function sortLane(
 export function groupByColumn(
   tasks: Task[],
   now: number = Date.now(),
+  sortBy: TaskSortBy = "changed",
 ): Map<BoardLane, Task[]> {
   const map = new Map<BoardLane, Task[]>(
     BOARD_LANES.map((c) => [c.key, [] as Task[]]),
@@ -4118,7 +4166,13 @@ export function groupByColumn(
     // moves for any other reason; and BEFORE the two partitions below, which is
     // what lets them stay the outer order (waiting still outranks a draft in
     // Blocked) while the hoist survives inside each of their halves.
-    map.set(col.key, hoistDrafts(sortLane(map.get(col.key)!, col.key, now)));
+    // Created keeps the lanes and only re-orders within them (user decision
+    // 2026-10-21); the partitions below stay as they are.
+    const lane = map.get(col.key)!;
+    map.set(
+      col.key,
+      hoistDrafts(sortBy === "created" ? byCreated(lane) : sortLane(lane, col.key, now)),
+    );
   }
   // WAITING FIRST, inside the one lane that holds two statuses. The lane's own
   // order (last run, descending) says nothing about which of its cards somebody
@@ -4173,7 +4227,7 @@ export function groupByColumn(
   const upcoming = map.get("upcoming");
   if (upcoming && upcoming.length > 1) {
     map.set("upcoming", [
-      ...byDraftClock(upcoming.filter((t) => isDraftTask(t))),
+      ...(sortBy === "created" ? byCreated : byDraftClock)(upcoming.filter((t) => isDraftTask(t))),
       ...upcoming.filter((t) => !isDraftTask(t)),
     ]);
   }
@@ -4423,8 +4477,8 @@ export const LIST_ORDER: BoardColumn[] = BOARD_COLUMNS.map((c) => c.key);
  * A new array; the input is never mutated (it is the polled list, which React is
  * still holding).
  */
-export function sortForList(tasks: Task[], now: number = Date.now()): Task[] {
-  const byLane = groupByColumn(tasks, now);
+export function sortForList(tasks: Task[], now: number = Date.now(), sortBy: TaskSortBy = "changed"): Task[] {
+  const byLane = groupByColumn(tasks, now, sortBy);
   return BOARD_LANES.flatMap((col) => byLane.get(col.key) ?? []);
 }
 
@@ -4438,6 +4492,14 @@ function hoistDrafts(lane: Task[]): Task[] {
   const rest: Task[] = [];
   for (const task of lane) (hasDraft(task) ? drafts : rest).push(task);
   return drafts.length ? [...drafts, ...rest] : lane;
+}
+
+/** One lane by creation time, newest first, the incoming order breaking ties. */
+function byCreated(lane: Task[]): Task[] {
+  return lane
+    .map((task, index) => ({ task, index, at: createdAt(task) }))
+    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map((r) => r.task);
 }
 
 /** The drafts at the head of Upcoming: newest words first, the server's order
@@ -5367,14 +5429,34 @@ export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
 // test that does not need a DOM — the same split repo-updates-lib.ts makes for
 // its own rows.
 
+/** What a notice calls the task: the reader's OWN newest message, so the card
+ *  names the thing they remember asking for, and stays put until they say
+ *  something new (a recap or reply line lands later and reads as a title that
+ *  changed under them). A renamed task, summary-only titles and a task nothing
+ *  has been said in yet keep the server `title` — `cardTitleLine` already
+ *  answers those. One short line. */
+export function taskNoticeTitle(task: TaskPulseTask): string {
+  const line = cardTitleLine({ ...task, last_message: null, recap: undefined }).text;
+  const said = task.last_message?.role === "user" ? firstLine(task.last_message.text ?? "") : "";
+  const keepsTitle = task.title_source === "renamed" || task.title_mode === "summary";
+  // A kept title that is EMPTY falls through to the message, never to "A task".
+  const text = (keepsTitle && line) || said || line || "A task";
+  const chars = Array.from(text);
+  return chars.length > 120 ? chars.slice(0, 119).join("").trimEnd() + "\u2026" : text;
+}
+
 /** One waiting task, as the Notifications section draws it. */
 export interface AttentionRow {
   /** React key, and the task's identity in the poll: its session/pending key. */
   key: string;
   /** The printed id — "TASK-097". */
   taskId: string;
-  /** The task's own title, for the row's second line. */
+  /** The task's own title. Also what a dismissal expires against, so it stays
+   *  the raw server title. */
   title: string;
+  /** What the row's second line prints: the same name the popup notice uses
+   *  (`taskNoticeTitle`), so the two never disagree about the task. */
+  label?: string;
   /** Where clicking the row lands — always a real destination (see below). */
   href: string;
   /** Who raised this row — the row-level counterpart to `Job.origin`/a
@@ -5413,6 +5495,7 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       key: task.key,
       taskId: task.task_id,
       title: task.title,
+      label: taskNoticeTitle(task),
       href: taskHref(task) ?? folderHref(task) ?? "/tasks",
       // ADDITION 1 (live testing, 2026-09-17): `project` FIRST, matching
       // `folderHref`'s (schedule-lib.ts) own established order — do NOT swap
@@ -6127,10 +6210,10 @@ export const prRefOf = (task: Task): PrRef | null => prRefsOf(task)[0] ?? null;
 /** Which day-bucket a moment falls in, newest first in the order below. */
 const TIME_BUCKETS = ["Later", "Last hour", "Today", "Yesterday", "This week", "Earlier", "No date"] as const;
 
-function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
+function timeBucketOf(task: Task, now: number, sortBy: TaskSortBy = "changed"): (typeof TIME_BUCKETS)[number] {
   // THE ROW'S OWN STAMP (taskWhen) — the moment its time cell prints — so a row
   // reading "2d ago" can never sit under Today.
-  const w = taskWhen(task, now);
+  const w = taskWhenFor(task, now, sortBy);
   if (w.kind === "next") return "Later";
   if (w.kind === "none" || !w.at) return "No date";
   const when = new Date(w.at * 1000);
@@ -6185,8 +6268,11 @@ export function groupRows(
   by: TaskGroupBy,
   home = "",
   now: number = Date.now(),
+  sortBy: TaskSortBy = "changed",
   prStatus?: (key: string) => PrState | null | undefined,
 ): TaskGroup[] {
+  // Under "created" a section's recency is its newest creation time.
+  const activity = (t: Task) => (sortBy === "created" ? createdAt(t) : activityAt(t, now));
   const groups = new Map<string, TaskGroup>();
   const put = (key: string, label: string, task: Task) => {
     let g = groups.get(key);
@@ -6195,11 +6281,11 @@ export function groupRows(
       groups.set(key, g);
     }
     g.rows.push(task);
-    g.recentAt = Math.max(g.recentAt, activityAt(task, now));
+    g.recentAt = Math.max(g.recentAt, activity(task));
   };
   if (by === "time") {
     for (const task of rows) {
-      const b = timeBucketOf(task, now);
+      const b = timeBucketOf(task, now, sortBy);
       put(b, b, task);
     }
     return TIME_BUCKETS.map((b) => groups.get(b)).filter((g): g is TaskGroup => !!g);
@@ -6270,7 +6356,7 @@ export function groupRows(
       bucket.refs.push(ref);
     }
   }
-  const recentOf = (list: Task[]) => list.reduce((m, t) => Math.max(m, activityAt(t, now)), 0);
+  const recentOf = (list: Task[]) => list.reduce((m, t) => Math.max(m, activity(t)), 0);
   const out: TaskGroup[] = [...repos.keys()]
     .map((repo) => {
       const slug = repo === UNKNOWN ? "?" : repo;

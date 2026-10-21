@@ -62,7 +62,7 @@ import type { TaskPulseTask } from "@platform/lib/api";
 import type { NotificationInput } from "@platform/lib/notifications";
 import { labelForSource } from "@platform/lib/format";
 import { agentLabel, agentNamed } from "@platform/lib/agent-backends";
-import { taskColumn } from "@shell/tasks-lib";
+import { taskColumn, taskNoticeTitle as noticeTitle } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
 
@@ -239,13 +239,14 @@ export function notificationForTransition(
   if (column === previous) return null;
 
   if (column === "needs_attention") {
-    return { title: `${task.title || "A task"} needs your input` };
+    return { title: `${noticeTitle(task)} needs your input` };
   }
   if (previous === "in_progress" && column === "blocked") {
     return {
-      title: `${task.title || "A task"} failed`,
+      title: `${noticeTitle(task)} failed`,
       tone: "error",
       page: taskDestination(task),
+      familyKey: `task-failed:${task.key}`,
     };
   }
   if (previous === "in_progress" && column === "done") {
@@ -312,7 +313,7 @@ export function notificationForTransition(
       normalizedDestination !== "/" &&
       isDestinationOpen(normalizedDestination);
     return {
-      title: titleWithoutCaption(task.title || "A task", caption),
+      title: titleWithoutCaption(noticeTitle(task), caption),
       // "Finished" moves OUT of the title and into `detail` (`.dl-model`,
       // MessageRowView's `secondary`) rather than staying baked into the
       // title string or landing in `status`: `status` is already spoken for

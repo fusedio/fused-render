@@ -149,7 +149,8 @@ import {
   taskUnreadLabel,
   cardTitleLine,
   recapTitlesOn,
-  taskWhen,
+  taskWhenFor,
+  type TaskSortBy,
   threadView,
   tildePath,
   toggleExpanded,
@@ -2207,6 +2208,7 @@ export function TaskList({
   floored = false,
   emptyLabel = "Nothing to show here.",
   groupBy = null,
+  sortBy = "changed",
   onNewTaskIn,
 }: {
   /** The Project view's + on a folder's heading (Akshil, 2026-10-19): open
@@ -2218,6 +2220,9 @@ export function TaskList({
    *  Project / PR views, tasks-lib.groupRows). null ⇒ the plain List. Rows keep
    *  the List's order inside every section. */
   groupBy?: TaskGroupBy | null;
+  /** The page's "Sort by" (tasks-lib.TaskSortBy): last change (lanes, today's
+   *  order) or creation time, newest first. */
+  sortBy?: TaskSortBy;
   /** A queue verb landed here: paint the claim over the row until the server's
    * own answer arrives (tasks-lib.QueueOverride). The page holds the claims —
    * see TaskBoard's own note for why they must outlive this component. */
@@ -2389,7 +2394,7 @@ export function TaskList({
   // resolution the rows print anyway — so this re-sorts sixty times an hour, not
   // once a second.
   const now = useNow();
-  const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);
+  const sorted = useMemo(() => sortForList(tasks, now, sortBy), [tasks, now, sortBy]);
   // The grouped views cut the sorted list into sections and draw them one frame
   // each; `rows` stays the flat, in-order list every index below is about.
   // THE PR VIEW SECTIONS BY GITHUB STATUS, asked of the server for the PRs
@@ -2404,9 +2409,9 @@ export function TaskList({
   );
   const prStatuses = usePrStatuses(visiblePrKeys);
   const groups = useMemo(
-    () => (groupBy ? groupRows(sorted, groupBy, home, now, (k) => prStatuses[k]) : null),
+    () => (groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `prStatuses` is a fresh object each render; its values are the dep
-    [sorted, groupBy, home, now, visiblePrKeys.map((k) => prStatuses[k] ?? "").join(",")],
+    [sorted, groupBy, home, now, sortBy, visiblePrKeys.map((k) => prStatuses[k] ?? "").join(",")],
   );
   const rows = useMemo(() => (groups ? flattenGroups(groups) : sorted), [groups, sorted]);
   // The pull request each row stands for (PR view only): a task naming two PRs
@@ -2907,6 +2912,7 @@ export function TaskList({
         // The PR view's `#N` chip takes the folder chip's slot (see PrNumChip).
         showProject={showProject && !rowRefs?.[ix]}
         prRef={rowRefs?.[ix] ?? null}
+        sortBy={sortBy}
         folderMissing={missing?.has(taskFolder(task)) ?? false}
         open={expanded.has(task.key)}
         peekOn={peekOn}
@@ -3171,6 +3177,7 @@ function TaskNode({
   home,
   showProject,
   prRef = null,
+  sortBy = "changed",
   folderMissing,
   open: requested,
   variant = "task",
@@ -3212,6 +3219,8 @@ function TaskNode({
   /** The PR view's row: the pull request this copy of the task stands for.
    *  Replaces the folder chip with a `#N` link to GitHub. */
   prRef?: PrRef | null;
+  /** Which time the row's last cell prints: its last change, or its creation. */
+  sortBy?: TaskSortBy;
   /** The task's folder is gone from the disk (useMissingFolders). The row then
    * has nowhere to go: its press raises a toast instead of leaving for an
    * Explorer that can only answer with a stat error. */
@@ -3451,7 +3460,7 @@ function TaskNode({
   // every row in a list re-letters in ONE paint — two rows flipping "59m ago" to
   // "1h ago" a second apart is two cells of one column disagreeing.
   const now = useNow();
-  const when = taskWhen(task, now);
+  const when = taskWhenFor(task, now, sortBy);
   // A run still ahead — the mark after the title, clock or circle arrows
   // (tasks-lib.scheduledMark). No chip beside the time any more (Akshil,
   // 2026-09-11: "we don't need to show time 2 times on the right side").

@@ -53,6 +53,9 @@ export interface BotEvent {
   /** approval: the rule the card's third button writes (send with `forever: true`); absent when this call may never
    *  be remembered (bot management, a phone-started task). `label` is the sentence the user approves. */
   forever?: AllowRule;
+  /** approval: the model's read of the call (agent_engine._risk_fields); both absent when the assessment failed. */
+  severity?: "low" | "medium" | "high";
+  risk_summary?: string;
   offer?: Offer;
   app?: AppRef;
   reply?: ReplyRef;
@@ -65,7 +68,9 @@ export interface BotEvent {
   handoff?: HandoffRef;
   /** A hand-off target's card relayed into Super Bot's chat (docs §11 relay): which bot waits on which card, and its
    *  choices. The card's buttons here post to THAT bot; Super Bot itself never answers it. */
-  relay?: { bot: string; seq: number; kind: "approval" | "question"; options: string[] };
+  relay?: { bot: string; seq: number; kind: "approval" | "question"; options: string[];
+    /** An approval relay only: the target's own card text and bare preview, so the card splits command from why (approvalParts). */
+    text?: string; detail?: string };
   /** source "build": the build that stopped moving (permission card, question, failure, usage limit); renders as a build card. */
   build?: BuildRef;
   /** A "Sent to Super Bot" line: the card it became in Super Bot's chat ("Read more" opens that chat there). */

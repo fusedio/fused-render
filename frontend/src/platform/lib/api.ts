@@ -4095,7 +4095,15 @@ export type TaskPulseTask = Pick<
   | "backend"
   | "canvas"
   | "background_jobs"
->;
+  // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the newest
+  // user message, unless renamed / summary-only) — optional, each absent with
+  // its flag off or on an older server. Recap titles are deliberately NOT
+  // here: the notice ignores them, the Tasks cards do not.
+  | "title_mode"
+  | "last_message"
+> &
+  // Optional: a pulse row from a server that predates it carries none.
+  Partial<Pick<Task, "title_source">>;
 
 /** The model / thinking a NEW task opens on: the global Claude preference
  *  (`~/.claude/settings.json` `model` / `effortLevel`, the pair the Claude

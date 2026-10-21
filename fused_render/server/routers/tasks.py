@@ -6343,6 +6343,25 @@ _PULSE_FIELDS = (
 )
 
 
+# What the finished / failed / needs-input notice names a task by
+# (task-status-notify `noticeTitle`): the reader's newest message, unless the
+# task was renamed or summary-only titles are on. `title_mode` is ABSENT with
+# its flag off, so these ride only when the row has them.
+_PULSE_TITLE_FIELDS = ("title_source", "title_mode", "last_message")
+
+
+def _pulse_row(row: dict) -> dict:
+    out = {field: row.get(field) for field in _PULSE_FIELDS}
+    for field in _PULSE_TITLE_FIELDS:
+        if field not in row:
+            continue
+        value = row[field]
+        if field == "last_message" and isinstance(value, dict):
+            value = {**value, "text": str(value.get("text") or "")}
+        out[field] = value
+    return out
+
+
 @router.get("/api/tasks/pulse")
 def api_tasks_pulse():
     """The compact task facts used by the global sidebar's status pulse.
@@ -6360,7 +6379,7 @@ def api_tasks_pulse():
     listing already pays. Server-side since D1386 — see `api_tasks_seen`."""
     return {
         "tasks": [
-            {field: row.get(field) for field in _PULSE_FIELDS}
+            _pulse_row(row)
             for row in _task_rows()
             if row.get("kind") != "draft"
         ],

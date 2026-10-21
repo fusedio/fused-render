@@ -160,6 +160,11 @@ import {
   taskUnread,
   taskUnreadLabel,
   taskWhen,
+  taskWhenFor,
+  createdAt,
+  readTaskSort,
+  writeTaskSort,
+  TASKS_SORT_KEY,
   threadView,
   tildePath,
   toggleExpanded,
@@ -8699,14 +8704,16 @@ describe("sortForList: the page's one order", () => {
     // `now` is a dep since 2026-09-15 — half of what `sortForList` decides is "is
     // this scheduled for LATER", which goes stale with the clock and nothing else.
     expect(VIEWS).toContain(
-      "const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);",
+      "const sorted = useMemo(() => sortForList(tasks, now, sortBy), [tasks, now, sortBy]);",
     );
     // The plain List draws straight off that order, with nothing between the
     // rows. The grouped views (Time / Project / PR, 2026-10-16) are the one
     // OPT-IN exception: a reader who put a grouped tab on the row asked for the
     // cut, and `rows` is still the sorted list, flattened in section order.
     expect(VIEWS).toContain('<div className="tasks-list-frame">{rows.map(rowAt)}</div>');
-    expect(VIEWS).toContain("groupBy ? groupRows(sorted, groupBy, home, now, (k) => prStatuses[k]) : null");
+    expect(VIEWS).toContain(
+      "groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null",
+    );
     // The index rides along ONLY so the row can take its React key from
     // `taskListKeys` (the queue's identity rule).
     expect(VIEWS).toContain("key={rowKeys[ix]}");
@@ -11677,7 +11684,7 @@ describe("groupRows", () => {
     const rowsIn = [1, 2, 3, 4, 5, 6].map((n) =>
       row({ key: `t${n}`, title: `PR #${n}`, repo: "x/y", last_active: sec("2026-10-16T14:00:00") }),
     );
-    const g = groupRows(rowsIn, "pr", "", NOW, (k) => states[k]);
+    const g = groupRows(rowsIn, "pr", "", NOW, "changed", (k) => states[k]);
     expect(g).toHaveLength(1);
     expect(g[0]?.groups?.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([
       ["Open", ["t2", "t5"]],
@@ -11696,7 +11703,7 @@ describe("groupRows", () => {
       last_active: sec("2026-10-16T14:00:00"),
     });
     const none = row({ key: "none", title: "plain", last_active: sec("2026-10-16T13:00:00") });
-    const g = groupRows([two, none], "pr", "", NOW, (k) => (k === "x/y#1" ? "merged" : "open"));
+    const g = groupRows([two, none], "pr", "", NOW, "changed", (k) => (k === "x/y#1" ? "merged" : "open"));
     expect(g.map((x) => x.label)).toEqual(["x/y", "No PR"]);
     const flat = flattenGroups(g);
     expect(flat.map((r) => r.key)).toEqual(["two", "two", "none"]);
@@ -11908,5 +11915,99 @@ describe("a live background job under a finished turn", () => {
     const t = task({ status: "done", background_jobs: held(1) });
     expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["in_progress"] })).toBe(true);
     expect(taskMatches(t, { ...EMPTY_FILTERS, statuses: ["done"] })).toBe(false);
+  });
+});
+
+describe("Sort by: Created", () => {
+  const T = Date.parse("2026-10-16T15:00:00");
+  const sec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const row = (over: Partial<Task>): Task => task({ messages: [], ...over }, 0);
+  const rows: Task[] = [
+    row({ key: "old", started: sec("2026-10-01T09:00:00"), last_active: sec("2026-10-16T14:50:00") }),
+    row({ key: "new", started: sec("2026-10-15T09:00:00"), last_active: sec("2026-10-02T09:00:00") }),
+    row({ key: "noStart", started: 0, last_active: sec("2026-10-10T09:00:00") }),
+  ];
+  it("createdAt falls back to last_active, then 0", () => {
+    expect(createdAt(rows[0]!)).toBe(sec("2026-10-01T09:00:00"));
+    expect(createdAt(rows[2]!)).toBe(sec("2026-10-10T09:00:00"));
+    expect(createdAt(row({ started: undefined, last_active: 0 }))).toBe(0);
+  });
+  it("within one lane rows order by creation, newest first; ties keep input order; last_active fallback", () => {
+    expect(sortForList(rows, T, "created").map((t) => t.key)).toEqual(["new", "noStart", "old"]);
+    const tie = [row({ key: "a", started: 100 }), row({ key: "b", started: 100 }), row({ key: "c", started: 100 })];
+    expect(sortForList(tie, T, "created").map((t) => t.key)).toEqual(["a", "b", "c"]);
+  });
+  it("keeps the status lanes: a Done task created today sorts below older In Progress and Blocked ones", () => {
+    const rs = [
+      row({ key: "doneNew", status: "done", started: sec("2026-10-16T14:00:00") }),
+      row({ key: "runOld", status: "in_progress", live: true, started: sec("2026-10-01T09:00:00") }),
+      row({ key: "blockedOld", status: "blocked", started: sec("2026-10-02T09:00:00") }),
+    ];
+    const keys = sortForList(rs, T, "created").map((t) => t.key);
+    expect(keys.indexOf("runOld")).toBeLessThan(keys.indexOf("blockedOld"));
+    expect(keys.indexOf("blockedOld")).toBeLessThan(keys.indexOf("doneNew"));
+  });
+  it("an archived task created most recently still sorts last", () => {
+    const rs = [
+      row({ key: "arch", status: "archived", started: sec("2026-10-16T14:00:00") }),
+      row({ key: "done", status: "done", started: sec("2026-10-01T09:00:00") }),
+    ];
+    expect(sortForList(rs, T, "created").map((t) => t.key)).toEqual(["done", "arch"]);
+  });
+  it("within Blocked an older needs-attention task stays above a newer blocked one", () => {
+    const rs = [
+      row({ key: "blockedNew", status: "blocked", started: sec("2026-10-15T09:00:00") }),
+      row({ key: "attnOld", status: "needs_attention", started: sec("2026-10-01T09:00:00") }),
+    ];
+    expect(sortForList(rs, T, "created").map((t) => t.key)).toEqual(["attnOld", "blockedNew"]);
+  });
+  it("orders each lane by creation inside the lane", () => {
+    const rs = [
+      row({ key: "d1", status: "done", started: 100 }),
+      row({ key: "d2", status: "done", started: 300 }),
+      row({ key: "d3", status: "done", started: 0, last_active: 200 }),
+    ];
+    expect(sortForList(rs, T, "created").map((t) => t.key)).toEqual(["d2", "d3", "d1"]);
+  });
+  it("the default argument is today's order", () => {
+    expect(sortForList(rows, T).map((t) => t.key)).toEqual(sortForList(rows, T, "changed").map((t) => t.key));
+  });
+  it("time buckets use the creation time", () => {
+    const g = groupRows(sortForList(rows, T, "created"), "time", "", T, "created");
+    expect(g.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([
+      ["Yesterday", ["new"]],
+      ["This week", ["noStart"]],
+      ["Earlier", ["old"]],
+    ]);
+    const none = groupRows([row({ key: "z", started: 0, last_active: 0 })], "time", "", T, "created");
+    expect(none.map((x) => x.label)).toEqual(["No date"]);
+  });
+  it("project sections order by newest created", () => {
+    const rs = [
+      row({ key: "a", project: "/p/a", started: 100, last_active: 9000 }),
+      row({ key: "b", project: "/p/b", started: 500, last_active: 200 }),
+    ];
+    expect(groupRows(rs, "project", "", T, "created").map((g) => g.label)).toEqual(["b", "a"]);
+  });
+  it("the time cell prints the creation stamp", () => {
+    const w = taskWhenFor(rows[0]!, T, "created");
+    expect(w.kind).toBe("created");
+    expect(w.title.startsWith("Created ")).toBe(true);
+    expect(taskWhenFor(rows[0]!, T).kind).toBe(taskWhen(rows[0]!, T).kind);
+  });
+  it("readTaskSort: garbage and a blocked store give 'changed'", () => {
+    const store = new Map<string, string>();
+    (globalThis as any).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    };
+    expect(readTaskSort()).toBe("changed");
+    store.set(TASKS_SORT_KEY, "banana");
+    expect(readTaskSort()).toBe("changed");
+    writeTaskSort("created");
+    expect(readTaskSort()).toBe("created");
+    (globalThis as any).localStorage = { getItem: () => { throw new Error("blocked"); } };
+    expect(readTaskSort()).toBe("changed");
+    delete (globalThis as any).localStorage;
   });
 });
