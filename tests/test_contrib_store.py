@@ -1037,7 +1037,7 @@ def test_sign_in_upgrade_with_flags_off_is_their_repo_auto_pushing(world, monkey
 def test_unknown_owner_wording_never_promises_the_edits_stay(world):
     """Final gate (R7): a GitHub-link copy whose owner fused couldn't ask
     about may turn out to be yours (then it publishes) — Doctor and the git
-    panel say "until Fused knows whether this app is yours"."""
+    panel say "until fused knows whether this app is yours"."""
     import importlib.util
 
     from fused_render import app_doctor
@@ -1045,16 +1045,16 @@ def test_unknown_owner_wording_never_promises_the_edits_stay(world):
     bob = _install(world)  # signed out: owner unchecked
     _sync(bob)
     row = app_doctor._contrib_git_row(bob)
-    assert row["detail"] == ("Your changes stay on this computer until Fused knows "
+    assert row["detail"] == ("Your changes stay on this computer until fused knows "
                              "whether this app is yours.")
     ops_path = os.path.join(os.path.dirname(app_git.__file__), "templates", "git", "ops.py")
     spec = importlib.util.spec_from_file_location("ops_for_contrib_test", ops_path)
     ops = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ops)
-    assert ops._push_blocked(bob).endswith("until Fused knows whether this app is yours.")
+    assert ops._push_blocked(bob).endswith("until fused knows whether this app is yours.")
     store.update(bob, lambda r: r.__setitem__("owner_checked", True))
     _sync(bob)
-    assert "until Fused knows" not in ops._push_blocked(bob)
+    assert "until fused knows" not in ops._push_blocked(bob)
     assert "until you propose them" in app_doctor._contrib_git_row(bob)["detail"]
 
 

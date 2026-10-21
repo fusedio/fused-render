@@ -417,6 +417,12 @@ def _facts(root, branch) -> _Facts | None:
     # then nothing says which of HEAD's commits GitHub once had.
     unknown = not dropped and (not earlier
                                or not _published_in_head(root, head, tip, mb, values))
+    if unknown and not earlier and _made_here(root, held):
+        # A fresh clone (a second Mac): R is only the tip, but every commit
+        # HEAD has beyond it was made in this folder, with reflogs on — had
+        # any been published from here, the tracking ref's reflog would say
+        # so. Nothing in U was ever on GitHub: safe.
+        unknown = False
     ok = not unknown and not dropped
     f = _Facts(branch=branch, head=head, tip=tip, tip_in_head=mb == tip, ok=ok,
                unknown=unknown, reason=None if ok else ("unknown" if unknown else "dropped"))
@@ -426,6 +432,37 @@ def _facts(root, branch) -> _Facts | None:
         f.u = [row.split()[0] for row in u_rows if row]
         f.u_merges = any(len(row.split()) > 2 for row in u_rows)
     return f
+
+
+#: HEAD reflog messages that record a commit CREATED in this folder.
+_MADE_HERE = ("commit:", "commit (", "cherry-pick:", "revert:", "rebase")
+
+
+def _made_here(root, commits) -> bool:
+    """Every commit in `commits` was created in this folder — HEAD's reflog
+    records it as a local commit/merge/amend/cherry-pick/revert/rebase
+    step — and reflogs are on (`core.logAllRefUpdates` not false), so a
+    push from here would have logged the tracking ref. False when unsure."""
+    if not commits:
+        return False
+    logging_on = gu._out(replay.git(root, "config", "--bool", "core.logAllRefUpdates"))
+    if logging_on == "false":
+        return False
+    path = gu._out(replay.git(root, "rev-parse", "--git-path", "logs/HEAD"))
+    if path and not os.path.isabs(path):
+        path = os.path.join(root, path)
+    made = set()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                parts = line.split(" ", 2)
+                msg = line.partition("\t")[2]
+                if len(parts) >= 2 and (msg.startswith(_MADE_HERE)
+                                        or (msg.startswith("merge ") and "Merge made" in msg)):
+                    made.add(parts[1])
+    except OSError:
+        return False
+    return all(c in made for c in commits)
 
 
 def _published_in_head(root, head, tip, mb, values) -> bool:

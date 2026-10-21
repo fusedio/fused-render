@@ -213,13 +213,34 @@ def test_row9_fast_forward_says_what_came_in(w):
     assert res["status"] == "synced"
     assert w.head() == a
     assert _texts(w)[-1] == "Got alice's latest: “Add notes”."
-    assert _backups(w) == []
+    assert store.activity(w.app)[0]["undo"]             # every automatic move has Undo
     _remote_untouched(w, a)
     assert (store.get(w.app) or {}).get("last_checked")
     assert store.get(w.app)["last_head"] == a           # adoption after a Finder move
     mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     engine.status(w.app)
     assert store.get(w.app)["last_head"] == mine
+
+
+@pytest.mark.parametrize("bob_has_changes", [False, True])
+def test_undo_of_an_automatic_update_holds_that_tip(w, bob_has_changes):
+    """Acceptance step 2: an automatic fast-forward / clean merge line has
+    Undo; Undo goes back to the old HEAD and the next sync does not bring
+    the same update straight back (Keep mine), while Bring in still does.
+    fused's own "Claude: " commit prefix never reaches the line."""
+    before = w.head()
+    if bob_has_changes:
+        before = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    tip = _alice(w, {"NOTES.md": "n\n"}, "Claude: Add notes")
+    assert w.sync()["status"] == "synced" and _anc(w, tip, w.head())
+    line = store.activity(w.app)[0]
+    assert line["undo"] and "Claude:" not in line["text"] and "“Add notes”" in line["text"]
+    assert engine.restore(w.app, line["id"])["ok"]
+    assert w.head() == before
+    assert store.get(w.app)["skip_tip"] == tip
+    assert w.sync()["why"] == "kept-mine" and w.head() == before
+    assert engine.status(w.app)["kept_mine"]
+    assert engine.bring_in(w.app)["ok"] and _anc(w, tip, w.head())
 
 
 def test_row8_noop_keeps_bobs_commit(w):
@@ -247,7 +268,8 @@ def test_row11_clean_merge_keeps_bobs_commit_ids_r14(w):
         assert w.g("rev-list", "--parents", "-n", "1", "HEAD").split()[1:] == \
             [w.g("rev-parse", "HEAD^1"), tip]
         _remote_untouched(w, tip)
-    assert _backups(w) == []
+    # Every automatic bring-in is undoable: one pin of the old HEAD each.
+    assert len(_backups(w)) == 3 and all(e["backup"] for e in _activity(w))
     assert _texts(w)[-1] == "Brought in alice's “notes 2”, your changes kept."
     assert read(w.app, "index.html") == PAGE.replace("blue", "red")
     assert read(w.app, "app.py") == APP_LOUD

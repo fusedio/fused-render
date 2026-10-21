@@ -514,6 +514,32 @@ def test_V3b_unknown_rewind_holds_an_ahead_only_publish(env):
     assert ownsync.status(env.lap)["state"] == "published"
 
 
+def test_fresh_clone_first_edit_publishes(env):
+    """A plain clone of her own repo on a second Mac: nothing seen, no
+    tracking reflog — but every new commit was made right here (HEAD's
+    reflog), so the first Claude edit publishes, it is not held."""
+    _forget_seen(env)
+    log = os.path.join(env.lap, ".git", "logs", "refs", "remotes", "origin", "main")
+    assert not os.path.exists(log)                 # a clone writes none
+    mine = _commit(env.lap, "c.txt", "c\n", "Claude: c")
+    res = _sync(env.lap)
+    assert res["status"] == "synced" and res["pushed"] is True and _remote(env) == mine
+    assert ownsync.hold_of(env.lap) is None
+
+
+def test_fresh_clone_with_a_commit_from_elsewhere_stays_held(env):
+    """U holds a commit this folder did not make (fetched in by hand, never
+    seen published here): still unknown, held."""
+    _forget_seen(env)
+    git(env.other, "pull", "-q", "--ff-only", "origin", "main")
+    foreign = _commit(env.other, "f.txt", "f\n", "made elsewhere")
+    git(env.lap, "fetch", "-q", env.other, "main")
+    git(env.lap, "merge", "-q", "--ff-only", foreign)
+    res = _sync(env.lap)
+    assert res["status"] == "skipped" and res["why"] == "held"
+    assert ownsync.status(env.lap)["state"] == "unknown"
+
+
 def test_held_after_upgrade_never_publishes_until_the_button(env):
     """§16.12: github→own upgrade with unpublished edits sets the hold
     (ws-guard, `ownsync.set_hold`); every automatic sync keeps it, Publish

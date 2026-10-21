@@ -1615,7 +1615,7 @@ def _push_blocked(root):
     # `fused.ownerunknown`: log.py's twin — whose app this is is not known yet.
     code, out, _err = _run(root, "config", "--local", "--get", "fused.ownerunknown")
     unknown = code == 0 and out.decode("utf-8", "replace").strip() == "true"
-    until = " until Fused knows whether this app is yours" if unknown else ""
+    until = " until fused knows whether this app is yours" if unknown else ""
     if _app_page_on():
         return f"This app follows {who}{until}. Send your changes from its app page."
     return f"This copy of {who} has changes of its own, and they stay on this computer{until}."

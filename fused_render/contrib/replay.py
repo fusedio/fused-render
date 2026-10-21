@@ -25,7 +25,8 @@ tip the new one does not contain — or over a local file the new tip adds —
 the old tip is pinned at `refs/fused/backup/<unix_ms>-<why>` (and the
 uncommitted edits, untracked files included, at `…-wip` —
 `wip_commit_locked`). A fast-forward or a merge commit whose first parent is
-HEAD pins nothing: the old tip stays in the new tip's history. `land` answers
+HEAD drops nothing, but an automatic one still pins the old tip
+(`undoable=True`) so its Activity line can offer Undo. `land` answers
 the ref it wrote so the engine can name it on the Activity line that offers
 Undo. The refs are NEVER deleted while an activity line references them;
 `prune_backups_locked` drops only unreferenced ones older than 30 days.
@@ -804,10 +805,13 @@ def land(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str | None
         return land_locked(root, branch=branch, old_tip=old_tip, new_tip=new_tip, why=why)
 
 
-def land_locked(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str | None]:
+def land_locked(root, *, branch, old_tip, new_tip, why,
+                undoable=False) -> tuple[str | None, str | None]:
     """`land`'s body; the caller holds the slot. `(None, backup)` when the
     branch moved to `new_tip` (`backup` None for a move that keeps the old
-    tip in history and overwrites no local file), else `(reason, None)`:
+    tip in history and overwrites no local file — unless `undoable`: an
+    automatic move whose Activity line offers Undo pins the old tip even
+    then), else `(reason, None)`:
     `moved` (the branch is not at `old_tip`, or a commit raced in),
     `in-progress` (an operation in flight) or `reset-refused` (the backup or
     `reset --keep` failed — an uncommitted edit overlapping the move).
@@ -829,7 +833,7 @@ def land_locked(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str
     refs = []
     if new_tip != old_tip:
         clobber = clobber_paths(root, old_tip, new_tip)
-        if clobber or not is_ancestor(root, old_tip, new_tip):
+        if clobber or undoable or not is_ancestor(root, old_tip, new_tip):
             refs = backup_locked(root, old_tip, why=why, also=clobber)
             if not refs or (clobber and not any(r.endswith("-wip") for r in refs)):
                 unbackup_locked(root, refs)

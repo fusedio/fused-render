@@ -572,7 +572,7 @@ def _push_blocked(root):
     # if it turns out to be yours, it publishes as usual from then on.
     unknown = _git(root, "config", "--local", "--get", "fused.ownerunknown",
                    allow=(0, 1)).decode("utf-8", "replace").strip() == "true"
-    until = " until Fused knows whether this app is yours" if unknown else ""
+    until = " until fused knows whether this app is yours" if unknown else ""
     if _app_page_on():
         return f"This app follows {who}{until}. Send your changes from its app page."
     return f"This copy of {who} has changes of its own, and they stay on this computer{until}."

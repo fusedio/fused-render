@@ -10,9 +10,13 @@ changes are whatever HEAD has that the tip does not. The author's latest
 comes in by MERGING it (P4): a fast-forward when Bob has nothing of his own,
 else a merge commit whose first parent is Bob's HEAD — so Bob's commits keep
 their ids forever (a version-history link he kept still works, a proposal's
-`sent` stays in HEAD) and a merge drops nothing, so it needs no backup. The
-only rewrite of Bob's commits is A4's return (row 7), which re-applies
-exactly the edits he made after sending onto the author's tip.
+`sent` stays in HEAD). The only rewrite of Bob's commits is A4's return
+(row 7), which re-applies exactly the edits he made after sending onto the
+author's tip. EVERY automatic move is undoable (owner: automatic is fine,
+a manual fix must exist): even a fast-forward or a merge, which drop
+nothing, pin the old HEAD (`_land(undoable=True)`), and Undo of such a
+line goes back there and sets `skip_tip` so the next sync does not bring
+the same update straight back (Bring in stays offered).
 
 THE ENGINE NEVER PUSHES (P2). No automatic path here sends anything
 anywhere; `push_to_main` is the one push, an explicit collaborator action,
@@ -67,6 +71,7 @@ from dataclasses import dataclass
 import hashlib
 import logging
 import os
+import re
 import threading
 import time
 
@@ -206,7 +211,9 @@ def _subjects(root, a, b) -> str:
     `a..b` (first parent), "…and N more". The author's own text."""
     rng = f"{a}..{b}" if a else b
     r = replay.git(root, "log", "--first-parent", "--no-merges", "--format=%s", rng)
-    subs = [s.strip() for s in gu._out(r).splitlines() if s.strip()] if gu._ok(r) else []
+    # The "Claude: " prefix is fused's own commit convention, not words.
+    subs = [re.sub(r"^Claude: ", "", s.strip()) for s in gu._out(r).splitlines()
+            if s.strip()] if gu._ok(r) else []
     if not subs:
         return ""
     shown = ", ".join(f"“{s[:80]}”" for s in subs[:3])
@@ -493,9 +500,11 @@ def decide(f: Facts) -> Action:
     |   |   a return)                                  |                         |
     | 7 | proposal merged, its merge commit ⊆ tip      | return                  |
     | 8 | tip ⊆ HEAD                                   | noop                    |
-    | 9 | HEAD ⊆ tip                                   | ff (`reset --keep tip`) |
+    | 9 | HEAD ⊆ tip                                   | ff (`reset --keep tip`; |
+    |   |                                              |   backup, Undo)         |
     |10 | tree(HEAD) == tree(tip)                      | move (backup, Undo)     |
-    |11 | otherwise                                    | merge (merge commit, or |
+    |11 | otherwise                                    | merge (merge commit;    |
+    |   |                                              |   backup, Undo — or     |
     |   |                                              |   needs_merge `update`) |
 
     Flags (§16.12): rows 8–11 with a clean merge run whatever the flags.
@@ -600,14 +609,16 @@ _AGAIN = object()
 
 def _land(root, branch, old, new, why) -> tuple:
     """A move's only write: under the slot, a Claude turn re-checked, then
-    `replay.land_locked` (backup + final check + `reset --keep`).
+    `replay.land_locked` (backup + final check + `reset --keep`), always
+    with a backup of the old HEAD (every automatic move has Undo).
     `(None, backup)` when it landed, else `(why, None)`."""
     with replay.slot() as held:
         if not held:
             return "slot-busy", None
         if _claude_busy(root):
             return "claude", None
-        return replay.land_locked(root, branch=branch, old_tip=old, new_tip=new, why=why)
+        return replay.land_locked(root, branch=branch, old_tip=old, new_tip=new, why=why,
+                                  undoable=True)
 
 
 def _note_head(root, head=None) -> None:
@@ -1055,6 +1066,11 @@ def go_back_main(root) -> dict:
     return _user_run(root, go)
 
 
+#: Activity kinds an automatic sync writes (rows 7, 9–11): undoing one holds
+#: the tip it brought in (`skip_tip`).
+_AUTOMATIC_KINDS = frozenset({"update", "return"})
+
+
 def _apply_wip_locked(root, base, wip) -> None:
     """Put a backup's uncommitted edits back as uncommitted edits: every
     path `base..wip` changes gets wip's content in the working tree (index
@@ -1134,6 +1150,12 @@ def restore(root, activity_id) -> dict:
             # A line whose files did not all come back keeps its Restore.
             store.mark_restored(root, activity_id)
         _settled(root)
+        if backup and entry.get("kind") in _AUTOMATIC_KINDS:
+            # Undo of an automatic update: the next sync must not bring the
+            # same tip straight back (row 4); Bring in stays offered.
+            tip = follow.tip(root, fol)
+            if tip:
+                store.update(root, lambda r: r.__setitem__("skip_tip", tip))
         t = time.localtime(entry.get("at") or time.time())
         when = f"{time.strftime('%b', t)} {t.tm_mday}, {time.strftime('%H:%M', t)}"
         if backup:

@@ -706,7 +706,7 @@ def ensure_push_guard(root, kind) -> bool:
 
 #: Repo-local marker: a `github` copy whose owner fused could not ask about
 #: yet — the git panel (PY-15, cannot read the store) words its Push
-#: sentence as "until Fused knows whether this app is yours".
+#: sentence as "until fused knows whether this app is yours".
 UNCHECKED_CONFIG = "fused.ownerunknown"
 
 

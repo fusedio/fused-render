@@ -956,7 +956,7 @@ def _contrib_git_row(app_dir: str) -> dict | None:
         elif not rec.get("owner_checked"):
             # Whose app this is is not known yet (signed out): if it turns
             # out to be yours, it publishes as usual — never promise "stays".
-            state, detail = PASS, ("Your changes stay on this computer until Fused knows "
+            state, detail = PASS, ("Your changes stay on this computer until fused knows "
                                    "whether this app is yours.")
         else:
             state, detail = PASS, "Your changes stay on this computer until you propose them."
