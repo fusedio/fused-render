@@ -35,9 +35,8 @@ jobs:
         include:
           - runner: macos-15
             arch: arm64
-          # TEMPORARY: intel comes back once arm64 compiles.
-          # - runner: macos-15-intel
-          #   arch: x86_64
+          - runner: macos-15-intel
+            arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
