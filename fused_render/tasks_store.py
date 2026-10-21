@@ -1184,11 +1184,18 @@ def _clean_prs(value) -> list[dict]:
     return out
 
 
+# Lists written before capture was scoped (version 1, no marker) were greedy
+# and are dropped; the transcript scan recomputes them.
+_PRS_VERSION = 2
+
+
 def session_prs(state: dict, session_id: str) -> list[dict]:
     """The stored PRs for one session, oldest first — `[]` when there are none
     (or the record is not that shape)."""
     rec = state.get(str(session_id or ""))
-    return _clean_prs(rec.get("prs")) if isinstance(rec, dict) else []
+    if not isinstance(rec, dict) or rec.get("prs_v") != _PRS_VERSION:
+        return []
+    return _clean_prs(rec.get("prs"))
 
 
 def record_prs(session_id: str, prs: list) -> list[dict]:
@@ -1203,11 +1210,14 @@ def record_prs(session_id: str, prs: list) -> list[dict]:
     def mutate(state: dict):
         rec = state.get(session_id)
         rec = dict(rec) if isinstance(rec, dict) else {}
-        have = _clean_prs(rec.get("prs"))
+        have = _clean_prs(rec.get("prs")) \
+            if rec.get("prs_v") == _PRS_VERSION else []
         merged = _clean_prs(have + incoming)
-        if merged == have and rec.get("prs") == have:
+        if merged == have and rec.get("prs") == have \
+                and rec.get("prs_v") == _PRS_VERSION:
             return merged, False
         rec["prs"] = merged
+        rec["prs_v"] = _PRS_VERSION
         state[session_id] = rec
         return merged, True
 

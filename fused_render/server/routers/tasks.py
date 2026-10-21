@@ -512,12 +512,15 @@ _PR_URL_RE = re.compile(
 _PRS_PER_SCAN = 50
 
 
-def _note_prs(rec: dict, line: str) -> None:
-    """Append every PR URL on this raw line to the scan's `prs`, first-seen
-    order, deduped case-insensitively (the first spelling is displayed)."""
+_GH_PR_IDS_CAP = 200
+
+
+def _add_prs(rec: dict, text: str) -> None:
+    """Append every PR URL in `text` to the scan's `prs`, first-seen order,
+    deduped case-insensitively (the first spelling is displayed)."""
     prs = rec.setdefault("prs", [])
-    # A raw JSON line escapes its slashes in some writers (`https:\/\/…`).
-    for repo, number in _PR_URL_RE.findall(line.replace("\\/", "/")):
+    # A raw JSON line escapes its slashes in some writers (`https:\/\/...`).
+    for repo, number in _PR_URL_RE.findall(text.replace("\\/", "/")):
         if len(prs) >= _PRS_PER_SCAN:
             return
         key = f"{repo.lower()}#{int(number)}"
@@ -527,13 +530,65 @@ def _note_prs(rec: dict, line: str) -> None:
                     "url": f"https://github.com/{repo}/pull/{int(number)}"})
 
 
+def _result_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return ""
+
+
+def _note_prs(rec: dict, line: str) -> None:
+    """Attach PRs from the few places that mean "this session's PR": plain chat
+    text (assistant text blocks, the user's own message) and the result of a
+    Bash `gh pr ...` command (plus a URL in that command). Never file reads,
+    other tools' inputs, thinking, meta/attachment lines or subagent chatter."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(obj, dict) or obj.get("isSidechain") or obj.get("isMeta"):
+        return
+    kind = obj.get("type")
+    if kind not in ("assistant", "user"):
+        return
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        if kind == "user":
+            _add_prs(rec, content)
+        return
+    if not isinstance(content, list):
+        return
+    ids = rec.setdefault("gh_pr_tool_ids", [])
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text" and isinstance(block.get("text"), str):
+            _add_prs(rec, block["text"])
+        elif kind == "assistant" and btype == "tool_use":
+            inp = block.get("input")
+            cmd = inp.get("command") if isinstance(inp, dict) else None
+            if block.get("name") == "Bash" and isinstance(cmd, str) \
+                    and "gh pr " in cmd:
+                if isinstance(block.get("id"), str):
+                    ids.append(block["id"])
+                    del ids[:-_GH_PR_IDS_CAP]
+                _add_prs(rec, cmd)
+        elif kind == "user" and btype == "tool_result" \
+                and block.get("tool_use_id") in ids:
+            _add_prs(rec, _result_text(block.get("content")))
+
+
 def _absorb(rec: dict, line: str) -> None:
     """Fold one raw transcript line into a scan record. Screened before parsing:
     a transcript is mostly assistant turns and tool results, and `json.loads` on
     every one of them is the cost this endpoint cannot pay."""
-    # Every PR link on any line — a `gh pr create` tool result, a reply, a
-    # prompt — counts; substring screen first, same reason as below.
-    if "github.com" in line and "pull" in line:
+    # PR capture is scoped (see `_note_prs`); substring screen first, same
+    # reason as below. A `gh pr` tool_use line has no URL yet, so screen for it.
+    if ("github.com" in line and "pull" in line) or "gh pr " in line:
         _note_prs(rec, line)
     # An assistant reply is the one non-user line with a fact to contribute:
     # whether the newest prompt's last answer was an API error. Substring tests
@@ -623,7 +678,7 @@ def _new_scan() -> dict:
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
             "command": "", "reply_line": "", "reply": "", "reply_at": 0.0,
-            "prs": []}
+            "prs": [], "gh_pr_tool_ids": []}
 
 
 def _condense_reply(rec: dict) -> None:
