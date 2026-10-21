@@ -38,7 +38,8 @@
 import { RUN_BLOCKED_HINT } from "@platform/lib/task-actions";
 import { EMBED_PREFIX, IS_QUERY_EMBED, VIEW_PREFIX } from "@platform/lib/router";
 import type { Task, TaskBackgroundJobs, TaskMessage, TaskPulseTask } from "@platform/lib/api";
-import { prRefsOf, type PrRef } from "@platform/lib/task-prs";
+import type { PrState } from "@platform/lib/prStatus";
+import { prKey, prRefsOf, type PrRef } from "@platform/lib/task-prs";
 import { labelForSource } from "@platform/lib/format";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
@@ -6075,8 +6076,11 @@ export interface TaskGroup {
   recentAt: number;
   /** Where the heading links (the PR view: the pull request on GitHub). */
   href?: string;
-  /** Nested sections (the PR view: a repository's pull requests). */
+  /** Nested sections (the PR view: a repository's status sections). */
   groups?: TaskGroup[];
+  /** The PR view's status sections: the pull request each row stands for,
+   *  parallel to `rows` (one task appears once per PR it names). */
+  refs?: PrRef[];
   /** The Project view: the folder this section IS, full path — what a task
    *  made from the section's + runs in. Absent on "No folder" and elsewhere. */
   folder?: string;
@@ -6091,6 +6095,18 @@ export function flattenGroups(groups: TaskGroup[]): Task[] {
   const out: Task[] = [];
   const walk = (g: TaskGroup) => {
     out.push(...g.rows);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  for (const g of groups) walk(g);
+  return out;
+}
+
+/** The pull request behind each row of `flattenGroups(groups)`, in the same
+ *  order — null for rows not drawn as a PR (every view but PR, and "No PR"). */
+export function flattenGroupRefs(groups: TaskGroup[]): (PrRef | null)[] {
+  const out: (PrRef | null)[] = [];
+  const walk = (g: TaskGroup) => {
+    g.rows.forEach((_, i) => out.push(g.refs?.[i] ?? null));
     for (const c of g.groups ?? []) walk(c);
   };
   for (const g of groups) walk(g);
@@ -6164,7 +6180,13 @@ export const RECENT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
  * last; repositories and their pull requests likewise newest first, with the
  * PR-less rows last.
  */
-export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number = Date.now()): TaskGroup[] {
+export function groupRows(
+  rows: Task[],
+  by: TaskGroupBy,
+  home = "",
+  now: number = Date.now(),
+  prStatus?: (key: string) => PrState | null | undefined,
+): TaskGroup[] {
   const groups = new Map<string, TaskGroup>();
   const put = (key: string, label: string, task: Task) => {
     let g = groups.get(key);
@@ -6208,51 +6230,60 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
       return byRecency(a, b) || (a.hint ?? "").localeCompare(b.hint ?? "");
     });
   }
-  // PR: REPOSITORY, then pull request (Akshil, 2026-10-16) — a section per
-  // repo, each holding one section per PR, with the heading linking to the PR
-  // on GitHub. Both levels newest activity first (Akshil, 2026-10-19), the PR
-  // number breaking a tie. Rows naming a PR in a folder with no known GitHub
-  // remote sit under "Unknown repository" (no links); rows naming no PR at all
-  // come last, under "No PR".
+  // PR: REPOSITORY, then the pull request's STATUS — Open, Draft, Merged,
+  // Closed, Unknown (status unasked or GitHub did not say), empty ones left
+  // out. A task naming several PRs is one row in each PR's section (`refs`
+  // says which PR a row is). Repositories newest activity first (Akshil,
+  // 2026-10-19); rows keep list order inside a section. Rows naming a PR in a
+  // folder with no known GitHub remote sit under "Unknown repository"; rows
+  // naming no PR at all come last, under "No PR".
   const NONE = "\u0000none";
   const UNKNOWN = "\u0000unknown";
-  const repos = new Map<string, Map<number, Task[]>>();
+  const BUCKETS: { id: string; label: string }[] = [
+    { id: "open", label: "Open" },
+    { id: "draft", label: "Draft" },
+    { id: "merged", label: "Merged" },
+    { id: "closed", label: "Closed" },
+    { id: "unknown", label: "Unknown" },
+  ];
+  const repos = new Map<string, Map<string, { rows: Task[]; refs: PrRef[] }>>();
   for (const task of rows) {
-    const ref = prRefOf(task);
-    if (!ref) {
+    const refs = prRefsOf(task);
+    if (!refs.length) {
       put(NONE, "No PR", task);
       continue;
     }
-    const r = ref.repo ?? UNKNOWN;
-    let prs = repos.get(r);
-    if (!prs) {
-      prs = new Map();
-      repos.set(r, prs);
+    for (const ref of refs) {
+      const r = ref.repo ?? UNKNOWN;
+      let buckets = repos.get(r);
+      if (!buckets) {
+        buckets = new Map();
+        repos.set(r, buckets);
+      }
+      const id = (ref.repo && prStatus?.(prKey(ref))) || "unknown";
+      let bucket = buckets.get(id);
+      if (!bucket) {
+        bucket = { rows: [], refs: [] };
+        buckets.set(id, bucket);
+      }
+      bucket.rows.push(task);
+      bucket.refs.push(ref);
     }
-    const list = prs.get(ref.number);
-    if (list) list.push(task);
-    else prs.set(ref.number, [task]);
   }
   const recentOf = (list: Task[]) => list.reduce((m, t) => Math.max(m, activityAt(t, now)), 0);
   const out: TaskGroup[] = [...repos.keys()]
     .map((repo) => {
-      const prs = [...repos.get(repo)!.entries()]
-        .map(([n, list]) => ({
-          key: `pr:${repo === UNKNOWN ? "?" : repo}#${n}`,
-          label: `#${n}`,
-          rows: list,
-          recentAt: recentOf(list),
-          number: n,
-          ...(repo === UNKNOWN ? {} : { href: `https://github.com/${repo}/pull/${n}` }),
-        }))
-        .sort((a, b) => b.recentAt - a.recentAt || b.number - a.number)
-        .map(({ number: _n, ...g }) => g);
+      const slug = repo === UNKNOWN ? "?" : repo;
+      const buckets = BUCKETS.filter((b) => repos.get(repo)!.has(b.id)).map((b) => {
+        const { rows: list, refs } = repos.get(repo)!.get(b.id)!;
+        return { key: `pr:${slug}:${b.id}`, label: b.label, rows: list, refs, recentAt: recentOf(list) };
+      });
       return {
-        key: `repo:${repo === UNKNOWN ? "?" : repo}`,
+        key: `repo:${slug}`,
         label: repo === UNKNOWN ? "Unknown repository" : repo,
         rows: [],
-        recentAt: prs.reduce((m, g) => Math.max(m, g.recentAt), 0),
-        groups: prs,
+        recentAt: buckets.reduce((m, g) => Math.max(m, g.recentAt), 0),
+        groups: buckets,
         unknown: repo === UNKNOWN,
       };
     })

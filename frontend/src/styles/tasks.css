@@ -1031,6 +1031,20 @@ button.tasks-caret,
   cursor: default;
 }
 
+/* THE PR VIEW'S `#N` CHIP: the folder chip's slot, but a real link. Lifted
+   above `.tasks-rowlink` (z-index 1) like the shield, so a click on it opens
+   GitHub rather than the task; no underline until the pointer is on it. */
+.tasks-row .task-pr-num {
+  position: relative;
+  z-index: 2;
+  text-decoration: none;
+  cursor: pointer;
+}
+.tasks-row .task-pr-num:hover .schedule-tv-id-name {
+  color: var(--fg);
+  text-decoration: underline;
+}
+
 .tasks-row .schedule-tv-id-shield::after {
   content: "";
   position: absolute;
