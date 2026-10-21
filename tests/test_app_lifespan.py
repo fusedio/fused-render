@@ -19,6 +19,9 @@ import pytest
 
 from fused_render.server import create_app
 from fused_render.server.app import _lifespan
+from fused_render.server.routers.index import (
+    start_startup_scan_and_warm as _REAL_START_SCAN_AND_WARM,  # conftest stubs the attribute
+)
 from fused_render.server.app import _safe_artifacts_scan as _REAL_SAFE_ARTIFACTS_SCAN
 
 #: Same real, spawnable fixture daemon test_background_apps.py uses — stdlib
@@ -557,6 +560,8 @@ def test_with_the_flag_on_the_startup_scan_is_not_awaited(monkeypatch):
     monkeypatch.setattr(index_routes, "start_index_job_bridge", lambda: None)
     monkeypatch.setattr(index_routes, "start_deferred_startup_scan",
                         lambda d, ev: calls.append(("deferred", ev)))
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda d: calls.append("scan+warm"))
 
     monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: True)
     asyncio.run(_index_scan_handler(app)())
@@ -565,7 +570,47 @@ def test_with_the_flag_on_the_startup_scan_is_not_awaited(monkeypatch):
     calls.clear()
     monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: False)
     asyncio.run(_index_scan_handler(app)())
-    assert calls == ["scan", "warm"]
+    assert calls == ["scan+warm"]
+
+
+def test_with_the_flag_off_the_startup_scan_is_not_awaited(monkeypatch):
+    import fused_render.shell.prefs as prefs
+    from fused_render import extras
+    from fused_render.server.routers import index as index_routes
+
+    app = create_app(start_dir=".")
+    started = []
+
+    async def must_not_run(start_dir=None):
+        raise AssertionError("startup_scan must not be awaited on the boot path")
+
+    monkeypatch.setattr(extras, "available", lambda name: True)
+    monkeypatch.setattr(index_routes, "startup_scan", must_not_run)
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda d: started.append(d))
+    monkeypatch.setattr(index_routes, "start_index_job_bridge", lambda: None)
+    monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: False)
+    asyncio.run(_index_scan_handler(app)())
+    assert started == ["."]
+
+
+def test_start_startup_scan_and_warm_runs_scan_then_warm_off_thread(monkeypatch):
+    import threading
+
+    from fused_render.server.routers import index as index_routes
+
+    order = []
+    release = threading.Event()
+    monkeypatch.setattr(index_routes, "run_startup_scan",
+                        lambda d=None: (release.wait(5), order.append("scan")))
+    monkeypatch.setattr(index_routes, "run_startup_warm",
+                        lambda: order.append("warm"))
+    t = _REAL_START_SCAN_AND_WARM(".")
+    assert t.daemon and t.is_alive()  # returned while the scan still blocks
+    assert order == []
+    release.set()
+    t.join(5)
+    assert order == ["scan", "warm"]
 
 
 @pytest.fixture()

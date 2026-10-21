@@ -1302,12 +1302,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
                 start_dir, app.state.startup_done)
             index_routes.start_index_job_bridge()
             return
-        await index_routes.startup_scan(start_dir)
-        # ...and warm the corpus path the explorer's home search reads, on a
-        # detached thread, so the gitignore sweep and the duckdb import are
-        # paid at idle rather than by the user's first keystroke
-        # (index/specs/server-api.md §4).
-        index_routes.startup_warm()
+        # The scan (prune + one detached worker per root) and then the warm of
+        # the corpus path the explorer's home search reads (index/specs/
+        # server-api.md §4) run on one daemon thread, so neither delays the bind.
+        index_routes.start_startup_scan_and_warm(start_dir)
         # ...and mirror every scan run into a sys:index:<run_id> Job so it
         # shows up in the Activity card the same way a download does. Same
         # idempotent start-once pattern as the resource-trail start

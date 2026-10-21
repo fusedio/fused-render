@@ -735,6 +735,9 @@ def _no_startup_index_scan(monkeypatch):
     # developer's real home and outlives the test that spawned it — so it goes
     # too. Its own tests call `run_startup_warm()` directly.
     monkeypatch.setattr(index_routes, "startup_warm", lambda: None)
+    # ...and the combined scan+warm thread the non-low-impact hook now starts.
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda start_dir=None: None)
     # Same hazard by a second door: GET /api/fs/list notes the folder for the
     # index freshness check (scan-incremental.md §5), which runs on a background
     # thread and can call runner.start. A test listing any path under the

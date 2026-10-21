@@ -1009,3 +1009,22 @@ def test_score_depth_cap_is_below_the_actual_smallest_weight_gap(monkeypatch):
     smallest_gap = min(b - a for a, b in zip(weights, weights[1:]))
     assert smallest_gap == 100
     assert _SCORE_DEPTH_CAP < smallest_gap
+
+
+def test_order_by_has_no_constant_terms():
+    # Newer duckdb rejects a literal in ORDER BY, and a constant never changes
+    # the order, so the vector omits it.
+    preds = index_query._name_predicate_sql("nm", ["x"])
+    preds = dict(preds, edge="true", boundary="false")
+    order_by, _score, _tier = index_query._lex_order_and_score(
+        "nm = lower('x')", preds)
+    assert "(true) DESC" not in order_by
+    assert "(false) DESC" not in order_by
+    assert "depth ASC" in order_by
+
+
+def test_order_by_keeps_a_real_natural_term():
+    preds = index_query._name_predicate_sql("nm", ["x"])
+    order_by, _score, _tier = index_query._lex_order_and_score(
+        "nm = lower('x')", preds, nm_exact_natural="nm LIKE 'a%'")
+    assert "(nm LIKE 'a%') DESC" in order_by
