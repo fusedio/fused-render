@@ -302,8 +302,10 @@ def prefetch_for_bundle(app_dir: str, arch: str | None = None, fetch=None) -> bo
         return True
     current = artifact(arch)
     if current is not None and engine_dir(current) == engine_dir(art):
-        # The update pins the engine already installed (or installing).
-        return is_ready(art)
+        # The update pins the engine this app already has — or is installing
+        # right now: join that download (bounded) rather than swap the app
+        # while it is still in flight, which would relaunch on WebKit.
+        return ensure(arch, fetch=fetch, timeout=600)
     logger.info("chromium prefetch: engine %s (%s) for the pending update",
                 art.engine_version, art.cef_version)
     _install_sync(art, fetch or _http_fetch, progress=lambda *_: None)
