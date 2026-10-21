@@ -440,10 +440,11 @@ describe("the door-time check (ensureAppFor)", () => {
     pending[1]!(undefined); // B's answer first — the newest ask, adopted as is
     await askB;
     expect(appForProject("/w/b", knownApps())?.name).toBe("b");
-    pending[0]!(undefined); // then A's stale [A] — not written; a re-read instead
+    pending[0]!(undefined); // then A's stale [A] — not written, and B's table kept
     await askA;
-    expect(reads.length).toBe(1);
+    expect(reads.length).toBe(0); // no re-read either: a newer adoption is current
     expect(appForProject("/w/b", knownApps())?.name).toBe("b");
+    expect(appForProject("/w/a", knownApps())?.name).toBe("a");
   });
 
   it("a failed ask is a 'no' and the next open may retry", async () => {
