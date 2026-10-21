@@ -19,6 +19,7 @@ import pytest
 
 from fused_render.server import create_app
 from fused_render.server.app import _lifespan
+from fused_render.server.app import _safe_artifacts_scan as _REAL_SAFE_ARTIFACTS_SCAN
 
 #: Same real, spawnable fixture daemon test_background_apps.py uses — stdlib
 #: only, binds :0, publishes {port, token, pid} (see its own docstring).
@@ -134,6 +135,7 @@ EXPECTED_STARTUP = [
     "_startup_queue_manager",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
+    "_startup_artifacts_warm",
     "_startup_ai_hub_metadata_refresh",
     "_startup_ai_hub_catalog_refresh",
     # Event-loop lag gauge + pool/lane snapshots for the Monitor dashboard.
@@ -689,3 +691,31 @@ def test_startup_prewarm_ai_defers_the_spawn(tmp_path, monkeypatch):
     handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_prewarm_ai")
     run(handler())
     assert seen["delay"] == 5.0
+
+
+def test_artifacts_warm_runs_off_the_startup_path(tmp_path, monkeypatch):
+    import threading
+
+    from fused_render.server import app as app_mod
+
+    from fused_render import claude_artifacts
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_list():
+        entered.set()
+        release.wait(10)
+        return []
+
+    monkeypatch.setattr(claude_artifacts, "list_artifacts", blocking_list)
+    # conftest neutralizes the scan target for every app; this test wants the real one.
+    monkeypatch.setattr(app_mod, "_safe_artifacts_scan", _REAL_SAFE_ARTIFACTS_SCAN)
+    handler, run = _grab_startup_handler(
+        tmp_path, monkeypatch, "_startup_artifacts_warm")
+    run(handler())  # returns while the scan is still blocked
+    assert entered.wait(5)
+    assert not release.is_set()
+    release.set()
+    thread = next(t for t in threading.enumerate() if t.name == "artifacts-warm")
+    thread.join(5)

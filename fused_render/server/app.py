@@ -399,6 +399,16 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 STARTUP_SLOW_HANDLER_S = 1.0
 
 
+def _safe_artifacts_scan() -> None:
+    """Warm thread target for `_startup_artifacts_warm`; never raises."""
+    try:
+        from fused_render import claude_artifacts
+
+        claude_artifacts.list_artifacts()
+    except Exception:  # noqa: BLE001 - a warm-up must never matter
+        logger.exception("could not warm the Claude artifacts listing")
+
+
 def _handler_name(handler) -> str:
     return getattr(handler, "__name__", None) or repr(handler)
 
@@ -698,6 +708,15 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         # For tests, which need to know when the warm's own listing is done
         # before they count listings of their own.
         app.state.tasks_warm = thread
+
+    # Warm the Claude artifacts listing (claude_artifacts.py): the first scan of
+    # a big ~/.claude is seconds, so it is paid here on a daemon thread rather
+    # than by the first /api/claude-artifacts request.
+    @on_startup_full
+    async def _startup_artifacts_warm():
+        # Looked up at call time so tests can swap the target (conftest).
+        threading.Thread(target=_safe_artifacts_scan, name="artifacts-warm",
+                         daemon=True).start()
 
     # `_AI_SESSION` is constructed at import time and can be started by the
     # first `/api/ai` request even under `lean` (its prewarm startup hook is
