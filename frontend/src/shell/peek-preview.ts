@@ -359,7 +359,15 @@ export function ensureAppFor(project: string): Promise<boolean> {
       if (!app) return false;
       // Announce FIRST: the module-level listener above drops the cache on
       // the event, and the fresh table must survive it.
+      // A STALE answer (a newer ask already adopted its table) must not take
+      // that table down with its own announce: on a real window the listener
+      // drops the cache synchronously, and nothing below would put it back.
+      const newer = adoptedGen > gen ? appsCache : null;
       announceCurrentAppsChanged();
+      if (newer) {
+        appsCache = newer;
+        return true;
+      }
       if (added && apps && gen === ensureGen) {
         appsCache = currentApps(apps, []);
         adoptedGen = gen;
