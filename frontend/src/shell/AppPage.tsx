@@ -73,7 +73,6 @@ import {
 } from "react";
 import {
   appIconUrl,
-  ensureCurrentApp,
   getAppEntry,
   getAppIcon,
   statPath,
@@ -103,10 +102,7 @@ import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
 import { applyIconPick } from "@platform/lib/app-icon";
 import { notify } from "@platform/lib/notifications";
-import {
-  CURRENT_APPS_CHANGED_EVENT,
-  announceCurrentAppsChanged,
-} from "@platform/lib/tasksChanged";
+import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { AppDoctorPanel } from "@platform/ui/AppDoctorModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
@@ -413,19 +409,13 @@ export default function AppPage({
         // with the card that pictures the app.
         const info = await getAppEntry(dir);
         if (live) setResolved({ kind: "app", entry: info.entry });
-        // THE DOOR-TIME CHECK (current_apps.py `ensure`): an app page opened
-        // from a Bots "ready" link, a Recent, a typed URL — the folder the
-        // tasks listing's one look found empty lands on the desk here. Best
-        // effort, after the page is already resolved: the desk is a side
-        // table and must never gate the app. Announced for ANY app, not only
-        // an added one (CodeRabbit on #1830): another tab may have put the
-        // row there, and this tab's sidebar heard nothing — one refetch per
-        // app open is the price of a desk that is right.
-        ensureCurrentApp(dir)
-          .then((r) => {
-            if (r.app) announceCurrentAppsChanged();
-          })
-          .catch(() => {});
+        // NOT a door for the desk (owner, 2026-10-21, #1830): opening an app
+        // page does not put the app on the desk. An app the user took off
+        // the sidebar (its cross) stays off when opened from a Recent, a
+        // Bots link or a typed URL — the behaviour before the door-time
+        // check existed. The task side peek is the one door (peek-preview.ts
+        // `ensureAppFor`, archived tasks excluded); the explorer's "Open in
+        // project" button stays the explicit way on.
       } catch (e) {
         if (live) setResolved({ kind: "error", message: (e as Error).message });
       }

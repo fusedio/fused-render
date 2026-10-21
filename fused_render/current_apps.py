@@ -16,18 +16,19 @@ questions: "what is on my desk" and "what is filed". The owner's redesign
 * A NEW task adds its app to the table if the app is not already there
   (`observe`, run inside the tasks listing so it sees every task on the
   machine, however it was started — chat, schedule, CLI).
-* OPENING a task or an app folder adds its app too (`ensure`, POST
-  /api/current-apps/ensure — the task side peek and the app page call it on
-  mount). `observe` sees a task ONCE, and a task that MAKES the app — a Bots
+* OPENING a task adds its app too (`ensure`, POST /api/current-apps/ensure —
+  the task side peek calls it on mount; NOT the app page: an app the user
+  took off the desk must stay off when its page is opened from a Recent or
+  a link, as it always did). `observe` sees a task ONCE, and a task that MAKES the app — a Bots
   build (bots/bot.py `build`), "make me an app in this empty folder" — is
   first listed while the folder is still empty, so the one look finds no app
   and the folder never reached the desk: no sidebar row, no preview in the
   peek (shell/peek-preview.ts reads this table and only this table). The
   owner (2026-10-21) put the check where it is needed instead of a watch on
-  the listing: the thing is re-asked at the doors the user walks through, and
-  an app you never open is not on your desk yet. An archived task's door does
-  not add (removing an app archives its tasks; opening one of those must not
-  bring the app back).
+  the listing: the thing is re-asked at the door the user walks through, and
+  an app whose tasks you never open is not on your desk yet. An archived
+  task's door does not add (removing an app archives its tasks; opening one
+  of those must not bring the app back).
 * Nothing removes an app automatically. Archive every task under it and the
   row stays; the table grows through tasks — and through the explorer's
   "Open in project" button (`add`, POST /api/current-apps/add), which puts

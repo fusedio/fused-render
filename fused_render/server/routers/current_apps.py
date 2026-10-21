@@ -128,7 +128,7 @@ def api_current_apps_add(patch: FolderPatch):
 @router.post("/api/current-apps/ensure")
 def api_current_apps_ensure(patch: FolderPatch,
                             x_fused: str | None = Header(default=None)):
-    """The user opened a task or an app page on `path`: if the folder (or an
+    """The user opened a task on `path` (the side peek): if the folder (or an
     ancestor) is an app that is not on the desk yet, put it there
     (`current_apps.ensure`, module docstring on why the doors ask). `app` is
     the desk folder or null; `added` says this call put it there; `apps` is

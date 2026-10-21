@@ -3412,7 +3412,7 @@ export async function removeAppIcon(
   return r.json();
 }
 
-/** The user opened a task or an app page on `path`: if the folder (or an
+/** The user opened a task on `path` (the side peek): if the folder (or an
  *  ancestor) is an app not on the desk yet, the server puts it there
  *  (current_apps.py `ensure` — the door-time check that replaced "the tasks
  *  listing looked once"). `app` is the desk folder, null for a plain project;
