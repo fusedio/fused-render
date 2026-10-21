@@ -2190,7 +2190,10 @@ def _ahead_facts(tasks: dict[str, dict], key: str) -> dict:
     try:
         _place(task)
         record = _scan(task["path"]) if task["path"] else None
-        title, _source = _title(task, record, task["first_prompt"])
+        title, _source = _title(task, record, task["first_prompt"],
+                                tasks_store.session_title(
+                                    tasks_store.settings_state(),
+                                    task["session_id"]))
         return {"title": title,
                 # A `pending:<entry>` row has no session and therefore no chat
                 # to open: "" here is the same absence `taskHref` refuses on.
@@ -2394,9 +2397,12 @@ def _failed(speaker: dict | None) -> bool:
 # ----------------------------------------------------------------- the titles
 
 
-def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
-    """(title, where it came from). The precedence is §4's: what the user called
-    it (`user`), then Claude Code's own one-liner for the session (`ai`), then
+def _title(task: dict, rec: dict | None, first_prompt: str,
+           custom: str = "") -> tuple[str, str]:
+    """(title, where it came from). The precedence is §4's: a title the user
+    typed over the task in the Tasks UI (`renamed`, the stored `custom_title`,
+    passed in as `custom` so the caller's one settings read serves it), then
+    what the user called it (`user`), then Claude Code's own one-liner for the session (`ai`), then
     the first line of the first message. No summarisation call anywhere — the
     title we want is already written into the transcript once per turn.
 
@@ -2432,6 +2438,9 @@ def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
     the client's to choose. A placeholder invented here would not stay a
     placeholder — it is what the New task form prefills a Title field with, and a
     prefill the user saves becomes the task's permanent name."""
+    custom = str(custom or "").strip()
+    if custom:
+        return custom[:200], "renamed"
     for entry in reversed(task["entries"]):
         title = str(entry.get("title") or "").strip()
         if title:
@@ -3881,7 +3890,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     surfaced = max(active, (newest["at"] or 0.0) if newest is not None else 0.0)
     if not surfaced and task["entries"]:
         surfaced = _entry_at(task["entries"][-1])
-    title, source = _title(task, rec, task["first_prompt"])
+    title, source = _title(task, rec, task["first_prompt"],
+                           tasks_store.session_title(settings or {},
+                                                     task["session_id"]))
     # WHAT THIS RUN IS WAITING ON, asked once here so the row's `status`, its
     # `blocked_reason` and its `attention` line cannot describe three different
     # states of the same run. Keyed by the session id: a task with none (a
@@ -6911,6 +6922,46 @@ def api_task_archive(patch: ArchivePatch,
     # filing kept underneath, and the card is how the reader finds out.
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed,
             "stopped": stopped}
+
+
+class RenamePatch(BaseModel):
+    key: str
+    # Typed `Any` so a non-string reaches the handler as a 400 of ours, not a
+    # pydantic 422 the client has no wording for.
+    title: Any = ""
+
+
+@router.post("/api/tasks/rename")
+def api_task_rename(patch: RenamePatch,
+        x_fused: str | None = Header(default=None)):
+    """Give one started task a title of the user's own, or take it back.
+
+    The title is stored on the session's settings record (`custom_title`) and
+    wins every title mode (`_title`); an empty one deletes it and the automatic
+    title returns. Only the first line is kept, capped at 200 characters, the
+    same cap the listing applies. A task with no session yet (a `pending:`
+    message, a draft, a new chat) has nothing to key the title on and is
+    refused. Answers with the title as stored ("" when cleared)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not isinstance(patch.title, str):
+        raise HTTPException(status_code=400, detail="title must be a string")
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    session_id = task["session_id"]
+    if (key.startswith((tasks_store.PENDING_PREFIX, "draft:",
+                        drafts.NEW_CHAT_PREFIX)) or not session_id):
+        return _error("only a started task can be renamed")
+    text = patch.title.strip()
+    first = text.splitlines()[0].strip() if text else ""
+    stored = tasks_store.record_title(session_id, first[:200])
+    tasks_watch.notify({key})
+    return {"ok": True, "title": stored}
 
 
 def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:

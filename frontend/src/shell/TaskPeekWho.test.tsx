@@ -35,7 +35,7 @@ function render(props: Parameters<typeof TaskPeekWho>[0]) {
     r = create(createElement(TaskPeekWho, props));
   });
   mounted.push(r);
-  return { text: () => JSON.stringify(r.toJSON()) };
+  return { r, text: () => JSON.stringify(r.toJSON()) };
 }
 
 // The server only ever sends the reader's own prompt as `last_message` now;
@@ -59,4 +59,185 @@ test("nothing said yet: the task's own name, first line only, as the row does", 
 
 test("a task with no title and nothing said prints the wall's own word", () => {
   expect(render({ task: task({ title: "" }) }).text()).toContain("(untitled)");
+});
+
+// ---- renaming in place (the title is the reader's to change) -----------------
+
+const titleSpan = (r: ReactTestRenderer) =>
+  r.root.findAll((n) => n.type === "span" && n.props.className === "task-side-peek-title")[0];
+const inputOf = (r: ReactTestRenderer) =>
+  r.root.findAll((n) => n.type === "input" && n.props.className === "task-side-peek-title-input")[0];
+const pencilOf = (r: ReactTestRenderer) =>
+  r.root.findAll((n) => n.type === "button" && n.props["aria-label"] === "Rename task")[0];
+const edit = (r: ReactTestRenderer, value: string) =>
+  act(() => {
+    inputOf(r).props.onChange({ target: { value } });
+  });
+const key = (r: ReactTestRenderer, k: string) =>
+  act(() => {
+    inputOf(r).props.onKeyDown({ key: k, preventDefault() {} });
+  });
+
+test("double-click opens an input prefilled with the title; Enter saves the trimmed text", async () => {
+  const calls: [string, string][] = [];
+  const v = render({ task: task(), rename: async (k, t) => void calls.push([k, t]) });
+  expect(inputOf(v.r)).toBeUndefined();
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  expect(inputOf(v.r).props.value).toBe("Rename the pane noun");
+  edit(v.r, "  Better name  ");
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  expect(calls).toEqual([["sess-1", "Better name"]]);
+  expect(inputOf(v.r)).toBeUndefined();
+});
+
+test("the pencil button opens the editor too", () => {
+  const v = render({ task: task(), rename: async () => {} });
+  act(() => {
+    pencilOf(v.r).props.onClick();
+  });
+  expect(inputOf(v.r)).toBeDefined();
+});
+
+test("Escape cancels and the unchanged text saves nothing", async () => {
+  const calls: string[] = [];
+  const v = render({
+    task: task({ title_source: "renamed" } as Partial<Task>),
+    rename: async (_k, t) => void calls.push(t),
+  });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  edit(v.r, "Something else");
+  key(v.r, "Escape");
+  expect(inputOf(v.r)).toBeUndefined();
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  expect(calls).toEqual([]);
+  expect(inputOf(v.r)).toBeUndefined();
+});
+
+test("a failed save keeps the input open and says why", async () => {
+  const v = render({
+    task: task(),
+    rename: async () => {
+      throw new Error("boom");
+    },
+  });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  edit(v.r, "New");
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  expect(inputOf(v.r)).toBeDefined();
+  expect(v.text()).toContain("boom");
+});
+
+test("a task that has not started offers no rename", () => {
+  for (const k of ["pending:e1", "draft:d1", "new:abc"]) {
+    const v = render({ task: task({ key: k }), rename: async () => {} });
+    expect(pencilOf(v.r)).toBeUndefined();
+    act(() => {
+      titleSpan(v.r).props.onDoubleClick?.();
+    });
+    expect(inputOf(v.r)).toBeUndefined();
+  }
+});
+
+// ---- the no-op check compares the STORED name, not the displayed headline ----
+
+async function saveUntouched(
+  t: Task,
+  value?: string,
+): Promise<{ calls: string[]; v: ReturnType<typeof render> }> {
+  const calls: string[] = [];
+  const v = render({ task: t, rename: async (_k, x) => void calls.push(x) });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  if (value !== undefined) edit(v.r, value);
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  return { calls, v };
+}
+
+test("not renamed, headline is the last message: saving it unchanged pins it as the name", async () => {
+  const t = task({
+    title_source: "message",
+    last_message: { role: "user", text: "Newest message", at: 1 },
+  } as Partial<Task>);
+  const { calls } = await saveUntouched(t);
+  expect(calls).toEqual(["Newest message"]);
+});
+
+test("renamed: saving the stored name unchanged calls nothing", async () => {
+  const { calls } = await saveUntouched(
+    task({ title: "Mine", title_source: "renamed" } as Partial<Task>),
+  );
+  expect(calls).toEqual([]);
+});
+
+test("renamed: clearing the field saves an empty name", async () => {
+  const { calls } = await saveUntouched(
+    task({ title: "Mine", title_source: "renamed" } as Partial<Task>),
+    "",
+  );
+  expect(calls).toEqual([""]);
+});
+
+test("not renamed: clearing the field has nothing to clear", async () => {
+  const { calls } = await saveUntouched(task({ title_source: "message" } as Partial<Task>), "");
+  expect(calls).toEqual([]);
+});
+
+// ---- the 200-character cap and IME composition --------------------------------
+
+test("the title input carries the server's 200-character cap", () => {
+  const v = render({ task: task(), rename: async () => {} });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  expect(inputOf(v.r).props.maxLength).toBe(200);
+});
+
+test("an over-long prefill is shown and saved at 200 characters", async () => {
+  const calls: string[] = [];
+  const v = render({
+    task: said("x".repeat(300)),
+    rename: async (_k, t) => void calls.push(t),
+  });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  expect(inputOf(v.r).props.value).toBe("x".repeat(200));
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  expect(calls).toEqual(["x".repeat(200)]);
+});
+
+test("an Enter that confirms an IME candidate does not save", async () => {
+  const calls: string[] = [];
+  const v = render({ task: task(), rename: async (_k, t) => void calls.push(t) });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  edit(v.r, "かな");
+  for (const ev of [{ nativeEvent: { isComposing: true } }, { keyCode: 229, nativeEvent: {} }]) {
+    await act(async () => {
+      inputOf(v.r).props.onKeyDown({ key: "Enter", preventDefault() {}, ...ev });
+    });
+  }
+  expect(calls).toEqual([]);
+  expect(inputOf(v.r)).toBeDefined();
 });
