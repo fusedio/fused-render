@@ -705,11 +705,41 @@ def _await_approval(req_id: str, key) -> dict:
                 _INFLIGHT.pop(key, None)
 
 
+# The chat's "Always approve" store (agent._chat_allow_path): the CLI's own
+# session rules die with each reply's process, so a grant that must last the
+# chat is also written to this file by agent._decide. Never matched for the
+# two tools whose card is a question or a plan, whatever the file says.
+_NEVER_AUTO_ALLOWED = (ANSWERABLE_TOOL, "ExitPlanMode")
+
+
+def _chat_allows(tool_name, tool_input) -> bool:
+    """True when this chat already said "always approve" for exactly this call:
+    the whole tool (`tools`) or, for Bash, this exact command string (`bash`).
+    Missing, unreadable or malformed file: False, so the card parks as usual."""
+    path = os.environ.get("FUSED_PERM_ALLOW_FILE") or ""
+    if not path or tool_name in _NEVER_AUTO_ALLOWED:
+        return False
+    try:
+        with open(path, encoding="utf-8") as fh:
+            store = json.load(fh)
+        tools, bash = store.get("tools"), store.get("bash")
+    except (OSError, ValueError, AttributeError):
+        return False
+    if isinstance(tools, list) and tool_name in tools:
+        return True
+    cmd = tool_input.get("command")
+    return (tool_name == "Bash" and isinstance(bash, list)
+            and isinstance(cmd, str) and cmd in bash)
+
+
 def _handle_approve(args: dict) -> dict:
     tool_name = args.get("tool_name") or "(unknown tool)"
     tool_input = args.get("input")
     if not isinstance(tool_input, dict):
         tool_input = {}
+    if _chat_allows(tool_name, tool_input):
+        return _text(_permission_result(tool_name, tool_input,
+                                        {"decision": "allow", "scope": "once"}))
 
     req_id = _request_id()
     _write_atomic(os.path.join(PERM_DIR, req_id + ".req.json"), {

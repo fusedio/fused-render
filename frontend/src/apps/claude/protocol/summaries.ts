@@ -93,7 +93,7 @@ export function prettyToolName(name: unknown): string {
   return m[1].replace(/_+/g, " ") + ": " + m[2].replace(/_+/g, " ");
 }
 
-/** T:13913 — the pretty name as a BUTTON label ("Allow all X in this reply"). */
+/** T:13913 — the pretty name as a BUTTON label ("Always approve every X call"). */
 export function permCardLabel(pretty: string): string {
   return pretty.length > 28 ? pretty.slice(0, 27) + "…" : pretty;
 }

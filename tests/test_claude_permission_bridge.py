@@ -2697,3 +2697,133 @@ def test_questions_and_decided_cards_start_no_read(agent, tmp_path, monkeypatch)
     agent._write_decision(agent._perm_dir(run_dir), "req-done", {"decision": "allow", "scope": "once"})
     rows = agent._permissions(run_dir)
     assert [r["risk_state"] for r in rows] == ["", ""] and stub.calls == []
+
+
+# ------------------------------------------- Always approve lasts the chat
+# Every reply is a NEW `claude -p --resume` process, so the CLI's session rule
+# (updatedPermissions) dies with it. agent._decide also writes the chat's
+# allow store and permission_server reads it.
+def _chat_run(agent, tmp_path, monkeypatch, name, chat="chat-1"):
+    """A live run dir `name` belonging to chat `chat`, under one shared RUNS."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    run_dir = tmp_path / name
+    os.makedirs(run_dir / "perm")
+    (run_dir / "meta.json").write_text(json.dumps({"resumed_from": chat}))
+    agent.RUNS = str(tmp_path)
+    agent._alive = lambda _run_dir: True
+    return str(run_dir)
+
+
+def _store(agent, chat="chat-1"):
+    try:
+        with open(agent._chat_allow_path(chat), encoding="utf-8") as fh:
+            return json.load(fh)
+    except OSError:
+        return None
+
+
+def test_decide_exact_and_session_append_to_the_chat_store(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    _add_req(agent, run_dir, "r1", "Bash", {"command": "git status"})
+    _add_req(agent, run_dir, "r2", "Edit", {"file_path": "/x"})
+    _add_req(agent, run_dir, "r3", "Bash", {"command": "ls *"})
+    _add_req(agent, run_dir, "r4", "Bash", {"command": "pwd"})
+    assert agent._decide("run", "r1", "allow", "exact")["scope"] == "exact"
+    assert agent._decide("run", "r2", "allow", "session")["scope"] == "session"
+    agent._decide("run", "r3", "allow", "exact")     # a pattern: allowed once
+    agent._decide("run", "r4", "allow", "once")
+    agent._decide("run", "r1", "allow", "exact")     # idempotent
+    assert _store(agent) == {"tools": ["Edit"], "bash": ["git status"]}
+
+
+def test_a_deny_or_a_question_never_reaches_the_store(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    _add_req(agent, run_dir, "r1", "Bash", {"command": "rm x"})
+    _add_req(agent, run_dir, "r2", "AskUserQuestion", _QUESTION_INPUT)
+    agent._decide("run", "r1", "deny", "exact")
+    agent._decide("run", "r2", "allow", "session")
+    assert _store(agent) is None
+
+
+def _auto_server(tmp_path, allow_file):
+    s = MCPServer([sys.executable, os.path.abspath(SERVER), str(tmp_path / "perm")],
+                  env={"FUSED_PERM_ALLOW_FILE": str(allow_file)})
+    s.call("initialize", {"protocolVersion": "2025-06-18",
+                          "capabilities": {}, "clientInfo": {"name": "test"}})
+    return s
+
+
+def _approve(s, tool, tool_input):
+    return s.send_async("tools/call", {
+        "name": "approve", "arguments": {"tool_name": tool, "input": tool_input}})
+
+
+def _reqs(tmp_path):
+    perm = tmp_path / "perm"
+    return [n for n in os.listdir(perm) if n.endswith(".req.json")] if perm.is_dir() else []
+
+
+def test_the_server_auto_allows_what_the_chat_always_approved(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    _add_req(agent, run_dir, "r1", "Bash", {"command": "git status"})
+    _add_req(agent, run_dir, "r2", "Edit", {"file_path": "/x"})
+    agent._decide("run", "r1", "allow", "exact")
+    agent._decide("run", "r2", "allow", "session")
+    s = _auto_server(tmp_path, agent._chat_allow_path("chat-1"))
+    try:
+        for tool, inp in (("Bash", {"command": "git status"}),
+                          ("Edit", {"file_path": "/anything"})):
+            payload = _result_payload(_approve(s, tool, inp).result(10))
+            assert payload["behavior"] == "allow" and payload["updatedInput"] == inp
+        assert _reqs(tmp_path) == []          # no card, no req.json
+        # a different command (here one that merely extends it) still parks
+        _approve(s, "Bash", {"command": "git status --short"})
+        _wait_for_request(tmp_path / "perm")
+        assert len(_reqs(tmp_path)) == 1
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("content", [None, "{not json", "[]", '{"tools": 3, "bash": "x"}'])
+def test_a_missing_or_corrupt_store_parks_normally(tmp_path, content):
+    allow = tmp_path / "allow.json"
+    if content is not None:
+        allow.write_text(content)
+    s = _auto_server(tmp_path, allow)
+    try:
+        _approve(s, "Bash", {"command": "ls"})
+        assert _wait_for_request(tmp_path / "perm")["tool"] == "Bash"
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize("tool", ["AskUserQuestion", "ExitPlanMode"])
+def test_the_store_never_auto_allows_a_question_or_a_plan(tmp_path, tool):
+    allow = tmp_path / "allow.json"
+    allow.write_text(json.dumps({"tools": [tool], "bash": []}))
+    s = _auto_server(tmp_path, allow)
+    try:
+        _approve(s, tool, {})
+        assert _wait_for_request(tmp_path / "perm")["tool"] == tool
+    finally:
+        s.close()
+
+
+def test_the_store_survives_across_two_runs_of_the_same_chat(agent, tmp_path, monkeypatch):
+    first = _chat_run(agent, tmp_path, monkeypatch, "run-1")
+    _add_req(agent, first, "r1", "Bash", {"command": "make test"})
+    agent._decide("run-1", "r1", "allow", "exact")
+    # The next reply: a new run dir that resumed the same session.
+    second = _chat_run(agent, tmp_path, monkeypatch, "run-2")
+    assert agent._run_chat_id(second) == agent._run_chat_id(first) == "chat-1"
+    cfg = json.load(open(agent._write_mcp_config(second, chat_id="chat-1")))
+    env = cfg["mcpServers"][agent.PERMISSION_SERVER]["env"]
+    assert env["FUSED_PERM_ALLOW_FILE"] == agent._chat_allow_path("chat-1")
+    s = _auto_server(tmp_path, env["FUSED_PERM_ALLOW_FILE"])
+    try:
+        payload = _result_payload(_approve(s, "Bash", {"command": "make test"}).result(10))
+        assert payload["behavior"] == "allow" and _reqs(tmp_path) == []
+    finally:
+        s.close()
+    # another chat does not inherit it
+    assert _store(agent, "chat-2") is None
