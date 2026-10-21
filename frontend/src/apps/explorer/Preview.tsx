@@ -2245,6 +2245,7 @@ function TemplatePreview({
                   mountClassName={"preview-frame" + (m === shown ? " is-shown" : "")}
                   file={fsPath}
                   paramsSource="url"
+                  prChip
                   /* THE RECAP OPT-IN, and one of only two sites that take it:
                      this pane and the `?_side=claude` sidebar are the full chat
                      the reader opened. A thumbnail is neither — `IS_PREVIEW`
@@ -2457,6 +2458,7 @@ function TemplatePreview({
                    never appeared in this file's Recent list. */
                 annotateTarget={annotateTargetFrame}
                 paramsSource="url"
+                prChip
                 /* THE RECAP OPT-IN, and one of only two sites that take it:
                    this pane and the `?_side=claude` sidebar are the full chat
                    the reader opened. A thumbnail is neither — `IS_PREVIEW`

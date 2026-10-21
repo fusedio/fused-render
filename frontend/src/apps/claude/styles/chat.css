@@ -812,6 +812,11 @@
   max-width: 180px;
   overflow: hidden;
 }
+.chat-root .c-topbar .c-tb-extra {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
 .chat-root .c-topbar-merged .c-tb-tail {
   margin-left: auto;
   display: flex;

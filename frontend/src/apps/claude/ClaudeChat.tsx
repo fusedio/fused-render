@@ -42,6 +42,7 @@ import {
   taskDraftKey,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
+import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
@@ -250,6 +251,9 @@ export interface ClaudeChatProps {
   headerInPeek?: boolean;
   /** Host-supplied node for the slim header's right-hand seat (a PR chip). */
   headerExtra?: ReactNode;
+  /** Draw `TaskPrChip` for the open task in the header, ahead of any
+   *  `headerExtra` (the explorer's pane; TaskPeek passes its own chip). */
+  prChip?: boolean;
   /** Fold `← Chats` and the menu into the identity row (no strip row, no
    *  folder name) when the strip has no annotate seats. The explorer's folder
    *  sidebar opts in. */
@@ -4947,6 +4951,18 @@ function ChatBody(props: ChatBodyProps) {
     inChat && showHead ? (state.sessionId ?? null) : null,
     file,
   );
+  // The header's last seat: the task's PR chip when the host asked for it (the
+  // chip draws nothing for a task that names no pull request), then the
+  // host's own node.
+  const headerExtra =
+    props.prChip && head.task ? (
+      <>
+        <TaskPrChip task={head.task} />
+        {props.headerExtra}
+      </>
+    ) : (
+      props.headerExtra
+    );
 
   // THE MERGED HEAD (`mergedHead`, the explorer's folder sidebar): when the
   // strip would hold nothing but `← Chats` and the menu, those two ride the
@@ -5222,7 +5238,7 @@ function ChatBody(props: ChatBodyProps) {
               <Topbar
                 slim={peek}
                 {...(mergedHeadRow ? { lead: backBtn, tail: kebabEl, noProject: true } : {})}
-                {...(props.headerExtra ? { extra: props.headerExtra } : {})}
+                {...(headerExtra ? { extra: headerExtra } : {})}
                 worktree={worktreeMenu}
                 worktreeHint={
                   <WorktreeHintChip hint={visibleWorktreeHint(state.worktreeHint, state.tasks)} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />

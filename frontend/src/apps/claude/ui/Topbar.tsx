@@ -138,7 +138,8 @@ export interface TopbarProps {
    * host's own head (TaskPeek) already names the project and agent.
    */
   slim?: boolean;
-  /** The host's node for the slim line's last seat (the Task page's PR chip). */
+  /** The host's node for the line's last seat before `tail` (the PR chip) —
+   *  drawn by the slim line and by the task-identity head. */
   extra?: ReactNode;
   /** First child of the row, before the identity (the merged head's `← Chats`). */
   lead?: ReactNode;
@@ -263,6 +264,9 @@ export function Topbar({
             drives the composer's stop square; the header defers to the ring. */}
         {worktree}
         {worktreeHint}
+        {/* The host's PR chip (explorer pane): the slim line seats `extra` too,
+            so both heads say which pull requests the task is about. */}
+        {extra ? <span className="c-tb-extra">{extra}</span> : null}
         {tail ? <span className="c-tb-tail">{tail}</span> : null}
       </div>
     );
