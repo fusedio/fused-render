@@ -849,7 +849,9 @@ button.new-task-source:focus-visible {
   gap: 5px;
 }
 
-.pp {
+/* Scoped under the dialog: `.deploy-body button` (fields.css, 0,1,1) paints
+   padding/font/border on every button and beats a bare `.pp` (0,1,0). */
+.new-task-dialog .nt-pills .pp {
   display: inline-flex;
   align-items: stretch;
   height: 28px;
@@ -859,7 +861,7 @@ button.new-task-source:focus-visible {
   background: var(--bg);
   color: var(--fg);
   font: inherit;
-  font-size: 12.5px;
+  font-size: 12px;
   cursor: pointer;
   box-shadow: 0 1px 1px var(--shadow-ink-soft);
   overflow: hidden;
