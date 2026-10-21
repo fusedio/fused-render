@@ -21,16 +21,7 @@ import { updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/upda
 import { isBot } from "@platform/lib/flavor";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { Button } from "@platform/shadcn/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@platform/shadcn/ui/alert-dialog";
+import { Modal } from "@platform/ui/modal/Modal";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { labelId, PrefToggleRow, SettingRow, usePrefWrite, type PrefControlProps, SettingSelect } from "./SettingRow";
 
@@ -251,28 +242,35 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
           </Button>
         </div>
       )}
-      <AlertDialog open={ask} onOpenChange={setAsk}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Reopen windows to apply the engine change</AlertDialogTitle>
-            <AlertDialogDescription>
-              {staleLine} Reopening closes every window and opens one Home window on the new engine.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Later</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={busy}
-              onClick={() => {
-                setAsk(false);
-                void reopen();
-              }}
-            >
-              Reopen windows
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {ask && (
+        <Modal
+          title="Reopen windows to apply the engine change"
+          busy={busy}
+          onClose={() => setAsk(false)}
+          width={420}
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setAsk(false)}>
+                Later
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => {
+                  setAsk(false);
+                  void reopen();
+                }}
+              >
+                Reopen windows
+              </button>
+            </>
+          }
+        >
+          <p>{staleLine}</p>
+          <p>Reopening closes every window and opens one Home window on the new engine.</p>
+        </Modal>
+      )}
     </PrefToggleRow>
   );
 }
