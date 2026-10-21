@@ -619,7 +619,8 @@ def test_V2_check_now_brings_in_what_undo_set_aside(env):
 def _fake_job(monkeypatch, purpose):
     from fused_render.contrib import merge_job
     job = {"id": "j1", "status": "ready", "purpose": purpose, "files": ["index.html"]}
-    monkeypatch.setattr(merge_job, "current", lambda app_dir, **kw: dict(job))
+    monkeypatch.setattr(merge_job, "current", lambda app_dir, purpose=None: (
+        dict(job) if purpose in (None, job["purpose"]) else None))
 
 
 def test_V1_a_proposal_merge_never_stalls_the_authors_copy(env, monkeypatch):

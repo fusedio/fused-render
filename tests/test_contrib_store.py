@@ -752,7 +752,10 @@ def test_own_copy_ahead_only_push_asks_ownsync_first(world, monkeypatch):
     monkeypatch.setattr(pkg, "ownsync", fake, raising=False)
     assert _sync(a, push=True)["why"] == "github-changed"
     assert _remote_main(world) == before
+    seen = []
+    fake.note_seen = lambda root: seen.append(root)
     assert _sync(a)["status"] == "synced"  # no push asked: resolve not involved
+    assert seen == [a]  # a plain own sync notes the GitHub tip it saw
     fake.resolve = lambda root, action, push: None
     r = _sync(a, push=True)
     assert r["status"] == "synced" and r["pushed"] is True
@@ -925,7 +928,8 @@ def test_v1_record_over_a_different_repo_is_dropped_not_bound(world):
     different repo got bound to it and pointed its origin at Alice."""
     a = os.path.join(str(world.ws), "app", "sine")
     rec = store.new_record("github", repo=REPO, branch="main", classified_by="install")
-    rec.pop("root_commit")
+    for v2_only in ("root_commit", "v", "copy_id"):
+        rec.pop(v2_only)
     other = str(world.tmp / "other.git")
     git(str(world.tmp), "init", "-q", "--bare", "-b", "main", other)
     w = str(world.tmp / "ow")
@@ -945,3 +949,108 @@ def test_record_sync_failure_helper_writes_todays_row(world):
                                          message="Your copy and the author's both changed.")
     assert r["status"] == "failed" and r["failure"]["reason"] == "diverged"
     assert git_upstream.sync_failures()[0]["output"] == "Your copy and the author's both changed."
+
+
+def test_binding_never_drops_a_v2_record_over_its_origin(world):
+    """§16.1: binding is on the root commit ONLY. An own copy's origin is its
+    author's to change (a rename, a transfer); a v2 row missing its root
+    commit is filled whatever the origin says. Only a v1 row is judged by
+    origin (round-1 item 5)."""
+    a = _install(world)
+    store.update(a, lambda r: r.update({"kind": "own"}))
+    git(a, "remote", "set-url", "origin", "https://github.com/alice/renamed")
+    store.update(a, lambda r: r.__setitem__("root_commit", None))
+    rec = store.get(a)
+    assert rec is not None and rec["kind"] == "own" and rec["root_commit"]
+    _sync(a)
+    assert store.get(a)["repo"] == REPO
+    assert git(a, "remote", "get-url", "origin").strip() == "https://github.com/alice/renamed"
+
+
+def test_a_fresh_clone_never_adopts_a_deleted_copys_record(world, monkeypatch):
+    """Audit V12: a copy with an open proposal deleted in Finder, the same
+    repo `git clone`d into a NEW folder: the orphan (proposal and all) was
+    adopted. A fresh clone carries no `fused.copyid`: never adopts."""
+    monkeypatch.setattr(classify, "_identity", lambda: {"login": "bob"})
+    monkeypatch.setattr(classify, "_role_cache", {})
+    monkeypatch.setattr(classify, "_gh", lambda: type("G", (), {
+        "org_role": staticmethod(lambda org: "member")}))
+    a = _install(world)
+    head = git(a, "rev-parse", "HEAD").strip()
+    store.update(a, lambda r: r.__setitem__("proposal", {"repo": REPO, "number": 7,
+                                                        "sent": head, "cache": {"state": "open"}}))
+    shutil.rmtree(a)
+    n = os.path.join(str(world.ws), "app", "sine-fresh")
+    git(str(world.tmp), "clone", "-q", URL, n)
+    rec = classify.ensure(n)
+    assert rec["proposal"] is None and rec["classified_by"] == "migration"
+    assert store.get_raw(store.key(a))["proposal"]["number"] == 7  # still an orphan
+
+
+def test_two_copies_of_one_repo_the_moved_one_is_adopted(world, monkeypatch):
+    """Audit V10: two copies share one root commit. Finder: move A to C,
+    delete B (newer). C adopted the NEWEST orphan, B's. Now: the one whose
+    copy id travelled with the folder."""
+    import time as _t
+
+    a = _install(world, name="sine")
+    store.update(a, lambda r: r.__setitem__("skip_tip", "a" * 40))
+    _t.sleep(0.01)
+    b = _install(world, name="sine-2")
+    store.update(b, lambda r: r.__setitem__("skip_tip", "b" * 40))
+    c = os.path.join(str(world.ws), "app", "renamed")
+    os.rename(a, c)
+    shutil.rmtree(b)
+    rec = classify.ensure(c)
+    assert rec is not None and rec["classified_by"] == "install"
+    assert store.get_raw(store.key(b)) is not None and store.get_raw(store.key(a)) is None
+
+
+def test_an_orphan_from_before_copy_ids_needs_its_last_head(world):
+    """Orphans without a copy id: adopted only when the folder's HEAD is or
+    contains their `last_head` (and a sent proposal), best match first."""
+    a = _install(world, name="sine")
+    mine = _commit(a, "b.txt", "bob\n", "mine")
+    git(a, "config", "--local", "--unset", classify.COPY_ID_CONFIG)
+
+    def legacy(r):
+        r.pop("copy_id")
+        r["last_head"] = mine
+    store.update(a, legacy)
+    c = os.path.join(str(world.ws), "app", "moved")
+    os.rename(a, c)
+    store.put(os.path.join(str(world.ws), "app", "other"),
+              {**store.new_record("github", repo=REPO, branch="main"),
+               "copy_id": None, "root_commit": store.get_raw(store.key(a))["root_commit"],
+               "last_head": "e" * 40, "classified_at": 9e12})
+    rec = classify.ensure(c)
+    assert rec is not None and rec["last_head"] == mine
+
+
+def test_link_install_place_drops_the_old_record_and_guards_the_clone(world, monkeypatch):
+    """The real `_place` path of a link install: a deleted copy's stale
+    record at the same folder is gone, the clone is recorded `github`,
+    push-guarded, hooked and stamped."""
+    from fused_render import app_fused_dir, appfile
+
+    dest = os.path.join(str(world.ws), "app", "sine")
+    os.makedirs(dest)
+    store.put(dest, {**store.new_record("github", repo=REPO, branch="main"),
+                     "root_commit": None, "proposal": {"number": 7, "sent": "d" * 40}})
+    shutil.rmtree(dest)
+    tip = git(world.alice, "rev-parse", "HEAD").strip()
+    stage = os.path.join(appfile_git._staging_root(URL), "sine")
+    os.makedirs(os.path.dirname(stage), exist_ok=True)
+    git(str(world.tmp), "clone", "-q", URL, stage)
+    name, app_id = appfile_git.expected_identity(stage, URL)
+    monkeypatch.setattr(appfile, "write_stamp", lambda *a, **k: None)
+    monkeypatch.setattr(app_fused_dir, "ensure", lambda *a, **k: None)
+    target = {"git": {"url": URL, "commit": tip}, "state": "new", "path": dest, "found_by": None}
+    manifest = {"name": name, "app_id": app_id, "entry": "index.html"}
+    done = appfile_git.install("x.fused", target, manifest, force=False)
+    assert done["action"] == "installed"
+    rec = store.get(dest)
+    assert rec["kind"] == "github" and rec["proposal"] is None and rec["classified_by"] == "install"
+    assert classify.is_push_guarded(dest)
+    assert classify.HOOK_MARK in open(os.path.join(dest, ".git", "hooks", "pre-push")).read()
+    assert git(dest, "config", "--local", "--get", classify.COPY_ID_CONFIG).strip() == rec["copy_id"]

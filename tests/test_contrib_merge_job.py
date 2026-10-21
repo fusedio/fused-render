@@ -457,3 +457,26 @@ def test_is_scratch_workdir(home):
     assert merge_job.is_scratch_workdir(os.path.join(base, "contrib", "work", "abc"))
     assert not merge_job.is_scratch_workdir(os.path.join(base, "contrib", "work"))
     assert not merge_job.is_scratch_workdir("/tmp/contrib/work/abc")
+
+
+def test_one_job_per_app_and_purpose(overlap):
+    """An inbox proposal merge (land=False) never hides or blocks an
+    own-sync merge in the same folder (§16.12)."""
+    bob, ours, theirs = overlap
+    gate = []
+
+    def slow(wt, files, context):
+        while not gate and not context["job"]["cancel"]:
+            time.sleep(0.02)
+        return {"ok": False, "error": None}
+    prop = merge_job.start(bob, purpose="proposal", ours=ours, theirs=theirs, land=False,
+                           resolver=slow)
+    own = merge_job.start(bob, purpose="own-sync", ours=ours, theirs=theirs, resolver=slow)
+    assert own != prop
+    assert merge_job.start(bob, purpose="own-sync", ours=ours, theirs=theirs) == own
+    assert merge_job.current(bob, purpose="own-sync")["id"] == own
+    assert merge_job.for_app(bob, purpose=("update", "return")) is None
+    assert merge_job.current(bob, purpose=("proposal",))["id"] == prop
+    merge_job.discard(prop)
+    merge_job.discard(own)
+    gate.append(1)

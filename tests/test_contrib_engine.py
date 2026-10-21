@@ -537,7 +537,8 @@ def test_row7_squash_of_two_commits_returns_before_merging_r3(w):
     assert rec["proposal"]["checked_tip"] == w.alice()
     assert w.head() == w.alice()
     assert _texts(w)[-1] == "alice merged your change. You're on alice's latest version."
-    assert engine.status(w.app)["state"] == "merged"
+    st = engine.status(w.app)
+    assert st["state"] == "merged" and st["merged_in_tip"]
     assert w.sync()["status"] == "synced" and w.head() == w.alice()  # returns once
 
 
@@ -968,3 +969,25 @@ def test_partial_unaside_keeps_restore(w, tmp_path):
     assert engine.restore(w.app, lid)["ok"]
     assert read(w.app, "b.txt") == "B\n"
     assert store.activity_entry(w.app, lid)["restored_at"]
+
+
+@pytest.mark.parametrize("method", ["merge", "squash"])
+def test_merged_then_taken_back_says_so(w, method):
+    """V4 wording: Alice merges, then reverts — the return lands and the
+    line says she took it back; Bob's later edit is kept."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    n = _propose(w)
+    claude_commit(w.app, {"app.py": APP_LOUD}, "louder")
+    w.fake.merge(REPO, n, method)
+    _alice(w, {"index.html": PAGE}, "Revert red")
+    assert w.sync()["status"] == "synced"
+    assert "blue" in read(w.app, "index.html") and read(w.app, "app.py") == APP_LOUD
+    assert _texts(w)[-1] == ("alice merged your change, then took it back. You're on "
+                             "alice's latest version. 1 edit you made since kept.")
+    assert engine.status(w.app)["merged_in_tip"]
+
+
+def test_merged_in_tip_false_without_a_merged_proposal(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _propose(w)
+    assert engine.status(w.app)["merged_in_tip"] is False

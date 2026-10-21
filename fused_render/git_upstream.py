@@ -960,6 +960,9 @@ def _sync_plain(root, *, action, push, kind=None):
     after a sign-in upgrade (§16.12) never pushes until Publish now."""
     if not os.path.isdir(root):
         return _skipped("unavailable")
+    # A held copy's automatic syncs never push (§16.12). `_own_resolve` gets
+    # the push asked for and applies the hold itself; this module's own
+    # plain push (the loop off: resolve answers None) checks `held`.
     held = False
     if kind == "own" and push:
         try:
@@ -968,10 +971,10 @@ def _sync_plain(root, *, action, push, kind=None):
                 if action == PUBLISH_NOW:
                     classify.release_hold(root)
                 else:
-                    held, push = True, False
+                    held = True
         except Exception:  # noqa: BLE001 — unknown hold reads as held
             logger.exception("contrib hold check failed for %s", root)
-            held, push = True, False
+            held = True
     if not _ok(_run(root, "remote", "get-url", "origin")):
         return _skipped("no-remote")
     default_branch = _default_branch(root)
@@ -1046,7 +1049,7 @@ def _sync_plain(root, *, action, push, kind=None):
         res = _own_resolve(root, action=action, push=push)
         if res is not None:
             return res
-    if push and (ahead or 0) > 0:
+    if push and not held and (ahead or 0) > 0:
         push_cmd = f"git push -- origin {default_branch}"
         result = _run(root, "push", "--", "origin", default_branch)
         if not _ok(result):
@@ -1061,11 +1064,32 @@ def _sync_plain(root, *, action, push, kind=None):
         pushed = True
 
     _clear_failures(root)
+    if kind == "own":
+        _note_seen(root)
     out = {"ok": True, "status": "synced", "pulled": pulled, "pushed": pushed,
            "state": state()}
     if held:
         out["held"] = True
     return out
+
+
+def _check_noting(root):
+    """`check_repo` (a fetch of origin), and for an own copy the tip it saw
+    noted (`_note_seen`)."""
+    result = check_repo(root)
+    if result is not None and _kind_of(root) == "own":
+        _note_seen(root)
+    return result
+
+
+def _note_seen(root):
+    """An own copy's successful fetch NOT through `_own_resolve` (which
+    notes its own): ownsync remembers the GitHub tip it saw (§16.12, R)."""
+    try:
+        from fused_render.contrib import ownsync
+        ownsync.note_seen(root)
+    except Exception:  # noqa: BLE001 — memory only; never costs a sync
+        logger.exception("contrib note_seen failed for %s", root)
 
 
 #: The `action` of the own copy's Publish now button (contrib/ownsync.py):
@@ -1236,7 +1260,7 @@ def _background_check(path, runner=None):
                     # a GitHub-link copy, whatever the engine skipped for
                     # (busy, Claude working, mid-operation): it is fetched
                     # by its record's URL only (§16.0 P3).
-                    _record(check_repo(root))
+                    _record(_check_noting(root))
             elif _is_github(root):
                 # Auto-sync off: the engine only fetches (the author's latest,
                 # by the record's URL) for the page's status — no tree move,
@@ -1245,7 +1269,7 @@ def _background_check(path, runner=None):
                 with _state_lock:
                     _state.pop(root, None)  # one recorded before it was recorded
             else:
-                _record(check_repo(root))
+                _record(_check_noting(root))
     except Exception:  # noqa: BLE001 — best-effort housekeeping
         logger.exception("git-upstream check failed for %s", path)
     finally:
@@ -1341,7 +1365,7 @@ def force_check(path, *, _runner=None):
             if not _is_github(root):
                 # A GitHub-link copy is fetched by the engine only (its
                 # Doctor row reads the engine's state, not this cache).
-                _record(check_repo(root))
+                _record(_check_noting(root))
         except Exception:  # noqa: BLE001 — best-effort, exactly like note_app_opened
             logger.exception("git-upstream forced check failed for %s", path)
         finally:

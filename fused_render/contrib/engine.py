@@ -107,12 +107,17 @@ def _out(status, why=None, **extra) -> dict:
     return {"status": status, "why": why, "pulled": 0, "pushed": False, **extra}
 
 
+#: The Merge with Claude purposes that run on a GitHub-link copy.
+_COPY_PURPOSES = ("update", "return", "proposal")
+
+
 def _merge_job(root):
-    """The app's open Merge with Claude job (`merge_job.current`), if any."""
+    """The copy's own Merge with Claude job (`merge_job.current`, the
+    purposes a GitHub-link copy runs), if any."""
     try:
         from fused_render.contrib import merge_job
 
-        job = merge_job.current(root)
+        job = merge_job.current(root, purpose=_COPY_PURPOSES)
     except Exception:  # noqa: BLE001
         logger.exception("contrib: merge_job.current failed for %s", root)
         return None
@@ -532,13 +537,34 @@ def decide(f: Facts) -> Action:
     return Action("merge")
 
 
-def _merged_in(root, rec, tip) -> bool:
-    p = rec.get("proposal") if isinstance(rec.get("proposal"), dict) else None
-    if not p or p.get("returned_at"):
-        return False
-    cache = p.get("cache") if isinstance(p.get("cache"), dict) else {}
+def _merge_in_tip(root, p, tip) -> bool:
+    """The proposal is merged on GitHub and its merge commit is in `tip`."""
+    cache = p.get("cache") if isinstance(p, dict) and isinstance(p.get("cache"), dict) else {}
     sha = cache.get("merge_commit_sha")
     return cache.get("state") == "merged" and bool(sha) and replay.is_ancestor(root, sha, tip)
+
+
+def _merged_in(root, rec, tip) -> bool:
+    """Row 7's fact: a merged proposal in the tip, not returned yet."""
+    p = rec.get("proposal") if isinstance(rec.get("proposal"), dict) else None
+    return bool(p) and not p.get("returned_at") and _merge_in_tip(root, p, tip)
+
+
+def _taken_back(root, p, tip) -> bool:
+    """The author's latest no longer holds what was merged (merged, then
+    reverted): re-applying it to the tip is clean but changes the tip. What
+    is re-applied: the sent version when the tip does not contain it (a
+    squash or rebase merge), else the merge commit's own change (on its
+    first parent). An overlap (maintainer edits) is not called taken back."""
+    sent = replay.rev(root, (p or {}).get("sent") or "")
+    msha = replay.rev(root, ((p or {}).get("cache") or {}).get("merge_commit_sha") or "")
+    if sent and not replay.is_ancestor(root, sent, tip):
+        mt = replay.merge_tree(root, tip, sent)
+    elif msha and replay.rev(root, f"{msha}^1"):
+        mt = replay.merge_tree(root, tip, msha, base=replay.rev(root, f"{msha}^1"))
+    else:
+        return False
+    return mt["supported"] and mt["clean"] and mt["tree"] != replay.tree_of(root, tip)
 
 
 def _facts(root, rec, fol, tip, *, user) -> Facts | None:
@@ -619,9 +645,9 @@ def _fail(root, fol, f: Facts, why, files, *, action) -> dict:
     words = _fail_words(f, why, files)
     failure = None
     if not f.user:
-        failure = gu._record_failure(root, why, action=action,
-                                     command=f"git pull --ff-only -- origin {fol.branch}",
-                                     output=words, push=False)
+        failure = gu.record_sync_failure(
+            root, why, action=action, push=False, message=words,
+            command=f"git pull --ff-only -- origin {fol.branch}").get("failure")
     return _out("failed", why, failure=failure, message=words, files=list(files), **done)
 
 
@@ -728,12 +754,14 @@ def _return(root, rec, fol, f: Facts) -> dict:
     if why:
         return _out("deferred", why, **done)
     _settled(root, clear_proposal=True)
-    _activity(root, "return", _return_text(f.who, kept), backup=backup)
+    _activity(root, "return", _return_text(f.who, kept, taken_back=_taken_back(root, p, f.tip)),
+              backup=backup)
     return _out("synced", move="return", **done)
 
 
-def _return_text(who, kept) -> str:
-    text = f"{who} merged your change. You're on {who}'s latest version."
+def _return_text(who, kept, *, taken_back=False) -> str:
+    text = (f"{who} merged your change, then took it back." if taken_back
+            else f"{who} merged your change.") + f" You're on {who}'s latest version."
     if kept:
         text += f" {kept} edit{'s' if kept != 1 else ''} you made since kept."
     return text
@@ -1303,7 +1331,7 @@ def status(root) -> dict:
         "remix_of": None, "changes_files": [], "changes": 0, "dirty": False,
         "unproposed": 0, "behind": 0, "needs_merge": False, "needs_merge_purpose": None,
         "needs_merge_files": [], "merge_job": None, "blocked_files": [],
-        "kept_mine": False, "off_default": False, "claude_busy": False,
+        "kept_mine": False, "off_default": False, "claude_busy": False, "merged_in_tip": False,
         "last_checked": None, "auto_sync": gu.auto_sync_enabled(),
         "original_update": False, "can_push": None, "owner_checked": True,
         "sync_error": None, "sync_error_code": None, "pending": False, "event": None,
@@ -1357,7 +1385,8 @@ def status(root) -> dict:
         needs_merge_files=list((nm or {}).get("files") or []),
         kept_mine=bool(tip) and rec.get("skip_tip") == tip and behind > 0,
         off_default=gu._current_branch(root) != fol.branch,
-        claude_busy=_claude_busy(root))
+        claude_busy=_claude_busy(root),
+        merged_in_tip=bool(proposal and tip) and _merge_in_tip(root, proposal, tip))
     if tip and behind:
         view["blocked_files"] = [p for p in replay.clobber_paths(root, head, tip)
                                  if p not in tracked]

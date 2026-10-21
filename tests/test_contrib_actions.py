@@ -40,6 +40,8 @@ def gh(state="following", *, flags=ALL, github=IN, proposal=None, owner_checked=
     c.update(copy)
     if state == "needs-merge" and "needs_merge" not in copy:
         c["needs_merge"] = True
+    if state == "merged" and "merged_in_tip" not in copy:
+        c["merged_in_tip"] = True
     return {"kind": "github", "repo": "alice/x", "remix_of": None,
             "owner_checked": owner_checked, "original_update": False, "flags": flags,
             "github": github, "copy": c, "own": None, "proposal": proposal,
@@ -170,12 +172,8 @@ TABLE = [
                                                       "purpose": "proposal"}), ["check"]),
     ("own no tracking yet", own("no-github"), ["check"]),
     # §16.12: held after a github→own upgrade; unknown rewind state.
-    ("own held", own("held", unpublished=2, fixes=["publish-now"],
-                     message="This is your app. 2 edits are ready to publish."),
-     ["publish-now", "check"]),
-    ("own unknown", own("unknown", unpublished=1, fixes=["publish-now", "use-github"],
-                        message="fused can't tell whether GitHub's version was rolled back."),
-     ["publish-now", "use-github", "check"]),
+    ("own held", own("held", unpublished=2), ["publish-now", "check"]),
+    ("own unknown", own("unknown", unpublished=1), ["publish-now", "use-github", "check"]),
     ("own A1 still fixes", own("github-changed", unpublished=1, flags=A1),
      ["put-on-top", "use-github", "publish-over", "check"]),
     ("own no repo", own(repo=None), []),
@@ -217,6 +215,8 @@ def test_buttons(name, f, want):
     ("blocked", gh(blocked_files=["x"]), "move-aside"),
     ("own needs-merge", own("needs-merge", unpublished=1), "merge-claude"),
     ("github-changed", own("github-changed", unpublished=1), "put-on-top"),
+    ("held", own("held", unpublished=2), "publish-now"),
+    ("unknown", own("unknown", unpublished=1), "publish-now"),
     ("github-changed, nothing of mine", own("github-changed"), "use-github"),
     ("sync failed", gh(sync_error="Couldn't reach GitHub."), "retry"),
     ("nothing to do", gh(), "check"),

@@ -247,27 +247,20 @@ def _identity(*, cached: bool) -> dict | None:
 _OPEN_JOB = ("running", "ready", "landing")
 
 
-def _open_job(root) -> dict | None:
-    """The app's open Merge with Claude job, any purpose (None if none)."""
+def _job_open(root) -> bool:
+    """An own-sync Merge with Claude job is open here. Only that purpose
+    (merge_job keeps one open job per purpose): a proposal merge in the
+    inbox runs in its own scratch tree and must not stall this copy or read
+    as "merging" (§16.12)."""
     try:
         from fused_render.contrib import merge_job
 
-        try:
-            job = merge_job.current(root, purpose="own-sync")
-        except TypeError:  # a merge_job without per-purpose lookup
-            job = merge_job.current(root)
+        job = merge_job.current(root, purpose="own-sync")
     except Exception:  # noqa: BLE001
         logger.exception("ownsync: merge_job.current failed for %s", root)
-        return None
-    return job if isinstance(job, dict) and job.get("status") in _OPEN_JOB else None
-
-
-def _job_open(root) -> bool:
-    """An own-sync Merge with Claude job is open here. Only that purpose:
-    a proposal merge in the inbox runs in its own scratch tree and must
-    not stall this copy or read as "merging" (§16.12)."""
-    job = _open_job(root)
-    return bool(job) and job.get("purpose") == "own-sync"
+        return False
+    return isinstance(job, dict) and job.get("purpose") == "own-sync" \
+        and job.get("status") in _OPEN_JOB
 
 
 def _reflog_values(root, path_out: str) -> list[str]:
@@ -863,10 +856,6 @@ def start_merge(root) -> dict:
     plan = merge_plan(root)
     if plan is None:
         return {"ok": False, "message": "There's nothing to combine right now."}
-    other = _open_job(root)
-    if other and other.get("purpose") != "own-sync":
-        return {"ok": False, "message": "Claude is combining a proposal in this app right "
-                "now. Try again when that's done."}
     from fused_render.contrib import merge_job
 
     job = merge_job.start(root, purpose=plan["purpose"], ours=plan["ours"],

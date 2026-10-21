@@ -356,7 +356,7 @@ def _github(f: dict, flags: dict) -> dict:
         b.add("move-aside", "Move my file aside and update", primary=True)
         b.add("keep-mine", "Keep mine")
     elif state == "merged":
-        if copy.get("merged_in_tip", True) is False:
+        if not copy.get("merged_in_tip"):
             sentence = f"{who} merged your change; fused will bring it in shortly."
         else:
             sentence = f"{who} merged your change. You're on {who}'s latest version."

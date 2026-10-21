@@ -42,7 +42,7 @@ may change nothing else. Capped at MAX_ROUNDS rounds and MAX_SECONDS.
 THE RESOLVER IS A SEAM: `start(..., resolver=fn)` (tests pass a fake that
 edits the files); production uses `claude_resolver`.
 
-ONE JOB PER APP; a start while one is open returns it. Jobs are in memory:
+ONE JOB PER APP AND PURPOSE; a start while one is open returns it. Jobs are in memory:
 a restart forgets them, and `_sweep_orphans` (first use) removes work dirs
 no job owns once older than ORPHAN_AGE_S. A ready job nobody acts on is
 discarded after EXPIRE_S.
@@ -316,7 +316,7 @@ def start(app_dir: str, *, purpose: str, ours: str | None = None, theirs: str | 
     root = _canon(app_dir)
     with _lock:
         for job in _jobs.values():
-            if job["root"] == root and job["status"] in _OPEN:
+            if job["root"] == root and job["purpose"] == purpose and job["status"] in _OPEN:
                 return job["id"]
         job_id = uuid.uuid4().hex[:16]
         job = {"id": job_id, "root": root, "purpose": purpose, "ours": ours,
@@ -339,13 +339,23 @@ def get(job_id: str) -> dict | None:
         return _public(job) if job else None
 
 
-def current(app_dir: str) -> dict | None:
+def _purposes(purpose) -> tuple | None:
+    if purpose is None:
+        return None
+    return (purpose,) if isinstance(purpose, str) else tuple(purpose)
+
+
+def current(app_dir: str, purpose=None) -> dict | None:
     """The app's open job, else its newest failed one while the overlap it
-    failed on still stands — what `engine.status`'s `merge_job` shows."""
+    failed on still stands — what `engine.status`'s `merge_job` shows.
+    `purpose` (a name or several) narrows it: an inbox proposal merge in
+    the author's own repo never hides an own-sync one."""
     _housekeep()
     root = _canon(app_dir)
+    want = _purposes(purpose)
     with _lock:
-        mine = [j for j in _jobs.values() if j["root"] == root]
+        mine = [j for j in _jobs.values() if j["root"] == root
+                and (want is None or j["purpose"] in want)]
     live = [j for j in mine if j["status"] in _OPEN]
     if live:
         return _public(live[-1])
@@ -367,12 +377,15 @@ def _still_needed(root: str, purpose: str) -> bool:
     return bool(rec.get("needs_merge"))
 
 
-def for_app(app_dir: str) -> dict | None:
-    """The app's open job (running, ready, or landing), else None."""
+def for_app(app_dir: str, purpose=None) -> dict | None:
+    """The app's open job (running, ready, or landing) — of `purpose` when
+    given — else None."""
     _housekeep()
     root = _canon(app_dir)
+    want = _purposes(purpose)
     with _lock:
-        live = [j for j in _jobs.values() if j["root"] == root and j["status"] in _OPEN]
+        live = [j for j in _jobs.values() if j["root"] == root and j["status"] in _OPEN
+                and (want is None or j["purpose"] in want)]
         return _public(live[-1]) if live else None
 
 
