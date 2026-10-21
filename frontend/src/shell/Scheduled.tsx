@@ -1586,8 +1586,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                         onClick={() => pickView(v)}>
                   {VIEW_ICONS[v]}
                   <span className="schedule-fit-lbl">
-                    {v === "calendar" && <span className="schedule-beta-tag">Beta</span>}
                     {VIEW_LABELS[v]}
+                    {v === "calendar" && (
+                      <span className="sidebar-count-chip sidebar-beta-chip schedule-beta-tag">Beta</span>
+                    )}
                   </span>
                 </button>
               ))}
