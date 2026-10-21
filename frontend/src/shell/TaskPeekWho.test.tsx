@@ -199,3 +199,45 @@ test("not renamed: clearing the field has nothing to clear", async () => {
   const { calls } = await saveUntouched(task({ title_source: "message" } as Partial<Task>), "");
   expect(calls).toEqual([]);
 });
+
+// ---- the 200-character cap and IME composition --------------------------------
+
+test("the title input carries the server's 200-character cap", () => {
+  const v = render({ task: task(), rename: async () => {} });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  expect(inputOf(v.r).props.maxLength).toBe(200);
+});
+
+test("an over-long prefill is shown and saved at 200 characters", async () => {
+  const calls: string[] = [];
+  const v = render({
+    task: said("x".repeat(300)),
+    rename: async (_k, t) => void calls.push(t),
+  });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  expect(inputOf(v.r).props.value).toBe("x".repeat(200));
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  expect(calls).toEqual(["x".repeat(200)]);
+});
+
+test("an Enter that confirms an IME candidate does not save", async () => {
+  const calls: string[] = [];
+  const v = render({ task: task(), rename: async (_k, t) => void calls.push(t) });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  edit(v.r, "かな");
+  for (const ev of [{ nativeEvent: { isComposing: true } }, { keyCode: 229, nativeEvent: {} }]) {
+    await act(async () => {
+      inputOf(v.r).props.onKeyDown({ key: "Enter", preventDefault() {}, ...ev });
+    });
+  }
+  expect(calls).toEqual([]);
+  expect(inputOf(v.r)).toBeDefined();
+});

@@ -59,6 +59,10 @@ export function useTaskHeadline(task: Task | null | undefined): string {
   return cardTitleLine(task).text || peekTitle(task);
 }
 
+/** The server keeps only a title's first 200 characters (`api_task_rename` /
+ *  `_title`); the input stops there so what is shown is what is stored. */
+const TITLE_MAX_LENGTH = 200;
+
 /** A task the server can rename: a started session. `pending:` rows (a message
  *  not sent yet), `draft:` rows and `new:` chats have no session to hold a
  *  title. */
@@ -113,7 +117,7 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
     if (!canRename || busy) return;
     settled.current = false;
     setError("");
-    setDraft(title === "(untitled)" ? "" : title);
+    setDraft(title === "(untitled)" ? "" : title.slice(0, TITLE_MAX_LENGTH));
   };
   const cancelRename = () => {
     settled.current = true;
@@ -122,7 +126,7 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
   };
   const saveRename = async () => {
     if (draft === null || settled.current || busy) return;
-    const next = draft.trim();
+    const next = draft.slice(0, TITLE_MAX_LENGTH).trim();
     // Compare with the STORED name, not the headline: in last-message or recap
     // mode the headline is not the task's name, and saving it unchanged is how
     // the reader pins it. Only an already-renamed task has a name to match.
@@ -190,6 +194,7 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
           <input
             className="task-side-peek-title-input"
             value={draft}
+            maxLength={TITLE_MAX_LENGTH}
             disabled={busy}
             autoFocus
             aria-label="Task title"
@@ -199,6 +204,9 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
             onChange={(e) => setDraft(e.target.value)}
             onBlur={() => void saveRename()}
             onKeyDown={(e) => {
+              // The Enter/Escape that settles an IME candidate is not ours
+              // (keyCode 229 is Safari's spelling of isComposing).
+              if (e.nativeEvent?.isComposing || e.keyCode === 229) return;
               if (e.key === "Enter") {
                 e.preventDefault();
                 void saveRename();

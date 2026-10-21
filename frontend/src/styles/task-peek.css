@@ -1042,3 +1042,10 @@ body.tasks-peek-dragging {
 .task-side-peek-rename:focus-visible {
   opacity: 1;
 }
+
+/* Touch has no hover: keep the pencil visible there. */
+@media (hover: none) {
+  .task-side-peek-rename {
+    opacity: 0.6;
+  }
+}
