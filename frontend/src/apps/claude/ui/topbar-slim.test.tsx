@@ -48,6 +48,21 @@ test("slim draws worktree, hint, session label and extra, and none of the identi
   expect(has(r, "task-side-peek-who")).toBe(0);
 });
 
+test("slim draws one gap, before the worktree seat, loaded or not", () => {
+  for (const over of [{}, { worktree: null, extra: null }]) {
+    const r = render(over);
+    expect(has(r, "c-tb-slim-gap")).toBe(1);
+    const kids = r.root.findByProps({ className: "c-topbar c-topbar-slim" }).children as unknown as {
+      props?: { className?: string };
+    }[];
+    const cls = kids.map((k) => String(k.props?.className ?? ""));
+    const gap = cls.indexOf("c-tb-slim-gap");
+    expect(gap).toBeGreaterThan(-1);
+    const seat = cls.indexOf("chat-worktree-menu");
+    if (seat >= 0) expect(gap).toBeLessThan(seat);
+  }
+});
+
 test("slim still says running", () => {
   expect(has(render({ running: true }), "c-tb-run")).toBe(1);
 });

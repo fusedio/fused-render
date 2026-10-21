@@ -552,6 +552,7 @@
   max-width: 100%;
 }
 .chat-root.chat-peek-head .c-topbar .chat-worktree-menu {
+  display: flex;
   min-width: 0;
   flex: 0 1 auto;
 }
@@ -560,7 +561,20 @@
   min-width: 0;
 }
 .chat-root.chat-peek-head .c-topbar .c-tb-slim-extra {
+  display: flex;
   flex: 0 0 auto;
+}
+/* The gap does the pushing to the right edge; it is chip-tall (18px line, 2px
+   padding and 1px border each side) so the row has chip height before any chip
+   has loaded. */
+.chat-root.chat-peek-head .c-topbar .c-tb-slim-gap {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 24px;
+}
+.chat-root.chat-peek-head .c-topbar .chat-worktree-menu,
+.chat-root.chat-peek-head .c-topbar .chat-worktree-hint {
+  margin-left: 0;
 }
 /* Same halving as compact, for the same reason: the head above is the host's. */
 .chat-root.chat-peek .chat-log {
