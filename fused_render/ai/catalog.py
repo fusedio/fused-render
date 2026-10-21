@@ -335,7 +335,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # 2.4x apart in download are not the same pick twice: they answer for
         # two different machines, which is what earns this one a slot.
         #
-        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 (the runner's pin), through
+        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9, the floor of the runner's
+        # `>=0.7.9,<0.8` range, resolved in the gate venv, through
         # the worker's own `load`/`generate`: `model_type`
         # `prism_hadamard_qwen35`, "Say hello." answered. Replaces
         # `prism-ml/Ternary-Bonsai-27B-mlx-2bit`.
@@ -357,7 +358,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "against a 4-bit model you already trust.",
         },
         # LFM2.5 24B-A2B (Liquid AI): 24B of knowledge at about a 2B's speed.
-        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 through the worker's own
+        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 (the floor of the runner's
+        # `>=0.7.9,<0.8` range, resolved in the gate venv) through the worker's own
         # `load`/`generate` (`model_type` `lfm2_moe`). 13.59GB Hub whole-snapshot
         # byte sum. LFM Open License v1.0, not Apache — the note says so.
         {
@@ -368,13 +370,15 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "LFM2.5 24B-A2B (MLX 4-bit)",
             "nickname": "Liquid 2.5",
             "size_gb": 13.6,
-            "note": "24B of knowledge answering at about a 2B's speed — a "
-                    "mixture of experts, under Liquid's own license rather "
-                    "than Apache.",
+            "note": "24B of knowledge answering at about a 2B's speed, though "
+                    "its 14GB of weights want a 24GB machine or more — a "
+                    "16GB laptop is not enough. Under Liquid's own license "
+                    "rather than Apache.",
         },
         # Gemma 4 26B-A4B (Google), Apache-2.0: the Google family row the
         # 9B slot once cost this list, back as a mixture of experts.
-        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 through the worker's own
+        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 (the floor of the runner's
+        # `>=0.7.9,<0.8` range, resolved in the gate venv) through the worker's own
         # `load`/`generate` (`model_type` `gemma4`). 15.37GB Hub byte sum.
         {
             "id": "mlx-community/gemma-4-26B-A4B-it-4bit",
@@ -414,7 +418,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # download. Its 35B-A3B MoE sibling is omitted for the reason D310 gives
         # about mflux — 24.7GB resident on a 34GB machine already several GB
         # into swap is not something to suggest on one machine's evidence.
-        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 through the worker's own
+        # **Load-gated 2026-10-22** on mlx-vlm 0.7.9 (the floor of the runner's
+        # `>=0.7.9,<0.8` range, resolved in the gate venv) through the worker's own
         # `load`/`generate` (`model_type` `qwen3_5`); 20.68GB Hub byte sum.
         # Replaces `mlx-community/Qwen3.6-27B-OptiQ-4bit`.
         {
@@ -583,12 +588,13 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "Qwen3.5 4B above, and a laptop GPU to run it mostly "
                     "or entirely on the CPU rather than resident in VRAM.",
         },
-        # The mixture-of-experts row, and it matters MORE here than its MLX
-        # twin does: this list's default build has no GPU, and a router that
-        # multiplies ~2B of a 24B model per token is the one architecture that
-        # turns a CPU into a reasonable place to run a 24B at all. Nothing in
-        # the runner has to know — MoE experts are ordinary tensors, only the
-        # COMPUTE is conditional, and llama.cpp does that inside the graph.
+        # The mixture-of-experts row. Only ~2B of the 24B is computed per
+        # token, which makes it fast, but the WHOLE file is resident at load
+        # regardless of active parameters — the 14.5GB is what a machine
+        # must hold, so this is a 24GB-class row, not a small-machine one.
+        # Nothing in the runner has to know — MoE experts are ordinary
+        # tensors, only the COMPUTE is conditional, and llama.cpp does that
+        # inside the graph.
         #
         # **What we CANNOT do for it is placement**, and that is a binding
         # limit rather than an oversight: llama.cpp's `--n-cpu-moe` (keep the
@@ -612,9 +618,10 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "LFM2.5 24B-A2B (Q4_K_M)",
             "nickname": "Liquid 2.5",
             "size_gb": 14.5,
-            "note": "24B of knowledge answering at about a 2B's speed — a "
-                    "mixture of experts, so only a fraction of it runs per "
-                    "token.",
+            "note": "24B of knowledge answering at about a 2B's speed, though "
+                    "its 14.5GB file is resident whole — it wants a 24GB "
+                    "machine or a big GPU, and a 16GB laptop is not "
+                    "enough.",
         },
         # Gemma 4 26B-A4B (unsloth UD-Q4_K_M, 16.95GB Hub size), the GGUF twin
         # of the MLX row. **Load-gated 2026-10-22** on llama-cpp-python 0.3.29:

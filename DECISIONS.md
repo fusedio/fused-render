@@ -7700,3 +7700,15 @@ Refreshed the curated suggestions for `mlx-text`, `llamacpp-text` and `mflux-ima
 **Removed ids whose mirror manifests can be cleaned up**: `prism-ml/Ternary-Bonsai-27B-mlx-2bit`, `mlx-community/Qwen3.6-27B-OptiQ-4bit`, `mlx-community/Qwen3.5-9B-OptiQ-4bit`, and the GGUF `LiquidAI/LFM2.5-8B-A1B-GGUF` file `LFM2.5-8B-A1B-Q4_K_M.gguf`.
 
 **Not done**: Kokoro-82M on mlx-audio-tts needs the worker's Qwen3-TTS-only `speech_traits` gate loosened and is a separate PR.
+
+## D1412: PR #1843 review round (2026-10-22, catalog-refresh-2026-10)
+
+Seven fixes from code review of D1411's PR.
+
+1. Qwen-Image 2.1 Turbo's catalog row `defaults` now carry `"guidance": 1.0`, so the route, `fused_ai` and the benchmark report the guidance actually used.
+2. **A pinned-guidance mismatch is refused, not overridden.** The mflux worker raises `ValueError("<model> runs without CFG; guidance must be 1.0")` when a recipe pins `guidance` and the request differs (what mflux itself does), instead of swapping in the pinned value. The `MFLUX_VARIANTS` key stays as the fact the refusal reads; a catalog test asserts every pinned variant has a row whose `defaults["guidance"]` equals it.
+3. The worker read `float(guidance or 4.0)`, turning a legal 0.0 into 4.0; now `is None` semantics.
+4. `mflux_edit_recipe` derives `guidance` from the plain row (only when present).
+5. The two 24B-A2B rows (GGUF 14.5GB, MLX 13.6GB): notes and comment no longer imply a small-machine row; the whole file is resident, a 16GB laptop is not enough.
+6. Gate comments on the mlx-text rows say "mlx-vlm 0.7.9, the floor of the runner's `>=0.7.9,<0.8` range" rather than "the runner's pin".
+7. SPEC.md's size-estimate paragraph now cites `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`, 8.6GB, ~1.82x (no other retired ids appear in SPEC.md).

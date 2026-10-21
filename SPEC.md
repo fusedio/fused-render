@@ -9684,8 +9684,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   `catalog.py` row with both `params` and `quantization` was checked.
   Before the fix above, `params x bytes_per_param` landed within a
   generous 60% band of the curated `size_gb` for all but two:
-  `prism-ml/Ternary-Bonsai-27B-mlx-2bit` ("Ternary 2-bit", estimate
-  15.66GB vs. a catalog-confirmed-accurate 6.1GB, ~2.57x over) —
+  `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit` ("Ternary 2-bit", estimate
+  15.66GB vs. the catalog's 8.6GB — a Hub byte sum, not measured on disk —
+  ~1.82x over) —
   ternary/BitNet quantization (~1.58 bits/weight nominal) has no row in
   SPEC item 4's own table, so it fell to the ~4-bit-sized default; and
   `tonera/FLUX.2-klein-4B-int8-diffusers` ("int8 (torchao)", estimate
