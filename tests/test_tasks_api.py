@@ -1120,6 +1120,91 @@ def test_an_unknown_task_is_a_404(client):
     assert client.get("/api/tasks/nope/messages").status_code == 404
 
 
+# ------------------------------------------------------------ export (D1390)
+#
+# `GET /api/tasks/{key}/export` — the whole transcript as a file, Markdown by
+# default (the Bots export's layout) or the parsed turns as JSON. The kebab's
+# "Download transcript" and a bot's `fused.tasks.export` both read it.
+
+
+def test_export_markdown_is_a_named_attachment_in_the_bots_layout(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9, uuid="u1"),
+        _assistant("Ran it, 3 tables updated", T10),
+    ])
+
+    r = client.get("/api/tasks/sess-a/export")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/markdown")
+    disposition = r.headers["content-disposition"]
+    assert disposition.startswith("attachment; filename=\"")
+    assert disposition.endswith("-sess-a.md\"")
+    assert "run-the-migration" in disposition
+    body = r.text
+    assert body.startswith("# run the migration — transcript\n")
+    assert "Session: sess-a" in body
+    assert "**You**" in body and "\nrun the migration\n" in body
+    assert "**Claude**" in body and "Ran it, 3 tables updated" in body
+    assert body.index("**You**") < body.index("**Claude**")
+
+
+def test_export_markdown_names_what_each_tool_call_did(client, projects_dir):
+    call = {"type": "assistant", "timestamp": T10,
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash",
+                 "input": {"command": "ls -la\npwd", "description": "List files"}}]}}
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("look", T9), call])
+
+    body = client.get("/api/tasks/sess-a/export").text
+    assert "- `Bash` List files" in body
+
+
+def test_export_markdown_closes_a_tool_list_before_the_next_paragraph(
+        client, projects_dir):
+    call = {"type": "assistant", "timestamp": T10,
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "Read",
+                 "input": {"file_path": "/p/a.py"}}]}}
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("look", T9), call, _assistant("Done reading", T10)])
+
+    body = client.get("/api/tasks/sess-a/export").text
+    assert "- `Read` /p/a.py\n\nDone reading\n" in body
+
+
+def test_export_json_carries_the_parsed_turns_under_a_header(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("run the migration", T9, uuid="u1"),
+        _assistant("Ran it", T10),
+    ])
+
+    r = client.get("/api/tasks/sess-a/export", params={"format": "json"})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/json")
+    assert r.headers["content-disposition"].endswith("-sess-a.json\"")
+    payload = r.json()
+    assert payload["key"] == "sess-a"
+    assert payload["session_id"] == "sess-a"
+    assert payload["title"] == "run the migration"
+    assert [t["role"] for t in payload["turns"]] == ["user", "assistant"]
+    assert payload["turns"][0]["text"] == "run the migration"
+    assert payload["turns"][0]["uuid"] == "u1"
+
+
+def test_export_refuses_an_unknown_format_task_or_session(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    assert client.get("/api/tasks/sess-a/export",
+                      params={"format": "pdf"}).status_code == 400
+    assert client.get("/api/tasks/nope/export").status_code == 404
+    # A scheduled task that has not run has no session and nothing to export.
+    _seed_schedule([_entry("e1", "later", _later())])
+    r = client.get("/api/tasks/pending:e1/export")
+    assert r.status_code == 409
+
+
 def test_numbers_restart_per_project_and_survive_a_new_session(client,
                                                                projects_dir):
     _write_transcript(projects_dir, "sess-a", "/home/a", [_user("a", T9)])

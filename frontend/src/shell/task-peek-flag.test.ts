@@ -400,6 +400,12 @@ describe("the peek header", () => {
       expect(HEAD).toContain(label);
     }
     expect(HEAD).toContain("Unarchive task");
+    // D1390: the conversation as a file, between the terminal rows and the
+    // filing ones; disabled rather than hidden on a row with no session yet.
+    expect(HEAD).toContain('label: "Download transcript"');
+    expect(HEAD.indexOf('label: "Download transcript"')).toBeLessThan(
+      HEAD.indexOf('label: filing.kind === "archive"'),
+    );
     // The two that left: the first is a control of its own in the header now,
     // the second was a menu row nobody could find for an act the address bar
     // already does.
