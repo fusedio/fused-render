@@ -239,9 +239,7 @@ export function notificationForTransition(
   if (column === previous) return null;
 
   if (column === "needs_attention") {
-    // Keyed by the task, not the title: the title now follows the newest turn, so
-    // the same task asking twice must still collapse into one row.
-    return { title: `${noticeTitle(task)} needs your input`, familyKey: `task-needs-input:${task.key}` };
+    return { title: `${noticeTitle(task)} needs your input` };
   }
   if (previous === "in_progress" && column === "blocked") {
     return {

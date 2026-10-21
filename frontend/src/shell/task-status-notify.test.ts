@@ -44,6 +44,15 @@ describe("notice title", () => {
 });
 
 describe("notice title edge cases", () => {
+  test("summary mode with an empty title falls back to the newest message", () => {
+    const t = task({
+      status: "done",
+      title: "",
+      title_mode: "summary",
+      last_message: { role: "user", text: "fix the login redirect", at: 1 },
+    });
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("fix the login redirect");
+  });
   test("a renamed task keeps the user's name", () => {
     const t = task({
       status: "done",
@@ -58,10 +67,31 @@ describe("notice title edge cases", () => {
     const title = notificationForTransition("in_progress", t, 0)?.title ?? "";
     expect(title.length).toBeLessThan(140);
   });
-  test("the same task asking twice shares one family", () => {
-    const a = notificationForTransition("in_progress", task({ status: "needs_attention", key: "k1", title: "a" }), 0);
-    const b = notificationForTransition("in_progress", task({ status: "needs_attention", key: "k1", title: "b" }), 0);
+  test("a failed task shares one family across its own repeats", () => {
+    const a = notificationForTransition("in_progress", task({ status: "blocked", key: "k1", title: "a" }), 0);
+    const b = notificationForTransition("in_progress", task({ status: "blocked", key: "k1", title: "b" }), 0);
     expect(a?.familyKey).toBe(b?.familyKey);
+  });
+  test("a renamed task with an empty title falls back to the newest message", () => {
+    const t = task({
+      status: "done",
+      title: "",
+      title_source: "renamed",
+      last_message: { role: "user", text: "fix the login redirect", at: 1 },
+    });
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("fix the login redirect");
+  });
+  test("a whitespace title never reaches the notice", () => {
+    const t = task({ status: "needs_attention", title: "  \n ", title_mode: "summary" });
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("A task needs your input");
+  });
+  test("the cap is 120 characters, ends in an ellipsis and never splits an emoji", () => {
+    const text = "x".repeat(118) + "\u{1F600}" + "tail";
+    const t = task({ status: "blocked", last_message: { role: "user", text, at: 1 } });
+    const title = (notificationForTransition("in_progress", t, 0)?.title ?? "").replace(" failed", "");
+    expect(Array.from(title).length).toBe(120);
+    expect(title.endsWith("\u2026")).toBe(true);
+    expect(title).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
   });
 });
 

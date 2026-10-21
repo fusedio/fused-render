@@ -512,9 +512,9 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # running, like the Tasks page, and needs the list to know.
         "background_jobs",
     )
-    # What the finished/needs-input notice titles a task by (`cardTitleLine`):
-    # the same fields the Tasks views read, riding only when the row has them.
-    title_fields = ("title_source", "last_message")
+    # What the finished/needs-input notice titles a task by (the newest user
+    # message unless renamed): riding only when the row has them.
+    title_fields = ("title_source", "last_message")  # + title_mode, flag-gated
     assert pulse == [
         {field: row[field] for field in pulse_fields + title_fields if field in row}
         for row in full

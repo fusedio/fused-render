@@ -5371,11 +5371,13 @@ export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
  *  has been said in yet keep the server `title` — `cardTitleLine` already
  *  answers those. One short line. */
 export function taskNoticeTitle(task: TaskPulseTask): string {
-  const line = cardTitleLine({ ...task, last_message: null, recap: undefined });
-  const said = task.last_message?.role === "user" ? firstLine(task.last_message.text) : "";
+  const line = cardTitleLine({ ...task, last_message: null, recap: undefined }).text;
+  const said = task.last_message?.role === "user" ? firstLine(task.last_message.text ?? "") : "";
   const keepsTitle = task.title_source === "renamed" || task.title_mode === "summary";
-  const text = (!keepsTitle && said) || line.text || task.title || "A task";
-  return text.length > 120 ? text.slice(0, 119).trimEnd() + "…" : text;
+  // A kept title that is EMPTY falls through to the message, never to "A task".
+  const text = (keepsTitle && line) || said || line || "A task";
+  const chars = Array.from(text);
+  return chars.length > 120 ? chars.slice(0, 119).join("").trimEnd() + "\u2026" : text;
 }
 
 /** One waiting task, as the Notifications section draws it. */

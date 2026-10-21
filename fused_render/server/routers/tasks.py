@@ -6246,7 +6246,6 @@ _PULSE_FIELDS = (
 # task was renamed or summary-only titles are on. `title_mode` is ABSENT with
 # its flag off, so these ride only when the row has them.
 _PULSE_TITLE_FIELDS = ("title_source", "title_mode", "last_message")
-_PULSE_TEXT_CAP = 400
 
 
 def _pulse_row(row: dict) -> dict:
@@ -6256,7 +6255,7 @@ def _pulse_row(row: dict) -> dict:
             continue
         value = row[field]
         if field == "last_message" and isinstance(value, dict):
-            value = {**value, "text": str(value.get("text", ""))[:_PULSE_TEXT_CAP]}
+            value = {**value, "text": str(value.get("text") or "")}
         out[field] = value
     return out
 
