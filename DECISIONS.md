@@ -7276,3 +7276,12 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 
 - **Problem.** An open chat in the explorer's folder sidebar stacked the `.c-anntools` strip (`← Chats`, the menu) over the identity `Topbar`, which also printed the folder name the reader is already in.
 - **Decision.** `ClaudeChat`/`ChatMount` take `mergedHead`; `ListingPreviewPane` is the only caller. When it applies (in a chat, head shown, and the strip would hold nothing else: no annotate target, no left-mode picker, no narrow view toggle) the strip is not drawn and `Topbar` gets `lead` (`← Chats`), `tail` (the menu, right end) and `noProject`. Back and menu are one local element each, shared by both placements, so the nav lock and aria wording are unchanged. Otherwise the two-row layout stays.
+
+## D1403: Task rename: user title in session_settings.json, wins every title mode (2026-10-21, task-rename-titles)
+
+- **Problem.** A task's title was always derived (an entry's title, Claude Code's ai-title, the first message, or the recap/last-message/summary modes on the client), and the reader had no way to name one.
+- **Decision.** The peek header and the chat topbar (`TaskPeekWho`) rename a task in place: double-click the title or the hover pencil, Enter or blur saves, Escape cancels, an unchanged text is a no-op. `POST /api/tasks/rename {key, title}` stores the first line (stripped, 200 chars) as `custom_title` on the session's record in `session_settings.json` (`tasks_store.record_title` / `session_title`), beside model/effort/recap, then notifies `tasks_watch`.
+- **Precedence.** `_title` takes the stored title first and reports `title_source: "renamed"`. The client's `cardTitleLine` checks that source before summary mode, recaps, replies and the last message, so the List, Board, Cards, peek and chat topbar all show it in every title mode.
+- **Empty clears.** Saving empty or whitespace deletes the key and the automatic title returns. `forget_session` drops the record on erase, so the title goes with the task.
+- **Not written to the transcript.** The transcript is Claude Code's file, and nothing reads a `custom-title` record from it, so writing there would buy nothing and risk the file.
+- **Not renamable.** `pending:` rows, drafts and new-chat keys have no session to key the title on; the endpoint answers 400 `only a started task can be renamed` and the header offers no affordance.
