@@ -6557,9 +6557,13 @@ def api_task_export(key: str, format: str = "md"):
     task = tasks.get(key)
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
-    if not task.get("session_id") or not task.get("path"):
+    if not task.get("session_id"):
         raise HTTPException(status_code=409,
                             detail="that task has not started a session yet")
+    # A session named only by a send mark or a scheduled entry: it started,
+    # but there is no transcript on disk to export.
+    if not task.get("path"):
+        raise HTTPException(status_code=404, detail="that task's transcript is gone")
     agent = _agent_module()
     if agent is None:
         raise HTTPException(status_code=503, detail="the claude agent module did not load")
