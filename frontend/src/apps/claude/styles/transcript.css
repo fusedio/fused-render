@@ -740,7 +740,7 @@
   cursor: pointer;
 }
 .chat-root .turn.compact .compact-toggle:hover {
-  color: var(--c-text);
+  color: var(--c-fg);
 }
 .chat-root .turn.compact .compact-body {
   margin-top: 8px;
