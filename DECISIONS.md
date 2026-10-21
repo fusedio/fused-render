@@ -7230,7 +7230,14 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **UI.** `McpSection` renders the cached list, shows "Checking status..." in the toolbar summary and dims the status pills until `list({fresh: true})` returns; a failed live check keeps the cached list instead of replacing it with an error.
 - **Deviation.** No frontend test: there is no existing McpSection test and the swap is a few lines of state; the backend contract is covered in `tests/test_claude_config_api.py`.
 
-## D1395: Task-page chat sidebar draws a slim chat header (2026-10-21, task-peek-chat-header)
+## D1394: Heads-up checks review finished steps, never report progress, and fork only at a step boundary (2026-10-21, headsup-review-not-redo)
+
+- **Problem.** Mid-turn heads-up notes restated what the main agent was still investigating (the root cause the user had asked about, just before the agent reported it) and claimed things were "not built" or "the session ended" while a tool was still running. The fork prompt never said the turn was open, our condensed prompt had dropped the rules that prevent this, and the fork snapshotted the on-disk session at an arbitrary poll time, possibly mid tool call.
+- **Decision.** `HEADSUP_PROMPT` is reframed as checking the agent's work on the user's behalf and regains the rules: the agent keeps working while the fork reads, it will likely reach the same point, do not do its job or pre-announce its conclusion, skip topics the user is already discussing with it, passing mentions still count as possibly missed, and progress is never a topic. `_build_prompt(..., turn_open)` appends an "agent is still working, judge only finished steps" section on an open turn; `generate` and `_worker` thread it through from `_poll`.
+- **Step boundary.** `main_steps`'s incremental cache also tracks unanswered main-thread `tool_use` ids (`pending_tools`). `_poll` returns idle on an open turn while any is unanswered, without recording the bucket in `checked`, so the same bucket fires on a later poll once the step completes. Turn-end behaviour is unchanged. Mid-turn checks stay.
+- **Origin.** The prompt rules are ported from Claude Code's built-in `you-should-know` plugin (2.1.305), which forks in-process at turn steps (every 6th step) and whose prompt carries the "agent keeps working / don't race it / skip what the user is already discussing" rules.
+
+## D1396: Task-page chat sidebar draws a slim chat header (2026-10-21, task-peek-chat-header)
 
 - **Problem.** The Task side peek and peek modal hid the chat top bar, so the worktree menu, the worktree hint chip and the session id the explorer `_side=claude` sidebar shows were missing.
 - **Decision.** `ClaudeChat`/`ChatMount` take `headerInPeek` (and `headerExtra`). With `peek` it draws `Topbar slim`: session label, running/limit word, worktree menu, hint chip and the host extra seat; the mark, title, file and identity block are left out because TaskPeek already shows them. `.c-anntools` stays hidden in peek. Root gets `chat-peek-head`. The compact cards wall is unchanged so tiles do not each call `/api/claude/worktrees`.
