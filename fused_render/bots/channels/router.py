@@ -61,7 +61,14 @@ def render(ev: dict, caps: Caps, approvals: bool = True) -> tuple[str, list[str]
         text += "\n\nAnswer it in the app."
     if approval:
         opts = list(base.APPROVAL_OPTIONS) if approvals else []
+    sev, why = str(ev.get("severity") or "").strip().lower(), str(ev.get("risk_summary") or "").strip()
+    risk = ""
+    if sev in ("low", "medium", "high") and why and not caps.buttons and (approval or base.relay_of(ev) is not None):
+        risk = f"\n\n{sev.capitalize()} risk: {why}"  # the model's read, ahead of the numbered options
     suffix = "\n\nReply " + " · ".join(f"{i + 1} {o}" for i, o in enumerate(opts)) if opts and not caps.options else ""
+    if risk and caps.max_len and len(text) + len(risk) + len(suffix) > caps.max_len and len(text) + len(suffix) <= caps.max_len:
+        risk = ""  # the risk line is the extra: drop it before the options (and the phone's answer) go
+    text += risk
     if caps.max_len and len(text) + len(suffix) > caps.max_len:
         head = text[:caps.max_len]
         cut = max(head.rfind("\n"), head.rfind(". "), head.rfind("! "), head.rfind("? "))

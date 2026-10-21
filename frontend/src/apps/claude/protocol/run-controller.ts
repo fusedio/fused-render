@@ -1445,6 +1445,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // UNANSWERED until this arrives, so the poll that brings it has to republish
     // even though every other field reads exactly the same.
     a.held === b.held &&
+    // The model's read lands a poll or two AFTER the card opens (agent.py writes
+    // the sidecar from a thread), so a late assessment has to republish the row.
+    a.severity === b.severity &&
+    a.risk_summary === b.risk_summary &&
+    a.risk_state === b.risk_state &&
     JSON.stringify(a.answers ?? {}) === JSON.stringify(b.answers ?? {});
 
   const permissionRows = (): PermissionRow[] => {

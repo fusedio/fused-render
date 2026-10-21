@@ -13,10 +13,11 @@ import {
   ShieldAlertIcon,
   SquareIcon,
   SquareCheckIcon,
-  XIcon,
 } from "lucide-react";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
+import { approvalParts } from "@platform/lib/approvalParts";
+import { GateCard, type GateStatus } from "@platform/ui/GateCard";
 import {
   answerAfter,
   approvalVerdict,
@@ -114,6 +115,7 @@ export function Thread({
           answer={card ? answerAfter(events, it.e.seq) : null}
           live={card && bot.status === "waiting" && bot.waiting_seq === it.e.seq && !held.has(it.e.seq)}
           held={held.has(it.e.seq)}
+          botName={bot.name}
           {...h}
         />,
       );
@@ -200,6 +202,8 @@ type RowProps = ThreadHandlers & {
   /** This card's buttons are live (it is `bot.waiting_seq`). */
   live: boolean;
   held: boolean;
+  /** The bot's display name, for the approval card's head. */
+  botName: string;
 };
 
 function Muted({ children, center }: { children: ReactNode; center?: boolean }) {
@@ -236,7 +240,7 @@ function Quote({ text }: { text: string }) {
 const BUBBLE = "max-w-[86%] rounded-[20px] px-3.5 py-2.5 text-[16px] leading-[1.4] break-words";
 const LEFT = cn(BUBBLE, "self-start rounded-bl-md border border-[var(--sh-border)] bg-[var(--card)]");
 
-const Row = memo(function Row({ item, answer, live, held, onReply, onVerdict, onAnswer }: RowProps) {
+const Row = memo(function Row({ item, answer, live, held, botName, onReply, onVerdict, onAnswer }: RowProps) {
   const e = item.e;
   const deliveries = item.deliveries.length ? (
     <div className="flex flex-col px-1">
@@ -286,47 +290,41 @@ const Row = memo(function Row({ item, answer, live, held, onReply, onVerdict, on
 
   if (e.role === "approval") {
     const verdict = approvalVerdict(answer?.text);
+    // Approve / Deny ONLY, on purpose: "Always approve" writes a standing rule and stays a desktop decision
+    // (phone.py says so).
+    const status: GateStatus | undefined = live
+      ? undefined
+      : held
+        ? { tone: "queued", text: "Sending…" }
+        : verdict
+          ? { tone: verdict === "Approved" ? "allow" : "deny", text: verdict === "Approved" ? "✓ Approved" : "✗ Denied" }
+          : answer
+            ? { tone: "expired", text: `Answered: ${oneLine(answer.text, 80)}` }
+            : { tone: "expired", text: "Not answered" };
+    const parts = approvalParts(e);
     return (
       <div className="flex flex-col gap-1 pt-1">
-        <div
-          className={cn(
-            "max-w-[92%] self-start rounded-[20px] border p-3.5",
-            live
-              ? "border-[color-mix(in_srgb,var(--warning)_55%,transparent)] bg-[color-mix(in_srgb,var(--warning)_9%,var(--card))]"
-              : "border-[var(--sh-border)] bg-[var(--card)]",
-          )}
-        >
-          <div className={cn("mb-1.5 flex items-center gap-1.5 text-[13px] font-semibold", live ? "text-[var(--warning)]" : "text-[var(--fg-muted)]")}>
-            <ShieldAlertIcon className="size-4" />
-            {live ? "Needs your OK" : "Asked for approval"}
-          </div>
-          <div className="text-[16px] leading-[1.4] break-words whitespace-pre-wrap">{e.text}</div>
-          {live ? (
-            <div className="mt-3 flex gap-2">
-              <Button variant="accent" className="h-11 flex-1 rounded-xl text-[15px]" onClick={() => onVerdict(e.seq, true)}>
-                <CheckIcon />
-                Approve
-              </Button>
-              <Button variant="outline" className="h-11 flex-1 rounded-xl text-[15px]" onClick={() => onVerdict(e.seq, false)}>
-                <XIcon />
-                Deny
-              </Button>
-            </div>
-          ) : (
-            <div className="mt-2 flex items-center gap-1.5 text-[13px] text-[var(--fg-muted)]">
-              {held ? "Sending…" : verdict ? (
-                <>
-                  {verdict === "Approved" ? <CheckIcon className="size-3.5" /> : <XIcon className="size-3.5" />}
-                  {verdict}
-                </>
-              ) : answer ? (
-                `Answered: ${oneLine(answer.text, 80)}`
-              ) : (
-                "Not answered"
-              )}
-            </div>
-          )}
-        </div>
+        <GateCard
+          touch
+          className="max-w-[92%] self-start"
+          head={
+            <span className="flex items-center gap-1.5 font-semibold">
+              <ShieldAlertIcon className="size-4" />
+              {live ? <><span className="gate-tool">{botName}</span> needs your OK</> : "Asked for approval"}
+            </span>
+          }
+          severity={e.severity}
+          riskSummary={e.risk_summary}
+          sub={parts.sub}
+          body={parts.body}
+          bodyWhat={parts.bodyWhat}
+          resolved={!live}
+          status={status}
+          actions={[
+            { key: "approve", text: "Approve", kind: "primary", onClick: () => onVerdict(e.seq, true) },
+            { key: "deny", text: "Deny", kind: "default", onClick: () => onVerdict(e.seq, false) },
+          ]}
+        />
         <Foot e={e} />
       </div>
     );

@@ -73,6 +73,7 @@ import traceback
 from collections import deque
 from urllib.parse import quote
 
+from fused_render import permission_risk
 from fused_render.bots import apptools, channels, claude_cli, paths, tools
 
 # The step cap (bot.MAX_STEPS / SUPER_MAX_STEPS, or the bot's own `max_steps`): --max-turns does not exist on this
@@ -1522,7 +1523,7 @@ def _permission(bot, sess: Turn, args: dict):
     # deny carries a message the model reads, so they ride on that.
     notes: list = []
     raw: list = []
-    verdict, said = _gate(bot, sess, preview, why, notes, raw, rule=rule)
+    verdict, said = _gate(bot, sess, preview, why, notes, raw, rule=rule, tool=name, tool_input=inp)
     if verdict is None:
         return None
     if verdict:
@@ -1712,7 +1713,29 @@ def _loaded_skill(bot, args: dict) -> list:
     return [sec] if sec else []
 
 
-def _gate(bot, sess: Turn, preview: str, why: str, notes: list, raw: list | None = None, rule: dict | None = None):
+def _risk_fields(bot, tool: str | None, tool_input, why: str = "") -> dict:
+    """`severity=` / `risk_summary=` for an approval event, or {} when the model
+    gave none (no rule-based fallback: the card then simply shows no score).
+    The call goes through the bot's usage ledger (`bot._ai_call`). Never a
+    `summary` key: channels/router.py render() swaps the card text for it."""
+    if not tool:
+        return {}
+
+    def call(prompt, system_prompt, timeout):
+        from fused_render.bots import bot as bot_mod  # lazy: bot.py imports this module
+
+        return bot._ai_call(bot_mod._fused_ai(), prompt, model="haiku", effort="low",
+                            system_prompt=system_prompt, timeout=timeout)
+
+    try:
+        got = permission_risk.assess(tool, tool_input, context=why, call=call)
+    except Exception:  # noqa: BLE001 — never block the card on the assessor
+        return {}
+    return {"severity": got["severity"], "risk_summary": got["summary"]} if got else {}
+
+
+def _gate(bot, sess: Turn, preview: str, why: str, notes: list, raw: list | None = None, rule: dict | None = None,
+          tool: str | None = None, tool_input=None):
     """The approval card for one risky call. (verdict, said): True approved,
     False denied (with the user's words), None Stop. An answer that is neither
     yes nor no is a mid-task instruction ("use the blue one", "wait, check the
@@ -1723,7 +1746,7 @@ def _gate(bot, sess: Turn, preview: str, why: str, notes: list, raw: list | None
     `rule` (tools.forever_rule): the card gets its third button, and a yes that
     carries the Forever marker writes the rule so this call never asks again."""
     ev = bot.emit("approval", " ".join(p for p in (f"About to {preview}.", why.strip(), "Approve?") if p), detail=preview,
-                  **({"forever": rule} if rule else {}))
+                  **({"forever": rule} if rule else {}), **_risk_fields(bot, tool, tool_input, why))
     seq = _seq(ev)
     bot.set_status("waiting", waiting_on=seq)
     verdict, said = None, ""
@@ -1791,7 +1814,7 @@ def _act(bot, sess: Turn, name: str, args: dict, notes: list | None = None) -> d
             bot.emit("note", f"Not asking again: the user already declined to {preview}.")
             return _result(f"DENIED EARLIER by the user: {preview}. It was not run and the user was not asked again. "
                            "Do not retry it: do something else, or finish and say what you could not do.", error=True)
-        verdict, said = _gate(bot, sess, preview, why, notes, rule=rule)
+        verdict, said = _gate(bot, sess, preview, why, notes, rule=rule, tool=name, tool_input=args)
         if verdict is None:
             return None
         if not verdict:

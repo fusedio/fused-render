@@ -93,7 +93,7 @@ export function prettyToolName(name: unknown): string {
   return m[1].replace(/_+/g, " ") + ": " + m[2].replace(/_+/g, " ");
 }
 
-/** T:13913 — the pretty name as a BUTTON label ("Allow all X in this reply"). */
+/** T:13913 — the pretty name as a BUTTON label ("Always approve every X call"). */
 export function permCardLabel(pretty: string): string {
   return pretty.length > 28 ? pretty.slice(0, 27) + "…" : pretty;
 }
@@ -248,36 +248,52 @@ export function summarizePermission(row: Pick<PermissionRow, "tool" | "input">):
 export interface PermChoice {
   text: string;
   decision: "allow" | "deny";
-  scope: "once" | "session";
+  scope: "once" | "session" | "exact";
   /** "" or the mode to switch the running session into. */
   mode: "" | SwitchableMode;
   /** The accent-filled button — exactly one, and Enter's target. */
   primary: boolean;
-  /** Tooltip, on the escalation button only. */
+  /** Tooltip, on the escalation and Always approve buttons. */
   title?: string;
+  /** Drawn after Deny as a quiet link-style button, not as a peer of the three. */
+  secondary?: boolean;
 }
 
-/** T:13887-13903 — the buttons a card offers. `liveMode` is the mode the run is
- *  ACTUALLY in as reported by poll, never the picker's param. */
+/** The buttons a card offers: Approve, Always approve, Deny, then (when it makes
+ *  sense) the quiet "let Claude decide from here" link. "Always approve" is the
+ *  whole-tool session grant for the file tools and "this exact command, this
+ *  chat" for Bash; any other tool has no safe thing to remember, so it gets no
+ *  such button. `liveMode` is the mode the run is ACTUALLY in as reported by
+ *  poll, never the picker's param. */
 export function permChoices(
   row: Pick<PermissionRow, "tool">,
   liveMode?: PermissionMode | "",
   /** The agent's name for the escalation row (D18); Claude's words otherwise. */
   agent = "Claude",
 ): PermChoice[] {
-  const label = permCardLabel(prettyToolName(row.tool));
   const choices: PermChoice[] = [
-    { text: "Allow", decision: "allow", scope: "once", mode: "", primary: true },
+    { text: "Approve", decision: "allow", scope: "once", mode: "", primary: true },
   ];
   if (WHOLE_TOOL_GRANTABLE.has(row.tool)) {
     choices.push({
-      text: "Allow all " + label + " in this reply",
+      text: "Always approve",
       decision: "allow",
       scope: "session",
       mode: "",
       primary: false,
+      title: `Approve every ${permCardLabel(prettyToolName(row.tool))} call for the rest of this chat.`,
+    });
+  } else if (row.tool === "Bash") {
+    choices.push({
+      text: "Always approve",
+      decision: "allow",
+      scope: "exact",
+      mode: "",
+      primary: false,
+      title: "Approve this exact command, and only this one, for the rest of this chat.",
     });
   }
+  choices.push({ text: "Deny", decision: "deny", scope: "once", mode: "", primary: false });
   // Never mid-plan: this button's whole job is to loosen a strict mode, and
   // doing that from a side-door tool card would leave plan mode through a door
   // that is not the plan card.
@@ -288,12 +304,12 @@ export function permChoices(
       scope: "once",
       mode: "auto",
       primary: false,
+      secondary: true,
       title:
         `Stops asking for what ${agent} judges safe; it still escalates anything ` +
         "it will not vouch for.",
     });
   }
-  choices.push({ text: "Deny", decision: "deny", scope: "once", mode: "", primary: false });
   return choices;
 }
 

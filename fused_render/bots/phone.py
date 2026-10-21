@@ -54,7 +54,7 @@ LIMIT_MAX = 400
 # `ignored_seq` and the rest of the bookkeeping. `detail` is kept, cut to DETAIL_MAX.
 EVENT_KEYS = ("seq", "ts", "role", "text", "result", "thumb", "options", "multi", "offer", "app", "reply", "via",
               "source", "handoff", "build", "link", "summary", "ref", "channel", "addr", "error", "login",
-              "ignored_seq")  # a system line naming a user line that was written but not applied
+              "ignored_seq", "severity", "risk_summary")  # a system line naming a user line that was written but not applied
 # The roles a list row's "last line" is taken from: what the user said and what the bot said back.
 LAST_ROLES = ("user", "done", "question", "approval", "error")
 # The settings sheet's keys (routes._settings with nothing else from the desktop dialog).

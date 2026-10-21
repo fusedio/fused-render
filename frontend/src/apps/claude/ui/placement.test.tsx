@@ -67,7 +67,7 @@ function cards(r: ReturnType<typeof create>): Array<{ text: string; inTurn: stri
     void body;
     let head = "";
     walk(n, (m) => {
-      if (cls(m).includes("perm-head")) {
+      if (cls(m).includes("gate-head")) {
         head = (m.children ?? []).filter((c) => typeof c === "string").join("");
       }
     });
@@ -175,8 +175,8 @@ test("a parked card renders inside the turn it was answered in — not the strea
   walk(r.toJSON() as Json, (n) => {
     if (cls(n).includes("assistant")) assistants.push(n);
   });
-  const inFirst = JSON.stringify(assistants[0]).includes("perm-head");
-  const inSecond = JSON.stringify(assistants[1]).includes("perm-head");
+  const inFirst = JSON.stringify(assistants[0]).includes("gate-head");
+  const inSecond = JSON.stringify(assistants[1]).includes("gate-head");
   expect([inFirst, inSecond]).toEqual([true, false]);
 });
 

@@ -932,7 +932,21 @@
    ~4% of lightness off the page and read as a slightly different background.
    The tokens are its own (styles/chat.css) so raising them here leaves the
    avatar disc, a chip's open tint and the copy button where they were. */
+/* THE SHARED APPROVAL CARD (platform/ui/GateCard) reads its colours from private
+   --gate-* variables; the chat points them at its own palette (set in the rule
+   below), so the permission card keeps the salmon accent and the chat's pre ground. */
 .chat-root .perm {
+  --gate-accent: var(--c-accent);
+  --gate-accent-text: var(--c-accent-text);
+  --gate-ok: var(--c-ok);
+  --gate-err: var(--c-error);
+  --gate-muted: var(--c-dim);
+  --gate-line: var(--c-border);
+  --gate-ground: var(--c-card-bg);
+  --gate-hover: var(--c-card-bg-2);
+  --gate-pre-bg: var(--c-pre-bg);
+  --gate-pre-fg: var(--c-pre-fg);
+  --gate-on-accent: var(--c-on-accent);
   border: 1px solid color-mix(in srgb, var(--c-accent) 55%, transparent);
   border-radius: 14px;
   background: var(--c-card-bg);
@@ -963,7 +977,8 @@
 }
 .chat-root .perm.resolved .plan-body,
 .chat-root .perm.resolved .qtext,
-.chat-root .perm.resolved .perm-sub {
+.chat-root .perm.resolved .perm-sub,
+.chat-root .perm.resolved .gate-sub {
   color: var(--c-dim);
 }
 .chat-root .perm.resolved .qhead {
@@ -1075,7 +1090,8 @@
    The negative inline margins carry the card's own ground (opaque
    `--c-card-bg`, both themes) to the card's border so the payload does not
    show down the sides; the padding puts the buttons back where they were. */
-.chat-root .chat-tailpin.is-pinned .perm .perm-actions {
+.chat-root .chat-tailpin.is-pinned .perm .perm-actions,
+.chat-root .chat-tailpin.is-pinned .perm .gate-actions {
   position: sticky;
   bottom: 0;
   z-index: 1;

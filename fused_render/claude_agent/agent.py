@@ -52,7 +52,7 @@ Actions:
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
-       scope="once"|"session", answers=<json string, AskUserQuestion only>,
+       scope="once"|"session"|"exact", answers=<json string, AskUserQuestion only>,
        custom=<json string, the "Other" text per question, AskUserQuestion only>,
        note=<free text, ExitPlanMode deny only>)
                                       -> {"decided": ..., "decision": ...}
@@ -343,6 +343,27 @@ PERMISSION_WAIT = _permission_wait()
 WHOLE_TOOL_GRANTABLE = frozenset({
     "Edit", "Write", "Read", "Glob", "Grep", "NotebookEdit",
 })
+
+# "Always approve" on a tool the card cannot grant whole: allow this EXACT call
+# for the rest of the chat (scope "exact" -> an `addRules` update whose
+# ruleContent is the command itself, never a prefix or wildcard). Bash only, and
+# only for a command the CLI's rule syntax would not read as a pattern.
+# MUST stay identical to `_exact_rule_content` in permission_server.py (a test
+# asserts the two agree). Enforced here and again there: this side decides the
+# scope that lands on disk, that side builds the payload the CLI receives.
+_RULE_SPECIALS = frozenset("*()\\\n\r")
+
+
+def _exact_rule_content(tool_name: str, tool_input: dict):
+    if tool_name != "Bash" or not isinstance(tool_input, dict):
+        return None
+    cmd = tool_input.get("command")
+    if not isinstance(cmd, str) or not cmd.strip() or len(cmd) > 1000:
+        return None
+    if any(ch in _RULE_SPECIALS for ch in cmd):
+        return None
+    return cmd
+
 
 # How many approvals the user wants to be asked for, mapped onto the CLI's own
 # --permission-mode. The prompt tool stays wired in ALL of them: the mode only
@@ -1912,7 +1933,7 @@ def _terminal_tools_supported() -> bool:
 
 
 def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
-                      strict: bool = False) -> str:
+                      strict: bool = False, chat_id: str = "") -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
@@ -1961,6 +1982,12 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
         # PYTHONUTF8 would not survive the spawn.
         "PYTHONUTF8": "1",
     }
+    allow_path = _chat_allow_path(chat_id)
+    if allow_path and approve:
+        # The chat's "Always approve" store (`_chat_allow_path`). An env var,
+        # not argv: argv[2] already has a meaning of its own (the app-state
+        # directory), and the server only ever READS this path.
+        server_env["FUSED_PERM_ALLOW_FILE"] = allow_path
     if _terminal_tools_supported():
         # The switch for the terminal tools (permission_server.TERMINAL_*): the
         # origin they call. Named here for the same reason as PYTHONUTF8 — it
@@ -2362,6 +2389,85 @@ def _close_abandoned(run_dir: str, perm_dir: str, out: list) -> None:
         row["mode"] = str(res.get("mode") or "")
 
 
+# ---- risk read on a pending card -------------------------------------------
+# A model call (seconds) must never sit inside the 400 ms poll, so the poll only
+# STARTS one: a daemon thread per undecided request writes `<id>.risk.json`
+# ({"severity", "summary"}, or {"failed": true} so a failure is not retried on
+# every poll) and the next poll merges it into the row. Never imports
+# permission_server (stdlib-only, and spawned by path): `permission_risk` is
+# loaded by path like the other shared helpers, and `fused_render` is not imported.
+_RISK_LOCK = threading.Lock()
+_RISK_INFLIGHT: set = set()
+_RISK_MOD = None
+# Not approvals: a question and a plan are the model asking the user something.
+_RISK_SKIP = frozenset({"AskUserQuestion", "ExitPlanMode"})
+
+
+def _risk_module():
+    global _RISK_MOD
+    if _RISK_MOD is None:
+        import importlib.util
+        path = os.path.join(os.path.dirname(HERE), "permission_risk.py")
+        spec = importlib.util.spec_from_file_location("fused_render_permission_risk", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _RISK_MOD = mod
+    return _RISK_MOD
+
+
+def _risk_path(perm_dir: str, request_id: str) -> str:
+    return os.path.join(perm_dir, request_id + ".risk.json")
+
+
+def _risk_worker(perm_dir: str, request_id: str, tool: str, tool_input: dict) -> None:
+    try:
+        try:
+            got = _risk_module().assess(tool, tool_input)
+        except Exception:  # noqa: BLE001 — no score is the documented failure mode
+            got = None
+        data = {"severity": got["severity"], "summary": got["summary"]} if got else {"failed": True}
+        try:
+            _write_json_atomic(_risk_path(perm_dir, request_id), data)
+        except OSError:
+            pass  # the run dir went away; nothing to show it on
+    finally:
+        with _RISK_LOCK:
+            _RISK_INFLIGHT.discard((perm_dir, request_id))
+
+
+def _risk_fields(perm_dir: str, request_id: str, tool: str, tool_input: dict, decided: bool) -> dict:
+    """`severity` / `risk_summary` / `risk_state` for one row. state: "ready",
+    "failed", "pending" (an undecided request whose read is in flight; started
+    here the first time it is seen) or "" (nothing to say: a decided or
+    non-approval request with no read on disk)."""
+    try:
+        with open(_risk_path(perm_dir, request_id), encoding="utf-8") as fh:
+            got = json.load(fh)
+    except (OSError, ValueError):
+        got = None
+    if isinstance(got, dict):
+        sev, why = got.get("severity"), got.get("summary")
+        if sev in ("low", "medium", "high") and isinstance(why, str) and why:
+            return {"severity": sev, "risk_summary": why, "risk_state": "ready"}
+        return {"severity": "", "risk_summary": "", "risk_state": "failed"}
+    if decided or tool in _RISK_SKIP or os.environ.get("FUSED_RENDER_PERMISSION_RISK") == "0":
+        return {"severity": "", "risk_summary": "", "risk_state": ""}
+    key = (perm_dir, request_id)
+    with _RISK_LOCK:
+        fresh = key not in _RISK_INFLIGHT
+        if fresh:
+            _RISK_INFLIGHT.add(key)
+    if fresh:
+        try:
+            threading.Thread(target=_risk_worker, args=(perm_dir, request_id, tool, tool_input),
+                             daemon=True, name="perm-risk").start()
+        except RuntimeError:
+            with _RISK_LOCK:
+                _RISK_INFLIGHT.discard(key)
+            return {"severity": "", "risk_summary": "", "risk_state": "failed"}
+    return {"severity": "", "risk_summary": "", "risk_state": "pending"}
+
+
 def _permissions(run_dir: str) -> list:
     """Every permission request this run has raised, each with the user's
     decision if one has been made. The whole list, not just the unanswered
@@ -2427,6 +2533,10 @@ def _permissions(run_dir: str) -> list:
             # call — `_close_abandoned`), "cancelled" (Stop), "timeout" (the
             # permission server gave up). "" on a click, and on every allow.
             "reason": str(res.get("reason") or ""),
+            # The model's read of the call (`_risk_fields`): never waited for here.
+            **_risk_fields(perm_dir, req["id"], str(req.get("tool") or ""),
+                           req.get("input") if isinstance(req.get("input"), dict) else {},
+                           bool(res.get("decision"))),
             # Only a question card has these, and it is the same reason the whole
             # list is returned: a frame that re-attaches has to be able to
             # rebuild a card it never saw, including what was chosen on it.
@@ -2528,6 +2638,66 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
     return True
 
 
+def _chat_allow_path(chat_id: str) -> str:
+    """The per-chat "Always approve" store, or "" for a chat with no usable id.
+
+    Keyed by the SESSION id, the one thing every reply of a chat shares (each
+    reply is a new `claude -p --resume <session>` process in a new run dir, so
+    neither the run dir nor the CLI's in-memory session rules survive it). Lives
+    beside the chat's other per-session records, `claude-sessions/`."""
+    chat_id = (chat_id or "").strip()
+    if not chat_id or _bad_id(chat_id):
+        return ""
+    return _state_file("claude-sessions", "perm-allow", chat_id + ".json")
+
+
+def _run_chat_id(run_dir: str) -> str:
+    """The chat a run belongs to: what it resumed, else its own (minted) id —
+    exactly `new_session_id or session_id` at spawn."""
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    return str(meta.get("resumed_from") or "") or _run_own_session(run_dir, meta)
+
+
+def _chat_allow_add(run_dir: str, tool: str, asked) -> None:
+    """Remember a "for the rest of this chat" grant: the whole tool
+    (`tools`) or one exact Bash command (`bash`). Atomic (tmp + os.replace)
+    under a flock, best effort — a store that will not write costs the chat
+    its persistence, never the click."""
+    path = _chat_allow_path(_run_chat_id(run_dir))
+    if not path:
+        return
+    cmd = _exact_rule_content(tool, asked)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".lock", "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    store = json.load(fh)
+            except (OSError, ValueError):
+                store = {}
+            if not isinstance(store, dict):
+                store = {}
+            tools = [t for t in store.get("tools") or [] if isinstance(t, str)]
+            bash = [c for c in store.get("bash") or [] if isinstance(c, str)]
+            if tool in WHOLE_TOOL_GRANTABLE and tool not in tools:
+                tools.append(tool)
+            elif cmd is not None and cmd not in bash:
+                bash.append(cmd)
+            tmp = "%s.%d.tmp" % (path, os.getpid())
+            with _private_open(tmp) as fh:
+                json.dump({"tools": tools, "bash": bash}, fh)
+            os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def _decide(run_id: str, request_id: str, decision: str, scope: str,
             mode: str = "", answers: str = "", note: str = "",
             custom: str = "") -> dict:
@@ -2551,8 +2721,19 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
         # session-wide Bash rule, and the caller is told which scope it got.
         if scope == "session" and tool not in WHOLE_TOOL_GRANTABLE:
             scope = "once"
+        # "exact" is the same narrowing for everything the whole-tool grant
+        # refuses: it pins THIS call (Bash: the command string), and anything
+        # that cannot be pinned exactly is allow-once, never a wider rule.
+        if scope == "exact" and (tool in WHOLE_TOOL_GRANTABLE
+                                 or _exact_rule_content(tool, asked) is None):
+            scope = "once"
         payload = {"decision": verdict,
-                   "scope": "session" if scope == "session" else "once"}
+                   "scope": scope if scope in ("session", "exact") else "once"}
+        if verdict == "allow" and payload["scope"] != "once" \
+                and tool != ANSWERABLE_TOOL and tool != PLAN_TOOL:
+            # The CLI rule below only lives as long as this reply's process;
+            # the store is what makes "Always approve" last the chat.
+            _chat_allow_add(run_dir, tool, asked)
         # "…and stop asking": switch the running session's mode as well. Only
         # ever alongside an allow (a deny that also loosened the mode would be
         # incoherent), and only to a mode on the short switchable list — an
@@ -3232,7 +3413,11 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            # follow-up sent mid-turn actually reached the CLI's own queue
            # rather than landing on a pipe nobody was reading from anymore.
            "--replay-user-messages",
-           "--mcp-config", _write_mcp_config(run_dir, pane, strict=strict_mcp),
+           "--mcp-config", _write_mcp_config(
+               run_dir, pane, strict=strict_mcp,
+               # The chat's stable id: a resume's own session, or the id a
+               # fresh chat / fork was minted (the same key `_decide` writes).
+               chat_id=new_session_id or session_id),
            *(["--strict-mcp-config"] if strict_mcp else []),
            "--permission-prompt-tool",
            f"mcp__{PERMISSION_SERVER}__{PERMISSION_TOOL}",
