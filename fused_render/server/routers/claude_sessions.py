@@ -57,15 +57,17 @@ router = APIRouter()
 # Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
 # `agent_roots.claude_dir`), module-level because the tests of this router
 # and of `routers/tasks` patch it at a tmp dir. Every scan here walks
-# `projects_roots()`, which puts fused's own Copilot root beside it
-# (docs/COPILOT_BACKEND.md D3): same bucket layout, same row shape, so a
-# Copilot session is a session on every one of these surfaces.
+# `projects_roots()`, which puts fused's own Copilot and Codex roots beside
+# it (docs/COPILOT_BACKEND.md D3, docs/CODEX_BACKEND.md D3): same bucket
+# layout, same row shape, so a Copilot or Codex session is a session on every
+# one of these surfaces.
 CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 
 
 def projects_roots() -> list[tuple[str, str]]:
-    """`[(backend, projects dir), ...]` — Claude's (as patched) and Copilot's."""
+    """`[(backend, projects dir), ...]` — Claude's (as patched), Copilot's and
+    Codex's."""
     return roots.projects_roots(PROJECTS_DIR)
 
 # Mutable session state (custom names, triage). The retired bundled sessions
@@ -1002,8 +1004,9 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
                     ended: bool = False, backend: str = "claude") -> str:
     """Read the transcript, run the one-shot CLI, return the recap or "".
 
-    A COPILOT session is recapped by Copilot (`_recap_copilot`) from the same
-    tail; everything below is the Claude run.
+    A COPILOT session is recapped by Copilot (`_recap_copilot`) and a CODEX
+    session by Codex (`_recap_codex`), each from the same tail; everything
+    below is the Claude run.
 
     `--no-session-persistence` is the load-bearing flag: this run mints a
     session id of its own and must leave no `.jsonl` behind, or every recap
@@ -1052,6 +1055,8 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         return ""
     if backend == "copilot":
         return _recap_copilot(agent, tail, titles)
+    if backend == "codex":
+        return _recap_codex(agent, tail, titles)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": _recap_prompts(titles)[1] % tail}]}})
@@ -1150,6 +1155,74 @@ def _recap_copilot(agent, tail: str, titles: bool | None = None) -> str:
     finally:
         if _COPILOT_SESSION_ID_RE.fullmatch(sid):
             shutil.rmtree(os.path.join(state_dir, sid), ignore_errors=True)
+
+
+def _recap_codex(agent, tail: str, titles: bool | None = None) -> str:
+    """The Codex twin of the Claude run (docs/CODEX_BACKEND.md D12, D16):
+    `codex exec`, Codex's one-shot, never the app-server the sessions use.
+    Codex's `exec` has no system-prompt flag either, so the system text leads
+    the one user message, as the Copilot run sends it.
+
+    The flags, each checked against `codex exec --help` (0.163.0):
+
+    * `--ephemeral` is the load-bearing one, `--no-session-persistence`'s
+      twin: without it every recap would leave a rollout file under
+      `<CODEX_HOME>/sessions/`, which `codex resume` lists — a phantom
+      conversation in the user's own terminal. Nothing to clean up after, so
+      no minted id and no `finally` (unlike Copilot's run).
+    * `-s read-only`: Codex has no "no tools" switch, so the sandbox is the
+      bound — a run that went off and ran a command could read but not write.
+      `exec` never stops to ask (there is nobody to ask), so no approval
+      policy is needed for it not to stall.
+    * `-C <temp dir>` + `--skip-git-repo-check`: the working root is the
+      temp dir, which is not a git repo, and Codex refuses to run outside one
+      without the flag. Pointed there by Codex's own flag, NOT a Popen `cwd`
+      (the spawn rule below).
+    * `-m <the Codex row's default model>`: the recap is small, and the
+      catalog's default is the model the user's plan certainly runs.
+    * `-o <file>` (`--output-last-message`): the reply is read from the
+      file, not from stdout, which also carries Codex's own banner and
+      progress — the file holds the last agent message and nothing else.
+    * `-` reads the prompt from stdin: the tail travels over stdin, never
+      argv, the same rule as the Claude run.
+
+    `_spawn_env(backend="codex")` leaves `CODEX_HOME` exactly as found, so
+    the run signs in with the user's own credential. Same spawn rule as the
+    other two (no Popen `cwd`, `close_fds=False`), and every failure is "",
+    as there."""
+    from fused_render.agent_backends import registry
+
+    system, template = _recap_prompts(titles)
+    prompt = system + "\n\n" + template % tail
+    fd, out_path = tempfile.mkstemp(prefix="fused-codex-recap-", suffix=".txt")
+    os.close(fd)
+    try:
+        proc = subprocess.Popen(
+            [agent._codex_bin(), "exec", "--skip-git-repo-check", "--ephemeral",
+             "-s", "read-only", "-C", tempfile.gettempdir(),
+             "-m", registry.get("codex").default_model,
+             "-o", out_path, "-"],
+            env=agent._spawn_env(backend="codex"),
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, **claude_health.SUBPROCESS_KWARGS)
+        try:
+            proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _recap_reap(proc)
+            return ""
+        if proc.returncode != 0:
+            return ""
+        try:
+            with open(out_path, encoding="utf-8", errors="replace") as fh:
+                reply = fh.read()
+        except OSError:
+            return ""
+        return _recap_plain(reply, titles)
+    finally:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
 
 
 def _stored_recap(session_id: str, for_uuid: str,
