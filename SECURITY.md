@@ -93,7 +93,7 @@ narrow exceptions that fetch something on first use:
   the first `.usd`/`.usdz` conversion (D119).
 - `fused_render/chromium` downloads the pinned Chromium (CEF) engine from our
   own GitHub release the first time the experimental `chromium_windows_enabled`
-  preference is turned on (D1401): HTTPS only (redirects that leave HTTPS are
+  preference is turned on (D1404): HTTPS only (redirects that leave HTTPS are
   refused), verified against the size and SHA-256 in `chromium/manifest.json`
   before anything is unpacked, and unpacked with a zip-slip guard.
 - `docs/install_worker.py` and `latex/install_worker.py` download the

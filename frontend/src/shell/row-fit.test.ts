@@ -324,6 +324,25 @@ describe("rowNeed", () => {
     // One seat, so no gap is charged either.
     expect(rowNeed(fakeRow(seats))).toBe(55 + 24);
   });
+
+  it("charges a seat that anchors a popover its rect, not the open menu (2026-10-20)", () => {
+    // The toolbar's Status trigger is a `position: relative` wrap whose menu
+    // hangs under it, absolutely positioned and 190px wide. The wrap's
+    // scrollWidth counts that menu once it is open, so the ladder read a 31px
+    // trigger as 190px and folded "+ New task" the moment Status was pressed.
+    // The trigger cannot shrink: its rect IS its need.
+    const trigger: FakeSeat = { width: 31, content: 31 };
+    const menu: FakeSeat = { width: 190, content: 190, position: "absolute" };
+    const closed: FakeSeat[] = [{ width: 31, content: 31, position: "relative", kids: [trigger] }];
+    const open: FakeSeat[] = [{ width: 31, content: 190, position: "relative", kids: [trigger, menu] }];
+    expect(rowNeed(fakeRow(open))).toBe(rowNeed(fakeRow(closed)));
+    expect(rowNeed(fakeRow(open))).toBe(31 + 24);
+    // A relative seat with nothing hanging off it still answers with its
+    // content, as does a static one: ellipsised text in an `overflow: hidden`
+    // box is the one case that number is for.
+    expect(rowNeed(fakeRow([{ width: 31, content: 190, position: "relative" }]))).toBe(190 + 24);
+    expect(rowNeed(fakeRow([{ width: 31, content: 190 }]))).toBe(190 + 24);
+  });
 });
 
 describe("rowNeed's restore", () => {

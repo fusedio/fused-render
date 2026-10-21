@@ -1,9 +1,10 @@
 // The Preferences search box. Every word typed must appear somewhere in a
-// setting's label, description, keywords, section or group name; results keep
-// page order. The row (SettingRow) highlights the word in its label, and a
+// setting's label, description, keywords, section, group name or the nav
+// heading over the group (so "claude code" finds every Claude Code row, as it
+// did while they were one group of that name); results keep page order. The row (SettingRow) highlights the word in its label, and a
 // result that only matched through a synonym says which word did — otherwise
 // "tts" turning up Reader reads as a wrong answer.
-import { groupOf, type SettingEntry } from "./registry";
+import { groupOf, navSectionOf, type SettingEntry } from "./registry";
 
 export interface LabelParts {
   pre: string;
@@ -16,7 +17,8 @@ export function tokenize(query: string): string[] {
 }
 
 function haystack(e: SettingEntry): string {
-  return [e.label, e.description, e.keywords, e.section, groupOf(e.group).label]
+  const group = groupOf(e.group);
+  return [e.label, e.description, e.keywords, e.section, group.label, navSectionOf(group.nav).label]
     .join(" ")
     .toLowerCase();
 }

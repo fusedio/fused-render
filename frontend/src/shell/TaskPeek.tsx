@@ -92,6 +92,7 @@ import {
 import { useTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
 import { MISSING_FOLDER_TOAST, taskFolder } from "./useMissingFolders";
+import { TaskPrChip } from "./TaskPrChip";
 import {
   PEEK_ITEM_ATTR,
   PEEK_KEY_STEP,
@@ -1336,6 +1337,8 @@ export function TaskPeek({
                 {...(anchor ? { msgAnchor: anchor } : {})}
                 chatOnly
                 peek
+                headerInPeek
+                headerExtra={<TaskPrChip task={task} />}
                 paramsSource="memory"
                 // THE RECAP OPT-IN (ChatMount `recap`): the peek is the one chat
                 // the reader opened on this page, so it gets the "While you were

@@ -43,6 +43,7 @@ import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
+import { botsPulseTitle, botsRunningLabel, botsWaitingLabel, useBotsPulse } from "@platform/lib/botsPulse";
 import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
@@ -639,6 +640,61 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       </>
     ) : undefined;
 
+  // THE BOTS ROW SAYS THE SAME THINGS THE TASKS ROW DOES (Akshil, 2026-10-20:
+  // "like tasks in left sidebar has status… can we have the same for bots").
+  // Same marks, same words, same order of precedence, read from
+  // platform/lib/botsPulse (one poll shared with the Bots page):
+  //   red    — a bot is WAITING on an approval / question card. The one state
+  //            that goes nowhere until the reader acts, so it outranks the rest;
+  //            red is the hue a blocked task wears, and "waiting" is the bot
+  //            status's own word (statusLabel: "waiting for you").
+  //   yellow — a bot is running.
+  //   green  — a bot has events past the reader's mark (a bot they have opened
+  //            before; a never-opened bot has nothing to catch up on).
+  //   chip   — how many bots have such unread news. A count of BOTS, like the
+  //            Tasks chip counts rows, and ungated by the visit for the Tasks
+  //            chip's reason: it clears when the bot is opened, not glanced at.
+  // Errors are in the tooltip only ("1 error"): an errored bot is not asking
+  // for anything, and a fourth colour on one dot is one too many.
+  //
+  // NOTHING IS SUPPRESSED ON /bots — unlike the Tasks dot on /tasks (Akshil,
+  // 2026-10-21: "when I click on Bots it becomes clear even though I didn't
+  // read the bot"). The Tasks page shows every done task at once, so landing
+  // there IS seeing them; the Bots page shows ONE bot's chat, and a bot with
+  // news in the list beside it is still unread. The dot therefore says exactly
+  // what the chip says, and both clear when the bot is opened (markSeen), not
+  // when the page is.
+  const botsPulse = useBotsPulse();
+  const botsTip = botsPulseTitle(botsPulse);
+  const botsDot = botsPulse.waiting > 0 ? (
+    <span className="sidebar-rail-dot is-attention" title={botsTip} />
+  ) : botsPulse.running > 0 ? (
+    <span className="sidebar-rail-dot is-running" title={botsTip} />
+  ) : botsPulse.unread > 0 ? (
+    <span className="sidebar-rail-dot is-unread" title={botsTip} />
+  ) : undefined;
+  const botsTrailing =
+    botsPulse.waiting > 0 || botsPulse.running > 0 || botsPulse.unread > 0 ? (
+      <>
+        {/* Waiting speaks INSTEAD of running, as on the Tasks row: the one that
+            asks for something wins the words; the total is in the tooltip. */}
+        {botsPulse.waiting > 0 ? (
+          <span className="sidebar-running is-attention" title={botsTip}>
+            {botsWaitingLabel(botsPulse.waiting)}
+          </span>
+        ) : botsPulse.running > 0 && (
+          <span className="sidebar-running" title={botsTip}>
+            {botsRunningLabel(botsPulse.running)}
+          </span>
+        )}
+        {botsPulse.unread > 0 && (
+          <span className="sidebar-count-chip" title={botsTip}>
+            {botsPulse.unread}
+          </span>
+        )}
+      </>
+    ) : undefined;
+
   // Everything that is not primary nav lives in the bottom menu for now: the
   // settings pages. Same gates as before — an entry a machine can't use stays
   // hidden. Claude Config is no longer an entry: it is the Claude Code group
@@ -800,7 +856,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ...(bot
       ? []
       : [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }]),
-    { key: "bots", label: "Bots", icon: BOTS_ICON, href: "/bots", active: botsActive },
+    {
+      key: "bots",
+      label: botsTip ? `Bots — ${botsTip}` : "Bots",
+      icon: BOTS_ICON,
+      href: "/bots",
+      active: botsActive,
+      badge: botsDot,
+    },
     {
       key: "tasks",
       label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
@@ -899,6 +962,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             label="Bots"
             icon={BOTS_ICON}
             active={botsActive}
+            extra={botsDot}
+            trailing={botsTrailing}
+            // Errors have no dot and no words, so the row itself carries the
+            // sentence; the rail says it through its label either way.
+            title={botsTip}
           />
           {/* Tasks took Inbox's place as well as its job: the two pages showed
               the same pile of work from two ends, and the one that survives is

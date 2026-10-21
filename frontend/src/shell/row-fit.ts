@@ -228,6 +228,18 @@ export function naturalNeed(
  *     before any word in the row folds. Read from CSS rather than cached from a
  *     wide moment: a page first painted narrow has never seen the wide one.
  */
+/** Does this seat hang an out-of-flow child off itself — a menu under its
+ *  trigger? Direct children only: that is where a popover sits, and the one
+ *  case `scrollWidth` counts something that is not in the row. */
+function anchorsOutOfFlow(seat: HTMLElement): boolean {
+  for (const kid of Array.from(seat.children) as HTMLElement[]) {
+    if (typeof kid !== "object" || kid === null) continue;
+    const pos = getComputedStyle(kid).position;
+    if (pos === "absolute" || pos === "fixed") return true;
+  }
+  return false;
+}
+
 /** Does this child lay its OWN children out as seats — i.e. is it a box whose
  *  want is the sum of theirs, rather than a run of text that ellipsises? */
 function isBox(style: CSSStyleDeclaration): boolean {
@@ -321,6 +333,21 @@ export function rowNeed(scope: HTMLElement, restore?: readonly number[]): number
       // it is charged is the floor below which it stops being a title at all;
       // everything past that is the ellipsis doing its job.
       need += Math.min(rect.width, FIT_TEXT_FLOOR);
+    } else if (style.position !== "static" && anchorsOutOfFlow(child)) {
+      // A SEAT THAT ANCHORS A POPOVER — the toolbar's filter triggers, each a
+      // `position: relative` wrap so its menu can hang under it. `scrollWidth`
+      // on such a seat counts the open menu (190px, absolutely positioned,
+      // contained by this very box), so the moment Status opened the ladder
+      // read the trigger as five times its width and folded another rung —
+      // "+ New task" lost its words and Project merged into Status, under a
+      // menu the reader had just opened (measured live at 720px, WebKit and
+      // Chromium alike, 2026-10-20). A seat that cannot shrink IS its rect;
+      // what hangs off it is not in the row. Asked of the seat's CHILDREN
+      // rather than of its `position` alone: a relative seat with nothing
+      // hanging off it (a row's time, its id shield) still answers with its
+      // content, which is what ellipsised text in an `overflow: hidden` box
+      // needs the number for.
+      need += rect.width;
     } else {
       need += Math.max(rect.width, content);
     }
@@ -673,6 +700,18 @@ export function useStripFit(
    *  cache is the measurement (`pickLevelFromNeeds` says why it is not a set of
    *  per-rung costs). */
   const needAt = useRef<(number | undefined)[]>([]);
+  /** The measuring step, for the level effect below; null while unobserved. */
+  const readRef = useRef<(() => void) | null>(null);
+  // A LEVEL IS MEASURED BEFORE IT PAINTS. Rendering a level is what measures
+  // it (pickLevelFromNeeds returns an unknown level to try it), and the
+  // observers below only wake on a size or DOM change — a CSS fold is neither,
+  // so an unknown level used to sit on screen for a frame before the next
+  // event measured it. Reading it here, in a layout effect keyed on the level
+  // just rendered, measures it synchronously and — if it does not fit — moves
+  // on before the browser paints, however many rungs that takes.
+  useLayoutEffect(() => {
+    readRef.current?.();
+  }, [level]);
   useLayoutEffect(() => {
     // Off, the row is measured by nothing and folds nothing — see `useRowFit`'s
     // note on what the flag's "off" has to mean.
@@ -686,27 +725,28 @@ export function useStripFit(
       // count appeared, the panel swapped to another task — so what we remember
       // about the OTHER levels was taken of a different row.
       //
-      // SHIFTED, NOT DROPPED. Whatever the change was, it costs about the same
-      // at every level: a folder chip three characters wider is three
-      // characters wider whether the view labels are folded or not. So the
-      // delta observed here is applied to every level we know, which keeps them
-      // all answerable and lets the row unfold in the very next frame. Dropping
-      // them instead left a hole under the current level, and a hole is a frame
-      // of the row snapping fully open before it folds back — for a poll that
-      // lands every twenty seconds.
-      //
-      // Each entry is corrected for real the next time its own level is
-      // rendered, so an estimate that drifts is an estimate with a short life.
+      // DROPPED, NOT SHIFTED (2026-10-20). This used to apply the delta seen
+      // here to every other level, on the reading that a change costs about the
+      // same at every level. It does not: a change inside a LABEL costs nothing
+      // at the levels that hide the label, and a change seen at a folded level
+      // says nothing about the words a shallower level would also draw. A
+      // shifted guess that ran high was never re-measured — pickLevelFromNeeds
+      // skips a known level that "does not fit" — so the toolbar sat two rungs
+      // too deep at 902px with the search gone and 250px of row standing empty
+      // (Akshil, 2026-10-20, WebKit), until a press on Status happened to
+      // mutate the row. Every other level is forgotten instead, and the walk
+      // below re-tries them from the shallowest. That is safe now because a
+      // level is MEASURED BEFORE IT PAINTS (the layout effect on `level`):
+      // the hole a dropped level leaves is filled in the same frame, so the
+      // row never flashes open on its way to the rung that fits.
       if (known !== undefined && Math.abs(known - need) > 1) {
-        const delta = need - known;
-        needAt.current = needAt.current.map((v) =>
-          v === undefined ? undefined : Math.max(0, v + delta),
-        );
+        needAt.current = [];
       }
       needAt.current[at] = need;
       const next = pickLevelFromNeeds(el.clientWidth, needAt.current, drops.length);
       setLevel((cur) => (cur === next ? cur : next));
     };
+    readRef.current = read;
     const schedule = () => {
       if (frame) return;
       frame = 1;
@@ -722,6 +762,7 @@ export function useStripFit(
     const mo = new MutationObserver(schedule);
     mo.observe(el, { childList: true, subtree: true, characterData: true });
     return () => {
+      readRef.current = null;
       ro.disconnect();
       mo.disconnect();
     };
