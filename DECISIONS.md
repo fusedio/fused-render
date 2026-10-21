@@ -7230,7 +7230,7 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **UI.** `McpSection` renders the cached list, shows "Checking status..." in the toolbar summary and dims the status pills until `list({fresh: true})` returns; a failed live check keeps the cached list instead of replacing it with an error.
 - **Deviation.** No frontend test: there is no existing McpSection test and the swap is a few lines of state; the backend contract is covered in `tests/test_claude_config_api.py`.
 
-## D1394: Task-page chat sidebar draws a slim chat header (2026-10-21, task-peek-chat-header)
+## D1395: Task-page chat sidebar draws a slim chat header (2026-10-21, task-peek-chat-header)
 
 - **Problem.** The Task side peek and peek modal hid the chat top bar, so the worktree menu, the worktree hint chip and the session id the explorer `_side=claude` sidebar shows were missing.
 - **Decision.** `ClaudeChat`/`ChatMount` take `headerInPeek` (and `headerExtra`). With `peek` it draws `Topbar slim`: session label, running/limit word, worktree menu, hint chip and the host extra seat; the mark, title, file and identity block are left out because TaskPeek already shows them. `.c-anntools` stays hidden in peek. Root gets `chat-peek-head`. The compact cards wall is unchanged so tiles do not each call `/api/claude/worktrees`.
