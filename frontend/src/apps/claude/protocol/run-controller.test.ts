@@ -5220,3 +5220,40 @@ describe("the run's tasks", () => {
     }
   });
 });
+
+describe("the working clock survives a reload (server stamp)", () => {
+  test("a poll's turn_started_at sets working.startedAt with empty sessionStorage", async () => {
+    // `now` is fixed at 1000 ms here, so a stamp of 0.4 s is 600 ms in the past.
+    const seen: number[] = [];
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n === 1) seen.push(controller.getState().working?.startedAt ?? -1);
+        return n <= 1
+          ? poll({ turn_started_at: 0.4, segments: [text("still going")] })
+          : poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(seen).toEqual([400]);
+  });
+
+  test("a 0 stamp keeps the local clock", async () => {
+    const seen: number[] = [];
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n === 1) seen.push(controller.getState().working?.startedAt ?? -1);
+        return n <= 1
+          ? poll({ turn_started_at: 0, segments: [text("still going")] })
+          : poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(seen).toEqual([1000]);
+  });
+});
