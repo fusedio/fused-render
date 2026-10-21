@@ -2646,8 +2646,8 @@ describe("the source-task chip", () => {
   test("an Edit never wears one", () => {
     // That heading already IS the task, and the card is not continuing anything.
     expect(page()).toContain("if (editing) return null;");
-    // …inside the breadcrumb that names the agent, and still the h2's last words.
-    expect(card()).toContain('{editing ? "Edit task" : "New task"}\n        </>');
+    // …the h2 is just the card's name; the agent crumb is `titleLead` beside it.
+    expect(card()).toContain('title={editing ? "Edit task" : "New task"}');
     expect(card()).toContain("{...(editing || !sourceTask ? {} : {");
   });
 
@@ -2998,5 +2998,19 @@ describe("one box", () => {
 
   test("empty is all empty", () => {
     expect(taskFieldsOf("  \n ")).toEqual({ message: "", title: "", description: "" });
+  });
+});
+
+describe("the agent crumb is the agent dropdown", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("a titleLead PropPill lists every agent, and the MODEL popover no longer does", () => {
+    const s = src();
+    expect(s).toContain("titleLead={(");
+    expect(s).toContain('className="pp--agent"');
+    expect(s).toContain("agents.all.map((b) =>");
+    expect(s.includes("agents.backends.map(")).toBe(false);
+    expect(s).toContain("popHeight={300}");
+    expect(s).toContain("AGENT_PREFS_URL");
   });
 });

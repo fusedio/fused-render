@@ -25,6 +25,7 @@ import {
   agentNamed,
   capsOf,
   defaultModelOf,
+  AGENT_PREFS_URL,
   isBackendEnabled,
   isForeignModel,
   isUnlistedEffort,
@@ -521,8 +522,8 @@ function CheckField({
 //
 // `display: contents` on the wrapper (new-task.css): the pills stay direct
 // flex items of `.nt-pills`.
-type PillName = "where" | "when" | "access" | "model";
-const PILL_NAMES: readonly PillName[] = ["where", "when", "access", "model"];
+type PillName = "where" | "when" | "access" | "model" | "agent";
+const PILL_NAMES: readonly PillName[] = ["where", "when", "access", "model", "agent"];
 
 function PropPill({
   k, icon, value, open, onToggle, onDismiss, onKeyDown, pillRef, children,
@@ -4185,10 +4186,12 @@ export default function NewJobModal({
   const [whenPane, setWhenPane] = useState<"presets" | "custom">("presets");
   const [accessOpen, setAccessOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
   const wherePillRef = useRef<HTMLButtonElement>(null);
   const whenPillRef = useRef<HTMLButtonElement>(null);
   const accessPillRef = useRef<HTMLButtonElement>(null);
   const modelPillRef = useRef<HTMLButtonElement>(null);
+  const agentPillRef = useRef<HTMLButtonElement>(null);
   const dismissPill = (which: PillName) => {
     if (which === "where") {
       setRecentsOpen(false);
@@ -4199,12 +4202,14 @@ export default function NewJobModal({
       setTimeOpen(false);
     } else if (which === "access") {
       setAccessOpen(false);
+    } else if (which === "agent") {
+      setAgentOpen(false);
     } else {
       setModelOpen(false);
     }
   };
   const togglePill = (which: PillName) => {
-    const wasOpen = { where: recentsOpen, when: whenOpen, access: accessOpen, model: modelOpen }[which];
+    const wasOpen = { where: recentsOpen, when: whenOpen, access: accessOpen, model: modelOpen, agent: agentOpen }[which];
     for (const other of PILL_NAMES) if (other !== which) dismissPill(other);
     if (wasOpen) {
       dismissPill(which);
@@ -4222,6 +4227,8 @@ export default function NewJobModal({
       setWhenOpen(true);
     } else if (which === "access") {
       setAccessOpen(true);
+    } else if (which === "agent") {
+      setAgentOpen(true);
     } else {
       setModelOpen(true);
     }
@@ -4750,16 +4757,57 @@ export default function NewJobModal({
   return (
     <Modal
       // A breadcrumb — WHO runs it, then what this card is — so the heading
-      // answers "which agent" before the first field does. The h2 still names
-      // the dialog, and its text still ends in "New task" / "Edit task".
-      title={(
+      // answers "which agent" before the first field does. The crumb is the
+      // agent dropdown (`titleLead`), a button beside the h2 rather than inside
+      // it; the h2 alone names the dialog.
+      title={editing ? "Edit task" : "New task"}
+      titleLead={(
         <>
-          <span className="nt-crumb">
-            <span className="nt-crumb-mark" aria-hidden="true" />
-            {agentLabel(agent)}
-          </span>
+          {/* THE AGENT FIRST (D18): the Permissions, Model and Thinking are that
+              agent's. A card out of a session opens on that session's agent and
+              may still pick another — the task then starts fresh there
+              (`continuesSession`). A dropdown even with one agent on, so a
+              reader with Copilot off can see that a second one exists. */}
+          <PropPill
+            k=""
+            icon={<span className="nt-crumb-mark" aria-hidden="true" />}
+            value={agentLabel(agent)}
+            ariaLabel="Agent"
+            className="pp--agent"
+            popWidth={240}
+            popHeight={agents.all.length * 40 + 60}
+            open={agentOpen}
+            onToggle={() => togglePill("agent")}
+            onDismiss={() => dismissPill("agent")}
+            pillRef={agentPillRef}
+          >
+            <div className="nt-pop-h">Agent</div>
+            <div className="nt-menu" role="group" aria-label="Agent">
+              {agents.all.map((b) => {
+                const on = isBackendEnabled(b.id);
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={agent === b.id}
+                    disabled={!on}
+                    onClick={() => { pickBackend(b.id); dismissPill("agent"); }}
+                  >
+                    {b.label}
+                    {!on && <span className="nt-menu-off">Off</span>}
+                    {on && agent === b.id && ICON_CHECK}
+                  </button>
+                );
+              })}
+            </div>
+            {agents.all.some((b) => !isBackendEnabled(b.id)) && (
+              <div className="nt-menu-note">
+                Turn agents on in <a href={AGENT_PREFS_URL}>Preferences</a>
+              </div>
+            )}
+          </PropPill>
           <span className="nt-crumb-sep" aria-hidden="true">›</span>
-          {editing ? "Edit task" : "New task"}
         </>
       )}
       dialogClassName="new-task-dialog"
@@ -5656,31 +5704,8 @@ export default function NewJobModal({
             onDismiss={() => dismissPill("model")}
             pillRef={modelPillRef}
             popWidth={260}
-            popHeight={agents.backends.length >= 2 ? 380 : 300}
+            popHeight={300}
           >
-            {/* THE AGENT FIRST (D18), and only while there is a choice: the
-                Permissions, Model and Thinking are that agent's. A card out of a
-                session opens on that session's agent and may still pick another
-                — the task then starts fresh there (`continuesSession`). */}
-            {agents.backends.length >= 2 && (
-              <>
-                <div className="nt-pop-h">Agent</div>
-                <div className="nt-menu" role="group" aria-label="Agent">
-                  {agents.backends.map((b) => (
-                    <button
-                      key={b.id}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={agent === b.id}
-                      onClick={() => pickBackend(b.id)}
-                    >
-                      {b.label}
-                      {agent === b.id && ICON_CHECK}
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
             <div className="nt-pop-h">Model</div>
             {/* Same contract as Permissions: the KEY is submitted, the label is
                 only how it is said. `taskRunOptions` is what keeps an
