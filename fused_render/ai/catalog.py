@@ -921,6 +921,26 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # defaults are the one mode that bypasses the catalog).
             "defaults": {"steps": 28, "guidance": 30.0},
         },
+        # Qwen-Image 2.1 Turbo (OsaurusAI's 4-bit mflux conversion), October
+        # 2026 refresh — LAST on its 10.6GB (Hub whole-snapshot byte sum,
+        # 2026-10-22). Qwen's research license (`license_name: qwen-research`,
+        # not Apache) — the note says so. **Load-gated** with mflux 0.23.0:
+        # `QwenImage21` over the snapshot, 8 steps at 256x256, a clean apple,
+        # and the same through the worker's own `load`/`generate`. Distilled
+        # and no-CFG: mflux raises on any guidance but 1, so its
+        # `MFLUX_VARIANTS` row pins it. No live preview (see that row).
+        {
+            "id": "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit",
+            "params": "20B",
+            "quantization": "MLX 4-bit",
+            "label": "Qwen-Image 2.1 Turbo (MLX 4-bit)",
+            "nickname": "Qwen-Image",
+            "size_gb": 10.6,
+            "note": "The heaviest image model here, and the one to try for "
+                    "text drawn inside the picture — under Qwen's research "
+                    "license rather than Apache.",
+            "defaults": {"steps": 8},
+        },
     ],
     # MLX conversions ONLY, and this is the third mutually unloadable Whisper
     # list in the app: a `mlx-community` repo carries `weights.npz`,
