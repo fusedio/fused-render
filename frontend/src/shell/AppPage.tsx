@@ -409,6 +409,13 @@ export default function AppPage({
         // with the card that pictures the app.
         const info = await getAppEntry(dir);
         if (live) setResolved({ kind: "app", entry: info.entry });
+        // NOT a door for the desk (owner, 2026-10-21, #1830): opening an app
+        // page does not put the app on the desk. An app the user took off
+        // the sidebar (its cross) stays off when opened from a Recent, a
+        // Bots link or a typed URL — the behaviour before the door-time
+        // check existed. The task side peek is the one door (peek-preview.ts
+        // `ensureAppFor`, archived tasks excluded); the explorer's "Open in
+        // project" button stays the explicit way on.
       } catch (e) {
         if (live) setResolved({ kind: "error", message: (e as Error).message });
       }

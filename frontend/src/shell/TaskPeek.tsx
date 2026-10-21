@@ -530,7 +530,13 @@ export function TaskPeek({
   // THE APP THIS TASK IS ABOUT, if its folder is one (shell/peek-preview.ts:
   // the desk's own table, never a second predicate). Null on an ordinary
   // project, and the body is then exactly what it was — chat, full height.
-  const app = useAppForProject(task && !gone ? task.project : "");
+  // …and the DOOR-TIME CHECK (peek-preview.ts `ensureAppFor`): a folder the
+  // listing's one look found empty is asked about again here, where the
+  // preview is wanted. Not for an archived task — see the hook.
+  const app = useAppForProject(
+    task && !gone ? task.project : "",
+    !!task && !gone && task.status !== "archived",
+  );
   const previewSrc = app?.entry
     ? // The SAME document the app page's Overview frames and the Home card
       // opens, plus the shell's embedded-frame focus contract: an app that
