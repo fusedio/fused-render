@@ -706,7 +706,7 @@ SMOKE_OUT="$(echo "{\"path\":\"$SMOKE_DIR/duckdb_smoke.py\",\"params\":{}}" | \
   env PYTHONHOME="$APP_DIR/Contents/Resources" \
   "$APP_DIR/Contents/MacOS/python" \
   "$APP_PYLIB/fused_render/_child.py" 2>&1 || true)"
-if ! echo "$SMOKE_OUT" | grep -q '"ok": true'; then
+if ! echo "$SMOKE_OUT" | grep -Eq '"ok": ?true'; then
   echo "FATAL: duckdb smoke test failed through _child.py:" >&2
   echo "$SMOKE_OUT" >&2
   exit 1
