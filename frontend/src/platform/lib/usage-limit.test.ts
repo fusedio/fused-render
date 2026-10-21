@@ -146,7 +146,7 @@ describe("the surfaces that say them", () => {
     // …and asked only under the flag and only where the header is drawn: the
     // hook is one listing read per instance, and a cards wall mounts a dozen.
     expect(CHAT).toContain(
-      'const limitWord = useLimitWord(queueOn && !compact && !peek ? taskKey : "");',
+      'const limitWord = useLimitWord(queueOn && showHead ? taskKey : "");',
     );
     expect(LIMIT_HOOK).toContain("usageLimitStatusWord(row)");
     expect(LIMIT_HOOK).toContain("TASKS_CHANGED_EVENT");
