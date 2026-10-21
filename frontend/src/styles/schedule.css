@@ -340,6 +340,11 @@ body.embed .schedule-page {
 /* "Beta" after the Calendar word: the sidebar's own Beta chip (sidebar.css), so
    the tag reads the same in both places. It lives inside `.schedule-fit-lbl`,
    so it folds away with the word when the toolbar is short on room. */
+.schedule-view-btn .schedule-fit-lbl {
+  display: inline-flex;
+  align-items: center;
+}
+
 .schedule-beta-tag {
   margin-left: 6px;
 }
