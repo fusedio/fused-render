@@ -568,10 +568,25 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "above handles badly — it answers above its size class "
                     "for the download.",
         },
+        {
+            "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+            # first tag picks the UI section: the recommended 4B leads
+            # `writing`, the larger generalist leads `reasoning`
+            "useCases": ["reasoning", "writing", "coding"],
+            "params": "27B",
+            "quantization": "GGUF UD-Q3_K_XL",
+            "label": "Qwen3.8 27B (UD-Q3_K_XL)",
+            "nickname": "Qwen 3.8",
+            "size_gb": 13.1,
+            "note": "The newest and largest model here, quantized hard to fit "
+                    "the download — expect a bigger quality hit than the "
+                    "Qwen3.5 4B above, and a laptop GPU to run it mostly "
+                    "or entirely on the CPU rather than resident in VRAM.",
+        },
         # The mixture-of-experts row, and it matters MORE here than its MLX
         # twin does: this list's default build has no GPU, and a router that
-        # multiplies ~1B of an 8B model per token is the one architecture that
-        # turns a CPU into a reasonable place to run an 8B at all. Nothing in
+        # multiplies ~2B of a 24B model per token is the one architecture that
+        # turns a CPU into a reasonable place to run a 24B at all. Nothing in
         # the runner has to know — MoE experts are ordinary tensors, only the
         # COMPUTE is conditional, and llama.cpp does that inside the graph.
         #
@@ -585,32 +600,36 @@ SUGGESTIONS: dict[str, list[dict]] = {
         # the Vulkan build this row is offloaded by whole layers like any
         # dense model, leaving the trick unused. On the CPU build, which is
         # what most machines resolve to, there is nothing left on the table.
+        #
+        # **Load-gated 2026-10-22** on the pinned llama-cpp-python 0.3.29:
+        # `general.architecture` is `lfm2moe`, the file loads and answers a
+        # chat turn. Replaces `LFM2.5-8B-A1B-Q4_K_M.gguf`. 14.53GB Hub size.
         {
-            "id": "LFM2.5-8B-A1B-Q4_K_M.gguf",
+            "id": "LFM2.5-24B-A2B-Q4_K_M.gguf",
             "useCases": ["writing"],
-            "params": "8B (~1B active)",
+            "params": "24B (~2B active)",
             "quantization": "GGUF Q4_K_M",
-            "label": "LFM2.5 8B-A1B (Q4_K_M)",
+            "label": "LFM2.5 24B-A2B (Q4_K_M)",
             "nickname": "Liquid 2.5",
-            "size_gb": 5.2,
-            "note": "8B of knowledge answering at about a 1B's speed — a "
+            "size_gb": 14.5,
+            "note": "24B of knowledge answering at about a 2B's speed — a "
                     "mixture of experts, so only a fraction of it runs per "
                     "token.",
         },
+        # Gemma 4 26B-A4B (unsloth UD-Q4_K_M, 16.95GB Hub size), the GGUF twin
+        # of the MLX row. **Load-gated 2026-10-22** on llama-cpp-python 0.3.29:
+        # `general.architecture` is `gemma4`, loads and answers a chat turn.
         {
-            "id": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
-            # first tag picks the UI section: the recommended 4B leads
-            # `writing`, the larger generalist leads `reasoning`
+            "id": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
             "useCases": ["reasoning", "writing", "coding"],
-            "params": "27B",
-            "quantization": "GGUF UD-Q3_K_XL",
-            "label": "Qwen3.8 27B (UD-Q3_K_XL)",
-            "nickname": "Qwen 3.8",
-            "size_gb": 13.1,
-            "note": "The newest and largest model here, quantized hard to fit "
-                    "the download — expect a bigger quality hit than the "
-                    "LFM2.5 8B-A1B above, and a laptop GPU to run it mostly "
-                    "or entirely on the CPU rather than resident in VRAM.",
+            "params": "26B (~4B active)",
+            "quantization": "GGUF UD-Q4_K_M",
+            "label": "Gemma 4 26B-A4B (UD-Q4_K_M)",
+            "nickname": "Gemma 4",
+            "size_gb": 17.0,
+            "note": "The strong second family: 26B of knowledge at about a "
+                    "4B's speed, but its 17GB of weights want a 24GB machine "
+                    "or a big GPU.",
         },
         # Coding model (SPEC AI-28b) — the GGUF twin of the MLX row of the
         # same model. unsloth's Q4_K_M is 18.56GB (Hub tree listing,

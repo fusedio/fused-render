@@ -1217,13 +1217,17 @@ GGUF_RECIPES = {
         "repo": "unsloth/gemma-4-E4B-it-GGUF",
         "file": "gemma-4-E4B-it-Q4_K_M.gguf",
     },
-    "LFM2.5-8B-A1B-Q4_K_M.gguf": {
-        "repo": "LiquidAI/LFM2.5-8B-A1B-GGUF",
-        "file": "LFM2.5-8B-A1B-Q4_K_M.gguf",
-    },
     "Qwen3.8-27B-UD-Q3_K_XL.gguf": {
         "repo": "unsloth/Qwen3.8-27B-GGUF",
         "file": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+    },
+    "LFM2.5-24B-A2B-Q4_K_M.gguf": {
+        "repo": "LiquidAI/LFM2.5-24B-A2B-GGUF",
+        "file": "LFM2.5-24B-A2B-Q4_K_M.gguf",
+    },
+    "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf": {
+        "repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+        "file": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
     },
     "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf": {
         "repo": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
