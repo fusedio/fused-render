@@ -192,6 +192,10 @@ export function Topbar({
             running
           </span>
         ) : null}
+        {/* The gap pins the chips to the right edge whether or not the worktree
+            menu has loaded, so the PR chip does not jump when the branch chip
+            arrives. */}
+        <span className="c-tb-slim-gap" aria-hidden="true" />
         {worktree}
         {worktreeHint}
         {extra ? <span className="c-tb-slim-extra">{extra}</span> : null}
