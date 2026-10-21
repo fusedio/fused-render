@@ -927,10 +927,10 @@ def test_live_compact_boundary_is_a_notice_segment(agent):
          "compact_metadata": {"trigger": "auto", "pre_tokens": 167165,
                               "post_tokens": 16130}}])
     assert [(s["kind"], s["text"]) for s in segs] == \
-        [("notice", ["Context compacted \u00b7 167k \u2192 16k tokens"])]
+        [("notice", "Context compacted \u00b7 167k \u2192 16k tokens")]
     bare = agent._segments_from_rows([
         {"type": "system", "subtype": "compact_boundary"}])
-    assert bare[0]["text"] == ["Context compacted"]
+    assert bare[0]["text"] == "Context compacted"
 
 
 def test_history_drops_the_other_synthetic_user_records_too(
