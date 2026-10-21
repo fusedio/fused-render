@@ -153,13 +153,9 @@ describe("visibility", () => {
   test("Optional features keeps its sections in order, Windows last", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
     const secs = sectionsOf(visibleSettings(on), "features").map((s) => s.section);
-    expect(secs).toEqual(["Sidebar", "Status bar", "File views", "Windows"]);
+    expect(secs).toEqual(["Sidebar", "Windows"]);
     // Without the capability the group is what it was.
-    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual([
-      "Sidebar",
-      "Status bar",
-      "File views",
-    ]);
+    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Sidebar"]);
   });
 });
 

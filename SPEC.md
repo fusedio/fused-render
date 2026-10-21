@@ -1238,7 +1238,11 @@ never imports server).
   on-demand engine download, reported under `chromium_windows: {enabled,
   available, engine: {state, progress, error, …}}` and by `GET
   /api/prefs/chromium`; `POST /api/prefs/chromium/install|remove` retry or
-  delete it), `default_model`, `calls_enabled`,
+  delete it; open windows keep the engine they were born with, so
+  `chromium_windows.stale_windows` counts the ones on the other engine and
+  `POST /api/prefs/chromium/reopen-windows` closes every window and opens
+  one Home window on the current engine — 409 when this process has no
+  window host), `default_model`, `calls_enabled`,
   `calls_params` or
   `calls_retention_days` present, so each control PUTs only its own field — and
   returns the same shape. An unknown engine value,
