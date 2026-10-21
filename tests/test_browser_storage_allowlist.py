@@ -49,6 +49,7 @@ ALLOWED = {
     "shell/notifications-seen-store.ts": "import",
     "shell/settings/claude.tsx": "display",         # accordion open/order habits (Akshil 2026-10-20)
     "shell/task-peek-store.ts": "display",          # peek width + per-tab autocollapse marker
+    "shell/tasks-lib.ts": "display",                # Tasks "Sort by" choice (per viewer)
     "shell/tasksPulse.ts": "signal",                # chat-activity listener (+ seen import)
     # ---- apps -------------------------------------------------------------
     "apps/ai_models/local/HubSearchScreen.tsx": "cache",
