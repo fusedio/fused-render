@@ -149,7 +149,8 @@ import {
   taskUnreadLabel,
   cardTitleLine,
   recapTitlesOn,
-  taskWhen,
+  taskWhenFor,
+  type TaskSortBy,
   threadView,
   tildePath,
   toggleExpanded,
@@ -2167,6 +2168,7 @@ export function TaskList({
   floored = false,
   emptyLabel = "Nothing to show here.",
   groupBy = null,
+  sortBy = "changed",
   onNewTaskIn,
 }: {
   /** The Project view's + on a folder's heading (Akshil, 2026-10-19): open
@@ -2178,6 +2180,9 @@ export function TaskList({
    *  Project / PR views, tasks-lib.groupRows). null ⇒ the plain List. Rows keep
    *  the List's order inside every section. */
   groupBy?: TaskGroupBy | null;
+  /** The page's "Sort by" (tasks-lib.TaskSortBy): last change (lanes, today's
+   *  order) or creation time, newest first. */
+  sortBy?: TaskSortBy;
   /** A queue verb landed here: paint the claim over the row until the server's
    * own answer arrives (tasks-lib.QueueOverride). The page holds the claims —
    * see TaskBoard's own note for why they must outlive this component. */
@@ -2349,12 +2354,12 @@ export function TaskList({
   // resolution the rows print anyway — so this re-sorts sixty times an hour, not
   // once a second.
   const now = useNow();
-  const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);
+  const sorted = useMemo(() => sortForList(tasks, now, sortBy), [tasks, now, sortBy]);
   // The grouped views cut the sorted list into sections and draw them one frame
   // each; `rows` stays the flat, in-order list every index below is about.
   const groups = useMemo(
-    () => (groupBy ? groupRows(sorted, groupBy, home, now) : null),
-    [sorted, groupBy, home, now],
+    () => (groupBy ? groupRows(sorted, groupBy, home, now, sortBy) : null),
+    [sorted, groupBy, home, now, sortBy],
   );
   const rows = useMemo(() => (groups ? flattenGroups(groups) : sorted), [groups, sorted]);
   // Which sections are folded (the grouped views only; see groupFrames).
@@ -2845,6 +2850,7 @@ export function TaskList({
         task={task}
         home={home}
         showProject={showProject}
+        sortBy={sortBy}
         folderMissing={missing?.has(taskFolder(task)) ?? false}
         open={expanded.has(task.key)}
         peekOn={peekOn}
@@ -3108,6 +3114,7 @@ function TaskNode({
   task,
   home,
   showProject,
+  sortBy = "changed",
   folderMissing,
   open: requested,
   variant = "task",
@@ -3146,6 +3153,8 @@ function TaskNode({
   /** Whether the folder chip is worth drawing. The LIST's answer, not this row's:
    * a chip that every visible row repeats distinguishes nothing (spansProjects). */
   showProject: boolean;
+  /** Which time the row's last cell prints: its last change, or its creation. */
+  sortBy?: TaskSortBy;
   /** The task's folder is gone from the disk (useMissingFolders). The row then
    * has nowhere to go: its press raises a toast instead of leaving for an
    * Explorer that can only answer with a stat error. */
@@ -3385,7 +3394,7 @@ function TaskNode({
   // every row in a list re-letters in ONE paint — two rows flipping "59m ago" to
   // "1h ago" a second apart is two cells of one column disagreeing.
   const now = useNow();
-  const when = taskWhen(task, now);
+  const when = taskWhenFor(task, now, sortBy);
   // A run still ahead — the mark after the title, clock or circle arrows
   // (tasks-lib.scheduledMark). No chip beside the time any more (Akshil,
   // 2026-09-11: "we don't need to show time 2 times on the right side").
