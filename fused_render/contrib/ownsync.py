@@ -93,7 +93,7 @@ MESSAGES = {
     "merging": "Claude is combining your edits with the version on GitHub.",
     "no-github": "This app isn't connected to GitHub.",
     "held": "This is your app. {edits} ready to publish.",
-    "held-unknown": ("fused can't tell whether the version on GitHub was rolled back, so "
+    "unknown": ("fused can't tell whether the version on GitHub was rolled back, so "
                      "your edits are waiting here. Publish them, or switch to the version "
                      "on GitHub."),
     "github-changed-unknown": ("fused can't tell what changed on GitHub since this copy "
@@ -113,6 +113,7 @@ FIXES = {
     "publish-failed": ["publish-now"],
     "publish-auth": ["publish-now"],
     "held": ["publish-now"],
+    "unknown": ["publish-now", "use-github"],
 }
 
 
@@ -162,12 +163,19 @@ def _set_state(root, state: str | None, **fields) -> None:
     store.update(root, fn)
 
 
+#: States that hold publishing until Publish now (§16.12): `held` (ws-guard,
+#: a github→own upgrade with unpublished edits — git_upstream drops the push
+#: itself, `classify.is_held`) and `unknown` (ours: only ahead, and nothing
+#: says whether GitHub was rolled back under these edits).
+HOLDS = ("held", "unknown")
+
+
 def _settle(root) -> None:
-    """An automatic outcome with nothing stuck: clear the state — except
-    `held`, which only Publish now (or a move away from these edits)
-    ends (§16.12)."""
+    """An automatic outcome with nothing stuck: clear the state — except a
+    hold (HOLDS), which only Publish now (or a button that moves away from
+    these edits) ends."""
     st = _own_state(root)
-    if st and st.get("state") != "held":
+    if st and st.get("state") not in HOLDS:
         _set_state(root, None)
 
 
@@ -302,7 +310,7 @@ def _repo_state(root, branch) -> dict:
 
 
 def _dirty_tracked(root) -> set:
-    r = gu._run(root, "status", "--porcelain=v1", "-z", "--untracked-files=no")
+    r = replay.git(root, "status", "--porcelain=v1", "-z", "--untracked-files=no")
     if not gu._ok(r):
         return set()
     found = set()
@@ -323,7 +331,7 @@ def _still_edited(root, files) -> bool:
 
 
 def _changed(root, a, b) -> set:
-    r = gu._run(root, "diff", "--name-only", "-z", a, b)
+    r = replay.git(root, "diff", "--name-only", "-z", a, b)
     if not gu._ok(r):
         return set()
     return {p for p in r[1].decode("utf-8", "replace").split("\0") if p}
@@ -346,7 +354,7 @@ def _facts(root, branch) -> _Facts | None:
     processes when diverged, three when only ahead and ok (then nothing is
     picked, so U is not needed: `u` stays None)."""
     ref = _tracking(branch)
-    lines = _lines(gu._run(root, "rev-parse", "--git-path", f"logs/{ref}", "HEAD", ref))
+    lines = _lines(replay.git(root, "rev-parse", "--git-path", f"logs/{ref}", "HEAD", ref))
     if len(lines) != 3:
         return None
     log_path, head, tip = lines
@@ -360,8 +368,8 @@ def _facts(root, branch) -> _Facts | None:
     if head == tip:
         return _Facts(branch=branch, head=head, tip=tip, tip_in_head=True, ok=True,
                       unknown=False, u=[], u_merges=False)
-    mb = gu._out(gu._run(root, "merge-base", head, tip)) or None
-    held = set(_lines(gu._run(root, "rev-list", head, f"^{tip}")))
+    mb = gu._out(replay.git(root, "merge-base", head, tip)) or None
+    held = set(_lines(replay.git(root, "rev-list", head, f"^{tip}")))
     dropped = any(v in held for v in values)
     # Unknown: no evidence at all, or none of it inside HEAD (X empty) —
     # then nothing says which of HEAD's commits GitHub once had.
@@ -371,7 +379,7 @@ def _facts(root, branch) -> _Facts | None:
     f = _Facts(branch=branch, head=head, tip=tip, tip_in_head=mb == tip, ok=ok,
                unknown=unknown, reason=None if ok else ("unknown" if unknown else "dropped"))
     if not (ok and f.tip_in_head):
-        u_rows = _lines(gu._run(root, "rev-list", "--topo-order", "--reverse", "--parents",
+        u_rows = _lines(replay.git(root, "rev-list", "--topo-order", "--reverse", "--parents",
                                 head, "--not", *values))
         f.u = [row.split()[0] for row in u_rows if row]
         f.u_merges = any(len(row.split()) > 2 for row in u_rows)
@@ -413,7 +421,7 @@ def _push(root, branch) -> tuple[bool, str | None]:
     """`git push -- origin <b>` (the author's own remote, never forced).
     `(pushed, why-not)`: why-not is `offline`, `rejected` (GitHub moved
     again: the next sync combines and pushes), `auth` or `git-failed`."""
-    r = gu._run(root, "push", "--", "origin", branch)
+    r = replay.git(root, "push", "--", "origin", branch)
     if gu._ok(r):
         return True, None
     why = gu._classify(r, push=True)
@@ -537,7 +545,7 @@ def resolve(root, *, action, push) -> dict | None:
 
 
 def _held(st) -> bool:
-    return bool(st) and st.get("state") == "held"
+    return bool(st) and st.get("state") in HOLDS
 
 
 def _resolve_locked(root, branch, *, push) -> dict:
@@ -557,8 +565,8 @@ def _resolve_locked(root, branch, *, push) -> dict:
             # Only ahead, and nothing says whether GitHub was rolled back
             # under these edits: wait for the person, with a button.
             if not _held(st):
-                _set_state(root, "held", why="unknown", head=f.head, tip=f.tip)
-            return _result(root, branch, "skipped", "held")
+                _set_state(root, "unknown", head=f.head, tip=f.tip)
+            return _result(root, branch, "skipped", (st or {}).get("state") or "unknown")
         return _stuck(root, f, "github-changed", unknown=f.unknown)
     if f.tip_in_head:
         # Nothing to bring in (a rewind that kept every published point is
@@ -567,7 +575,7 @@ def _resolve_locked(root, branch, *, push) -> dict:
             _settle(root)
             return _result(root, branch, "synced")
         if _held(st):
-            return _result(root, branch, "skipped", "held")
+            return _result(root, branch, "skipped", (st or {}).get("state") or "unknown")
         pushed, why = _push(root, branch)
         return _after_push(root, f, pulled=0, pushed=pushed, why=why)
     if _job_open(root):
@@ -661,7 +669,7 @@ def _fetched_facts(root):
         return None, _answer(root, False, NOT_MAIN)
     if gu._operation_in_flight(root) is not None:
         return None, _answer(root, False, BUSY)
-    fetched = gu._run(root, "fetch", "--", "origin", branch)
+    fetched = replay.git(root, "fetch", "--", "origin", branch)
     if not gu._ok(fetched):
         why = gu._classify(fetched)
         return None, _answer(root, False, OFFLINE if why == "offline"
@@ -711,7 +719,7 @@ def _hard_move(root, f: _Facts) -> tuple[str | None, list]:
         return "reset-refused", []
     replay.protect_after_move(root)  # see land_locked: the S bit lets .fused/ through
     with replay.fused_aside(root, f.tip):
-        moved = gu._run(root, "reset", "--hard", f.tip, timeout=replay.REPLAY_TIMEOUT_S)
+        moved = replay.git(root, "reset", "--hard", f.tip, timeout=replay.REPLAY_TIMEOUT_S)
     if not gu._ok(moved) or not replay.undo_race_locked(root, f.head, refs, hard=True):
         # A failed hard reset may be partial, and a raced one dropped the
         # edits: either way the backup is their only copy — named.
@@ -799,11 +807,11 @@ def publish_over(root) -> dict:
         if not seen or not replay.rev(root, "HEAD"):
             return _answer(root, False, UNREADABLE)
         pin = _pin(root, seen, "publish-over")
-        r = gu._run(root, "push", f"--force-with-lease={branch}:{seen}", "--",
+        r = replay.git(root, "push", f"--force-with-lease={branch}:{seen}", "--",
                     "origin", f"HEAD:refs/heads/{branch}")
         if not gu._ok(r):
             if pin:
-                gu._run(root, "update-ref", "-d", pin)
+                replay.git(root, "update-ref", "-d", pin)
             why = gu._classify(r, push=True)
             logger.info("ownsync: publish over refused in %s (%s): %s", root, why, gu._text(r))
             if why == "offline":
@@ -823,7 +831,7 @@ def publish_over(root) -> dict:
 def _pin(root, sha, why) -> str | None:
     """A backup ref at `sha` (GitHub's version, about to be replaced)."""
     name = f"{replay.BACKUP_PREFIX}{int(time.time() * 1000)}-{why}"
-    return name if gu._ok(gu._run(root, "update-ref", name, sha)) else None
+    return name if gu._ok(replay.git(root, "update-ref", name, sha)) else None
 
 
 def save_edits(root) -> dict:
@@ -917,7 +925,7 @@ def _put_back_edits(root, target, wip, saved: list) -> bool:
     """Write the unsaved edits a backup's `-wip` holds (relative to
     `target`) back into the folder, unstaged. Edits made here since are
     backed up first when the move itself saved nothing (`saved`)."""
-    r = gu._run(root, "diff", "--name-status", "--no-renames", "-z", target, wip)
+    r = replay.git(root, "diff", "--name-status", "--no-renames", "-z", target, wip)
     if not gu._ok(r):
         return False
     fields = [p for p in r[1].decode("utf-8", "replace").split("\0") if p]
@@ -931,7 +939,7 @@ def _put_back_edits(root, target, wip, saved: list) -> bool:
             return False
         saved.extend(refs)
     keep = [p for code, p in pairs if code != "D"]
-    if keep and not gu._ok(gu._run(root, "--literal-pathspecs", "restore", f"--source={wip}",
+    if keep and not gu._ok(replay.git(root, "--literal-pathspecs", "restore", f"--source={wip}",
                                    "--worktree", "--", *keep)):
         return False
     for code, p in pairs:
@@ -985,10 +993,9 @@ def status(root) -> dict:
     if _job_open(root):
         state, files = "merging", st.get("files") or []
     elif _held(st) and ahead:
-        # Held stands until Publish now, whatever HEAD does meanwhile.
-        state, files = "held", []
-        variant = "held-unknown" if st.get("why") == "unknown" else None
-    elif st.get("state") not in (None, "held") and st.get("head") == head \
+        # A hold stands until Publish now, whatever HEAD does meanwhile.
+        state, files = st["state"], []
+    elif st.get("state") not in (None, *HOLDS) and st.get("head") == head \
             and st.get("tip") == tip and (
                 st["state"] != "edits" or _still_edited(root, st.get("files"))):
         state, files = st["state"], st.get("files") or []
@@ -1007,7 +1014,5 @@ def status(root) -> dict:
         # would carry back what GitHub removed, nothing says which edits
         # GitHub already had, or there is nothing to carry.
         fixes.remove("put-on-top")
-    if variant == "held-unknown":
-        fixes.append("use-github")
     return {"state": state, "unpublished": ahead, "github_new": behind, "files": files,
             "message": _message(variant or state, files, ahead), "fixes": fixes}

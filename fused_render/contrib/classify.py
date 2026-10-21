@@ -58,6 +58,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 
@@ -382,26 +383,60 @@ def ensure(app_dir, *, identity=None) -> dict | None:
     return store.get(app_dir) or rec
 
 
+COPY_ID_CONFIG = "fused.copyid"
+
+
+def _stamp_copy(root, rec) -> None:
+    """Write the record's `copy_id` into the repo's own config (a Finder move
+    carries `.git` along; a fresh clone has none — `_adopt`), and remember
+    the HEAD the copy is at (`last_head`). The caller holds the slot."""
+    cid = rec.get("copy_id")
+    if not cid:
+        cid = secrets.token_hex(8)
+        store.update(root, lambda r: r.__setitem__("copy_id", r.get("copy_id") or cid))
+        cid = (store.get(root) or {}).get("copy_id") or cid
+    if _local_config(root, COPY_ID_CONFIG) != cid:
+        _g(root, "config", "--local", COPY_ID_CONFIG, cid)
+    store.note_head(root, replay.rev(root, "HEAD"))
+
+
 def _adopt(app_dir, repo, rc) -> dict | None:
     """A Finder move the server never saw (§3 self-healing): an orphaned row
-    for the same repo whose folder is gone is THIS copy's — but only one with
-    the SAME root commit (§16.1). Among several, the one whose sent proposal
-    this repo has wins (it is the moved copy, not a deleted sibling), else
-    the newest. A v1 orphan never got a root commit (its folder was gone
-    before any v2 read): it is adopted only when it is the ONLY orphan of
-    the repo — nothing to confuse it with."""
+    for the same repo whose folder is gone is THIS copy's — and ONLY this
+    copy's (audit V10/V12: a fresh clone into a new folder took a deleted
+    copy's open proposal; of two copies of one repo the newest orphan won,
+    the deleted sibling's). An orphan qualifies when it has the same root
+    commit (§16.1) and either names the folder's own `fused.copyid` (written
+    into `.git/config` by `_stamp_copy`, so it moves with the folder and a
+    fresh clone has none), or — an orphan from before copy ids — the
+    folder's HEAD is or contains its `last_head` (and its sent proposal, if
+    any). Among those, `last_head == HEAD` first, then the newest. A v1
+    orphan with neither a root commit nor a last HEAD is adopted only when
+    it is the ONLY orphan of the repo."""
     orphans = [(k, r) for k, r in store.find_by_repo(repo) if not os.path.isdir(k)]
-    cands = [(k, r) for k, r in orphans if r.get("root_commit") == rc]
-    if not cands and len(orphans) == 1 and not orphans[0][1].get("root_commit"):
-        cands = orphans
+    root = follow.is_repo_root(app_dir)
+    mine = _local_config(root, COPY_ID_CONFIG) if root else None
+    head = replay.rev(app_dir, "HEAD")
 
-    def has_sent(r):
-        p = r.get("proposal")
-        sent = (p.get("sent") or p.get("pushed_head") or p.get("proposed_head")) \
-            if isinstance(p, dict) else None
-        return isinstance(sent, str) and bool(sent) and replay.rev(app_dir, sent) is not None
+    def contains(sha):
+        return isinstance(sha, str) and bool(sha) and bool(head) and \
+            replay.rev(app_dir, sha) is not None and replay.is_ancestor(app_dir, sha, head)
 
-    cands.sort(key=lambda kr: not has_sent(kr[1]))  # stable: newest first within
+    def qualifies(r):
+        if r.get("root_commit") and r["root_commit"] != rc:
+            return False
+        if r.get("copy_id") or mine:
+            return bool(mine) and r.get("copy_id") == mine
+        p = r.get("proposal") if isinstance(r.get("proposal"), dict) else {}
+        sent = p.get("sent") or p.get("pushed_head") or p.get("proposed_head")
+        if sent and not contains(sent):
+            return False
+        if r.get("last_head"):
+            return contains(r["last_head"])
+        return not r.get("root_commit") and len(orphans) == 1
+
+    cands = [(k, r) for k, r in orphans if qualifies(r)]
+    cands.sort(key=lambda kr: kr[1].get("last_head") != head)  # stable: newest first within
     for k, _orphan in cands:
         adopted = store.adopt(k, app_dir)
         if adopted is not None:
@@ -437,7 +472,8 @@ def _recheck(app_dir, rec, identity, *, block=False) -> dict | None:
         if mine and r.get("kind") == "github":
             r["kind"] = "own"
             if unpublished:
-                r["own_state"] = {"state": HELD, "at": time.time(), "count": unpublished}
+                r["own_state"] = {"state": HELD, "why": "upgrade", "at": time.time(),
+                                  "count": unpublished}
 
     out = store.update(app_dir, fn)
     _forget_kind(app_dir)
@@ -696,6 +732,8 @@ def settle_locked(root, kind=None) -> dict | None:
         if kind == "github":
             _point_back(root, rec)
         ensure_push_guard(root, kind)
+        if kind in ("github", "own"):
+            _stamp_copy(root, rec)
         return store.get(root) or rec
     except Exception:  # noqa: BLE001 — a guard failure never costs a sync
         logger.exception("contrib: settle failed for %s", root)

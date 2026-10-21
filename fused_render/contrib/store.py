@@ -82,7 +82,8 @@ ORPHAN_TTL_S = 30 * 24 * 3600
 
 #: The record fields `adopt` carries to a new folder.
 ADOPT_KEEP = ("kind", "repo", "branch", "remix_of", "proposal", "classified_by",
-              "classified_at", "owner_checked", "root_commit")
+              "classified_at", "owner_checked", "root_commit", "copy_id", "last_head",
+              "seen_tips")
 
 #: How long a binding answer is trusted for an unchanged folder (its memo
 #: key already changes on a re-clone; this only bounds a stale object DB).
@@ -145,6 +146,13 @@ def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
         "activity": [],
         "skip_tip": None,
         "own_state": None,
+        # ownsync's memory of GitHub tips it saw (newest last, capped by it).
+        "seen_tips": [],
+        # Adoption after a Finder move (`classify._adopt`): the HEAD this
+        # copy was last seen at, and the id fused wrote into its own
+        # `.git/config` (`fused.copyid`) — a fresh clone has neither.
+        "last_head": None,
+        "copy_id": secrets.token_hex(8),
     }
 
 
@@ -154,7 +162,8 @@ def _view(rec: dict) -> dict:
     reader has to know which schema wrote the row. Nothing persists here;
     `migrate_v2` does that."""
     for name, default in (("root_commit", None), ("activity", []),
-                          ("skip_tip", None), ("own_state", None)):
+                          ("skip_tip", None), ("own_state", None), ("seen_tips", []),
+                          ("last_head", None), ("copy_id", None)):
         rec.setdefault(name, default)
     p = rec.get("proposal")
     if isinstance(p, dict):
@@ -286,11 +295,14 @@ def _bind(k: str, rec: dict) -> dict | None:
             return None
         return rec
     found = root_commit_of(k)
-    if found and not _origin_matches(k, rec):
+    if found and rec.get("v") != RECORD_V and not _origin_matches(k, rec):
         # A v1 row (no root commit yet) over a repo whose origin is not the
         # record's: a different repository moved in before the first v2 read
         # (§16.12). Binding it now would hand the stranger the old record —
-        # drop it instead; the folder is classified afresh.
+        # drop it instead; the folder is classified afresh. ONLY a v1 row:
+        # binding is on the root commit alone (§16.1) — a v2 row is never
+        # dropped over its origin (a github copy's is pointed back, an own
+        # copy's is its author's to change).
         with _lock:
             data = _read()
             cur = data["apps"].get(k)
@@ -612,6 +624,17 @@ def add_backup(app_dir: str, ref: str, why: str) -> dict | None:
 
 
 # -------------------------------------------------------------------- activity
+
+
+def note_head(app_dir: str, head: str | None) -> None:
+    """Remember the HEAD this copy was last seen at (`last_head`, for
+    adoption after a Finder move). Writes only when it changed."""
+    if not head:
+        return
+    rec = get(app_dir)
+    if rec is None or rec.get("last_head") == head:
+        return
+    update(app_dir, lambda r: r.__setitem__("last_head", head))
 
 
 def add_activity(app_dir: str, kind: str, text: str, *, backup=None, aside=None) -> str | None:

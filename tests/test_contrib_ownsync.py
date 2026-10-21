@@ -141,6 +141,14 @@ def _activity(root):
     return store.activity(root)
 
 
+def _verb(args):
+    """A git argv with fused's `-c key=value` prefix (§16.12) stripped."""
+    args = list(args)
+    while args[:1] == ["-c"]:
+        args = args[2:]
+    return tuple(args) or ("",)
+
+
 def _plain(text):
     low = text.lower()
     return not any(w.lower() in low for w in _GIT_WORDS)
@@ -495,11 +503,11 @@ def test_V3b_unknown_rewind_holds_an_ahead_only_publish(env):
     git(env.other, "fetch", "-q", "origin")
     git(env.other, "push", "-q", "--force", "origin", f"{kept}:refs/heads/main")
     res = _sync(env.lap)
-    assert res["status"] == "skipped" and res["why"] == "held" and _remote(env) == kept
+    assert res["status"] == "skipped" and res["why"] == "unknown" and _remote(env) == kept
     assert _sync(env.lap)["pushed"] is not True and _remote(env) == kept   # still held
     assert git_upstream.sync_failures() == []
     st = ownsync.status(env.lap)
-    assert st["state"] == "held" and st["fixes"] == ["publish-now", "use-github"]
+    assert st["state"] == "unknown" and st["fixes"] == ["publish-now", "use-github"]
     assert _plain(st["message"]) and st["unpublished"] == 1
     assert ownsync.publish_now(env.lap)["ok"]               # the person's go-ahead
     assert _remote(env) == _head(env.lap)
@@ -668,7 +676,7 @@ def test_C_one_diverged_sync_costs_few_processes(env, monkeypatch):
 
     def counting(root, *a, **k):
         calls["n"] += 1
-        if a[:2] == ("merge-base", "--is-ancestor"):
+        if _verb(a)[:2] == ("merge-base", "--is-ancestor"):
             calls["anc"] += 1
         return real(root, *a, **k)
 
@@ -700,11 +708,13 @@ def test_rewind_never_republishes_what_github_removed(env):
 
 def test_plain_ahead_publishes_in_few_processes(env, monkeypatch):
     mine = _commit(env.lap, "c.txt", "c\n", "c")
-    calls = []
+    calls, unsafe = [], []
     real = git_upstream._run
 
     def counting(root, *a, **k):
-        calls.append(a[0])
+        calls.append(_verb(a)[0])
+        if _verb(a)[0] in ("push", "rev-list", "merge-base") and a[:1] != ("-c",):
+            unsafe.append(a)
         return real(root, *a, **k)
 
     with replay.slot():
@@ -713,6 +723,9 @@ def test_plain_ahead_publishes_in_few_processes(env, monkeypatch):
         res = ownsync.resolve(env.lap, action="test", push=True)
     assert res["status"] == "synced" and res["pushed"] is True and _remote(env) == mine
     assert calls.count("push") == 1 and len(calls) - 1 <= 6, calls
+    # ownsync's own git calls run with fsmonitor and hooks off (§16.12);
+    # `rev-list` here may be git_upstream's ahead/behind count (its own).
+    assert not [a for a in unsafe if _verb(a)[0] != "rev-list"], unsafe
 
 
 # --------------------------------------------------------------- audit G
