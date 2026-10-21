@@ -2002,7 +2002,8 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
     assert cmd[cmd.index("--permission-prompt-tool") + 1] == tool
     # acceptEdits was only ever there because headless claude could not be
     # asked; with a prompt tool wired up the default (ask) is answerable.
-    assert cmd[cmd.index("--permission-mode") + 1] == "default"
+    # (no mode named: the default pref, "auto" when unset)
+    assert cmd[cmd.index("--permission-mode") + 1] == "auto"
     # A prompt tool un-gates AskUserQuestion and ExitPlanMode in headless mode.
     # Both now render — a question card and a plan card — so nothing is disallowed
     # and the flag is gone rather than passed with an empty value (which the CLI
@@ -2156,7 +2157,7 @@ def test_permission_timeout_is_actually_configurable(tmp_path, monkeypatch, env,
     ("acceptEdits", "acceptEdits"),    # edits through, Bash/web still card
     ("auto", "auto"),                  # the CLI's classifier judges each one
     ("plan", "plan"),                  # research first, then a plan card
-    ("", "default"),                   # unset -> strictest
+    ("", "auto"),                      # unset -> the default pref ("auto" unless changed)
     ("bypassPermissions", "default"),  # not on the menu, and not reachable
     ("dontAsk", "default"),
     ("../../etc", "default"),
@@ -2545,3 +2546,34 @@ def test_strict_mcp_pref_reads_prefs_json_and_defaults_on(agent, tmp_path, monke
     assert agent._strict_mcp_pref() is False
     (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}))
     assert agent._strict_mcp_pref() is True  # only a stored False turns it off
+
+
+def test_default_permission_pref_reads_prefs_json_and_defaults_auto(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_home_dir", lambda: str(tmp_path))
+    assert agent._default_permission_pref() == "auto"  # no file
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_default_permission": "plan"}))
+    assert agent._default_permission_pref() == "plan"
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_default_permission": "yolo"}))
+    assert agent._default_permission_pref() == "auto"
+
+
+@pytest.mark.parametrize("pref,expected", [
+    ("auto", "auto"), ("prompt", "default"), ("acceptEdits", "acceptEdits"), ("plan", "plan")])
+def test_start_with_empty_permission_uses_the_default_pref(agent, tmp_path, monkeypatch,
+                                                           pref, expected):
+    monkeypatch.setattr(agent, "_default_permission_pref", lambda: pref)
+    _req, launch = _start_req(agent, tmp_path, monkeypatch, pref=True, isolate=False)
+    assert launch["cli_mode"] == expected
+
+
+def test_start_with_unknown_permission_is_prompt_not_the_pref(agent, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_default_permission_pref", lambda: "auto")
+    target = tmp_path / "sample.html"
+    target.write_text("<html></html>")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path / "runs"))
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    seen = {}
+    monkeypatch.setattr(agent.subprocess, "Popen", lambda cmd, **kw: _HostProc(seen))
+    run_id = agent._start(str(target), "hi", "", "", "", "bogus")["run_id"]
+    launch = json.load(open(os.path.join(agent.RUNS, run_id, "launch.json")))
+    assert launch["cli_mode"] == "default"

@@ -667,6 +667,21 @@ def _strict_mcp_pref() -> bool:
                 and prefs.get("claude_strict_mcp_enabled") is False)
 
 
+def _default_permission_pref() -> str:
+    """The Approvals mode a chat starts in when the page named none: the
+    `claude_default_permission` pref in `<home>/prefs.json`, `"auto"` when
+    unset or junk. A stdlib read like `_strict_mcp_pref` (this module does not
+    import fused_render.shell); `shell/prefs.py::claude_default_permission`
+    reads the same key."""
+    try:
+        with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
+            prefs = json.load(fh)
+    except (OSError, ValueError):
+        return "auto"
+    value = prefs.get("claude_default_permission") if isinstance(prefs, dict) else None
+    return value if value in PERMISSION_MODES else "auto"
+
+
 def _plugin_mcp_servers(claude_home: str) -> dict:
     """MCP servers declared by every ENABLED plugin, keyed the way the CLI keys
     them (`plugin_<plugin>_<server>`, so tool names stay
@@ -2107,7 +2122,7 @@ def _session_backend(session_id: str) -> str:
 
 
 def _record_settings(session_id: str, model: str = "", effort: str = "",
-                     backend: str = "") -> None:
+                     backend: str = "", permission: str = "") -> None:
     """Record what this conversation is running with. Best-effort: a store that
     will not open costs a chat its remembered pill, never a send.
 
@@ -2129,7 +2144,9 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
     model = (model or "").strip()
     effort = (effort or "").strip()
     backend = backend if backend in BACKENDS else ""
-    if not session_id or _bad_id(session_id) or not (model or effort or backend):
+    permission = permission if permission in PERMISSION_MODES else ""
+    if not session_id or _bad_id(session_id) \
+            or not (model or effort or backend or permission):
         return   # an id `_defaults` would refuse to read is not worth writing
     path = _state_file(*SESSION_SETTINGS)
     try:
@@ -2151,6 +2168,8 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
                 rec["effort"] = effort
             if backend:
                 rec["backend"] = backend
+            if permission:
+                rec["permission"] = permission
             rec["at"] = time.time()
             state[session_id] = rec
             with open(path, "w", encoding="utf-8") as fh:
@@ -3918,6 +3937,14 @@ def _start(file: str, message: str, session_id: str, model: str,
         forked_from, fork_parent = session_id, point
         if not fork_parent:
             session_id = ""
+    named_permission = permission_mode if permission_mode in PERMISSION_MODES else ""
+    if not permission_mode:
+        # EMPTY = "the page did not say": the user's default pref. Plan is not
+        # a Copilot mode, so a plan default must not refuse a chat that never
+        # asked for it; it starts as prompt there.
+        permission_mode = _default_permission_pref()
+        if backend == "copilot" and permission_mode == "plan":
+            permission_mode = DEFAULT_PERMISSION_MODE
     if backend == "copilot" and permission_mode == "plan":
         # No plan card to approve on ACP (D12/§7 plan_mode): refused rather
         # than silently downgraded to prompt, which would run edits the user
@@ -4165,7 +4192,7 @@ def _start(file: str, message: str, session_id: str, model: str,
     # chat's record is written on exactly the condition it always was (a
     # model or an effort to say), not for every Claude session there is.
     _record_settings(new_session_id or session_id, model, effort,
-                     backend if backend == "copilot" else "")
+                     backend if backend == "copilot" else "", named_permission)
     # Transient: overwritten by the host with the CLI's OWN pid the moment it
     # spawns it (see session_host.py) — `_cancel`'s killpg needs that one, not
     # the host's, to reach the CLI's whole process group. Written here, to the
@@ -4907,6 +4934,72 @@ def _live_host(file: str, session_id: str = "",
     return {"run_id": ""}
 
 
+def _set_mode(run_id: str, permission_mode: str) -> dict:
+    """Switch a LIVE session's approvals mode, no message and no turn: the
+    `set_permission_mode` control request the session host drains (also
+    mid-turn). The body `_send` ran inline for a changed pill, extracted so the
+    pill itself can apply at once. Answers `{"error": ...}`, `{"respawn":
+    True}` (Copilot `acceptEdits` is an argv grant: the session is ended and
+    the caller's next send starts it afresh) or `{"ok": True, "mode":
+    page_mode}`. An unknown mode reads as `DEFAULT_PERMISSION_MODE`, as in
+    `_start`."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "no such run"}
+    path = os.path.join(run_dir, "host.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            host = json.load(fh)
+    except (OSError, ValueError):
+        return {"error": "no live session"}
+    if not isinstance(host, dict) or not _pid_alive(str(host.get("pid") or "")):
+        return {"error": "no live session"}
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    backend = _meta_backend(host if host.get("backend") in BACKENDS else meta)
+    # `host.json`'s "mode" is the CLI-wire form (_start's `cli_mode`, e.g.
+    # "acceptEdits"), the same shape `--permission-mode` takes and
+    # `set_permission_mode` answers with — map the incoming page value through
+    # the exact table `_start` uses so the comparison (and the control request
+    # itself, if one is needed) speaks the CLI's spelling and not the page's.
+    page_mode = permission_mode if permission_mode in PERMISSION_MODES \
+        else DEFAULT_PERMISSION_MODE
+    if backend == "copilot" and page_mode == "plan":
+        return {"error": "plan mode is not available for Copilot",
+                "reason": "unsupported", "backend": backend}
+    cli_mode = _backend_mode(backend, PERMISSION_MODES[page_mode])
+    if cli_mode != host.get("mode", ""):
+        if backend == "copilot" and "acceptEdits" in (cli_mode, host.get("mode")):
+            # `acceptEdits` is an argv grant (`--allow-tool write`, D5): it can
+            # neither be added nor taken back from a live process.
+            # prompt<->auto is the host's `allow_all` switch and goes through
+            # the control request below.
+            _cancel(run_id, interrupt_first=False)
+            return {"respawn": True}
+        _write_control_request(run_dir, "set_permission_mode", mode=cli_mode)
+        # TWO WRITERS (the Claude host writes host.json at spawn, the Copilot
+        # host rewrites it after its handshake to add its session id): re-read
+        # just before writing, change only "mode", replace atomically. Gone by
+        # now (the host reaped) -> nothing to record into.
+        try:
+            with open(path, encoding="utf-8") as fh:
+                fresh = json.load(fh)
+            if isinstance(fresh, dict):
+                fresh["mode"] = cli_mode
+                tmp = f"{path}.{os.urandom(4).hex()}.tmp"
+                with _private_open(tmp) as f:
+                    json.dump(fresh, f)
+                os.replace(tmp, path)
+        except (OSError, ValueError):
+            pass
+    return {"ok": True, "mode": page_mode}
+
+
 def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
          effort: str = "", permission_mode: str = "",
          terminal_hint: str = "") -> dict:
@@ -5015,30 +5108,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
         host["model"] = model
         host_changed = True
     if permission_mode:
-        # `host.json`'s "mode" is the CLI-wire form (_start's `cli_mode`,
-        # e.g. "acceptEdits"), the same shape `--permission-mode` takes and
-        # `set_permission_mode` answers with — map the incoming page value
-        # through the exact table `_start` uses so the comparison (and the
-        # control request itself, if one is needed) speaks the CLI's spelling
-        # and not the page's.
-        wire_mode = permission_mode if permission_mode in PERMISSION_MODES \
-            else DEFAULT_PERMISSION_MODE
-        if backend == "copilot" and wire_mode == "plan":
-            return {"error": "plan mode is not available for Copilot",
-                    "reason": "unsupported", "backend": backend}
-        cli_mode = _backend_mode(backend, PERMISSION_MODES[wire_mode])
-        if cli_mode != host.get("mode", ""):
-            if backend == "copilot" and "acceptEdits" in (cli_mode, host.get("mode")):
-                # `acceptEdits` is an argv grant (`--allow-tool write`, D5):
-                # it can neither be added nor taken back from a live
-                # process. prompt<->auto is the host's `allow_all` switch
-                # and goes through the control request below.
-                _cancel(run_id, interrupt_first=False)
-                return {"respawn": True}
-            _write_control_request(run_dir, "set_permission_mode",
-                                   mode=cli_mode)
-            host["mode"] = cli_mode
-            host_changed = True
+        res = _set_mode(run_id, permission_mode)
+        if "error" in res or res.get("respawn"):
+            return res
     if host_changed:
         # TWO WRITERS. The Claude host writes host.json once, at spawn; the
         # Copilot host REWRITES it after its handshake, to put Copilot's own
@@ -5052,7 +5124,9 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
             with open(path, encoding="utf-8") as fh:
                 fresh = json.load(fh)
             if isinstance(fresh, dict):
-                fresh.update({k: host[k] for k in ("model", "mode") if k in host})
+                # Only "model": `_set_mode` persisted the mode itself, and this
+                # send's stale copy of it must not be written back over it.
+                fresh.update({k: host[k] for k in ("model",) if k in host})
                 tmp = f"{path}.{os.urandom(4).hex()}.tmp"
                 with _private_open(tmp) as f:
                     json.dump(fresh, f)
@@ -5069,7 +5143,8 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # (`meta` was read above, for the backend.)
     _record_settings(
         _run_own_session(run_dir, meta) or str(meta.get("resumed_from") or ""),
-        model, effort)
+        model, effort, "",
+        permission_mode if permission_mode in PERMISSION_MODES else "")
     # Marks this message as sent-but-not-yet-echoed, so `_poll` (see its
     # `pending_echo` handling) will not believe a stale trailing `result` in
     # `out.jsonl` means the turn is done: at this exact instant the host may
@@ -11333,6 +11408,24 @@ def main(action: str = "start", file: str = "", message: str = "",
         # whether that means a control request or a forced respawn.
         return _send(run_id, message, read_dirs, model, effort,
                     permission_mode, terminal_hint)
+    if action == "set_mode":
+        # The Approvals pill changed on a live chat: apply it now, with no
+        # message and no turn (`_send` only applies it piggybacked on a send).
+        if not run_id:
+            return {"error": "missing run_id"}
+        res = _set_mode(run_id, permission_mode or mode)
+        if res.get("ok"):
+            run_dir = os.path.join(RUNS, run_id)
+            try:
+                with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                    meta = json.load(fh)
+            except (OSError, ValueError):
+                meta = {}
+            meta = meta if isinstance(meta, dict) else {}
+            _record_settings(_run_own_session(run_dir, meta)
+                             or str(meta.get("resumed_from") or ""),
+                             permission=res["mode"])
+        return res
     if action == "commands":
         # The composer's slash-command menu (SPEC C-2).
         if not file:
