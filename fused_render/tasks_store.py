@@ -1026,6 +1026,15 @@ def session_settings(state: dict, session_id: str) -> tuple[str, str]:
     return (str(rec.get("model") or ""), str(rec.get("effort") or ""))
 
 
+def session_permission(state: dict, session_id: str) -> str:
+    """The Approvals mode recorded for one session (plan | prompt | acceptEdits
+    | auto), "" when none — the pill's own pick, which outranks the page's seed
+    and the global default."""
+    rec = state.get(str(session_id or ""))
+    value = rec.get("permission") if isinstance(rec, dict) else ""
+    return value if value in ("plan", "prompt", "acceptEdits", "auto") else ""
+
+
 def session_backend(state: dict, session_id: str) -> str:
     """The agent backend recorded for one session ("claude" | "copilot"), ""
     when this store has no answer — which is every session that predates the
@@ -1040,7 +1049,8 @@ def session_backend(state: dict, session_id: str) -> str:
 
 
 def record_settings(session_id: str, model: str = "", effort: str = "",
-                    now: float | None = None, backend: str = "") -> dict:
+                    now: float | None = None, backend: str = "",
+                    permission: str = "") -> dict:
     """Record what this conversation runs with; return the stored record.
 
     ONLY THE FIELDS GIVEN. An empty `model` means "I am not saying anything
@@ -1061,7 +1071,12 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
     backend = str(backend or "").strip()
     if backend not in roots.BACKENDS:
         backend = ""
-    if not session_id or not (model or effort or backend):
+    # The Approvals pill's value, one of the four page spellings; junk is
+    # dropped rather than stored.
+    permission = str(permission or "").strip()
+    if permission not in ("plan", "prompt", "acceptEdits", "auto"):
+        permission = ""
+    if not session_id or not (model or effort or backend or permission):
         return {}
     stamp = time.time() if now is None else float(now)
 
@@ -1074,6 +1089,8 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
             rec["effort"] = effort
         if backend:
             rec["backend"] = backend
+        if permission:
+            rec["permission"] = permission
         rec["at"] = stamp
         state[session_id] = rec
         return rec, True

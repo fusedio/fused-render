@@ -106,10 +106,17 @@ test("effort ranks param > detected only — prefs never reach it (T:11905)", ()
   expect(resolveEffort("turbo")).toBe(DEFAULT_EFFORT);
 });
 
-test("permission is the param or the STRICTEST default — never detected", () => {
+test("permission ranks recorded > param > global pref > auto; unknown is the strictest", () => {
   expect(resolvePermission("auto")).toBe("auto");
   expect(resolvePermission("acceptEdits")).toBe("acceptEdits");
   expect(resolvePermission("plan")).toBe("plan");
-  expect(resolvePermission()).toBe("prompt");
+  // Absent everywhere: the user's default, "auto" unless they changed it.
+  expect(resolvePermission()).toBe("auto");
+  expect(resolvePermission(undefined, undefined, "prompt")).toBe("prompt");
+  expect(resolvePermission("plan", undefined, "prompt")).toBe("plan");
+  expect(resolvePermission("plan", "acceptEdits", "prompt")).toBe("acceptEdits");
+  // Present but not a mode: the safety fallback, never a looser rank below it.
   expect(resolvePermission("yolo")).toBe("prompt");
+  expect(resolvePermission("yolo", undefined, "auto")).toBe("prompt");
+  expect(resolvePermission(undefined, undefined, "yolo")).toBe("prompt");
 });
