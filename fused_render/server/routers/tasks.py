@@ -142,6 +142,7 @@ from fused_render import (
     claude_remote,
     current_apps,
     drafts,
+    pr_status,
     project_queue,
     queue_manager,
     schedule,
@@ -6365,6 +6366,24 @@ def api_tasks_seen(body: Any = Body(default=None),
             detail="expected {seen: {key: number}} with non-empty string keys "
                    "and finite numbers")
     return {"ok": True, "seen": tasks_store.set_seen_done(seen)}
+
+
+class PrStatusBody(BaseModel):
+    refs: list[str] = []
+
+
+@router.post("/api/tasks/pr-status")
+async def api_tasks_pr_status(body: PrStatusBody,
+                              x_fused: str | None = Header(default=None)):
+    """`{"owner/repo#n": "open"|"draft"|"merged"|"closed"|null}` for the PRs the
+    Tasks page and the chat chip are showing — GitHub's answer through the
+    user's `gh` token, cached (`pr_status`). POST because the list is a body,
+    guarded like the other POSTs; the call blocks on the network, so it runs in
+    the threadpool."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    return await run_in_threadpool(pr_status.fetch_statuses, body.refs[:100])
 
 
 class RunningPatch(BaseModel):
