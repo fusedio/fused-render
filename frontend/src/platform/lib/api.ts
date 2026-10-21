@@ -4090,6 +4090,7 @@ export type TaskPulseTask = Pick<
   | "entrypoint"
   | "backend"
   | "canvas"
+  | "background_jobs"
 >;
 
 /** The model / thinking a NEW task opens on: the global Claude preference

@@ -487,7 +487,7 @@ class UpdateManager(_base.UpdateManager):
             source = self._find_app(mount)
             self._verify_app_version(source, manifest["version"])
             # With the Chromium engine on, fetch the engine the NEW app pins
-            # now, so the relaunch finds it on disk (D1405). BEFORE the swap:
+            # now, so the relaunch finds it on disk (D1407). BEFORE the swap:
             # this process's modules still import from the current bundle
             # here; after the rename a lazy import lands on the moved tree
             # (PR #1645). Best effort — a failed engine download never fails
