@@ -146,6 +146,9 @@ def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
         "activity": [],
         "skip_tip": None,
         "own_state": None,
+        # A `github` copy whose account may publish straight to the author's
+        # branch (a collaborator, §16.6): True/False once GitHub said, else None.
+        "can_push": None,
         # A held own copy (§16.12): automatic syncs never push it until
         # Publish now (`classify.is_held` / `release_hold`, ownsync).
         "hold": None,
@@ -225,16 +228,22 @@ def root_commit_of(path: str) -> str | None:
 
 def _folder_stamp(k: str):
     """What changes when a different repo moves in at `k`: the folder's own
-    inode, and its `.git`'s (dir, or a worktree's file) inode. Not `.git`'s
-    mtime: every git write (index.lock) bumps it."""
+    inode and mtime, and its `.git`'s (dir, or a worktree's file) inode.
+    Not `.git`'s mtime: every git write (index.lock) bumps it. The folder's
+    mtime is there because inodes are REUSED: on ext4 a folder deleted and
+    cloned again within seconds gets the same inode numbers back, and the
+    memo would then vouch for the stranger's repo (a replaced folder kept
+    the old record for BIND_TTL_S). The top folder's mtime moves only when
+    an entry is added or removed at its top level — rare in use, and a miss
+    costs one local walk."""
     try:
         st = os.stat(k)
     except OSError:
         return None
     try:
-        return (st.st_ino, os.stat(os.path.join(k, ".git")).st_ino)
+        return (st.st_ino, st.st_mtime_ns, os.stat(os.path.join(k, ".git")).st_ino)
     except OSError:
-        return (st.st_ino, None)
+        return (st.st_ino, st.st_mtime_ns, None)
 
 
 def _bound(k: str, root_commit: str) -> bool | None:

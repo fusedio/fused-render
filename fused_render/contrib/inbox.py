@@ -157,6 +157,11 @@ def invalidate(app_dir: str, number: int | None = None) -> None:
                                       or p.get("number") != number])
             _gens[repo] = _gens.get(repo, 0) + 1
             _stale.add(repo)
+            # An accept moved the author's branch: whether every OTHER
+            # proposal still fits is GitHub's to say again (its `mergeable`
+            # is per head AND base), so the next listing asks afresh.
+            for key in [k for k in _fits if k[0] == repo]:
+                _fits.pop(key, None)
 
 
 def refreshing(app_dir: str) -> bool:
@@ -187,8 +192,38 @@ def list(app_dir: str, *, review: bool = True, force: bool = False) -> builtins.
     _prune_reviews(repo, open_numbers)
     for pr in prs:
         if isinstance(pr.get("number"), int):
-            _fits_for(repo, pr["number"], pr.get("head_sha"), network=True)
+            if _fits_for(repo, pr["number"], pr.get("head_sha"), network=True) is None:
+                _ask_fits_again(repo, pr["number"], pr.get("head_sha"))
     return _items(app_dir, repo, prs, start_reviews=review)
+
+
+#: GitHub computes `mergeable` lazily: the first read after either side
+#: moved answers null and starts the computation, and the real answer comes
+#: a few seconds later. Asked again, off-thread, a few times — otherwise "No
+#: longer fits" would wait for the next listing, up to LIST_TTL_S away.
+FITS_RETRY_S = 5.0
+FITS_RETRIES = 6
+_fits_pending: set = set()
+
+
+def _ask_fits_again(repo: str, number: int, head) -> None:
+    key = (repo, int(number), head)
+    with _lock:
+        if key in _fits_pending:
+            return
+        _fits_pending.add(key)
+
+    def run():
+        try:
+            for _ in range(FITS_RETRIES):
+                time.sleep(FITS_RETRY_S)
+                if _fits_for(repo, number, head, network=True) is not None:
+                    return
+        finally:
+            with _lock:
+                _fits_pending.discard(key)
+
+    threading.Thread(target=run, name=f"contrib-bg-fits-{number}", daemon=True).start()
 
 
 def _fits_for(repo: str, number: int, head, *, network: bool) -> bool | None:
@@ -935,7 +970,11 @@ def merge_start(app_dir: str, number: int) -> dict:
     if refusal:
         return refusal
     author = pr.get("user") or "the sender"
-    if not pr.get("head_repo") or not pr.get("maintainer_can_modify"):
+    # A proposal from a branch of the author's own repo (a collaborator's):
+    # GitHub reports `maintainer_can_modify` false there, since the flag is
+    # about forks, but the author can push to her own branches.
+    same_repo = str(pr.get("head_repo") or "").lower() == repo.lower()
+    if not pr.get("head_repo") or not (pr.get("maintainer_can_modify") or same_repo):
         return {"ok": False, "reason": "forbidden",
                 "message": f"{author} didn't allow changes to this proposal. "
                            f"Ask {author} to update it instead."}

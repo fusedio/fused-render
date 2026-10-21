@@ -677,6 +677,65 @@ def test_merge_with_claude_needs_maintainer_edits(fits_world):
     assert res["reason"] == "forbidden" and "Ask bob to update" in res["message"]
 
 
+def test_merge_with_claude_on_a_same_repo_proposal(fits_world, monkeypatch):
+    """A collaborator's proposal comes from a branch of the author's own
+    repo. GitHub reports `maintainer_can_modify` false for those (the flag
+    is about forks), but the author can push to her own branches, so Merge
+    with Claude is offered — found against the real GitHub."""
+    from fused_render.contrib import merge_job
+
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    bare = fake.bare_path("alice/x")
+    fake._g(bare, "update-ref", "refs/heads/fused-x-1", fake.tip("alice/x"))
+    fake.commit("alice/x", "fused-x-1", {"app.py": "x = 2\n"}, "Carol's change", author="alice")
+    fake.sign_in("alice")
+    gh.forget_identity()
+    pr = gh.open_pr("alice/x", title="Two", body="x = 2", head="alice:fused-x-1", base="main")
+    with fake._txn() as st:
+        st["pulls"]["alice/x"][0]["maintainer_can_modify"] = False
+    fake.commit("alice/x", "main", {"app.py": "x = 3\n"}, "Alice's x", author="alice")
+
+    def keep_theirs(wt, files, context):
+        for rel in files:
+            with open(os.path.join(wt, rel), "w", encoding="utf-8") as fh:
+                fh.write("x = 5\n")
+        return {"ok": True, "summary": "Picked five."}
+
+    monkeypatch.setattr(merge_job, "claude_resolver", keep_theirs)
+    res = inbox.merge_start(alice, pr["number"])
+    assert res.get("ok") and res.get("reason") != "forbidden", res
+    if res.get("job"):
+        assert _wait_merge(res["job"])["status"] == "ready"
+        merge_job.discard(res["job"])
+
+
+def test_fits_is_asked_again_while_github_computes_it(fits_world, monkeypatch):
+    """GitHub answers `mergeable: null` on the first read after either side
+    moved and the real value a few seconds later: the inbox asks again off
+    the listing, so "No longer fits" does not wait for the next listing."""
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"app.py": "x = 2\n"})
+    fake.commit("alice/x", "main", {"app.py": "x = 3\n"}, "Alice's x", author="alice")
+    real = gh.get_pr
+    nulls = [2]
+
+    def lazy(full, number):
+        out = real(full, number)
+        if nulls[0] > 0:
+            nulls[0] -= 1
+            out["mergeable"] = None
+        return out
+
+    monkeypatch.setattr(gh, "get_pr", lazy)
+    monkeypatch.setattr(inbox, "FITS_RETRY_S", 0.05)
+    assert inbox.list(alice, review=False, force=True)[0]["fits"] is None
+    deadline = time.time() + 5
+    while inbox.cached(alice)[0]["fits"] is None and time.time() < deadline:
+        time.sleep(0.05)
+    assert inbox.cached(alice)[0]["fits"] is False
+    assert nulls[0] == 0 and pr["number"] == inbox.cached(alice)[0]["number"]
+
+
 def test_a_merge_of_a_moved_proposal_is_not_sent(fits_world, monkeypatch):
     alice, fake = fits_world["alice"], fits_world["fake"]
     pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})

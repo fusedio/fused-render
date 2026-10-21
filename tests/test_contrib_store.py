@@ -736,9 +736,11 @@ def test_own_copy_divergence_goes_to_ownsync(world, monkeypatch):
 
 
 def test_own_copy_ahead_only_push_asks_ownsync_first(world, monkeypatch):
-    """TL ruling (§16.7 rewind): only ahead + push → `ownsync.resolve` before
-    the plain push (a GitHub rewind must not re-publish removed commits);
-    None falls through to today's push."""
+    """TL ruling (§16.7 rewind): only ahead → `ownsync.resolve` before the
+    plain push (a GitHub rewind must not re-publish removed commits), and
+    before an open's no-push sync too, so the rewind is named on the page
+    at once rather than by a Publish now that then refuses; None falls
+    through to today's sync/push."""
     import types
 
     import fused_render.contrib as pkg
@@ -754,11 +756,13 @@ def test_own_copy_ahead_only_push_asks_ownsync_first(world, monkeypatch):
     monkeypatch.setattr(pkg, "ownsync", fake, raising=False)
     assert _sync(a, push=True)["why"] == "github-changed"
     assert _remote_main(world) == before
+    assert _sync(a)["why"] == "github-changed"  # an open asks the same question
+    assert _remote_main(world) == before
     seen = []
     fake.note_seen = lambda root: seen.append(root)
-    assert _sync(a)["status"] == "synced"  # no push asked: resolve not involved
-    assert seen == [a]  # a plain own sync notes the GitHub tip it saw
     fake.resolve = lambda root, action, push: None
+    assert _sync(a)["status"] == "synced"  # not handled: today's sync
+    assert seen == [a]  # a plain own sync notes the GitHub tip it saw
     r = _sync(a, push=True)
     assert r["status"] == "synced" and r["pushed"] is True
 

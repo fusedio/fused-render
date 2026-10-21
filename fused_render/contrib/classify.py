@@ -213,6 +213,53 @@ def _classify(repo: str | None, ident) -> tuple[str, bool]:
         return "github", False
 
 
+#: `gh.repo(...).permissions.push` per (login, repo): whether this account
+#: may publish straight to the author's branch (a collaborator, §16.6). Asked
+#: once per classification with an identity; only definite answers cached.
+_push_cache: dict = {}
+
+
+def _can_push(repo: str | None, ident) -> bool | None:
+    """Whether the signed-in account has push rights on `repo` — the fact
+    behind the page's "Update <who>'s app directly" button (`push_to_main`
+    re-checks with GitHub before it pushes). None when unknown: no
+    identity, or GitHub could not say."""
+    if not repo or not ident or not ident.get("login"):
+        return None
+    gh = _gh()
+    if gh is None:
+        return None
+    ck = (str(ident.get("login")).lower(), repo.lower())
+    now = time.time()
+    with _role_lock:
+        hit = _push_cache.get(ck)
+    if hit and now - hit[0] < ROLE_TTL_S:
+        return hit[1]
+    try:
+        info = gh.repo(repo)
+    except Exception as exc:  # noqa: BLE001 — unknown, asked again next time
+        if getattr(exc, "reason", None) in ("not-found", "forbidden"):
+            value = False
+        else:
+            return None
+    else:
+        perms = info.get("permissions") if isinstance(info, dict) else None
+        value = bool(perms.get("push")) if isinstance(perms, dict) else None
+    if value is not None:
+        with _role_lock:
+            _push_cache[ck] = (now, value)
+    return value
+
+
+def _with_push_rights(rec: dict, ident) -> dict:
+    """`rec` with `can_push` noted for a checked `github` copy (§16.6): the
+    one fact `actions.for_app` needs to offer a collaborator the direct
+    publish. An own copy has no such button; the field stays None."""
+    if rec.get("kind") == "github" and rec.get("owner_checked") and ident:
+        rec["can_push"] = _can_push(rec.get("repo"), ident)
+    return rec
+
+
 def _commit_identity(ident: dict | None) -> tuple[str, str] | None:
     """`(name, email)` fused commits as for this GitHub account: its name
     (or login) and its noreply address. None when unknown."""
@@ -372,7 +419,8 @@ def ensure(app_dir, *, identity=None) -> dict | None:
         if adopted is not None:
             _guard_soon(app_dir, identity)
             return store.get(app_dir) or adopted
-    kind, checked = _classify(repo, identity if identity is not None else _identity())
+    ident = identity if identity is not None else _identity()
+    kind, checked = _classify(repo, ident)
     if not checked:
         # A pre-loop clone and no GitHub identity to ask (§16.12): NOT
         # classified yet. It may be the author's own app, auto-pushing as
@@ -381,6 +429,7 @@ def ensure(app_dir, *, identity=None) -> dict | None:
         return None
     rec = store.new_record(kind, repo=repo, branch=_local_default_branch(root) if root else None,
                            classified_by="migration", owner_checked=checked, root_commit=rc)
+    _with_push_rights(rec, ident)
     if not store.create(app_dir, rec):
         return store.get(app_dir)
     _forget_kind(app_dir)
@@ -525,6 +574,7 @@ def _recheck(app_dir, rec, identity, *, block=False) -> dict | None:
     # Only with A1 on, where that button lives (round 2): with it off the
     # page never said anything, and their own repo auto-pushes as today.
     unpublished = _unpublished(root) if root is not None and _sources_on() else 0
+    can_push = None if mine else _can_push(repo, ident)
 
     def fn(r):
         r["owner_checked"] = True
@@ -532,6 +582,8 @@ def _recheck(app_dir, rec, identity, *, block=False) -> dict | None:
             r["kind"] = "own"
             if unpublished:
                 r["hold"] = {"why": "upgrade", "at": time.time(), "count": unpublished}
+        elif r.get("kind") == "github" and can_push is not None:
+            r["can_push"] = can_push
 
     out = store.update(app_dir, fn)
     _forget_kind(app_dir)
@@ -639,6 +691,7 @@ def record_install(app_dir, url) -> dict | None:
     rec = store.new_record(kind, repo=repo, branch=_local_default_branch(root) if root else None,
                            classified_by="install", owner_checked=checked,
                            root_commit=store.root_commit_of(app_dir))
+    _with_push_rights(rec, ident)
     store.put(app_dir, rec)
     _forget_kind(app_dir)
     _guard(app_dir, ident, block=True, lookup=False)

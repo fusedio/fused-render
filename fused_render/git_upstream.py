@@ -1146,6 +1146,15 @@ def _sync_plain(root, *, action, push, kind=None):
     pull_cmd = f"git pull --ff-only -- origin {default_branch}"
     if behind > 0:
         if not _is_clean(root, include_untracked=False):
+            if kind == "own":
+                # The author's own copy with unsaved edits (§16.7): edits
+                # beside the newer version ride along (`reset --keep`);
+                # one on a file it changes is the `edits` state with "Save
+                # my edits and continue" — not today's dirty row, which
+                # left her copy behind after she accepted a proposal.
+                res = _own_resolve(root, action=action, push=push)
+                if res is not None:
+                    return res
             failure = _record_failure(
                 root, "dirty", action=action, command=pull_cmd,
                 output=("Not run: the working tree has uncommitted changes to "
@@ -1172,10 +1181,13 @@ def _sync_plain(root, *, action, push, kind=None):
         _record_pull(root, pulled)
 
     pushed = False
-    if kind == "own" and push and ahead and not behind:
+    if kind == "own" and ahead and not behind:
         # Only ahead: a plain push would re-publish commits GitHub may have
         # had removed (a rewind) — ownsync checks, then pushes as today
-        # (§16.7). Ahead AND behind went to the diverged call above.
+        # (§16.7). Without `push` (an app open) it only checks, so a rewind
+        # is named on the page at once, with its fixes, instead of "edits
+        # ready to publish" that Publish now would then refuse. Ahead AND
+        # behind went to the diverged call above.
         res = _own_resolve(root, action=action, push=push)
         if res is not None:
             return res

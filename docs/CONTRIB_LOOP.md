@@ -908,3 +908,47 @@ Cross-WS calls use exactly the names in §16.1–16.9. Need something another
 WS owns → message that WS (and the TL). Tests: real temp repos + FakeGitHub,
 `-n0`; port every audit repro (scratchpad `audit-{user,author,contrib}/`) that
 describes a v1 bug as a test asserting the FIXED behaviour.
+
+### 16.13 Review round 2 amendments (2026-10-21) — from the permutation run and a live GitHub run
+
+Found by `tests/test_contrib_permutations.py` (every accept method × where the
+author accepts × what the sender did since sending, second loops, declined /
+withdrawn / discarded, two senders on one line, a rewind, a collaborator, the
+loop switched off mid-proposal, a folder moved on disk) and by driving the real
+loop against a GitHub repo the signed-in account owns:
+
+- **Collaborators.** `can_push` was read by `actions.for_app` but never written:
+  "Update <who>'s app directly" could not appear. Classification now records
+  `gh.repo(...).permissions.push` for a checked `github` copy (`classify._can_push`,
+  cached like `org_role`) at install, migration and the ownership re-check.
+- **Author's copy behind with unsaved edits.** `_sync_plain` recorded today's
+  `dirty` row, so after Accept the author's copy stayed behind until she saved
+  or undid an unrelated edit. An own copy behind with uncommitted tracked edits
+  now goes to `ownsync.resolve`: an edit beside the newer version rides along
+  (`reset --keep`); one on a file the newer version changes is the `edits`
+  state with **Save my edits and continue** (§16.7).
+- **Rewind seen on open.** An own copy that is only ahead asks `ownsync.resolve`
+  on every sync, not only when a push was asked: a GitHub rewind is named on
+  the page at once (`github-changed`, with its fixes) instead of "edits ready to
+  publish" that Publish now would then refuse.
+- **"No longer fits" after an accept.** `inbox._fits` is dropped for the repo
+  on `invalidate` (an accept moved the base), and when GitHub answers
+  `mergeable: null` (it computes lazily) the proposal is asked again off-thread
+  a few times (`FITS_RETRY_S`, `FITS_RETRIES`) instead of waiting for the next
+  listing.
+- **Same-repo proposals.** GitHub reports `maintainer_can_modify: false` for a
+  proposal from a branch of the author's own repo (the flag is about forks);
+  the author can push to her own branches, so `inbox.merge_start` allows it.
+- **Binding memo vs inode reuse.** `store._folder_stamp` (the key of the
+  `_bound` and `kind_of` memos) was the folder's and `.git`'s inodes only; ext4
+  hands a folder deleted and cloned again the same inodes back, so a replaced
+  repo could keep the old record for BIND_TTL_S. The stamp now includes the top
+  folder's mtime.
+
+Live-run notes (not bugs): GitHub's pulls API lags a push by a few seconds
+(`head.sha` and `mergeable`), so a page read right after Update may still show
+the old head; a proposal sent and reviewed by the SAME account cannot see the
+author's "asked you to update" (the sender's refresh reads comments by other
+people only); `_delete_branch` never deletes a branch on the author's repo, so a
+withdrawn same-repo proposal leaves its `fused-*` branch behind.
+
