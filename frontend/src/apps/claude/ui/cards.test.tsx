@@ -167,6 +167,16 @@ test("PermCard shows the model's risk read above the payload, a placeholder whil
   }
 });
 
+test("PermCard draws no pill for a severity it does not know", () => {
+  const r = mount(
+    <PermCard
+      row={row({ severity: "critical" as never, risk_summary: "Odd.", risk_state: "ready" })}
+      onDecide={noop}
+    />,
+  );
+  expect(withClass(r, "perm-risk-pill")).toHaveLength(0);
+});
+
 test("PermCard escalation carries the mode; Deny carries neither", async () => {
   // One card per verdict: a card that has sent its answer stays disabled, which
   // is the point — the subprocess has already been told.
@@ -271,7 +281,7 @@ test("PermCard disables every button while the answer is in flight", () => {
 test("a resolved PermCard is a receipt: past tense, no controls, the landed verdict", () => {
   const cases: Array<[Partial<PermissionRow>, string]> = [
     [{ decision: "allow" }, "✓ Allowed"],
-    [{ decision: "allow", scope: "session" }, "✓ Allowed — not asking again for Edit in this reply"],
+    [{ decision: "allow", scope: "session" }, "✓ Allowed — not asking again for Edit in this chat"],
     [{ decision: "allow", scope: "exact" }, "✓ Allowed — this exact command, for the rest of this chat"],
     [{ decision: "allow", mode: "auto" }, "✓ Allowed — approvals set to “Claude decides”"],
     [{ decision: "expired" }, "◦ Unanswered — the reply ended before you decided"],

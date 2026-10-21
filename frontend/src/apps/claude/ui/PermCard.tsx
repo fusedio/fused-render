@@ -9,6 +9,7 @@
 import { useState } from "react";
 
 import { Button } from "@platform/shadcn/ui/button";
+import { severityLabel } from "@platform/lib/risk";
 import { cn } from "@platform/lib/utils";
 
 import type { ChatController } from "../protocol/controller-api";
@@ -24,8 +25,6 @@ import type { Decision, DecisionScope, PermissionMode, PermissionRow, Switchable
 import { useAgent } from "./agent-context";
 import { CollapsiblePre } from "./CollapsiblePre";
 import { permissionLabelsFor } from "./composer-defaults";
-
-const RISK_LABELS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
 
 export interface PermCardProps {
   row: PermissionRow;
@@ -103,7 +102,7 @@ function statusFor(
         text: "✓ Allowed — approvals set to “" + (modeLabels[row.mode] || row.mode) + "”",
       };
     if (row.scope === "session")
-      return { cls: "allow", text: "✓ Allowed — not asking again for " + label + " in this reply" };
+      return { cls: "allow", text: "✓ Allowed — not asking again for " + label + " in this chat" };
     if (row.scope === "exact")
       return { cls: "allow", text: "✓ Allowed — this exact command, for the rest of this chat" };
     return { cls: "allow", text: "✓ Allowed" };
@@ -137,6 +136,8 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
   // is already answered — and the second answer is the one that would be thrown
   // away, silently, by first-writer-wins down in agent.py.
   const resolved = !!row.decision || answerHeld(row);
+  // null for a severity this build does not know: no pill rather than an empty one.
+  const riskLabel = severityLabel(row.severity);
 
   // WHY THE ROW AND NOT LOCAL STATE. `decidePermission` does not reject — the
   // controller catches the failure and writes `row.sendError`, which the poll
@@ -185,9 +186,9 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
       {/* The model's read, ABOVE the verbatim payload and never instead of it. While
           it is being written a muted placeholder holds the pill's place; "failed" or
           absent draws nothing, and the card is exactly what it was. */}
-      {row.severity && row.risk_state === "ready" ? (
+      {riskLabel && row.risk_state === "ready" ? (
         <div className="perm-risk">
-          <span className={cn("perm-risk-pill", row.severity)}>{RISK_LABELS[row.severity]}</span>
+          <span className={cn("perm-risk-pill", row.severity)}>{riskLabel}</span>
           {row.risk_summary ? <span className="perm-risk-sum">{row.risk_summary}</span> : null}
         </div>
       ) : row.risk_state === "pending" && !resolved ? (
