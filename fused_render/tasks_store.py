@@ -1150,6 +1150,44 @@ def record_recap(session_id: str, for_uuid: str, text: str,
     return _update(SETTINGS_FILE, mutate)
 
 
+# THE USER'S OWN TITLE for a task rides on the same record, under `custom_title`
+# (set from the Tasks UI's rename gesture). It is stored here and nowhere else:
+# Claude Code's transcript is Claude Code's file, and nothing reads a title
+# written into it. Empty text deletes the key, which restores the automatic
+# title. `forget_session` drops it with the rest of the record.
+
+
+def session_title(state: dict, session_id: str) -> str:
+    """The user's own title for one session, or "" when there is none."""
+    rec = state.get(str(session_id or ""))
+    title = rec.get("custom_title") if isinstance(rec, dict) else None
+    return title.strip() if isinstance(title, str) else ""
+
+
+def record_title(session_id: str, text: str) -> str:
+    """Store the user's title for one session beside whatever its record
+    already holds; empty or whitespace-only text clears it. Returns what is
+    stored now ("" when cleared, or for an empty session id)."""
+    session_id = str(session_id or "").strip()
+    text = str(text or "").strip()
+    if not session_id:
+        return ""
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        if text:
+            rec["custom_title"] = text
+        elif "custom_title" in rec:
+            del rec["custom_title"]
+        else:
+            return text, False  # nothing to clear: no write
+        state[session_id] = rec
+        return text, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
 def forget_session(session_id: str) -> dict:
     """Erase what these stores keep about one session — the erase gesture's
     share of `POST /api/tasks/erase`, where the transcript itself goes too.

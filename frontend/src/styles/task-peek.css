@@ -991,3 +991,61 @@ body.tasks-peek-dragging {
 .tasks-peek-host .prefs-section .tasks-card-wrap:hover > .schedule-tv-card.is-peeked {
   background: var(--row-bg-selected);
 }
+
+/* RENAMING THE TITLE IN PLACE (TaskPeekWho). The input takes the title span's
+   slot at the same 13px/600 and line box, so the header does not change
+   height; `--accent` outline like the sidebar's bookmark rename. The pencil
+   shows only while the identity block is hovered or holds focus, so a header
+   at rest is exactly what it was. */
+.task-side-peek-title-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin: -1px 0;
+}
+
+.task-side-peek-title-input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.task-side-peek-title-input:disabled {
+  opacity: 0.6;
+}
+
+.task-side-peek-rename-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--error);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-side-peek-rename {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  opacity: 0;
+}
+
+.task-side-peek-who:hover .task-side-peek-rename,
+.task-side-peek-rename:focus-visible {
+  opacity: 1;
+}
+
+/* Touch has no hover: keep the pencil visible there. */
+@media (hover: none) {
+  .task-side-peek-rename {
+    opacity: 0.6;
+  }
+}

@@ -7299,3 +7299,13 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 
 - **Cause.** One CLI run held two turns, the second a queued bare slash command whose user row has STRING content (`<command-name>`). `_starts_new_turn` only accepted list echoes, so the poll cursor never advanced and `_poll` replayed the run from offset 0 with `message` = the opening prompt. On a plain re-attach the opening line was on screen but not the LAST user bubble (a folded mid-turn note was), so `matches` was false, `shownAlready` is false without `neverShown`/`quiet`, and the shell typed it again and re-streamed turn 1.
 - **Fix.** `_starts_new_turn` also accepts a non-meta, non-tool-result user row whose string content holds `<command-name>`; the pending-echo check in `_poll` passes `slash=False`, since a slash row is never the echo of an inbox send. In `run-controller.ts` the in-flight re-attach types the opening only when it is not on screen; if it is, it refreshes from the transcript and sets `landedWindow` so the loop does not replay the window beneath the history.
+
+## D1407: Task rename: user title in session_settings.json, wins every title mode (2026-10-21, task-rename-titles)
+
+- **Problem.** A task's title was always derived (an entry's title, Claude Code's ai-title, the first message, or the recap/last-message/summary modes on the client), and the reader had no way to name one.
+- **Decision.** The peek header and the chat topbar (`TaskPeekWho`) rename a task in place: double-click the title or the hover pencil, Enter or blur saves, Escape cancels, an unchanged text is a no-op. `POST /api/tasks/rename {key, title}` stores the first line (stripped, 200 chars) as `custom_title` on the session's record in `session_settings.json` (`tasks_store.record_title` / `session_title`), beside model/effort/recap, then notifies `tasks_watch`.
+- **Precedence.** `_title` takes the stored title first and reports `title_source: "renamed"`. The client's `cardTitleLine` checks that source before summary mode, recaps, replies and the last message, so the List, Board, Cards, peek and chat topbar all show it in every title mode.
+- **Empty clears.** Saving empty or whitespace deletes the key and the automatic title returns. `forget_session` drops the record on erase, so the title goes with the task.
+- **Not written to the transcript.** The transcript is Claude Code's file, and nothing reads a `custom-title` record from it, so writing there would buy nothing and risk the file.
+- **Not renamable.** `pending:` rows, drafts and new-chat keys have no session to key the title on; the endpoint answers 400 `only a started task can be renamed` and the header offers no affordance.
+
