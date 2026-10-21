@@ -316,9 +316,11 @@ export function Topbar({
       )}
       <span className="c-tb-title">{agent.label}</span>
       {line ? <QueuedCaption line={line} /> : null}
-      <span className="c-tb-file" title={subtitle || undefined}>
-        {subtitle ?? ""}
-      </span>
+      {noProject ? null : (
+        <span className="c-tb-file" title={subtitle || undefined}>
+          {subtitle ?? ""}
+        </span>
+      )}
       {label ? (
         // The full session id stays reachable for the reader who actually wants
         // it (a log line, a bug report) without spending header width on it

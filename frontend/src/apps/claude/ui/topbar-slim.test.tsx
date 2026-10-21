@@ -57,3 +57,8 @@ test("without slim the title and file are drawn", () => {
   expect(has(r, "c-topbar-slim")).toBe(0);
   expect(has(r, "c-tb-title")).toBe(1);
 });
+
+test("fallback branch: noProject hides the subtitle, otherwise it is drawn", () => {
+  expect(has(render({ slim: false, task: null, noProject: true }), "c-tb-file")).toBe(0);
+  expect(has(render({ slim: false, task: null }), "c-tb-file")).toBe(1);
+});

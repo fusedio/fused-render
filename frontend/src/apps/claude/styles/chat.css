@@ -555,6 +555,10 @@
   min-width: 0;
   flex: 0 1 auto;
 }
+.chat-root.chat-peek-head .c-topbar .chat-worktree-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+}
 .chat-root.chat-peek-head .c-topbar .c-tb-slim-extra {
   flex: 0 0 auto;
 }
