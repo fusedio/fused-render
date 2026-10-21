@@ -43,7 +43,8 @@ from fastapi.responses import JSONResponse
 
 from fused_render import app_id as app_identity
 from fused_render import app_listing, appfile
-from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
+from fused_render.fusedcli import (child_env, cli_error, fused_cli, set_fused_env,
+                                   workbench_env)
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +216,7 @@ def _run_shim(request: dict, timeout: float) -> tuple[dict | None, JSONResponse 
         return None, err
     cli = fused_cli()
     env = child_env(cli)
-    env["FUSED_ENV"] = workbench_env()
+    set_fused_env(env, workbench_env())
     try:
         proc = subprocess.run(
             command,

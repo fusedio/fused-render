@@ -80,7 +80,10 @@ _DEFAULT_FUSED_DIR = "~/Fused"
 # (`~/Fused/canvas/<env>/<name>`): fusedcli.WORKBENCH_ENV_CHOICES, duplicated
 # for the same no-heavy-imports reason. Anything else in that position is not
 # a clone of ours.
-_ENVS = ("unstable", "prod")
+_ENVS = ("unstable", "prod", "custom")
+# fusedcli.CUSTOM_WORKBENCH_ENV, duplicated likewise: the env whose runs leave
+# FUSED_ENV unset, so the CLI keeps `~/.fused/settings.toml`'s endpoint.
+_CUSTOM_ENV = "custom"
 
 # The server's own bound origin, published by server/app.py:set_server_origin_env
 # before it serves, so every spawned session inherits it. Absent means "no
@@ -303,8 +306,25 @@ def _fall_through(name: str, env: str, err) -> int | None:
     the wrapper takes from the clone path when run inside one, from the
     DEFAULT environment otherwise, and an explicit `FUSED_ENV=x fused ...`
     beats both. For a clone of the other environment that is one Fused's
-    files into the other's same-named canvas: not inert, so refuse."""
+    files into the other's same-named canvas: not inert, so refuse.
+
+    The custom env is the one targeted by an UNSET FUSED_ENV (the CLI then
+    keeps `~/.fused/settings.toml`'s endpoint), so a custom clone refuses any
+    set FUSED_ENV. An unset one with a prod/unstable clone still falls through
+    as before: unset is also a bare shell without the wrapper, and this cannot
+    tell the two apart."""
     target_env = os.environ.get("FUSED_ENV")
+    if env == _CUSTOM_ENV:
+        if target_env:
+            err.write(
+                "fused-render: canvas clone %r belongs to the custom environment "
+                "(~/.fused/settings.toml), but this `fused` run targets %s "
+                "(FUSED_ENV).\n"
+                "Pushing it there would overwrite a different canvas. Run the push "
+                "from inside the clone folder, or with FUSED_ENV unset.\n"
+                % (name, target_env))
+            return 1
+        return None
     if target_env and target_env != env:
         err.write(
             "fused-render: canvas clone %r belongs to the %s environment, but this "

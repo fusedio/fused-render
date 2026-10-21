@@ -144,6 +144,7 @@ function status(over: Partial<CanvasesStatus>): CanvasesStatus {
     envs: {
       unstable: { base_url: "https://unstable.fused.io", canvases_dir: "/Users/x/Fused/canvas/unstable", cloned_count: 0 },
       prod: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/prod", cloned_count: 0 },
+      custom: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/custom", cloned_count: 0 },
     },
     ...over,
   };

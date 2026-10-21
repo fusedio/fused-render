@@ -331,6 +331,27 @@ def test_a_clone_of_the_other_environment_is_refused_on_every_fall_through(root,
         assert f"FUSED_ENV={other}" in err and "Preferences" not in err
 
 
+def test_a_custom_clone_refuses_a_set_fused_env_and_falls_through_unset(root, monkeypatch):
+    """The custom env is the one an UNSET FUSED_ENV targets (the CLI keeps
+    `~/.fused/settings.toml`'s endpoint): on a fall-through a custom clone
+    refuses any named env, and with FUSED_ENV unset runs the real CLI."""
+    clone = root.parent / "custom" / "alpha"
+    clone.mkdir(parents=True)
+    args = ["workbench", "canvas", "push", str(clone)]
+    monkeypatch.setenv("FUSED_ENV", "prod")
+    code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    assert code == 1
+    assert "custom environment" in err and "FUSED_ENV unset" in err
+    monkeypatch.delenv("FUSED_ENV")
+    server = _Server(200, {"ok": True})
+    code, _, _ = _intercept(args, monkeypatch, server, origin=None)
+    assert code is None
+    # With a server, the push routes to the custom manager like any env's.
+    code, _, _ = _intercept(args, monkeypatch, server)
+    assert code == 0
+    assert [c[1:] for c in server.calls] == [("alpha", "custom")]
+
+
 def test_a_mismatched_fused_env_still_posts_when_the_server_takes_it(root, monkeypatch):
     """With a server to take it, FUSED_ENV is irrelevant: the push is routed
     by the clone's own env to that environment's manager. Refusing first

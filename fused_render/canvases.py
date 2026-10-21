@@ -95,6 +95,8 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
+import urllib.parse
 import zipfile
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
@@ -102,11 +104,13 @@ from fastapi.responses import JSONResponse
 
 from fused_render import canvas_snapshot, canvas_sync_state
 from fused_render.fusedcli import (
+    CUSTOM_WORKBENCH_ENV,
     WORKBENCH_ENV_CHOICES,
     WORKBENCH_ENV_VAR,
     child_env,
     cli_error,
     fused_cli,
+    set_fused_env,
     workbench_env,
     workbench_env_locked,
 )
@@ -187,7 +191,10 @@ ROWLESS_GRACE_S = 5.0
 # share uploads — so it is read here in four places only: the status payload,
 # the FUSED_RENDER_WORKBENCH_URL override, the FUSED_RENDER_WORKBENCH_ENV pin
 # (`_require_env`), and the env-less credential calls (`_auth_env`). Never
-# frozen into a module constant: the preference moves at runtime.
+# frozen into a module constant: the preference moves at runtime. The third
+# env, `custom` (fusedcli.CUSTOM_WORKBENCH_ENV), is no Fused of its own: its
+# runs get FUSED_ENV unset so the CLI keeps `~/.fused/settings.toml`'s
+# endpoint, and its iframe loads that endpoint's web origin.
 
 # Cap on the per-line push-error transcript kept for the UI and the fix
 # session — enough for any real validation report (one line per problem plus
@@ -204,6 +211,58 @@ _ENV_WEB_URLS = {
 }
 
 
+# fused's own settings files, in its load order (fused `_options.py`
+# OPTIONS_PATH, then OPTIONS_JSON_PATH): where the custom environment's
+# endpoint comes from. Read here, not by importing fused, because the server
+# never imports fused (every fused call is a subprocess) and these are read
+# per status call — cheap, and an edit to the file shows on the next one.
+_FUSED_SETTINGS_FILES = ("~/.fused/settings.toml", "~/.fused/settings.json")
+# fused's `Options.base_url` default — what an absent file or key means.
+_FUSED_DEFAULT_API_URL = "https://www.fused.io/server/v1"
+# fused's `Options.base_web_url`: the hosted API URLs whose web origin is not
+# simply the API URL's own origin. Anything else is `scheme://netloc`.
+_FUSED_API_WEB_URLS = {
+    "https://staging.fused.io/server/v1": "https://staging.fused.io",
+    "https://unstable.fused.io/server/v1": "https://unstable.fused.io",
+    "http://localhost:8783/v1": "http://localhost:3000",
+}
+
+
+def fused_settings_base_url() -> str:
+    """The API `base_url` fused loads from `~/.fused/settings.toml` (else
+    `settings.json`), else fused's default — what a custom-environment run,
+    with FUSED_ENV unset, actually talks to. Like fused, a file that does not
+    parse is skipped for the next one; a parsed file without `base_url` means
+    the default."""
+    for raw in _FUSED_SETTINGS_FILES:
+        path = os.path.expanduser(raw)
+        try:
+            with open(path, "rb") as fh:
+                data = tomllib.load(fh) if path.endswith(".toml") else json.load(fh)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:  # TOMLDecodeError is a ValueError
+            logger.warning("could not read %s for the custom canvas environment: %s",
+                           path, exc)
+            continue
+        value = data.get("base_url") if isinstance(data, dict) else None
+        return value if isinstance(value, str) and value else _FUSED_DEFAULT_API_URL
+    return _FUSED_DEFAULT_API_URL
+
+
+def _fused_settings_web_url() -> str:
+    """The workbench origin for `fused_settings_base_url()`, by fused's own
+    `Options.base_web_url` rule."""
+    api = fused_settings_base_url()
+    known = _FUSED_API_WEB_URLS.get(api)
+    if known:
+        return known
+    parts = urllib.parse.urlparse(api)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return _ENV_WEB_URLS["prod"]
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 # The pinned env's workbench origin override (dev recipe: a local workbench).
 _WORKBENCH_URL_VAR = "FUSED_RENDER_WORKBENCH_URL"
 
@@ -217,10 +276,13 @@ def workbench_base_url(env: str) -> str:
     (localhost:3000) standing in for unstable. Keyed off the mutable DEFAULT
     instead, flipping the preference to prod would dress prod canvases in
     that local frame; without a pin the var is ignored
-    (`log_url_override_without_pin` says so once at startup)."""
+    (`log_url_override_without_pin` says so once at startup). The custom
+    env's origin comes from `~/.fused/settings.toml` (`_fused_settings_web_url`)."""
     override = os.environ.get(_WORKBENCH_URL_VAR)
     if override and workbench_env_locked() and env == workbench_env():
         return override
+    if env == CUSTOM_WORKBENCH_ENV:
+        return _fused_settings_web_url()
     return _ENV_WEB_URLS.get(env, "https://www.fused.io")
 
 
@@ -257,9 +319,12 @@ def _cli_env(cli, env: str) -> dict[str, str]:
     the interception. So the push POSTed back to /api/canvases/sync/push, was
     refused because a push was already running (itself), and recorded that
     refusal as a CLI failure: push_state "error" with push_seq stuck at 0.
+
+    The custom env gets FUSED_ENV REMOVED (`set_fused_env`), so the CLI keeps
+    the endpoint `~/.fused/settings.toml` names.
     """
     child = child_env(cli)
-    child["FUSED_ENV"] = env
+    set_fused_env(child, env)
     child[_canvas_push_internal_env()] = "1"
     return child
 
@@ -271,7 +336,8 @@ def _auth_env() -> str:
     whoami` under both), so between them the choice is moot; the DEFAULT env
     is used so that a FUSED_RENDER_WORKBENCH_ENV pin to a dev/PR environment
     (fused's `_dev_auth`: its own tenant and `credentials-dev` store) signs in
-    where that environment reads."""
+    where that environment reads. A custom default runs with FUSED_ENV unset
+    (`_cli_env`), so it signs in wherever `~/.fused/settings.toml` points."""
     return workbench_env()
 
 
