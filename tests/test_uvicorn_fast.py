@@ -31,6 +31,8 @@ def test_httptools_is_in_cli_and_all_extras_only():
     for name in ("cli", "all"):
         assert any(d.startswith("httptools") for d in extras[name]), name
     assert not any(d.startswith("httptools") for d in proj["dependencies"])
+    everything = list(proj["dependencies"]) + [d for v in extras.values() for d in v]
+    assert not any(d.lower().startswith("uvloop") for d in everything)
 
 
 def test_config_selects_the_httptools_protocol():
