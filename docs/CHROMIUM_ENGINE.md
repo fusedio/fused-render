@@ -118,9 +118,11 @@ signature runs.
 1. Bump `engine_version` in the manifest on any native change (the artifact
    name and release tag carry it).
 2. Run the **Chromium engine** workflow (`.github/workflows/chromium-engine.yml`,
-   manual) with *publish* on. It builds both arches, smoke-tests the zip with
-   the Python unpacker, and uploads the zips and `.json` files to the GitHub
-   release `chromium-engine-<engine_version>`.
+   manual) with *publish* on. It builds arm64 (Intel Macs are not served:
+   the manifest's `x86_64` entry stays unpinned and the row says unpublished
+   there), smoke-tests the zip with the Python unpacker, and uploads the zip
+   and `.json` to the GitHub release `chromium-engine-<engine_version>`. An
+   arch the manifest already pins is never re-uploaded: bump the version.
 3. Pin it:
    ```
    gh release download chromium-engine-<v> -p '*.json' -D /tmp/engine

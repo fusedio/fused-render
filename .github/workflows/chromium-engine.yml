@@ -1,6 +1,8 @@
-# Build the on-demand Chromium engine (fused_render/chromium/native) for both
-# Mac architectures and attach the zips to the GitHub release named by
+# Build the on-demand Chromium engine (fused_render/chromium/native) for
+# Apple silicon and attach the zip to the GitHub release named by
 # fused_render/chromium/manifest.json's base_url (chromium-engine-<engine_version>).
+# Intel Macs are not served (owner, 2026-10-21): the manifest's x86_64 entry
+# stays unpinned and the preference reports the engine as unpublished there.
 #
 # Manual: the engine changes rarely and ships out of band from app releases.
 # After a successful run, pin it:
@@ -13,10 +15,6 @@
 name: Chromium engine
 
 on:
-  # TEMPORARY (remove before merge): the workflow is not on main yet, so
-  # workflow_dispatch cannot see it; a push to this branch publishes instead.
-  push:
-    branches: [chromium-windows-experimental]
   workflow_dispatch:
     inputs:
       publish:
@@ -33,10 +31,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Apple silicon only (owner, 2026-10-21): Intel Macs keep WebKit,
+          # the preference row reports the engine as unpublished there.
           - runner: macos-15
             arch: arm64
-          - runner: macos-15-intel
-            arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
