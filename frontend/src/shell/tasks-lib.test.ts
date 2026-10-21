@@ -8353,8 +8353,10 @@ describe("the tasks toolbar", () => {
     // Since the tab editor (2026-10-16) the row is drawn from `tabs`, one button
     // per view name, each pairing the view's glyph (VIEW_ICONS) with its word
     // (VIEW_LABELS) — the pairing is unchanged, it is just said once.
+    // …and Calendar's word is followed by the sidebar's Beta chip, INSIDE the
+    // label so it folds away with the word when the toolbar is short on room.
     expect(PAGE).toMatch(
-      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">\{VIEW_LABELS\[v\]\}<\/span>/,
+      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">\s*\{VIEW_LABELS\[v\]\}\s*\{v === "calendar" && \(\s*<span className="sidebar-count-chip sidebar-beta-chip schedule-beta-tag">Beta<\/span>\s*\)\}\s*<\/span>/,
     );
     for (const [view, icon] of [
       ["list", "ICON_VIEW_LIST"],
@@ -9603,9 +9605,10 @@ describe("the Cards view's frame", () => {
     // clear"). No "Open in Tasks": we are already in Tasks.
     const acts = CARDS.slice(CARDS.indexOf("headActions={"), CARDS.indexOf("footer={"));
     expect(acts).not.toContain("Open in Tasks");
-    expect(acts.indexOf("Open in Explorer")).toBeGreaterThan(-1);
+    // The door's word is `pageDoorLabel(task)` — "Open in Canvas" on a canvas task.
+    expect(acts.indexOf("pageDoorLabel(task)")).toBeGreaterThan(-1);
     // Archive first, the folder last, beside the close button (Akshil, 2026-09-05).
-    expect(acts.indexOf("{filing.label}")).toBeLessThan(acts.indexOf("Open in Explorer"));
+    expect(acts.indexOf("{filing.label}")).toBeLessThan(acts.indexOf("pageDoorLabel(task)"));
     // Three: Archive, the live folder door, and its disabled twin for a folder
     // that is gone — the last two never drawn together (`explorer` / `gone`).
     expect((acts.match(/className="btn btn-secondary modal-head-act"/g) ?? []).length).toBe(3);
@@ -9641,7 +9644,7 @@ describe("the Cards view's frame", () => {
     expect(CARDS_CSS).not.toContain("@media");
     expect(CARDS_CSS).toContain("@container (max-width: 920px)");
     expect(CARDS_CSS).toContain("@container (max-width: 600px)");
-    expect(acts).toContain("{ICON_FOLDER}\n              Open in Explorer");
+    expect(acts).toContain("{ICON_FOLDER}\n              {pageDoorLabel(task)}");
     // Bugbot, #1009: the popup follows the polls (a "Starting…" task gains its
     // session), survives an empty wall (a failed poll, a filter), and puts the
     // caret in the chat.
