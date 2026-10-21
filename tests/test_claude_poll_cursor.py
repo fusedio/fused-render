@@ -316,3 +316,34 @@ def test_a_subagent_result_row_does_not_advance_the_cursor(agent, run_dir):
         "a subagent's result row must not be mistaken for the main turn " \
         "closing, or the cursor jumps past text already streamed and the " \
         "next poll's segments shrink"
+
+
+# ------------------------------------------- (z) the turn clock survives a reload
+
+def test_turn_started_at_is_stamped_kept_midturn_and_restamped_after_done(
+        agent, run_dir):
+    """`turn_started_at` is the server-side source of the page's "(6s)"
+    counter: stamped by the turn's first inbox write, untouched by a follow-up
+    queued mid-turn, re-stamped by the first write after `_poll` saw done."""
+    agent.RUNS = str(run_dir.parent)
+    agent._write_inbox_entry(str(run_dir), "one")
+    first = float((run_dir / "turn_started_at").read_text())
+    assert first > 0
+
+    _write(run_dir, [_text_row("working")])
+    live = _poll(agent, run_dir, alive=True)
+    assert live["done"] is False
+    assert live["turn_started_at"] == first
+
+    agent._write_inbox_entry(str(run_dir), "mid-turn follow-up")
+    assert float((run_dir / "turn_started_at").read_text()) == first
+
+    _append(run_dir, [_result_row()])
+    ended = _poll(agent, run_dir, alive=True)
+    assert ended["done"] is True
+    assert ended["turn_started_at"] == first
+
+    agent._write_inbox_entry(str(run_dir), "next turn")
+    second = float((run_dir / "turn_started_at").read_text())
+    assert second > first
+    assert _poll(agent, run_dir, alive=True)["turn_started_at"] == second

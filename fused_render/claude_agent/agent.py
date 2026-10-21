@@ -44,6 +44,8 @@ Actions:
   main(action="poll", run_id=...)
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
           "phase": ..., "message": <the run's first message, for re-attach>,
+          "turn_started_at": <epoch seconds the current turn's first message
+                              was written, 0 if unknown; survives reload>,
           "permissions": [{"id", "tool", "input", "decision", "scope",
                            "answers"}, ...],
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
@@ -3749,6 +3751,36 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
     os.replace(tmp_path, final_path)
 
 
+def _turn_stamp_read(run_dir: str, name: str) -> float:
+    try:
+        with open(os.path.join(run_dir, name)) as f:
+            return float(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _turn_stamp_write(run_dir: str, name: str) -> None:
+    path = os.path.join(run_dir, name)
+    tmp = path + ".tmp"
+    try:
+        with _private_open(tmp) as f:
+            f.write(repr(time.time()))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _stamp_turn_start(run_dir: str) -> None:
+    """Record when the current turn began, in the run dir, so a reloaded page
+    (or another tab) can keep counting from the real start. A follow-up
+    queued MID-turn keeps the old stamp: it re-stamps only once `_poll` has
+    seen the run done AFTER the existing stamp (`turn_ended_at`)."""
+    started = _turn_stamp_read(run_dir, "turn_started_at")
+    if started and _turn_stamp_read(run_dir, "turn_ended_at") <= started:
+        return
+    _turn_stamp_write(run_dir, "turn_started_at")
+
+
 def _write_inbox_entry(run_dir: str, message: str) -> None:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
@@ -3761,6 +3793,7 @@ def _write_inbox_entry(run_dir: str, message: str) -> None:
     ids, and a folded N-block echo row that repeats a uuid is still that one
     entry (`_drained_unechoed`). A CLI that ignores the key loses nothing: the
     text match stands behind it."""
+    _stamp_turn_start(run_dir)
     _write_inbox_row(run_dir, {"type": "user", "uuid": str(uuid.uuid4()), "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
@@ -8899,7 +8932,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # too. `_cancelled_marker_state` also backs `_stopped_last`, which needs
     # the identical staleness check off its own cursor read.
     cancelled = _cancelled_marker_state(run_dir, scan_cursor)
+    turn_started_at = _turn_stamp_read(run_dir, "turn_started_at")
+    if (done and turn_started_at
+            and _turn_stamp_read(run_dir, "turn_ended_at") <= turn_started_at):
+        _turn_stamp_write(run_dir, "turn_ended_at")
     return {"text": "" if echo_pending else text, "done": done,
+            "turn_started_at": turn_started_at,
             "session_id": new_session, "error": error, "backend": backend,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
