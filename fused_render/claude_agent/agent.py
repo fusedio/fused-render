@@ -3770,14 +3770,46 @@ def _turn_stamp_write(run_dir: str, name: str) -> None:
         pass
 
 
+def _cli_idle(run_dir: str) -> tuple[bool, float]:
+    """(idle, out.jsonl mtime): idle when `out.jsonl` is missing/empty or its
+    last complete row is the turn-end `result`. Reads only the last 64KB."""
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        with open(path, "rb") as f:
+            size = os.fstat(f.fileno()).st_size
+            mtime = os.fstat(f.fileno()).st_mtime
+            if not size:
+                return True, mtime
+            f.seek(max(0, size - 65536))
+            tail = f.read()
+    except OSError:
+        return True, 0.0
+    if not tail.endswith(b"\n"):
+        return False, mtime  # a row is mid-write: the CLI is streaming
+    lines = tail.rstrip(b"\n").split(b"\n")
+    try:
+        row = json.loads(lines[-1])
+    except ValueError:
+        return False, mtime
+    return (isinstance(row, dict) and row.get("type") == "result"), mtime
+
+
 def _stamp_turn_start(run_dir: str) -> None:
     """Record when the current turn began, in the run dir, so a reloaded page
-    (or another tab) can keep counting from the real start. A follow-up
-    queued MID-turn keeps the old stamp: it re-stamps only once `_poll` has
-    seen the run done AFTER the existing stamp (`turn_ended_at`)."""
+    (or another tab) can keep counting from the real start.
+
+    Idle-vs-mid-turn is decided here from the run's own output, never from
+    polling (nobody may be polling when a turn ends). Re-stamp when
+    `out.jsonl` is missing/empty, or ends in a `result` row AND the existing
+    stamp is not newer than out.jsonl's mtime (stamp < mtime: that turn ended
+    after it began). A stamp newer than the mtime means a turn was just
+    started and nothing streamed yet, so it is kept; a turn still streaming
+    keeps its stamp; no stamp at all always writes one."""
     started = _turn_stamp_read(run_dir, "turn_started_at")
-    if started and _turn_stamp_read(run_dir, "turn_ended_at") <= started:
-        return
+    if started:
+        idle, mtime = _cli_idle(run_dir)
+        if not idle or (mtime and started >= mtime):
+            return
     _turn_stamp_write(run_dir, "turn_started_at")
 
 
@@ -8933,9 +8965,6 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # the identical staleness check off its own cursor read.
     cancelled = _cancelled_marker_state(run_dir, scan_cursor)
     turn_started_at = _turn_stamp_read(run_dir, "turn_started_at")
-    if (done and turn_started_at
-            and _turn_stamp_read(run_dir, "turn_ended_at") <= turn_started_at):
-        _turn_stamp_write(run_dir, "turn_ended_at")
     return {"text": "" if echo_pending else text, "done": done,
             "turn_started_at": turn_started_at,
             "session_id": new_session, "error": error, "backend": backend,

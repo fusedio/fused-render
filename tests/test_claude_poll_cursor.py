@@ -323,11 +323,13 @@ def test_a_subagent_result_row_does_not_advance_the_cursor(agent, run_dir):
 def test_turn_started_at_is_stamped_kept_midturn_and_restamped_after_done(
         agent, run_dir):
     """`turn_started_at` is the server-side source of the page's "(6s)"
-    counter: stamped by the turn's first inbox write, untouched by a follow-up
-    queued mid-turn, re-stamped by the first write after `_poll` saw done."""
+    counter, decided from out.jsonl's tail at write time (no poll needed)."""
+    import os
     agent.RUNS = str(run_dir.parent)
+    stamp = run_dir / "turn_started_at"
+    out = run_dir / "out.jsonl"
     agent._write_inbox_entry(str(run_dir), "one")
-    first = float((run_dir / "turn_started_at").read_text())
+    first = float(stamp.read_text())
     assert first > 0
 
     _write(run_dir, [_text_row("working")])
@@ -336,14 +338,18 @@ def test_turn_started_at_is_stamped_kept_midturn_and_restamped_after_done(
     assert live["turn_started_at"] == first
 
     agent._write_inbox_entry(str(run_dir), "mid-turn follow-up")
-    assert float((run_dir / "turn_started_at").read_text()) == first
+    assert float(stamp.read_text()) == first
 
+    # Turn ends while NOBODY polls; the next message must still re-stamp.
     _append(run_dir, [_result_row()])
-    ended = _poll(agent, run_dir, alive=True)
-    assert ended["done"] is True
-    assert ended["turn_started_at"] == first
-
+    os.utime(out, (first + 100, first + 100))
     agent._write_inbox_entry(str(run_dir), "next turn")
-    second = float((run_dir / "turn_started_at").read_text())
+    second = float(stamp.read_text())
     assert second > first
+
+    # Re-stamped, nothing streamed yet (result row older than the stamp).
+    os.utime(out, (second - 50, second - 50))
+    agent._write_inbox_entry(str(run_dir), "queued right after")
+    assert float(stamp.read_text()) == second
     assert _poll(agent, run_dir, alive=True)["turn_started_at"] == second
+    assert not (run_dir / "turn_ended_at").exists()
