@@ -7230,7 +7230,14 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **UI.** `McpSection` renders the cached list, shows "Checking status..." in the toolbar summary and dims the status pills until `list({fresh: true})` returns; a failed live check keeps the cached list instead of replacing it with an error.
 - **Deviation.** No frontend test: there is no existing McpSection test and the swap is a few lines of state; the backend contract is covered in `tests/test_claude_config_api.py`.
 
-## D1394: Claude chat approvals default to auto, changeable globally and per chat (2026-10-21, claude-permission)
+## D1394: Heads-up checks review finished steps, never report progress, and fork only at a step boundary (2026-10-21, headsup-review-not-redo)
+
+- **Problem.** Mid-turn heads-up notes restated what the main agent was still investigating (the root cause the user had asked about, just before the agent reported it) and claimed things were "not built" or "the session ended" while a tool was still running. The fork prompt never said the turn was open, our condensed prompt had dropped the rules that prevent this, and the fork snapshotted the on-disk session at an arbitrary poll time, possibly mid tool call.
+- **Decision.** `HEADSUP_PROMPT` is reframed as checking the agent's work on the user's behalf and regains the rules: the agent keeps working while the fork reads, it will likely reach the same point, do not do its job or pre-announce its conclusion, skip topics the user is already discussing with it, passing mentions still count as possibly missed, and progress is never a topic. `_build_prompt(..., turn_open)` appends an "agent is still working, judge only finished steps" section on an open turn; `generate` and `_worker` thread it through from `_poll`.
+- **Step boundary.** `main_steps`'s incremental cache also tracks unanswered main-thread `tool_use` ids (`pending_tools`). `_poll` returns idle on an open turn while any is unanswered, without recording the bucket in `checked`, so the same bucket fires on a later poll once the step completes. Turn-end behaviour is unchanged. Mid-turn checks stay.
+- **Origin.** The prompt rules are ported from Claude Code's built-in `you-should-know` plugin (2.1.305), which forks in-process at turn steps (every 6th step) and whose prompt carries the "agent keeps working / don't race it / skip what the user is already discussing" rules.
+
+## D1395: Claude chat approvals default to auto, changeable globally and per chat (2026-10-21, claude-permission)
 
 - **Decision.** New pref `claude_default_permission` (default `auto`; `plan`/`prompt`/`acceptEdits`/`auto`, 400 otherwise), shown as "Default approvals for new chats" in Preferences. An empty `permission_mode` in `_start` uses it; in `_send` it still means "no change". Copilot, bots and scheduled jobs are unchanged.
 - **Ranking.** Frontend `resolvePermission(param, recorded, globalDefault)`: this chat's recorded pick, then the `permission` param, then the pref, then `auto`. A present-but-unknown value is `prompt` (strictest), never a looser fallback.
