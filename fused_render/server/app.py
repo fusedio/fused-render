@@ -40,7 +40,7 @@ from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_
 from fused_render.server.common import (
     STATIC_DIR,
     logger,
-    no_cache_and_log,
+    NoCacheAndLog,
     unhandled_exception,
     _forced_engine,
 )
@@ -910,7 +910,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         name="template-shared",
     )
 
-    app.middleware("http")(no_cache_and_log)
+    app.add_middleware(NoCacheAndLog)
 
     # React shell (D52/D54): built by Vite from frontend/ into static/
     # shell-dist/. The output is NOT committed — dev machines build it
