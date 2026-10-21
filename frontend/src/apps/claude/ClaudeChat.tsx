@@ -3699,9 +3699,9 @@ function ChatBody(props: ChatBodyProps) {
     worktreeReady.current = isRepo;
   }, []);
   // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
-  // own head and by `/tasks`, and scoped to the run and conversation on screen
-  // (`tasksPanelScope`) so it does not stay open into the next one. The host's
-  // `onToggleTasks` still hears `/tasks`.
+  // own head and by `/tasks`, and remembered globally (`useTasksOpen`). An empty
+  // strip only shows in the run/conversation it was opened in (`tasksPanelScope`).
+  // The host's `onToggleTasks` still hears `/tasks`.
   const [tasksOpen, toggleTasksPanel] = useTasksOpen(
     tasksPanelScope({
       lastRunId: state.lastRunId,
@@ -3709,6 +3709,7 @@ function ChatBody(props: ChatBodyProps) {
       sessionId: state.sessionId,
       transcriptGen: state.transcriptGen,
     }),
+    !!summarizeTasks(state.tasks),
   );
   const hostToggleTasks = props.onToggleTasks;
   const onToggleTasks = useCallback(() => {
