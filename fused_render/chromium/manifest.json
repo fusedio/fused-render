@@ -6,8 +6,8 @@
   "artifacts": {
     "arm64": {
       "file": "FusedChromium-6-arm64.zip",
-      "sha256": null,
-      "size": null
+      "sha256": "5d86a95ae71eeee9a0fbd54294e22d8debbeca7f41506f990819986b82d40766",
+      "size": 122564141
     },
     "x86_64": {
       "file": "FusedChromium-6-x86_64.zip",
