@@ -516,7 +516,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     @on_startup_full
     async def _startup_prewarm_ai():
-        prewarm_ai(app)
+        # Delayed: the spawn would otherwise compete with the first requests
+        # and the other startup warms.
+        prewarm_ai(app, delay=5.0)
 
     # Warm the fused engine off the request path (else the first /api/config pays the cold import).
     @on_startup
@@ -840,13 +842,17 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _startup_gc_project_venvs():
         from fused_render import projectenv
 
-        try:
-            removed = await asyncio.to_thread(projectenv.gc)
-        except Exception:  # noqa: BLE001 - never block startup on housekeeping
-            logger.exception("could not garbage-collect orphaned project venvs")
-            return
-        if removed:
-            logger.info("reclaimed %d orphaned project venv(s)", removed)
+        def _run_gc():
+            try:
+                removed = projectenv.gc()
+            except Exception:  # noqa: BLE001 - never block startup on housekeeping
+                logger.exception("could not garbage-collect orphaned project venvs")
+                return
+            if removed:
+                logger.info("reclaimed %d orphaned project venv(s)", removed)
+
+        # Fire and forget: nobody waits on this, so it must not hold the bind.
+        threading.Thread(target=_run_gc, name="project-venv-gc", daemon=True).start()
 
     app.exception_handler(Exception)(unhandled_exception)
     # A route whose feature group is not installed: 503 + `missing_extra`

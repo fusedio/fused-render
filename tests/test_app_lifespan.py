@@ -644,3 +644,48 @@ def test_the_deferred_scan_is_skipped_when_startup_never_finished(deferred):
         ".", threading.Event(), delay_s=0.0, wait=lambda s: None,
         ready_timeout_s=0.01)
     assert calls == []
+
+
+# ------------------------------------------------ housekeeping off the boot path
+
+
+def test_project_venv_gc_is_not_awaited(tmp_path, monkeypatch):
+    """The gc is a disk walk nobody waits on: the handler starts a daemon
+    thread and returns before `projectenv.gc` finishes."""
+    import threading
+
+    from fused_render import projectenv
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def slow_gc():
+        entered.set()
+        release.wait(10)
+        return 0
+
+    monkeypatch.setattr(projectenv, "gc", slow_gc)
+    handler, run = _grab_startup_handler(
+        tmp_path, monkeypatch, "_startup_gc_project_venvs")
+    run(handler())  # returns although gc is still blocked
+    assert entered.wait(5)
+    assert not release.is_set()
+    thread = next(t for t in threading.enumerate() if t.name == "project-venv-gc")
+    assert thread.daemon
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+
+
+def test_startup_prewarm_ai_defers_the_spawn(tmp_path, monkeypatch):
+    from fused_render.server import app as app_mod
+
+    seen = {}
+
+    def fake_prewarm(app, delay=0.0):
+        seen["delay"] = delay
+
+    monkeypatch.setattr(app_mod, "prewarm_ai", fake_prewarm)
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_prewarm_ai")
+    run(handler())
+    assert seen["delay"] == 5.0
