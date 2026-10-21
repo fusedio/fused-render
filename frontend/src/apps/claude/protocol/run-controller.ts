@@ -4365,8 +4365,22 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // that prompt and everything before it — then drop the partial rows
         // beneath it, which is exactly what the loop re-renders.
         if (await refreshFromTranscript()) stripUnderRefreshedUser();
-      } else if (probeMsg && !shownAlready) {
+      } else if (probeMsg && !onScreen(probeMsg)) {
         addUser(probeMsg);
+      } else if (probeMsg && !shownAlready) {
+        // THE OPENING LINE IS ON SCREEN BUT IS NOT THE LAST ONE, on a plain
+        // re-attach (neither `neverShown` nor `quiet`, so `shownAlready` is
+        // false). `poll.message` is the run's FIRST message, and a run that
+        // folded a note mid-turn, or queued a second turn behind the first,
+        // has a later last bubble — so `matches` refuses it. Typing the line
+        // again was a duplicate bubble, and `pollLoop` then replayed the
+        // window from offset 0 under the newest reply. The line is up: let the
+        // transcript supply whatever followed it, and mark the window as
+        // landed so the loop renders only what streams from here on. Not
+        // `stripUnderRefreshedUser`: that exists so the loop can re-render the
+        // stripped rows, and this loop is told not to.
+        await refreshFromTranscript();
+        landedWindow = { runId, segments: probeSegs.length, text: probeText };
       }
       sending = false; // pollLoop is not gated on it, and follow-ups need it free
       await pollLoop(runId, gen);
