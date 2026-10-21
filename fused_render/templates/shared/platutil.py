@@ -70,24 +70,42 @@ def funlock(fh: Any) -> None:
     msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
-def kill_tree(pid: int, sig: int | None = None) -> None:
-    """Signal `pid` and its descendants: the whole process group on POSIX
-    (default SIGKILL), `taskkill /T /F` on Windows. A process that is already
-    gone is not an error."""
+#: `signal.SIGKILL` where it exists; Windows has none, and `kill_tree` there
+#: ends the tree outright whatever signal is named.
+SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def kill_tree(pid: int, sig: int | None = None) -> bool:
+    """Signal `pid` and what it started (default SIGKILL). True once a signal
+    was delivered, False when the process is gone or not ours to signal.
+
+    POSIX signals the whole process group, but only when `pid` leads its own
+    (a `start_new_session` child): a pid read from a file may be stale or
+    recycled into the caller's own group, and `killpg` on that would take the
+    caller down. Any other pid gets a plain single-pid signal. Windows runs
+    `taskkill /T /F`, falling back to `os.kill`."""
+    if sig is None:
+        sig = SIGKILL
     if not IS_WINDOWS:
         try:
-            os.killpg(os.getpgid(pid), sig if sig is not None else signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-        return
+            leader = os.getpgid(pid) == pid
+        except OSError:
+            leader = False
+        try:
+            os.killpg(pid, sig) if leader else os.kill(pid, sig)
+        except OSError:
+            return False
+        return True
     try:
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                       capture_output=True, timeout=15)
+        done = subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                              capture_output=True, timeout=15)
+        return done.returncode == 0
     except (OSError, subprocess.SubprocessError):
         try:
             os.kill(pid, signal.SIGTERM)
         except OSError:
-            pass
+            return False
+        return True
 
 
 def detach_kwargs() -> dict[str, Any]:

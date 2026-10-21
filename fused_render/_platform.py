@@ -18,5 +18,6 @@ IS_WINDOWS = _mod.IS_WINDOWS
 flock = _mod.flock
 funlock = _mod.funlock
 kill_tree = _mod.kill_tree
+SIGKILL = _mod.SIGKILL
 detach_kwargs = _mod.detach_kwargs
 probe_pid = _mod.probe_pid

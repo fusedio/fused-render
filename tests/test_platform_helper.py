@@ -57,9 +57,9 @@ def test_flock_blocking_waits_for_release(tmp_path):
 def test_kill_tree_kills_group_and_swallows_missing():
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
                             **_platform.detach_kwargs())
-    _platform.kill_tree(proc.pid)
+    assert _platform.kill_tree(proc.pid) is True
     assert proc.wait(10) != 0
-    _platform.kill_tree(proc.pid)  # already gone: no raise
+    assert _platform.kill_tree(proc.pid) is False  # already gone: no raise
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX detach kwargs")
@@ -84,3 +84,19 @@ def test_probe_pid_alive_and_gone():
     proc.wait()
     with pytest.raises(ProcessLookupError):
         _platform.probe_pid(proc.pid)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+def test_kill_tree_spares_the_callers_own_group():
+    """A pid that leads no group of its own (the caller's own pid, here) is
+    signalled alone, never through `killpg`, which would take the whole group."""
+    import signal
+    seen = []
+    orig = os.killpg
+    os.killpg = lambda *a: seen.append(a)
+    try:
+        assert _platform.kill_tree(os.getpid(), 0) is True
+    finally:
+        os.killpg = orig
+    leader = os.getpgid(os.getpid()) == os.getpid()
+    assert bool(seen) == leader

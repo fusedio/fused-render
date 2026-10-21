@@ -490,13 +490,7 @@ def cancel_upload(upload_id: str) -> dict:
         except (OSError, ValueError):
             pid = None
     if pid is not None:
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
+        _platform.kill_tree(pid, signal.SIGTERM)
     return read_upload_state(upload_id)
 
 
