@@ -165,7 +165,7 @@ export interface HttpError extends Error {
   status?: number;
   body?: unknown;
 }
-function httpError(data: { error?: unknown } | null, status: number): HttpError {
+export function httpError(data: { error?: unknown } | null, status: number): HttpError {
   const said = data && typeof data.error === "string" ? data.error : "";
   const err = new Error(said || `HTTP ${status}`) as HttpError;
   err.status = status;
