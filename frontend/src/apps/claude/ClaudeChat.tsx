@@ -4917,7 +4917,8 @@ function ChatBody(props: ChatBodyProps) {
   // strip would hold nothing but `← Chats` and the menu, those two ride the
   // identity row as its lead and tail instead of a row of their own. Any seat
   // that has something to say (a target, the picker, the view toggle) keeps
-  // the two-row layout.
+  // the two-row layout. The view toggle only shows when there is a pane
+  // (viewClassNames drops `narrow` for a no-pane chat).
   const mergedHeadRow =
     !!props.mergedHead &&
     inChat &&
@@ -4926,7 +4927,7 @@ function ChatBody(props: ChatBodyProps) {
     !peek &&
     !(annTarget && !props.noAnnTools) &&
     host !== "anntools" &&
-    !(narrowView.narrow && !props.noAnnTools);
+    !(narrowView.narrow && !pane.noPane && !props.noAnnTools);
   // One definition each, placed by the strip or by the merged `Topbar`.
   const backBtn = (
         <button
