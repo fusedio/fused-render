@@ -212,7 +212,8 @@ describe("permChoices", () => {
   });
 
   test("the escalation is a quiet secondary after Deny, never a peer", () => {
-    const last = permChoices({ tool: "Bash" }, "prompt").at(-1);
+    const all = permChoices({ tool: "Bash" }, "prompt");
+    const last = all[all.length - 1];
     expect(last).toMatchObject({ mode: "auto", secondary: true, primary: false });
   });
 
