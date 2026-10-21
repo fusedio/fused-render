@@ -43,13 +43,16 @@ export interface ContribEvent {
   who: string | null;
 }
 
-export type MergePurpose = "needs-merge" | "return" | "own-sync" | "original";
+export type MergePurpose = "needs-merge" | "update" | "return" | "proposal" | "own-sync" | "original";
 
 export interface MergeJobView {
   id: string;
   /** `landing`: Keep the merge was pressed and the result is being moved
-   *  into the real folder — still in flight, drawn as running. */
-  status: "running" | "landing" | "ready" | "failed" | "accepted" | "discarded";
+   *  into the real folder — still in flight, drawn as running. `choice`:
+   *  nothing to combine line by line (one side deleted or replaced a file
+   *  the other changed) — the panel's sentence names it and its actions
+   *  (Keep mine / Use theirs) are the way out; no review is drawn. */
+  status: "running" | "landing" | "ready" | "choice" | "failed" | "accepted" | "discarded";
   /** Claude's 2–4 plain sentences about what it combined (ready). */
   summary: string;
   files: string[];
@@ -205,7 +208,7 @@ export interface Contributor {
 // sent and nothing more — no button is ever derived on this side.
 
 export interface SourcePanel {
-  kind: "github" | "own" | "remix" | "scratch" | "pending";
+  kind: "github" | "own" | "remix" | "scratch" | "pending" | null;
   /** "alice/x". */
   repo: string | null;
   /** The name every sentence uses (the author's login, or the user's own). */

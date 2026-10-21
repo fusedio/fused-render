@@ -50,7 +50,7 @@ def _tip(root: str, record: dict | None) -> str | None:
     gu = _gu()
 
     def rev(spec):
-        r = gu._run(root, "rev-parse", "--verify", "--quiet", f"{spec}^{{commit}}")
+        r = gu._run_safe(root, "rev-parse", "--verify", "--quiet", f"{spec}^{{commit}}")
         return gu._out(r) if gu._ok(r) else None
 
     kind = (record or {}).get("kind")
@@ -107,7 +107,7 @@ def list(app_dir: str) -> list[dict]:  # noqa: A001 — the contract's name
         if hit is not None:
             return [dict(r) for r in hit]
         gu = _gu()
-        r = gu._run(root, "log", f"--max-count={_MAX_COMMITS}", "--no-merges",
+        r = gu._run_safe(root, "log", f"--max-count={_MAX_COMMITS}", "--no-merges",
                     "--format=%an%x09%ae", tip)
         if not gu._ok(r):
             return []

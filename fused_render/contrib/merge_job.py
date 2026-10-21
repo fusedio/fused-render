@@ -248,7 +248,7 @@ def _prune_locked(now: float) -> list:
             job["status"] = "discarded"
             dead.append(job["worktree"])
             job["worktree"] = None
-        if job["status"] in ("failed", "accepted", "discarded"):
+        if job["status"] in ("failed", "choice", "accepted", "discarded"):
             del _jobs[jid]
     return dead
 
@@ -359,7 +359,7 @@ def current(app_dir: str, purpose=None) -> dict | None:
     live = [j for j in mine if j["status"] in _OPEN]
     if live:
         return _public(live[-1])
-    failed = sorted((j for j in mine if j["status"] == "failed"),
+    failed = sorted((j for j in mine if j["status"] in ("failed", "choice")),
                     key=lambda j: j["started_at"])
     if failed and _still_needed(root, failed[-1]["purpose"]):
         return _public(failed[-1])
@@ -404,7 +404,7 @@ def _run(job: dict, resolver) -> None:
     except Exception:  # noqa: BLE001 — a job never takes the thread down silently
         logger.exception("merge job %s crashed", job["id"])
         _finish(job, "failed", error=FAILED_MESSAGE)
-    if job["status"] in ("failed", "discarded"):
+    if job["status"] in ("failed", "choice", "discarded"):
         wt, job["worktree"] = job["worktree"], None
         _cleanup(wt)
 
@@ -474,6 +474,18 @@ def _run_inner(job: dict, resolver) -> None:
         _finish(job, "failed", error=FAILED_MESSAGE)
         return
 
+    # Only text overlaps with markers go to Claude. A file removed on one
+    # side and changed on the other, or changed on both sides but not line
+    # by line (binary), has nothing to combine — and doing nothing would
+    # pass every check below while silently picking a side. That is the
+    # person's choice (Keep mine / Use theirs for the whole update).
+    choice = _choices(wt, job)
+    if choice:
+        with _lock:
+            job["files"] = [p for p, _why in choice]
+        _finish(job, "choice", error=" ".join(why for _p, why in choice[:3]))
+        return
+
     summaries, touched = [], []
     for _round in range(MAX_ROUNDS):
         if job["cancel"]:
@@ -532,6 +544,33 @@ def _run_inner(job: dict, resolver) -> None:
     job["summary"] = _combine_summaries(summaries) or (
         "Claude combined both versions of " + _file_words(touched) + ".")
     _finish(job, "ready")
+
+
+def _choices(wt: str, job: dict) -> list:
+    """`[(path, sentence)]` for every unmerged path Claude cannot combine:
+    one side has no version of it (removed, or renamed away), or there are
+    no markers to resolve (a binary file). Empty when every overlap is a
+    text one."""
+    res = _git(wt, "ls-files", "-u", "-z")
+    stages: dict = {}
+    for item in (res[1].split("\0") if _ok(res) else []):
+        meta, _, path = item.partition("\t")
+        if path and meta.split()[-1:]:
+            stages.setdefault(path, set()).add(meta.split()[-1])
+    sides = job["sides"] or _sides(job["root"], job["purpose"])
+    out = []
+    for path, have in sorted(stages.items()):
+        name = _plain_name(os.path.basename(path))
+        if "2" not in have:
+            out.append((path, f"{name} was removed in {sides['first']} and changed in "
+                              f"{sides['second']}."))
+        elif "3" not in have:
+            out.append((path, f"{name} was changed in {sides['first']} and removed in "
+                              f"{sides['second']}."))
+        elif not _has_markers(wt, path) or not os.path.isfile(os.path.join(wt, path)):
+            out.append((path, f"{name} was changed in both versions in a way that can't be "
+                              "combined line by line."))
+    return out
 
 
 def _restore_outside(wt: str, files: list, before: set) -> None:
@@ -699,9 +738,12 @@ def discard(job_id: str) -> dict:
 # are copied into an empty sandbox folder under neutral names
 # (`part<N>/<name>`, any name Claude would load renamed to `….txt`), Claude
 # runs THERE with `--setting-sources=` (no project/user settings, hooks or
-# memory), `--strict-mcp-config` with no servers, and only Read/Edit/Write
-# (confined to its working folder, edits auto-accepted, nothing else
-# allowed); the edited files are copied back. A symlink is never followed
+# memory), `--strict-mcp-config` with no servers, and only Read/Edit/Write,
+# each allowed on the sandbox folder alone (`SANDBOX_RULES`) in `dontAsk`
+# mode — anything else, a Read outside it included, is denied, never asked
+# (a prompt injection in the conflict text cannot read the machine); the
+# edited files are copied back. Only text overlaps reach Claude
+# (`_choices`). A symlink is never followed
 # either way. File names reach the prompt fenced as data, one per line,
 # control characters stripped.
 
@@ -744,8 +786,19 @@ _NAME_RE = re.compile(r"[^\w.\- ]")
 
 RESOLVER_TOOLS = "Read,Edit,Write"
 
+
+def sandbox_rules(box: str | None = None) -> tuple:
+    """What the resolver may do: Read/Edit/Write inside the sandbox folder
+    only — path-scoped rules, never a bare tool name (a bare name allows
+    every path). `//<abs>` is an absolute path in Claude Code's rule
+    syntax; with no `box`, the working folder (`./`)."""
+    where = "/" + os.path.realpath(box) if box else "."
+    return tuple(f"{tool}({where}/**)" for tool in RESOLVER_TOOLS.split(","))
+
+
 #: How the resolver starts Claude (the test seam).
 _popen = subprocess.Popen
+
 
 def _prompt(files: list, context: dict) -> str:
     return _PROMPT.format(files="\n".join(_plain_name(f) for f in files),
@@ -771,14 +824,20 @@ def sandbox_names(files: list) -> dict:
     return out
 
 
-def resolver_argv(claude_bin: str) -> list:
-    """The resolver's Claude command line (module comment above)."""
+def resolver_argv(claude_bin: str, box: str | None = None) -> list:
+    """The resolver's Claude command line (module comment above), confined
+    to `box` (its working folder)."""
     return [claude_bin, "-p", "--no-session-persistence",
             "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--setting-sources=", "--strict-mcp-config",
             "--mcp-config", json.dumps({"mcpServers": {}}),
-            "--tools", RESOLVER_TOOLS, "--allowedTools", RESOLVER_TOOLS,
-            "--permission-mode", "acceptEdits", "--max-turns", "60"]
+            "--tools", RESOLVER_TOOLS,
+            # Only the sandbox folder, and nothing is ever asked: a rule that
+            # does not match is a denial (`dontAsk`; no acceptEdits). Verified
+            # with the real CLI (rev-sec r2 probes): a Read or Write outside
+            # the sandbox is refused.
+            "--allowedTools", *sandbox_rules(box),
+            "--permission-mode", "dontAsk", "--max-turns", "60"]
 
 
 def summary_from(text: str) -> str:
@@ -803,6 +862,17 @@ def _result(stdout: str) -> dict:
     return {}
 
 
+def _plain_file_inside(top: str, rel: str) -> bool:
+    """`top/rel` is a regular file reached through no symlink at all — not
+    the file itself, not any folder on the way (a proposal can commit
+    `link -> ~/.ssh` and conflict on `link/known_hosts`)."""
+    path = os.path.join(top, rel)
+    real_top = os.path.realpath(top)
+    return (os.path.isfile(path) and not os.path.islink(path)
+            and os.path.realpath(path) == os.path.join(real_top, os.path.normpath(rel))
+            and os.path.realpath(path).startswith(real_top + os.sep))
+
+
 def claude_resolver(worktree: str, files: list, context: dict) -> dict:
     """One headless Claude turn over copies of `files` in a sandbox folder
     (module comment above); `{"ok", "summary"}` or `{"ok": False, "error"}`.
@@ -810,8 +880,7 @@ def claude_resolver(worktree: str, files: list, context: dict) -> dict:
     job = context.get("job") or {}
     deadline = context.get("deadline") or (time.time() + MAX_SECONDS)
     names = {rel: name for rel, name in sandbox_names(files).items()
-             if os.path.isfile(os.path.join(worktree, rel))
-             and not os.path.islink(os.path.join(worktree, rel))}
+             if _plain_file_inside(worktree, rel)}
     if not names:
         return {"ok": False, "error": FAILED_MESSAGE}
     box = os.path.join(_work_root(), f"{job.get('id') or uuid.uuid4().hex}-claude")
@@ -823,10 +892,8 @@ def claude_resolver(worktree: str, files: list, context: dict) -> dict:
         answer = _run_claude(box, _prompt(list(names.values()), context), job, deadline)
         if answer.get("ok"):
             for rel, name in names.items():
-                src, dest = os.path.join(box, name), os.path.join(worktree, rel)
-                if os.path.isfile(src) and not os.path.islink(src) \
-                        and not os.path.islink(dest):
-                    shutil.copyfile(src, dest)
+                if _plain_file_inside(box, name) and _plain_file_inside(worktree, rel):
+                    shutil.copyfile(os.path.join(box, name), os.path.join(worktree, rel))
         return answer
     except OSError:
         logger.exception("merge job: resolver sandbox failed")
@@ -840,7 +907,7 @@ def _run_claude(box: str, prompt: str, job: dict, deadline: float) -> dict:
 
     agent = load_agent()
     try:
-        argv = resolver_argv(agent._claude_bin())
+        argv = resolver_argv(agent._claude_bin(), box)
     except FileNotFoundError:
         return {"ok": False, "error": "Claude couldn't start. Check that Claude Code is "
                                       "installed and signed in, then try again."}

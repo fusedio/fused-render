@@ -50,7 +50,8 @@ def gh(state="following", *, flags=ALL, github=IN, proposal=None, owner_checked=
 
 def own(state="published", *, flags=ALL, github=IN, remix_of=None, original_update=False,
         repo="bob/mine", proposal=None, merge_job=None, **o):
-    """Facts for an own app; `o` overrides ownsync.status fields."""
+    """Facts for an own app; `o` overrides ownsync.status fields;
+    `merge_job` is merge_job.current(purpose own-sync/original)."""
     s = {"state": state, "unpublished": 0, "github_new": 0, "files": [],
          "message": ownsync._message(state, o.get("files") or ()),
          "fixes": list(ownsync.FIXES.get(state, []))}
@@ -58,8 +59,9 @@ def own(state="published", *, flags=ALL, github=IN, remix_of=None, original_upda
     return {"kind": "own", "repo": repo, "remix_of": remix_of, "owner_checked": True,
             "original_update": original_update, "flags": flags, "github": github,
             "copy": {"kind": "own", "state": "remix" if remix_of else "own",
-                     "merge_job": merge_job},
-            "own": s, "proposal": proposal, "untracked": [], "last_checked": 2000.0}
+                     "merge_job": None},
+            "own": s, "own_merge": merge_job, "proposal": proposal, "untracked": [],
+            "last_checked": 2000.0}
 
 
 def ids(f):
@@ -122,6 +124,9 @@ TABLE = [
      ["update-proposal", "withdraw", "remix", "discard", "check"]),
     ("proposed, fits unknown", gh("proposed", proposal={**WAITING, "fits": None}, **CH),
      ["withdraw", "remix", "discard", "check"]),
+    # Round 2 (a): new untracked files → Update offered as a secondary action.
+    ("proposed, new files only", gh("proposed", proposal=WAITING, untracked=["new.csv"], **CH),
+     ["update-proposal", "withdraw", "remix", "discard", "check"]),
     ("proposed, signed out", gh("proposed", unproposed=1, proposal=WAITING, github=OUT, **CH),
      ["sign-in", "discard", "check"]),
     ("proposed, collaborator", gh("proposed", can_push=True, proposal=WAITING, **CH),
@@ -166,13 +171,30 @@ TABLE = [
     ("own publish failed", own("publish-failed", unpublished=1), ["publish-now", "check"]),
     ("own publish auth, signed out", own("publish-auth", unpublished=1, github=OUT),
      ["sign-in", "publish-now", "check"]),
-    ("own merging", own("merging"), []),
-    ("own merge job ready", own("needs-merge", merge_job={"id": "m", "status": "ready"}), []),
-    ("own, an inbox proposal merging", own(merge_job={"id": "m", "status": "running",
-                                                      "purpose": "proposal"}), ["check"]),
+    ("own merging", own("merging", merge_job={"id": "m", "status": "running",
+                                              "purpose": "own-sync"}), []),
+    ("own merge job ready", own("needs-merge", merge_job={"id": "m", "status": "ready",
+                                                          "purpose": "own-sync"}), []),
+    # rev-fe 2: a failed merge names it and offers the fixes again.
+    ("own merge failed", own("needs-merge", merge_job={"id": "m", "status": "failed",
+                                                       "purpose": "own-sync"}),
+     ["merge-claude", "use-github", "check"]),
+    ("own merge failed, state moved on", own(merge_job={"id": "m", "status": "choice",
+                                                        "purpose": "own-sync"}),
+     ["merge-claude", "use-github", "check"]),
+    ("remix bring-in ready", own(remix_of="alice/x", original_update=True,
+                                 merge_job={"id": "m", "status": "ready",
+                                            "purpose": "original"}), []),
+    ("remix bring-in failed", own(remix_of="alice/x", original_update=True,
+                                  merge_job={"id": "m", "status": "failed",
+                                             "purpose": "original"}),
+     ["bring-in", "check"]),
     ("own no tracking yet", own("no-github"), ["check"]),
     # §16.12: held after a github→own upgrade; unknown rewind state.
     ("own held", own("held", unpublished=2), ["publish-now", "check"]),
+    ("own kept (undone combine)", own("kept", github_new=1), ["bring-in", "check"]),
+    ("remix kept, original moved too", own("kept", remix_of="alice/x", original_update=True),
+     ["bring-in", "check"]),
     ("own unknown", own("unknown", unpublished=1), ["publish-now", "use-github", "check"]),
     ("own A1 still fixes", own("github-changed", unpublished=1, flags=A1),
      ["put-on-top", "use-github", "publish-over", "check"]),
@@ -216,6 +238,12 @@ def test_buttons(name, f, want):
     ("own needs-merge", own("needs-merge", unpublished=1), "merge-claude"),
     ("github-changed", own("github-changed", unpublished=1), "put-on-top"),
     ("held", own("held", unpublished=2), "publish-now"),
+    ("kept", own("kept", github_new=1), "bring-in"),
+    ("proposed, new files only", gh("proposed", proposal=WAITING, untracked=["n.csv"], **CH),
+     "check"),
+    ("proposed, new edits and new files",
+     gh("proposed", unproposed=1, proposal=WAITING, untracked=["n.csv"], **CH),
+     "update-proposal"),
     ("unknown", own("unknown", unpublished=1), "publish-now"),
     ("github-changed, nothing of mine", own("github-changed"), "use-github"),
     ("sync failed", gh(sync_error="Couldn't reach GitHub."), "retry"),
@@ -329,6 +357,7 @@ def test_nothing_to_show_is_null():
     (gh("merged"), "merged", "alice merged your change. You're on alice's latest version."),
     (gh("merged", merged_in_tip=False), "merged",
      "alice merged your change; fused will bring it in shortly."),
+    (gh("merged", taken_back=True), "merged", "alice merged your change, then took it back."),
     (gh("merged", **CH), "merged", "Your newer changes: 1 file."),
     (gh(off_default=True, behind=3), "other-branch", "which has 3 newer changes."),
     (gh("proposed", proposal={**WAITING, "fits": False}, **CH), "proposed",
@@ -367,8 +396,9 @@ def test_sentences(f, state, words):
     assert words in p["sentence"]
 
 
+#: §0.1 plus the frontend's words.ts list (which also bans "main").
 _GIT_WORDS = re.compile(r"\b(?:(?i:branch\w*|rebas\w*|fork\w*|commit\w*|push\w*|conflict\w*"
-                        r"|origin|sha)|HEAD)\b")
+                        r"|origin|sha|main)|HEAD)\b")
 
 
 def test_no_git_words():
@@ -398,7 +428,7 @@ CALLED = [
     ("ownsync", "status", ()), ("ownsync", "check_now", ()), ("ownsync", "publish_now", ()),
     ("ownsync", "use_github", ()), ("ownsync", "put_on_top", ()),
     ("ownsync", "publish_over", ()), ("ownsync", "save_edits", ()),
-    ("ownsync", "start_merge", ()), ("ownsync", "restore", ()),
+    ("ownsync", "start_merge", ()), ("ownsync", "restore", ()), ("ownsync", "bring_in", ()),
     ("merge_job", "start", ("purpose", "ours", "theirs")), ("merge_job", "get", ()),
     ("merge_job", "accept", ()), ("merge_job", "discard", ()),
     ("proposals", "view", ()), ("proposals", "untracked", ()),
@@ -433,3 +463,16 @@ def test_git_upstream_names_exist():
     for name in ("sync_repo", "last_checked"):
         assert callable(getattr(git_upstream, name, None)), name
     assert {"action", "push"} <= set(inspect.signature(git_upstream.sync_repo).parameters)
+
+
+def test_round2_new_files_and_taken_back():
+    """Audit r2: an open proposal with new untracked files offers them via
+    a secondary Update (sheet lists them); a merge taken back never claims
+    the copy is on the author's latest."""
+    f = gh("proposed", proposal=WAITING, untracked=["new.csv"], **CH)
+    out = actions.decide(f)
+    up = _button(f, "update-proposal")
+    assert up["label"] == "Add new files to your proposal" and not up["primary"]
+    assert out["panel"]["untracked"] == ["new.csv"]
+    p = actions.decide(gh("merged", taken_back=True, merged_in_tip=True))["panel"]
+    assert "You're on" not in p["sentence"]

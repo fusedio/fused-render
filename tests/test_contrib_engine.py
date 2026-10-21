@@ -542,7 +542,7 @@ def test_row7_squash_of_two_commits_returns_before_merging_r3(w):
     assert w.head() == w.alice()
     assert _texts(w)[-1] == "alice merged your change. You're on alice's latest version."
     st = engine.status(w.app)
-    assert st["state"] == "merged" and st["merged_in_tip"]
+    assert st["state"] == "merged" and st["merged_in_tip"] and not st["taken_back"]
     assert w.sync()["status"] == "synced" and w.head() == w.alice()  # returns once
 
 
@@ -988,7 +988,8 @@ def test_merged_then_taken_back_says_so(w, method):
     assert "blue" in read(w.app, "index.html") and read(w.app, "app.py") == APP_LOUD
     assert _texts(w)[-1] == ("alice merged your change, then took it back. You're on "
                              "alice's latest version. 1 edit you made since kept.")
-    assert engine.status(w.app)["merged_in_tip"]
+    st = engine.status(w.app)
+    assert st["merged_in_tip"] and st["taken_back"]
 
 
 def test_merged_in_tip_false_without_a_merged_proposal(w):

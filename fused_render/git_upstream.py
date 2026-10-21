@@ -469,7 +469,7 @@ _FOLLOWS_REFUSAL = ("Fused keeps this app up to date with its author's latest "
 
 def _record(result):
     if result is not None:
-        if _is_github(result["root"]):
+        if _card_hidden(result["root"], result):
             # No Update/Switch card (known_repos) for a copy the engine keeps.
             with _state_lock:
                 _state.pop(result["root"], None)
@@ -702,7 +702,7 @@ def switch_repo(root):
     raw git text, and refused (never silently taking some other action on
     the user's behalf; the fix is a terminal, the same as every other
     refusal this module surfaces)."""
-    if _is_github(root):
+    if _is_github(root) and _sources_on():
         return _refuse("contrib", _FOLLOWS_REFUSAL)
     with _mutation_slot() as slot:
         if not slot:
@@ -796,6 +796,16 @@ _FAILURE_TITLES = {
     "git-failed": "git reported an error",
 }
 
+# A GitHub-link copy's rows (the engine records today's `dirty`/`diverged`/
+# `git-failed` rows for it with A1 off — §16.12) must not invite a push: a
+# plain title, no git command, and a Fix-with-Claude `prompt` that says what
+# the copy is (`_follow_row`).
+_FOLLOW_TITLES = {
+    "dirty": "edits you haven't saved are in the way of the author's latest",
+    "diverged": "your changes and the author's latest both changed this app",
+}
+_FOLLOW_TITLE = "the author's latest couldn't be brought in"
+
 _sync_lock = threading.Lock()
 _sync_failures: dict = {}  # (root, reason) -> failure record
 _pulled_events: list = []  # newest last, capped
@@ -860,11 +870,43 @@ def _record_failure(root, reason, *, action, command, output, push):
         "push": bool(push),
         "at": time.time(),
     }
+    _follow_row(root, record)
     with _sync_lock:
         for key in [k for k in _sync_failures if k[0] == root]:
             del _sync_failures[key]
         _sync_failures[(root, reason)] = record
     return record
+
+
+def _follow_row(root, record):
+    """A GitHub-link copy's row, rewritten so nothing on it invites a push
+    (round 2, R6): plain title, no git command, `push` False, `follows`
+    naming the repo, and the Fix-with-Claude `prompt` the shell sends
+    instead of building one from the command."""
+    try:
+        if not _is_github(root):
+            return
+        from fused_render.contrib import store
+        rec = store.get(root) or {}
+    except Exception:  # noqa: BLE001 — today's row
+        return
+    repo = rec.get("repo") or "its author's repository"
+    branch = rec.get("branch") or "main"
+    record.update({
+        "title": _FOLLOW_TITLES.get(record["reason"], _FOLLOW_TITLE),
+        "command": "",
+        "push": False,
+        "follows": repo,
+        "prompt": (
+            f"This app folder ({root}) is a copy of {repo} on GitHub that follows its "
+            f"author's version. It must NEVER be pushed anywhere — not to origin, not "
+            f"by URL, not to a fork — and its remote settings must not be changed. "
+            f"Bring the author's latest version (the {branch} branch of "
+            f"https://github.com/{repo}) into this copy while keeping my local changes: "
+            f"fetch it, merge it into the current branch, resolve any conflicts so both "
+            f"sides' intent survives, and commit. Then tell me in plain words what "
+            f"changed. What fused saw: {record.get('output') or record['title']}"),
+    })
 
 
 def _clear_failures(root):
@@ -933,25 +975,76 @@ def _sync_locked(root, *, action, push):
     except Exception:  # noqa: BLE001 — unknown kind is never "no record" (a push)
         logger.exception("contrib kind check failed for %s", root)
         return _skipped("contrib-error")
+    if kind is None:
+        # A folder fused marked as a GitHub-link copy but with no record (a
+        # Finder duplicate, a lost record): recorded as one now, never
+        # plain-synced; if no record can be built, skipped (round 2, R4).
+        try:
+            if _cls.is_marked(root):
+                if _cls.claim_marked(root) is None:
+                    return _skipped("contrib-unrecorded")
+                kind = "github"
+        except Exception:  # noqa: BLE001 — a marked folder never gets a push
+            logger.exception("contrib marker check failed for %s", root)
+            return _skipped("contrib-error")
     if kind == "github":
         try:
             with contrib_git():
                 _cls.settle_locked(root, "github")
                 from fused_render.contrib import engine as _contrib
-                return _contrib.sync(root, action=action, push=push)
+                return _with_off_default_state(root, _contrib.sync(root, action=action, push=push))
         except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
             logger.exception("contrib sync failed for %s", root)
             return _skipped("contrib-error")
     if kind == "scratch":
         return _skipped("scratch")
     if kind == "own":
-        with contrib_git():
-            try:
+        # The author's own repo: fused's private reads are hook-free
+        # (`settle_locked`), but the plain fetch/pull/push below are today's,
+        # running the author's own hooks (a secret scanner) — §16.0 P5.
+        try:
+            with contrib_git():
                 _cls.settle_locked(root, "own")
-            except Exception:  # noqa: BLE001 — a guard failure never costs a sync
-                logger.exception("contrib settle failed for %s", root)
-            return _sync_plain(root, action=action, push=push, kind=kind)
+        except Exception:  # noqa: BLE001 — a guard failure never costs a sync
+            logger.exception("contrib settle failed for %s", root)
+        return _sync_plain(root, action=action, push=push, kind=kind)
     return _sync_plain(root, action=action, push=push, kind=kind)
+
+
+def _sources_on():
+    try:
+        from fused_render.contrib import flags
+        return flags.sources()
+    except Exception:  # noqa: BLE001 — unreadable reads as off (today)
+        return False
+
+
+def _with_off_default_state(root, result):
+    """A GitHub-link copy on another branch with A1 OFF keeps today's Switch
+    card (round 2, R5: the app page's Go back exists only with A1 on): the
+    engine's result gets a `check_repo`-shaped state saying so, from the
+    tracking ref its fetch refreshed."""
+    if _sources_on() or result.get("why") != "not-default":
+        return result
+    default_branch = _default_branch(root)
+    branch = _current_branch(root)
+    if not default_branch or branch == default_branch:
+        return result
+    ahead, behind = _ahead_behind_counts(root, default_branch)
+    if behind is None:
+        return result
+    return {**result, "state": {
+        "root": root, "branch": branch, "default_branch": default_branch,
+        "on_default": False, "ahead": ahead or 0, "behind": behind,
+        "checked_at": time.time()}}
+
+
+def _card_hidden(root, row):
+    """The old Update/Switch card is never shown for a GitHub-link copy —
+    except its Switch row while A1 is off (R5)."""
+    if not _is_github(root):
+        return False
+    return _sources_on() or bool(row.get("on_default"))
 
 
 def _last_fetch_ok(root):
@@ -1297,10 +1390,14 @@ def _background_check(path, runner=None):
             elif _is_github(root):
                 # Auto-sync off: the engine only fetches (the author's latest,
                 # by the record's URL) for the page's status — no tree move,
-                # and no Update card for a GitHub-link copy (`_record`).
-                _sync_locked(root, action="Check on app open", push=False)
-                with _state_lock:
-                    _state.pop(root, None)  # one recorded before it was recorded
+                # and no Update card for a GitHub-link copy (`_record`; its
+                # Switch row stays while A1 is off — R5).
+                result = _sync_locked(root, action="Check on app open", push=False)
+                if result.get("state"):
+                    _record(result["state"])
+                else:
+                    with _state_lock:
+                        _state.pop(root, None)  # one recorded before it was recorded
             else:
                 _record(_check_noting(root))
     except Exception:  # noqa: BLE001 — best-effort housekeeping
@@ -1430,7 +1527,7 @@ def known_repos():
                 if v.get("behind", 0) > 0 and not (auto and v.get("on_default"))]
     # A state recorded before the contribution loop took the copy over:
     # still never a card (`_record` stops new ones).
-    return [r for r in rows if not _is_github(r["root"])]
+    return [r for r in rows if not _card_hidden(r["root"], r)]
 
 
 def repo_state_for(root):

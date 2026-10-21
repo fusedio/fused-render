@@ -738,3 +738,41 @@ def test_the_item_carries_its_merge_and_one_merge_runs_at_a_time(fits_world):
     assert inbox.merge_start(alice, pr2["number"])["reason"] == "busy"
     assert inbox.merge_accept(alice, out["job"])["ok"]
     assert all(i["merge_job"] is None for i in inbox.cached(alice))
+
+
+def test_r2_inbox_git_calls_never_run_repo_configured_commands(fits_world, tmp_path):
+    """Alice's own repo: fused's private operations (review download and
+    diff, Try copy, Merge with Claude start) run none of its configured
+    hooks or fsmonitor command (rev-sec r2)."""
+    from test_contrib_proposals import arm_repo_config
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})
+    fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    marker = arm_repo_config(alice, tmp_path)
+    inbox.list(alice)
+    assert settle(alice, pr["number"])["status"] == "done"
+    inbox.try_open(alice, pr["number"], confirm=True)
+    inbox.try_remove(alice, pr["number"])
+    out = inbox.merge_start(alice, pr["number"])
+    assert _wait_merge(out["job"])["status"] == "ready"
+    assert not marker.exists(), marker.read_text()
+
+
+def test_accept_decline_and_try_wait_for_an_open_merge(fits_world):
+    """rev-fe r2 #8: while the item's Merge with Claude is open, Accept,
+    Decline and Try refuse plainly — Keep would otherwise push onto a
+    proposal that was just closed. Discarding the merge frees them."""
+    from fused_render.contrib import merge_job
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})
+    fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    jobs.wait(inbox.review(alice, pr["number"]))
+    out = inbox.merge_start(alice, pr["number"])
+    assert _wait_merge(out["job"])["status"] == "ready"
+    for res in (inbox.accept(alice, pr["number"], confirm=True),
+                inbox.decline(alice, pr["number"], "no"),
+                inbox.try_open(alice, pr["number"], confirm=True)):
+        assert res == {"ok": False, "reason": "merging", "message": inbox.MERGING_MESSAGE}
+    assert gh.get_pr("alice/x", pr["number"])["state"] == "open"
+    merge_job.discard(out["job"])
+    assert inbox.decline(alice, pr["number"])["ok"]

@@ -140,6 +140,11 @@ def facts(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dict:
     else:
         out["own"] = _call("own status", "ownsync", "status", app_dir)
         out["last_checked"] = _safely("checked", _own_checked, app_dir)
+        # engine.status tracks a GitHub-link copy's merges only; an own
+        # app's are ownsync's (own-sync) and a remix's (original). An inbox
+        # proposal's merge in the same folder is the inbox item's, not here.
+        out["own_merge"] = _call("own merge", "merge_job", "current", app_dir,
+                                 purpose=("own-sync", "original"))
     return out
 
 
@@ -323,9 +328,9 @@ def _github(f: dict, flags: dict) -> dict:
     if copy.get("off_default"):
         lets_bring_in = False
         state = "other-branch"
-        sentence = f"This copy is showing a different version than {who}'s main one"
+        sentence = f"This copy is showing a different version of the app than {who}'s usual one"
         sentence += (f", which has {_plural(behind, 'newer change')}." if behind else ".")
-        b.add("go-back-main", "Go back to the main version", primary=True)
+        b.add("go-back-main", "Go back to the usual version of this app", primary=True)
     elif copy.get("needs_merge"):
         lets_bring_in = False
         nm_files = _strs(copy.get("needs_merge_files"))
@@ -356,7 +361,9 @@ def _github(f: dict, flags: dict) -> dict:
         b.add("move-aside", "Move my file aside and update", primary=True)
         b.add("keep-mine", "Keep mine")
     elif state == "merged":
-        if not copy.get("merged_in_tip"):
+        if copy.get("taken_back"):
+            sentence = f"{who} merged your change, then took it back."
+        elif not copy.get("merged_in_tip"):
             sentence = f"{who} merged your change; fused will bring it in shortly."
         else:
             sentence = f"{who} merged your change. You're on {who}'s latest version."
@@ -387,6 +394,11 @@ def _github(f: dict, flags: dict) -> dict:
             if proposal.get("can_update") and (unproposed or asked or unfit
                                                or proposal.get("head_differs")):
                 b.add("update-proposal", "Update proposal", primary=True)
+            elif proposal.get("can_update") and _strs(f.get("untracked")):
+                # New files the proposal could carry (its sheet lists them
+                # unticked) — offered, never the big button.
+                b.add("update-proposal", "Add new files to your proposal")
+                b.add("check", "Check now", primary=True)
             if proposal.get("can_withdraw"):
                 b.add("withdraw", "Withdraw")
         remix_button()
@@ -436,6 +448,7 @@ _OWN_FIXES = {
     "put-on-top": dict(label="Put my edits on top"),
     "publish-over": dict(label="Publish mine over it", danger=True),  # + ownsync's confirm
     "save-edits": dict(label="Save my edits and continue"),
+    "bring-in": dict(label="Bring in and publish"),  # `kept`: an undone combine
 }
 
 
@@ -447,9 +460,7 @@ def _own(f: dict, flags: dict) -> dict:
     if not f.get("repo"):
         return {"panel": None, "actions": []}  # an app of their own, not on GitHub
     own = f.get("own")
-    job = _merge(f.get("copy"))
-    if job is not None and job.get("purpose") == "proposal":
-        job = None  # an inbox proposal's merge: its review is the inbox item's
+    job = f.get("own_merge") if isinstance(f.get("own_merge"), dict) else None
     if not isinstance(own, dict):
         b.add("check", "Check now", primary=True)
         return {"panel": _panel(f, kind=kind, who=who, merge=job), "actions": b.done()}
@@ -461,10 +472,26 @@ def _own(f: dict, flags: dict) -> dict:
     sentence = own.get("message") if isinstance(own.get("message"), str) else ""
     extra: list[str] = []
 
-    if state == "merging" or (job is not None and job.get("status") in _OPEN_JOB):
+    if job is not None and job.get("status") in _OPEN_JOB:
         # Keep / Discard live on the merge review (`panel.merge`).
-        panel.update(state="merging", sentence=sentence or "Claude is combining both versions…")
+        if job.get("status") == "ready":
+            summary = (job.get("summary") or "").strip()
+            sentence = "Claude combined both versions." + (f" {summary}" if summary else "")
+        else:
+            sentence = (sentence if state == "merging" else "") \
+                or "Claude is combining both versions…"
+        panel.update(state="merging", sentence=sentence, files=_strs(job.get("files")))
         return {"panel": panel, "actions": []}
+    failed = job is not None and job.get("status") in ("failed", "choice")
+    if failed:
+        # The overlap it failed on still stands (merge_job.current says so).
+        why = (job.get("error") or "").strip()
+        extra.append("Claude couldn't combine them." + (f" {why}" if why else ""))
+        if job.get("purpose") == "own-sync":
+            b.add("merge-claude", "Merge with Claude again", primary=True)
+            b.add("use-github", **_OWN_FIXES["use-github"])
+        elif flags.get("remix"):
+            b.add("bring-in", "Bring it in again", primary=True)
     for fix in _strs(own.get("fixes")):
         spec = _OWN_FIXES.get(fix)
         if spec is None or (fix == "put-on-top" and not unpublished):
@@ -497,7 +524,20 @@ def for_app(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dic
     return decide(facts(app_dir, copy=copy, proposal=proposal, github=github))
 
 
+def merge_open(app_dir: str) -> bool:
+    """A Merge with Claude job that will land in this folder is running or
+    waiting for Keep/Discard (an inbox proposal's merge never lands here).
+    Undo would move the folder under it, so it is off meanwhile."""
+    job = _call("open merge", "merge_job", "for_app", app_dir)
+    return isinstance(job, dict) and job.get("land", True) is not False
+
+
 def activity(app_dir: str) -> list:
-    """The record's Activity lines, newest first (`store.activity`), or []."""
+    """The record's Activity lines, newest first (`store.activity`), or [] —
+    with no Undo while a merge is open here (`merge_open`)."""
     lines = _call("activity", "store", "activity", app_dir)
-    return lines if isinstance(lines, list) else []
+    if not isinstance(lines, list):
+        return []
+    if any(isinstance(x, dict) and x.get("undo") for x in lines) and merge_open(app_dir):
+        return [{**x, "undo": False} if isinstance(x, dict) else x for x in lines]
+    return lines

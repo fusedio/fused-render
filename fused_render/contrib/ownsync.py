@@ -93,6 +93,8 @@ MESSAGES = {
     "merging": "Claude is combining your edits with the version on GitHub.",
     "no-github": "This app isn't connected to GitHub.",
     "held": "This is your app. {edits} ready to publish.",
+    "kept": ("You undid bringing in GitHub's version. New edits wait here until you "
+             "bring it in again."),
     "unknown": ("fused can't tell whether the version on GitHub was rolled back, so "
                      "your edits are waiting here. Publish them, or switch to the version "
                      "on GitHub."),
@@ -114,6 +116,7 @@ FIXES = {
     "publish-auth": ["publish-now"],
     "held": ["publish-now"],
     "unknown": ["publish-now", "use-github"],
+    "kept": ["bring-in"],
 }
 
 
@@ -163,27 +166,70 @@ def _set_state(root, state: str | None, **fields) -> None:
     store.update(root, fn)
 
 
-#: States that hold publishing until Publish now (§16.12): `held` (ws-guard,
-#: a github→own upgrade with unpublished edits — git_upstream drops the push
-#: itself, `classify.is_held`) and `unknown` (ours: only ahead, and nothing
-#: says whether GitHub was rolled back under these edits).
-HOLDS = ("held", "unknown")
-
-
 def _settle(root) -> None:
-    """An automatic outcome with nothing stuck: clear the state — except a
-    hold (HOLDS), which only Publish now (or a button that moves away from
-    these edits) ends."""
-    st = _own_state(root)
-    if st and st.get("state") not in HOLDS:
+    """An automatic outcome with nothing stuck: clear the stuck state. The
+    hold on publishing is a separate field (`hold`) no state write touches."""
+    if _own_state(root):
         _set_state(root, None)
 
 
+# ------------------------------------------------------------------ the hold
+#
+# THE HOLD (§16.12 round 2): a record field `hold = {why, count, at}`, apart
+# from `own_state`, so no stuck state (needs-merge, github-changed, edits)
+# and no landed merge can wipe it. While it is set nothing publishes on its
+# own — `resolve` never pushes. `why`: "upgrade" (ws-guard: a sign-in made a
+# GitHub-link copy the author's own while it had unpublished edits) or
+# "unknown" (ours: only ahead, and nothing says whether GitHub was rolled
+# back under these edits). Only Publish now — and the buttons that publish
+# or drop these edits on the person's say-so (Use the version on GitHub,
+# Put my edits on top, Publish mine over it) — clear it.
+
+
+def hold_of(root) -> dict | None:
+    """The record's hold, or None. A hold an earlier build wrote into
+    `own_state` (`{"state": "held"}`) is moved into `hold` first, so no
+    state write can wipe it from then on."""
+    rec = store.get(root) or {}
+    h = rec.get("hold")
+    if isinstance(h, dict) and h.get("why"):
+        return h
+    st = rec.get("own_state")
+    if isinstance(st, dict) and st.get("state") == "held":
+        moved = {"why": st.get("why") or "upgrade", "count": st.get("count"),
+                 "at": st.get("at") or time.time()}
+
+        def fn(r):
+            if isinstance(r.get("own_state"), dict) and r["own_state"].get("state") == "held":
+                r["own_state"] = None
+            if not (isinstance(r.get("hold"), dict) and r["hold"].get("why")):
+                r["hold"] = moved
+
+        store.update(root, fn)
+        return moved
+    return None
+
+
+def set_hold(root, why: str, *, count: int | None = None) -> None:
+    """Hold publishing (`why` "upgrade" | "unknown"); an existing hold keeps
+    its reason."""
+    def fn(rec):
+        if not (isinstance(rec.get("hold"), dict) and rec["hold"].get("why")):
+            rec["hold"] = {"why": why, "count": count, "at": time.time()}
+
+    store.update(root, fn)
+
+
+def release_hold(root) -> None:
+    """The person said go (or dropped the held edits): publishing may run."""
+    if hold_of(root):
+        store.update(root, lambda rec: rec.__setitem__("hold", None))
+
+
 def _own_state(root) -> dict | None:
+    """The stuck state (never the hold — `hold_of`)."""
     st = (store.get(root) or {}).get("own_state")
-    if isinstance(st, str) and st:  # ws-guard's `held` may be a bare string
-        return {"state": st}
-    return st if isinstance(st, dict) and st.get("state") else None
+    return st if isinstance(st, dict) and st.get("state") not in (None, "held") else None
 
 
 def _seen(root) -> list[str]:
@@ -537,15 +583,12 @@ def resolve(root, *, action, push) -> dict | None:
             note_seen(root, replay.rev(root, _tracking(branch)) or "")
 
 
-def _held(st) -> bool:
-    return bool(st) and st.get("state") in HOLDS
-
-
 def _resolve_locked(root, branch, *, push) -> dict:
     f = _facts(root, branch)
     if f is None:
         return {"ok": True, "status": "skipped", "why": "unreadable", "pulled": 0,
                 "pushed": False}
+    held = hold_of(root)
     st = _own_state(root)
     if st and st.get("state") in ("needs-merge", "edits") and st.get("head") == f.head \
             and st.get("tip") == f.tip and (st["state"] == "needs-merge" or _still_edited(
@@ -557,9 +600,9 @@ def _resolve_locked(root, branch, *, push) -> dict:
         if f.unknown and f.tip_in_head:
             # Only ahead, and nothing says whether GitHub was rolled back
             # under these edits: wait for the person, with a button.
-            if not _held(st):
-                _set_state(root, "unknown", head=f.head, tip=f.tip)
-            return _result(root, branch, "skipped", (st or {}).get("state") or "unknown")
+            set_hold(root, "unknown")
+            _settle(root)
+            return _result(root, branch, "skipped", "held")
         return _stuck(root, f, "github-changed", unknown=f.unknown)
     if f.tip_in_head:
         # Nothing to bring in (a rewind that kept every published point is
@@ -567,8 +610,9 @@ def _resolve_locked(root, branch, *, push) -> dict:
         if not push:
             _settle(root)
             return _result(root, branch, "synced")
-        if _held(st):
-            return _result(root, branch, "skipped", (st or {}).get("state") or "unknown")
+        if held:
+            _settle(root)
+            return _result(root, branch, "skipped", "held")
         pushed, why = _push(root, branch)
         return _after_push(root, f, pulled=0, pushed=pushed, why=why)
     if _job_open(root):
@@ -582,7 +626,7 @@ def _resolve_locked(root, branch, *, push) -> dict:
         store.update(root, lambda r: r.__setitem__("skip_tip", None))
     if _claude_busy(root):
         return _result(root, branch, "skipped", "claude")
-    if _held(st):
+    if held:
         push = False  # bring GitHub's version in; publishing waits for the button
     behind = replay.count(root, f"{f.head}..{f.tip}") or 0
     combined = _combine(root, f, allow_merge=True, identity=_identity(cached=True))
@@ -636,12 +680,11 @@ def _sync_answer(root, res: dict) -> dict:
 
 
 def publish_now(root) -> dict:
-    """Publish now: today's sync, pushing (never waits for Claude). Ends a
-    `held` state — the person's go-ahead — and vouches for the GitHub
-    version this copy holds now (`note_seen`), so an "unknown" rewind
-    state does not hold the same edits again."""
-    if _held(_own_state(root)):
-        _set_state(root, None)
+    """Publish now: today's sync, pushing (never waits for Claude). Ends the
+    hold — the person's go-ahead — and vouches for the GitHub version this
+    copy holds now (`note_seen`), so an "unknown" rewind state does not
+    hold the same edits again."""
+    release_hold(root)
     note_seen(root)
     return _sync_answer(root, gu.sync_repo(root, action=gu.PUBLISH_NOW, push=True))
 
@@ -652,6 +695,15 @@ def check_now(root) -> dict:
     if (store.get(root) or {}).get("skip_tip"):
         store.update(root, lambda r: r.__setitem__("skip_tip", None))
     return _sync_answer(root, gu.sync_repo(root, action="Check now", push=False))
+
+
+def bring_in(root) -> dict:
+    """Bring in and publish (the `kept` state's button): drop what an Undo
+    set aside (`skip_tip`), bring GitHub's version in and publish — the
+    hold, if any, still decides the publishing."""
+    if (store.get(root) or {}).get("skip_tip"):
+        store.update(root, lambda r: r.__setitem__("skip_tip", None))
+    return _sync_answer(root, gu.sync_repo(root, action="Bring in and publish", push=True))
 
 
 def _fetched_facts(root):
@@ -695,6 +747,7 @@ def use_github(root) -> dict:
             return _answer(root, False, BUSY if refused != "reset-refused"
                            else "Couldn't switch to the version on GitHub. Try again.")
         _set_state(root, None)
+        release_hold(root)  # the held edits are not this copy's version any more
         _activity(root, "use-github", "Switched to the version on GitHub. Your edits "
                   "are saved in case you want them back.", backup=refs)
     return _answer(root, True, "This app now matches the version on GitHub.")
@@ -772,6 +825,7 @@ def put_on_top(root) -> dict:
         if not f.u:  # only unsaved edits rode along: nothing to publish
             _set_state(root, None)
             return _answer(root, True, "Your edits are on top of the version on GitHub.")
+        release_hold(root)  # the button publishes, on the person's say-so
         pushed, why = _push(root, f.branch)
         _after_push(root, f, pulled=0, pushed=pushed, why=why)
         note_seen(root, replay.rev(root, _tracking(f.branch)) or "")
@@ -814,6 +868,7 @@ def publish_over(root) -> dict:
                                "looked. Check again before replacing it.")
             return _answer(root, False, MESSAGES["publish-failed"])
         _set_state(root, None)
+        release_hold(root)  # published, on the person's say-so
         # Not undoable here: putting this copy back on GitHub's old version
         # would not un-publish anything. The pin ages out like any backup.
         _activity(root, "publish-over", "Replaced the version on GitHub with this copy. "
@@ -847,7 +902,10 @@ def save_edits(root) -> dict:
         _activity(root, "save-edits", f"Saved your edits to {_files_words(files)}.")
     if st.get("then") == "put-on-top":
         return put_on_top(root)
-    return publish_now(root)
+    # Carry on with the sync they blocked — NOT Publish now: a hold on
+    # publishing stays until its own button (resolve never pushes held).
+    return _sync_answer(root, gu.sync_repo(root, action="Save my edits and continue",
+                                           push=True))
 
 
 def start_merge(root) -> dict:
@@ -977,22 +1035,26 @@ def status(root) -> dict:
         return {"state": "no-github", "unpublished": 0, "github_new": 0, "files": [],
                 "message": MESSAGES["no-github"], "fixes": []}
     ahead, behind = _ahead_behind(root, branch)
+    rec = store.get(root) or {}
     st = _own_state(root) or {}
+    held = hold_of(root)
     variant = None
     if _job_open(root):
         state, files = "merging", st.get("files") or []
-    elif _held(st) and ahead:
-        # A hold stands until Publish now, whatever HEAD does meanwhile.
-        state, files = st["state"], []
-    elif st.get("state") not in (None, *HOLDS) and st.get("head") == head \
-            and st.get("tip") == tip and (
-                st["state"] != "edits" or _still_edited(root, st.get("files"))):
+    elif st.get("state") and st.get("head") == head and st.get("tip") == tip and (
+            st["state"] != "edits" or _still_edited(root, st.get("files"))):
+        # A stuck state shows first (its buttons); a hold outlives it.
         state, files = st["state"], st.get("files") or []
         if state == "github-changed":
             # What Put my edits on top would carry: the never-published
             # edits, +1 for unsaved ones (they ride along too).
             ahead = int(st.get("unpublished") or 0) + (1 if _dirty_tracked(root) else 0)
             variant = "github-changed-unknown" if st.get("unknown") else None
+    elif held and ahead:
+        # The hold stands until Publish now, whatever HEAD does meanwhile.
+        state, files = ("unknown" if held["why"] == "unknown" else "held"), []
+    elif rec.get("skip_tip") == tip and behind:
+        state, files = "kept", []
     else:
         files = []
         state = ("published" if not ahead and not behind else
@@ -1004,4 +1066,5 @@ def status(root) -> dict:
         # GitHub already had, or there is nothing to carry.
         fixes.remove("put-on-top")
     return {"state": state, "unpublished": ahead, "github_new": behind, "files": files,
-            "message": _message(variant or state, files, ahead), "fixes": fixes}
+            "message": _message(variant or state, files, ahead), "fixes": fixes,
+            "hold": held["why"] if held else None}

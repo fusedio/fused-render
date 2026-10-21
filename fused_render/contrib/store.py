@@ -146,6 +146,9 @@ def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
         "activity": [],
         "skip_tip": None,
         "own_state": None,
+        # A held own copy (§16.12): automatic syncs never push it until
+        # Publish now (`classify.is_held` / `release_hold`, ownsync).
+        "hold": None,
         # ownsync's memory of GitHub tips it saw (newest last, capped by it).
         "seen_tips": [],
         # Adoption after a Finder move (`classify._adopt`): the HEAD this
@@ -162,7 +165,7 @@ def _view(rec: dict) -> dict:
     reader has to know which schema wrote the row. Nothing persists here;
     `migrate_v2` does that."""
     for name, default in (("root_commit", None), ("activity", []),
-                          ("skip_tip", None), ("own_state", None), ("seen_tips", []),
+                          ("skip_tip", None), ("own_state", None), ("hold", None), ("seen_tips", []),
                           ("last_head", None), ("copy_id", None)):
         rec.setdefault(name, default)
     p = rec.get("proposal")
@@ -295,14 +298,16 @@ def _bind(k: str, rec: dict) -> dict | None:
             return None
         return rec
     found = root_commit_of(k)
-    if found and rec.get("v") != RECORD_V and not _origin_matches(k, rec):
-        # A v1 row (no root commit yet) over a repo whose origin is not the
-        # record's: a different repository moved in before the first v2 read
-        # (§16.12). Binding it now would hand the stranger the old record —
-        # drop it instead; the folder is classified afresh. ONLY a v1 row:
-        # binding is on the root commit alone (§16.1) — a v2 row is never
-        # dropped over its origin (a github copy's is pointed back, an own
-        # copy's is its author's to change).
+    if found and (rec.get("v") != RECORD_V or rec.get("kind") == "github") \
+            and not _origin_matches(k, rec):
+        # A row with no root commit yet — v1, or a github row made without
+        # one — over a repo whose origin is not the record's: a different
+        # repository may have moved in before the first bound read (§16.12,
+        # audit V11/R8). Binding it now would hand the stranger the old
+        # record — drop it instead; the folder is classified afresh. A BOUND
+        # row (root commit known) is never dropped over its origin (§16.1: a
+        # github copy's is pointed back), and a v2 own row is filled whatever
+        # its origin says (its author's to change).
         with _lock:
             data = _read()
             cur = data["apps"].get(k)

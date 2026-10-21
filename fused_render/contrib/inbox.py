@@ -389,7 +389,7 @@ def _local_base(app_dir: str, number: int) -> str | None:
     local refs only, no network."""
     gu = _gu()
     n = int(number)
-    return gu._out(gu._run(app_dir, "merge-base", f"refs/fused/pr/{n}-base",
+    return gu._out(gu._run_safe(app_dir, "merge-base", f"refs/fused/pr/{n}-base",
                            f"refs/fused/pr/{n}")) or None
 
 
@@ -481,7 +481,7 @@ def _fetch_pr(app_dir: str, repo: str, number: int, branch: str) -> str:
     fetched = _mod("gh").fetch(app_dir, repo, f"+refs/pull/{n}/head:refs/fused/pr/{n}",
                                f"+refs/heads/{branch}:refs/fused/pr/{n}-base",
                                timeout=_FETCH_TIMEOUT_S)
-    head = gu._out(gu._run(app_dir, "rev-parse", "--verify", "-q",
+    head = gu._out(gu._run_safe(app_dir, "rev-parse", "--verify", "-q",
                            f"refs/fused/pr/{n}^{{commit}}")) if fetched else ""
     if not head:
         raise PlainError("Couldn't download this proposal from GitHub. Try again.")
@@ -511,7 +511,7 @@ def _neutral_git(app_dir: str, *args, timeout: float = 120.0):
     """`(rc, stdout_bytes)` of `git <args>` in the author's repo with no
     attributes and pinned diff config (see above), or None."""
     gu = _gu()
-    git_dir = gu._out(gu._run(app_dir, "rev-parse", "--absolute-git-dir"))
+    git_dir = gu._out(gu._run_safe(app_dir, "rev-parse", "--absolute-git-dir"))
     if not git_dir:
         return None
     with tempfile.TemporaryDirectory(prefix="fused-review-") as tmp:
@@ -523,7 +523,7 @@ def _neutral_git(app_dir: str, *args, timeout: float = 120.0):
         try:
             proc = subprocess.run(
                 [gu._git_bin(), "--git-dir", git_dir, "--work-tree", tree,
-                 *_NEUTRAL_CONFIG, *args],
+                 *gu.SAFE_CONFIG, *_NEUTRAL_CONFIG, *args],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                 env=env, timeout=timeout, close_fds=False)
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -585,7 +585,7 @@ def _not_text(app_dir: str, entries) -> set:
     def batch(flag: str):
         try:
             return subprocess.run(
-                [gu._git_bin(), "-C", app_dir, "cat-file", flag],
+                [gu._git_bin(), "-C", app_dir, *gu.SAFE_CONFIG, "cat-file", flag],
                 input=("\n".join(blobs) + "\n").encode(), stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL, timeout=120.0, close_fds=False,
                 env={**os.environ, **gu._ENV}).stdout
@@ -661,6 +661,20 @@ def _proposal_diff(app_dir: str, number: int, base: str | None = None,
 # ------------------------------------------------------- try / accept / decline
 
 
+MERGING_MESSAGE = ("Claude is still combining this proposal — keep or discard that "
+                   "first.")
+
+
+def _merging(app_dir: str, number: int) -> dict | None:
+    """The refusal while this item's Merge with Claude is open (running,
+    waiting for Keep/Discard, or kept but not yet sent): accepting,
+    declining or trying it then would race the push Keep makes."""
+    job = _merge_for(app_dir, number)
+    if job and job["status"] in ("running", "ready", "landing"):
+        return {"ok": False, "reason": "merging", "message": MERGING_MESSAGE}
+    return None
+
+
 def try_open(app_dir: str, number: int, *, confirm: bool = False) -> dict:
     """Make the Try copy. Refuses until the review of the current head is
     ready; on a "look" verdict, refuses with reason "confirm" unless
@@ -669,6 +683,9 @@ def try_open(app_dir: str, number: int, *, confirm: bool = False) -> dict:
     repo, _ = _repo_of(app_dir)
     if repo is None:
         return {"ok": False, "reason": "not-own", "message": "This app has no proposals."}
+    busy = _merging(app_dir, number)
+    if busy:
+        return busy
     head = _current_head(app_dir, repo, number)
     base = _local_base(app_dir, number) if head else None
     review_obj = _review_for(app_dir, repo, number, head, base) if base else None
@@ -729,6 +746,9 @@ def accept(app_dir: str, number: int, *, confirm: bool = False) -> dict:
     repo, _ = _repo_of(app_dir)
     if repo is None:
         return {"ok": False, "reason": "not-own", "message": "This app has no proposals."}
+    busy = _merging(app_dir, number)
+    if busy:
+        return busy
     gh = _mod("gh")
     try:
         pr = gh.get_pr(repo, number)
@@ -843,6 +863,9 @@ def decline(app_dir: str, number: int, note: str = "") -> dict:
     repo, _ = _repo_of(app_dir)
     if repo is None:
         return {"ok": False, "reason": "not-own", "message": "This app has no proposals."}
+    busy = _merging(app_dir, number)
+    if busy:
+        return busy
     note = (note or "").strip()
     try:
         _mod("gh").close_pr(repo, number, comment=note or None)
@@ -927,7 +950,7 @@ def merge_start(app_dir: str, number: int) -> dict:
                 "message": f"{author} just changed this proposal. Try again."}
     gu = _gu()
     n = int(number)
-    base = gu._out(gu._run(app_dir, "rev-parse", "--verify", "-q",
+    base = gu._out(gu._run_safe(app_dir, "rev-parse", "--verify", "-q",
                            f"refs/fused/pr/{n}-base^{{commit}}"))
     if not base:
         return {"ok": False, "reason": "offline",

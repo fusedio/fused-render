@@ -1196,3 +1196,87 @@ def test_fused_transfers_never_run_the_repos_hooks(w):
     assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _head(w)
     args = w.gh.git_net_args()
     assert "core.hooksPath=" + os.devnull in args and "core.fsmonitor=" in args
+
+
+def test_r2f_a_newer_tip_only_fetched_is_nothing_to_send(w):
+    """Round 2 (F): Bob brought in tip1; tip2 is fetched but NOT brought in
+    (auto-sync off, Keep mine). head_differs judges HEAD against the
+    author's latest HEAD actually holds, so nothing of Bob's reads as new."""
+    from fused_render.contrib.jobs import PlainError
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    w.fake.commit("alice/sine", "main", {"N1.md": "1\n"}, "n1", author="alice")
+    _bring_in(w)
+    tip2 = w.fake.commit("alice/sine", "main", {"N2.md": "2\n"}, "n2", author="alice")
+    assert _fetch(w) == tip2 and not _anc(w, tip2, _head(w))
+    view = _p().refresh(w.app, force=True)
+    assert view["head_differs"] is False and view["unproposed"] == 0
+    with pytest.raises(PlainError, match="already has all your changes"):
+        _p().update(w.app)
+
+
+def test_r2f_a_resolution_still_differs_when_a_newer_tip_is_only_fetched(sw, monkeypatch):
+    """The other side of (F): after a Merge with Claude resolution against
+    tip1, a fetched-only tip2 must not hide it — head_differs stays True."""
+    from fused_render.contrib import engine, merge_job
+    w = sw
+    monkeypatch.setattr(_p(), "merge_accepted", lambda app_dir: {"ok": True})
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    w.fake.commit("alice/sine", "main", {"index.html": PAGE.replace("blue", "green")},
+                  "green", author="alice")
+    w.sync()
+    plan = engine.merge_plan(w.app)
+
+    def resolver(wt, files, ctx):
+        with open(os.path.join(wt, "index.html"), "w", encoding="utf-8") as fh:
+            fh.write(PAGE.replace("blue", "red-green"))
+        return {"ok": True, "summary": "Kept both."}
+
+    job = merge_job.start(w.app, purpose=plan["purpose"], ours=plan["ours"],
+                          theirs=plan["theirs"], resolver=resolver)
+    import time
+    deadline = time.time() + 30
+    while merge_job.get(job)["status"] == "running" and time.time() < deadline:
+        time.sleep(0.05)
+    assert merge_job.accept(job)["ok"]
+    w.fake.commit("alice/sine", "main", {"N2.md": "2\n"}, "n2", author="alice")
+    _fetch(w)                                       # fetched, not brought in
+    assert _p().view(w.app)["head_differs"] is True
+
+
+def arm_repo_config(root, tmp_path):
+    """Plant a repo-configured fsmonitor command and hooks that write a
+    marker when git runs them (rev-sec r2). Answers the marker path."""
+    marker = tmp_path / "FIRED"
+    script = tmp_path / "fsmon.sh"
+    script.write_text(f"#!/bin/sh\necho fsmonitor >> {marker}\nexit 1\n")
+    script.chmod(0o755)
+    hooks = tmp_path / "hooks"
+    hooks.mkdir(exist_ok=True)
+    for h in ("pre-commit", "post-checkout", "commit-msg", "post-commit", "post-merge",
+              "pre-push", "reference-transaction"):
+        p = hooks / h
+        p.write_text(f"#!/bin/sh\necho {h} >> {marker}\n")
+        p.chmod(0o755)
+    git(root, "config", "--local", "core.fsmonitor", str(script))
+    git(root, "config", "--local", "core.hooksPath", str(hooks))
+    return marker
+
+
+def test_r2_proposal_git_calls_never_run_repo_configured_commands(w, tmp_path):
+    from fused_render.contrib import contributors
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    edit(w.app, "app.py", APP_PY_LOUD)
+    edit(w.app, "new.py", "N = 1\n")
+    marker = arm_repo_config(w.app, tmp_path)
+    _p().untracked(w.app)
+    _send(w, include=["new.py"])
+    _p().view(w.app)
+    claude_commit(w.app, {"NOTES.md": "n\n"}, "notes")
+    marker.unlink(missing_ok=True)        # claude_commit (the test's own git) ran them
+    _p().update(w.app)
+    _p().refresh(w.app, force=True)
+    contributors.list(w.app)
+    _p().withdraw(w.app)
+    assert not marker.exists(), marker.read_text()

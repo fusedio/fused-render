@@ -92,6 +92,18 @@ const ATTENTION_STATES = new Set([
 ]);
 /** States that say all is well. */
 const QUIET_STATES = new Set(["following", "merged", "published"]);
+/** A long action's progress line, in the words of what it does. */
+const DOING: Record<string, string> = {
+  check: "Checking…",
+  withdraw: "Withdrawing…",
+  "bring-in": "Bringing in…",
+  "publish-now": "Publishing…",
+  "put-on-top": "Publishing…",
+  "publish-over": "Publishing…",
+  "update-proposal": "Sending…",
+  "push-main": "Sending…",
+  discard: "Discarding…",
+};
 /** Opens the new-files sheet first when the copy has new files. */
 const UPDATE_ID = "update-proposal";
 const DISCARD_ID = "discard";
@@ -115,7 +127,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The job a long action is running, for its progress line.
-  const [job, setJob] = useState<{ label: string; step: string | null } | null>(null);
+  const [job, setJob] = useState<{ id: string; step: string | null } | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [withdrawToo, setWithdrawToo] = useState(false);
   const [include, setInclude] = useState<ReadonlySet<string>>(() => new Set());
@@ -158,17 +170,19 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
 
   /** Run one thing: one at a time ("busy" when another is running — a double
    *  click is a no-op), the server's sentence on a refusal, a re-read either
-   *  way. A "signed-out" refusal opens the sign-in sheet and runs it once
-   *  more after, instead of an error. */
-  const act = async (key: string, fn: () => Promise<Outcome>): Promise<"busy" | boolean> => {
-    if (busy) return "busy";
+   *  way. A "signed-out" refusal closes whatever sheet asked (a confirm),
+   *  opens the sign-in sheet, and runs the same thing ONCE more after it by
+   *  itself — a second "signed-out" is said as an error, never a loop. */
+  const act = async (key: string, fn: () => Promise<Outcome>, retried = false): Promise<"busy" | boolean> => {
+    if (busy && !retried) return "busy";
     setBusy(key);
     setError(null);
     const r = await fn();
     if (r.reason === "aborted") return false; // unmounted: nobody to tell
     if (!r.ok && r.reason !== "confirm") {
-      if (r.reason === "signed-out") {
-        setSignIn({ doing: "keep going", again: () => void act(key, fn) });
+      if (r.reason === "signed-out" && !retried) {
+        setSheet(null);
+        setSignIn({ doing: "keep going", again: () => void act(key, fn, true) });
       } else {
         setError(plainMessage(r));
       }
@@ -201,21 +215,32 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
         if (started.ok) say(started);
         return started;
       }
-      setJob({ label: a.label, step: null });
+      setJob({ id: a.id, step: null });
       const r = await runJob(Promise.resolve(started), {
         signal: signal(),
-        onTick: (j: ContribJob) => setJob({ label: a.label, step: j.step ?? null }),
+        onTick: (j: ContribJob) => setJob({ id: a.id, step: j.step ?? null }),
       });
       if (r.ok) say(r);
       return r;
     });
+
+  // Check now lives in the "checked" line — unless it is the panel's one way
+  // forward (the primary), when it is a real button in the strip.
+  const check = actions.find((a) => a.id === CHECK_ID) ?? null;
+  const footCheck = check && !check.primary ? check : null;
+  const rest = actions.filter((a) => a !== footCheck);
 
   const press = (a: ContribAction) => {
     if (busy) return;
     if (a.dialog === "propose") return setSheet({ k: "propose" });
     if (a.dialog === "remix") return setSheet({ k: "remix" });
     if (a.dialog === "sign-in") {
-      return setSignIn({ doing: "keep going", again: () => void contrib.refresh() });
+      // Signing in may change what this app is (its owner is checked once
+      // GitHub knows who the user is): run Check now after, when offered.
+      return setSignIn({
+        doing: "keep going",
+        again: () => void (check ? post(check) : contrib.refresh()),
+      });
     }
     if (a.confirm) return setSheet({ k: "confirm", action: a, sentence: a.confirm });
     if (a.id === UPDATE_ID && untracked.length > 0) {
@@ -233,8 +258,6 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const spin = (key: string) => busy === key && <Loader2 data-icon="inline-start" className="animate-spin" />;
 
   // ---- the buttons, in the server's order (its one primary first) ------------
-  const check = actions.find((a) => a.id === CHECK_ID) ?? null;
-  const rest = actions.filter((a) => a.id !== CHECK_ID);
   const label = (a: ContribAction) => (busy === a.id && !a.dialog ? `${a.label}…` : a.label);
   const button = (a: ContribAction) =>
     a.primary ? (
@@ -250,11 +273,13 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const first = rest[0]?.primary ? rest[0] : null;
   const others = first ? rest.slice(1) : rest;
 
-  const merge = mergeShown(panel.merge) ? panel.merge : null;
+  const merge = mergeShown(panel.merge, true) ? panel.merge : null;
+  // Nothing may move the copy back while Claude's merge is open.
+  const mergeOpen = merge?.status === "running" || merge?.status === "landing" || merge?.status === "ready";
   const working = !!job || merge?.status === "running" || merge?.status === "landing" || panel.state === "pending";
   const tone: StripTone = working
     ? "working"
-    : merge?.status === "ready" || ATTENTION_STATES.has(panel.state)
+    : merge?.status === "ready" || merge?.status === "failed" || ATTENTION_STATES.has(panel.state)
       ? "attention"
       : QUIET_STATES.has(panel.state)
         ? "success"
@@ -283,7 +308,10 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
           onDismiss={SETTLED_STATES.has(panel.state) ? dismiss : undefined}
         >
           <FileList files={panel.files} />
-          {job && <JobProgress steps={[{ key: job.step ?? "run", label: `${job.label}…` }]} current={job.step} />}
+          {/* Check now says "Checking…" in its own line: no second spinner. */}
+          {job && job.id !== CHECK_ID && (
+            <JobProgress steps={[{ key: job.step ?? "run", label: DOING[job.id] ?? "Working…" }]} current={job.step} />
+          )}
           {merge && <MergeReview dir={dir} job={merge} brief disabled={!!busy} refresh={contrib.refresh} />}
           {error && sheet?.k !== "confirm" && (
             <p className="contrib-error" role="alert">
@@ -293,11 +321,11 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
           <div className="contrib-panel-foot">
             <span className="contrib-panel-checked">
               {checked ? `Checked ${checked}` : "Not checked yet"}
-              {check && (
+              {footCheck && (
                 <>
                   {" · "}
-                  <QuietAction onClick={() => press(check)} disabled={!!busy}>
-                    {busy === CHECK_ID ? "Checking…" : check.label}
+                  <QuietAction onClick={() => press(footCheck)} disabled={!!busy}>
+                    {busy === CHECK_ID ? DOING.check : footCheck.label}
                   </QuietAction>
                 </>
               )}
@@ -321,7 +349,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
                   <span className="contrib-activity-at">{timeAgo(line.at) ?? ""}</span>
                   <span className="contrib-activity-text">{line.text}</span>
                   {line.undo && (
-                    <QuietAction onClick={() => setSheet({ k: "undo", line })} disabled={!!busy}>
+                    <QuietAction onClick={() => setSheet({ k: "undo", line })} disabled={!!busy || mergeOpen}>
                       <RotateCcw aria-hidden="true" />
                       {busy === `undo:${line.id}` ? "Putting it back…" : "Undo"}
                     </QuietAction>

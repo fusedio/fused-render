@@ -69,7 +69,7 @@ def _gu():
 
 
 def _run(root, *args, timeout=60.0):
-    return _gu()._run(root, *args, timeout=timeout)
+    return _gu()._run_safe(root, *args, timeout=timeout)
 
 
 def try_root() -> str:
@@ -177,7 +177,7 @@ def _clone(app_dir: str, path: str, ref: str) -> bool:
         (path, ("remote", "remove", "origin")),
     ]
     for root, args in steps:
-        result = gu._run(root, *args, timeout=_CLONE_TIMEOUT_S)
+        result = gu._run_safe(root, *args, timeout=_CLONE_TIMEOUT_S)
         if not gu._ok(result):
             logger.warning("try copy: git %s failed: %s", args[0],
                            gu._text(result) if result else "did not run")

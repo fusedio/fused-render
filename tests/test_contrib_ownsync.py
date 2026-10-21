@@ -503,11 +503,11 @@ def test_V3b_unknown_rewind_holds_an_ahead_only_publish(env):
     git(env.other, "fetch", "-q", "origin")
     git(env.other, "push", "-q", "--force", "origin", f"{kept}:refs/heads/main")
     res = _sync(env.lap)
-    assert res["status"] == "skipped" and res["why"] == "unknown" and _remote(env) == kept
+    assert res["status"] == "skipped" and res["why"] == "held" and _remote(env) == kept
     assert _sync(env.lap)["pushed"] is not True and _remote(env) == kept   # still held
     assert git_upstream.sync_failures() == []
     st = ownsync.status(env.lap)
-    assert st["state"] == "unknown" and st["fixes"] == ["publish-now", "use-github"]
+    assert st["state"] == "unknown" and st["hold"] == "unknown" and st["fixes"] == ["publish-now", "use-github"]
     assert _plain(st["message"]) and st["unpublished"] == 1
     assert ownsync.publish_now(env.lap)["ok"]               # the person's go-ahead
     assert _remote(env) == _head(env.lap)
@@ -515,10 +515,10 @@ def test_V3b_unknown_rewind_holds_an_ahead_only_publish(env):
 
 
 def test_held_after_upgrade_never_publishes_until_the_button(env):
-    """§16.12: github→own upgrade with unpublished edits records `held`
-    (ws-guard); every automatic sync keeps it, Publish now ends it."""
-    store.update(env.lap, lambda r: r.__setitem__(
-        "own_state", {"state": "held", "why": "upgrade", "at": time.time()}))
+    """§16.12: github→own upgrade with unpublished edits sets the hold
+    (ws-guard, `ownsync.set_hold`); every automatic sync keeps it, Publish
+    now ends it."""
+    ownsync.set_hold(env.lap, "upgrade", count=1)
     before = _remote(env)
     _commit(env.lap, "c.txt", "c\n", "c")
     assert _sync(env.lap)["pushed"] is not True and _remote(env) == before
@@ -529,7 +529,54 @@ def test_held_after_upgrade_never_publishes_until_the_button(env):
     assert st["state"] == "held" and st["fixes"] == ["publish-now"]
     assert st["message"] == "This is your app. 2 edits are ready to publish."
     assert ownsync.publish_now(env.lap)["ok"] and _remote(env) == _head(env.lap)
-    assert (store.get(env.lap) or {}).get("own_state") is None
+    assert ownsync.hold_of(env.lap) is None
+
+
+def test_R2_no_stuck_state_or_merge_ends_the_hold(env, monkeypatch):
+    """Audit R2: a needs-merge used to overwrite the hold, and a later clean
+    combine (or a landed Merge with Claude) then published the held edit
+    without Publish now."""
+    ownsync.set_hold(env.lap, "upgrade", count=1)
+    _commit(env.lap, "a.txt", "one\nMINE\nthree\n", "held edit")
+    _elsewhere(env, "a.txt", "one\nTHEIRS\nthree\n", "other mac")
+    assert _sync(env.lap)["why"] == "needs-merge"
+    assert ownsync.status(env.lap)["state"] == "needs-merge"   # its buttons first
+    assert ownsync.hold_of(env.lap)["why"] == "upgrade"
+    # A landed Merge with Claude schedules a publish: the hold still decides.
+    monkeypatch.setattr(git_upstream, "schedule_sync",
+                        lambda path, action, *, push=True, _runner=None:
+                        git_upstream.sync_repo(path, action=action, push=push))
+    ownsync.merge_landed(env.lap, old_tip=None, new_tip=None)
+    _elsewhere(env, "a.txt", "one\ntwo\nthree\n", "other mac reverts")
+    res = _sync(env.lap)
+    assert res["status"] == "synced" and res["pushed"] is False
+    assert "MINE" not in git(env.remote, "show", "main:a.txt")
+    assert ownsync.status(env.lap)["state"] == "held"
+    assert ownsync.publish_now(env.lap)["ok"]
+    assert "MINE" in git(env.remote, "show", "main:a.txt")
+
+
+def test_R2_save_my_edits_never_publishes_held_edits(env):
+    """rev-sec R2: an overlapping unsaved edit's `edits` state used to replace
+    the hold, and Save my edits and continue then published."""
+    store.update(env.lap, lambda r: r.__setitem__(           # an earlier build's hold
+        "own_state", {"state": "held", "why": "upgrade", "at": time.time()}))
+    _commit(env.lap, "c.txt", "c\n", "held edit")
+    theirs = _elsewhere(env, "a.txt", "one\nTHEIRS\nthree\n", "other mac")
+    write(env.lap, "a.txt", "one\nDIRTY\nthree\n")
+    assert _sync(env.lap)["why"] == "edits"
+    assert ownsync.hold_of(env.lap)["why"] == "upgrade"     # moved, not lost
+    out = ownsync.save_edits(env.lap)
+    assert out["ok"] is False or out["state"] in ("held", "needs-merge")
+    assert _remote(env) != _head(env.lap)
+    assert git(env.remote, "show", "main:c.txt", check=False) == ""   # held edit stays here
+    assert ownsync.hold_of(env.lap) is not None and _remote(env) == theirs
+
+
+def test_use_github_drops_the_hold_with_the_edits(env):
+    ownsync.set_hold(env.lap, "upgrade", count=1)
+    _commit(env.lap, "c.txt", "c\n", "c")
+    assert ownsync.use_github(env.lap)["ok"] and ownsync.hold_of(env.lap) is None
 
 
 def test_put_on_top_refuses_when_edits_hold_a_combined_version(env):
@@ -601,10 +648,28 @@ def test_V2_undo_of_an_automatic_combine_sticks_until_github_moves(env):
         res = _sync(env.lap, push=push)
         assert res["status"] == "skipped" and res["why"] == "kept"
         assert _head(env.lap) == head
-    assert ownsync.status(env.lap)["state"] == "github-new"
+    assert ownsync.status(env.lap)["state"] == "kept"
     _elsewhere(env, "z.txt", "z\n", "GitHub moved again")
     assert _sync(env.lap)["status"] == "synced" and _head(env.lap) == _remote(env)
     assert _read(env.lap, "b.txt") == "mine\n" and _read(env.lap, "z.txt") == "z\n"
+
+
+def test_R4_after_undo_the_panel_says_why_edits_wait(env):
+    """Audit R4: after Undo new edits piled up unpublished under a vague
+    "GitHub has a newer version". Now the sentence says why, and Bring in
+    and publish ends it."""
+    _diverge(env)
+    assert _sync(env.lap, push=False)["status"] == "synced"
+    assert ownsync.restore(env.lap, _activity(env.lap)[0]["id"])["ok"]
+    later = _commit(env.lap, "later.txt", "l\n", "Claude: later")
+    assert _sync(env.lap)["why"] == "kept" and _remote(env) != later
+    st = ownsync.status(env.lap)
+    assert st["state"] == "kept" and st["fixes"] == ["bring-in"]
+    assert st["message"] == ("You undid bringing in GitHub's version. New edits wait "
+                             "here until you bring it in again.")
+    out = ownsync.bring_in(env.lap)
+    assert out["ok"], out
+    assert _remote(env) == _head(env.lap) and _read(env.lap, "later.txt") == "l\n"
 
 
 def test_V2_check_now_brings_in_what_undo_set_aside(env):

@@ -179,6 +179,10 @@ function InboxCard({
   const flagged = review?.verdict === "look";
   const who = item.author;
   const stale = item.fits === false;
+  // Claude's merge of this proposal is open: Try, Decline and Accept wait
+  // for its Keep / Discard (the server refuses them meanwhile too).
+  const mergeStatus = item.merge_job?.status;
+  const merging = mergeStatus === "running" || mergeStatus === "landing" || mergeStatus === "ready";
 
   const act = async (key: string, fn: () => Promise<ContribAnswer | { ok: boolean; message?: string }>) => {
     if (busy) return false;
@@ -330,7 +334,7 @@ function InboxCard({
       <footer className="contrib-inbox-actions">
         <Button
           variant="outline"
-          disabled={!!busy || !review || !!tryCopy}
+          disabled={!!busy || !review || !!tryCopy || merging}
           onClick={onTry}
           title={reading ? "Available once Claude has read it" : undefined}
         >
@@ -338,10 +342,10 @@ function InboxCard({
           Try
         </Button>
         <span className="contrib-inbox-spacer" />
-        <Button variant="outline" disabled={!!busy} onClick={() => setAsk("decline")}>
+        <Button variant="outline" disabled={!!busy || merging} onClick={() => setAsk("decline")}>
           Decline
         </Button>
-        <Button disabled={!!busy || !review} onClick={() => setAsk("accept")}>
+        <Button disabled={!!busy || !review || merging} onClick={() => setAsk("accept")}>
           {spin("accept")}
           {busy === "accept" ? "Accepting…" : "Accept"}
         </Button>

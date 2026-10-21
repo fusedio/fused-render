@@ -1305,6 +1305,7 @@ def merge_landed(root, *, purpose, old_tip, new_tip, backup=None, **_legacy) -> 
 
 _status_lock = threading.Lock()
 _status_cache: dict = {}  # root -> (key, (changes_files, behind, unproposed))
+_taken_cache: dict = {}   # (root, tip, sent, merge commit) -> taken_back
 _STATUS_CACHE_MAX = 256
 
 
@@ -1344,6 +1345,7 @@ def status(root) -> dict:
         "unproposed": 0, "behind": 0, "needs_merge": False, "needs_merge_purpose": None,
         "needs_merge_files": [], "merge_job": None, "blocked_files": [],
         "kept_mine": False, "off_default": False, "claude_busy": False, "merged_in_tip": False,
+        "taken_back": False,
         "last_checked": None, "auto_sync": gu.auto_sync_enabled(),
         "original_update": False, "can_push": None, "owner_checked": True,
         "sync_error": None, "sync_error_code": None, "pending": False, "event": None,
@@ -1401,6 +1403,18 @@ def status(root) -> dict:
         off_default=gu._current_branch(root) != fol.branch,
         claude_busy=_claude_busy(root),
         merged_in_tip=bool(proposal and tip) and _merge_in_tip(root, proposal, tip))
+    # Merged, then reverted by the author (the merged sentence says so).
+    if view["merged_in_tip"]:
+        tkey = (root, tip, sent, (proposal.get("cache") or {}).get("merge_commit_sha"))
+        with _status_lock:
+            hit = _taken_cache.get(tkey)
+        if hit is None:
+            hit = _taken_back(root, proposal, tip)
+            with _status_lock:
+                if len(_taken_cache) >= _STATUS_CACHE_MAX:
+                    _taken_cache.clear()
+                _taken_cache[tkey] = hit
+        view["taken_back"] = hit
     if tip and behind:
         view["blocked_files"] = [p for p in replay.clobber_paths(root, head, tip)
                                  if p not in tracked]

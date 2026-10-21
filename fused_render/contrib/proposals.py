@@ -134,8 +134,11 @@ def _gu():
 
 
 def _git(root, *args, timeout=None):
+    """Every git call here runs with no repo-configured hook or fsmonitor
+    command (`git_upstream.SAFE_CONFIG`, §16.12): the folder is
+    Claude-writable, and these are fused's own operations."""
     gu = _gu()
-    return gu._run(root, *args, timeout=timeout or gu.TIMEOUT_S)
+    return gu._run(root, *gu.SAFE_CONFIG, *args, timeout=timeout or gu.TIMEOUT_S)
 
 
 def _ok(res) -> bool:
@@ -376,7 +379,8 @@ def _commit_tree(root, tree, parents, message, *, author, committer) -> str:
             env.pop(key, None)
     try:
         res = subprocess.run(
-            [_gu()._git_bin(), "-C", root, "commit-tree", "--no-gpg-sign", tree,
+            [_gu()._git_bin(), "-C", root, *_gu().SAFE_CONFIG, "commit-tree",
+             "--no-gpg-sign", tree,
              *parent_args, "-F", "-"],
             input=message, capture_output=True, text=True, encoding="utf-8",
             errors="replace", env=env, close_fds=False, timeout=30,
@@ -595,9 +599,12 @@ def head_differs(root, record, tip: str | None = None) -> bool:
     if now == replay.tree_of(root, pr_head):
         return False
     tip = tip or tip_of(root, record)
-    if not tip or replay.is_ancestor(root, tip, pr_head):
+    # The author's latest AS HEAD HAS IT: a newer tip fetched but not
+    # brought in (auto-sync off, Keep mine) is nothing of Bob's to send.
+    held = _out(_git(root, "merge-base", head, tip)) if tip else ""
+    if not held or replay.is_ancestor(root, held, pr_head):
         return True
-    mt = replay.merge_tree(root, pr_head, tip)
+    mt = replay.merge_tree(root, pr_head, held)
     return not (mt.get("clean") and mt.get("tree") == now)
 
 

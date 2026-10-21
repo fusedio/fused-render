@@ -360,6 +360,11 @@ def ensure(app_dir, *, identity=None) -> dict | None:
         return store.get(app_dir) or rec
 
     root = follow.is_repo_root(app_dir)
+    if root is not None:
+        marked = claim_marked(root)
+        if marked is not None:
+            _guard_soon(app_dir, identity)
+            return store.get(app_dir) or marked
     repo = repo_of_url(_origin_url(root)) if root else None
     rc = store.root_commit_of(app_dir)
     if repo and rc:
@@ -384,6 +389,58 @@ def ensure(app_dir, *, identity=None) -> dict | None:
 
 
 COPY_ID_CONFIG = "fused.copyid"
+
+
+def claim_marked(root) -> dict | None:
+    """A folder with no record that fused marked as a GitHub-link copy
+    (`fused.kind=github` in its own config) — a Finder DUPLICATE of a live
+    copy, or one whose record was lost (audit R4). It must never get the
+    plain, pushing sync: it gets its own `github` record, whatever the
+    identity state (round 2) — a move's orphan adopted when its copy id
+    matches, else a new record cloned from the live copy whose `fused.copyid`
+    it carries (repo, branch, ownership; no proposal or activity), else one
+    built from its origin, owner unchecked. The new record's own copy id is
+    written by the next `settle_locked`. No network; answers the record, or
+    None when nothing can be built (the caller then skips — never pushes)."""
+    try:
+        if _local_config(root, KIND_CONFIG) != "github" or store.get(root) is not None:
+            return None
+        k = store.key(root)
+        cid = _local_config(root, COPY_ID_CONFIG)
+        rc = store.root_commit_of(root)
+        live = None
+        if cid:
+            for other, r in store.all().items():
+                if other != k and isinstance(r, dict) and r.get("copy_id") == cid:
+                    if os.path.isdir(other):
+                        live = r
+                        break
+                    if r.get("repo") and rc:
+                        adopted = _adopt(root, r["repo"], rc)
+                        if adopted is not None:
+                            return adopted
+        repo = (live or {}).get("repo") or repo_of_url(_origin_url(root))
+        if not repo:
+            return None
+        rec = store.new_record(
+            "github", repo=repo,
+            branch=(live or {}).get("branch") or _local_default_branch(root),
+            classified_by="duplicate" if live else "marked",
+            owner_checked=bool((live or {}).get("owner_checked")) and live.get("kind") == "github",
+            root_commit=rc)
+        if not store.create(root, rec):
+            return store.get(root)
+        _forget_kind(root)
+        logger.info("contrib: %s carries a GitHub-link copy's marker; recorded it as one", root)
+        return store.get(root) or rec
+    except Exception:  # noqa: BLE001 — the caller skips (never pushes)
+        logger.exception("contrib: claim_marked failed for %s", root)
+        return None
+
+
+def is_marked(root) -> bool:
+    """Whether fused marked `root` as a GitHub-link copy (`fused.kind`)."""
+    return _local_config(root, KIND_CONFIG) == "github"
 
 
 def _stamp_copy(root, rec) -> None:
@@ -465,15 +522,16 @@ def _recheck(app_dir, rec, identity, *, block=False) -> dict | None:
     # Work made while the copy was `github` was told it stays on this
     # computer: an upgrade never auto-publishes it (§16.12). It is HELD —
     # git_upstream skips the push — until the person presses Publish now.
-    unpublished = _unpublished(root) if root is not None else 0
+    # Only with A1 on, where that button lives (round 2): with it off the
+    # page never said anything, and their own repo auto-pushes as today.
+    unpublished = _unpublished(root) if root is not None and _sources_on() else 0
 
     def fn(r):
         r["owner_checked"] = True
         if mine and r.get("kind") == "github":
             r["kind"] = "own"
             if unpublished:
-                r["own_state"] = {"state": HELD, "why": "upgrade", "at": time.time(),
-                                  "count": unpublished}
+                r["hold"] = {"why": "upgrade", "at": time.time(), "count": unpublished}
 
     out = store.update(app_dir, fn)
     _forget_kind(app_dir)
@@ -504,18 +562,18 @@ def _unpublished(root) -> int:
 
 
 def is_held(root) -> bool:
-    st = (store.get(root) or {}).get("own_state")
-    return isinstance(st, dict) and st.get("state") == HELD
+    """An own copy whose automatic syncs must not push (the record's `hold`,
+    §16.12) — only ever set with A1 on, and read only then."""
+    if not _sources_on():
+        return False
+    return bool((store.get(root) or {}).get("hold"))
 
 
 def release_hold(root) -> bool:
     """Publish now was pressed: the held work may go (§16.12)."""
-    def fn(r):
-        st = r.get("own_state")
-        if isinstance(st, dict) and st.get("state") == HELD:
-            r["own_state"] = None
-
-    return is_held(root) and store.update(root, fn) is not None
+    if not (store.get(root) or {}).get("hold"):
+        return False
+    return store.update(root, lambda r: r.__setitem__("hold", None)) is not None
 
 
 def after_sign_in(ident=None) -> dict:

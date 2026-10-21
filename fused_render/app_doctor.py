@@ -911,7 +911,16 @@ _OWN_STATE_DETAIL = {
               "app page to save them and continue."),
     "needs-merge": ("Your changes and the latest version on GitHub overlap — open the "
                     "app page to combine them."),
+    "unknown": ("Fused can't tell whether the version on GitHub dropped something you had "
+                "published, so your latest edits are waiting — open the app page to "
+                "publish them or to use the version on GitHub."),
 }
+
+#: The record's `hold` (§16.12): work made while this was someone else's copy,
+#: waiting for Publish now.
+_HELD_DETAIL = ("This is your app now. Edits made before Fused knew that are waiting on "
+                "this computer — open the app page and press Publish now to send them to "
+                "GitHub.")
 
 
 def _contrib_git_row(app_dir: str) -> dict | None:
@@ -949,9 +958,12 @@ def _contrib_git_row(app_dir: str) -> dict | None:
     else:
         own = rec.get("own_state")
         own = own.get("state") if isinstance(own, dict) else own
-        if own not in _OWN_STATE_DETAIL:
+        if classify.is_held(root):
+            state, detail = FAIL, _HELD_DETAIL
+        elif own in _OWN_STATE_DETAIL:
+            state, detail = FAIL, _OWN_STATE_DETAIL[own]
+        else:
             return None
-        state, detail = FAIL, _OWN_STATE_DETAIL[own]
     row = _check("git", "Repo in sync", state, detail, [])
     # `contrib`: the page offers "Open app page" here instead of Fix with
     # Claude, and Fix all leaves the row out (`doctor_prompt_all`).

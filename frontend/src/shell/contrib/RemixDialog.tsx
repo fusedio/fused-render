@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Check, Copy, Loader2 } from "lucide-react";
 import {
-  publishRemix,
+  runAction,
   runJob,
   useUnmountSignal,
   startRemixDraft,
@@ -118,10 +118,14 @@ export function RemixDialog({
     setPhase("publishing");
     setError(null);
     setStep(null);
-    const r = await runJob<PublishedRemix>(publishRemix(dir, { name: name.trim(), credit: credit.trim() }), {
-      signal: signal(),
-      onTick: (j) => live.current && setStep(j.step ?? null),
-    });
+    // The panel's `remix` action (POST /api/contrib/action), like Propose.
+    const r = await runJob<PublishedRemix>(
+      runAction(dir, "remix", { args: { name: name.trim(), credit: credit.trim() } }),
+      {
+        signal: signal(),
+        onTick: (j) => live.current && setStep(j.step ?? null),
+      },
+    );
     if (!live.current) return;
     if (r.ok) {
       setLink(r.result?.share_url ?? r.result?.url ?? null);

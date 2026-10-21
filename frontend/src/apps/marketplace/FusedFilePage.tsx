@@ -357,6 +357,9 @@ function describeGit(t: AppFileProbe, git: GitLink): StateView {
   const followed = "changes" in git;
   const who = git.who || owner;
   const blocked = followed ? (git.collision ?? []) : [];
+  // The app page is pointed at only when it has the panel to act on
+  // (`git.app_page`, the A1 switch); otherwise plain words.
+  const appPage = followed && git.app_page === true;
   switch (t.state) {
     case "new":
       return {
@@ -414,7 +417,10 @@ function describeGit(t: AppFileProbe, git: GitLink): StateView {
           body: (
             <>
               {possessive(who)} latest adds {blocked.length === 1 ? blocked[0] : `${blocked.length} files`}, which you
-              already have here. Open the app to move yours aside and get the update.
+              already have here
+              {appPage
+                ? ". Open the app to move yours aside and get the update."
+                : ", so this app isn't updated from here."}
             </>
           ),
           list: blocked.length > 1 ? blocked : undefined,
@@ -427,7 +433,11 @@ function describeGit(t: AppFileProbe, git: GitLink): StateView {
           callout: true,
           tone: "warn",
           title: "You have your own changes",
-          body: <>You have your own changes in this app. Open it to bring in {possessive(who)} latest.</>,
+          body: appPage ? (
+            <>You have your own changes in this app. Open it to bring in {possessive(who)} latest.</>
+          ) : (
+            <>This app has changes of its own, so it isn&rsquo;t updated from here.</>
+          ),
           status: "Edited",
           statusCaption: "Your changes",
         };

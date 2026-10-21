@@ -2337,6 +2337,9 @@ export interface AppFileProbe {
     /** Installed GitHub-link copy only: the user's own files the author's
      *  latest would land on (up to 12). */
     collision?: string[];
+    /** Installed GitHub-link copy only: its app page has the Source panel to
+     *  act on (the A1 switch) — only then does the page point at it. */
+    app_page?: boolean;
   } | null;
   /** The file sits in the deep-link downloads cache, not a folder of the user's. */
   downloaded?: boolean;

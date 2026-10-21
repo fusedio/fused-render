@@ -783,9 +783,17 @@ def _remix(t: _Target, args) -> dict:
 
 
 def _bring_in(t: _Target) -> dict:
-    if t.record.get("kind") == "own":  # a remix: the original's update
-        return _call("bring in", _mod("remix").start_bring_in, t.app_dir)
-    return _job("action-bring-in", t.app_dir, _mod("engine").bring_in, t.app_dir)
+    """Bring in: a GitHub-link copy's author's latest (engine); an own app's
+    GitHub version after an undone combine (ownsync's `kept` state names
+    it as a fix); else a remix's original (remix)."""
+    if t.record.get("kind") != "own":
+        return _job("action-bring-in", t.app_dir, _mod("engine").bring_in, t.app_dir)
+    own = _mod("ownsync")
+    if "bring-in" in ((own.status(t.app_dir) or {}).get("fixes") or []):
+        return _job("action-bring-in", t.app_dir, own.bring_in, t.app_dir)
+    # A merge job's id (purpose "original"): the review shows it, not /job.
+    out = _call("bring in", _mod("remix").start_bring_in, t.app_dir)
+    return {**out, "merge": True} if out.get("ok") and out.get("job") else out
 
 
 def _discard(t: _Target, args) -> dict:
@@ -894,6 +902,8 @@ def api_contrib_restore(body: dict = Body(...), x_fused: str | None = Header(def
     if not isinstance(t, _Target):
         return t
     line_id = _text(body, "id")
+    if _actions().merge_open(t.app_dir):
+        return _refuse("merging", "Keep or discard Claude's merge first.")
     lines = _safely("activity", _actions().activity, t.app_dir) or []
     line = next((x for x in lines if isinstance(x, dict) and x.get("id") == line_id), None)
     if not line_id or line is None or not line.get("undo"):

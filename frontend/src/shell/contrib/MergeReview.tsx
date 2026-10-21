@@ -9,7 +9,8 @@
 // `brief`: the Source panel's sentence already says what Claude is doing or
 // did, with its summary, and its files are the merge's — so the block adds
 // only the clock or the choice. A card has no such sentence: it says all of
-// it here.
+// it here. A failed merge keeps its line and "Leave it for now" (Discard)
+// on both surfaces until the user clears it.
 import { useEffect, useRef, useState } from "react";
 import { Loader2, TriangleAlert } from "lucide-react";
 import { acceptMerge, discardMerge, plainMessage, type MergeJobView } from "@platform/lib/contrib";
@@ -20,8 +21,9 @@ import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { QuietAction } from "./StatusStrip";
 import { elapsed } from "./words";
 
-/** A merge worth drawing: in flight, waiting for the user's choice, or (on
- *  a card) failed. */
+/** A merge worth drawing: in flight, waiting for the user's choice, or
+ *  failed (`withFailed`). A `choice` merge draws nothing: the sentence and
+ *  the server's Keep mine / Use theirs buttons are all of it. */
 export function mergeShown(job: MergeJobView | null | undefined, withFailed = false): job is MergeJobView {
   if (!job) return false;
   const s = job.status;
@@ -79,8 +81,11 @@ export function MergeReview({
       <div className="contrib-panel-merge is-failed" role="status">
         <TriangleAlert aria-hidden="true" />
         <div className="contrib-panel-merge-body">
-          <p className="contrib-panel-merge-title">Claude couldn&rsquo;t combine the two versions.</p>
-          <p className="contrib-strip-detail">{job.error || "Nothing changed."}</p>
+          {/* Brief: the panel's sentence already says it failed. */}
+          {!brief && <p className="contrib-panel-merge-title">Claude couldn&rsquo;t combine the two versions.</p>}
+          <p className={brief ? "contrib-panel-merge-title" : "contrib-strip-detail"}>
+            {job.error || "Nothing changed."}
+          </p>
           <div className="contrib-panel-actions">
             <QuietAction onClick={() => void run("discard")} disabled={!!busy || disabled}>
               Leave it for now

@@ -430,6 +430,26 @@ def test_merge_claude_starts_the_planned_merge(env):
     assert _act(env, d, "merge-claude")["reason"] == "nothing-to-merge"
 
 
+def test_own_bring_in_is_ownsyncs_when_it_names_it(env):
+    """`kept` (an undone combine) → ownsync.bring_in; a remix whose original
+    moved → remix.start_bring_in."""
+    d = env.app("m", kind="own", repo="bob/m")
+    ran = []
+    env.ownsync.status = lambda app_dir: {"state": "kept", "unpublished": 0, "github_new": 1,
+                                          "files": [], "message": "You undid it.",
+                                          "fixes": ["bring-in"]}
+    env.ownsync.bring_in = lambda app_dir: ran.append("own") or {"ok": True}
+    env.remix.start_bring_in = lambda app_dir: ran.append("remix") or {"ok": True, "job": "r"}
+    assert _job(env, _act(env, d, "bring-in")["job"])["status"] == "done"
+    r = env.app("r", kind="own", repo="bob/r", remix_of={"repo": "alice/x"},
+                original_update=True)
+    env.ownsync.status = lambda app_dir: {"state": "published", "unpublished": 0,
+                                          "github_new": 0, "files": [], "message": "",
+                                          "fixes": []}
+    assert _act(env, r, "bring-in") == {"ok": True, "job": "r"}
+    assert ran == ["own", "remix"]
+
+
 def test_own_app_fixes_dispatch_to_ownsync(env):
     d = env.app("m", kind="own", repo="bob/m")
     stuck = {"state": "github-changed", "unpublished": 1, "github_new": 2, "files": [],

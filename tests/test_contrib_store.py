@@ -550,16 +550,18 @@ def test_claude_turn_in_a_github_copy_credits_claude(world, monkeypatch):
     assert "Co-authored-by: Claude <noreply@anthropic.com>" in out
 
 
-def test_switch_card_stays_hidden_for_a_github_copy_flags_off(world):
-    """P2-8 (audit O1b): flags off, a GitHub-link copy on another branch got
-    the old Switch card (a plain checkout behind the engine's back). v2: the
-    kind hides it whatever the flags."""
+def test_switch_card_hidden_for_a_github_copy_while_the_panel_exists(world):
+    """P2-8 (audit O1): with A1 on (the panel's Go back), a GitHub-link copy
+    on another branch gets no old Switch card; Update is never offered for
+    one (round 2 keeps the Switch row only with A1 off — next test)."""
+    _prefs(world.home, contrib_sources_enabled=True)
     bob = _install(world)
     git(bob, "checkout", "-q", "-b", "feature")
     _alice_push(world, "c.txt", "alice\n")
     git_upstream.note_app_opened(bob, _runner=lambda fn: fn())
     assert git_upstream.known_repos() == []
     assert git_upstream.update_repo(bob)["reason"] == "contrib"
+    assert git_upstream.switch_repo(bob)["reason"] == "contrib"
 
 
 # ------------------------------------------------------------- binding
@@ -904,7 +906,19 @@ def test_push_by_url_is_refused_by_the_pre_push_hook(world):
 def test_sign_in_upgrade_holds_unpublished_work_until_publish_now(world, monkeypatch):
     """Audit V8: a signed-out install upgraded to own at sign-in auto-pushed
     every commit the page had said stays local. Now: held (+ activity line),
-    no push on any automatic sync — flags off or on — until Publish now."""
+    no automatic push until Publish now — with A1 on, where that button is
+    (round 2). ownsync is stubbed out ("not handled") so this pins
+    git_upstream's own guard; ownsync's handling of `hold` is its suite's."""
+    import types
+
+    import fused_render.contrib as pkg
+
+    _prefs(world.home, contrib_sources_enabled=True)
+    fake = types.ModuleType("fused_render.contrib.ownsync")
+    fake.resolve = lambda root, action, push: None
+    fake.note_seen = lambda root: None
+    monkeypatch.setitem(sys.modules, "fused_render.contrib.ownsync", fake)
+    monkeypatch.setattr(pkg, "ownsync", fake, raising=False)
     bob = _install(world)
     _commit(bob, "b1.txt", "x\n", "local 1")
     _commit(bob, "b2.txt", "x\n", "local 2")
@@ -912,8 +926,11 @@ def test_sign_in_upgrade_holds_unpublished_work_until_publish_now(world, monkeyp
     monkeypatch.setattr(classify, "_owns", lambda owner, ident: True)
     assert classify.after_sign_in({"login": "alice", "id": 1})["rechecked"] == 1
     assert classify.kind_of(bob) == "own" and classify.is_held(bob)
-    assert store.get(bob)["own_state"]["count"] == 2
+    assert store.get(bob)["hold"]["count"] == 2 and store.get(bob)["own_state"] is None
     assert "2 edits are ready to publish" in store.activity(bob)[0]["text"]
+    from fused_render import app_doctor
+
+    assert app_doctor._contrib_git_row(bob)["detail"] == app_doctor._HELD_DETAIL
     _commit(bob, "b3.txt", "x\n", "Claude: b3")
     r = _sync(bob, push=True)
     assert r["status"] == "synced" and r["pushed"] is False and r["held"] is True
@@ -951,28 +968,118 @@ def test_record_sync_failure_helper_writes_todays_row(world):
     assert git_upstream.sync_failures()[0]["output"] == "Your copy and the author's both changed."
 
 
-def test_recorded_copies_sync_without_repo_hooks_record_less_repos_keep_them(world):
-    """§16.12: every fused git call on a contrib repo runs hook-free (and
-    fsmonitor-free); a repo with no record keeps today's sync, hooks and
-    all."""
-    def refuse_hook(repo):
-        hook = os.path.join(repo, ".git", "hooks", "pre-push")
-        with open(hook, "w") as f:
-            f.write("#!/bin/sh\necho refused-by-repo-hook >&2\nexit 1\n")
-        os.chmod(hook, 0o755)
-
+def test_an_own_copys_auto_push_still_runs_its_authors_hooks(world):
+    """Round 2 (author R3, §16.0 P5): an own copy's plain fetch/pull/push is
+    today's — the author's pre-push hook (a secret scanner) still runs on
+    auto-push; only fused's private reads are hook-free."""
     a = _install(world)
     store.update(a, lambda r: r.__setitem__("kind", "own"))
     classify.ensure_push_guard(a, "own")
-    refuse_hook(a)
+    hook = os.path.join(a, ".git", "hooks", "pre-push")
+    with open(hook, "w") as f:
+        f.write("#!/bin/sh\necho secret-scanner-said-no >&2\nexit 1\n")
+    os.chmod(hook, 0o755)
     _commit(a, "b.txt", "mine\n", "mine")
+    before = _remote_main(world)
     r = _sync(a, push=True)
-    assert r["status"] == "synced" and r["pushed"] is True
-    store.drop(a)
-    classify._kind_memo.clear()
-    _commit(a, "c.txt", "mine\n", "mine 2")
-    r = _sync(a, push=True)
-    assert r["status"] == "failed" and "refused-by-repo-hook" in r["failure"]["output"]
+    assert r["status"] == "failed" and "secret-scanner-said-no" in r["failure"]["output"]
+    assert _remote_main(world) == before
+
+
+def test_sign_in_upgrade_with_flags_off_is_their_repo_auto_pushing(world, monkeypatch):
+    """Round 2 R7: with A1 off there is no Publish now anywhere — the
+    upgrade holds nothing; it is their repo and auto-pushes as today."""
+    bob = _install(world)
+    _commit(bob, "b1.txt", "x\n", "l1")
+    monkeypatch.setattr(classify, "_owns", lambda owner, ident: True)
+    classify.after_sign_in({"login": "alice", "id": 1})
+    assert classify.kind_of(bob) == "own" and not classify.is_held(bob)
+    assert store.get(bob)["hold"] is None
+    r = _sync(bob, push=True)
+    assert r["pushed"] is True and _remote_main(world) == git(bob, "rev-parse", "HEAD").strip()
+
+
+def test_a_finder_duplicate_of_a_github_copy_is_a_github_copy(world):
+    """Round 2 R4: a Finder duplicate carries fused.kind=github, the guard
+    and the copy id, but no record — it got the plain sync (a push attempt
+    and a git-worded failure row every turn). Now it gets its own github
+    record (cloned from the live copy, fresh copy id), whatever the
+    identity state; a marked folder that can't be recorded is skipped."""
+    bob = _install(world)
+    store.update(bob, lambda r: r.__setitem__("proposal", {"repo": REPO, "number": 3,
+                                                          "sent": "a" * 40}))
+    dup = os.path.join(str(world.ws), "app", "sine copy")
+    shutil.copytree(bob, dup, symlinks=True)
+    dup = os.path.realpath(dup)
+    _commit(dup, "c.txt", "x\n", "Claude: c")
+    before = _remote_main(world)
+    r = _sync(dup, push=True)
+    assert r["status"] != "failed" and git_upstream.sync_failures() == []
+    assert _remote_main(world) == before
+    rec = store.get(dup)
+    assert rec["kind"] == "github" and rec["repo"] == REPO and rec["proposal"] is None
+    assert rec["classified_by"] == "duplicate" and rec["copy_id"] != store.get(bob)["copy_id"]
+    assert git(dup, "config", "--get", classify.COPY_ID_CONFIG).strip() == rec["copy_id"]
+    # A marked folder whose origin names no GitHub repo: skipped, no push.
+    odd = os.path.join(str(world.ws), "app", "odd")
+    shutil.copytree(dup, odd, symlinks=True)
+    git(odd, "remote", "set-url", "origin", str(world.remote))
+    git(odd, "config", "--unset", classify.COPY_ID_CONFIG)
+    assert _sync(os.path.realpath(odd), push=True)["why"] == "contrib-unrecorded"
+    assert _remote_main(world) == before
+
+
+def test_flags_off_switch_card_stays_for_a_github_copy_on_another_branch(world):
+    """Round 2 R5: with A1 off (no app-page Go back) a GitHub-link copy on
+    another branch keeps today's Switch card; with A1 on it is hidden."""
+    bob = _install(world)
+    git(bob, "checkout", "-q", "-b", "feature")
+    _alice_push(world, "c.txt", "alice\n")
+    git_upstream.note_app_opened(bob, _runner=lambda fn: fn())
+    rows = git_upstream.known_repos()
+    assert [(r["branch"], r["on_default"], r["behind"]) for r in rows] == [("feature", False, 1)]
+    assert git_upstream.switch_repo(bob)["ok"] is True
+    _prefs(world.home, contrib_sources_enabled=True)
+    assert git_upstream.known_repos() == []
+
+
+def test_a_github_copys_failure_row_never_invites_a_push(world):
+    """Round 2 R6: the flags-off rows the engine records for a GitHub-link
+    copy quoted `git pull` and their Fix prompt ended "ask me whether to
+    push". Now: plain title, no command, push False, and a prompt saying
+    the copy follows the repo and must never be pushed."""
+    bob = _install(world)
+    r = git_upstream._record_failure(bob, "diverged", action="Auto-update on app open",
+                                     command="git pull --ff-only -- origin main",
+                                     output="Your changes and alice's latest overlap.",
+                                     push=False)
+    assert r["command"] == "" and r["push"] is False and r["follows"] == REPO
+    assert "git" not in r["title"].lower()
+    assert "NEVER be pushed" in r["prompt"] and f"https://github.com/{REPO}" in r["prompt"]
+    plain = git_upstream._record_failure("/x/other", "diverged", action="a", command="git pull",
+                                         output="o", push=True)
+    assert plain["command"] == "git pull" and "prompt" not in plain
+
+
+def test_a_github_record_without_root_commit_over_an_unrelated_repo_is_dropped(world):
+    """Round 2 R8: the V11 fix only covered v1 rows; a github row made
+    without a root commit still bound to whatever repo was there."""
+    a = os.path.join(str(world.ws), "app", "sine")
+    rec = store.new_record("github", repo=REPO, branch="main", classified_by="install")
+    for k in ("root_commit", "copy_id", "last_head"):
+        rec.pop(k, None)
+    other = str(world.tmp / "other.git")
+    git(str(world.tmp), "init", "-q", "--bare", "-b", "main", other)
+    w = str(world.tmp / "ow")
+    git(str(world.tmp), "clone", "-q", other, w)
+    _commit(w, "x.txt", "x\n", "other")
+    git(w, "push", "-q", "origin", "main")
+    os.makedirs(os.path.dirname(a), exist_ok=True)
+    git(str(world.tmp), "clone", "-q", other, a)
+    store.put(a, rec)
+    _sync(os.path.realpath(a))
+    assert classify.kind_of(a) is None
+    assert git(a, "remote", "get-url", "origin").strip() == other
 
 
 def test_binding_never_drops_a_v2_record_over_its_origin(world):
