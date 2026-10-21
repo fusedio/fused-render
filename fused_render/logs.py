@@ -222,6 +222,19 @@ def uvicorn_log_config() -> dict:
     }
 
 
+def uvicorn_fast_kwargs() -> dict:
+    """Extra `uvicorn.Config` kwargs for the fast HTTP parser, when installed.
+
+    `http="httptools"` only when the wheel is importable; otherwise "auto" (the
+    pure-Python h11), so a lean install still starts. The loop stays on stdlib
+    asyncio on purpose: uvloop is not shipped (see DECISIONS D1412).
+    """
+    import importlib.util
+
+    fast = importlib.util.find_spec("httptools") is not None
+    return {"loop": "asyncio", "http": "httptools" if fast else "auto"}
+
+
 def setup_logging() -> str:
     """Attach a rotating file handler to the root logger; return the log path.
 

@@ -27,7 +27,7 @@ import webbrowser
 
 from fused_render import _flavor, desktop_probe, relaunch_windows
 from fused_render._branch import branch_dir, branch_port
-from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
+from fused_render.logs import log_dir, setup_logging, uvicorn_fast_kwargs, uvicorn_log_config
 
 # NOT imported here: `uvicorn` and `fused_render.server` (create_app & co, which
 # pull in FastAPI and every router) cost ~0.7 s warm and several seconds on a
@@ -329,7 +329,8 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     # permessage-deflate would compress multi-MB replies ON the event loop for
     # zero gain over loopback, so it is off.
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
-                            log_config=uvicorn_log_config(), ws_per_message_deflate=False)
+                            log_config=uvicorn_log_config(), ws_per_message_deflate=False,
+                            **uvicorn_fast_kwargs())
     server = uvicorn.Server(config)
     # Named so a crashlog/threading.excepthook line and the D6 watchdog's
     # "server thread died" line both say WHICH thread it was.
