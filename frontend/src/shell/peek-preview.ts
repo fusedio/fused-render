@@ -291,8 +291,9 @@ export function ensureApps(): Promise<void> {
     .catch(() => {
       // No desk, no preview. A failed read is "there is no app here" rather
       // than an error the peek shows: the conversation is what the panel is
-      // for, and it is unaffected.
-      appsCache = [];
+      // for, and it is unaffected. Unless a door-time adopt filled the table
+      // while this read was failing — that table is newer and stays.
+      appsCache = appsCache ?? [];
     })
     .finally(() => {
       appsInFlight = null;
@@ -362,9 +363,13 @@ export function ensureAppFor(project: string): Promise<boolean> {
       // ON THE DESK ALREADY, yet this table had no app for the project: the
       // cache is stale (another tab added it, or a read from before). Or a
       // newer ask went out after this one (`ensureGen`). Either way the
-      // snapshot in hand is not to be trusted: re-read.
-      appsCache = null;
-      return ensureApps().then(() => true);
+      // snapshot in hand is not to be trusted: re-read — AFTER any read
+      // already in flight has settled, or `ensureApps` would hand back that
+      // older read as the fresh one (CodeRabbit on #1830).
+      return (appsInFlight ?? Promise.resolve()).then(() => {
+        appsCache = null;
+        return ensureApps().then(() => true);
+      });
     })
     // Same stance as `ensureApps`: no desk, no preview, and the door opens.
     .catch(() => false)
