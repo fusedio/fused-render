@@ -142,6 +142,7 @@ from fused_render import (
     claude_remote,
     current_apps,
     drafts,
+    pr_status,
     project_queue,
     queue_manager,
     schedule,
@@ -504,10 +505,91 @@ def _mark_fate(prompts: list[dict], fate: bool, line: str = "") -> None:
         prompts[-1]["limit"] = bool(fate) and _limit_hit(line)
 
 
+# A GitHub PR URL as it sits in a transcript line. The trailing lookahead keeps
+# `/pull/12/files` from reading as 123 and `/pull/1234567890` from matching.
+_PR_URL_RE = re.compile(
+    r"https://github\.com/([\w.-]+/[\w.-]+?)/pull/(\d{1,7})(?!\d)")
+_PRS_PER_SCAN = 50
+
+
+_GH_PR_IDS_CAP = 200
+
+
+def _add_prs(rec: dict, text: str) -> None:
+    """Append every PR URL in `text` to the scan's `prs`, first-seen order,
+    deduped case-insensitively (the first spelling is displayed)."""
+    prs = rec.setdefault("prs", [])
+    # A raw JSON line escapes its slashes in some writers (`https:\/\/...`).
+    for repo, number in _PR_URL_RE.findall(text.replace("\\/", "/")):
+        if len(prs) >= _PRS_PER_SCAN:
+            return
+        key = f"{repo.lower()}#{int(number)}"
+        if any(f"{p['repo'].lower()}#{p['number']}" == key for p in prs):
+            continue
+        prs.append({"repo": repo, "number": int(number),
+                    "url": f"https://github.com/{repo}/pull/{int(number)}"})
+
+
+def _result_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return ""
+
+
+def _note_prs(rec: dict, line: str) -> None:
+    """Attach PRs from the few places that mean "this session's PR": plain chat
+    text (assistant text blocks, the user's own message) and the result of a
+    Bash `gh pr ...` command (plus a URL in that command). Never file reads,
+    other tools' inputs, thinking, meta/attachment lines or subagent chatter."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(obj, dict) or obj.get("isSidechain") or obj.get("isMeta"):
+        return
+    kind = obj.get("type")
+    if kind not in ("assistant", "user"):
+        return
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        if kind == "user":
+            _add_prs(rec, content)
+        return
+    if not isinstance(content, list):
+        return
+    ids = rec.setdefault("gh_pr_tool_ids", [])
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text" and isinstance(block.get("text"), str):
+            _add_prs(rec, block["text"])
+        elif kind == "assistant" and btype == "tool_use":
+            inp = block.get("input")
+            cmd = inp.get("command") if isinstance(inp, dict) else None
+            if block.get("name") == "Bash" and isinstance(cmd, str) \
+                    and "gh pr " in cmd:
+                if isinstance(block.get("id"), str):
+                    ids.append(block["id"])
+                    del ids[:-_GH_PR_IDS_CAP]
+                _add_prs(rec, cmd)
+        elif kind == "user" and btype == "tool_result" \
+                and block.get("tool_use_id") in ids:
+            _add_prs(rec, _result_text(block.get("content")))
+
+
 def _absorb(rec: dict, line: str) -> None:
     """Fold one raw transcript line into a scan record. Screened before parsing:
     a transcript is mostly assistant turns and tool results, and `json.loads` on
     every one of them is the cost this endpoint cannot pay."""
+    # PR capture is scoped (see `_note_prs`); substring screen first, same
+    # reason as below. A `gh pr` tool_use line has no URL yet, so screen for it.
+    if ("github.com" in line and "pull" in line) or "gh pr " in line:
+        _note_prs(rec, line)
     # An assistant reply is the one non-user line with a fact to contribute:
     # whether the newest prompt's last answer was an API error. Substring tests
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
@@ -595,7 +677,8 @@ def _new_scan() -> dict:
     # before the assistant reply was dropped from this scan may still carry its
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0}
+            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0,
+            "prs": [], "gh_pr_tool_ids": []}
 
 
 def _condense_reply(rec: dict) -> None:
@@ -3890,6 +3973,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     surfaced = max(active, (newest["at"] or 0.0) if newest is not None else 0.0)
     if not surfaced and task["entries"]:
         surfaced = _entry_at(task["entries"][-1])
+    prs = _row_prs(task["session_id"], rec, settings)
     title, source = _title(task, rec, task["first_prompt"],
                            tasks_store.session_title(settings or {},
                                                      task["session_id"]))
@@ -4004,6 +4088,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The List row prints it, grey and italic, after the title; the Board
         # card's hover says the same.
         "last_reply": _last_reply(rec, status, said),
+        # Every PR this session touched, oldest first (`_row_prs`).
+        "prs": prs,
         # Deferred by §12 — Claude Code stores no summary, so filling this needs
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
@@ -5562,6 +5648,22 @@ def _repo_slug(folder: object) -> str:
     return slug
 
 
+def _row_prs(sid: str, rec: dict | None, settings: dict | None) -> list[dict]:
+    """The stored PRs plus any the scan has seen that the store has not, the
+    new ones persisted (a shrunk transcript restarts the scan, so the scan alone
+    forgets). Oldest first; `[]` for none."""
+    stored = tasks_store.session_prs(settings or {}, sid)
+    seen = {f"{p['repo'].lower()}#{p['number']}" for p in stored}
+    merged = stored + [p for p in (rec.get("prs") or [] if rec else [])
+                       if f"{p['repo'].lower()}#{p['number']}" not in seen]
+    if merged != stored and sid:
+        try:
+            tasks_store.record_prs(sid, merged)
+        except (OSError, ValueError):
+            pass  # costs the filing, not the row
+    return merged
+
+
 def _row_hash(row: dict) -> str:
     """A short digest of a row's content, for the page's "is this the row I
     already hold" test. Field order is the build's own and stable, so the plain
@@ -6338,6 +6440,24 @@ def api_tasks_seen(body: Any = Body(default=None),
             detail="expected {seen: {key: number}} with non-empty string keys "
                    "and finite numbers")
     return {"ok": True, "seen": tasks_store.set_seen_done(seen)}
+
+
+class PrStatusBody(BaseModel):
+    refs: list[str] = []
+
+
+@router.post("/api/tasks/pr-status")
+async def api_tasks_pr_status(body: PrStatusBody,
+                              x_fused: str | None = Header(default=None)):
+    """`{"owner/repo#n": "open"|"draft"|"merged"|"closed"|null}` for the PRs the
+    Tasks page and the chat chip are showing — GitHub's answer through the
+    user's `gh` token, cached (`pr_status`). POST because the list is a body,
+    guarded like the other POSTs; the call blocks on the network, so it runs in
+    the threadpool."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    return await run_in_threadpool(pr_status.fetch_statuses, body.refs[:100])
 
 
 class RunningPatch(BaseModel):

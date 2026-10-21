@@ -5,6 +5,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import type { PrState } from "@platform/lib/prStatus";
 import {
   BOARD_COLUMNS,
   BOARD_LANES,
@@ -56,8 +57,12 @@ import {
   seedCollapsedGroups,
   groupSize,
   parseViewTabs,
+  flattenGroupRefs,
+  prKey,
   prOfTask,
   prRefOf,
+  prRefsOf,
+  prUrl,
   canRunNow,
   cancelIntent,
   carryMarkToHeld,
@@ -8706,7 +8711,9 @@ describe("sortForList: the page's one order", () => {
     // OPT-IN exception: a reader who put a grouped tab on the row asked for the
     // cut, and `rows` is still the sorted list, flattened in section order.
     expect(VIEWS).toContain('<div className="tasks-list-frame">{rows.map(rowAt)}</div>');
-    expect(VIEWS).toContain("groupBy ? groupRows(sorted, groupBy, home, now, sortBy) : null");
+    expect(VIEWS).toContain(
+      "groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null",
+    );
     // The index rides along ONLY so the row can take its React key from
     // `taskListKeys` (the queue's identity rule).
     expect(VIEWS).toContain("key={rowKeys[ix]}");
@@ -11653,7 +11660,7 @@ describe("groupRows", () => {
     expect([...openOnFirstVisit(groupRows([{ ...due, project: "/later" }], "project", "", NOW), "project", NOW)]).toEqual([]);
     expect(activityAt(t, NOW)).toBe(sec("2026-10-16T09:00:00"));
   });
-  it("by PR: repositories and pull requests newest activity first, the number breaking a tie", () => {
+  it("by PR: repositories newest activity first, rows keep list order in a status section", () => {
     const pr = (key: string, n: number, repo: string, iso: string) =>
       row({ key, title: `PR #${n}`, repo, last_active: sec(iso) });
     const g = groupRows(
@@ -11666,27 +11673,57 @@ describe("groupRows", () => {
       "pr", "", NOW,
     );
     expect(g.map((x) => x.label)).toEqual(["x/new", "x/old"]);
-    expect(g[0]?.groups?.map((x) => x.label)).toEqual(["#99", "#5", "#100"]);
+    // No status asked: one Unknown section per repository.
+    expect(g[0]?.groups?.map((x) => [x.key, x.label, x.rows.map((r) => r.key)])).toEqual([
+      ["pr:x/new:unknown", "Unknown", ["p2", "p3", "p4"]],
+    ]);
     expect(g[0]?.recentAt).toBe(sec("2026-10-16T14:00:00"));
   });
-  it("by PR: repository first, then pull request, each heading linked (Akshil, 2026-10-16)", () => {
+  it("by PR: repository, then status sections in a fixed order, empty ones omitted", () => {
+    const states: Record<string, PrState | null> = { "x/y#1": "merged", "x/y#2": "open", "x/y#3": "closed", "x/y#4": "draft", "x/y#5": "open" };
+    const rowsIn = [1, 2, 3, 4, 5, 6].map((n) =>
+      row({ key: `t${n}`, title: `PR #${n}`, repo: "x/y", last_active: sec("2026-10-16T14:00:00") }),
+    );
+    const g = groupRows(rowsIn, "pr", "", NOW, "changed", (k) => states[k]);
+    expect(g).toHaveLength(1);
+    expect(g[0]?.groups?.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([
+      ["Open", ["t2", "t5"]],
+      ["Draft", ["t4"]],
+      ["Merged", ["t1"]],
+      ["Closed", ["t3"]],
+      ["Unknown", ["t6"]],
+    ]);
+    expect(g[0]?.groups?.[0]?.refs?.map((r) => r.number)).toEqual([2, 5]);
+  });
+  it("by PR: a task naming two PRs is one row in each section; flattenGroupRefs lines up", () => {
+    const two = row({
+      key: "two",
+      repo: "x/y",
+      title: "https://github.com/x/y/pull/1 then https://github.com/x/y/pull/2",
+      last_active: sec("2026-10-16T14:00:00"),
+    });
+    const none = row({ key: "none", title: "plain", last_active: sec("2026-10-16T13:00:00") });
+    const g = groupRows([two, none], "pr", "", NOW, "changed", (k) => (k === "x/y#1" ? "merged" : "open"));
+    expect(g.map((x) => x.label)).toEqual(["x/y", "No PR"]);
+    const flat = flattenGroups(g);
+    expect(flat.map((r) => r.key)).toEqual(["two", "two", "none"]);
+    expect(flattenGroupRefs(g).map((r) => r && prKey(r))).toEqual(["x/y#2", "x/y#1", null]);
+  });
+  it("by PR: repository first, then status, rows reachable in drawing order (Akshil, 2026-10-16)", () => {
     // a + d name #1203 in a folder whose remote the server read; b carries a
     // full GitHub link to another repo; c names no PR.
     const g = groupRows(rows.map((r) => (r.key === "c" || r.key === "b" ? r : { ...r, repo: "fusedio/fused-render" })), "pr", "", NOW);
     expect(g.map((x) => x.label)).toEqual(["fusedio/fused-render", "x/y", "No PR"]);
-    expect(g[0]?.groups?.map((x) => [x.label, x.href, x.rows.map((r) => r.key)])).toEqual([
-      ["#1203", "https://github.com/fusedio/fused-render/pull/1203", ["a", "d"]],
-    ]);
-    expect(g[1]?.groups?.map((x) => [x.label, x.href])).toEqual([["#77", "https://github.com/x/y/pull/77"]]);
+    expect(g[0]?.groups?.map((x) => [x.label, x.rows.map((r) => r.key)])).toEqual([["Unknown", ["a", "d"]]]);
+    expect(g[1]?.groups?.map((x) => x.label)).toEqual(["Unknown"]);
     expect(g[2]?.rows.map((r) => r.key)).toEqual(["c"]);
-    // The flat order the List draws, repositories A→Z and PRs highest first.
     expect(flattenGroups(g).map((r) => r.key)).toEqual(["a", "d", "b", "c"]);
     expect(groupSize(g[0]!)).toBe(2);
   });
-  it("by PR: a folder with no GitHub remote files its PRs under Unknown repository, unlinked", () => {
+  it("by PR: a folder with no GitHub remote files its PRs under Unknown repository", () => {
     const g = groupRows(rows, "pr", "", NOW);
     expect(g.map((x) => x.label)).toEqual(["x/y", "Unknown repository", "No PR"]);
-    expect(g[1]?.groups?.map((x) => [x.label, x.href ?? null])).toEqual([["#1203", null]]);
+    expect(g[1]?.groups?.map((x) => x.label)).toEqual(["Unknown"]);
   });
   it("opens Later / Last hour / Today on a first visit to Time, folds the rest", () => {
     const g = groupRows(
@@ -11715,9 +11752,9 @@ describe("groupRows", () => {
       ],
       "pr", "", NOW,
     );
-    expect([...openOnFirstVisit(pr, "pr", NOW)]).toEqual(["pr:repo:x/y", "pr:pr:x/y#1"]);
-    expect([...seedCollapsedGroups(new Set(), pr, "pr", NOW)].sort()).toEqual(["pr:pr:x/y#2", "pr:pr:x/z#3", "pr:repo:x/z"]);
-    expect(groupFoldKeys(pr, "pr")).toEqual(["pr:repo:x/y", "pr:pr:x/y#1", "pr:pr:x/y#2", "pr:repo:x/z", "pr:pr:x/z#3"]);
+    expect([...openOnFirstVisit(pr, "pr", NOW)]).toEqual(["pr:repo:x/y", "pr:pr:x/y:unknown"]);
+    expect([...seedCollapsedGroups(new Set(), pr, "pr", NOW)].sort()).toEqual(["pr:pr:x/z:unknown", "pr:repo:x/z"]);
+    expect(groupFoldKeys(pr, "pr")).toEqual(["pr:repo:x/y", "pr:pr:x/y:unknown", "pr:repo:x/z", "pr:pr:x/z:unknown"]);
   });
   it("reads the seeded views and the per-tab facets out of untrusted stores", () => {
     expect([...parseSeededViews('["time","nope","pr"]')]).toEqual(["time", "pr"]);
@@ -11741,6 +11778,35 @@ describe("groupRows", () => {
     expect(prRefOf(row({ title: "fix #34", repo: "c/d" }))).toEqual({ number: 34, repo: "c/d" });
     expect(prRefOf(row({ title: "fix #34" }))).toEqual({ number: 34, repo: null });
     expect(prRefOf(row({ title: "nothing" }))).toBeNull();
+  });
+  it("prRefsOf: every PR a task names, newest first", () => {
+    const refs = prRefsOf(row({
+      title: "https://github.com/a/b/pull/12",
+      last_reply: "second: https://github.com/a/b/pull/14 and https://github.com/c/d/pull/3",
+    }));
+    expect(refs.map(prKey)).toEqual(["c/d#3", "a/b#14", "a/b#12"]);
+    expect(prUrl(refs[0])).toBe("https://github.com/c/d/pull/3");
+  });
+  it("prRefsOf: server prs come first (oldest to newest), text adds and dedupes", () => {
+    const refs = prRefsOf(row({
+      prs: [
+        { repo: "a/b", number: 1, url: "https://github.com/a/b/pull/1" },
+        { repo: "a/b", number: 2, url: "https://github.com/a/b/pull/2" },
+      ],
+      title: "see https://github.com/A/B/pull/2 and https://github.com/a/b/pull/5",
+    }));
+    expect(refs.map(prKey)).toEqual(["a/b#5", "a/b#2", "a/b#1"]);
+    expect(refs[1].repo).toBe("a/b");
+  });
+  it("prRefsOf: bare numbers only count when nothing is named, and take the folder's repo", () => {
+    expect(prRefsOf(row({ title: "Issue #55 blocks PR #1203", repo: "c/d" })).map(prKey)).toEqual(["c/d#1203"]);
+    expect(prRefsOf(row({ title: "fix #34", repo: "c/d" })).map(prKey)).toEqual(["c/d#34"]);
+    expect(prRefsOf(row({ title: "fix #34" })).map(prKey)).toEqual(["?#34"]);
+    expect(prRefsOf(row({ title: "nothing" }))).toEqual([]);
+  });
+  it("prRefsOf: a named number already known with a repo is not repeated with the folder's", () => {
+    const refs = prRefsOf(row({ title: "PR #12 https://github.com/a/b/pull/12", repo: "c/d" }));
+    expect(refs.map(prKey)).toEqual(["a/b#12"]);
   });
   it("reads a PR out of the latest message too", () => {
     expect(prOfTask(row({ title: "x", last_message: { role: "assistant", text: "opened #99", at: 1 } }))).toBe(99);

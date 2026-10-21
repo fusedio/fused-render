@@ -162,8 +162,12 @@ import {
   ERASE_BLOCKED_HINT,
   opensCanvas,
   pageDoorLabel,
+  flattenGroupRefs,
+  prKey,
+  prUrl,
 } from "./tasks-lib";
 import type {
+  PrRef,
   FilingIntent,
   LaneChoices,
   ListMemory,
@@ -178,6 +182,8 @@ import type {
 } from "./tasks-lib";
 import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import { useProjectQueueEnabled } from "@apps/claude/feature-flag";
+import { usePrStatuses } from "@platform/lib/prStatus";
+import { prRefsOf } from "@platform/lib/task-prs";
 import { runAgent } from "@apps/claude/protocol/agent";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
@@ -924,6 +930,40 @@ export function IdentityChip({ name, title, onPick, active = false }: {
       >
         {body}
       </button>
+    </span>
+  );
+}
+
+/** The PR view's stand-in for the folder chip: `#1818`, a link to the pull
+ *  request on GitHub (a plain label when the repository is not known). Wears
+ *  the folder chip's own classes so it sits in the row exactly where that
+ *  chip does; the link is lifted over the row's stretched link (`.task-pr-num`)
+ *  and its press never counts as a press on the row. */
+function PrNumChip({ prRef }: { prRef: PrRef }) {
+  const body = <span className="schedule-tv-id-name">#{prRef.number}</span>;
+  const href = prUrl(prRef);
+  if (!href) return <span className="schedule-tv-id">{body}</span>;
+  // The same shield + pill the project chip wears (`IdentityChip` with `onPick`),
+  // so border, radius, padding, size and hover come from `.schedule-tv-id--tag`
+  // itself; the pill is an <a> rather than a <button>.
+  return (
+    <span
+      className="schedule-tv-id-shield"
+      data-hint=""
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <a
+        className="schedule-tv-id schedule-tv-id--tag task-pr-num"
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-hint={`${prRef.repo} #${prRef.number}`}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        {body}
+      </a>
     </span>
   );
 }
@@ -2357,11 +2397,28 @@ export function TaskList({
   const sorted = useMemo(() => sortForList(tasks, now, sortBy), [tasks, now, sortBy]);
   // The grouped views cut the sorted list into sections and draw them one frame
   // each; `rows` stays the flat, in-order list every index below is about.
+  // THE PR VIEW SECTIONS BY GITHUB STATUS, asked of the server for the PRs
+  // on screen only (and not at all on any other view). The answer lands after
+  // the first paint, so rows first file under "Unknown" and move.
+  const visiblePrKeys = useMemo(
+    () =>
+      groupBy === "pr"
+        ? [...new Set(sorted.flatMap((t) => prRefsOf(t)).filter((r) => r.repo).map(prKey))]
+        : [],
+    [sorted, groupBy],
+  );
+  const prStatuses = usePrStatuses(visiblePrKeys);
   const groups = useMemo(
-    () => (groupBy ? groupRows(sorted, groupBy, home, now, sortBy) : null),
-    [sorted, groupBy, home, now, sortBy],
+    () => (groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `prStatuses` is a fresh object each render; its values are the dep
+    [sorted, groupBy, home, now, sortBy, visiblePrKeys.map((k) => prStatuses[k] ?? "").join(",")],
   );
   const rows = useMemo(() => (groups ? flattenGroups(groups) : sorted), [groups, sorted]);
+  // The pull request each row stands for (PR view only): a task naming two PRs
+  // is drawn twice, so the row's React key and its `#N` chip need the pair.
+  // expanded / peeked / selected stay keyed by `task.key`, so both copies of a
+  // task light up together — deliberate, they are the same task.
+  const rowRefs = useMemo(() => (groups ? flattenGroupRefs(groups) : null), [groups]);
   // Which sections are folded (the grouped views only; see groupFrames).
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(readCollapsedGroups);
   // THE FIRST VISIT TO A GROUPED VIEW STARTS FOLDED (Akshil, 2026-10-19), bar
@@ -2395,7 +2452,10 @@ export function TaskList({
    * queue off it is `task.key` for every row and nothing has changed.
    */
   const queueOn = useProjectQueueEnabled();
-  const rowKeys = useMemo(() => taskListKeys(rows, queueOn), [rows, queueOn]);
+  const rowKeys = useMemo(() => {
+    const keys = taskListKeys(rows, queueOn);
+    return rowRefs ? keys.map((k, i) => (rowRefs[i] ? `${k}@${prKey(rowRefs[i]!)}` : k)) : keys;
+  }, [rows, queueOn, rowRefs]);
 
   /**
    * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
@@ -2849,7 +2909,9 @@ export function TaskList({
         onNode={onNode}
         task={task}
         home={home}
-        showProject={showProject}
+        // The PR view's `#N` chip takes the folder chip's slot (see PrNumChip).
+        showProject={showProject && !rowRefs?.[ix]}
+        prRef={rowRefs?.[ix] ?? null}
         sortBy={sortBy}
         folderMissing={missing?.has(taskFolder(task)) ?? false}
         open={expanded.has(task.key)}
@@ -3114,6 +3176,7 @@ function TaskNode({
   task,
   home,
   showProject,
+  prRef = null,
   sortBy = "changed",
   folderMissing,
   open: requested,
@@ -3153,6 +3216,9 @@ function TaskNode({
   /** Whether the folder chip is worth drawing. The LIST's answer, not this row's:
    * a chip that every visible row repeats distinguishes nothing (spansProjects). */
   showProject: boolean;
+  /** The PR view's row: the pull request this copy of the task stands for.
+   *  Replaces the folder chip with a `#N` link to GitHub. */
+  prRef?: PrRef | null;
   /** Which time the row's last cell prints: its last change, or its creation. */
   sortBy?: TaskSortBy;
   /** The task's folder is gone from the disk (useMissingFolders). The row then
@@ -4200,6 +4266,7 @@ function TaskNode({
             then the folder it belongs to, then the words. It lived at the right
             end among the tags until then; DraftChip stays there alone. Same
             component, same press, same shield — only the slot moved. */}
+        {prRef && <PrNumChip prRef={prRef} />}
         {showProject && (
           <IdentityChip
             name={basename(task.project)}

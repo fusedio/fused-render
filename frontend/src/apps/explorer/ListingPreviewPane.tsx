@@ -179,6 +179,7 @@ export default function ListingPreviewPane({
             noFocus
             noOpen
             paramsSource="url"
+            prChip
             // THE RECAP OPT-IN (ChatMount `recap`): this pane IS the chat the
             // reader opened on a folder — `/explorer/view/<dir>?session_id=`
             // lands here, not in Preview's content pane — so it is a primary
