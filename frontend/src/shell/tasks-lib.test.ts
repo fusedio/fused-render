@@ -11386,6 +11386,34 @@ describe("cardTitleLine — summary-only titles (title_mode: summary)", () => {
   });
 });
 
+describe("cardTitleLine — a renamed title (title_source: renamed)", () => {
+  const base = {
+    title: "My name\nsecond line",
+    title_source: "renamed",
+    last_message: { text: "newest message" },
+    last_reply: "Fixed it.",
+    status: "done",
+    recap: { text: "haiku recap", for_uuid: "u1" },
+  };
+
+  it("beats summary mode, the recap, the reply and the last message", () => {
+    const want = { text: "My name", said: false, kind: "title", hint: "My name\nsecond line" };
+    expect(cardTitleLine({ ...base, title_mode: "summary" })).toEqual(want);
+    expect(cardTitleLine(base)).toEqual(want);
+    expect(cardTitleLine({ ...base, recap: undefined })).toEqual(want);
+    expect(cardTitleLine({ ...base, recap: undefined, status: "running" })).toEqual(want);
+  });
+
+  it("an empty renamed title falls through to the old rules", () => {
+    expect(cardTitleLine({ ...base, title: "  " }).kind).toBe("recap");
+    expect(cardTitleLine({ ...base, title: "", recap: undefined }).kind).toBe("said");
+  });
+
+  it("another title_source changes nothing", () => {
+    expect(cardTitleLine({ ...base, title_source: "ai" }).kind).toBe("recap");
+  });
+});
+
 describe("cardTitleLine — task recaps (prefs task_recap.enabled)", () => {
   const base = {
     title: "ai title",

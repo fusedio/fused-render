@@ -142,15 +142,25 @@ export function recapTitlesOn(task: { recap?: unknown }): boolean {
  *  `title_mode: "summary"` on every row with it on) beat everything below:
  *  the row is titled by the server's stable `title` alone (user-set title,
  *  else Claude Code's ai-title summary, else the first message), never by the
- *  newest message, the recap or the reply. An empty title falls through. */
+ *  newest message, the recap or the reply. An empty title falls through.
+ *
+ *  A RENAMED TASK beats all of it (`title_source: "renamed"`: the server's
+ *  `title` is then what the reader typed in the peek header, stored on the
+ *  session). It is the reader's own name for the task, so no mode — summary,
+ *  recap or newest message — gets to retitle it. An empty one falls through. */
 export function cardTitleLine(task: {
   title?: string | null;
   title_mode?: string;
+  title_source?: string;
   last_message?: { text: string } | null;
   status?: string;
   last_reply?: string;
   recap?: { text: string; for_uuid: string } | null;
 }): CardTitle {
+  if (task.title_source === "renamed") {
+    const renamed = firstLine(task.title ?? "");
+    if (renamed) return { text: renamed, said: false, kind: "title", hint: task.title ?? undefined };
+  }
   if (task.title_mode === "summary") {
     const title = firstLine(task.title ?? "");
     if (title) return { text: title, said: false, kind: "title", hint: task.title ?? undefined };

@@ -3829,6 +3829,9 @@ export interface Task {
   /** "summary" when prefs `task_summary_titles.enabled` is on: the row is
    *  titled by `title` alone. ABSENT otherwise. */
   title_mode?: "summary";
+  /** Where `title` came from: "renamed" (the reader's own, set from the peek
+   *  header), "user", "ai", "message", "entry" or "command". */
+  title_source?: string;
   /**
    * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
    * (or absent, on an older server) when there is none.
@@ -4515,6 +4518,13 @@ export function archiveTask(
     "/api/tasks/archive",
     { key },
   );
+}
+
+/** Give a started task a title of the reader's own; "" takes it back and the
+ *  automatic title returns. `title` is what the server stored (first line,
+ *  trimmed, capped). */
+export function renameTask(key: string, title: string): Promise<{ ok: boolean; title: string }> {
+  return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
 }
 
 // Taking the filing back — the drag out of the Archive lane, and the exact
