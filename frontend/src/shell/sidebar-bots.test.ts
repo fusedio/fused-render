@@ -98,10 +98,10 @@ describe("wiring", () => {
     expect(row).toContain("botsWaitingLabel(botsPulse.waiting)");
     expect(row).toContain("botsRunningLabel(botsPulse.running)");
     expect(row).toContain('"sidebar-count-chip"');
-    // Only the green dot is suppressed on /bots itself, as only `unseen` is on /tasks.
-    expect(row).toContain("const botsNews = botsActive ? 0 : botsPulse.unread;");
-    expect(row).toContain("botsNews > 0 ?");
-    expect(row).not.toContain("botsActive ? undefined");
+    // Nothing is gated on being on /bots: the dot clears when the BOT is opened,
+    // not when the page is (Akshil, 2026-10-21).
+    expect(row).toContain("botsPulse.unread > 0 ?");
+    expect(row).not.toContain("botsActive ?");
   });
 
   it("both widths show it: the rail badge + tooltip, the expanded extra + trailing", () => {

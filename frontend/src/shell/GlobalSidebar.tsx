@@ -661,18 +661,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // Errors are in the tooltip only ("1 error"): an errored bot is not asking
   // for anything, and a fourth colour on one dot is one too many.
   //
-  // Only the GREEN dot is suppressed while /bots is on screen, exactly as the
-  // Tasks row suppresses its green dot on /tasks: "there is news" is noise beside
-  // the page showing it, but "a bot is waiting" / "a bot is running" is state,
-  // and state does not stop being true because the reader is looking at it.
+  // NOTHING IS SUPPRESSED ON /bots — unlike the Tasks dot on /tasks (Akshil,
+  // 2026-10-21: "when I click on Bots it becomes clear even though I didn't
+  // read the bot"). The Tasks page shows every done task at once, so landing
+  // there IS seeing them; the Bots page shows ONE bot's chat, and a bot with
+  // news in the list beside it is still unread. The dot therefore says exactly
+  // what the chip says, and both clear when the bot is opened (markSeen), not
+  // when the page is.
   const botsPulse = useBotsPulse();
   const botsTip = botsPulseTitle(botsPulse);
-  const botsNews = botsActive ? 0 : botsPulse.unread;
   const botsDot = botsPulse.waiting > 0 ? (
     <span className="sidebar-rail-dot is-attention" title={botsTip} />
   ) : botsPulse.running > 0 ? (
     <span className="sidebar-rail-dot is-running" title={botsTip} />
-  ) : botsNews > 0 ? (
+  ) : botsPulse.unread > 0 ? (
     <span className="sidebar-rail-dot is-unread" title={botsTip} />
   ) : undefined;
   const botsTrailing =
