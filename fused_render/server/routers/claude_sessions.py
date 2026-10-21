@@ -1200,13 +1200,22 @@ def _recap_codex(agent, tail: str, titles: bool | None = None) -> str:
     # when there is no `.git` above it — which is exactly the `-C` case), so
     # a `/tmp/AGENTS.md` any local user can drop there would ride along into
     # the recap. A fresh `mkdtemp` has nothing in it to read; the reply file
-    # lives inside it and the whole folder goes in `finally`.
+    # lives inside it and the whole folder goes in `finally`. And NO WALK
+    # UPWARDS from it: Codex finds its project root by climbing from the cwd
+    # to the nearest `project_root_markers` entry (`.git` by default) and
+    # reads every `AGENTS.md` from that root down, so a `/tmp/.git` beside a
+    # `/tmp/AGENTS.md` — both any local user's to plant — would make the
+    # shared temp dir the project after all. An EMPTY marker list turns the
+    # climb off (Codex's own `agents_md.rs`: "An empty marker list disables
+    # parent traversal"); the override rides `-c`, TOML on the right-hand
+    # side, as `agent._codex_argv` spells its own.
     work_dir = tempfile.mkdtemp(prefix="fused-codex-recap-")
     out_path = os.path.join(work_dir, "reply.txt")
     try:
         proc = subprocess.Popen(
             [agent._codex_bin(), "exec", "--skip-git-repo-check", "--ephemeral",
              "-s", "read-only", "-C", work_dir,
+             "-c", "project_root_markers=[]",
              "-m", registry.get("codex").default_model,
              "-o", out_path, "-"],
             env=agent._spawn_env(backend="codex"),

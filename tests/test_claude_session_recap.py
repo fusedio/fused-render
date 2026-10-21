@@ -543,6 +543,10 @@ def test_a_codex_session_is_recapped_by_codex_exec_ephemeral_and_read_only(
     assert os.path.dirname(work_dir) == recap_mod.tempfile.gettempdir()
     assert os.path.dirname(argv[argv.index("-o") + 1]) == work_dir
     assert not os.path.exists(work_dir)
+    # ...and Codex never climbs out of it looking for a project root: a
+    # planted `/tmp/.git` + `/tmp/AGENTS.md` must not become the recap's
+    # instructions. The empty marker list is the documented off switch.
+    assert argv[argv.index("-c") + 1] == "project_root_markers=[]"
     assert argv[argv.index("-m") + 1] == registry.get("codex").default_model
     # The prompt comes from stdin (`-`, last), the system text leading it.
     assert argv[-1] == "-"

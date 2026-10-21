@@ -57,6 +57,57 @@ const SAID: Record<string, { title: string; explain: string }> = {
   raw: { title: "Something went wrong", explain: "" },
 };
 
+// The same three stories told about the OTHER agents, for a card with no text
+// overrides: a Codex card that fell back to "The app can't find Claude Code"
+// beside "Install Codex" named the wrong agent in the one line the user reads
+// first (CodeRabbit on the Codex PR). `raw` is shared — it names nobody.
+const SAID_BY_AGENT: Record<string, Record<string, { title: string; explain: string }>> = {
+  codex: {
+    notfound: {
+      title: "The app can't find Codex",
+      explain:
+        "Fused Render uses OpenAI Codex CLI on this computer for this task, " +
+        "and it could not find it. Either it was never installed, or it is " +
+        "somewhere the app cannot see.",
+    },
+    login: {
+      title: "Codex isn't signed in",
+      explain:
+        "Codex is installed but not signed in to your ChatGPT or OpenAI " +
+        "account yet, so nothing can run. Sign in from Preferences → AI & " +
+        "agents, or in a terminal, once.",
+    },
+    limit: {
+      title: "Your Codex usage limit was reached",
+      explain:
+        "Nothing is broken — your ChatGPT plan includes a set amount of Codex " +
+        "use and it is spent for now. The message below says when it resets.",
+    },
+  },
+  copilot: {
+    notfound: {
+      title: "The app can't find GitHub Copilot CLI",
+      explain:
+        "Fused Render uses GitHub Copilot CLI on this computer for this task, " +
+        "and it could not find it. Either it was never installed, or it is " +
+        "somewhere the app cannot see.",
+    },
+    login: {
+      title: "GitHub Copilot isn't signed in",
+      explain:
+        "Copilot is installed but not signed in to your GitHub account yet, so " +
+        "nothing can run. Sign in from Preferences → AI & agents, or run " +
+        "`copilot login` in a terminal, once.",
+    },
+    limit: {
+      title: "Your Copilot request budget was reached",
+      explain:
+        "Nothing is broken — your GitHub Copilot plan includes a set amount of " +
+        "requests and it is spent for now. The message below says when it resets.",
+    },
+  },
+};
+
 function CopyLine({ text, label }: { text: string; label: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -142,7 +193,7 @@ export function TroubleCard({
   children?: React.ReactNode;
 }) {
   const kind = kindProp ?? troubleKind(error, backend);
-  const fallback = SAID[kind] ?? SAID.raw;
+  const fallback = (backend && SAID_BY_AGENT[backend]?.[kind]) ?? SAID[kind] ?? SAID.raw;
   const said = { title: title ?? fallback.title, explain: explain ?? fallback.explain };
   const ctx = { what, error, ...(facts ?? {}), ...(backend ? { backend } : {}) };
   const report = troubleReport(ctx);

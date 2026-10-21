@@ -466,6 +466,56 @@ describe("the door-time check (ensureAppFor)", () => {
     }
   });
 
+  it("a stale answer whose app the newer table LACKS re-reads instead of keeping it", async () => {
+    // The two asks are concurrent and the server takes them in ITS order: it
+    // answered B before it had added A, so B's table — adopted, newest — is
+    // [B] alone. A's answer then lands with [A, B]. Keeping the "newer" table
+    // would keep the one that is behind; the desk would miss A until some
+    // later fresh read (CodeRabbit on the Codex PR).
+    const rowA = { ...row, path: "/w/a", name: "a", entry: "/w/a/index.html" };
+    const rowB = { ...row, path: "/w/b", name: "b", entry: "/w/b/index.html" };
+    const pending: Array<(v: unknown) => void> = [];
+    const reads: string[] = [];
+    (globalThis as { fetch: unknown }).fetch = (url: string, init?: { body?: string }) => {
+      if (url.endsWith("/ensure")) {
+        const path = JSON.parse(init?.body ?? "{}").path as string;
+        const body = path === "/w/a"
+          ? { ok: true, app: "/w/a", added: true, apps: [rowA, rowB] }
+          : { ok: true, app: "/w/b", added: true, apps: [rowB] };
+        return new Promise((resolve) => {
+          pending.push(() =>
+            resolve({
+              ok: true,
+              status: 200,
+              headers: { get: () => "application/json" },
+              json: async () => body,
+              text: async () => JSON.stringify(body),
+            } as unknown as Response),
+          );
+        });
+      }
+      reads.push(url);
+      const body = { apps: [rowA, rowB] };
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response);
+    };
+    const askA = ensureAppFor("/w/a");
+    const askB = ensureAppFor("/w/b");
+    pending[1]!(undefined); // B first: adopted, and it has no A
+    await askB;
+    expect(appForProject("/w/a", knownApps())).toBeNull();
+    pending[0]!(undefined); // A's answer: its app is missing from the adopted table
+    await askA;
+    expect(reads.length).toBe(1); // so the cache was dropped and re-read…
+    expect(appForProject("/w/a", knownApps())?.name).toBe("a"); // …and A is on the desk
+    expect(appForProject("/w/b", knownApps())?.name).toBe("b");
+  });
+
   it("a failed ask is a 'no' and the next open may retry", async () => {
     (globalThis as { fetch: unknown }).fetch = () => Promise.reject(new Error("offline"));
     expect(await ensureAppFor("/w/built")).toBe(false);

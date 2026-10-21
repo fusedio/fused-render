@@ -379,7 +379,18 @@ export function ensureAppFor(project: string): Promise<boolean> {
         // listener above drop the very table this branch keeps — which is
         // how a stale answer used to leave the cache empty whenever the
         // announce went out ahead of this check.
-        if (adoptedGen > gen) return true;
+        //
+        // UNLESS the newer table lacks THIS ask's app: the server may have
+        // answered the newer ask before it had added this one (the asks
+        // are concurrent, their order on the server is its own), in which
+        // case the "newer" snapshot is the one that is behind, and this
+        // added app would be missing from the desk until the next fresh
+        // read. Then it is the re-read below, after all (CodeRabbit on
+        // this PR).
+        if (adoptedGen > gen
+            && (!added || (appsCache !== null && appForProject(project, appsCache) !== null))) {
+          return true;
+        }
         announceCurrentAppsChanged();
         appsCache = null;
         return ensureApps().then(() => true);
