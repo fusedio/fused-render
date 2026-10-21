@@ -304,6 +304,16 @@ async function closeBox(box: ReactTestRenderer): Promise<void> {
   if (lastBox === box) lastBox = null;
 }
 
+/** The folder lives in the WHERE pill's popover now — open it, the way a reader
+ *  does, before asking what the folder box says. */
+async function openWhere(box: ReactTestRenderer): Promise<void> {
+  const pill = box.root.findAll(
+    (n) => n.type === "button" && n.props["aria-label"] === "Folder"
+      && n.props["aria-haspopup"] === "dialog",
+  )[0];
+  if (pill) await act(async () => { pill.props.onClick(); });
+}
+
 /** What the card is showing, by the labels a reader sees. */
 function fields(box: ReactTestRenderer): Record<string, string> {
   const out: Record<string, string> = {};
@@ -325,6 +335,7 @@ test("a `new:` hop opens the card on that record — title, words and folder", a
     + "&from=" + encodeURIComponent("/explorer/view/tmp/lab?_side=claude"),
   );
   try {
+    await openWhere(box);
     const seen = fields(box);
     // The card is UP — the live failure was no dialog at all, so this is the
     // assertion the rest hang off.
@@ -352,6 +363,7 @@ test("a SESSION hop lands in the session's folder, not the reader's home", async
     + "&from=" + encodeURIComponent("/explorer/view/tmp/lab?_side=claude"),
   );
   try {
+    await openWhere(box);
     const seen = fields(box);
     expect(seen["What should Claude do?"]).toBe("Ship the notes");
     expect(seen["Additional instructions"]).toBe("then tell Ada");
@@ -368,6 +380,7 @@ test("a record that names its own target still wins over the hop's", async () =>
     "?new=1&draft=" + session + "&target=" + encodeURIComponent("/tmp/lab"),
   );
   try {
+    await openWhere(box);
     expect(fields(box)["Add folder or file"]).toBe("/tmp/chosen");
   } finally {
     await closeBox(box);

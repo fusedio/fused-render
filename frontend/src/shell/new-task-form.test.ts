@@ -59,6 +59,8 @@ let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
 let PATH_MISSING: typeof import("./NewJobModal").PATH_MISSING;
 let twoLevelsMissing: typeof import("./NewJobModal").twoLevelsMissing;
 let saveActionLabel: typeof import("./NewJobModal").saveActionLabel;
+let whenPillLabel: typeof import("./NewJobModal").whenPillLabel;
+let presetWhen: typeof import("./NewJobModal").presetWhen;
 let seededDraftForm: typeof import("./NewJobModal").seededDraftForm;
 
 beforeAll(async () => {
@@ -96,6 +98,8 @@ beforeAll(async () => {
   PATH_MISSING = mod.PATH_MISSING;
   twoLevelsMissing = mod.twoLevelsMissing;
   saveActionLabel = mod.saveActionLabel;
+  whenPillLabel = mod.whenPillLabel;
+  presetWhen = mod.presetWhen;
   seededDraftForm = mod.seededDraftForm;
 });
 
@@ -1116,7 +1120,9 @@ describe("naming the task", () => {
   test("…and the second field is the OVERFLOW of that question, and says it is optional", () => {
     // Never the same question twice: the field above asks what the task is, so
     // this one asks only for what that answer left out.
-    expect(ASK_PLACEHOLDER).toBe("Additional instructions (optional)");
+    expect(ASK_PLACEHOLDER).toBe(
+      "Describe what Claude should do. Paste a screenshot or drop a file. (optional)",
+    );
     expect(ASK_PLACEHOLDER).toContain("optional");
     expect(ASK_PLACEHOLDER).not.toContain("What should Claude do");
   });
@@ -1703,7 +1709,7 @@ describe("where the new-folder answer is shown", () => {
 
   test("the row lives inside the recents dropdown, under the folders", () => {
     const s = src();
-    const open = s.indexOf('className="schedule-recents"');
+    const open = s.indexOf('className="schedule-recents nt-recents"');
     const rowAt = s.indexOf("schedule-recents-new\"");
     expect(open).toBeGreaterThan(-1);
     expect(rowAt).toBeGreaterThan(open);
@@ -1870,20 +1876,18 @@ describe("what the primary button says it will do", () => {
 describe("where the when-row lives", () => {
   const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
 
-  test("it is inside More options, which opens itself on a planning card", () => {
+  test("it is the WHEN property pill; the More options fold is gone", () => {
     const s = src();
-    const more = s.indexOf('<details className="schedule-form-more"');
-    expect(more).toBeGreaterThan(-1);
-    // The when-row now sits AFTER the disclosure opens, not on the card's face.
-    expect(s.indexOf("Google's when-row")).toBeGreaterThan(more);
-    // Openness is React state, not a bare `open` attribute: a half-controlled
-    // <details> would slam shut on the next re-render, under the user's hand.
-    // …and for a re-opened DRAFT that carries a time, which is the one other
-    // card whose when-row holds an answer the reader already gave.
-    expect(s).toContain(
-      "const [moreOpen, setMoreOpen] = useState(planning || saved.when !== null);",
-    );
-    expect(s).toContain("onToggle={(e) => setMoreOpen(e.currentTarget.open)}");
+    expect(s).toContain('<div className="nt-pills">');
+    expect(s).toContain('k="When"');
+    expect(s).not.toContain("schedule-form-more");
+    expect(s).not.toContain("<details");
+    // No disclosure state either: a planning card or a draft with a saved time
+    // simply shows its reading in the pill.
+    expect(s).not.toContain("moreOpen");
+    // The Google-style date grid and time list still back the custom pane.
+    expect(s).toContain("<MiniCalendar");
+    expect(s).toContain("<TimeList");
   });
 
   test("the three when-controls are what mark the time as picked", () => {
@@ -2610,7 +2614,7 @@ describe("the path locks to the app the card was opened in", () => {
     // hide the path field". It used to sit disabled with a line saying why; the
     // whole row goes now, and the target is still what the scope seeded.
     const src = card();
-    expect(src).toContain('{!lockTarget && (\n        <div className="schedule-form-line">');
+    expect(src).toMatch(/\{!lockTarget && \(\s*<PropPill\s+k="Where"/);
     expect(src).not.toContain("Tasks here run against this project.");
   });
 });
@@ -2640,7 +2644,8 @@ describe("the source-task chip", () => {
   test("an Edit never wears one", () => {
     // That heading already IS the task, and the card is not continuing anything.
     expect(page()).toContain("if (editing) return null;");
-    expect(card()).toContain('title={editing ? "Edit task" : "New task"}');
+    // …inside the breadcrumb that names the agent, and still the h2's last words.
+    expect(card()).toContain('{editing ? "Edit task" : "New task"}\n        </>');
     expect(card()).toContain("{...(editing || !sourceTask ? {} : {");
   });
 
@@ -2844,5 +2849,66 @@ describe("Tab in the folder field", () => {
     // …and the dead icon arm went with the dead flag: every row this list
     // builds is a folder.
     expect(s).not.toContain("p.is_dir ? ICON_FOLDER : ICON_FILE");
+  });
+});
+
+// ---- the property pills (P2 design) ----------------------------------------
+describe("property pills", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+  const now = new Date("2026-10-21T14:30:00");
+
+  test("four pills, in source order: Where, When, Access, Model", () => {
+    const s = src();
+    const at = ["Where", "When", "Access", "Model"].map((k) => s.indexOf(`k="${k}"`));
+    expect(at.every((i) => i > -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    // …and they sit in the row that replaced the folder row.
+    expect(s.indexOf('<div className="nt-pills">')).toBeLessThan(at[0]);
+    expect(s).toContain('<div className="nt-notes">');
+  });
+
+  test("the WHEN presets, in order", () => {
+    const s = src();
+    // Read off the menu's own markup, from its "Run" header on — the words also
+    // turn up in comments above it.
+    const menu = s.slice(s.indexOf('<div className="nt-pop-h">Run</div>'));
+    const labels = ["Now", "In an hour", "Tonight at 9:00pm", "Tomorrow at 9:00am",
+      "Pick a time…", "Repeat…"];
+    const at = labels.map((l) => menu.search(
+      new RegExp(`\\n\\s+(<span[^>]*/>\\s+)?${l}\\s*\\n`)));
+    expect(at.every((i) => i > -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+  });
+
+  test("the controls keep the aria-labels the rest of the suite finds them by", () => {
+    const s = src();
+    for (const l of ['ariaLabel="Permissions"', 'ariaLabel="Model"', 'aria-label="Thinking"',
+      'ariaLabel="Repeats"']) {
+      expect(s).toContain(l);
+    }
+  });
+
+  test("whenPillLabel reads the pick the way the pill says it", () => {
+    expect(whenPillLabel(null, null, now)).toBe("Now");
+    expect(whenPillLabel(new Date("2026-10-21T21:00:00"), null, now)).toBe("Today · 9:00pm");
+    expect(whenPillLabel(new Date("2026-10-22T09:00:00"), null, now)).toBe("Tomorrow · 9:00am");
+    expect(whenPillLabel(new Date("2026-10-24T09:00:00"), null, now)).toBe("Oct 24 · 9:00am");
+    // A repeat says the pattern, not the day.
+    expect(whenPillLabel(new Date("2026-10-22T02:00:00"), "Daily", now)).toBe("Daily · 2:00am");
+    expect(whenPillLabel(new Date("2026-10-22T09:00:00"), "Weekdays", now)).toBe("Weekdays · 9:00am");
+  });
+
+  test("whenPillLabel names a past time by its date, and a year away with the year", () => {
+    expect(whenPillLabel(new Date("2026-10-20T08:15:00"), null, now)).toBe("Oct 20 · 8:15am");
+    expect(whenPillLabel(new Date("2027-01-05T12:00:00"), null, now)).toBe("Jan 5, 2027 · 12:00pm");
+  });
+
+  test("presetWhen: an hour on, tonight at 21:00, tomorrow at 09:00", () => {
+    expect(presetWhen("hour", now).getTime()).toBe(now.getTime() + 3_600_000);
+    expect(presetWhen("tonight", now).getTime()).toBe(new Date("2026-10-21T21:00:00").getTime());
+    expect(presetWhen("tomorrow", now).getTime()).toBe(new Date("2026-10-22T09:00:00").getTime());
+    // Across a month end.
+    expect(presetWhen("tomorrow", new Date("2026-10-31T23:00:00")).getTime())
+      .toBe(new Date("2026-11-01T09:00:00").getTime());
   });
 });
