@@ -16,7 +16,10 @@
 //              `danger` reads red; `confirm` asks first on an in-page sheet
 //              (never window.confirm), as does a "confirm" refusal. A button
 //              with `dialog` opens its sheet instead of posting — Propose,
-//              Publish as remix, Sign in. Everything else is ONE route,
+//              Publish as remix, Sign in. Update proposal asks first which
+//              new files to send when the copy has any (`include`, as
+//              Propose does), and Discard's confirm carries "Also withdraw my
+//              proposal" while one is open. Everything else is ONE route,
 //              POST /api/contrib/action; a long one answers a job, shown as
 //              progress until it ends.
 //   merge      `panel.merge`, Claude's merge for this copy: the clock while it
@@ -51,6 +54,7 @@ import { timeAgo } from "@platform/lib/format";
 import { notify } from "@platform/lib/notifications";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -61,6 +65,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@platform/shadcn/ui/alert-dialog";
+import { ContribDialog } from "./ContribDialog";
+import { IncludeFiles, pickedOf } from "./IncludeFiles";
 import { JobProgress } from "./JobProgress";
 import { MergeReview, mergeShown } from "./MergeReview";
 import { ProposeDialog } from "./ProposeDialog";
@@ -86,6 +92,9 @@ const ATTENTION_STATES = new Set([
 ]);
 /** States that say all is well. */
 const QUIET_STATES = new Set(["following", "merged", "published"]);
+/** Opens the new-files sheet first when the copy has new files. */
+const UPDATE_ID = "update-proposal";
+const DISCARD_ID = "discard";
 /** States that stand until the user dismisses them (ack "settled"). */
 const SETTLED_STATES = new Set(["merged", "declined"]);
 
@@ -94,6 +103,7 @@ type Sheet =
   | { k: "propose" }
   | { k: "remix" }
   | { k: "confirm"; action: ContribAction; sentence: string }
+  | { k: "update"; action: ContribAction }
   | { k: "undo"; line: ActivityLine };
 
 /** Any action's answer, as `act` reads it. */
@@ -107,6 +117,8 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   // The job a long action is running, for its progress line.
   const [job, setJob] = useState<{ label: string; step: string | null } | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [withdrawToo, setWithdrawToo] = useState(false);
+  const [include, setInclude] = useState<ReadonlySet<string>>(() => new Set());
   // Dismissed here ahead of the re-read, keyed by which settlement it was,
   // so a LATER proposal's answer is not hidden by this one's ✕.
   const [acked, setAcked] = useState<string | null>(null);
@@ -121,6 +133,8 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
     setError(null);
     setJob(null);
     setActivityOpen(false);
+    setWithdrawToo(false);
+    setInclude(new Set());
     setAcked(null);
     setSignIn(null);
   }, [dir]);
@@ -138,6 +152,8 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const who = panel.who || authorOf(c.copy);
   const signedIn = c.github.signed_in;
   const settledKey = `${panel.state}:${proposal?.number ?? ""}`;
+  const untracked = panel.untracked ?? [];
+  const openProposal = !!proposal && (proposal.state === "waiting" || proposal.state === "commented");
   if (SETTLED_STATES.has(panel.state) && acked === settledKey) return null;
 
   /** Run one thing: one at a time ("busy" when another is running — a double
@@ -172,9 +188,9 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
 
   /** POST one action; a long one's job is watched to its end. A "confirm"
    *  refusal (the server wants a yes first) opens the confirm sheet. */
-  const post = (a: ContribAction, confirm = false) =>
+  const post = (a: ContribAction, confirm = false, args?: Record<string, unknown>) =>
     act(a.id, async () => {
-      const started = await runAction(dir, a.id, { confirm });
+      const started = await runAction(dir, a.id, { confirm, args });
       if (!started.ok && started.reason === "confirm" && !confirm) {
         setSheet({ k: "confirm", action: a, sentence: plainMessage(started) });
         return started;
@@ -202,6 +218,10 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
       return setSignIn({ doing: "keep going", again: () => void contrib.refresh() });
     }
     if (a.confirm) return setSheet({ k: "confirm", action: a, sentence: a.confirm });
+    if (a.id === UPDATE_ID && untracked.length > 0) {
+      setInclude(new Set());
+      return setSheet({ k: "update", action: a });
+    }
     void post(a);
   };
 
@@ -352,6 +372,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
         onOpenChange={(o) => {
           if (!o && !busy) {
             setSheet(null);
+            setWithdrawToo(false);
             setError(null);
           }
         }}
@@ -362,6 +383,12 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
               <AlertDialogTitle>{sheet.action.label}?</AlertDialogTitle>
               <AlertDialogDescription>{sheet.sentence}</AlertDialogDescription>
             </AlertDialogHeader>
+            {sheet.action.id === DISCARD_ID && openProposal && (
+              <label className="contrib-check">
+                <Checkbox checked={withdrawToo} onCheckedChange={(v) => setWithdrawToo(v === true)} />
+                <span>Also withdraw my proposal</span>
+              </label>
+            )}
             {error && (
               <p className="contrib-error" role="alert">
                 {error}
@@ -373,12 +400,15 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
                 variant={sheet.action.danger ? "destructive" : "default"}
                 disabled={!!busy}
                 onClick={async () => {
-                  const r = await post(sheet.action, true);
+                  const a = sheet.action;
+                  const args = a.id === DISCARD_ID && openProposal ? { withdraw: withdrawToo } : undefined;
+                  const r = await post(a, true, args);
                   // Another action running: nothing happened, keep the sheet.
                   // A refusal keeps it too, its sentence shown inside — the
                   // next move is to wait and press again, not to start over.
                   if (r === "busy" || r === false) return;
                   setSheet(null);
+                  setWithdrawToo(false);
                 }}
               >
                 {spin(sheet.action.id)}
@@ -388,6 +418,34 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
           </AlertDialogContent>
         )}
       </AlertDialog>
+
+      {sheet?.k === "update" && (
+        <ContribDialog
+          open
+          onClose={() => setSheet(null)}
+          title={sheet.action.label}
+          description={`${who} gets what your copy runs now. Your new files go too, but only the ones you tick.`}
+          footer={
+            <>
+              <Button variant="outline" onClick={() => setSheet(null)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={() => {
+                  const a = sheet.action;
+                  setSheet(null);
+                  // Progress, a refusal and a sign-in all show on the panel.
+                  void post(a, false, { include: pickedOf(untracked, include) });
+                }}
+              >
+                {sheet.action.label}
+              </Button>
+            </>
+          }
+        >
+          <IncludeFiles files={untracked} picked={include} onChange={setInclude} />
+        </ContribDialog>
+      )}
 
       <AlertDialog
         open={sheet?.k === "undo"}

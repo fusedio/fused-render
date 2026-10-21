@@ -333,7 +333,8 @@ def _changed(root, a, b) -> set:
 
 
 class _Facts:
-    __slots__ = ("branch", "head", "tip", "tip_in_head", "ok", "u", "u_merges", "reason")
+    __slots__ = ("branch", "head", "tip", "tip_in_head", "ok", "unknown", "u", "u_merges",
+                 "reason")
 
     def __init__(self, **kw):
         for k in self.__slots__:
@@ -349,16 +350,26 @@ def _facts(root, branch) -> _Facts | None:
     if len(lines) != 3:
         return None
     log_path, head, tip = lines
-    values = list(dict.fromkeys([tip, *_reflog_values(root, log_path)]))
+    # R: the tip, every reflog value, and the tips fused itself saw (the
+    # record — a repo without a reflog is not blind, §16.12). Nothing but
+    # the tip = "unknown": no evidence of what GitHub showed before. (Not
+    # the version a folder was cloned at: an edit published after the
+    # clone by hand leaves no trace, and the clone would vouch for it.)
+    earlier = [*_reflog_values(root, log_path), *_seen(root)]
+    values = list(dict.fromkeys([tip, *earlier]))
     if head == tip:
         return _Facts(branch=branch, head=head, tip=tip, tip_in_head=True, ok=True,
-                      u=[], u_merges=False)
+                      unknown=False, u=[], u_merges=False)
     mb = gu._out(gu._run(root, "merge-base", head, tip)) or None
     held = set(_lines(gu._run(root, "rev-list", head, f"^{tip}")))
     dropped = any(v in held for v in values)
-    ok = not dropped and _published_in_head(root, head, tip, mb, values)
+    # Unknown: no evidence at all, or none of it inside HEAD (X empty) —
+    # then nothing says which of HEAD's commits GitHub once had.
+    unknown = not dropped and (not earlier
+                               or not _published_in_head(root, head, tip, mb, values))
+    ok = not unknown and not dropped
     f = _Facts(branch=branch, head=head, tip=tip, tip_in_head=mb == tip, ok=ok,
-               reason=None if ok else ("dropped" if dropped else "no-history"))
+               unknown=unknown, reason=None if ok else ("unknown" if unknown else "dropped"))
     if not (ok and f.tip_in_head):
         u_rows = _lines(gu._run(root, "rev-list", "--topo-order", "--reverse", "--parents",
                                 head, "--not", *values))
@@ -390,10 +401,11 @@ def _result(root, branch, status, why=None, *, pulled=0, pushed=False, ok=True) 
     return out
 
 
-def _stuck(root, f: _Facts, state: str, *, files=(), then=None) -> dict:
+def _stuck(root, f: _Facts, state: str, *, files=(), then=None, unknown=False) -> dict:
     """Record a state that needs a button; the tree is untouched."""
     _set_state(root, state, head=f.head, tip=f.tip, files=list(files),
-               unpublished=len(f.u or ()), u_merges=bool(f.u_merges), then=then)
+               unpublished=len(f.u or ()), u_merges=bool(f.u_merges), then=then,
+               unknown=bool(unknown))
     return _result(root, f.branch, "skipped", state)
 
 
@@ -414,10 +426,10 @@ def _after_push(root, f: _Facts, *, pulled, pushed, why) -> dict:
         _set_state(root, None)
         return _result(root, f.branch, "synced", pulled=pulled, pushed=pushed)
     if why == "offline":
-        _set_state(root, None)
+        _settle(root)
         return _result(root, f.branch, "offline", pulled=pulled)
     if why == "rejected":
-        _set_state(root, None)
+        _settle(root)
         return _result(root, f.branch, "skipped", "rejected", pulled=pulled)
     state = "publish-auth" if why == "auth" else "publish-failed"
     head = replay.rev(root, "HEAD")
@@ -517,6 +529,15 @@ def resolve(root, *, action, push) -> dict | None:
             logger.exception("ownsync: resolve failed for %s (%s)", root, action)
             return {"ok": True, "status": "skipped", "why": "own-sync-error",
                     "pulled": 0, "pushed": False}
+        finally:
+            # This fetch's tip is a published point for every later check —
+            # recorded only now, so the decision above saw the list as it
+            # stood before it.
+            note_seen(root, replay.rev(root, _tracking(branch)) or "")
+
+
+def _held(st) -> bool:
+    return bool(st) and st.get("state") == "held"
 
 
 def _resolve_locked(root, branch, *, push) -> dict:
@@ -524,8 +545,6 @@ def _resolve_locked(root, branch, *, push) -> dict:
     if f is None:
         return {"ok": True, "status": "skipped", "why": "unreadable", "pulled": 0,
                 "pushed": False}
-    if _job_open(root):
-        return _result(root, branch, "skipped", "merge-job")
     st = _own_state(root)
     if st and st.get("state") in ("needs-merge", "edits") and st.get("head") == f.head \
             and st.get("tip") == f.tip and (st["state"] == "needs-merge" or _still_edited(
@@ -534,17 +553,36 @@ def _resolve_locked(root, branch, *, push) -> dict:
         # turn it into another state under the person's cursor.
         return _result(root, branch, "skipped", st["state"])
     if not f.ok:
-        return _stuck(root, f, "github-changed")
+        if f.unknown and f.tip_in_head:
+            # Only ahead, and nothing says whether GitHub was rolled back
+            # under these edits: wait for the person, with a button.
+            if not _held(st):
+                _set_state(root, "held", why="unknown", head=f.head, tip=f.tip)
+            return _result(root, branch, "skipped", "held")
+        return _stuck(root, f, "github-changed", unknown=f.unknown)
     if f.tip_in_head:
         # Nothing to bring in (a rewind that kept every published point is
-        # still ok): only the push.
+        # still ok): only the push — never waits on Claude or a merge job.
         if not push:
-            _set_state(root, None)
+            _settle(root)
             return _result(root, branch, "synced")
+        if _held(st):
+            return _result(root, branch, "skipped", "held")
         pushed, why = _push(root, branch)
         return _after_push(root, f, pulled=0, pushed=pushed, why=why)
+    if _job_open(root):
+        return _result(root, branch, "skipped", "merge-job")
+    rec = store.get(root) or {}
+    if rec.get("skip_tip"):
+        if rec["skip_tip"] == f.tip:
+            # The person undid the last automatic combine: it stays undone
+            # until GitHub's version moves again (or they press Check now).
+            return _result(root, branch, "skipped", "kept")
+        store.update(root, lambda r: r.__setitem__("skip_tip", None))
     if _claude_busy(root):
         return _result(root, branch, "skipped", "claude")
+    if _held(st):
+        push = False  # bring GitHub's version in; publishing waits for the button
     behind = replay.count(root, f"{f.head}..{f.tip}") or 0
     combined = _combine(root, f, allow_merge=True, identity=_identity(cached=True))
     if combined.get("conflict"):
@@ -563,7 +601,7 @@ def _resolve_locked(root, branch, *, push) -> dict:
         text = "Brought in the newer version from GitHub."
     _activity(root, "own-sync", text, backup=refs)
     if not push:
-        _set_state(root, None)
+        _settle(root)
         return _result(root, branch, "synced", pulled=behind)
     pushed, why = _push(root, branch)
     return _after_push(root, f, pulled=behind, pushed=pushed, why=why)
@@ -597,12 +635,21 @@ def _sync_answer(root, res: dict) -> dict:
 
 
 def publish_now(root) -> dict:
-    """Publish now: today's sync, pushing (never waits for Claude)."""
-    return _sync_answer(root, gu.sync_repo(root, action="Publish now", push=True))
+    """Publish now: today's sync, pushing (never waits for Claude). Ends a
+    `held` state — the person's go-ahead — and vouches for the GitHub
+    version this copy holds now (`note_seen`), so an "unknown" rewind
+    state does not hold the same edits again."""
+    if _held(_own_state(root)):
+        _set_state(root, None)
+    note_seen(root)
+    return _sync_answer(root, gu.sync_repo(root, action=gu.PUBLISH_NOW, push=True))
 
 
 def check_now(root) -> dict:
-    """Check now: fetch and bring in what GitHub has, without publishing."""
+    """Check now: fetch and bring in what GitHub has, without publishing —
+    including a version an Undo had set aside (`skip_tip`)."""
+    if (store.get(root) or {}).get("skip_tip"):
+        store.update(root, lambda r: r.__setitem__("skip_tip", None))
     return _sync_answer(root, gu.sync_repo(root, action="Check now", push=False))
 
 
@@ -692,6 +739,12 @@ def put_on_top(root) -> dict:
             return refusal
         if f.ok and f.tip_in_head:  # GitHub only lacks what is here: just publish
             return _answer(root, False, "Nothing here needs to go on top — use Publish now.")
+        if f.unknown:
+            # Nothing says which of these edits GitHub already had (and
+            # maybe removed): picking them could publish one again.
+            return _answer(root, False, "fused can't tell which of your edits were already "
+                           "on GitHub, so it can't put only the new ones on top. Use the "
+                           "version on GitHub, or publish yours over it.")
         if not f.u and not _dirty_tracked(root):
             return _answer(root, False, "There are no new edits here to put on top. Use the "
                            "version on GitHub, or publish yours over it.")
@@ -720,6 +773,7 @@ def put_on_top(root) -> dict:
             return _answer(root, True, "Your edits are on top of the version on GitHub.")
         pushed, why = _push(root, f.branch)
         _after_push(root, f, pulled=0, pushed=pushed, why=why)
+        note_seen(root, replay.rev(root, _tracking(f.branch)) or "")
     if not pushed:
         return _answer(root, False, OFFLINE if why == "offline"
                        else "Your edits are on top here, but aren't saved to GitHub yet. "
@@ -801,6 +855,10 @@ def start_merge(root) -> dict:
     plan = merge_plan(root)
     if plan is None:
         return {"ok": False, "message": "There's nothing to combine right now."}
+    other = _open_job(root)
+    if other and other.get("purpose") != "own-sync":
+        return {"ok": False, "message": "Claude is combining a proposal in this app right "
+                "now. Try again when that's done."}
     from fused_render.contrib import merge_job
 
     job = merge_job.start(root, purpose=plan["purpose"], ours=plan["ours"],
@@ -844,7 +902,12 @@ def restore(root, activity_id) -> dict:
         if wip and not _put_back_edits(root, target, wip, saved):
             return _answer(root, False, "Couldn't put back your unsaved edits. Try again.")
         store.mark_restored(root, activity_id)
-        _set_state(root, None)
+        _settle(root)  # a hold on publishing outlives the move
+        if entry.get("kind") == "own-sync":
+            # Undoing an automatic combine sticks until GitHub's version
+            # moves (or Check now): the next sync must not redo it (§16.12).
+            tip = replay.rev(root, _tracking(branch))
+            store.update(root, lambda r: r.__setitem__("skip_tip", tip))
         _activity(root, "restore", "Put back an earlier version of this app. What was here "
                   "is saved too.", backup=saved or None)
     return _answer(root, True, "This app is back to the earlier version.")
@@ -917,24 +980,34 @@ def status(root) -> dict:
         return {"state": "no-github", "unpublished": 0, "github_new": 0, "files": [],
                 "message": MESSAGES["no-github"], "fixes": []}
     ahead, behind = _ahead_behind(root, branch)
-    st = _own_state(root)
+    st = _own_state(root) or {}
+    variant = None
     if _job_open(root):
-        state, files = "merging", (st or {}).get("files") or []
-    elif st and st.get("head") == head and st.get("tip") == tip and (
-            st["state"] != "edits" or _still_edited(root, st.get("files"))):
+        state, files = "merging", st.get("files") or []
+    elif _held(st) and ahead:
+        # Held stands until Publish now, whatever HEAD does meanwhile.
+        state, files = "held", []
+        variant = "held-unknown" if st.get("why") == "unknown" else None
+    elif st.get("state") not in (None, "held") and st.get("head") == head \
+            and st.get("tip") == tip and (
+                st["state"] != "edits" or _still_edited(root, st.get("files"))):
         state, files = st["state"], st.get("files") or []
         if state == "github-changed":
             # What Put my edits on top would carry: the never-published
             # edits, +1 for unsaved ones (they ride along too).
             ahead = int(st.get("unpublished") or 0) + (1 if _dirty_tracked(root) else 0)
+            variant = "github-changed-unknown" if st.get("unknown") else None
     else:
         files = []
         state = ("published" if not ahead and not behind else
                  "unpublished" if not behind else "github-new")
     fixes = list(FIXES.get(state, []))
-    if state == "github-changed" and ((st or {}).get("u_merges") or not ahead):
+    if state == "github-changed" and (st.get("u_merges") or st.get("unknown") or not ahead):
         # Put my edits on top would only refuse: a merge among the edits
-        # would carry back what GitHub removed, or there is nothing to carry.
+        # would carry back what GitHub removed, nothing says which edits
+        # GitHub already had, or there is nothing to carry.
         fixes.remove("put-on-top")
+    if variant == "held-unknown":
+        fixes.append("use-github")
     return {"state": state, "unpublished": ahead, "github_new": behind, "files": files,
-            "message": _message(state, files), "fixes": fixes}
+            "message": _message(variant or state, files, ahead), "fixes": fixes}

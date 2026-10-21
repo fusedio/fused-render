@@ -226,11 +226,16 @@
         body: c ? "You have " + who + "'s latest version." : t.path + " has the newest version of " + repo + ".",
         button: null, open: true };
       case "local":
+        // The app page is pointed at only when it has the panel to act on
+        // (`git.app_page`, the A1 switch — §16.12); otherwise plain words.
         if (c && c.blocked && c.blocked.length) return { tone: "warn", title: "A file of yours is in the way",
-          body: who + "'s latest adds " + words(c.blocked) + ", which you already have here. Open the app to move yours aside and get the update.",
+          body: who + "'s latest adds " + words(c.blocked) + ", which you already have here" +
+                (t.git.app_page ? ". Open the app to move yours aside and get the update." : ", so this app isn't updated from here."),
           list: c.blocked.length > 1 ? c.blocked : [], button: null };
         if (c) return { tone: "warn", title: "You have your own changes",
-          body: "You have your own changes in this app. Open it to bring in " + who + "'s latest.",
+          body: t.git.app_page
+            ? "You have your own changes in this app. Open it to bring in " + who + "'s latest."
+            : "This app has changes of its own, so it isn't updated from here.",
           button: null };
         return t.found_by === "git"
           ? { tone: "warn", title: "Your copy has changes of its own",

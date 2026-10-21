@@ -1089,7 +1089,7 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
             # the update would land on). Absent for any other clone.
             from fused_render import appfile_git
 
-            git = {**git, **(appfile_git.copy_view(dest) or {})}
+            git = {**git, **(appfile_git.copy_view(dest, git) or {})}
 
     files = []
     total = 0

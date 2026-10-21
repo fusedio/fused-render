@@ -28,13 +28,13 @@ import {
   type SentProposal,
 } from "@platform/lib/contrib";
 import { Button } from "@platform/shadcn/ui/button";
-import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Field, FieldGroup, FieldLabel } from "@platform/shadcn/ui/field";
 import { Input } from "@platform/shadcn/ui/input";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { GitHubSignIn } from "@platform/ui/GitHubSignIn";
 import { ContribDialog } from "./ContribDialog";
+import { IncludeFiles, pickedOf } from "./IncludeFiles";
 import { JobProgress } from "./JobProgress";
 import { QuietAction } from "./StatusStrip";
 import { atStart, possessive, SEND_STEPS } from "./words";
@@ -133,8 +133,7 @@ export function ProposeDialog({
           title: title.trim(),
           description: description.trim(),
           note: note.trim(),
-          // Only files still offered, in the order listed.
-          include: untracked.filter((f) => include.has(f)),
+          include: pickedOf(untracked, include),
         },
       }),
       { signal: signal(), onTick: (j) => live.current && setStep(j.step ?? null) },
@@ -278,33 +277,7 @@ export function ProposeDialog({
               onChange={(e) => setNote(e.target.value)}
             />
           </Field>
-          {untracked.length > 0 && (
-            <fieldset className="contrib-include">
-              <legend className="contrib-include-legend">
-                New files <span className="font-normal text-muted-foreground">(sent only if you tick them)</span>
-              </legend>
-              <ul className="contrib-include-list">
-                {untracked.map((f) => (
-                  <li key={f}>
-                    <label className="contrib-check">
-                      <Checkbox
-                        checked={include.has(f)}
-                        onCheckedChange={(v) =>
-                          setInclude((cur) => {
-                            const next = new Set(cur);
-                            if (v === true) next.add(f);
-                            else next.delete(f);
-                            return next;
-                          })
-                        }
-                      />
-                      <code className="contrib-include-file">{f}</code>
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            </fieldset>
-          )}
+          <IncludeFiles files={untracked} picked={include} onChange={setInclude} />
         </FieldGroup>
         {error && (
           <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">

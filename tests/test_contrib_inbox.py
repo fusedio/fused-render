@@ -46,6 +46,8 @@ def world(tmp_path, monkeypatch):
     alice = ws / "app" / "x"
     alice.parent.mkdir()
     git(tmp_path, "clone", "-q", fake.bare_path("alice/x"), str(alice))
+    # Her own app as GitHub knows it: the record binds to origin's repo.
+    git(alice, "remote", "set-url", "origin", "https://github.com/alice/x.git")
     store.put(str(alice), store.new_record("own", repo="alice/x", branch="main"))
     syncs = []
     monkeypatch.setattr(git_upstream, "sync_repo",

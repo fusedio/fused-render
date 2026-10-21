@@ -1181,3 +1181,18 @@ def test_v5_update_takes_ticked_new_files(w):
     assert w.fake.read("bob/sine", "extra.py", ref) == "X = 1\n"
     assert w.fake.read("bob/sine", "scratch.txt", ref) is None
     assert _p().untracked(w.app) == ["scratch.txt"]
+
+
+def test_fused_transfers_never_run_the_repos_hooks(w):
+    """§16.12: a `github` copy refuses every push through its own pre-push
+    hook; fused's explicit sends run with no hooks at all."""
+    hook = os.path.join(w.app, ".git", "hooks", "pre-push")
+    os.makedirs(os.path.dirname(hook), exist_ok=True)
+    with open(hook, "w", encoding="utf-8") as fh:
+        fh.write("#!/bin/sh\necho refused >&2\nexit 1\n")
+    os.chmod(hook, 0o755)
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _head(w)
+    args = w.gh.git_net_args()
+    assert "core.hooksPath=" + os.devnull in args and "core.fsmonitor=" in args

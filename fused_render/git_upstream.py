@@ -897,13 +897,12 @@ def _sync_locked(root, *, action, push):
     back at its record and its push guard). A root with no record — every
     app made here, a developer's own checkout — gets the plain body exactly
     as before."""
-    kind = None
-    _cls = None
     try:
         from fused_render.contrib import classify as _cls
-        kind = _cls.kind_of(root, kick=True)
-    except Exception:  # noqa: BLE001 — no record readable: today's sync
+        kind = _cls.kind_of(root, kick=True, strict=True)
+    except Exception:  # noqa: BLE001 — unknown kind is never "no record" (a push)
         logger.exception("contrib kind check failed for %s", root)
+        return _skipped("contrib-error")
     if kind == "github":
         try:
             _cls.settle_locked(root, "github")
@@ -957,9 +956,22 @@ def _sync_plain(root, *, action, push, kind=None):
     """`_sync_locked`'s body for every root that is not a GitHub-link copy —
     the auto-sync rules of the section comment above, unchanged except one
     case: an own copy (`kind == "own"`) whose branch has diverged from
-    origin goes to `_own_resolve` before a failure is recorded."""
+    origin goes to `_own_resolve` before a failure is recorded, and one HELD
+    after a sign-in upgrade (§16.12) never pushes until Publish now."""
     if not os.path.isdir(root):
         return _skipped("unavailable")
+    held = False
+    if kind == "own" and push:
+        try:
+            from fused_render.contrib import classify
+            if classify.is_held(root):
+                if action == PUBLISH_NOW:
+                    classify.release_hold(root)
+                else:
+                    held, push = True, False
+        except Exception:  # noqa: BLE001 — unknown hold reads as held
+            logger.exception("contrib hold check failed for %s", root)
+            held, push = True, False
     if not _ok(_run(root, "remote", "get-url", "origin")):
         return _skipped("no-remote")
     default_branch = _default_branch(root)
@@ -1049,8 +1061,28 @@ def _sync_plain(root, *, action, push, kind=None):
         pushed = True
 
     _clear_failures(root)
-    return {"ok": True, "status": "synced", "pulled": pulled, "pushed": pushed,
-            "state": state()}
+    out = {"ok": True, "status": "synced", "pulled": pulled, "pushed": pushed,
+           "state": state()}
+    if held:
+        out["held"] = True
+    return out
+
+
+#: The `action` of the own copy's Publish now button (contrib/ownsync.py):
+#: the one sync that releases a held copy (§16.12).
+PUBLISH_NOW = "Publish now"
+
+
+def record_sync_failure(root, reason, *, action, push, message, command=""):
+    """Today's standing failure row, for the contribution engine's flag-off
+    path (§16.12 gating: rows 5, 6 and an overlapping update with
+    `sources` off are recorded exactly as a plain sync would). `reason` is
+    one of git_upstream's: `dirty` | `diverged` | `git-failed` | …;
+    `message` is the plain sentence the row carries as its output. Answers
+    `_sync_locked`'s failed shape."""
+    failure = _record_failure(root, reason, action=action, command=command,
+                              output=message, push=push)
+    return {"ok": False, "status": "failed", "failure": failure}
 
 
 def sync_repo(root, *, action, push):

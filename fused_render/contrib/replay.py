@@ -107,9 +107,16 @@ _FORCE_SCRATCH_MERGE = False
 # ------------------------------------------------------------------- git bits
 
 
+#: Before every git call fused makes on a contrib repo (§16.12): the repo's
+#: own `.git/config` is app-writable, and `core.fsmonitor` / `core.hooksPath`
+#: there would run its commands from fused's own reads and checkouts.
+SAFE_CONFIG = ("-c", "core.fsmonitor=", "-c", "core.hooksPath=" + os.devnull)
+
+
 def git(root, *args, timeout=gu.TIMEOUT_S):
-    """`git_upstream._run` — one bounded call, `(rc, out, err)` or None."""
-    return gu._run(root, *args, timeout=timeout)
+    """`git_upstream._run` with SAFE_CONFIG — one bounded call,
+    `(rc, out, err)` or None."""
+    return gu._run(root, *SAFE_CONFIG, *args, timeout=timeout)
 
 
 def ok(result) -> bool:
@@ -421,7 +428,8 @@ def _run_env(root, env, *args, timeout=gu.TIMEOUT_S):
     # gu._popen_kwargs() spelled out: test_git_posix_spawn reads these kwargs
     # statically, and close_fds=False keeps CPython on posix_spawn.
     try:
-        proc = subprocess.run([gu._git_bin(), "-C", root, *args], stdout=subprocess.PIPE,
+        proc = subprocess.run([gu._git_bin(), "-C", root, *SAFE_CONFIG, *args],
+                              stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
                               env={**os.environ, **gu._ENV, **env}, timeout=timeout,
                               close_fds=False)
@@ -860,6 +868,15 @@ def undo_race_locked(root, old_tip, refs, *, hard=False) -> bool:
         if not ok(back):
             logger.error("contrib: could not put %s back on %s (pinned at %s): %s",
                          root, moved_from, pin, gu._text(back))
+            try:
+                from fused_render.contrib import store
+
+                store.add_activity(root, "race", "A change saved while fused was updating "
+                                                 "this app couldn't be put back in place. "
+                                                 "It is kept: Restore brings it back.",
+                                   backup=pin)
+            except Exception:  # noqa: BLE001 — the pin itself already keeps the change
+                logger.exception("contrib: race activity line failed for %s", root)
             return False
     if not hard:
         unbackup_locked(root, refs)

@@ -84,8 +84,14 @@ def env(tmp_path, monkeypatch):
     e.lap = os.path.join(str(ws), "app", "sine")
     git(str(tmp_path), "clone", "-q", e.remote, e.lap)
     e.lap = os.path.realpath(e.lap)
+    # Bound to its root commit (origin here is a local path, not the repo's
+    # GitHub URL, so an unbound row would be dropped as a stranger's).
     store.put(e.lap, store.new_record("own", repo=REPO, branch="main",
-                                      classified_by="install"))
+                                      classified_by="install",
+                                      root_commit=store.root_commit_of(e.lap)))
+    # Fused has seen GitHub's version once (the app was opened after the
+    # clone): what the rewind check vouches from. V3b tests the unseen case.
+    ownsync.note_seen(e.lap)
     e.other = str(tmp_path / "other")
     git(str(tmp_path), "clone", "-q", e.remote, e.other)
     _flags(e, sources=True)
@@ -432,18 +438,90 @@ def test_B3b_repo_recreated_with_readme(env, flags_on):
         assert res["status"] == "failed" and res["failure"]["reason"] == "diverged"
 
 
-def test_no_history_is_github_changed_and_put_on_top_works(env):
-    """No reflog (expired, or never written) and HEAD lacks the tip: no
-    evidence of what was published, so nothing moves on its own."""
+def _no_reflog(e):
+    git(e.lap, "config", "core.logAllRefUpdates", "false")
+    log = os.path.join(e.lap, ".git", "logs", "refs", "remotes", "origin", "main")
+    if os.path.exists(log):
+        os.remove(log)
+
+
+def _forget_seen(e):
+    store.update(e.lap, lambda r: r.__setitem__("seen_tips", []))
+
+
+def test_no_reflog_is_not_blind_with_tips_fused_saw(env):
+    """§16.12: the GitHub tips fused saw are published points too."""
+    _no_reflog(env)
     _diverge(env)
-    log = os.path.join(env.lap, ".git", "logs", "refs", "remotes", "origin", "main")
-    git(env.lap, "fetch", "-q", "origin")
-    os.remove(log)
     res = _sync(env.lap)
-    assert res["why"] == "github-changed"
-    out = ownsync.put_on_top(env.lap)
-    assert out["ok"], out
+    assert res["status"] == "synced" and res["pushed"] is True
     assert _remote(env) == _head(env.lap) and _read(env.lap, "b.txt") == "mine\n"
+
+
+def test_V3_unknown_history_never_puts_a_removed_edit_back(env):
+    """Audit V3: no reflog and nothing seen; GitHub removed a published K
+    and this copy has K + a new edit. Put my edits on top used to pick K back
+    onto GitHub. Now: not offered, and refused if called."""
+    _no_reflog(env)
+    _forget_seen(env)
+    _commit(env.lap, "secret.txt", "API_KEY=sk\n", "add key")
+    git(env.lap, "push", "-q", "origin", "main")
+    git(env.other, "fetch", "-q", "origin")
+    git(env.other, "reset", "-q", "--hard", "origin/main~1")
+    _commit(env.other, "index.html", "<p>v2</p>\n", "fix")
+    git(env.other, "push", "-q", "--force", "origin", "main")
+    head = _commit(env.lap, "mine.txt", "m\n", "my edit")
+    gh_tip = _remote(env)
+    res = _sync(env.lap)
+    assert res["why"] == "github-changed" and _head(env.lap) == head
+    st = ownsync.status(env.lap)
+    assert "put-on-top" not in st["fixes"] and _plain(st["message"])
+    out = ownsync.put_on_top(env.lap)
+    assert out["ok"] is False and _plain(out["message"])
+    assert _remote(env) == gh_tip
+    assert git(env.remote, "show", "main:secret.txt", check=False).strip() == ""
+
+
+def test_V3b_unknown_rewind_holds_an_ahead_only_publish(env):
+    """Audit V3b: no reflog and nothing seen; GitHub rewound under a
+    published K; this copy is only ahead. The turn-end push used to
+    republish K. Now it is held, with a sentence and buttons, until the
+    person says Publish now."""
+    _no_reflog(env)
+    _forget_seen(env)
+    kept = _remote(env)
+    _commit(env.lap, "secret.txt", "API_KEY=sk\n", "add key")
+    git(env.lap, "push", "-q", "origin", "main")
+    git(env.other, "fetch", "-q", "origin")
+    git(env.other, "push", "-q", "--force", "origin", f"{kept}:refs/heads/main")
+    res = _sync(env.lap)
+    assert res["status"] == "skipped" and res["why"] == "held" and _remote(env) == kept
+    assert _sync(env.lap)["pushed"] is not True and _remote(env) == kept   # still held
+    assert git_upstream.sync_failures() == []
+    st = ownsync.status(env.lap)
+    assert st["state"] == "held" and st["fixes"] == ["publish-now", "use-github"]
+    assert _plain(st["message"]) and st["unpublished"] == 1
+    assert ownsync.publish_now(env.lap)["ok"]               # the person's go-ahead
+    assert _remote(env) == _head(env.lap)
+    assert ownsync.status(env.lap)["state"] == "published"
+
+
+def test_held_after_upgrade_never_publishes_until_the_button(env):
+    """§16.12: github→own upgrade with unpublished edits records `held`
+    (ws-guard); every automatic sync keeps it, Publish now ends it."""
+    store.update(env.lap, lambda r: r.__setitem__(
+        "own_state", {"state": "held", "why": "upgrade", "at": time.time()}))
+    before = _remote(env)
+    _commit(env.lap, "c.txt", "c\n", "c")
+    assert _sync(env.lap)["pushed"] is not True and _remote(env) == before
+    _diverge(env)                                    # combining still happens
+    res = _sync(env.lap)
+    assert res["status"] == "synced" and res["pushed"] is False
+    st = ownsync.status(env.lap)
+    assert st["state"] == "held" and st["fixes"] == ["publish-now"]
+    assert st["message"] == "This is your app. 2 edits are ready to publish."
+    assert ownsync.publish_now(env.lap)["ok"] and _remote(env) == _head(env.lap)
+    assert (store.get(env.lap) or {}).get("own_state") is None
 
 
 def test_put_on_top_refuses_when_edits_hold_a_combined_version(env):
@@ -504,12 +582,64 @@ def test_undo_use_github_brings_back_edits_saved_and_not(env):
     assert _sync(env.lap)["why"] == "github-changed" and _head(env.lap) == mine
 
 
-def test_undo_an_automatic_combine(env):
+def test_V2_undo_of_an_automatic_combine_sticks_until_github_moves(env):
+    """Audit V2: the next sync used to redo the combine the person undid."""
     head = _diverge(env)
     assert _sync(env.lap, push=False)["status"] == "synced"
     line = _activity(env.lap)[0]
     assert ownsync.restore(env.lap, line["id"])["ok"]
     assert _head(env.lap) == head
+    for push in (False, True):                       # app open, turn end
+        res = _sync(env.lap, push=push)
+        assert res["status"] == "skipped" and res["why"] == "kept"
+        assert _head(env.lap) == head
+    assert ownsync.status(env.lap)["state"] == "github-new"
+    _elsewhere(env, "z.txt", "z\n", "GitHub moved again")
+    assert _sync(env.lap)["status"] == "synced" and _head(env.lap) == _remote(env)
+    assert _read(env.lap, "b.txt") == "mine\n" and _read(env.lap, "z.txt") == "z\n"
+
+
+def test_V2_check_now_brings_in_what_undo_set_aside(env):
+    head = _diverge(env)
+    assert _sync(env.lap, push=False)["status"] == "synced"
+    assert ownsync.restore(env.lap, _activity(env.lap)[0]["id"])["ok"]
+    assert _sync(env.lap, push=False)["why"] == "kept" and _head(env.lap) == head
+    assert ownsync.check_now(env.lap)["ok"] and _head(env.lap) != head
+    assert _read(env.lap, "b.txt") == "mine\n"
+
+
+def _fake_job(monkeypatch, purpose):
+    from fused_render.contrib import merge_job
+    job = {"id": "j1", "status": "ready", "purpose": purpose, "files": ["index.html"]}
+    monkeypatch.setattr(merge_job, "current", lambda app_dir, **kw: dict(job))
+
+
+def test_V1_a_proposal_merge_never_stalls_the_authors_copy(env, monkeypatch):
+    """Audit V1: an inbox Merge with Claude left `ready` used to stop every
+    publish of the author's copy and paint her panel "merging"."""
+    _fake_job(monkeypatch, "proposal")
+    mine = _commit(env.lap, "c.txt", "c\n", "Claude: c")
+    assert _sync(env.lap)["pushed"] is True and _remote(env) == mine
+    assert ownsync.status(env.lap)["state"] == "published"
+    _diverge(env)
+    assert _sync(env.lap)["status"] == "synced" and _remote(env) == _head(env.lap)
+    assert ownsync.status(env.lap)["state"] == "published"
+
+
+def test_V1_own_merge_job_holds_moves_not_publishes(env, monkeypatch):
+    _fake_job(monkeypatch, "own-sync")
+    assert ownsync.status(env.lap)["state"] == "merging"
+    mine = _commit(env.lap, "c.txt", "c\n", "Claude: c")
+    assert _sync(env.lap)["pushed"] is True and _remote(env) == mine   # never waits
+    head = _diverge(env)
+    res = _sync(env.lap)
+    assert res["why"] == "merge-job" and _head(env.lap) == head
+
+
+def test_publish_over_confirm_says_what_comes_back():
+    low = ownsync.PUBLISH_OVER_CONFIRM.lower()
+    assert "removed from github" in low and "comes back" in low
+    assert _plain(ownsync.PUBLISH_OVER_CONFIRM)
 
 
 def test_publish_over_refuses_when_github_moved_again(env):

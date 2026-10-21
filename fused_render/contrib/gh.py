@@ -206,7 +206,7 @@ def git_net_env() -> dict:
 def git_net_args() -> list[str]:
     """`-c` options (placed before the git subcommand) that make https to
     github.com authenticate through `gh`, whatever the user's git config
-    says. Empty for the fake: its remotes are file paths.
+    says. For the fake (its remotes are file paths) only the no-hooks pair.
 
     Command-line `-c` is read LAST, so it beats the repo's own config for the
     same key: TLS verification is forced on, and the proxy is pinned to what
@@ -217,13 +217,17 @@ def git_net_args() -> list[str]:
     proxy", which is what the environment said. A URL-scoped repo setting
     (`http.https://github.com/….proxy`) would outrank these generic ones, so
     `url_rewrites` refuses those outright instead."""
+    # No hook and no fsmonitor of the repo's ever runs in a fused transfer
+    # (§16.12): a `github` copy carries fused's own refuse-every-push hook,
+    # and the folder is Claude-writable. The fake too.
+    safe = ["-c", "core.hooksPath=" + os.devnull, "-c", "core.fsmonitor="]
     if _fake() is not None:
-        return []
+        return safe
     from fused_render import github_setup
     path, _source = github_setup.resolve()
     proxy = next((os.environ[k] for k in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
                   if os.environ.get(k)), "")
-    fixed = ["-c", "core.hooksPath=" + os.devnull,
+    fixed = [*safe,
              "-c", "http.sslVerify=true",
              "-c", "http.https://github.com/.sslVerify=true",
              "-c", f"http.proxy={proxy}",

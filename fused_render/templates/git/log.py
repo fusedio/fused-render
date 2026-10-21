@@ -568,7 +568,26 @@ def _push_blocked(root):
                allow=(0, 1)).decode("utf-8", "replace").strip()
     m = _GITHUB_REPO.match(url)
     who = m.group(1) if m else "its author's version on GitHub"
-    return f"This app follows {who}. Send your changes from its app page."
+    if _app_page_on():
+        return f"This app follows {who}. Send your changes from its app page."
+    return f"This copy of {who} has changes of its own, and they stay on this computer."
+
+
+def _app_page_on():
+    """Whether the app page has the panel the Push sentence can point at —
+    the contribution loop's A1 switch (`contrib_sources_enabled` in the
+    app's prefs.json; docs/CONTRIB_LOOP.md §16.12). Read through appenv
+    (PY-15); unreadable reads as off. ops.py's twin."""
+    try:
+        import json
+
+        import appenv
+
+        with open(os.path.join(appenv.home_dir(), "prefs.json"), encoding="utf-8") as f:
+            prefs = json.load(f)
+        return isinstance(prefs, dict) and prefs.get("contrib_sources_enabled") is True
+    except Exception:  # noqa: BLE001 — the plain sentence is always true
+        return False
 
 
 def _status(root, rel, is_dir):

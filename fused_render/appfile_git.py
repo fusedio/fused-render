@@ -267,23 +267,52 @@ def _kind(app_dir: str) -> str | None:
         return None
 
 
-def copy_view(app_dir: str) -> dict | None:
+def _link_collisions(app_dir: str, src: dict | None) -> list[str]:
+    """The user's own files (untracked or ignored, on disk) at paths the
+    link's commit tracks and the copy's HEAD does not — what would make
+    "Get the latest" refuse. Asked of the STAGED clone, which has the new
+    commit even when the copy has not fetched it yet; else of the copy
+    itself when it knows the commit. [] when neither can say."""
+    if not src:
+        return []
+    ask = staged_clone(src)
+    if ask is None:
+        if _git("cat-file", "-e", src["commit"] + "^{commit}", cwd=app_dir, timeout=20).returncode != 0:
+            return []
+        ask = app_dir
+    r = _git("ls-tree", "-r", "-z", "--name-only", src["commit"], cwd=ask, timeout=60)
+    mine = _git("ls-files", "-z", cwd=app_dir, timeout=60)
+    if r.returncode != 0 or mine.returncode != 0:
+        return []
+    tracked = set(mine.stdout.split("\0"))
+    hits = [p for p in r.stdout.split("\0") if p and p not in tracked
+            and not p.startswith(".fused/")
+            and os.path.lexists(os.path.join(app_dir, *p.split("/")))]
+    return sorted(hits)[:12]
+
+
+def copy_view(app_dir: str, src: dict | None = None) -> dict | None:
     """For a GitHub-link copy (§16.8): what the install page says about it,
     off `engine.status` (no network) — ``{who, changes: bool, collision:
-    [paths of the user's own files the update would land on]}``, merged
-    into the probe's ``git``; None for any other folder."""
+    [paths of the user's own files the update would land on], app_page:
+    bool}``, merged into the probe's ``git``; None for any other folder.
+    `collision` also counts the LINK's commit (`_link_collisions`), so the
+    page never offers "Get the latest" that will refuse; `app_page` is
+    whether the app page has the panel to point at (A1, §16.12)."""
     if _kind(app_dir) != "github":
         return None
     try:
         from fused_render.contrib import engine
 
         st = engine.status(os.path.realpath(app_dir))
+        collision = sorted(set(st.get("blocked_files") or []) | set(_link_collisions(app_dir, src)))
     except Exception:  # noqa: BLE001 — the page falls back to the plain words
         logger.exception("install page: copy status failed for %s", app_dir)
         return None
     return {"who": st.get("who") or None,
             "changes": bool(st.get("changes_files") or st.get("needs_merge")),
-            "collision": list(st.get("blocked_files") or [])[:12]}
+            "collision": collision[:12],
+            "app_page": _contrib_sources()}
 
 
 def _probe_github(app_dir: str, src: dict, head: str) -> str:
@@ -295,7 +324,7 @@ def _probe_github(app_dir: str, src: dict, head: str) -> str:
 
     st = engine.status(os.path.realpath(app_dir))
     if (st.get("changes") or st.get("needs_merge") or st.get("changes_files")
-            or st.get("blocked_files")):
+            or st.get("blocked_files") or _link_collisions(app_dir, src)):
         return "local"
     if st.get("behind"):
         return "update"
@@ -455,10 +484,20 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
         if target.get("found_by") == "git":
             if kind == "github":
                 # The engine keeps the copy on the author's latest with the
-                # user's changes kept (§16.8); the app page is where to look.
-                who = (copy_view(dest) or {}).get("who") or "the author"
-                raise GitInstallError("You have your own changes in this app. Open it to "
-                                      f"bring in {who}'s latest.")
+                # user's changes kept (§16.8); the app page is where to look —
+                # when it has the panel (A1, §16.12). Plain words either way.
+                view = copy_view(dest, src) or {}
+                who = view.get("who") or "the author"
+                if view.get("collision"):
+                    raise GitInstallError(
+                        f"{who}'s latest adds {view['collision'][0]}, which you already have "
+                        "here, so this app isn't updated from here."
+                        + (" Open it to move yours aside." if view.get("app_page") else ""))
+                if view.get("app_page"):
+                    raise GitInstallError("You have your own changes in this app. Open it to "
+                                          f"bring in {who}'s latest.")
+                raise GitInstallError("This app has changes of its own, so it isn't updated "
+                                      "from here.")
             if _contrib_sources():
                 raise GitInstallError("You already have this app with your own changes. "
                                       "Open it to see them.")

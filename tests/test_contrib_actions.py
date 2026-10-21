@@ -404,7 +404,7 @@ CALLED = [
     ("proposals", "view", ()), ("proposals", "untracked", ()),
     ("proposals", "start_draft", ()),
     ("proposals", "start_send", ("title", "description", "note", "include")),
-    ("proposals", "start_update", ()), ("proposals", "withdraw", ()),
+    ("proposals", "start_update", ("include",)), ("proposals", "withdraw", ()),
     ("inbox", "review", ()), ("inbox", "try_open", ("confirm",)), ("inbox", "try_remove", ()),
     ("inbox", "accept", ("confirm",)), ("inbox", "decline", ()), ("inbox", "ask_update", ()),
     ("inbox", "merge_start", ()), ("inbox", "merge_accept", ()), ("inbox", "owns_merge", ()),

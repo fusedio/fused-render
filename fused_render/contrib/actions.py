@@ -426,7 +426,6 @@ def _github(f: dict, flags: dict) -> dict:
     return {"panel": panel, "actions": b.done()}
 
 
-
 #: Labels for the fixes ownsync names per state (`ownsync.FIXES`).
 _OWN_FIXES = {
     "publish-now": dict(label="Publish now"),

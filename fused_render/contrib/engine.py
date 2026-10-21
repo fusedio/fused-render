@@ -845,7 +845,6 @@ def _hard_to_tip(root, *, why, kind, text, message) -> dict:
     who = _who(rec)
     if _claude_busy(root):
         return _refuse("claude", CLAUDE_BUSY_MESSAGE)
-    _discard_job(root)
 
     def go():
         with replay.slot() as held:
@@ -853,6 +852,9 @@ def _hard_to_tip(root, *, why, kind, text, message) -> dict:
                 return _refuse("busy", BUSY_MESSAGE)
             if gu._current_branch(root) != fol.branch or gu._operation_in_flight(root):
                 return _refuse("in-progress", ELSEWHERE_MESSAGE)
+            # Only now, with the move sure to be attempted: a ready Merge
+            # with Claude result is not thrown away by a refused click.
+            _discard_job(root)
             tip, _reason = follow.fetch(root, fol)
             tip = tip or follow.tip(root, fol)
             if not tip:
@@ -990,8 +992,15 @@ def go_back_main(root) -> dict:
                 r = replay.git(root, "checkout", "-q", "-B", fol.branch)
                 text = "Went back to the main version of this app, with your edits."
             else:
-                refs = replay.backup_locked(root, head, why="go-back")
-                backup = refs[0] if refs else None
+                # `checkout` overwrites an ignored local file the default
+                # branch tracks without asking: it goes into the backup too.
+                clobber = replay.clobber_paths(root, head, main)
+                refs = replay.backup_locked(root, head, why="go-back", also=clobber)
+                if not refs or (clobber and not any(x.endswith("-wip") for x in refs)):
+                    replay.unbackup_locked(root, refs)
+                    return _refuse("failed", "Couldn't save this version first; nothing was "
+                                             "changed.")
+                backup = refs[0]
                 with replay.fused_aside(root, main):
                     r = replay.git(root, "checkout", "-q", fol.branch)
                 text = "Went back to the main version of this app. The other version is saved."
@@ -1056,8 +1065,12 @@ def restore(root, activity_id) -> dict:
                 if gu._current_branch(root) != fol.branch or gu._operation_in_flight(root):
                     return _refuse("in-progress", ELSEWHERE_MESSAGE)
                 head = replay.rev(root, "HEAD")
-                refs = replay.backup_locked(root, head, why="restore")
-                if not refs:
+                # As `land_locked`: an ignored local file the restored version
+                # tracks is overwritten by the move, so it rides in the backup.
+                clobber = replay.clobber_paths(root, head, target)
+                refs = replay.backup_locked(root, head, why="restore", also=clobber)
+                if not refs or (clobber and not any(x.endswith("-wip") for x in refs)):
+                    replay.unbackup_locked(root, refs)
                     return _refuse("failed", "Couldn't save what's here first; nothing was "
                                              "changed.")
                 new_backup = refs[0]
@@ -1073,14 +1086,28 @@ def restore(root, activity_id) -> dict:
                     _apply_wip_locked(root, target, wip)
                 replay.protect_after_move(root)
             back = _unaside(root, aside) if aside else []
-        store.mark_restored(root, activity_id)
+        # Still in the aside folder = not back yet (an earlier Restore may
+        # have brought the others).
+        box = (aside or {}).get("dir") or ""
+        left = [p for p in (aside or {}).get("files") or []
+                if os.path.lexists(os.path.join(box, p))]
+        if not left:
+            # A line whose files did not all come back keeps its Restore.
+            store.mark_restored(root, activity_id)
         _settled(root)
         t = time.localtime(entry.get("at") or time.time())
         when = f"{time.strftime('%b', t)} {t.tm_mday}, {time.strftime('%H:%M', t)}"
         if backup:
             text = f"Brought back your version from {when}."
+        elif not back:
+            return _refuse("in-the-way", f"Couldn't put your {_files_words(left)} back: a file "
+                                         "with that name is already here. Rename it, then try "
+                                         "again.")
         else:
             text = f"Put your {_files_words(back)} back."
+            if left:
+                text += (f" {_files_words(left)} is still set aside: a file with that name is "
+                         "already here.")
         _activity(root, "restore", text, backup=new_backup)
         return {"ok": True, "message": text}
 

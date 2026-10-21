@@ -151,18 +151,24 @@ def test_non_github_and_nested_folders_are_own(home, tmp_path):
     assert classify.ensure(str(plain))["kind"] == "own"
 
 
-def test_github_clone_unchecked_without_identity(home, tmp_path):
+def test_pre_loop_clone_is_not_classified_while_signed_out(home, tmp_path, monkeypatch):
+    """Audit V4 (§16.12): a pre-loop clone with no GitHub identity to ask is
+    NOT recorded — it may be the author's own app, auto-pushing as ever —
+    until an identity exists."""
     d = _clone(tmp_path, "x", "git@github.com:Alice/X.git")
+    assert classify.ensure(d) is None and store.get(d) is None
+    assert classify.kind_of(d) is None
+    monkeypatch.setattr(classify, "_identity", lambda: {"login": "bob"})
+    monkeypatch.setattr(classify, "_role_cache", {})
+    monkeypatch.setattr(classify, "_gh", lambda: type("G", (), {
+        "org_role": staticmethod(lambda org: "member")}))
     rec = classify.ensure(d)
-    assert (rec["kind"], rec["repo"], rec["owner_checked"]) == ("github", "Alice/X", False)
-    assert rec["classified_by"] == "migration"
-    # Unknown ownership never pushes (§16.1): it counts as a GitHub-link copy.
-    assert classify.kind_of(d) == "github"
+    assert (rec["kind"], rec["repo"], rec["owner_checked"]) == ("github", "Alice/X", True)
 
 
 def test_recheck_upgrades_to_own_once(home, tmp_path, monkeypatch):
     d = _clone(tmp_path, "x", "https://github.com/alice/x")
-    classify.ensure(d)
+    classify.record_install(d, "https://github.com/alice/x")  # unchecked
     monkeypatch.setattr(classify, "_identity", lambda: {"login": "Alice"})
     rec = classify.ensure(d)
     assert rec["kind"] == "own" and rec["owner_checked"] is True
@@ -639,7 +645,7 @@ def test_adoption_needs_the_same_root_commit_and_prefers_the_moved_copy(world):
     store.put(os.path.join(str(world.ws), "app", "gone"),
               {**store.new_record("github", repo=REPO, branch="main"),
                "root_commit": "f" * 40, "proposal": {"number": 9}})
-    assert classify.ensure(d)["proposal"] is None
+    assert classify.ensure(d) is None  # signed out: neither adopted nor classified
 
 
 # ---------------------------------------------------------- v1 -> v2 + activity
@@ -797,11 +803,145 @@ def test_install_page_for_a_github_copy_with_changes_is_plain(world):
     tip = _alice_push(world, "c.txt", "alice\n")
     src = {"url": URL, "commit": tip}
     assert appfile_git.probe(bob, src) == "local"
-    assert appfile_git.copy_view(bob) == {"who": "alice", "changes": True, "collision": []}
+    assert appfile_git.copy_view(bob) == {"who": "alice", "changes": True, "collision": [], "app_page": False}
     target = {"git": src, "state": "local", "path": bob, "found_by": "git"}
+    with pytest.raises(appfile_git.GitInstallError) as exc:
+        appfile_git.install("x.fused", target, {}, force=False)
+    # Audit V1/V13 (§16.12): with A1 off the app page has no panel — plain
+    # words, no pointer there.
+    assert str(exc.value) == "This app has changes of its own, so it isn't updated from here."
+    _prefs(world.home, contrib_sources_enabled=True)
     with pytest.raises(appfile_git.GitInstallError) as exc:
         appfile_git.install("x.fused", target, {}, force=False)
     msg = str(exc.value)
     assert msg.startswith("You have your own changes in this app. Open it to bring in")
     for word in ("git", "commit", "pull", "branch", "push"):
         assert word not in msg.lower()
+
+
+def test_install_page_names_a_colliding_file_instead_of_offering_get_the_latest(world):
+    """Audit contrib V3: Bob's own untracked NOTES.md, Alice adds NOTES.md.
+    The copy has not taken the update in, so the engine sees no collision —
+    but the link's commit does: the page says `local` naming the file, never
+    a "Get the latest" that refuses."""
+    bob = _install(world)
+    write(bob, "NOTES.md", "bob's notes\n")
+    tip = _alice_push(world, "NOTES.md", "alice\n", "notes")
+    git(bob, "fetch", "-q", "origin")  # the copy knows the commit (no staged clone here)
+    src = {"url": URL, "commit": tip}
+    assert appfile_git.probe(bob, src) == "local"
+    assert appfile_git.copy_view(bob, src)["collision"] == ["NOTES.md"]
+    target = {"git": src, "state": "local", "path": bob, "found_by": "git"}
+    with pytest.raises(appfile_git.GitInstallError) as exc:
+        appfile_git.install("x.fused", target, {}, force=False)
+    assert "NOTES.md" in str(exc.value)
+    with open(os.path.join(bob, "NOTES.md")) as f:
+        assert f.read() == "bob's notes\n"
+
+
+# ------------------------------------------------------ review round 1 (§16.12)
+
+
+def test_pre_loop_author_app_keeps_auto_pushing_while_signed_out(world, monkeypatch):
+    """Audit author V4: A1 on, signed out, a pre-loop app of Alice's (no
+    record) was classified github/unchecked and stopped reaching GitHub.
+    Now: no record until an identity exists; today's sync pushes."""
+    _prefs(world.home, contrib_sources_enabled=True)
+    monkeypatch.setattr(classify, "ensure_in_background", lambda d: classify.ensure(d))
+    lap = os.path.join(str(world.ws), "app", "sine")
+    os.makedirs(os.path.dirname(lap), exist_ok=True)
+    git(str(world.tmp), "clone", "-q", URL, lap)
+    mine = _commit(lap, "c.txt", "c\n", "Claude: c")
+    r = _sync(os.path.realpath(lap), push=True)
+    assert store.get(lap) is None and r["pushed"] is True and _remote_main(world) == mine
+
+
+def test_kind_lookup_failure_is_skipped_not_a_plain_push(world, monkeypatch):
+    """Audit V7: an exception deciding the kind fell through to `_sync_plain`
+    (a push, and a failure row quoting git). Now: skipped, nothing moves."""
+    bob = _install(world)
+    _commit(bob, "b.txt", "bob\n", "bob")
+
+    def boom(*a, **k):
+        raise RuntimeError("store broke")
+
+    monkeypatch.setattr(classify, "kind_of", boom)
+    before = _remote_main(world)
+    r = _sync(bob, push=True)
+    assert r == {"ok": True, "status": "skipped", "why": "contrib-error"}
+    assert _remote_main(world) == before and git_upstream.sync_failures() == []
+
+
+def test_push_by_url_is_refused_by_the_pre_push_hook(world):
+    """Audit V6: the pushurl guard only covers pushes by remote NAME; a push
+    by URL went straight to the author. Now a pre-push hook refuses every
+    push; fused's own pushes skip hooks; the person's own hook comes back
+    when the copy becomes theirs."""
+    bob = _install(world)
+    _commit(bob, "b.txt", "bob\n", "bob")
+    before = _remote_main(world)
+    by_url = subprocess.run(["git", "-C", bob, "push", "-q", URL, "HEAD:main"],
+                            capture_output=True, text=True)
+    assert by_url.returncode != 0 and "can't be sent from here" in by_url.stderr
+    assert _remote_main(world) == before
+    fused = subprocess.run(["git", "-C", bob, "-c", "core.hooksPath=/dev/null", "push", "-q",
+                            URL, "HEAD:refs/heads/fused-test"], capture_output=True, text=True)
+    assert fused.returncode == 0, fused.stderr
+    hook = os.path.join(bob, ".git", "hooks", "pre-push")
+    # The person's own hook is kept aside and restored on `own`.
+    assert classify.ensure_push_guard(bob, "own") and not os.path.exists(hook)
+    with open(hook, "w") as f:
+        f.write("#!/bin/sh\n# mine\nexit 0\n")
+    assert classify.ensure_push_guard(bob, "github")
+    assert classify.HOOK_MARK in open(hook).read()
+    assert classify.ensure_push_guard(bob, "own")
+    assert open(hook).read() == "#!/bin/sh\n# mine\nexit 0\n"
+
+
+def test_sign_in_upgrade_holds_unpublished_work_until_publish_now(world, monkeypatch):
+    """Audit V8: a signed-out install upgraded to own at sign-in auto-pushed
+    every commit the page had said stays local. Now: held (+ activity line),
+    no push on any automatic sync — flags off or on — until Publish now."""
+    bob = _install(world)
+    _commit(bob, "b1.txt", "x\n", "local 1")
+    _commit(bob, "b2.txt", "x\n", "local 2")
+    before = _remote_main(world)
+    monkeypatch.setattr(classify, "_owns", lambda owner, ident: True)
+    assert classify.after_sign_in({"login": "alice", "id": 1})["rechecked"] == 1
+    assert classify.kind_of(bob) == "own" and classify.is_held(bob)
+    assert store.get(bob)["own_state"]["count"] == 2
+    assert "2 edits are ready to publish" in store.activity(bob)[0]["text"]
+    _commit(bob, "b3.txt", "x\n", "Claude: b3")
+    r = _sync(bob, push=True)
+    assert r["status"] == "synced" and r["pushed"] is False and r["held"] is True
+    assert _remote_main(world) == before
+    r = git_upstream.sync_repo(bob, action=git_upstream.PUBLISH_NOW, push=True)
+    assert r["pushed"] is True and _remote_main(world) == git(bob, "rev-parse", "HEAD").strip()
+    assert not classify.is_held(bob)
+
+
+def test_v1_record_over_a_different_repo_is_dropped_not_bound(world):
+    """Audit V11: a v1 record (no root commit) whose folder now holds a
+    different repo got bound to it and pointed its origin at Alice."""
+    a = os.path.join(str(world.ws), "app", "sine")
+    rec = store.new_record("github", repo=REPO, branch="main", classified_by="install")
+    rec.pop("root_commit")
+    other = str(world.tmp / "other.git")
+    git(str(world.tmp), "init", "-q", "--bare", "-b", "main", other)
+    w = str(world.tmp / "ow")
+    git(str(world.tmp), "clone", "-q", other, w)
+    _commit(w, "x.txt", "x\n", "other")
+    git(w, "push", "-q", "origin", "main")
+    os.makedirs(os.path.dirname(a), exist_ok=True)
+    git(str(world.tmp), "clone", "-q", other, a)
+    store.put(a, rec)
+    _sync(os.path.realpath(a))
+    assert classify.kind_of(a) is None and store.get_raw(store.key(a)) is None
+    assert git(a, "remote", "get-url", "origin").strip() == other
+
+
+def test_record_sync_failure_helper_writes_todays_row(world):
+    r = git_upstream.record_sync_failure("/x/app", "diverged", action="Sync", push=False,
+                                         message="Your copy and the author's both changed.")
+    assert r["status"] == "failed" and r["failure"]["reason"] == "diverged"
+    assert git_upstream.sync_failures()[0]["output"] == "Your copy and the author's both changed."
