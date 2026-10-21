@@ -56,3 +56,18 @@ def test_disk_space_check_reads_shutil_not_statvfs(monkeypatch, tmp_path):
     mgr = _manager.UpdateManager.__new__(_manager.UpdateManager)
     with pytest.raises(RuntimeError, match="not enough free disk space"):
         mgr._check_disk_space(str(tmp_path))
+
+
+def test_terminal_sessions_are_refused_on_windows(monkeypatch):
+    from fused_render import _platform, pty_session
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    with pytest.raises(RuntimeError, match="not supported on Windows"):
+        pty_session.PtySessionRegistry().spawn(None)
+
+
+def test_legacy_mount_sweep_is_skipped_on_windows(monkeypatch):
+    from fused_render import _platform, legacy_mounts_cleanup
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(legacy_mounts_cleanup.threading, "Thread",
+                        lambda *a, **k: pytest.fail("started the sweep on Windows"))
+    legacy_mounts_cleanup.start_background()

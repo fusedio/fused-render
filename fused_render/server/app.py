@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from fused_render import _flavor
+from fused_render import _flavor, _platform
 from fused_render import calls as shell_calls
 from fused_render import health
 from fused_render.canvases import router as canvases_router
@@ -1151,7 +1151,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # One owner per machine (bots/registry.py module docstring): the process holding the bots flock serves
     # `/api/bots/*` itself, every other one forwards there. A lean `open` never elects: it forwards when an
     # owner exists and answers 503 otherwise, instead of building Bots and running engines beside the app's.
-    _bots_registry.set_lean(lean)
+    # Windows never elects: the engines and per-bot Chrome lean on POSIX process groups and
+    # signals, so there it forwards (to no one) and answers 503 like a lean server.
+    _bots_registry.set_lean(lean or _platform.IS_WINDOWS)
     app.middleware("http")(_bots_forward)
 
     # The bots' scheduler thread. `@on_startup`, so a lean `fused-render open`
@@ -1161,6 +1163,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # (registry._become_owner) — all of which used to run here in every process.
     @on_startup
     async def _startup_bots():
+        if _platform.IS_WINDOWS:
+            logger.info("bots are not supported on Windows; the scheduler is not started")
+            return
         from fused_render.bots import registry as bots_registry
 
         try:
