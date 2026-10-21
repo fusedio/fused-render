@@ -6221,6 +6221,12 @@ _PULSE_FIELDS = (
     # door as the Tasks page (`taskHref`), and that door is the canvas page
     # for a canvas task. A small dict per row, not a path walk per click.
     "canvas",
+    # The held background jobs (`_row`), `None` when there are none: a task
+    # whose turn ended but whose chat still holds a background Agent, Monitor or
+    # run_in_background Bash is `done` by status, and the Tasks page paints it
+    # In Progress (tasks-lib `liveJobRow`). The sidebar must apply the same rule
+    # or it paints running work as "finished, not read".
+    "background_jobs",
 )
 
 
@@ -6241,7 +6247,7 @@ def api_tasks_pulse():
     listing already pays. Server-side since D1386 — see `api_tasks_seen`."""
     return {
         "tasks": [
-            {field: row[field] for field in _PULSE_FIELDS}
+            {field: row.get(field) for field in _PULSE_FIELDS}
             for row in _task_rows()
             if row.get("kind") != "draft"
         ],

@@ -505,6 +505,9 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         # The canvas a task is on (2026-10-20): the notification's door is the
         # canvas page for a canvas task, like the Tasks page's.
         "canvas",
+        # Held background work (2026-10-21): the sidebar paints such a row as
+        # running, like the Tasks page, and needs the list to know.
+        "background_jobs",
     )
     assert pulse == [
         {field: row[field] for field in pulse_fields}
@@ -4369,6 +4372,20 @@ def test_background_work_is_a_caption_not_a_status(
     # Exactly what the row's Stop hands the agent's `task_stop`: the run dir's
     # name and the CLI's own task id.
     assert task["background_jobs"] == {
+        "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
+
+
+def test_the_pulse_ships_a_done_rows_held_background_jobs(
+        client, projects_dir, parked, monkeypatch, registry):
+    """The sidebar cannot apply the Tasks page's "live job = running" rule
+    unless the pulse carries the job list."""
+    _replied(projects_dir)
+    _stage_hosted(parked.dir, "r-1", "sess-a", ["bash_1"], os.getpid())
+    _install_hosted(monkeypatch, parked.dir)
+    registry("sess-a")
+    row = _pulse(client)[0]
+    assert row["status"] == "done"
+    assert row["background_jobs"] == {
         "count": 1, "run_id": "r-1", "jobs": [{"id": "bash_1", "title": ""}]}
 
 

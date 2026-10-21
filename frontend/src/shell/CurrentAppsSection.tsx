@@ -50,7 +50,7 @@ import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
-import { inFlight, isQueued, opensElsewhere, queuedLabel, statusColumn } from "@shell/tasks-lib";
+import { inFlight, isQueued, liveJobRow, opensElsewhere, queuedLabel, statusColumn } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
@@ -496,7 +496,7 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
     [rows],
   );
   const runningProjects = useMemo(
-    () => rows.filter((r) => inFlight(statusColumn(r.status))).map((r) => r.project || ""),
+    () => rows.filter((r) => inFlight(statusColumn(r.status)) || liveJobRow(r)).map((r) => r.project || ""),
     [rows],
   );
   // The same pulse rows read for the other half of the sentence: tasks WAITING
