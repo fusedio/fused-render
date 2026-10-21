@@ -2350,7 +2350,7 @@ export function ComposerCard({
           </div>
         ) : null}
         {/* THE AGENT IS OFF (D17): the placeholder says so; this is the link. */}
-        {blocked && blockedNote ? <div className="c-queued c-blocked-note">{blockedNote}</div> : null}
+        {blockedNote ? <div className="c-queued c-blocked-note">{blockedNote}</div> : null}
         {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding,
             as against the follow-ups above that the run's host already has.
             Drawn whatever the queue flag says — these are not the project

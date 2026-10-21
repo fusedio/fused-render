@@ -139,6 +139,7 @@ from starlette.concurrency import run_in_threadpool
 from fused_render import netlog
 from fused_render import (
     app_listing,
+    claude_remote,
     current_apps,
     drafts,
     project_queue,
@@ -9307,6 +9308,14 @@ def api_task_send(key: str, body: dict = Body(...),
     if refusal is not None:
         return refusal
 
+    delivered = claude_remote.admit([session], _deliver_page_send, key, task, target,
+                                    session, text, model, effort, owner)
+    if delivered == {"error": claude_remote.HELD}:
+        return _error(claude_remote.HELD, status=409)
+    return delivered
+
+
+def _deliver_page_send(key, task, target, session, text, model, effort, owner):
     agent = project_queue.agent_module()
     if agent is not None:
         try:
