@@ -92,6 +92,14 @@ jobs:
         run: |
           v="$(python3 -c 'import json;print(json.load(open("fused_render/chromium/manifest.json"))["engine_version"])')"
           tag="chromium-engine-$v"
+          # Never replace a pinned artifact: once the manifest carries this
+          # arch's sha256, the zip on the release IS that sha, and a rebuild
+          # (signing timestamps alone change it) would make every download
+          # fail verification. Bump engine_version for a new build instead.
+          if python3 -c 'import json,sys;sys.exit(0 if json.load(open("fused_render/chromium/manifest.json"))["artifacts"][sys.argv[1]]["sha256"] else 1)' "${{ matrix.arch }}"; then
+            echo "::notice::engine $v/${{ matrix.arch }} is already pinned in the manifest; not uploading"
+            exit 0
+          fi
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Chromium engine $v" \
             --notes "On-demand Chromium (CEF) engine for the macOS app windows, engine version $v. Downloaded by the app when the experimental preference is on; not for manual installation." --prerelease
           gh release upload "$tag" "$RUNNER_TEMP"/engine/*.zip "$RUNNER_TEMP"/engine/*.json --clobber
