@@ -4,37 +4,38 @@
 // not be magic … manual trigger and manual fix ways should be there").
 //
 // THE SERVER DECIDES. `/api/contrib/app` sends `panel` (one sentence, the
-// files it is about, when GitHub was last checked), `actions` (the buttons,
-// in order) and `activity` (what happened, newest first). This file renders
-// those and nothing else: it never derives a button from a state, so a
-// button exists exactly when contrib/actions.py says so (flags included).
+// files it is about, when GitHub was last checked; null = say nothing),
+// `actions` (the buttons, in order, exactly one primary) and `activity` (what
+// happened, newest first). This file renders those and nothing else: it never
+// derives a button from a state, so a button exists exactly when
+// contrib/actions.py says so (flags included).
 //
-//   sentence   the server's, as is; its `detail` under it.
+//   sentence   the server's, whole.
 //   files      the paths the sentence is about, a few at a time.
-//   actions    primary ones as buttons, the rest as quiet text actions;
-//              `danger` reads red; `confirm` asks first on an in-page sheet.
-//              A few ids open a sheet instead of posting at once — Propose,
-//              Publish as remix, Sign in — and Discard's confirm carries the
-//              "Also withdraw my proposal" box. Everything else is ONE route,
+//   actions    the primary as a button, the rest as quiet text actions;
+//              `danger` reads red; `confirm` asks first on an in-page sheet
+//              (never window.confirm), as does a "confirm" refusal. A button
+//              with `dialog` opens its sheet instead of posting — Propose,
+//              Publish as remix, Sign in. Everything else is ONE route,
 //              POST /api/contrib/action; a long one answers a job, shown as
 //              progress until it ends.
+//   merge      `panel.merge`, Claude's merge for this copy: the clock while it
+//              runs, Keep / Discard once ready (MergeReview). The sentence
+//              already says what Claude did.
 //   checked    "Checked 3m ago · Check now" (Check now only when sent).
-//   activity   a disclosure of what moved and when, each line with Undo /
-//              Restore when something moved away (POST /api/contrib/restore).
+//   activity   a disclosure of what moved and when, each line with Undo when
+//              something moved away (POST /api/contrib/restore).
 //
-// Claude's merge review (running → ready → Keep / Discard) still rides on
-// `copy.merge_job`, drawn inside the panel: the sentence says what Claude is
-// doing or did, the panel adds the elapsed clock or the two choices a ready
-// merge means (the merge job's own accept/discard routes). A failed merge is
-// the sentence's to say, with its fix buttons.
+// A merged or declined answer stands until the user dismisses it (✕ → ack
+// "settled"), the one control here the server does not list: it is how the
+// server's own state is told it was read.
 //
 // The sheets are mounted outside any one state's branch, so a background
 // re-read that moves the state on never unmounts one mid-flight.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import { Check, ChevronRight, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
 import {
-  acceptMerge,
-  discardMerge,
+  ackContrib,
   okMessage,
   plainMessage,
   restoreActivity,
@@ -42,17 +43,14 @@ import {
   runJob,
   useUnmountSignal,
   type ActivityLine,
-  type AppContrib,
   type AppContribState,
   type ContribAction,
   type ContribJob,
-  type MergeJobView,
 } from "@platform/lib/contrib";
 import { timeAgo } from "@platform/lib/format";
 import { notify } from "@platform/lib/notifications";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
-import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -63,17 +61,14 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@platform/shadcn/ui/alert-dialog";
-import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { JobProgress } from "./JobProgress";
+import { MergeReview, mergeShown } from "./MergeReview";
 import { ProposeDialog } from "./ProposeDialog";
 import { RemixDialog } from "./RemixDialog";
 import { SignInSheet } from "./SignInSheet";
 import { QuietAction, StatusStrip, type StripTone } from "./StatusStrip";
-import { authorOf, elapsed, plural, possessive } from "./words";
+import { authorOf, plural } from "./words";
 
-/** Ids that open a sheet here instead of posting at once, for a server that
- *  does not mark them with `dialog` itself. */
-const SHEET_IDS = new Set(["propose", "remix", "sign-in"]);
 /** Drawn in the "checked" line, not the button row. */
 const CHECK_ID = "check";
 /** Files listed before "N more". */
@@ -82,14 +77,17 @@ const FILES_SHOWN = 6;
 const ATTENTION_STATES = new Set([
   "needs-merge",
   "blocked",
-  "github-changed",
-  "edits",
   "other-branch",
   "error",
-  "sync-error",
+  "github-changed",
+  "edits",
+  "publish-failed",
+  "publish-auth",
 ]);
 /** States that say all is well. */
-const QUIET_STATES = new Set(["following", "ok", "merged"]);
+const QUIET_STATES = new Set(["following", "merged", "published"]);
+/** States that stand until the user dismisses them (ack "settled"). */
+const SETTLED_STATES = new Set(["merged", "declined"]);
 
 type Sheet =
   | null
@@ -101,28 +99,17 @@ type Sheet =
 /** Any action's answer, as `act` reads it. */
 type Outcome = { ok: boolean; message?: string; reason?: string };
 
-/** A merge review in flight or waiting for the user's choice. A failed one
- *  is the server's to say: its sentence and fix buttons cover it. */
-function liveMerge(c: AppContrib): MergeJobView | null {
-  const job = c.copy?.merge_job;
-  if (!job) return null;
-  return job.status === "running" || job.status === "landing" || job.status === "ready" ? job : null;
-}
-
-/** The sheet (or flow) a button opens instead of posting, if any. */
-function dialogOf(a: ContribAction): string | null {
-  return a.dialog || (SHEET_IDS.has(a.id) ? a.id : null);
-}
-
 export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string; contrib: AppContribState }) {
   const c = contrib.data;
   const [sheet, setSheet] = useState<Sheet>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The job a long action is running, for its progress line.
-  const [job, setJob] = useState<{ label: string; step: string | null; steps?: StepList } | null>(null);
-  const [withdrawToo, setWithdrawToo] = useState(false);
+  const [job, setJob] = useState<{ label: string; step: string | null } | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
+  // Dismissed here ahead of the re-read, keyed by which settlement it was,
+  // so a LATER proposal's answer is not hidden by this one's ✕.
+  const [acked, setAcked] = useState<string | null>(null);
   // A refused action waiting on a sign-in: what to say, and what to run again.
   const [signIn, setSignIn] = useState<{ doing: string; again: () => void } | null>(null);
   const signal = useUnmountSignal();
@@ -133,8 +120,8 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
     setBusy(null);
     setError(null);
     setJob(null);
-    setWithdrawToo(false);
     setActivityOpen(false);
+    setAcked(null);
     setSignIn(null);
   }, [dir]);
 
@@ -143,34 +130,29 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const sentence = c?.panel?.sentence ?? null;
   useEffect(() => setError(null), [sentence]);
 
-  const merge = c ? liveMerge(c) : null;
-  const clockFrom = useMergeClock(merge);
-
-  if (!c?.panel) return null;
-  const { panel, proposal } = c;
+  const panel = c?.panel;
+  if (!c || !panel || !panel.sentence) return null;
+  const proposal = c.proposal;
   const actions = c.actions ?? [];
   const activity = c.activity ?? [];
-  // Nothing to say: the phase is off (an empty sentence), or an app of the
-  // user's own with no GitHub repo and no history to show.
-  if (!panel.sentence) return null;
-  if (panel.state === "local" && actions.length === 0 && activity.length === 0) return null;
   const who = panel.who || authorOf(c.copy);
   const signedIn = c.github.signed_in;
-  const openProposal = !!proposal && (proposal.state === "waiting" || proposal.state === "commented");
+  const settledKey = `${panel.state}:${proposal?.number ?? ""}`;
+  if (SETTLED_STATES.has(panel.state) && acked === settledKey) return null;
 
   /** Run one thing: one at a time ("busy" when another is running — a double
    *  click is a no-op), the server's sentence on a refusal, a re-read either
    *  way. A "signed-out" refusal opens the sign-in sheet and runs it once
    *  more after, instead of an error. */
-  const act = async (key: string, fn: () => Promise<Outcome>, signInTo?: string): Promise<"busy" | boolean> => {
+  const act = async (key: string, fn: () => Promise<Outcome>): Promise<"busy" | boolean> => {
     if (busy) return "busy";
     setBusy(key);
     setError(null);
     const r = await fn();
     if (r.reason === "aborted") return false; // unmounted: nobody to tell
     if (!r.ok && r.reason !== "confirm") {
-      if (r.reason === "signed-out" && signInTo) {
-        setSignIn({ doing: signInTo, again: () => void act(key, fn) });
+      if (r.reason === "signed-out") {
+        setSignIn({ doing: "keep going", again: () => void act(key, fn) });
       } else {
         setError(plainMessage(r));
       }
@@ -188,123 +170,68 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
     if (m) notify({ title: m, tone: "info" });
   };
 
-  /** POST one action; a long one's job is watched to its end. A
-   *  `reason:"confirm"` answer (the server wants a yes first, although no
-   *  confirm sentence came with the button) opens the confirm sheet. */
-  const post = (a: ContribAction, opts: { confirm?: boolean; args?: Record<string, unknown> } = {}) =>
-    act(
-      a.id,
-      async () => {
-        const started = await runAction(dir, a.id, opts);
-        if (!started.ok && started.reason === "confirm" && !opts.confirm) {
-          setSheet({ k: "confirm", action: a, sentence: plainMessage(started) });
-          return started;
-        }
-        // Merge with Claude answers its merge job (`merge: true`): its
-        // progress and review ride on `copy.merge_job`, read by the re-read.
-        if (!started.ok || !started.job || started.merge) {
-          if (started.ok) say(started);
-          return started;
-        }
-        setJob({ label: a.label, step: null });
-        const r = await runJob<Record<string, unknown>>(Promise.resolve(started), {
-          signal: signal(),
-          onTick: (j: ContribJob & { steps?: StepList }) =>
-            setJob({ label: a.label, step: j.step ?? null, steps: j.steps }),
-        });
-        if (r.ok) say(r);
-        return r;
-      },
-      "keep going",
-    );
+  /** POST one action; a long one's job is watched to its end. A "confirm"
+   *  refusal (the server wants a yes first) opens the confirm sheet. */
+  const post = (a: ContribAction, confirm = false) =>
+    act(a.id, async () => {
+      const started = await runAction(dir, a.id, { confirm });
+      if (!started.ok && started.reason === "confirm" && !confirm) {
+        setSheet({ k: "confirm", action: a, sentence: plainMessage(started) });
+        return started;
+      }
+      // Merge with Claude answers its merge job (`merge: true`): its
+      // progress and review ride on `panel.merge`, read by the re-read.
+      if (!started.ok || !started.job || started.merge) {
+        if (started.ok) say(started);
+        return started;
+      }
+      setJob({ label: a.label, step: null });
+      const r = await runJob(Promise.resolve(started), {
+        signal: signal(),
+        onTick: (j: ContribJob) => setJob({ label: a.label, step: j.step ?? null }),
+      });
+      if (r.ok) say(r);
+      return r;
+    });
 
   const press = (a: ContribAction) => {
     if (busy) return;
-    const dialog = dialogOf(a);
-    if (dialog === "propose") return setSheet({ k: "propose" });
-    if (dialog === "remix") return setSheet({ k: "remix" });
-    if (dialog === "sign-in") {
+    if (a.dialog === "propose") return setSheet({ k: "propose" });
+    if (a.dialog === "remix") return setSheet({ k: "remix" });
+    if (a.dialog === "sign-in") {
       return setSignIn({ doing: "keep going", again: () => void contrib.refresh() });
     }
-    if (a.confirm || a.id === "discard") {
-      return setSheet({ k: "confirm", action: a, sentence: a.confirm || "" });
-    }
+    if (a.confirm) return setSheet({ k: "confirm", action: a, sentence: a.confirm });
     void post(a);
+  };
+
+  const dismiss = () => {
+    setAcked(settledKey);
+    void ackContrib(dir, "settled").then(() => contrib.refresh());
   };
 
   const spin = (key: string) => busy === key && <Loader2 data-icon="inline-start" className="animate-spin" />;
 
-  // ---- the merge review (copy.merge_job) -------------------------------------
-  const onKeepMerge = (m: MergeJobView) =>
-    act("keep-merge", async () => {
-      const r = await acceptMerge(dir, m.id);
-      if (r.ok) notify({ title: okMessage(r, "Merged. Your copy has both versions."), tone: "info" });
-      return r;
-    });
-  const onDiscardMerge = (m: MergeJobView) => act("discard-merge", () => discardMerge(dir, m.id));
-
-  // The panel's sentence already says what Claude is doing or did (and its
-  // files are the merge's): the block adds only the clock, or the choice.
-  let mergeBlock: ReactNode = null;
-  if (merge && (merge.status === "running" || merge.status === "landing")) {
-    mergeBlock = (
-      <div className="contrib-panel-merge" role="status">
-        <ClaudeMark className="contrib-claude-working" />
-        <span>
-          {merge.status === "landing" ? (
-            "Keeping the merge…"
-          ) : (
-            <>
-              <span className="contrib-clock">{clockFrom}</span> so far. Your copy stays as it is until you choose.
-            </>
-          )}
-        </span>
-      </div>
-    );
-  } else if (merge?.status === "ready") {
-    mergeBlock = (
-      <div className="contrib-panel-merge is-ready">
-        <ClaudeMark />
-        <div className="contrib-panel-merge-body">
-          <p className="contrib-panel-merge-title">Nothing changes in your copy until you keep it.</p>
-          <div className="contrib-panel-actions">
-            <Button onClick={() => void onKeepMerge(merge)} disabled={!!busy}>
-              {spin("keep-merge")}
-              Keep the merge
-            </Button>
-            <QuietAction onClick={() => void onDiscardMerge(merge)} disabled={!!busy}>
-              {busy === "discard-merge" ? "Discarding…" : "Discard the merge"}
-            </QuietAction>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ---- the buttons, in the server's order, primary ones first -----------------
+  // ---- the buttons, in the server's order (its one primary first) ------------
   const check = actions.find((a) => a.id === CHECK_ID) ?? null;
   const rest = actions.filter((a) => a.id !== CHECK_ID);
-  const primaries = rest.filter((a) => a.primary);
-  const quiet = rest.filter((a) => !a.primary);
-  const label = (a: ContribAction) => (busy === a.id && !dialogOf(a) ? `${a.label}…` : a.label);
-  const primaryButtons = primaries.map((a, i) => (
-    <Button
-      key={a.id}
-      variant={a.danger ? "destructive" : i === 0 ? "default" : "outline"}
-      onClick={() => press(a)}
-      disabled={!!busy}
-    >
-      {spin(a.id)}
-      {label(a)}
-    </Button>
-  ));
-  const quietButtons = quiet.map((a) => (
-    <QuietAction key={a.id} onClick={() => press(a)} disabled={!!busy} tone={a.danger ? "danger" : undefined}>
-      {label(a)}
-    </QuietAction>
-  ));
+  const label = (a: ContribAction) => (busy === a.id && !a.dialog ? `${a.label}…` : a.label);
+  const button = (a: ContribAction) =>
+    a.primary ? (
+      <Button key={a.id} variant={a.danger ? "destructive" : "default"} onClick={() => press(a)} disabled={!!busy}>
+        {spin(a.id)}
+        {label(a)}
+      </Button>
+    ) : (
+      <QuietAction key={a.id} onClick={() => press(a)} disabled={!!busy} tone={a.danger ? "danger" : undefined}>
+        {label(a)}
+      </QuietAction>
+    );
+  const first = rest[0]?.primary ? rest[0] : null;
+  const others = first ? rest.slice(1) : rest;
 
-  const working = !!job || merge?.status === "running" || merge?.status === "landing";
+  const merge = mergeShown(panel.merge) ? panel.merge : null;
+  const working = !!job || merge?.status === "running" || merge?.status === "landing" || panel.state === "pending";
   const tone: StripTone = working
     ? "working"
     : merge?.status === "ready" || ATTENTION_STATES.has(panel.state)
@@ -331,26 +258,14 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
           icon={icon}
           busy={working}
           sentence={panel.sentence}
-          detail={panel.detail || null}
-          primary={primaryButtons.length > 0 ? primaryButtons[0] : null}
-          secondary={
-            primaryButtons.length > 1 || quietButtons.length > 0 ? (
-              <>
-                {primaryButtons.slice(1)}
-                {quietButtons}
-              </>
-            ) : null
-          }
+          primary={first ? button(first) : null}
+          secondary={others.length > 0 ? others.map(button) : null}
+          onDismiss={SETTLED_STATES.has(panel.state) ? dismiss : undefined}
         >
-          <FileList files={panel.files} label="Files this is about" />
-          {job && (
-            <JobProgress
-              steps={job.steps?.length ? job.steps : [{ key: "run", label: `${job.label}…` }]}
-              current={job.step}
-            />
-          )}
-          {mergeBlock}
-          {error && !(sheet?.k === "confirm") && (
+          <FileList files={panel.files} />
+          {job && <JobProgress steps={[{ key: job.step ?? "run", label: `${job.label}…` }]} current={job.step} />}
+          {merge && <MergeReview dir={dir} job={merge} brief disabled={!!busy} refresh={contrib.refresh} />}
+          {error && sheet?.k !== "confirm" && (
             <p className="contrib-error" role="alert">
               {error}
             </p>
@@ -388,7 +303,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
                   {line.undo && (
                     <QuietAction onClick={() => setSheet({ k: "undo", line })} disabled={!!busy}>
                       <RotateCcw aria-hidden="true" />
-                      {busy === `undo:${line.id}` ? "Putting it back…" : line.undo_label || "Undo"}
+                      {busy === `undo:${line.id}` ? "Putting it back…" : "Undo"}
                     </QuietAction>
                   )}
                 </li>
@@ -437,7 +352,6 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
         onOpenChange={(o) => {
           if (!o && !busy) {
             setSheet(null);
-            setWithdrawToo(false);
             setError(null);
           }
         }}
@@ -446,19 +360,8 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>{sheet.action.label}?</AlertDialogTitle>
-              <AlertDialogDescription>
-                {sheet.sentence ||
-                  (sheet.action.id === "discard"
-                    ? `Your edits to ${slug} go away, and the app goes back to ${possessive(who)} latest version.`
-                    : "")}
-              </AlertDialogDescription>
+              <AlertDialogDescription>{sheet.sentence}</AlertDialogDescription>
             </AlertDialogHeader>
-            {sheet.action.id === "discard" && openProposal && (
-              <label className="contrib-check">
-                <Checkbox checked={withdrawToo} onCheckedChange={(v) => setWithdrawToo(v === true)} />
-                <span>Also withdraw my proposal</span>
-              </label>
-            )}
             {error && (
               <p className="contrib-error" role="alert">
                 {error}
@@ -470,19 +373,16 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
                 variant={sheet.action.danger ? "destructive" : "default"}
                 disabled={!!busy}
                 onClick={async () => {
-                  const a = sheet.action;
-                  const args = a.id === "discard" ? { withdraw: openProposal && withdrawToo } : undefined;
-                  const r = await post(a, { confirm: true, args });
+                  const r = await post(sheet.action, true);
                   // Another action running: nothing happened, keep the sheet.
                   // A refusal keeps it too, its sentence shown inside — the
                   // next move is to wait and press again, not to start over.
                   if (r === "busy" || r === false) return;
                   setSheet(null);
-                  setWithdrawToo(false);
                 }}
               >
                 {spin(sheet.action.id)}
-                {sheet.action.confirm_label || sheet.action.label}
+                {sheet.action.label}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -498,7 +398,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
         {sheet?.k === "undo" && (
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>{sheet.line.undo_label || "Undo"}?</AlertDialogTitle>
+              <AlertDialogTitle>Undo this?</AlertDialogTitle>
               <AlertDialogDescription>
                 The app goes back to how it was before this: &ldquo;{sheet.line.text}&rdquo;. What it has now is
                 kept in the activity list too, so nothing is lost either way.
@@ -519,7 +419,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
                 }}
               >
                 {spin(`undo:${sheet.line.id}`)}
-                {sheet.line.undo_label || "Undo"}
+                Undo
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -529,16 +429,14 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   );
 }
 
-type StepList = { key: string; label: string }[];
-
 /** The paths a sentence is about, a few at a time with "N more". */
-function FileList({ files, label }: { files: string[]; label: string }) {
+function FileList({ files }: { files: string[] }) {
   const [all, setAll] = useState(false);
   if (files.length === 0) return null;
   const shown = all ? files : files.slice(0, FILES_SHOWN);
   const more = files.length - shown.length;
   return (
-    <ul className="contrib-files" aria-label={label}>
+    <ul className="contrib-files" aria-label="Files">
       {shown.map((f) => (
         <li key={f}>{f}</li>
       ))}
@@ -549,22 +447,4 @@ function FileList({ files, label }: { files: string[]; label: string }) {
       )}
     </ul>
   );
-}
-
-/** "1:05" since the merge job started — the server's `started_at` when it
- *  sends one, else the first time this page saw the job running. Ticks once
- *  a second only while a job is running. */
-function useMergeClock(job: MergeJobView | null): string {
-  const firstSeen = useRef<{ id: string; at: number } | null>(null);
-  const [now, setNow] = useState(() => Date.now());
-  const running = job?.status === "running";
-  if (job && firstSeen.current?.id !== job.id) firstSeen.current = { id: job.id, at: Date.now() };
-  useEffect(() => {
-    if (!running) return;
-    const t = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(t);
-  }, [running]);
-  if (!job) return "";
-  const from = job.started_at ? job.started_at * 1000 : firstSeen.current!.at;
-  return elapsed(Math.max(0, now - from));
 }

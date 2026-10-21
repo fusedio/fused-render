@@ -2326,7 +2326,18 @@ export interface AppFileProbe {
   state: AppFileState;
   needs_force: boolean;
   /** A GitHub-link build (`open?git=`): installs as a clone of `url`. */
-  git?: { url: string; commit: string } | null;
+  git?: {
+    url: string;
+    commit: string;
+    /** Installed GitHub-link copy only (contrib §16.8): whose latest it gets. */
+    who?: string | null;
+    /** Installed GitHub-link copy only: the user has changes of their own.
+     *  Present (either way) exactly when this is such a copy. */
+    changes?: boolean;
+    /** Installed GitHub-link copy only: the user's own files the author's
+     *  latest would land on (up to 12). */
+    collision?: string[];
+  } | null;
   /** The file sits in the deep-link downloads cache, not a folder of the user's. */
   downloaded?: boolean;
   exported_at: string | null;

@@ -13,7 +13,9 @@
 // app moved on under it) says so with a badge and two ways forward: Ask
 // <sender> to update (a note on the proposal; the sender's page then offers
 // Update) or Merge with Claude (Claude combines it with the app's latest
-// here, then the review reads it again). Unknown (`fits` null) says nothing.
+// here, shown on the card with Keep / Discard; Keep sends the result onto the
+// sender's proposal, then the review reads it again). Unknown (`fits` null)
+// says nothing.
 //
 // The list is the `inbox` field of `/api/contrib/app` — the page's one
 // subscription, which polls fast while any review is still reading — so this
@@ -56,6 +58,7 @@ import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { ContribDialog } from "./ContribDialog";
+import { MergeReview, mergeShown } from "./MergeReview";
 import { QuietAction } from "./StatusStrip";
 import { plural, possessive } from "./words";
 
@@ -253,7 +256,12 @@ function InboxCard({
         onRetry={() => void act("review", () => reviewProposal(dir, item.number))}
       />
 
-      {stale && (
+      {/* Claude's merge of this proposal onto the app's latest: its clock,
+          then Keep (sent onto the sender's proposal by the server) or
+          Discard. While it stands, it is the card's one way forward. */}
+      {mergeShown(item.merge_job, true) ? (
+        <MergeReview dir={dir} job={item.merge_job} disabled={!!busy} refresh={refresh} />
+      ) : stale && (
         <div className="contrib-stale" role="status">
           <span>
             {slug} changed since {who} sent this, so it no longer fits as it is.

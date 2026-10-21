@@ -341,30 +341,22 @@ function describe(t: AppFileProbe): StateView {
   return { callout: true, tone: "warn", title: "Unknown state", body: String(t.state), status: "—", statusCaption: "" };
 }
 
-/** What the probe says about a GitHub-link build beyond its url. `who` and
- *  `collision` come from the installed copy's own status (§16.8) when the
- *  server sends them; an older server sends neither. */
-type GitLink = { url: string; commit: string; who?: string | null; collision?: string[] | null };
+type GitLink = NonNullable<AppFileProbe["git"]>;
 
-/** The name the page uses for the app's author: the server's, else the
- *  owner half of the repo ("github.com/alice/x" → "alice"). */
-function linkAuthor(git: GitLink): string {
-  if (git.who) return git.who;
-  const owner = repoLabel(git.url).split("/")[1];
-  return owner || "the author";
-}
-
-function possessive(name: string): string {
-  return name.endsWith("s") ? `${name}'` : `${name}'s`;
-}
-
-/** A GitHub-link build (SPEC §26 DL-9) installs as a copy that follows the
- *  author's repo. No git words anywhere (§0.1, §16.8): "follows", "latest",
- *  "your own changes" — never clone, commit, pull or push. */
+/** A GitHub-link build (SPEC §26 DL-9) installs as a copy that keeps getting
+ *  its author's latest — the vanilla template's describeGit, same words. No
+ *  git vocabulary anywhere (contrib §0.1, §16.8). For an INSTALLED GitHub-link
+ *  copy `git` also carries the contribution engine's view: `who` (whose
+ *  latest), `changes` (the user has their own — its presence marks such a
+ *  copy), `collision` (their own files the update would land on). */
 function describeGit(t: AppFileProbe, git: GitLink): StateView {
   const at = <code title={t.path}>{tail(t.path)}</code>;
-  const repo = <code>{repoLabel(git.url)}</code>;
-  const who = linkAuthor(git);
+  const label = repoLabel(git.url);
+  const repo = <code>{label}</code>;
+  const owner = label.split("/")[1] || "the author";
+  const followed = "changes" in git;
+  const who = git.who || owner;
+  const blocked = followed ? (git.collision ?? []) : [];
   switch (t.state) {
     case "new":
       return {
@@ -373,94 +365,115 @@ function describeGit(t: AppFileProbe, git: GitLink): StateView {
         title: "Not installed yet",
         body: (
           <>
-            Install puts the app at {at}, following {repo}: {possessive(who)} updates come in on their own, and edits you
-            make stay in your copy until you propose them to {who}.
+            Install puts a copy of {repo} at {at}. It keeps getting {possessive(owner)} latest version, and the changes
+            you make stay on this computer until you choose to share them.
           </>
         ),
         status: "Not installed",
         statusCaption: "Ready to install",
       };
     case "update":
-      return {
-        callout: true,
-        tone: "ok",
-        title: "Update available",
-        body: <>{repo} has a newer version. Your copy has no changes of its own, so it can take {possessive(who)} latest as is.</>,
-        status: "Update",
-        statusCaption: "Newer version",
-      };
+      return followed
+        ? {
+            callout: true,
+            tone: "ok",
+            title: "A newer version is available",
+            body: <>{who} has a newer version of this app.</>,
+            status: "Update",
+            statusCaption: "Newer version",
+          }
+        : {
+            callout: true,
+            tone: "ok",
+            title: "Update available",
+            body: <>A newer version of {repo} is available.</>,
+            status: "Update",
+            statusCaption: "Newer version",
+          };
     case "same":
       return {
         callout: true,
         tone: "ok",
         title: "This version is installed",
-        body: (
+        body: followed ? (
+          <>You have {possessive(who)} latest version.</>
+        ) : (
           <>
-            {at} follows {repo} and has {possessive(who)} latest version.
+            {at} has the newest version of {repo}.
           </>
         ),
         status: "Installed",
         statusCaption: "Up to date",
       };
-    case "local": {
-      if (t.found_by !== "git") {
+    case "local":
+      if (blocked.length > 0) {
         return {
           callout: true,
           tone: "warn",
-          title: "Your copy was edited since it was installed",
+          title: "A file of yours is in the way",
           body: (
             <>
-              {at} holds this app installed from a .fused file, and these files changed since. Rename or uninstall it,
-              then open the link again.
+              {possessive(who)} latest adds {blocked.length === 1 ? blocked[0] : `${blocked.length} files`}, which you
+              already have here. Open the app to move yours aside and get the update.
             </>
           ),
-          list: t.changed,
+          list: blocked.length > 1 ? blocked : undefined,
           status: "Edited",
-          statusCaption: "Local changes",
+          statusCaption: blocked.length === 1 ? "A file in the way" : `${blocked.length} files in the way`,
         };
       }
-      const collision = git.collision ?? [];
-      if (collision.length > 0) {
-        const n = collision.length;
+      if (followed) {
         return {
           callout: true,
           tone: "warn",
-          title: n === 1 ? "A file of yours is in the way" : "Files of yours are in the way",
-          body: (
-            <>
-              {possessive(who)} latest adds {n === 1 ? "a file" : `${n} files`} you already have in this app (
-              {collision.slice(0, 3).join(", ")}
-              {n > 3 ? ", …" : ""}). Open the app to move {n === 1 ? "yours" : "them"} aside and bring in{" "}
-              {possessive(who)} latest.
-            </>
-          ),
-          list: collision,
+          title: "You have your own changes",
+          body: <>You have your own changes in this app. Open it to bring in {possessive(who)} latest.</>,
           status: "Edited",
-          statusCaption: n === 1 ? "A file in the way" : `${n} files in the way`,
+          statusCaption: "Your changes",
         };
       }
-      return {
-        callout: true,
-        tone: "warn",
-        title: "Your copy has changes of its own",
-        body: <>You have your own changes in this app. Open it to bring in {possessive(who)} latest.</>,
-        status: "Edited",
-        statusCaption: "Your changes",
-      };
-    }
+      return t.found_by === "git"
+        ? {
+            callout: true,
+            tone: "warn",
+            title: "Your copy has changes of its own",
+            body: (
+              <>
+                {at} has changes that are not in {repo}, so it is not updated from here. Open it to see them, or ask
+                Claude.
+              </>
+            ),
+            status: "Edited",
+            statusCaption: "Local changes",
+          }
+        : {
+            callout: true,
+            tone: "warn",
+            title: "Your copy was edited since it was installed",
+            body: (
+              <>
+                {at} holds this app installed from a .fused file, and these files changed since. Rename or uninstall it,
+                then open the link again.
+              </>
+            ),
+            list: t.changed,
+            status: "Edited",
+            statusCaption: "Local changes",
+          };
     case "replace":
       return {
         callout: true,
         tone: "warn",
-        title: "Installed, but not from this link",
+        title: "Installed from a file",
         body: (
           <>
-            {at} holds this app, but it does not follow {repo}. Replacing it puts {possessive(who)} version in its place
-            and keeps its data (.fused) and environment (.venv); the old folder goes to the Trash.
+            {at} holds this app, installed from a file. Replacing it puts a copy of {repo} that keeps getting{" "}
+            {possessive(owner)} latest in its place, and keeps its data (.fused) and environment (.venv); the old folder
+            goes to the Trash.
           </>
         ),
         status: "Installed",
-        statusCaption: "Not following",
+        statusCaption: "From a file",
       };
     case "clash":
       return {
@@ -475,6 +488,10 @@ function describeGit(t: AppFileProbe, git: GitLink): StateView {
   return { callout: true, tone: "warn", title: "Unknown state", body: String(t.state), status: "—", statusCaption: "" };
 }
 
+function possessive(name: string): string {
+  return name.endsWith("s") ? `${name}'` : `${name}'s`;
+}
+
 /** "https://github.com/owner/repo" → "github.com/owner/repo". */
 function repoLabel(url: string): string {
   return url.replace(/^https?:\/\//i, "").replace(/\.git$/i, "");
@@ -486,7 +503,8 @@ function primaryLabel(t: AppFileProbe): string {
     case "replace":
       return "Replace";
     case "update":
-      return "Update";
+      // An installed GitHub-link copy brings the author's latest in.
+      return t.git && "changes" in t.git ? "Get the latest" : "Update";
     case "diverged":
     case "downgrade":
     case "unknown":
@@ -615,7 +633,11 @@ export function FusedFilePage({ path }: { path: string }) {
   const sizeNote = `${formatSize(t.bytes)} · ${t.files.length} file${t.files.length === 1 ? "" : "s"}`;
   if (phase.kind === "installing") {
     pill = { state: "progress", progress: null, label: phase.force || t.installed ? "Updating" : "Installing" };
-    note = t.installed ? "Replacing the app's files…" : "Unpacking into your workspace…";
+    note = !t.installed
+      ? "Unpacking into your workspace…"
+      : t.git
+        ? "Getting the latest version…"
+        : "Replacing the app's files…";
   } else if (phase.kind === "done") {
     pill = { state: "open", onClick: () => openEntry(phase.entry) };
     note = <b>{phase.updated ? "Updated" : "Installed"} · opening…</b>;
@@ -668,7 +690,7 @@ export function FusedFilePage({ path }: { path: string }) {
       t.state === "diverged" ? (
         <span className="is-warn">Installed · edited locally</span>
       ) : t.state === "replace" ? (
-        <span className="is-warn">Installed · not from this link</span>
+        <span className="is-warn">Installed · from a file</span>
       ) : t.state === "downgrade" ? (
         <span className="is-warn">Older than installed</span>
       ) : (
@@ -677,7 +699,9 @@ export function FusedFilePage({ path }: { path: string }) {
   } else if (t.state === "update") {
     const [mine, theirs] = stampPair(t.exported_at, t.installed_exported_at);
     pill = { state: "update", label, onClick: () => install(false) };
-    note = (
+    note = t.git ? (
+      "A newer version is available"
+    ) : (
       <>
         Update to <b>{mine ?? "this file"}</b>
         {theirs ? <> · you have {theirs}</> : null}

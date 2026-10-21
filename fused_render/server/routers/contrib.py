@@ -810,8 +810,12 @@ def _as_job(module: str, name: str, **kwargs):
     return run
 
 
-def _update_proposal(t: _Target, _args) -> dict:
-    return _call("propose update", _mod("proposals").start_update, t.app_dir)
+def _update_proposal(t: _Target, args) -> dict:
+    include = _include(args)
+    if include is None:
+        return _refuse("missing", "Some of the files you picked aren't in this app.")
+    extra = {"include": include} if include else {}
+    return _call("propose update", _mod("proposals").start_update, t.app_dir, **extra)
 
 
 def _withdraw(t: _Target, _args) -> dict:

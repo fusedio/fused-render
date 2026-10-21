@@ -69,8 +69,12 @@ OFFLINE = "Couldn't reach GitHub. Try again when you're online."
 BUSY = "This app is busy with another update. Try again in a moment."
 NOT_MAIN = "Switch this app back to its main version first."
 UNREADABLE = "Couldn't read this app's history. Try again."
-PUBLISH_OVER_CONFIRM = ("Replace the version on GitHub with this copy? What's on GitHub "
-                        "now is kept in a backup here.")
+PUBLISH_OVER_CONFIRM = ("Replace the version on GitHub with this copy? Anything removed "
+                        "from GitHub since this copy last saved there comes back, and "
+                        "changes made on GitHub since then are replaced. What's on GitHub "
+                        "now is kept on this Mac for 30 days.")
+#: GitHub tips fused saw, kept on the record (`seen_tips`, newest last).
+SEEN_KEEP = 20
 
 MESSAGES = {
     "published": "Everything here is saved on GitHub.",
@@ -88,6 +92,13 @@ MESSAGES = {
                      "saved there yet."),
     "merging": "Claude is combining your edits with the version on GitHub.",
     "no-github": "This app isn't connected to GitHub.",
+    "held": "This is your app. {edits} ready to publish.",
+    "held-unknown": ("fused can't tell whether the version on GitHub was rolled back, so "
+                     "your edits are waiting here. Publish them, or switch to the version "
+                     "on GitHub."),
+    "github-changed-unknown": ("fused can't tell what changed on GitHub since this copy "
+                               "last saved there, so it won't combine them on its own. "
+                               "Nothing here has changed — choose which version to keep."),
 }
 
 #: Which buttons fix each state (`actions.for_app` filters by flags).
@@ -101,6 +112,7 @@ FIXES = {
     "edits": ["save-edits"],
     "publish-failed": ["publish-now"],
     "publish-auth": ["publish-now"],
+    "held": ["publish-now"],
 }
 
 
@@ -122,8 +134,9 @@ def _files_words(files) -> str:
     return f"{names[0]}, {names[1]} and {len(names) - 2} more"
 
 
-def _message(state: str, files=()) -> str:
-    return MESSAGES.get(state, "").format(files=_files_words(files))
+def _message(state: str, files=(), n: int = 0) -> str:
+    edits = ("1 edit is" if n == 1 else f"{n} edits are") if n else "Your edits are"
+    return MESSAGES.get(state, "").format(files=_files_words(files), edits=edits)
 
 
 def _edits_word(n: int) -> str:
@@ -149,9 +162,49 @@ def _set_state(root, state: str | None, **fields) -> None:
     store.update(root, fn)
 
 
+def _settle(root) -> None:
+    """An automatic outcome with nothing stuck: clear the state — except
+    `held`, which only Publish now (or a move away from these edits)
+    ends (§16.12)."""
+    st = _own_state(root)
+    if st and st.get("state") != "held":
+        _set_state(root, None)
+
+
 def _own_state(root) -> dict | None:
     st = (store.get(root) or {}).get("own_state")
+    if isinstance(st, str) and st:  # ws-guard's `held` may be a bare string
+        return {"state": st}
     return st if isinstance(st, dict) and st.get("state") else None
+
+
+def _seen(root) -> list[str]:
+    """The GitHub tips fused saw here, newest first (record `seen_tips`)."""
+    seen = (store.get(root) or {}).get("seen_tips")
+    return [s for s in reversed(seen) if isinstance(s, str)] if isinstance(seen, list) else []
+
+
+def note_seen(root, tip: str | None = None) -> None:
+    """Remember GitHub's tip (`tip`, else origin's tracking ref) as a
+    published point (§16.12): appended when it differs from the last one,
+    the newest SEEN_KEEP kept. Evidence for the rewind check when there is
+    no reflog. Never raises."""
+    try:
+        if tip is None:
+            branch = gu._default_branch(root)
+            tip = replay.rev(root, _tracking(branch)) if branch else None
+        if not tip:
+            return
+
+        def fn(rec):
+            seen = [s for s in rec.get("seen_tips") or [] if isinstance(s, str)]
+            if not seen or seen[-1] != tip:
+                seen.append(tip)
+            rec["seen_tips"] = seen[-SEEN_KEEP:]
+
+        store.update(root, fn)
+    except Exception:  # noqa: BLE001
+        logger.exception("ownsync: noting GitHub's tip failed for %s", root)
 
 
 def _claude_busy(root) -> bool:
@@ -183,15 +236,30 @@ def _identity(*, cached: bool) -> dict | None:
     return {"name": ident.get("name") or ident.get("login"), "email": ident["email"]}
 
 
-def _job_open(root) -> bool:
+_OPEN_JOB = ("running", "ready", "landing")
+
+
+def _open_job(root) -> dict | None:
+    """The app's open Merge with Claude job, any purpose (None if none)."""
     try:
         from fused_render.contrib import merge_job
 
-        job = merge_job.current(root)
+        try:
+            job = merge_job.current(root, purpose="own-sync")
+        except TypeError:  # a merge_job without per-purpose lookup
+            job = merge_job.current(root)
     except Exception:  # noqa: BLE001
         logger.exception("ownsync: merge_job.current failed for %s", root)
-        return False
-    return isinstance(job, dict) and job.get("status") in ("running", "ready", "landing")
+        return None
+    return job if isinstance(job, dict) and job.get("status") in _OPEN_JOB else None
+
+
+def _job_open(root) -> bool:
+    """An own-sync Merge with Claude job is open here. Only that purpose:
+    a proposal merge in the inbox runs in its own scratch tree and must
+    not stall this copy or read as "merging" (§16.12)."""
+    job = _open_job(root)
+    return bool(job) and job.get("purpose") == "own-sync"
 
 
 def _reflog_values(root, path_out: str) -> list[str]:

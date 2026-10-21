@@ -334,9 +334,11 @@ def test_action_must_be_offered_right_now(env):
         assert out == {"ok": False, "reason": "not-offered",
                        "message": "That isn't available right now."}, wrong
     env.engine.status = lambda app_dir: _v2("changes")
-    env.flags["changes"] = False  # P1: changes off hides Propose and Discard
+    env.engine.status = lambda app_dir: _v2("changes", can_push=True)
+    env.flags["changes"] = False  # §16.12: changes off hides only the proposal buttons
     assert _act(env, d, "propose", args={"title": "T"})["reason"] == "not-offered"
-    assert _act(env, d, "discard", confirm=True)["reason"] == "not-offered"
+    assert _act(env, d, "push-main", confirm=True)["reason"] == "not-offered"
+    assert _act(env, d, "discard", confirm=True) == {"ok": True, "withdrew": False}
 
 
 def test_confirm_is_required_for_a_confirm_button(env):
@@ -351,6 +353,21 @@ def test_confirm_is_required_for_a_confirm_button(env):
     assert seen == [False]
     job = _act(env, d, "discard", confirm=True, args={"withdraw": True})["job"]
     assert _job(env, job)["status"] == "done" and seen[-1] is True
+
+
+def test_update_proposal_takes_include(env):
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("proposed", unproposed=1, changes_files=["a.py"])
+    env.proposals.view = lambda app_dir: {"number": 4, "state": "waiting", "can_update": True,
+                                          "can_withdraw": True}
+    sent = []
+    env.proposals.start_update = lambda app_dir, **kw: sent.append(kw) or {"ok": True,
+                                                                          "job": "u1"}
+    assert _act(env, d, "update-proposal", args={"include": ["../x"]})["reason"] == "missing"
+    assert _act(env, d, "update-proposal", args={"include": ["new.csv"]}) == {"ok": True,
+                                                                              "job": "u1"}
+    assert _act(env, d, "update-proposal") == {"ok": True, "job": "u1"}
+    assert sent == [{"include": ["new.csv"]}, {}]
 
 
 def test_propose_args(env):

@@ -108,9 +108,9 @@ def test_send_credits_bob_and_claude_and_changes_no_file(w):
         f"Bob <{w.fake.email_of('bob')}>"
     body = git(w.app, "log", "-1", "--format=%B")
     assert body.count("Co-authored-by: Claude <noreply@anthropic.com>") == 1
-    # The old tip is pinned, and the activity line names it (Undo).
-    line = [a for a in w.store.get(w.app)["activity"] if a["kind"] == "proposal-credit"]
-    assert line and git(w.app, "rev-parse", line[0]["backup"]) == old
+    # The old tip is pinned (no Undo on the line: §16.12).
+    assert old in git(w.app, "for-each-ref", "--format=%(objectname)",
+                      "refs/fused/backup/").split()
     assert [k for k, _t in _activity(w)][:2] == ["proposal-sent", "proposal-credit"]
     # On GitHub: the PR from Bob's own copy, exactly that commit, footer + note.
     pr = w.gh.get_pr("alice/sine", 1)
@@ -1070,3 +1070,114 @@ def test_cached_identity_never_asks_github(w):
     w.gh.forget_identity()
     w.fake.fail_next("user", "offline")
     assert w.gh.identity() is None and w.gh.cached_identity() is None
+
+
+# ------------------------------------------------- review round 1 (§16.12)
+
+
+@pytest.mark.parametrize("key", [
+    "http.https://*.com/.sslCAInfo",
+    "http.https://*.com/.curloptResolve",
+    "http.https://*.github.com/.extraHeader",
+    "http.https://github.com:443/.proxy",
+    "http.https://bob@github.com/.sslVerify",
+])
+def test_s2_url_scoped_http_keys_are_matched_the_way_git_matches_them(w, key):
+    url = "https://github.com/alice/sine.git"
+    assert w.gh.url_rewrites(w.app, url) == []
+    git(w.app, "config", "--local", key, "x")
+    assert w.gh.url_rewrites(w.app, url)
+    sha = _head(w)
+    with pytest.raises(w.gh.GitHubError):
+        w.gh.push(w.app, sha, "bob/sine", "x", lease="")
+    assert w.gh.fetch_detail(w.app, "alice/sine", "+refs/heads/main:refs/fused/x") == \
+        (False, "redirected")
+
+
+@pytest.mark.parametrize("key", ["http.https://*.example.com/.sslCAInfo",
+                                 "http.https://gitlab.com/.curloptResolve"])
+def test_s2_keys_scoped_elsewhere_do_not_refuse(w, key):
+    git(w.app, "config", "--local", key, "x")
+    assert w.gh.url_rewrites(w.app, "https://github.com/alice/sine.git") == []
+
+
+def test_s2_wildcard_key_in_an_included_file_or_worktree_config(w, tmp_path):
+    url = "https://github.com/alice/sine.git"
+    extra = tmp_path / "inc.cfg"
+    extra.write_text('[http "https://*.com/"]\n\tcurloptResolve = github.com:443:203.0.113.9\n')
+    git(w.app, "config", "include.path", str(extra))
+    assert w.gh.url_rewrites(w.app, url)
+    git(w.app, "config", "--unset", "include.path")
+    assert w.gh.url_rewrites(w.app, url) == []
+    git(w.app, "config", "extensions.worktreeConfig", "true")
+    git(w.app, "config", "--worktree", "http.https://*.com/.sslCAInfo", "/tmp/evil.pem")
+    assert w.gh.url_rewrites(w.app, url)
+
+
+def test_v1_update_is_offered_and_sent_after_merge_with_claude(sw, monkeypatch):
+    """V1 fixed: Alice's latest overlaps Bob's open proposal; Bob's Merge
+    with Claude resolves it. The resolution is a merge (never counted in
+    `unproposed`), yet the page learns the proposal no longer fits and that
+    HEAD holds more than GitHub has — and Update sends it."""
+    from fused_render.contrib import engine, merge_job
+    w = sw
+    monkeypatch.setattr(_p(), "merge_accepted", lambda app_dir: {"ok": True})
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    w.fake.commit("alice/sine", "main", {"index.html": PAGE.replace("blue", "green")},
+                  "green", author="alice")
+    w.sync()
+    plan = engine.merge_plan(w.app)
+    assert plan, w.store.get(w.app).get("needs_merge")
+
+    def resolver(wt, files, ctx):
+        with open(os.path.join(wt, "index.html"), "w", encoding="utf-8") as fh:
+            fh.write(PAGE.replace("blue", "red-green"))
+        return {"ok": True, "summary": "Kept both."}
+
+    job = merge_job.start(w.app, purpose=plan["purpose"], ours=plan["ours"],
+                          theirs=plan["theirs"], resolver=resolver)
+    import time
+    deadline = time.time() + 30
+    while merge_job.get(job)["status"] == "running" and time.time() < deadline:
+        time.sleep(0.05)
+    assert merge_job.accept(job)["ok"]
+    view = _p().refresh(w.app, force=True)
+    assert view["unproposed"] == 0
+    assert view["fits"] is False and view["head_differs"] is True
+    _p().update(w.app)
+    assert w.gh.get_pr("alice/sine", 1)["mergeable"] is True
+    assert _p().refresh(w.app, force=True)["head_differs"] is False
+
+
+def test_head_differs_is_false_after_a_clean_bring_in(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    assert _p().view(w.app)["head_differs"] is False
+    w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
+    _bring_in(w)
+    view = _p().refresh(w.app, force=True)
+    assert view["head_differs"] is False and view["fits"] is True
+
+
+def test_v2_the_credit_line_has_no_undo_but_the_backup_stays(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    old = _head(w)
+    _send(w)
+    line = next(a for a in w.store.activity(w.app) if a["kind"] == "proposal-credit")
+    assert line["undo"] is False
+    refs = git(w.app, "for-each-ref", "--format=%(objectname)", "refs/fused/backup/").split()
+    assert old in refs
+
+
+def test_v5_update_takes_ticked_new_files(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    edit(w.app, "extra.py", "X = 1\n")
+    edit(w.app, "scratch.txt", "mine\n")
+    assert _p().untracked(w.app) == ["extra.py", "scratch.txt"]
+    _p().update(w.app, include=["extra.py"])
+    ref = f"refs/heads/{_proposal(w)['head_branch']}"
+    assert w.fake.read("bob/sine", "extra.py", ref) == "X = 1\n"
+    assert w.fake.read("bob/sine", "scratch.txt", ref) is None
+    assert _p().untracked(w.app) == ["scratch.txt"]

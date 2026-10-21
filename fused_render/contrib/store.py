@@ -182,7 +182,8 @@ def _git(path, *args, timeout=10.0):
     from fused_render import git_upstream as gu
 
     try:
-        p = subprocess.run([gu._git_bin(), "-C", path, *args], stdout=subprocess.PIPE,
+        p = subprocess.run([gu._git_bin(), "-C", path, "-c", "core.fsmonitor=",
+                            "-c", "core.hooksPath=/dev/null", *args], stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, timeout=timeout,
                            env={**os.environ, **gu._ENV, "GIT_NO_LAZY_FETCH": "1"},
                            stdin=subprocess.DEVNULL, close_fds=False)
@@ -250,6 +251,21 @@ def _forget_binding(k: str) -> None:
         _bind_memo.pop(k, None)
 
 
+def _origin_matches(k: str, rec: dict) -> bool:
+    """Whether the folder's `origin` names the record's repo (both None for
+    an own app with no GitHub repo). Only `github`/`own` rows are judged — a
+    Try copy's origin is fused's own scratch remote."""
+    if rec.get("kind") not in ("github", "own"):
+        return True
+    from fused_render import git_upstream as gu
+    from fused_render.contrib import classify
+
+    r = _git(k, "config", "--get", "remote.origin.url")
+    url = gu._out(r) if gu._ok(r) else ""
+    have = (classify.repo_of_url(url) or "").lower()
+    return have == (rec.get("repo") or "").lower()
+
+
 def _bind(k: str, rec: dict) -> dict | None:
     """`rec` when it is still about the repo at `k`; None, after dropping
     the row, when it is not; a v1 row gets its `root_commit` filled (module
@@ -270,6 +286,20 @@ def _bind(k: str, rec: dict) -> dict | None:
             return None
         return rec
     found = root_commit_of(k)
+    if found and not _origin_matches(k, rec):
+        # A v1 row (no root commit yet) over a repo whose origin is not the
+        # record's: a different repository moved in before the first v2 read
+        # (§16.12). Binding it now would hand the stranger the old record —
+        # drop it instead; the folder is classified afresh.
+        with _lock:
+            data = _read()
+            cur = data["apps"].get(k)
+            if isinstance(cur, dict) and not cur.get("root_commit"):
+                del data["apps"][k]
+                _write(data)
+        logger.info("contrib store: %s no longer holds %s; dropped its v1 record",
+                    k, rec.get("repo"))
+        return None
     if found:
         with _lock:
             data = _read()

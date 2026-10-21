@@ -98,6 +98,16 @@ _kind_lock = threading.Lock()
 _kind_memo: dict = {}
 
 
+#: Every fused git call on a contrib repo (§16.12): no repo-configured
+#: fsmonitor command and no hooks run — `.git/config` and `.git/hooks` are
+#: writable by the app and by Claude sessions in the folder.
+SAFE_ARGS = ("-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null")
+
+
+def _g(root, *args, timeout=gu.TIMEOUT_S):
+    return gu._run(root, *SAFE_ARGS, *args, timeout=timeout)
+
+
 class _Unknown(Exception):
     """GitHub could not answer the ownership question right now."""
 
@@ -110,7 +120,7 @@ def repo_of_url(url: str | None) -> str | None:
 
 
 def _origin_url(root) -> str | None:
-    r = gu._run(root, "config", "--get", "remote.origin.url")
+    r = _g(root, "config", "--get", "remote.origin.url")
     return gu._out(r) or None if gu._ok(r) else None
 
 
@@ -119,7 +129,7 @@ def _local_default_branch(root) -> str | None:
     `origin/HEAD`), else `main`/`master` when that tracking ref exists, else
     the checked-out branch — `share_app._origin_default_branch`'s rule plus a
     last resort, with no `remote set-head --auto` (that asks the network)."""
-    r = gu._run(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    r = _g(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     short = gu._out(r) if gu._ok(r) else ""
     if "/" in short:
         return short.split("/", 1)[1]
@@ -239,8 +249,8 @@ def apply_identity(app_dir, ident=None, *, block=False) -> bool:
         with replay.slot(block=block) as held:
             if not held:
                 return False
-            gu._run(root, "config", "--local", "user.name", name)
-            gu._run(root, "config", "--local", "user.email", email)
+            _g(root, "config", "--local", "user.name", name)
+            _g(root, "config", "--local", "user.email", email)
         return True
     except Exception:  # noqa: BLE001 — housekeeping never fails its caller
         logger.exception("contrib: apply_identity failed for %s", app_dir)
@@ -261,7 +271,7 @@ def apply_identity_everywhere(ident=None) -> int:
 
 
 def _local_config(root, name) -> str | None:
-    r = gu._run(root, "config", "--local", "--get", name)
+    r = _g(root, "config", "--local", "--get", name)
     return (gu._out(r) or None) if gu._ok(r) else None
 
 
@@ -277,14 +287,15 @@ def _kind_stamp(k: str):
     return (s, store._folder_stamp(k))
 
 
-def kind_of(root, *, kick: bool = False) -> str | None:
+def kind_of(root, *, kick: bool = False, strict: bool = False) -> str | None:
     """`"github" | "own" | "scratch" | None` for the folder `root` (§16.1):
     the record's kind — an unchecked one counts as `github` — when the
     record is still bound to the repo there, else None. Store read +
-    binding, no network, any flags; never raises. `kick=True` (git_upstream's
-    sync) also starts the background classification a folder without a
-    record (A1 on, workspace app folders only, as v1) or with an unchecked
-    owner needs."""
+    binding, no network, any flags. Never raises, unless `strict`
+    (git_upstream's sync: an error deciding the kind must never read as "no
+    record" there — that is the plain, pushing sync). `kick=True` also
+    starts the background classification a folder without a record (A1 on,
+    workspace app folders only, as v1) or with an unchecked owner needs."""
     try:
         k = store.key(root)
         now = time.time()
@@ -303,6 +314,8 @@ def kind_of(root, *, kick: bool = False) -> str | None:
         return kind
     except Exception:  # noqa: BLE001 — unknown kind reads as "no record"
         logger.exception("contrib: kind_of failed for %s", root)
+        if strict:
+            raise
         return None
 
 
@@ -354,6 +367,12 @@ def ensure(app_dir, *, identity=None) -> dict | None:
             _guard_soon(app_dir, identity)
             return store.get(app_dir) or adopted
     kind, checked = _classify(repo, identity if identity is not None else _identity())
+    if not checked:
+        # A pre-loop clone and no GitHub identity to ask (§16.12): NOT
+        # classified yet. It may be the author's own app, auto-pushing as
+        # ever; recording it `github` would silently stop that. No record =
+        # today's plain sync; the next `ensure` with an identity decides.
+        return None
     rec = store.new_record(kind, repo=repo, branch=_local_default_branch(root) if root else None,
                            classified_by="migration", owner_checked=checked, root_commit=rc)
     if not store.create(app_dir, rec):
@@ -406,15 +425,27 @@ def _recheck(app_dir, rec, identity, *, block=False) -> dict | None:
     except _Unknown:
         return None
 
+    upgrade = mine and rec.get("kind") == "github"
+    root = follow.is_repo_root(app_dir) if upgrade else None
+    # Work made while the copy was `github` was told it stays on this
+    # computer: an upgrade never auto-publishes it (§16.12). It is HELD —
+    # git_upstream skips the push — until the person presses Publish now.
+    unpublished = _unpublished(root) if root is not None else 0
+
     def fn(r):
         r["owner_checked"] = True
         if mine and r.get("kind") == "github":
             r["kind"] = "own"
+            if unpublished:
+                r["own_state"] = {"state": HELD, "at": time.time(), "count": unpublished}
 
     out = store.update(app_dir, fn)
     _forget_kind(app_dir)
-    root = follow.is_repo_root(app_dir) if out and out.get("kind") == "own" else None
-    if root is not None:
+    if out and upgrade and unpublished:
+        n = unpublished
+        store.add_activity(app_dir, HELD, f"This is your app. {n} edit{'' if n == 1 else 's'} "
+                                          f"{'is' if n == 1 else 'are'} ready to publish.")
+    if out and upgrade and root is not None:
         try:
             with replay.slot(block=block) as held:
                 if held:
@@ -422,6 +453,33 @@ def _recheck(app_dir, rec, identity, *, block=False) -> dict | None:
         except Exception:  # noqa: BLE001 — the next sync settles it
             logger.exception("contrib: unguarding %s failed", app_dir)
     return out
+
+
+#: `own_state` of an own copy whose unpublished work must wait for Publish
+#: now (§16.12); `release_hold` clears it.
+HELD = "held"
+
+
+def _unpublished(root) -> int:
+    """Commits on HEAD no `origin` ref has (local refs only)."""
+    r = _g(root, "rev-list", "--count", "HEAD", "--not", "--remotes=origin")
+    out = gu._out(r) if gu._ok(r) else ""
+    return int(out) if out.isdigit() else 0
+
+
+def is_held(root) -> bool:
+    st = (store.get(root) or {}).get("own_state")
+    return isinstance(st, dict) and st.get("state") == HELD
+
+
+def release_hold(root) -> bool:
+    """Publish now was pressed: the held work may go (§16.12)."""
+    def fn(r):
+        st = r.get("own_state")
+        if isinstance(st, dict) and st.get("state") == HELD:
+            r["own_state"] = None
+
+    return is_held(root) and store.update(root, fn) is not None
 
 
 def after_sign_in(ident=None) -> dict:
@@ -511,26 +569,26 @@ def ensure_push_guard(root, kind) -> bool:
     (or is the install/remix that owns the folder). Answers whether it
     changed anything."""
     try:
-        r = gu._run(root, "config", "--get-all", "remote.origin.pushurl")
+        r = _g(root, "config", "--get-all", "remote.origin.pushurl")
         have = gu._out(r).split("\n") if gu._ok(r) and gu._out(r) else []
         marker = _local_config(root, KIND_CONFIG)
         changed = False
         if kind == "github":
             if _origin_url(root) and have != [NO_PUSH_URL]:
-                gu._run(root, "config", "--replace-all", "remote.origin.pushurl", NO_PUSH_URL)
+                _g(root, "config", "--replace-all", "remote.origin.pushurl", NO_PUSH_URL)
                 changed = True
             if marker != "github":
-                gu._run(root, "config", "--local", KIND_CONFIG, "github")
+                _g(root, "config", "--local", KIND_CONFIG, "github")
                 changed = True
-            return changed
+            return _set_hook(root, True) or changed
         if NO_PUSH_URL in have:
-            gu._run(root, "config", "--unset-all", "remote.origin.pushurl",
+            _g(root, "config", "--unset-all", "remote.origin.pushurl",
                     "^" + re.escape(NO_PUSH_URL) + "$")
             changed = True
         if marker is not None:
-            gu._run(root, "config", "--local", "--unset-all", KIND_CONFIG)
+            _g(root, "config", "--local", "--unset-all", KIND_CONFIG)
             changed = True
-        return changed
+        return _set_hook(root, False) or changed
     except Exception:  # noqa: BLE001
         logger.exception("contrib: push guard failed for %s", root)
         return False
@@ -538,8 +596,64 @@ def ensure_push_guard(root, kind) -> bool:
 
 def is_push_guarded(root) -> bool:
     """Whether `root`'s origin carries the P2 push guard."""
-    r = gu._run(root, "config", "--get-all", "remote.origin.pushurl")
+    r = _g(root, "config", "--get-all", "remote.origin.pushurl")
     return gu._ok(r) and NO_PUSH_URL in gu._out(r).split("\n")
+
+
+# The third lock (§16.12): the pushurl only covers pushes BY REMOTE NAME; a
+# push by URL (what a Claude session tries next) goes around it. A pre-push
+# hook in the repo's own hooks dir refuses every push, by name or URL. Fused's
+# own pushes (gh.push, ownsync) run with `core.hooksPath=/dev/null`. A hook
+# the person had is kept aside and put back when the copy becomes theirs.
+HOOK_MARK = "# fused: no-push guard"
+_HOOK = f"""#!/bin/sh
+{HOOK_MARK} (docs/CONTRIB_LOOP.md §16.12) — removed when this becomes your own app.
+echo "This is a copy of someone else's app: Fused keeps its changes on this computer, so they can't be sent from here." >&2
+exit 1
+"""
+
+
+def _hooks_dir(root) -> str | None:
+    r = _g(root, "rev-parse", "--git-common-dir")
+    d = gu._out(r) if gu._ok(r) else ""
+    if not d:
+        return None
+    return os.path.join(d if os.path.isabs(d) else os.path.join(root, d), "hooks")
+
+
+def _set_hook(root, on: bool) -> bool:
+    """Install (`on`) or remove fused's pre-push hook. Answers whether it
+    changed anything."""
+    hooks = _hooks_dir(root)
+    if hooks is None:
+        return False
+    path = os.path.join(hooks, "pre-push")
+    saved = path + ".before-fused"
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            current = f.read()
+    except OSError:
+        current = None
+    ours = current is not None and HOOK_MARK in current
+    if on:
+        if ours:
+            return False
+        os.makedirs(hooks, exist_ok=True)
+        if current is not None and not os.path.exists(saved):
+            os.replace(path, saved)
+        tmp = path + ".fused-tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(_HOOK)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, path)
+        return True
+    if not ours:
+        return False
+    if os.path.exists(saved):
+        os.replace(saved, path)
+    else:
+        os.unlink(path)
+    return True
 
 
 def _point_back(root, rec) -> bool:
@@ -553,7 +667,7 @@ def _point_back(root, rec) -> bool:
     if url is not None and (repo_of_url(url) or "").lower() == repo.lower():
         return False
     want = follow.github_url(repo)
-    r = gu._run(root, "remote", "set-url" if url is not None else "add", "origin", want)
+    r = _g(root, "remote", "set-url" if url is not None else "add", "origin", want)
     if not gu._ok(r):
         logger.warning("contrib: could not point %s back at %s: %s", root, repo, gu._text(r))
         return False
@@ -573,7 +687,7 @@ def settle_locked(root, kind=None) -> dict | None:
         if migrated:
             for ref in store.V1_REFS:
                 if replay.rev(root, ref):
-                    gu._run(root, "update-ref", "-d", ref)
+                    _g(root, "update-ref", "-d", ref)
         kind = kind or rec.get("kind")
         if follow.is_repo_root(root) is None:
             return rec

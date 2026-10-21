@@ -417,13 +417,14 @@ def _credit_once_locked(root, record, ident: dict, tip: str, branch: str) -> Non
     new = credit(root, tip, head, ident, exclude=_sent_shas(root, record))
     if new == head:
         return
-    why, backup = _land_locked(root, branch=branch, old_tip=head, new_tip=new,
-                               why="proposal-credit")
+    why, _backup = _land_locked(root, branch=branch, old_tip=head, new_tip=new,
+                                why="proposal-credit")
     if why is not None:
         raise PlainError("Your app changed while sending. Try again.")
+    # No Undo (§16.12): undoing would put the Fused-authored originals back
+    # under HEAD, and the next Update would send them. The backup ref stays.
     _activity(root, "proposal-credit",
-              "Put your name on your changes, with Claude credited, before sending them",
-              backup=backup)
+              "Put your name on your changes, with Claude credited, before sending them")
 
 
 def _prepare(root, record, ident: dict, *, tip: str | None, include=(),
@@ -574,6 +575,32 @@ def unproposed(root, record) -> int:
     return n + (1 if dirty(root) else 0)
 
 
+def head_differs(root, record, tip: str | None = None) -> bool:
+    """What Bob runs differs from what an Update would leave GitHub with
+    anyway (§16.12): HEAD's tree is neither the proposal's tree on GitHub
+    nor what merging the author's latest into it cleanly gives. True after
+    a Merge with Claude resolution (its merge commit counts nowhere in
+    `unproposed`, but the files GitHub has still collide); False after a
+    plain clean bring-in of her latest. No network."""
+    p = (record or {}).get("proposal")
+    if not _is_open(p):
+        return False
+    pr_head = (p.get("cache") or {}).get("head_sha")
+    pr_head = pr_head if pr_head and _rev(root, pr_head) else p.get("sent")
+    head = _rev(root, "HEAD")
+    if not pr_head or not head or not _rev(root, pr_head):
+        return False
+    replay = _replay()
+    now = replay.tree_of(root, head)
+    if now == replay.tree_of(root, pr_head):
+        return False
+    tip = tip or tip_of(root, record)
+    if not tip or replay.is_ancestor(root, tip, pr_head):
+        return True
+    mt = replay.merge_tree(root, pr_head, tip)
+    return not (mt.get("clean") and mt.get("tree") == now)
+
+
 def view(app_dir) -> dict | None:
     """The page's `proposal` object (§12.1) from the cached record — no
     network. None when the app has no proposal on record."""
@@ -606,7 +633,12 @@ def view(app_dir) -> dict | None:
            # a new app id, which must never be sent into the author's app:
            # still followed, still withdrawable, never updated.
            "can_update": waiting and record.get("kind") == "github",
-           "can_withdraw": waiting}
+           "can_withdraw": waiting,
+           # GitHub's own "does it still merge" (None = not known yet), and
+           # whether HEAD holds something the proposal lacks beyond the
+           # author's latest — either offers Update (§16.12).
+           "fits": cache.get("mergeable") if waiting else None,
+           "head_differs": head_differs(root, record) if waiting else False}
     if shown in ("commented", "declined") and cache.get("comment"):
         # Declined: the author's closing note, if she left one.
         out["comment"] = dict(cache["comment"])
@@ -865,9 +897,10 @@ def _take_in_pr_head(root, record, ident: dict, fork: str, head_branch: str,
     return merged
 
 
-def update(app_dir, *, step=None) -> dict:
+def update(app_dir, *, include=None, step=None) -> dict:
     """Send Bob's newer edits to his open proposal (§16.5): a plain push of
-    HEAD — which already holds `sent` — to the proposal's own branch."""
+    HEAD — which already holds `sent` — to the proposal's own branch.
+    `include` = new files Bob ticked, as for Send (§16.12)."""
     root, record = _record(app_dir)
     p = record.get("proposal")
     if not isinstance(p, dict) or not p.get("number"):
@@ -892,11 +925,12 @@ def update(app_dir, *, step=None) -> dict:
                          "edits. Withdraw it and propose again.")
     root, record = _contributor_record(root)
     p = record.get("proposal") or p
+    include = _check_include(root, include)
     tip = tip_of(root, record, fetch=True)
     if not tip:
         raise _no_tip(record)
     head = _rev(root, "HEAD")
-    edits = dirty(root)
+    edits = dirty(root) or bool(include)
     if not edits and _same_tree(root, head, tip):
         raise PlainError(f"Your copy matches {who}'s latest — there's nothing to send.")
     remote = pr.get("head_sha")
@@ -904,10 +938,11 @@ def update(app_dir, *, step=None) -> dict:
     asked = bool((p.get("cache") or {}).get("asked"))
     if (not edits and remote and remote == sent and not asked
             and pr.get("mergeable") is not False
-            and count_unproposed(root, sent, tip) == 0):
+            and count_unproposed(root, sent, tip) == 0
+            and not head_differs(root, record, tip)):
         raise PlainError("Your proposal already has all your changes.", reason="nothing-new")
     _say(step, "send")
-    head = _prepare(root, record, me, tip=tip, do_credit=False)
+    head = _prepare(root, record, me, tip=tip, include=include, do_credit=False)
     head = _take_in_pr_head(root, record, me, fork, head_branch, remote)
     if head == remote:
         raise PlainError("Your proposal already has all your changes.", reason="nothing-new")
@@ -1109,6 +1144,9 @@ def _apply_pr(root, pr: dict, comments: list | None,
         holder["prev"] = cache.get("state", "open")
         cache.update(state=state, merge_commit_sha=pr.get("merge_commit_sha") if pr.get("merged") else None,
                      checked_at=time.time(), head_sha=pr.get("head_sha"), error=None)
+        if state == "open":
+            cache["mergeable"] = pr.get("mergeable") if isinstance(pr.get("mergeable"), bool) \
+                else cache.get("mergeable")
         if tip:
             q["checked_tip"] = tip
         if comments is not None:
@@ -1278,9 +1316,10 @@ def start_send(app_dir, *, title: str, description: str, note: str | None = None
                                     note=note, include=include, step=step))
 
 
-def start_update(app_dir) -> dict:
+def start_update(app_dir, *, include=None) -> dict:
     """Job result = the proposal object. Fails with reason "nothing-new"
     when GitHub already has everything, "needs-merge" when edits made on
     GitHub overlap (a Merge with Claude job started; `merge_accepted` sends
     once it is kept)."""
-    return _start("propose-update", app_dir, lambda step: update(app_dir, step=step))
+    return _start("propose-update", app_dir,
+                  lambda step: update(app_dir, include=include, step=step))

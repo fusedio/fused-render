@@ -296,8 +296,12 @@ def url_rewrites(root: str, url: str | None = None) -> list[str]:
       * `url.<x>.insteadOf` / `pushInsteadOf` whose prefix mentions github.com
         or is a prefix of `url` (the fake's file paths included);
       * any `credential.*` key;
-      * a URL-scoped `http.<u>.<key>` whose `<u>` mentions github.com or
-        prefixes `url` (git prefers it over our command-line generic value);
+      * a URL-scoped `http.<u>.<key>` that git itself would apply to a
+        GitHub URL (git prefers it over our command-line generic value).
+        "Applies" is git's own urlmatch (`_scope_applies`: host wildcards
+        like `https://*.com/`, default ports, user names, path prefixes),
+        not a string test — plus `<u>` mentioning github.com or prefixing
+        `url` (the fake's file paths);
       * a generic `http.<key>` in `_HTTP_DENY` (CA, client cert/key, pinned
         key, extra headers, resolve overrides, cookies, ssl backend, proxy
         TLS). Generic `http.proxy` / `http.sslVerify` are not refused but
@@ -330,7 +334,7 @@ def url_rewrites(root: str, url: str | None = None) -> list[str]:
         if scope not in ("local", "worktree") or not rest:
             continue
         key, _, value = rest.partition("\n")
-        hit = _risky(key.lower(), value.strip(), url)
+        hit = _risky(key.lower(), value.strip(), url) or _scoped_http_applies(key, url)
         if hit:
             hits.append(f"{scope}:{key} = {value.strip()}")
     return hits
@@ -345,6 +349,41 @@ _HTTP_DENY = frozenset({
     "proxysslcainfo", "proxysslcertpasswordprotected", "proxyauthmethod",
     "schannelcheckrevoke", "schannelusesslcainfo", "followredirects",
 })
+
+
+_PROBE = "fused-urlmatch-probe"
+
+
+def _scoped_http_applies(key: str, url: str | None) -> bool:
+    """Whether a URL-scoped `http.<u>.<leaf>` key applies to a GitHub
+    transfer by git's OWN urlmatch rules: git is asked, with only that key
+    set (to a sentinel) and no other config at all, what `http.<leaf>` is
+    for the GitHub URL. Anything but "not set" — the sentinel, or a git that
+    could not answer — counts as applying (fail closed)."""
+    k = key.lower()
+    if not k.startswith("http."):
+        return False
+    middle, _, leaf = key[len("http."):].rpartition(".")
+    if not middle or not leaf:
+        return False
+    targets = ["https://github.com/"]
+    if url and url.lower().startswith("https://"):
+        targets.append(url)
+    probe = tempfile.mkdtemp(prefix="fused-urlmatch-")
+    try:
+        for target in targets:
+            res = _git(probe, "-c", f"http.{middle}.{leaf}={_PROBE}", "config",
+                       "--get-urlmatch", f"http.{leaf}", target,
+                       env={**git_net_env(), "GIT_CEILING_DIRECTORIES": os.path.dirname(probe)},
+                       timeout=10)
+            if res is None or res.returncode not in (0, 1):
+                return True
+            if res.returncode == 0:
+                return True
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            os.rmdir(probe)
 
 
 def _risky(key: str, value: str, url: str | None) -> bool:

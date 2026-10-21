@@ -134,9 +134,11 @@ export interface ProposalView {
   can_update?: boolean;
   /** Any open proposal, a remix's included. */
   can_withdraw?: boolean;
-  /** What this copy runs differs from what was last sent — the one signal
-   *  for offering Update proposal (WS-B). */
-  stale?: boolean;
+  /** The author asked for the proposal to be brought up to date (§16.6). */
+  asked_update?: boolean;
+  asked?: { author: string; body: string; at: string } | null;
+  /** Published directly by a collaborator: reads as merged, no banner. */
+  direct?: boolean;
 }
 
 export interface ReviewRisk {
@@ -185,6 +187,9 @@ export interface InboxItem {
   /** False: the proposal no longer fits on the app as it is now (GitHub's
    *  own check, cached). Null/absent = not known. */
   fits?: boolean | null;
+  /** Merge with Claude for a proposal that no longer fits: its review is
+   *  drawn on the item (Keep / Discard via /merge/accept|discard). */
+  merge_job?: MergeJobView | null;
 }
 
 export interface Contributor {
@@ -200,26 +205,28 @@ export interface Contributor {
 // sent and nothing more — no button is ever derived on this side.
 
 export interface SourcePanel {
-  kind: "github" | "own" | "scratch";
+  kind: "github" | "own" | "remix" | "scratch" | "pending";
   /** "alice/x". */
   repo: string | null;
   /** The name every sentence uses (the author's login, or the user's own). */
   who: string | null;
   /** Epoch seconds of the last successful check against GitHub; null = never. */
   last_checked: number | null;
-  /** For branching only (busy polls); the words are `sentence`. */
+  /** For branching only (tone, the settled dismiss); the words are
+   *  `sentence`, whole. */
   state: string;
   sentence: string;
-  /** A quieter second line, when the server has one. */
-  detail?: string | null;
   /** App-relative paths the sentence is about. */
   files: string[];
   unproposed: number;
   unpublished: number;
   github_new: number;
   /** App-relative files the Propose dialog offers unticked (never sent
-   *  unless the user ticks them). */
+   *  unless the user ticks them); filled only while `propose` is offered. */
   untracked?: string[];
+  /** Claude's merge for this copy (github update/return, own-sync) — the
+   *  same object as `copy.merge_job`; the panel draws its review. */
+  merge?: MergeJobView | null;
 }
 
 export interface ContribAction {
@@ -228,8 +235,6 @@ export interface ContribAction {
   primary: boolean;
   /** A sentence to confirm with before running; absent = run on the click. */
   confirm?: string | null;
-  /** The confirm sheet's button, when the server names it. */
-  confirm_label?: string | null;
   danger?: boolean;
   /** The sheet (or flow) the page opens for this button instead of
    *  posting at once: "propose", "remix", "sign-in". */
@@ -242,10 +247,8 @@ export interface ActivityLine {
   at: number;
   kind: string;
   text: string;
-  /** Something moved away and can come back: offers Undo / Restore. */
+  /** Something moved away and can come back: offers Undo. */
   undo: boolean;
-  /** "Undo" or "Restore" when the server names it. */
-  undo_label?: string | null;
 }
 
 export interface AppContrib {
@@ -262,7 +265,7 @@ export interface AppContrib {
    *  step checks for itself). */
   github: { signed_in: boolean; login: string | null; checking?: boolean };
   share_url: string | null;
-  /** v2 (§16.9): absent from an older server — the panel then shows nothing. */
+  /** v2 (§16.9). `panel` null (or absent, an older server) = show nothing. */
   panel?: SourcePanel | null;
   actions?: ContribAction[];
   activity?: ActivityLine[];
@@ -556,11 +559,16 @@ const BACKOFF_POLL_MS = 30_000;
  *  for? Drives the fast poll. */
 export function contribBusy(c: AppContrib | null): boolean {
   if (!c) return false;
-  const m = c.copy.merge_job?.status;
-  if (m === "running" || m === "landing") return true;
+  const moving = (s: string | undefined) => s === "running" || s === "landing";
+  if (moving(c.copy?.merge_job?.status) || moving(c.panel?.merge?.status)) return true;
+  if (c.panel?.state === "pending") return true;
   if (c.inbox?.loading) return true;
   return !!c.inbox?.items.some(
-    (i) => i.review_status === "none" || i.review_status === "pending" || i.review_status === "running",
+    (i) =>
+      i.review_status === "none" ||
+      i.review_status === "pending" ||
+      i.review_status === "running" ||
+      moving(i.merge_job?.status),
   );
 }
 

@@ -51,9 +51,15 @@ _OPEN_JOB = ("running", "landing", "ready")
 
 USE_GITHUB_CONFIRM = ("Your copy becomes the version on GitHub. Your edits are kept in "
                       "Activity so you can bring them back.")
-#: ownsync's own sentence for the same button (`ownsync.PUBLISH_OVER_CONFIRM`).
-PUBLISH_OVER_CONFIRM = ("Replace the version on GitHub with this copy? What's on GitHub "
-                        "now is kept in a backup here.")
+
+
+def _publish_over_confirm() -> str:
+    """ownsync's own sentence for Publish mine over it — it says what that
+    module keeps, so it is read from there, never copied."""
+    mod = _safely("import ownsync", _mod, "ownsync")
+    text = getattr(mod, "PUBLISH_OVER_CONFIRM", None)
+    return text if isinstance(text, str) and text else (
+        "Replace the version on GitHub with this copy?")
 
 
 def _mod(name: str):
@@ -167,7 +173,8 @@ class _Buttons:
             # Exactly one primary when anything is offered: the first fix —
             # never one that drops, takes back or publishes work past a
             # confirm (then Check now).
-            first = next((a for a in self.items if a["id"] not in ("check", "withdraw")
+            first = next((a for a in self.items
+                          if a["id"] not in ("check", "withdraw", "remix")
                           and not a.get("danger") and not a.get("confirm")),
                          next((a for a in self.items if a["id"] == "check"), self.items[0]))
             first["primary"] = True
@@ -249,6 +256,10 @@ def _github(f: dict, flags: dict) -> dict:
         return {"panel": _panel(f, kind="pending", who=who, state="pending",
                                 sentence="Checking where this app came from…"),
                 "actions": []}
+    # §16.12 gating: with the panel on (sources), every fix for a state the
+    # engine recorded is offered; `changes` gates only the proposal buttons
+    # (Propose, Update, Withdraw, Update <who>'s app directly); `remix` gates
+    # Remix.
     changes_on = bool(flags.get("changes"))
     remix_on = bool(flags.get("remix"))
     signed_out = _signed_out(f)
@@ -277,16 +288,26 @@ def _github(f: dict, flags: dict) -> dict:
               confirm=(f"Your changes to this app go away and it goes back to {who}'s "
                        "version. fused keeps a copy you can bring back from Activity."))
 
-    def send_buttons(label: str):
-        if signed_out:
-            b.add("sign-in", "Sign in to GitHub", primary=True, dialog="sign-in")
-            extra.append("Sign in to GitHub to send your proposal.")
-            return
-        b.add("propose", label, primary=True, dialog="propose")
-        if remix_on:
+    def remix_button():
+        if remix_on and not signed_out:
             b.add("remix", "Publish as remix", dialog="remix")
-        if can_push:
+
+    def push_button():
+        if changes_on and can_push and not signed_out:
             b.add("push-main", f"Update {who}'s app directly", confirm=push_confirm)
+
+    def send_buttons(label: str):
+        """Propose (or Sign in first), Remix, the collaborator's direct
+        update, Discard — what a copy with changes of its own offers."""
+        if changes_on:
+            if signed_out:
+                b.add("sign-in", "Sign in to GitHub", primary=True, dialog="sign-in")
+                extra.append("Sign in to GitHub to send your proposal.")
+            else:
+                b.add("propose", label, primary=True, dialog="propose")
+        remix_button()
+        push_button()
+        discard_button()
 
     if job is not None and job.get("status") in _OPEN_JOB:
         if job.get("status") == "ready":
@@ -302,9 +323,10 @@ def _github(f: dict, flags: dict) -> dict:
     if copy.get("off_default"):
         lets_bring_in = False
         state = "other-branch"
-        sentence = f"This copy is showing a different version than {who}'s main one."
+        sentence = f"This copy is showing a different version than {who}'s main one"
+        sentence += (f", which has {_plural(behind, 'newer change')}." if behind else ".")
         b.add("go-back-main", "Go back to the main version", primary=True)
-    elif copy.get("needs_merge") and changes_on:
+    elif copy.get("needs_merge"):
         lets_bring_in = False
         nm_files = _strs(copy.get("needs_merge_files"))
         purpose = copy.get("needs_merge_purpose") or "update"
@@ -325,7 +347,7 @@ def _github(f: dict, flags: dict) -> dict:
             b.add("use-theirs", f"Use {who}'s version", danger=True, confirm=theirs_confirm)
         if job is not None and job.get("status") == "failed":
             sentence += " Claude couldn't combine them last time."
-    elif blocked and changes_on:
+    elif blocked:
         lets_bring_in = False
         state = "blocked"
         panel["files"] = blocked
@@ -334,16 +356,25 @@ def _github(f: dict, flags: dict) -> dict:
         b.add("move-aside", "Move my file aside and update", primary=True)
         b.add("keep-mine", "Keep mine")
     elif state == "merged":
-        sentence = f"{who} merged your change. You're on {who}'s latest version."
+        if copy.get("merged_in_tip", True) is False:
+            sentence = f"{who} merged your change; fused will bring it in shortly."
+        else:
+            sentence = f"{who} merged your change. You're on {who}'s latest version."
+        if has_changes:
+            # Edits made after the proposal stay; they can go in a new one.
+            extra.append(f"Your newer changes: {_plural(len(files) or 1, 'file')}.")
+            send_buttons(f"Propose to {who}")
     elif state == "declined" and changes_on:
         sentence = f"{who} declined your proposal. Your changes are still here."
         send_buttons("Propose again")
-        discard_button()
     elif state == "proposed" and changes_on and proposal is not None:
         comment = proposal.get("comment") if isinstance(proposal.get("comment"), dict) else None
         asked = bool(proposal.get("asked_update"))
+        unfit = proposal.get("fits") is False
         if asked:
             sentence = f"{who} asked you to update your proposal."
+        elif unfit:
+            sentence = f"Your proposal no longer fits {who}'s latest."
         elif proposal.get("state") == "commented" and comment and comment.get("body"):
             sentence = f'{comment.get("author") or who} commented: "{comment["body"]}"'
         else:
@@ -353,23 +384,20 @@ def _github(f: dict, flags: dict) -> dict:
         if signed_out:
             b.add("sign-in", "Sign in to GitHub", primary=True, dialog="sign-in")
         else:
-            if proposal.get("can_update") and (unproposed or asked):
+            if proposal.get("can_update") and (unproposed or asked or unfit
+                                               or proposal.get("head_differs")):
                 b.add("update-proposal", "Update proposal", primary=True)
             if proposal.get("can_withdraw"):
                 b.add("withdraw", "Withdraw")
-            if can_push:
-                b.add("push-main", f"Update {who}'s app directly", confirm=push_confirm)
+        remix_button()
+        push_button()
+        # The page offers "also withdraw my proposal" with it (args.withdraw).
+        discard_button()
     elif has_changes:
         state = "changes"
-        if changes_on:
-            sentence = f"Your changes: {_plural(len(files) or 1, 'file')}."
-            send_buttons(f"Propose to {who}")
-            discard_button()
-        else:
-            # Changes off: the engine only fetches and catches up (P1) —
-            # nothing here may offer to send or drop them.
-            sentence = "You have your own changes in this app."
-            lets_bring_in = False
+        sentence = (f"Your changes: {_plural(len(files) or 1, 'file')}." if changes_on
+                    else "You have your own changes in this app.")
+        send_buttons(f"Propose to {who}")
     else:
         state = "following"
         sentence = (f"{who} has a newer version." if behind else
@@ -392,10 +420,11 @@ def _github(f: dict, flags: dict) -> dict:
         extra.append("Sign in so fused can tell whether this app is yours.")
         b.add("sign-in", "Sign in to GitHub", dialog="sign-in")
     b.add("check", "Check now")
-    if b.has("propose"):
+    if b.has("propose") or b.has("update-proposal"):
         panel["untracked"] = _strs(f.get("untracked"))
     panel.update(state=state, sentence=" ".join([sentence, *extra]).strip())
     return {"panel": panel, "actions": b.done()}
+
 
 
 #: Labels for the fixes ownsync names per state (`ownsync.FIXES`).
@@ -406,8 +435,7 @@ _OWN_FIXES = {
     "use-github": dict(label="Use the version on GitHub", danger=True,
                        confirm=USE_GITHUB_CONFIRM),
     "put-on-top": dict(label="Put my edits on top"),
-    "publish-over": dict(label="Publish mine over it", danger=True,
-                         confirm=PUBLISH_OVER_CONFIRM),
+    "publish-over": dict(label="Publish mine over it", danger=True),  # + ownsync's confirm
     "save-edits": dict(label="Save my edits and continue"),
 }
 
@@ -442,6 +470,8 @@ def _own(f: dict, flags: dict) -> dict:
         spec = _OWN_FIXES.get(fix)
         if spec is None or (fix == "put-on-top" and not unpublished):
             continue  # nothing of the author's to put on top
+        if fix == "publish-over":
+            spec = {**spec, "confirm": _publish_over_confirm()}
         # With nothing unpublished, GitHub's version is the safe way out.
         b.add(fix, primary=fix == "use-github" and not unpublished and state == "github-changed",
               **spec)
