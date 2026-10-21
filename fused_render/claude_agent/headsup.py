@@ -40,15 +40,19 @@ _MAX_BULLET = 400
 _TAGS = ("You should know", "Heads up")
 
 HEADSUP_PROMPT = """\
-You are an observer of the conversation above. Do not use any tools; just reply in text.
+You are checking the work in the conversation above on the user's behalf. Do not use any tools; just reply in text.
 
-Look for at most ONE thing the user should really know about this session and very likely does not understand yet. Good candidates: a constraint they are running into, a trade-off the agent chose on their behalf, a non-obvious edge case, or a decision that carries a real cost in money, time, wasted work or a wrong result.
+The main agent is not interrupted: it keeps working while you read, so you may be reading in the middle of its work. It is very capable and will very possibly reach the same point you do, possibly in the reply it is writing right now. Only offer something if you are confident it has been, or will be, glossed over. Do not do the agent's job: do not investigate the user's question yourself, and do not explain or pre-announce a finding, root cause or conclusion the agent is working toward. Avoid topics the user is already discussing with the agent: if the user asked the agent to explain or find X, do not offer X.
+
+Look for at most ONE thing the user should really know about this session and very likely does not understand yet. Good candidates: a decision or trade-off the agent made on the user's behalf, an assumption it is acting on, a constraint it hit, a non-obvious edge case, a result from a step it already finished that may be wrong, or a decision that carries a real cost in money, time, wasted work or a wrong result. A decision or detail the agent mentioned only in passing, inside a long answer or in the middle of a long run of tool calls, still counts as possibly missed, because people do not read everything.
+
+Progress is never a topic: never say something is missing, unfinished, not built, not pushed, or that the session or the agent stopped or ended. The user can see whether the agent is still running.
 
 Interesting is not the same as important. If the best reason you can give is that their understanding would be more complete, answer `learn: none`. Skip anything the user has already shown they understand, anything the agent has already explained clearly, and anything you are not confident is true. Default to `learn: none`. The bar is very high, and most checks should find nothing.
 
 Write for a tired reader who switched away and forgot the details. Use plain words, name the real thing instead of saying "this" or "it", define any technical term, and do not end with a question. Be brief: the whole note should read in five seconds.
 
-Pick the tag "Heads up" for a risk or a problem with the work, and "You should know" for understanding that matters.
+Pick the tag "Heads up" for the work in this session: a decision the agent made, something it did not highlight, or a result that may be off, with an immediate cost if missed. Pick "You should know" for how something works when it deeply matters to their work.
 
 Reply with exactly `learn: none`, or exactly this shape:
 
@@ -158,7 +162,7 @@ def main_steps(run_dir: str, agent=None) -> tuple:
         c = _steps_cache.get(run_dir)
         if c is None:
             c = {"offset": 0, "tail": b"", "results": 0, "steps": 0,
-                 "last_steps": 0, "idle": False}
+                 "last_steps": 0, "idle": False, "pending": set()}
             _steps_cache[run_dir] = c
         _steps_cache.move_to_end(run_dir)
         while len(_steps_cache) > _MAX_RUNS:
@@ -173,11 +177,11 @@ def main_steps(run_dir: str, agent=None) -> tuple:
                     ok = fh.read(c["offset"] - start) == c["tail"]
                 if not ok:
                     c.update(offset=0, tail=b"", results=0, steps=0,
-                             last_steps=0, idle=False)
+                             last_steps=0, idle=False, pending=set())
                 fh.seek(c["offset"])
                 data = fh.read()
         except OSError:
-            c.update(offset=0, tail=b"", results=0, steps=0, last_steps=0, idle=False)
+            c.update(offset=0, tail=b"", results=0, steps=0, last_steps=0, idle=False, pending=set())
             data = b""
         end = data.rfind(b"\n") + 1
         if end:
@@ -189,6 +193,17 @@ def main_steps(run_dir: str, agent=None) -> tuple:
         if c["idle"]:
             return max(c["results"] - 1, 0), c["last_steps"], False
         return c["results"], c["steps"], True
+
+
+def pending_tools(run_dir: str, agent=None) -> int:
+    """How many main-thread tool calls of the current turn have no
+    `tool_result` yet. Non-zero means the main agent is mid-step, so a fork of
+    the on-disk session would end in an unanswered call. Reads the same cache
+    as `main_steps` (refreshing it first)."""
+    main_steps(run_dir, agent)
+    with _steps_lock:
+        c = _steps_cache.get(run_dir)
+        return len(c["pending"]) if c else 0
 
 
 def _consume(c: dict, raw: bytes, not_a_turn) -> None:
@@ -208,11 +223,19 @@ def _consume(c: dict, raw: bytes, not_a_turn) -> None:
         c["results"] += 1
         c["last_steps"] = c["steps"]
         c["steps"] = 0
-    elif t == "assistant":
+        c["pending"].clear()
+    elif t in ("assistant", "user"):
         content = (row.get("message") or {}).get("content")
         if isinstance(content, list):
-            c["steps"] += sum(1 for b in content
-                              if isinstance(b, dict) and b.get("type") == "tool_use")
+            for b in content:
+                if not isinstance(b, dict):
+                    continue
+                if t == "assistant" and b.get("type") == "tool_use":
+                    c["steps"] += 1
+                    if b.get("id"):
+                        c["pending"].add(b["id"])
+                elif t == "user" and b.get("type") == "tool_result":
+                    c["pending"].discard(b.get("tool_use_id"))
 
 
 def _fallback_not_a_turn(row: dict) -> bool:
@@ -267,7 +290,8 @@ def build_fork_argv(agent, run_dir: str):
         argv = agent._claude_argv(
             fork_dir, bool(launch.get("pane")), None, session_id,
             model, effort,
-            launch.get("extra_read_dirs") or [], launch.get("file") or "")
+            launch.get("extra_read_dirs") or [], launch.get("file") or "",
+            strict_mcp=bool(launch.get("strict_mcp")))
     except Exception:
         shutil.rmtree(fork_dir, ignore_errors=True)
         raise
@@ -315,8 +339,16 @@ def _kill_tree(proc) -> None:
     proc.kill()
 
 
-def _build_prompt(seen: list, known: list) -> str:
+_OPEN_TURN = ("\nThe main agent is still working on this turn right now. The "
+              "conversation above stops partway through its work and may not show "
+              "its latest step, so only judge steps that already finished. Never "
+              "report anything as missing, unfinished or stopped.\n")
+
+
+def _build_prompt(seen: list, known: list, turn_open: bool = False) -> str:
     prompt = HEADSUP_PROMPT
+    if turn_open:
+        prompt += _OPEN_TURN
     if seen:
         prompt += ("\nThese notes were already shown to the user recently. "
                    "Do not offer them again:\n"
@@ -328,7 +360,7 @@ def _build_prompt(seen: list, known: list) -> str:
     return prompt
 
 
-def generate(agent, run_dir: str) -> dict | None:
+def generate(agent, run_dir: str, turn_open: bool = False) -> dict | None:
     """Run the fork once and return the parsed note, or None."""
     built = build_fork_argv(agent, run_dir)
     if built is None:
@@ -338,7 +370,7 @@ def generate(agent, run_dir: str) -> dict | None:
     try:
         message = json.dumps({"type": "user", "message": {
             "role": "user",
-            "content": [{"type": "text", "text": _build_prompt(seen, known)}]}})
+            "content": [{"type": "text", "text": _build_prompt(seen, known, turn_open)}]}})
         spawn, kw_cwd = _spawn_argv(argv, cwd)
         kwargs = {"cwd": kw_cwd} if kw_cwd else {}
         proc = subprocess.Popen(
@@ -567,10 +599,11 @@ def _run_state(run_id: str, run_dir: str | None = None) -> dict:
     return st
 
 
-def _worker(agent, run_id: str, run_dir: str, turn_index: int) -> None:
+def _worker(agent, run_id: str, run_dir: str, turn_index: int,
+            turn_open: bool = False) -> None:
     note = None
     try:
-        note = generate(agent, run_dir)
+        note = generate(agent, run_dir, turn_open)
     except Exception:  # noqa: BLE001 — a decoration, never a fault
         logger.exception("heads-up check failed for run %s", run_id)
     # A new user turn began while the check ran: the note is about the past.
@@ -634,6 +667,10 @@ def _poll(agent, run_id: str) -> dict:
     turn_index, steps, turn_open = main_steps(run_dir, agent)
     if steps < STEPS_PER_CHECK:
         return {"state": "idle"}
+    if turn_open and pending_tools(run_dir, agent):
+        # Mid-step: a fork now would end in an unanswered tool call. Leave the
+        # bucket unrecorded so it fires on a later poll, at a step boundary.
+        return {"state": "idle"}
     with _lock:
         st = _run_state(run_id)
         if st["inflight"]:
@@ -660,7 +697,7 @@ def _poll(agent, run_id: str) -> dict:
         st["checked"].add(key)
         _save(st)
         st["inflight"] = True
-    threading.Thread(target=_worker, args=(agent, run_id, run_dir, turn_index),
+    threading.Thread(target=_worker, args=(agent, run_id, run_dir, turn_index, turn_open),
                      daemon=True).start()
     return {"state": "checking"}
 

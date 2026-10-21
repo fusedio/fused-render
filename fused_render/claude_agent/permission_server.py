@@ -78,7 +78,6 @@ import sys
 import threading
 import time
 import urllib.parse
-import urllib.request
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "fused_approvals"
@@ -268,6 +267,9 @@ def _post_card_cleared(req_id: str) -> None:
 
 
 def _send_event(url: str, body: dict) -> None:
+    # Lazy: the eager import cost ~10 MB resident in EVERY session's
+    # permission server, and most never send an event.
+    import urllib.request
     try:
         req = urllib.request.Request(
             url, data=json.dumps(body).encode("utf-8"),
@@ -753,6 +755,7 @@ def _terminal_http(method: str, path: str, body=None):
     """`(status, parsed_json)` for one call to the server. Raises OSError for
     anything that is not an HTTP answer (refused, timeout, bad URL)."""
     import urllib.error
+    import urllib.request  # lazy, see `_send_event`
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(
         _terminal_origin() + path, data=data, method=method,

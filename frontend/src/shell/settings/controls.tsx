@@ -20,7 +20,6 @@ import {
   EnginesPointer,
 } from "./ai";
 import {
-  BotTerminalsControl,
   CanvasesControl,
   GithubLinkControl,
   GitSyncControl,
@@ -33,7 +32,8 @@ import {
   ShareSheetControl,
   TaskRecapsControl,
   TaskSummaryTitlesControl,
-  ChatHeadsupControl,
+  ClaudeStrictMcpControl,
+  ClaudeDefaultPermissionControl,
 } from "./toggles";
 import {
   IndexingControl,
@@ -57,6 +57,7 @@ import {
   CallLogControl,
   CallParamsControl,
   CallRetentionControl,
+  ClaudeMaxSessionsControl,
   DiagnosticsControl,
   IndexQueryControl,
 } from "./advanced";
@@ -83,7 +84,9 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,
   "task-summary-titles": TaskSummaryTitlesControl,
-  "chat-headsup": ChatHeadsupControl,
+  "claude-strict-mcp": ClaudeStrictMcpControl,
+  "claude-default-permission": ClaudeDefaultPermissionControl,
+  "claude-max-sessions": ClaudeMaxSessionsControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
   "share-sheet": ShareSheetControl,
@@ -96,7 +99,6 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "rebuild-index": RebuildIndexControl,
   canvases: CanvasesControl,
   marketplace: MarketplaceControl,
-  "bot-terminals": BotTerminalsControl,
   monitor: MonitorControl,
   reader: ReaderControl,
   lan: LanControl,

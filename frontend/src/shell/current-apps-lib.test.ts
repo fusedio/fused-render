@@ -136,8 +136,10 @@ describe("CurrentAppsSection's half of the order", () => {
   });
 
   it("keeps the fold in the ui-layout doc, not in localStorage", () => {
-    expect(SECTION).toContain("getUiLayout().currentAppsCollapsed ?? false");
-    expect(SECTION).toContain("patchUiLayout((d) => ({ ...d, currentAppsCollapsed: next }))");
+    // The accordion store (platform/ui/sidebar/sidebar-accordion.ts) owns the
+    // doc's `currentAppsCollapsed` flag; the section only asks it.
+    expect(SECTION).toContain('const collapsed = !useSidebarSectionOpen(sectionKey);');
+    expect(SECTION).toContain("setSidebarSectionOpen(sectionKey, collapsed)");
     // The old key's import is ui-layout.ts's, with the rest of the layout.
     expect(SECTION).not.toContain("fused-render:current-apps-collapsed");
   });

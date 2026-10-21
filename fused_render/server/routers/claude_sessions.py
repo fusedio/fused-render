@@ -1344,16 +1344,13 @@ def api_claude_session_recap(file: str, session_id: str, for_uuid: str):
 
 @router.get("/api/claude-sessions/headsup")
 def api_claude_session_headsup(run_id: str = ""):
-    """The heads-up card state for one live run: `disabled` (pref off), `idle`,
+    """The heads-up card state for one live run: `idle`,
     `checking`, or `note` with the card. Polled by the chat while a turn runs;
     the poll itself decides when a side check is due (`claude_agent.headsup`).
     Same 400/503 posture as the recap above."""
     from fused_render.claude_agent import headsup
     from fused_render.server.routers import tasks as _tasks
-    from fused_render.shell import prefs as shell_prefs
 
-    if not shell_prefs.chat_headsup_enabled():
-        return {"state": "disabled"}
     agent = _tasks._agent_module()
     if agent is None:
         raise HTTPException(status_code=503,

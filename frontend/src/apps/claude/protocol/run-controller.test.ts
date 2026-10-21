@@ -278,7 +278,7 @@ describe("start → poll → done", () => {
       session_id: "",
       model: "sonnet",
       effort: "high",
-      permission_mode: "prompt",
+      permission_mode: "auto",
       has_pane: "1",
       read_dirs: "[]",
     });
@@ -1099,7 +1099,85 @@ describe("follow-ups (T:16024, D687)", () => {
     ]);
     // The field name and the value T sends — NOT `permission`, and not the
     // CLI's own spelling of the flag.
-    expect(started.fields.permission_mode).toBe("prompt");
+    // Absent param = the user's default pref, "auto" until changed.
+    expect(started.fields.permission_mode).toBe("auto");
+  });
+
+  test("an absent param follows the default pref; the param beats it; junk is the strictest", async () => {
+    const { publishDefaultPermission } = await import("../feature-flag");
+    try {
+      publishDefaultPermission("acceptEdits");
+      const a = makeController({ start: () => ({ run_id: "r1" }), poll: () => poll({ done: true }) });
+      await a.controller.sendMessage("go");
+      expect(a.agent.of("start")[0]!.fields.permission_mode).toBe("acceptEdits");
+      const b = makeController(
+        { start: () => ({ run_id: "r1" }), poll: () => poll({ done: true }) },
+        createMemoryParamsStore({ permission: "plan" }),
+      );
+      await b.controller.sendMessage("go");
+      expect(b.agent.of("start")[0]!.fields.permission_mode).toBe("plan");
+      const c = makeController(
+        { start: () => ({ run_id: "r1" }), poll: () => poll({ done: true }) },
+        createMemoryParamsStore({ permission: "yolo" }),
+      );
+      await c.controller.sendMessage("go");
+      expect(c.agent.of("start")[0]!.fields.permission_mode).toBe("prompt");
+    } finally {
+      publishDefaultPermission("auto");
+    }
+  });
+
+  test("changing the pill mid-turn calls set_mode on the live run, with no send", async () => {
+    let controller!: ChatController;
+    let modeAfter = "";
+    const params = createMemoryParamsStore();
+    const made = makeController(
+      {
+        start: () => ({ run_id: "r1" }),
+        set_mode: (f) => ({ ok: true, mode: f.permission_mode }),
+        poll: async (_f, n) => {
+          if (n === 0) {
+            params.set({ permission: "acceptEdits" });
+            await controller.applyPermission("acceptEdits");
+            modeAfter = controller.getState().permissionMode;
+            return poll({ segments: [text("working")] });
+          }
+          return poll({ done: true, segments: [text("working")] });
+        },
+      },
+      params,
+    );
+    controller = made.controller;
+    await controller.sendMessage("go");
+    const calls = made.agent.of("set_mode");
+    expect(calls.length).toBe(1);
+    expect(calls[0]!.fields).toEqual({ run_id: "r1", permission_mode: "acceptEdits" });
+    expect(made.agent.of("send").length).toBe(0);
+    expect(modeAfter).toBe("acceptEdits");
+  });
+
+  test("set_mode with no live run is a no-op, and a respawn reply leaves the mode alone", async () => {
+    const idle = makeController({});
+    await idle.controller.applyPermission("auto");
+    expect(idle.agent.of("set_mode").length).toBe(0);
+    let controller!: ChatController;
+    let modeAfter = "";
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      set_mode: () => ({ respawn: true }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.applyPermission("acceptEdits");
+          modeAfter = controller.getState().permissionMode;
+          return poll({ segments: [text("working")] });
+        }
+        return poll({ done: true, segments: [text("working")] });
+      },
+    });
+    controller = made.controller;
+    await made.controller.sendMessage("go");
+    expect(made.agent.of("set_mode").length).toBe(1);
+    expect(modeAfter).not.toBe("acceptEdits");
   });
 
   test("the picker's mode rides every follow-up `send` too (T:16128)", async () => {
@@ -3499,8 +3577,8 @@ describe("ChatState.permissionMode: the mode the RUN is in (T:13884-13886)", () 
     );
     await controller.sendMessage("go");
     expect(controller.getState().permissionMode).toBe("prompt");
-    // …but the WIRE still carries it verbatim: agent.py is what rejects a mode.
-    expect(agent.of("start")[0].fields.permission_mode).toBe("yolo");
+    // …and the wire carries the SAME narrowed value, never the raw text.
+    expect(agent.of("start")[0].fields.permission_mode).toBe("prompt");
   });
 
   test("poll's own `mode` outranks the seed: it is agent.py's `_live_mode`", async () => {

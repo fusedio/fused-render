@@ -88,6 +88,7 @@ ACTIONS: dict[str, str] = {
     "cancel": "_cancel",
     "live_host": "_live_host",
     "send": "_send",
+    "set_mode": "_set_mode",
     "commands": "_commands",
     "task_output": "_task_output",
     "task_stop": "_task_stop",

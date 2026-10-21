@@ -107,7 +107,8 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from fused_render import _startonce, claude_spawn, cron, recur, tasks_store
+from fused_render import (_startonce, claude_spawn, cron, recur, session_cap,
+                          tasks_store)
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -766,6 +767,8 @@ def dispatch_entry(entry_id: str, now: datetime | None = None) -> dict | None:
     if (session and _session_live(session, now)
             and not _verdict_echo(session, entries, now)):
         raise SpawnBusy(f"{entry_id}: session {session} has a live turn")
+    if session_cap.held(entry, session):
+        raise SpawnBusy(f"{entry_id}: at the session cap")
     claimed = _claim(entry_id, now, resolved)
     if claimed is None:
         return None  # cancelled or claimed in the window since the read above
@@ -1541,7 +1544,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
            create_target: bool = False,
            model: str = "", effort: str = "", priority=None,
            follow_of: str = "", origin: str = "", bot: str = "",
-           backend: str = "") -> dict:
+           backend: str = "", strict_mcp: bool = False) -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `backend` — "claude" | "copilot" | "" — is which agent runs the turn (D2),
@@ -2004,6 +2007,10 @@ def create(target: str, message: str, due=None, session_id: str = "",
         entry["origin"] = origin
     if bot:
         entry["bot"] = bot
+    if strict_mcp:
+        # Run lean (`--strict-mcp-config`), whatever the Preferences default is
+        # — App Doctor's tasks. Written only when true, like `bot`.
+        entry["strict_mcp"] = True
     if spec is not None:
         # The first run of the series, kept where materialization cannot move
         # it — see the docstring. Every occurrence is "the anchor plus k steps",
@@ -3025,6 +3032,11 @@ def _send(entry: dict) -> None:
             # send without images keeps the exact call shape it has always had.
             attachments = ({"extra_read_dirs": [shots_dir()]}
                            if _stored_attachments(entry) else {})
+            if entry.get("template_id") or entry.get("strict_mcp"):
+                # A recurring occurrence (nobody is watching it) or an entry
+                # that asked for it runs lean; passed only when true so the
+                # plain call shape is unchanged.
+                attachments["isolate_mcp"] = True
             # `backend` ALWAYS rides, never "": `_start` reads "" on a fresh
             # chat as Claude, not as the Preferences default, so the entry's
             # pinned agent has to be said out loud every time.
@@ -4502,6 +4514,12 @@ def tick(now: datetime | None = None) -> list[dict]:
             left = _live_expires_in(session, now)
             if left:
                 held_soon.append(left)
+            continue
+        by_entry = next((e for e in entries if str(e["id"]) == entry_id), None)
+        if by_entry is not None and session_cap.held(by_entry, session):
+            # At the cap: left PENDING, like a busy session, and the next
+            # `exited` event (or the 30-second poll) tries again.
+            logger.debug("holding %s: at the session cap", entry_id)
             continue
         entry = _claim(entry_id, now, resolved)
         if entry is None:

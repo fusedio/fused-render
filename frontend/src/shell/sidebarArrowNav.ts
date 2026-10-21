@@ -29,7 +29,11 @@ const ROW_LINKS = "#sidebar a.bookmark-name";
 let refocusPending = false;
 
 function rowLinks(): HTMLAnchorElement[] {
-  return Array.from(document.querySelectorAll<HTMLAnchorElement>(ROW_LINKS));
+  // A folded section keeps its rows mounted for the fold animation
+  // (platform/ui/sidebar/SectionFold) — they are inert, not gone, so skip them.
+  return Array.from(document.querySelectorAll<HTMLAnchorElement>(ROW_LINKS)).filter(
+    (a) => !a.closest("[inert]"),
+  );
 }
 
 function inTextField(el: Element | null): boolean {

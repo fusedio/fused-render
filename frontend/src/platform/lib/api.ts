@@ -1453,10 +1453,6 @@ export interface Prefs {
   // older server answers without it, and the reader (live-previews-flag.ts)
   // treats absence as off.
   live_previews?: { enabled: boolean };
-  // Whether a running Claude chat gets heads-up notes above the composer
-  // (opt-in, default off — shell/prefs.py `chat_headsup_enabled`). OPTIONAL: an
-  // older server answers without it, and absence means off.
-  chat_headsup?: { enabled: boolean };
   // Whether the process Monitor is OFFERED (opt-in, default off —
   // shell/prefs.py `monitor_enabled`): the status bar's System chip and the
   // /monitor page. Gates the entry points, not /api/system/activity. OPTIONAL:
@@ -1469,12 +1465,6 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it, and the reader
   // (marketplace-flag.ts) treats absence as off.
   marketplace?: { enabled: boolean };
-  // Whether bots may drive their own terminal (opt-in, default off —
-  // shell/prefs.py `bot_terminals_enabled`). The global half of two switches;
-  // turning it off closes every bot terminal. OPTIONAL: an older server
-  // answers without it, and the reader (bot-terminals-flag.ts) treats absence
-  // as off.
-  bot_terminals?: { enabled: boolean };
   // Whether the Share sheet offers its GitHub install-link card (opt-in,
   // default off — shell/prefs.py `github_link_enabled`). Gates the card, not
   // /api/share/github. OPTIONAL: an older server answers without it, and the
@@ -1498,6 +1488,15 @@ export interface Prefs {
   // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
+  // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
+  // default). Optional: absent (older server) reads as on.
+  claude_strict_mcp?: { enabled: boolean };
+  // The Approvals mode a new Claude chat starts in (`claude_default_permission`,
+  // shell/prefs.py): plan | prompt | acceptEdits | auto, "auto" when unset.
+  claude_default_permission?: string;
+  // Concurrent Claude session cap (`claude_max_concurrent_sessions`; default
+  // 10, 0 = unlimited). Optional: absent (older server) reads as 10.
+  claude_sessions?: { max_concurrent: number };
   /** Page-wide Bots switches (shell/prefs.py `bots_autostage`, `bots_sounds`,
    *  `bots_clear_enabled`). Server-side since 2026-10-18 (D1386): they used to
    *  be per-browser localStorage flags, which the desktop app's port walk
@@ -1855,20 +1854,12 @@ export function putLivePreviewsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { live_previews_enabled: enabled });
 }
 
-export function putChatHeadsupEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { chat_headsup_enabled: enabled });
-}
-
 export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { monitor_enabled: enabled });
 }
 
 export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
-}
-
-export function putBotTerminalsEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { bot_terminals_enabled: enabled });
 }
 
 export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
@@ -1888,6 +1879,18 @@ export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskSummaryTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_summary_titles_enabled: enabled });
+}
+
+export function putClaudeDefaultPermission(mode: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { claude_default_permission: mode });
+}
+
+export function putClaudeStrictMcpEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { claude_strict_mcp_enabled: enabled });
+}
+
+export function putClaudeMaxConcurrentSessions(max: number): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { claude_max_concurrent_sessions: max });
 }
 
 export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
@@ -1920,6 +1923,8 @@ export interface UiLayoutDoc {
   sidebar?: { width: number; collapsed: boolean };
   bookmarksCollapsed?: boolean;
   currentAppsCollapsed?: boolean;
+  /** The sidebar's Canvases section fold (the desk's canvas half). */
+  canvasesCollapsed?: boolean;
   explorerSide?: { hidden?: boolean; width?: number | null; maximized?: boolean };
   /** canonical fs path → "?sort=..&order=.." (platform/lib/viewstate.ts). */
   viewState?: Record<string, string>;
@@ -3262,6 +3267,10 @@ export interface CurrentAppEntry {
    *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
    *  and by nothing done to the tasks. */
   unread?: boolean;
+  /** This row is a canvas CLONE (`~/Fused/canvas/<env>/<name>`): the sidebar
+   *  lists it in its Canvases section, not Projects, and the row opens the
+   *  canvas's project page. Null / absent for an app folder. */
+  canvas?: { env: string; name: string } | null;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
@@ -4466,19 +4475,20 @@ export function markWholeTaskRead(
 // composer's constants speaking, and the two cases are the same fact here.
 export function readChatSettings(
   sessionId: string,
-): Promise<{ model: string; effort: string; backend?: string }> {
+): Promise<{ model: string; effort: string; backend?: string; permission?: string }> {
   // `backend` (docs/COPILOT_BACKEND.md §8): the agent the record names; absent
-  // on an older server.
-  return getJson<{ model: string; effort: string; backend?: string }>(
+  // on an older server. `permission`: the Approvals pill's recorded pick, ""
+  // when none.
+  return getJson<{ model: string; effort: string; backend?: string; permission?: string }>(
     `/api/tasks/settings?session_id=${encodeURIComponent(sessionId)}`,
   );
 }
 
 export function recordChatSettings(
   sessionId: string,
-  settings: { model?: string; effort?: string },
-): Promise<{ ok: boolean; model: string; effort: string }> {
-  return postJson<{ ok: boolean; model: string; effort: string }>(
+  settings: { model?: string; effort?: string; permission?: string },
+): Promise<{ ok: boolean; model: string; effort: string; permission?: string }> {
+  return postJson<{ ok: boolean; model: string; effort: string; permission?: string }>(
     "/api/tasks/settings",
     { session_id: sessionId, ...settings },
   );

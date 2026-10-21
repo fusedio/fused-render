@@ -2882,3 +2882,21 @@ def test_the_default_environment_is_an_ordinary_preference(harness, tmp_path, mo
     res = harness.client.put("/api/prefs", json={"workbench_env": ENV}, headers=GUARD)
     assert res.status_code == 423
     assert exported == [1]
+
+
+def test_a_fix_session_is_always_lean(harness, monkeypatch):
+    from fused_render import claude_spawn
+
+    _fail_push_with_validation(harness, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        claude_spawn, "spawn_helper",
+        lambda target, prompt, mode, session_id="", **kw: (
+            seen.update(kw), {"run_id": "run-78"})[1])
+    monkeypatch.setattr(claude_spawn, "record_session_when_ready",
+                        lambda agent, run_id, on_tick=None: None)
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: object())
+    res = harness.client.post("/api/canvases/fix", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200
+    assert seen["isolate_mcp"] is True
+    _stop_sync("alpha")

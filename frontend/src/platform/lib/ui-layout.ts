@@ -109,6 +109,7 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
   }
   if (typeof src.bookmarksCollapsed === "boolean") out.bookmarksCollapsed = src.bookmarksCollapsed;
   if (typeof src.currentAppsCollapsed === "boolean") out.currentAppsCollapsed = src.currentAppsCollapsed;
+  if (typeof src.canvasesCollapsed === "boolean") out.canvasesCollapsed = src.canvasesCollapsed;
 
   const es = src.explorerSide;
   if (isObj(es)) {
@@ -172,8 +173,8 @@ const withSide = (d: UiLayoutDoc, s: NonNullable<UiLayoutDoc["explorerSide"]>): 
  * Shape-only parsing; `sanitizeUiLayout` and the owning store's read path do
  * the rest. The owners, for whoever greps an old key:
  *   sidebar                 platform/lib/sidebarstate.ts
- *   bookmarks-collapsed     apps/explorer/sidebar/BookmarksSection.tsx
- *   current-apps-collapsed  shell/CurrentAppsSection.tsx
+ *   bookmarks-collapsed     platform/ui/sidebar/sidebar-accordion.ts (was BookmarksSection.tsx)
+ *   current-apps-collapsed  platform/ui/sidebar/sidebar-accordion.ts (was CurrentAppsSection.tsx)
  *   explorer-side-*         apps/explorer/lib/side-{hidden-,}store.ts, platform/lib/side-maximized-store.ts
  *   viewstate               platform/lib/viewstate.ts
  *   scheduled-view          shell/Scheduled.tsx

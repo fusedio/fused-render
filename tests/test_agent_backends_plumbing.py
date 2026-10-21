@@ -914,3 +914,21 @@ def test_no_module_touched_here_spells_the_claude_root_itself():
                 if _LITERAL.search(code):
                     offenders.append(f"{rel}:{n}: {line.strip()}")
     assert offenders == []
+
+
+def test_spawn_helper_forwards_isolate_mcp_only_when_true(monkeypatch):
+    """A fake `_start` without the kwarg must keep working, so the default
+    call shape is unchanged and only an asked-for lean run says so."""
+    seen = []
+
+    class _Agent:
+        @staticmethod
+        def _start(*a, **kw):
+            seen.append(kw)
+            return {"run_id": "r"}
+
+    monkeypatch.setattr(claude_spawn, "load_agent", lambda: _Agent)
+    claude_spawn.spawn_helper("/t", "p", "auto")
+    claude_spawn.spawn_helper("/t", "p", "auto", isolate_mcp=True)
+    assert "isolate_mcp" not in seen[0]
+    assert seen[1]["isolate_mcp"] is True

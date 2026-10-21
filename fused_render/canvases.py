@@ -566,6 +566,44 @@ def _cloned_names(env: str) -> set[str]:
     return {d for d in entries if os.path.isfile(os.path.join(root, d, "canvas.toml"))}
 
 
+def clone_dir_for(path: str) -> tuple[str, str, str] | None:
+    """The canvas CLONE `path` is, or sits inside — `(env, name, clone_dir)`
+    — or None. A clone is `<canvases_root(env)>/<name>` (one level under an
+    environment's root, a CLI canvas name). Compared through `realpath` as
+    well as the plain path: the CLI wrapper reaches a clone through `pwd -P`,
+    and a task made from inside one may name it either way. No existence
+    check — the desk keeps a row for a clone that is gone, as it does for an
+    app folder, until the user hides it.
+
+    The desk's canvas rule (current_apps.py): a canvas is a project on the
+    sidebar's desk like any app folder (its own Canvases section), so a task
+    under a clone puts the clone there and `list_apps` says which canvas a
+    row is."""
+    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
+
+    path = str(path or "").rstrip("/\\")
+    if not path or not os.path.isabs(path):
+        return None
+    # NO syscall on `path` (CodeRabbit on #1795): this runs on every task
+    # project the desk observes, including ones on a mount that may be
+    # wedged, and `app_dir_for` promises an answer before any syscall. The
+    # ROOTS are resolved instead — a fixed local set — so a path the CLI
+    # already resolved (`pwd -P`) matches the real root and a plain one the
+    # plain root. A symlink from elsewhere INTO a clone is not matched; it
+    # is not a documented way to reach one.
+    cand = os.path.normpath(path)
+    for env in WORKBENCH_ENV_CHOICES:
+        root = canvases_root(env)
+        for base in {os.path.normpath(root), os.path.realpath(root)}:
+            if cand == base or not cand.startswith(base + os.sep):
+                continue
+            name = cand[len(base) + 1:].split(os.sep)[0]
+            if not _NAME_RE.match(name):
+                continue
+            return env, name, os.path.join(canvases_root(env), name)
+    return None
+
+
 @router.get("/api/canvases/whoami")
 def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None)):
     # EXECUTES a control-plane call — D36 guard, like account's probe=1.
@@ -4388,7 +4426,8 @@ def api_canvases_fix(body: dict = Body(...), x_fused: str | None = Header(defaul
             # CLAUDE, NAMED: a canvas fix is a Claude feature (like the app
             # builder), so it never follows the Preferences default agent.
             res = claude_spawn.spawn_helper(manager.dir, prompt, "auto",
-                                            backend="claude")
+                                            backend="claude",
+                                            isolate_mcp=True)
         except Exception as exc:  # noqa: BLE001 — spawn failure is the answer
             return _error(f"failed to start Claude session: {exc}", 500)
         if res.get("reason") == "backend_disabled":

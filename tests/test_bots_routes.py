@@ -364,13 +364,7 @@ def test_last_user_ts_tracks_only_user_messages(client, ws):
 
 # ---- per-bot Terminal opt-in and the owned session lifecycle (docs §16) --------
 
-@pytest.fixture
-def terminals_on(monkeypatch):
-    from fused_render.shell import prefs
-    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: True)
-
-
-def test_terminal_setting_round_trips_and_defaults_off(client, ws, terminals_on):
+def test_terminal_setting_round_trips_and_defaults_off(client, ws):
     bid = make(client, engine="agent")
     s = one(status(client), bid)
     assert not s.get("terminal")
@@ -384,18 +378,15 @@ def test_terminal_setting_round_trips_and_defaults_off(client, ws, terminals_on)
     assert j(client.post("/api/bots", {"name": "X", "terminal": 1}))[0] == 400
 
 
-def test_terminal_is_unavailable_with_the_pref_off_or_on_steps(client, ws, monkeypatch):
+def test_terminal_is_unavailable_on_steps(client, ws):
     bid = make(client, engine="agent", terminal=True)
-    assert one(status(client), bid)["terminal_available"] is False  # global pref off
-    from fused_render.shell import prefs
-    monkeypatch.setattr(prefs, "bot_terminals_enabled", lambda: True)
     assert one(status(client), bid)["terminal_available"] is True
     j(client.post(f"/api/bots/{bid}/settings", {"engine": "steps"}))
     s = one(status(client), bid)
     assert s["terminal_available"] is False and s["terminal_needs_claude"] is True
 
 
-def test_super_bot_refuses_terminal(client, ws, terminals_on):
+def test_super_bot_refuses_terminal(client, ws):
     assert j(client.post("/api/bots", {"name": "S", "kind": "super", "terminal": True}))[0] == 400
     sid = make(client, kind="super")
     st, out = j(client.post(f"/api/bots/{sid}/settings", {"terminal": True}))
@@ -409,7 +400,7 @@ def _live(sid):
     return s is not None and s.alive
 
 
-def test_terminal_session_is_owned_reused_and_closed_on_opt_out(client, ws, terminals_on):
+def test_terminal_session_is_owned_reused_and_closed_on_opt_out(client, ws):
     from fused_render import pty_session
     bid = make(client, engine="agent", terminal=True)
     b = registry.get(bid)
@@ -428,7 +419,7 @@ def test_terminal_session_is_owned_reused_and_closed_on_opt_out(client, ws, term
         b.close_terminal()
 
 
-def test_terminal_session_dies_with_delete(client, ws, terminals_on):
+def test_terminal_session_dies_with_delete(client, ws):
     bid = make(client, engine="agent", terminal=True)
     sess = registry.get(bid).terminal_session()
     assert _live(sess.id)
@@ -436,7 +427,7 @@ def test_terminal_session_dies_with_delete(client, ws, terminals_on):
     assert not _live(sess.id)
 
 
-def test_close_all_terminals_kills_every_bot_session_only(client, ws, terminals_on):
+def test_close_all_terminals_kills_every_bot_session_only(client, ws):
     from fused_render import pty_session
     a = registry.get(make(client, engine="agent", terminal=True)).terminal_session()
     mine = pty_session.REGISTRY.create()
@@ -447,7 +438,7 @@ def test_close_all_terminals_kills_every_bot_session_only(client, ws, terminals_
         mine.kill()
 
 
-def test_clone_copies_terminal_opt_in(client, ws, terminals_on):
+def test_clone_copies_terminal_opt_in(client, ws):
     bid = make(client, engine="agent", terminal=True)
     st, out = j(client.post(f"/api/bots/{bid}/clone", {"name": "Copy"}))
     assert one(status(client), out["id"])["terminal"] is True
