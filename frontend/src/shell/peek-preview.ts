@@ -343,13 +343,20 @@ export function ensureAppFor(project: string): Promise<boolean> {
   const pending = asking.get(project);
   if (pending) return pending;
   const ask = ensureCurrentApp(project)
-    .then(({ added, apps }) => {
-      if (!added || !apps) return false;
+    .then(({ app, added, apps }) => {
+      if (!app) return false;
       // Announce FIRST: the module-level listener above drops the cache on
       // the event, and the fresh table must survive it.
       announceCurrentAppsChanged();
-      appsCache = currentApps(apps, []);
-      return true;
+      if (added && apps) {
+        appsCache = currentApps(apps, []);
+        return true;
+      }
+      // ON THE DESK ALREADY, yet this table had no app for the project: the
+      // cache is stale (another tab added it, or a read from before). Re-read
+      // rather than trust it (CodeRabbit on #1830).
+      appsCache = null;
+      return ensureApps().then(() => true);
     })
     // Same stance as `ensureApps`: no desk, no preview, and the door opens.
     .catch(() => false)

@@ -373,10 +373,24 @@ describe("the door-time check (ensureAppFor)", () => {
     expect(await ensureAppFor("")).toBe(false);
   });
 
-  it("an app already on the desk is no change: nothing adopted, nothing announced", async () => {
-    stubEnsure({ app: "/w/built", added: false, apps: null });
-    expect(await ensureAppFor("/w/built")).toBe(false);
-    expect(knownApps()).toBeNull();
+  it("an app already on the desk that this table lacks = a stale cache: re-read", async () => {
+    const calls: string[] = [];
+    (globalThis as { fetch: unknown }).fetch = (url: string) => {
+      calls.push(url);
+      const body = url.endsWith("/ensure")
+        ? { ok: true, app: "/w/built", added: false, apps: null }
+        : { apps: [row] };
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => "application/json" },
+        json: async () => body,
+        text: async () => JSON.stringify(body),
+      } as unknown as Response);
+    };
+    expect(await ensureAppFor("/w/built")).toBe(true);
+    expect(calls.some((u) => u.endsWith("/api/current-apps"))).toBe(true);
+    expect(appForProject("/w/built", knownApps())?.name).toBe("built");
   });
 
   it("two mounts asking at once share the one request", async () => {

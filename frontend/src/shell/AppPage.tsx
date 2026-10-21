@@ -417,10 +417,13 @@ export default function AppPage({
         // from a Bots "ready" link, a Recent, a typed URL — the folder the
         // tasks listing's one look found empty lands on the desk here. Best
         // effort, after the page is already resolved: the desk is a side
-        // table and must never gate the app.
+        // table and must never gate the app. Announced for ANY app, not only
+        // an added one (CodeRabbit on #1830): another tab may have put the
+        // row there, and this tab's sidebar heard nothing — one refetch per
+        // app open is the price of a desk that is right.
         ensureCurrentApp(dir)
           .then((r) => {
-            if (r.added) announceCurrentAppsChanged();
+            if (r.app) announceCurrentAppsChanged();
           })
           .catch(() => {});
       } catch (e) {
