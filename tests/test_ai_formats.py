@@ -418,6 +418,31 @@ def test_mflux_needs_the_variant_table_as_well_as_the_layout():
         repo_id=fill, names=set(), dirnames=components, config={}, torch_weights=False)
 
 
+def test_the_z_image_and_qwen_image_rows_name_a_variant_class_and_a_config():
+    """Shape of the two rows added in the October 2026 refresh. Both are
+    distilled no-CFG checkpoints with no `vae` key: Z-Image's 16-channel VAE
+    would be projected through SD1.5's 4-channel `AutoencoderKL` fit, and
+    Qwen-Image's `AutoencoderKLQwenImage` has no row at all. Qwen-Image 2.1
+    Turbo pins `guidance` to 1 because mflux raises on anything else."""
+    from fused_render.ai.runners import preview
+
+    z = formats.MFLUX_VARIANTS["mflux-community/z-image-turbo-mflux-q4"]
+    assert (z["variant"], z["module"], z["config"]) == (
+        "ZImage", "mflux.models.z_image.variants", "z_image_turbo")
+    q = formats.MFLUX_VARIANTS["OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit"]
+    assert (q["variant"], q["module"], q["config"]) == (
+        "QwenImage21", "mflux.models.qwen21.variants.txt2img.qwen_image_21",
+        "qwen_image_21_turbo")
+    assert q["guidance"] == 1.0
+    for row in (z, q):
+        assert "vae" not in row
+    assert "AutoencoderKLQwenImage" not in preview.PROJECTIONS
+    for repo_id in ("mflux-community/z-image-turbo-mflux-q4",
+                    "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit"):
+        assert formats.mflux_native_mode(repo_id) == "generate"
+        assert formats.mflux_edit_recipe(repo_id) is None
+
+
 def test_mflux_edit_recipe_DERIVES_config_and_vae_rather_than_duplicating():
     """`MFLUX_EDIT_VARIANTS` carries only `variant`/`module` — the two facts
     that actually differ between editing and plain generation. `config` and

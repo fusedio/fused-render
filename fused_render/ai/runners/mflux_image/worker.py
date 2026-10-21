@@ -713,6 +713,11 @@ def generate(body):
     height = int(body.get("height") or 1024)
     steps = int(body.get("steps") or 28)
     guidance = float(body.get("guidance") or 4.0)
+    # A recipe that PINS guidance (Qwen-Image 2.1 Turbo raises on anything
+    # but 1) wins over both the default above and an explicit request value.
+    pinned = (_recipe_for(_loaded["model_id"], mode) or {}).get("guidance")
+    if pinned is not None:
+        guidance = float(pinned)
     seed = int(body.get("seed") or 0)
     out = str(body.get("out") or "")
     job = body.get("job") or None

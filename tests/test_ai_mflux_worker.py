@@ -367,6 +367,23 @@ def test_the_defaults_are_the_OTHER_RUNNERS_defaults(monkeypatch, base, tmp_path
     assert (model.calls[0]["width"], model.calls[0]["height"]) == (1024, 1024)
 
 
+def test_a_recipe_that_PINS_guidance_overrides_what_the_caller_sent(
+        monkeypatch, base, tmp_path):
+    """Qwen-Image 2.1 Turbo raises on any guidance but 1 (mflux's
+    `Qwen21TurboScheduler.check_generate`), and the worker's 4.0 default is
+    what an ordinary request arrives with — so the recipe's `guidance` wins
+    over both the default and an explicit value."""
+    worker, model = load_worker(monkeypatch, base)
+    recipe = dict(worker.formats.MFLUX_VARIANTS[MODEL], guidance=1.0)
+    monkeypatch.setitem(worker.formats.MFLUX_VARIANTS, MODEL, recipe)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path))
+    worker.generate(_request(tmp_path, guidance=2.5))
+
+    assert [c["guidance"] for c in model.calls] == [1.0, 1.0]
+
+
 def test_the_image_is_written_where_the_SERVER_said(monkeypatch, base, tmp_path):
     """`overwrite=True` is not optional: mflux's default resolves a colliding
     path by writing somewhere ELSE, and the server has already told the caller

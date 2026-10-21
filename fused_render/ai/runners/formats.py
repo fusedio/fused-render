@@ -216,6 +216,30 @@ MFLUX_VARIANTS = {
         "config": "flux2_klein_9b",
         "vae": "AutoencoderKLFlux2",
     },
+    # Z-Image Turbo (October 2026 refresh). Distilled, no CFG: `ZImage` zeroes
+    # guidance itself when `ModelConfig.supports_guidance` is False. **No `vae`
+    # key, so no live preview** — its VAE is bit-identical to the FLUX.1 one
+    # (the Fill row's, 260 tensors, max|diff| 0.0), a 16-channel latent, and
+    # `preview.PROJECTIONS["AutoencoderKL"]` is SD1.5's 4-channel fit, which
+    # would project garbage (see `MFLUX_FILL_VARIANTS`).
+    "mflux-community/z-image-turbo-mflux-q4": {
+        "variant": "ZImage",
+        "module": "mflux.models.z_image.variants",
+        "config": "z_image_turbo",
+    },
+    # Qwen-Image 2.1 Turbo. The package `__init__`s under `qwen21/variants`
+    # are empty, so `module` is the full submodule path. No `vae` key: its VAE
+    # is `AutoencoderKLQwenImage`, which `preview.PROJECTIONS` has no row for,
+    # so it gets no preview. `guidance` PINS the value the worker passes —
+    # mflux raises on anything but 1 for the Turbo checkpoint
+    # (`Qwen21TurboScheduler.check_generate`), and a plain request arrives
+    # with the worker's 4.0 default.
+    "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit": {
+        "variant": "QwenImage21",
+        "module": "mflux.models.qwen21.variants.txt2img.qwen_image_21",
+        "config": "qwen_image_21_turbo",
+        "guidance": 1.0,
+    },
 }
 
 #: The EDIT counterpart of `MFLUX_VARIANTS` — one entry per model that also

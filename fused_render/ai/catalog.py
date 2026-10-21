@@ -830,6 +830,25 @@ SUGGESTIONS: dict[str, list[dict]] = {
             # The same distilled model; the same D310 4-step benchmark.
             "defaults": {"steps": 4},
         },
+        # Z-Image Turbo (Tongyi), Apache-2.0, October 2026 refresh. A distilled
+        # no-CFG model — 8 steps is its published setting — and it sorts
+        # between the two klein rows on its 5.9GB (Hub whole-snapshot byte
+        # sum, 2026-10-22). **Load-gated** with mflux 0.23.0: `ZImage` built
+        # over the snapshot, 8 steps at 256x256 rendered a clean apple, and so
+        # did the worker's own `load`/`generate`. No live preview: its 16-channel
+        # VAE has no row in `preview.PROJECTIONS` (see `formats.MFLUX_VARIANTS`).
+        {
+            "id": "mflux-community/z-image-turbo-mflux-q4",
+            "params": "6B",
+            "quantization": "MLX 4-bit",
+            "label": "Z-Image Turbo (MLX 4-bit)",
+            "nickname": "Z-Image",
+            "size_gb": 5.9,
+            "note": "A different family from klein for the same 8-step "
+                    "quickness — worth a try when klein's look is not the "
+                    "one you want.",
+            "defaults": {"steps": 8},
+        },
         # The 9B klein, and the reason this list has a second row at all: an
         # engine whose whole shortlist is one model gives a reader nothing to
         # do when its first image is not good enough, and klein publishes
