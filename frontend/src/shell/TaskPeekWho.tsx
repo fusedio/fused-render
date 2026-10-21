@@ -123,7 +123,11 @@ export function TaskPeekWho({ task, running = false, rename = renameTask }: {
   const saveRename = async () => {
     if (draft === null || settled.current || busy) return;
     const next = draft.trim();
-    if (next === title) return cancelRename();
+    // Compare with the STORED name, not the headline: in last-message or recap
+    // mode the headline is not the task's name, and saving it unchanged is how
+    // the reader pins it. Only an already-renamed task has a name to match.
+    const stored = task.title_source === "renamed" ? (task.title || "").split("\n")[0].trim() : "";
+    if (next === stored) return cancelRename();
     setBusy(true);
     try {
       await rename(task.key, next);

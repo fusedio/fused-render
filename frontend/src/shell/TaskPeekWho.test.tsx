@@ -104,7 +104,10 @@ test("the pencil button opens the editor too", () => {
 
 test("Escape cancels and the unchanged text saves nothing", async () => {
   const calls: string[] = [];
-  const v = render({ task: task(), rename: async (_k, t) => void calls.push(t) });
+  const v = render({
+    task: task({ title_source: "renamed" } as Partial<Task>),
+    rename: async (_k, t) => void calls.push(t),
+  });
   act(() => {
     titleSpan(v.r).props.onDoubleClick();
   });
@@ -148,4 +151,51 @@ test("a task that has not started offers no rename", () => {
     });
     expect(inputOf(v.r)).toBeUndefined();
   }
+});
+
+// ---- the no-op check compares the STORED name, not the displayed headline ----
+
+async function saveUntouched(
+  t: Task,
+  value?: string,
+): Promise<{ calls: string[]; v: ReturnType<typeof render> }> {
+  const calls: string[] = [];
+  const v = render({ task: t, rename: async (_k, x) => void calls.push(x) });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  if (value !== undefined) edit(v.r, value);
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  return { calls, v };
+}
+
+test("not renamed, headline is the last message: saving it unchanged pins it as the name", async () => {
+  const t = task({
+    title_source: "message",
+    last_message: { role: "user", text: "Newest message", at: 1 },
+  } as Partial<Task>);
+  const { calls } = await saveUntouched(t);
+  expect(calls).toEqual(["Newest message"]);
+});
+
+test("renamed: saving the stored name unchanged calls nothing", async () => {
+  const { calls } = await saveUntouched(
+    task({ title: "Mine", title_source: "renamed" } as Partial<Task>),
+  );
+  expect(calls).toEqual([]);
+});
+
+test("renamed: clearing the field saves an empty name", async () => {
+  const { calls } = await saveUntouched(
+    task({ title: "Mine", title_source: "renamed" } as Partial<Task>),
+    "",
+  );
+  expect(calls).toEqual([""]);
+});
+
+test("not renamed: clearing the field has nothing to clear", async () => {
+  const { calls } = await saveUntouched(task({ title_source: "message" } as Partial<Task>), "");
+  expect(calls).toEqual([]);
 });
