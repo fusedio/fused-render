@@ -6241,11 +6241,11 @@ _PULSE_FIELDS = (
 )
 
 
-# What `cardTitleLine` (shell/tasks-lib) reads beyond `title`, so the
-# finished/needs-input notice names a task the way every Tasks view does. Each
-# key is ABSENT on a row whose flag is off (recap, title_mode) — the client
-# reads presence as the flag — so they ride only when the row has them.
-_PULSE_TITLE_FIELDS = ("title_source", "title_mode", "recap", "last_reply", "last_message")
+# What the finished / failed / needs-input notice names a task by
+# (task-status-notify `noticeTitle`): the reader's newest message, unless the
+# task was renamed or summary-only titles are on. `title_mode` is ABSENT with
+# its flag off, so these ride only when the row has them.
+_PULSE_TITLE_FIELDS = ("title_source", "title_mode", "last_message")
 _PULSE_TEXT_CAP = 400
 
 
@@ -6254,15 +6254,8 @@ def _pulse_row(row: dict) -> dict:
     for field in _PULSE_TITLE_FIELDS:
         if field not in row:
             continue
-        # `last_reply` only titles a row with recap titles on (`cardTitleLine`).
-        if field == "last_reply" and "recap" not in row:
-            continue
         value = row[field]
-        if field == "last_reply" and isinstance(value, str):
-            value = value[:_PULSE_TEXT_CAP]
-        elif field == "last_message" and isinstance(value, dict):
-            value = {**value, "text": str(value.get("text", ""))[:_PULSE_TEXT_CAP]}
-        elif field == "recap" and isinstance(value, dict):
+        if field == "last_message" and isinstance(value, dict):
             value = {**value, "text": str(value.get("text", ""))[:_PULSE_TEXT_CAP]}
         out[field] = value
     return out

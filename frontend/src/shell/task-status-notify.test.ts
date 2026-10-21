@@ -21,15 +21,19 @@ function task(over: Partial<TaskPulseTask> = {}): TaskPulseTask {
 }
 
 describe("notice title", () => {
-  test("names the task by its recap, like the Tasks views", () => {
+  test("names the task by the reader's newest message, not the recap", () => {
     const t = task({
       status: "done",
       title: "hi",
-      recap: { text: "Fixed the login redirect", for_uuid: "u1" },
+      last_message: { role: "user", text: "fix the login redirect\nthanks", at: 1 },
     });
-    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("Fixed the login redirect");
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("fix the login redirect");
   });
-  test("needs-input uses the newest message when there is no recap", () => {
+  test("an assistant message never titles the notice", () => {
+    const t = task({ status: "done", title: "hi", last_message: { role: "assistant", text: "Done!", at: 1 } });
+    expect(notificationForTransition("in_progress", t, 0)?.title).toBe("hi");
+  });
+  test("needs-input uses the newest user message", () => {
     const t = task({
       status: "needs_attention",
       title: "hi",
@@ -45,7 +49,7 @@ describe("notice title edge cases", () => {
       status: "done",
       title: "My export",
       title_source: "renamed",
-      recap: { text: "Fixed the login redirect", for_uuid: "u1" },
+      last_message: { role: "user", text: "fix the login redirect", at: 1 },
     });
     expect(notificationForTransition("in_progress", t, 0)?.title).toBe("My export");
   });

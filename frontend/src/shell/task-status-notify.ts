@@ -62,7 +62,7 @@ import type { TaskPulseTask } from "@platform/lib/api";
 import type { NotificationInput } from "@platform/lib/notifications";
 import { labelForSource } from "@platform/lib/format";
 import { agentLabel, agentNamed } from "@platform/lib/agent-backends";
-import { cardTitleLine, taskColumn } from "@shell/tasks-lib";
+import { cardTitleLine, firstLine, taskColumn } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
 
@@ -118,6 +118,20 @@ export function taskDestination(task: TaskPulseTask): string {
   return taskHref(task) ?? folderHref(task) ?? "/tasks";
 }
 
+/** What a notice calls the task: the reader's OWN newest message, so the card
+ *  names the thing they remember asking for, and stays put until they say
+ *  something new (a recap or reply line lands later and reads as a title that
+ *  changed under them). A renamed task, summary-only titles and a task nothing
+ *  has been said in yet keep the server `title` — `cardTitleLine` already
+ *  answers those. One short line. */
+function noticeTitle(task: TaskPulseTask): string {
+  const line = cardTitleLine({ ...task, last_message: null, recap: undefined });
+  const said = task.last_message?.role === "user" ? firstLine(task.last_message.text) : "";
+  const keepsTitle = task.title_source === "renamed" || task.title_mode === "summary";
+  const text = (!keepsTitle && said) || line.text || task.title || "A task";
+  return text.length > 120 ? text.slice(0, 119).trimEnd() + "…" : text;
+}
+
 /** The "who made this" caption for a task's own notification — SAME
  *  project-first order `folderHref` (schedule-lib.ts) and `attentionRows`
  *  (tasks-lib.ts:4872) already settled on, not target-first: a task made
@@ -126,13 +140,6 @@ export function taskDestination(task: TaskPulseTask): string {
  *  exact "index" caption bug `attentionRows`'s own comment names. `project`
  *  names the containing app/folder; `target` is only a fallback for a task
  *  with no project at all. */
-/** The task's name as every Tasks view prints it (recap / reply / newest
- *  message / title — `cardTitleLine`), not the raw server `title`. */
-function noticeTitle(task: TaskPulseTask): string {
-  const text = cardTitleLine(task).text || task.title || "A task";
-  return text.length > 120 ? text.slice(0, 119).trimEnd() + "…" : text;
-}
-
 function taskCaption(task: TaskPulseTask): string {
   return labelForSource(task.project || task.target);
 }

@@ -4095,8 +4095,6 @@ export type TaskPulseTask = Pick<
   // What the notice titles a task by (tasks-lib `cardTitleLine`) — optional,
   // each absent with its flag off or on an older server.
   | "title_mode"
-  | "recap"
-  | "last_reply"
   | "last_message"
 > &
   // Optional: a pulse row from a server that predates it carries none.

@@ -514,7 +514,6 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     )
     # What the finished/needs-input notice titles a task by (`cardTitleLine`):
     # the same fields the Tasks views read, riding only when the row has them.
-    # `last_reply` rides only with recap titles on (`recap` key present).
     title_fields = ("title_source", "last_message")
     assert pulse == [
         {field: row[field] for field in pulse_fields + title_fields if field in row}
