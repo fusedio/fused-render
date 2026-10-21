@@ -294,7 +294,9 @@
   box-shadow: 0 6px 24px var(--c-shadow);
 }
 .c-kebab-opt {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 7px 9px;
   font: inherit;
@@ -323,6 +325,25 @@
    apart from the reversible one directly above it BEFORE it is pressed. */
 .c-kebab-opt.is-danger {
   color: var(--c-error);
+}
+/* The icon column (platform/ui/TaskActionIcons), muted at rest like the Tasks
+   peek's ContextMenu column, taking the row's ink on hover and on danger. */
+.c-kebab-icon {
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-dim);
+}
+.c-kebab-opt[data-highlighted]:not([disabled]) .c-kebab-icon,
+.c-kebab-opt:hover:not([disabled]) .c-kebab-icon,
+.c-kebab-opt.is-danger:not([disabled]) .c-kebab-icon {
+  color: inherit;
+}
+.c-kebab-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--c-border);
 }
 .c-kebab-opt.is-danger:hover:not([disabled]),
 .c-kebab-opt.is-danger[data-highlighted]:not([disabled]),

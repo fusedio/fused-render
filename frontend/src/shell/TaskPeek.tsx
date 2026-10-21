@@ -42,6 +42,20 @@ import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ChatMount } from "@apps/claude";
+import {
+  RUN_BLOCKED_HINT,
+  TASK_ACTION_LABELS,
+  blockedActionLabel,
+  terminalActionLabel,
+} from "@platform/lib/task-actions";
+import {
+  TASK_ICON_ARCHIVE,
+  TASK_ICON_COPY,
+  TASK_ICON_DOWNLOAD,
+  TASK_ICON_TERMINAL,
+  TASK_ICON_TRASH,
+  TASK_ICON_UNARCHIVE,
+} from "@platform/ui/TaskActionIcons";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "@apps/claude/protocol/agent";
 
 // THE HEADER IS THE PEEK'S OWN NOW, not the chat's (design.md, Header + list
@@ -52,12 +66,7 @@ import { fetchTerminalCommand as fetchAgentTerminalCommand } from "@apps/claude/
 // title — with the panel's own controls either side.
 import { folderHref } from "./schedule-lib";
 import { EraseTaskModal } from "./EraseTaskModal";
-import {
-  ICON_ARCHIVE,
-  ICON_OPEN_FOLDER_PATH,
-  ICON_TRASH,
-  ICON_UNARCHIVE,
-} from "./ScheduleTaskViews";
+import { ICON_OPEN_FOLDER_PATH } from "./ScheduleTaskViews";
 import { useChatTemplates } from "./TaskCards";
 // The header's identity block — status ring, number, title, project — lives in
 // its own module because the native chat's top line draws the SAME block for the
@@ -80,7 +89,6 @@ import {
   type PreviewLoad,
 } from "./peek-preview";
 import {
-  ERASE_BLOCKED_HINT,
   emptyPaneFailed,
   emptyPaneText,
   eraseBlocked,
@@ -393,20 +401,6 @@ const ICON_OPEN_DOOR = (
   <svg {...ICON}><path d={ICON_OPEN_FOLDER_PATH} /></svg>
 );
 
-/** The terminal hand-off's mark — the prompt caret, the one picture of a shell
- *  this app already uses for it. */
-const ICON_TERMINAL = (
-  <svg {...ICON}><polyline points="5 7 9 11 5 15" /><path d="M12 16h7" /></svg>
-);
-// Download — arrow into a tray, the shape MenuIcons.download draws for an
-// app export: the transcript leaves the app as a file the reader keeps.
-const ICON_DOWNLOAD = (
-  <svg {...ICON}>
-    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-    <path d="M7 10l5 5 5-5" />
-    <path d="M12 15V3" />
-  </svg>
-);
 // ---- the panel ---------------------------------------------------------------
 
 export function TaskPeek({
@@ -1004,57 +998,69 @@ export function TaskPeek({
       });
       items.push("separator");
     }
-    // NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): both terminal rows
-    // hand the task to that agent's CLI. Same rule as the Explorer's item.
-    if (!isBackendOff(task.backend)) {
-    items.push({
-      // The agent's word once there is more than one to name (D18): the
-      // command handed over is that agent's own `--resume`.
-      label: agentNamed(task.backend)
-        ? `Continue with ${agentLabel(task.backend)} in terminal`
-        : "Continue this task in terminal",
-      icon: ICON_TERMINAL,
-      // No session and no template means there is no command to hand over —
-      // said by the row rather than by a toast after the press.
-      disabled: !terminalHere || !task.session_id,
-      onClick: () => void toTerminal(),
-    });
-    // The row above now RUNS the command where it can — this is the clipboard
-    // fallback for a reader who would rather paste it into a terminal of
-    // their own.
-    if (canRun) {
+    // THE HAND-OFFS (platform/lib/task-actions — the chat's ⋮ reads the same
+    // words in the same order). Hidden on a task with no session yet: there is
+    // no command to hand over and no transcript to save.
+    if (task.session_id) {
+      // NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): both terminal rows
+      // hand the task to that agent's CLI. Same rule as the Explorer's item.
+      if (!isBackendOff(task.backend)) {
+        items.push({
+          // The agent's word once there is more than one to name (D18): the
+          // command handed over is that agent's own `--resume`.
+          label: terminalActionLabel(
+            agentNamed(task.backend) ? agentLabel(task.backend) : null,
+            true,
+          ),
+          icon: TASK_ICON_TERMINAL,
+          // No template means there is no command to hand over — said by the
+          // row rather than by a toast after the press.
+          disabled: !terminalHere,
+          onClick: () => void toTerminal(),
+        });
+        // The row above RUNS the command where it can — this is the clipboard
+        // fallback for a reader who would rather paste it into a terminal of
+        // their own.
+        if (canRun) {
+          items.push({
+            label: TASK_ACTION_LABELS.copyCommand,
+            icon: TASK_ICON_COPY,
+            disabled: !terminalHere,
+            onClick: () => void copyTerminalCommand(),
+          });
+        }
+      }
       items.push({
-        label: "Copy terminal command",
-        icon: ICON_TERMINAL,
-        disabled: !terminalHere || !task.session_id,
-        onClick: () => void copyTerminalCommand(),
+        label: TASK_ACTION_LABELS.download,
+        icon: TASK_ICON_DOWNLOAD,
+        onClick: () => void downloadTranscript(),
       });
+      items.push("separator");
     }
-    }
-    // The conversation as a file. Disabled, not hidden, on a row with no
-    // session yet: the door exists, there is just nothing behind it until the
-    // task has run — the same rule the terminal rows above follow.
-    items.push({
-      label: "Download transcript",
-      icon: ICON_DOWNLOAD,
-      disabled: !task.session_id,
-      onClick: () => void downloadTranscript(),
-    });
+    // FILING. A running task's Archive is REFUSED, not missing — the chat's ⋮
+    // shows it greyed with the reason, and so does this one now.
+    const blocked = eraseBlocked(task);
     if (filing) {
       items.push({
-        label: filing.kind === "archive" ? "Archive task" : "Unarchive task",
-        icon: filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE,
+        label: filing.kind === "archive" ? TASK_ACTION_LABELS.archive : TASK_ACTION_LABELS.unarchive,
+        icon: filing.kind === "archive" ? TASK_ICON_ARCHIVE : TASK_ICON_UNARCHIVE,
         disabled: acting,
         onClick: () => void refile(),
+      });
+    } else if (blocked) {
+      items.push({
+        label: blockedActionLabel(TASK_ACTION_LABELS.archive, RUN_BLOCKED_HINT),
+        icon: TASK_ICON_ARCHIVE,
+        disabled: true,
+        onClick: () => {},
       });
     }
     // A menu row cannot carry a hint, so the DISABLED one says why in its own
     // words — nobody should meet the server's refusal for the first time inside
     // a confirmation (the card door's rule, tasks-lib.eraseBlocked).
-    const blocked = eraseBlocked(task);
     items.push({
-      label: blocked ? `Delete task — ${ERASE_BLOCKED_HINT.toLowerCase()}` : "Delete task",
-      icon: ICON_TRASH,
+      label: blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null),
+      icon: TASK_ICON_TRASH,
       danger: true,
       disabled: blocked,
       onClick: () => {
