@@ -1491,6 +1491,9 @@ export interface Prefs {
   // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
   // default). Optional: absent (older server) reads as on.
   claude_strict_mcp?: { enabled: boolean };
+  // The Approvals mode a new Claude chat starts in (`claude_default_permission`,
+  // shell/prefs.py): plan | prompt | acceptEdits | auto, "auto" when unset.
+  claude_default_permission?: string;
   // Concurrent Claude session cap (`claude_max_concurrent_sessions`; default
   // 10, 0 = unlimited). Optional: absent (older server) reads as 10.
   claude_sessions?: { max_concurrent: number };
@@ -1876,6 +1879,10 @@ export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskSummaryTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_summary_titles_enabled: enabled });
+}
+
+export function putClaudeDefaultPermission(mode: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { claude_default_permission: mode });
 }
 
 export function putClaudeStrictMcpEnabled(enabled: boolean): Promise<Prefs> {
@@ -4468,19 +4475,20 @@ export function markWholeTaskRead(
 // composer's constants speaking, and the two cases are the same fact here.
 export function readChatSettings(
   sessionId: string,
-): Promise<{ model: string; effort: string; backend?: string }> {
+): Promise<{ model: string; effort: string; backend?: string; permission?: string }> {
   // `backend` (docs/COPILOT_BACKEND.md §8): the agent the record names; absent
-  // on an older server.
-  return getJson<{ model: string; effort: string; backend?: string }>(
+  // on an older server. `permission`: the Approvals pill's recorded pick, ""
+  // when none.
+  return getJson<{ model: string; effort: string; backend?: string; permission?: string }>(
     `/api/tasks/settings?session_id=${encodeURIComponent(sessionId)}`,
   );
 }
 
 export function recordChatSettings(
   sessionId: string,
-  settings: { model?: string; effort?: string },
-): Promise<{ ok: boolean; model: string; effort: string }> {
-  return postJson<{ ok: boolean; model: string; effort: string }>(
+  settings: { model?: string; effort?: string; permission?: string },
+): Promise<{ ok: boolean; model: string; effort: string; permission?: string }> {
+  return postJson<{ ok: boolean; model: string; effort: string; permission?: string }>(
     "/api/tasks/settings",
     { session_id: sessionId, ...settings },
   );

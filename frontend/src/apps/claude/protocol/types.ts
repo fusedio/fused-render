@@ -27,6 +27,7 @@ export type Action =
   | "cancel"
   | "live_host"
   | "send"
+  | "set_mode"
   | "commands"
   | "task_output"
   | "task_stop"
@@ -245,6 +246,8 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
+  /** The pill changed on a live run: apply the mode now, no message, no turn. */
+  set_mode: { run_id: string; permission_mode: string };
   commands: CommandsRequest;
   task_output: TaskOutputRequest;
   task_stop: TaskOutputRequest;
@@ -692,6 +695,8 @@ export type StartResponse = { run_id: string; session_id?: string; error?: undef
 
 /** agent.py:2971-3038 — exactly one of the three. */
 export type SendResponse = { sent: true } | { respawn: true } | ErrorOnly;
+/** `set_mode`'s answer: `mode` is the page spelling now in force. */
+export type SetModeResponse = { ok: true; mode: PermissionMode } | { respawn: true } | ErrorOnly;
 
 /** agent.py:1601-1607; error branches carry only `error`. */
 export type DecideResponse =
@@ -1042,6 +1047,7 @@ export interface AgentResponses {
   cancel: CancelResponse;
   live_host: RunIdResponse | ErrorOnly;
   send: SendResponse;
+  set_mode: SetModeResponse;
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
   task_stop: TaskStopResponse | ErrorOnly;

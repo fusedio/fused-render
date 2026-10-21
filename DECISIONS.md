@@ -7229,3 +7229,10 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **Decision.** `claude_config/mcp.py` keeps the last good list in `<home>/claude_config/mcp_list_cache.json` (`{servers, checkedAt}`). `list` with a cache returns it at once with `stale: true` and starts one background refresh; with no cache it blocks as before. `fresh` joins or runs the single in-flight refresh. add/remove/logout success deletes the cache; a generation counter stops a refresh that started before the change from writing its outdated answer back. A failed refresh never touches the cache.
 - **UI.** `McpSection` renders the cached list, shows "Checking status..." in the toolbar summary and dims the status pills until `list({fresh: true})` returns; a failed live check keeps the cached list instead of replacing it with an error.
 - **Deviation.** No frontend test: there is no existing McpSection test and the swap is a few lines of state; the backend contract is covered in `tests/test_claude_config_api.py`.
+
+## D1394: Claude chat approvals default to auto, changeable globally and per chat (2026-10-21, claude-permission)
+
+- **Decision.** New pref `claude_default_permission` (default `auto`; `plan`/`prompt`/`acceptEdits`/`auto`, 400 otherwise), shown as "Default approvals for new chats" in Preferences. An empty `permission_mode` in `_start` uses it; in `_send` it still means "no change". Copilot, bots and scheduled jobs are unchanged.
+- **Ranking.** Frontend `resolvePermission(param, recorded, globalDefault)`: this chat's recorded pick, then the `permission` param, then the pref, then `auto`. A present-but-unknown value is `prompt` (strictest), never a looser fallback.
+- **Per chat.** `permission` is recorded beside model/effort (`tasks_store.record_settings`, `/api/tasks/settings`) and written back into the params on read so a remounted Task page keeps the pick.
+- **Live apply.** `agent._set_mode` (extracted from `_send`, exposed as the `set_mode` action) switches a running host's mode without a message. A `{respawn: true}` reply (Copilot acceptEdits) is left for the next send.
