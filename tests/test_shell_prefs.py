@@ -1572,6 +1572,18 @@ def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, mon
     assert prefs_mod.task_summary_titles_enabled() is False
 
 
+def test_task_summary_titles_solo_put_saves_and_turns_off(tmp_path, monkeypatch):
+    """Regression: the handler set the pref but never marked the write changed,
+    so a PUT carrying ONLY this key came back 400 "no known preference"."""
+    client, _home = _client(tmp_path, monkeypatch)
+    on = client.put("/api/prefs", json={"task_summary_titles_enabled": True}, headers=FUSED)
+    assert on.status_code == 200
+    assert client.get("/api/prefs").json()["task_summary_titles"] == {"enabled": True}
+    off = client.put("/api/prefs", json={"task_summary_titles_enabled": False}, headers=FUSED)
+    assert off.status_code == 200
+    assert client.get("/api/prefs").json()["task_summary_titles"] == {"enabled": False}
+
+
 def test_claude_strict_mcp_defaults_on_toggles_and_rejects_junk(tmp_path, monkeypatch):
     """Lean sessions are the default: only a stored `false` turns them off."""
     client, home = _client(tmp_path, monkeypatch)

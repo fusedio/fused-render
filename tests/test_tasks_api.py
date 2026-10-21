@@ -5338,3 +5338,78 @@ def test_recap_backfill_jobs_are_marked_for_the_busy_recheck(monkeypatch, lanes)
     with tasks_mod._recap_cond:
         job, _ = tasks_mod._recap_next(tasks_mod._recap_started + 1e6)
     assert job["backfill"] is True
+
+
+# ------------------------------------------------------------- renaming a task
+# `POST /api/tasks/rename` — the user's own title, stored on the session's
+# settings record, wins every title mode; an empty title restores the automatic
+# one.
+
+_FUSED = {"X-Fused": "1"}
+
+
+def _rename(client, key, title, headers=_FUSED):
+    return client.post("/api/tasks/rename", headers=headers,
+                       json={"key": key, "title": title})
+
+
+def test_a_renamed_title_beats_every_other_source(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("pull the news", T9), _ai_title("News puller"),
+    ])
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", claude_session_id="sess-a",
+                           title="Morning briefing")])
+    assert _tasks(client)[0]["title"] == "Morning briefing"
+    r = _rename(client, "sess-a", "  My name ")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "title": "My name"}
+    row = _tasks(client)[0]
+    assert (row["title"], row["title_source"]) == ("My name", "renamed")
+
+
+def test_a_renamed_title_beats_the_first_message_and_clearing_restores_it(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("fix the parser", T9)])
+    _rename(client, "sess-a", "Parser work")
+    row = _tasks(client)[0]
+    assert (row["title"], row["title_source"]) == ("Parser work", "renamed")
+    r = _rename(client, "sess-a", "   ")
+    assert r.json() == {"ok": True, "title": ""}
+    row = _tasks(client)[0]
+    assert (row["title"], row["title_source"]) == ("fix the parser", "message")
+
+
+def test_a_renamed_title_wins_in_summary_mode(client, projects_dir, tmp_path,
+                                              monkeypatch):
+    monkeypatch.setattr(prefs_mod, "task_summary_titles_enabled", lambda: True)
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("fix the login bug", T9), _assistant("Fixed it.", T10)])
+    _rename(client, "sess-a", "Login")
+    row = _tasks(client)[0]
+    assert row["title_mode"] == "summary"
+    assert (row["title"], row["title_source"]) == ("Login", "renamed")
+
+
+def test_a_multi_line_or_long_title_is_cut_to_its_first_line(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hello", T9)])
+    r = _rename(client, "sess-a", "first line\nsecond line")
+    assert r.json()["title"] == "first line"
+    assert len(_rename(client, "sess-a", "x" * 500).json()["title"]) == 200
+
+
+def test_rename_refuses_bad_requests(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hello", T9)])
+    assert _rename(client, "sess-a", 5).status_code == 400
+    assert _rename(client, "nope", "x").status_code == 404
+    assert _rename(client, "sess-a", "x", headers={}).status_code == 403
+    assert _tasks(client)[0]["title_source"] == "message"
+
+
+def test_a_task_without_a_session_cannot_be_renamed(client, tmp_path):
+    _seed_schedule([_entry("e1", "tomorrow", T12, target=str(tmp_path))])
+    key = _tasks(client)[0]["key"]
+    assert key.startswith("pending:")
+    r = _rename(client, key, "x")
+    assert r.status_code == 400
+    assert r.json() == {"error": "only a started task can be renamed"}

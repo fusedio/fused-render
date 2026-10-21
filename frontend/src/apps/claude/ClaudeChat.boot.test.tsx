@@ -188,6 +188,12 @@ function hostFrameStub(): () => HTMLIFrameElement | null {
   const frame = {
     isConnected: true,
     contentWindow: win,
+    // `hostFrame` only counts a frame whose document is READABLE (a null
+    // `contentDocument` is the cross-origin canvases workbench, #1720); this
+    // stub is the same-origin kind, so it has one. `body: null` keeps the
+    // annotation layer (which needs a real DOM to inject into) out of a test
+    // about the boot; the app-state walk reads `contentWindow.document` above.
+    contentDocument: { body: null },
     addEventListener() {},
     removeEventListener() {},
   } as unknown as HTMLIFrameElement;

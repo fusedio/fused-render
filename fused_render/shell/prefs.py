@@ -1210,6 +1210,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'task_summary_titles_enabled' must be a boolean"},
                                     status_code=400)
             prefs["task_summary_titles_enabled"] = value
+            changed = True
         for key in ("bots_autostage", "bots_sounds", "bots_clear_enabled"):
             if key in body:
                 value = body.get(key)

@@ -3677,8 +3677,9 @@ export interface Task {
   // sessionTitleOf and tasks.py `_title`.
   // …plus `"draft"` on a draft row, whose name is the form's own Title field
   // (or the first line of its description, or "Untitled draft") — there is no
-  // session or entry behind it to take one from.
-  title_source: "user" | "ai" | "message" | "entry" | "draft";
+  // session or entry behind it to take one from — and `"renamed"` when the reader
+  // renamed the task from the peek header.
+  title_source: "user" | "ai" | "message" | "entry" | "draft" | "renamed" | "command";
   description: string;
   /**
    * WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — `""` on both for
@@ -4516,6 +4517,13 @@ export function archiveTask(
     "/api/tasks/archive",
     { key },
   );
+}
+
+/** Give a started task a title of the reader's own; "" takes it back and the
+ *  automatic title returns. `title` is what the server stored (first line,
+ *  trimmed, capped). */
+export function renameTask(key: string, title: string): Promise<{ ok: boolean; title: string }> {
+  return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
 }
 
 // Taking the filing back — the drag out of the Archive lane, and the exact
