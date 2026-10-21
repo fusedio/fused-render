@@ -31,7 +31,7 @@ import {
 } from "react";
 import type { Task } from "@platform/lib/api";
 import { shortTaskId } from "@platform/lib/task-id";
-import { archiveTask, unarchiveTask } from "@platform/lib/api";
+import { archiveTask, downloadTaskTranscript, unarchiveTask } from "@platform/lib/api";
 import { copyPendingText } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
 import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
@@ -397,6 +397,15 @@ const ICON_OPEN_DOOR = (
  *  this app already uses for it. */
 const ICON_TERMINAL = (
   <svg {...ICON}><polyline points="5 7 9 11 5 15" /><path d="M12 16h7" /></svg>
+);
+// Download — arrow into a tray, the shape MenuIcons.download draws for an
+// app export: the transcript leaves the app as a file the reader keeps.
+const ICON_DOWNLOAD = (
+  <svg {...ICON}>
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+    <path d="M7 10l5 5 5-5" />
+    <path d="M12 15V3" />
+  </svg>
 );
 // ---- the panel ---------------------------------------------------------------
 
@@ -946,6 +955,23 @@ export function TaskPeek({
     }
   };
 
+  /** The whole conversation as a Markdown file (D1390) — the same layout the
+   *  Bots page exports in. A bot wanting the same bytes calls
+   *  `fused.tasks.export(key)`; this row is the human's door to the same route. */
+  const downloading = useRef(false);
+  const downloadTranscript = async () => {
+    // One download per press: a double-click would otherwise save two files.
+    if (!task?.session_id || downloading.current) return;
+    downloading.current = true;
+    try {
+      await downloadTaskTranscript(task.key, "md");
+    } catch (e) {
+      notify({ title: (e as Error).message, tone: "error" });
+    } finally {
+      downloading.current = false;
+    }
+  };
+
   /**
    * THREE ITEMS, and the list is the whole menu (design.md, Header + list state
    * v2): continue in a terminal, file it, delete it. "Open as page" and "Copy
@@ -1005,6 +1031,15 @@ export function TaskPeek({
       });
     }
     }
+    // The conversation as a file. Disabled, not hidden, on a row with no
+    // session yet: the door exists, there is just nothing behind it until the
+    // task has run — the same rule the terminal rows above follow.
+    items.push({
+      label: "Download transcript",
+      icon: ICON_DOWNLOAD,
+      disabled: !task.session_id,
+      onClick: () => void downloadTranscript(),
+    });
     if (filing) {
       items.push({
         label: filing.kind === "archive" ? "Archive task" : "Unarchive task",

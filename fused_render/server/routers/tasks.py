@@ -6463,6 +6463,156 @@ def api_task_messages(key: str):
     return {"messages": list(reversed(messages))}
 
 
+# ----------------------------------------------------------- export (D1390)
+#
+# `GET /api/tasks/{key}/export?format=md|json` — one task's WHOLE transcript
+# as a file. The kebab's "Download transcript" row and a bot's
+# `fused.tasks.export(key)` both land here. Two shapes, one source:
+#
+#   md    the conversation as Markdown, the layout the Bots page already
+#         exports its own transcripts in (`bots/store.export_markdown`), so a
+#         reader who has seen one of ours can read the other.
+#   json  the parsed turns the chat itself restores from (`agent._history`:
+#         `turns` of {role, text, segments, uuid, ts}) under a small header —
+#         NOT the raw JSONL under ~/.claude, whose row shapes are Claude
+#         Code's to change.
+#
+# Read from the transcript PATH the row already resolved (`task["path"]`), so
+# a task whose folder is gone still exports.
+_EXPORT_FORMATS = ("md", "json")
+
+
+def _export_name(task: dict, fmt: str) -> str:
+    """`<title-slug>-<session8>.<fmt>`, every part ASCII-safe for a header."""
+    def safe(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    slug = safe(str(task.get("title") or ""))[:40]
+    sid = safe(str(task.get("session_id") or ""))[:8]
+    return "-".join(p for p in (slug or "transcript", sid) if p) + "." + fmt
+
+
+def _export_stamp(ts) -> str:
+    """` · YYYY-MM-DD HH:MM`, or "" for a missing or unusable stamp."""
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        return ""
+    try:
+        return " · " + time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _quoted(body: str, italic: bool = False) -> list[str]:
+    """A block quote that covers EVERY line, not just the first."""
+    return [("> _" + line + "_" if italic and line.strip() else "> " + line).rstrip()
+            for line in body.split("\n")]
+
+
+def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
+    """The turns as Markdown, in the Bots export's vocabulary. Lossy by
+    design (tool results are not inlined); `format=json` is the full record."""
+    who = {"copilot": "Copilot"}.get(str(backend or ""), "Claude")
+    title = " ".join(str(task.get("title") or "Task").split())
+    out = [f"# {title} — transcript", ""]
+    if task.get("target"):
+        out.append(f"Folder: {task['target']}  ")
+    out += [f"Session: {task.get('session_id', '')}", ""]
+    for turn in turns:
+        role = turn.get("role")
+        text = str(turn.get("text") or "").rstrip()
+        stamp = _export_stamp(turn.get("ts"))
+        if role == "user":
+            out += [f"**You**{stamp}", "", text, ""]
+            continue
+        if role != "assistant":
+            if text:
+                out += _quoted(text) + [""]
+            continue
+        out += [f"**{who}**{stamp}", ""]
+        segments = turn.get("segments") or []
+        if not segments and text:
+            out += [text, ""]
+        in_tools = False
+        for seg in segments:
+            kind = seg.get("kind")
+            body = str(seg.get("text") or "").rstrip()
+            if kind == "tool":
+                # The one line a reader needs: the call's own summary, else
+                # what the tool was pointed at (Bash's description/command,
+                # a file tool's path), never the whole input.
+                inp = seg.get("input") if isinstance(seg.get("input"), dict) else {}
+                detail = str(seg.get("detail") or inp.get("description")
+                             or inp.get("file_path") or inp.get("command")
+                             or inp.get("pattern") or "").strip().split("\n")[0][:160]
+                out.append(f"- `{seg.get('name') or 'tool'}` {detail}".rstrip())
+                in_tools = True
+                continue
+            if not body:
+                continue
+            if in_tools:
+                # Close the tool list, or the next paragraph reads as a lazy
+                # continuation of its last bullet.
+                out.append("")
+                in_tools = False
+            if kind == "thinking":
+                out += _quoted(body, italic=True) + [""]
+            elif kind == "notice":
+                out += _quoted(body) + [""]
+            else:
+                out += [body, ""]
+        if in_tools:
+            out.append("")
+    return "\n".join(out) + "\n"
+
+
+@router.get("/api/tasks/{key}/export")
+def api_task_export(key: str, format: str = "md"):
+    """One task's whole transcript as a downloadable file — see above."""
+    fmt = (format or "md").lower()
+    if fmt not in _EXPORT_FORMATS:
+        raise HTTPException(status_code=400, detail="format must be md or json")
+    tasks = _collect()
+    task = tasks.get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    if not task.get("session_id"):
+        raise HTTPException(status_code=409,
+                            detail="that task has not started a session yet")
+    # A session named only by a send mark or a scheduled entry: it started,
+    # but there is no transcript on disk to export.
+    if not task.get("path"):
+        raise HTTPException(status_code=404, detail="that task's transcript is gone")
+    agent = _agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503, detail="the claude agent module did not load")
+    _place(task)
+    # Named the way the listing names it (`_row`), so the file a reader saves
+    # is called what the row they pressed was called.
+    record = _scan(task["path"])
+    task["title"], _source = _title(task, record, task.get("first_prompt") or "")
+    if not os.path.isfile(task["path"]):
+        raise HTTPException(status_code=404, detail="that task's transcript is gone")
+    try:
+        history = agent._history(task.get("target") or "", task["session_id"],
+                                 transcript=task["path"])
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"could not read the transcript: {e}") from e
+    turns = list(history.get("turns") or []) if isinstance(history, dict) else []
+    backend = str(history.get("backend") or "") if isinstance(history, dict) else ""
+    name = _export_name(task, fmt)
+    headers = {"Content-Disposition": f'attachment; filename="{name}"',
+               "Cache-Control": "no-store"}
+    if fmt == "json":
+        payload = {"key": task["key"], "title": task.get("title") or "",
+                   "target": task.get("target") or "",
+                   "session_id": task["session_id"], "backend": backend,
+                   "turns": turns}
+        return Response(json.dumps(payload, ensure_ascii=False, indent=1),
+                        media_type="application/json", headers=headers)
+    return Response(_export_markdown(task, turns, backend),
+                    media_type="text/markdown; charset=utf-8", headers=headers)
+
+
 # How far outside the asked-for window a scheduled entry is still considered a
 # candidate. The window is filtered EXACTLY, on each built message's final `at`
 # — and since `at` is now the entry's own due time and the join can no longer

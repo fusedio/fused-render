@@ -4464,6 +4464,50 @@ export function markTaskIdle(sessionId: string, turn: number): Promise<{ ok: boo
   });
 }
 
+/** One task's whole transcript as a file — `GET /api/tasks/{key}/export`.
+ *  `md` is the Bots export's layout; `json` is the parsed turns the chat
+ *  restores from. The kebab's "Download transcript" row hands it to the
+ *  reader through a blob link, the same door `downloadTemplatesExport` uses. */
+export type TaskExportFormat = "md" | "json";
+
+export function taskExportUrl(key: string, format: TaskExportFormat = "md"): string {
+  return `/api/tasks/${encodeURIComponent(key)}/export?format=${format}`;
+}
+
+export async function downloadTaskTranscript(
+  key: string,
+  format: TaskExportFormat = "md",
+): Promise<void> {
+  const res = await fetch(taskExportUrl(key, format));
+  if (!res.ok) {
+    let message = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === "string") message = body.detail;
+    } catch {
+      /* non-JSON error body — keep the status-based message */
+    }
+    throw new Error(message);
+  }
+  // The server names the file (`<title-slug>-<session8>.<fmt>`); read it
+  // back off the header so the saved name matches the row that was pressed.
+  const disposition = res.headers.get("content-disposition") || "";
+  const named = /filename="([^"]+)"/.exec(disposition);
+  const filename = named ? named[1] : `transcript.${format}`;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
 // "Show more": the whole thread, newest first. Deliberately a separate call —
 // this one is allowed to parse the full transcript because it is one task, on
 // demand, and never on the listing path.
