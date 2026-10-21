@@ -21,6 +21,16 @@ import { updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/upda
 import { isBot } from "@platform/lib/flavor";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { Button } from "@platform/shadcn/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@platform/shadcn/ui/alert-dialog";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { labelId, PrefToggleRow, SettingRow, usePrefWrite, type PrefControlProps, SettingSelect } from "./SettingRow";
 
@@ -174,6 +184,15 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
   // The windows that are open keep their engine; the page itself is one of
   // them, so its own request may die with it — a rejection is not an error.
   const stale = cw?.stale_windows ?? 0;
+  // The moment windows become stale (the toggle flipped, or the download
+  // the toggle started finished) a dialog says so, once per transition;
+  // closed, the line under the row keeps the offer.
+  const [ask, setAsk] = useState(false);
+  const hadStale = useRef(stale > 0);
+  useEffect(() => {
+    if (stale > 0 && !hadStale.current) setAsk(true);
+    hadStale.current = stale > 0;
+  }, [stale]);
   const reopen = async () => {
     if (busy) return;
     setBusy(true);
@@ -186,6 +205,9 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
     }
   };
 
+  const staleLine =
+    (stale === 1 ? "1 open window still uses" : `${stale} open windows still use`) +
+    " the previous engine. Reopen them for the change to take effect.";
   const line = chromiumStatusLine(engine, enabled);
   const status =
     line || state === "ready" || state === "failed" ? (
@@ -223,15 +245,34 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
       {error && <ErrorBanner>{error}</ErrorBanner>}
       {stale > 0 && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span>
-            {stale === 1 ? "1 open window still uses" : `${stale} open windows still use`} the previous
-            engine. Reopen them for the change to take effect.
-          </span>
+          <span>{staleLine}</span>
           <Button variant="outline" size="xs" disabled={busy} onClick={() => void reopen()}>
             Reopen windows
           </Button>
         </div>
       )}
+      <AlertDialog open={ask} onOpenChange={setAsk}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reopen windows to apply the engine change</AlertDialogTitle>
+            <AlertDialogDescription>
+              {staleLine} Reopening closes every window and opens one Home window on the new engine.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Later</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={busy}
+              onClick={() => {
+                setAsk(false);
+                void reopen();
+              }}
+            >
+              Reopen windows
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </PrefToggleRow>
   );
 }
