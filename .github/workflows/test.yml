@@ -455,13 +455,13 @@ jobs:
             exit 1
           fi
 
-      - name: serve refuses on the base install and names [all]
+      - name: serve refuses on the base install and names [cli]
         shell: bash
         run: |
           out=$(python -m fused_render.cli serve --port 8783 --no-browser 2>&1) && code=0 || code=$?
           echo "$out"
-          if [ "$code" = "0" ] || ! grep -q "fused-render\[all\]" <<<"$out"; then
-            echo "::error::serve did not refuse with the [all] install line on the base install"
+          if [ "$code" = "0" ] || ! grep -q "fused-render\[cli\]" <<<"$out"; then
+            echo "::error::serve did not refuse with the [cli] install line on the base install"
             exit 1
           fi
 

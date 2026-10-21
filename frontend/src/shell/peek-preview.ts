@@ -21,8 +21,11 @@
 // The pure half is here (`previewBox`, and the in-memory height below it) so
 // the clamps can be proved without a layout — peek-preview.test.ts.
 import { useEffect, useState } from "react";
-import { getCurrentApps } from "@platform/lib/api";
-import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
+import { ensureCurrentApp, getCurrentApps } from "@platform/lib/api";
+import {
+  CURRENT_APPS_CHANGED_EVENT,
+  announceCurrentAppsChanged,
+} from "@platform/lib/tasksChanged";
 import { currentApps, isUnderDir, type CurrentApp } from "./current-apps-lib";
 
 /** The virtual viewport the preview renders at, before scaling. 1280×720 is
@@ -281,13 +284,16 @@ export function ensureApps(): Promise<void> {
   if (appsInFlight) return appsInFlight;
   appsInFlight = getCurrentApps()
     .then(({ apps }) => {
-      appsCache = currentApps(apps, []);
+      // A door-time adopt (`ensureAppFor`) that landed while this read was in
+      // flight is the NEWER table; an older read must not write over it.
+      appsCache = appsCache ?? currentApps(apps, []);
     })
     .catch(() => {
       // No desk, no preview. A failed read is "there is no app here" rather
       // than an error the peek shows: the conversation is what the panel is
-      // for, and it is unaffected.
-      appsCache = [];
+      // for, and it is unaffected. Unless a door-time adopt filled the table
+      // while this read was failing — that table is newer and stays.
+      appsCache = appsCache ?? [];
     })
     .finally(() => {
       appsInFlight = null;
@@ -318,28 +324,99 @@ export function appForProject(
   return best;
 }
 
+// THE DOOR-TIME CHECK (owner, 2026-10-21). The desk learns about an app from
+// the tasks listing, which looks at each task ONCE — and a task that MAKES the
+// app (a Bots build, "make me an app in this empty folder") is first listed
+// while the folder is still empty, so the desk never got it: no sidebar row,
+// no preview here. Rather than a watch on the listing, the check sits where it
+// is needed: opening a task asks the server (`ensureCurrentApp`) when the
+// table has no app for its project. A "no" is NOT remembered: the build that
+// is still writing its page answers "no" now and "yes" once it is done, and
+// the reader who reopens the task then must get the preview without a
+// reload. One ask per open is the cost — one folder check on the server —
+// and two mounts asking at once share the one request (`asking`).
+const asking = new Map<string, Promise<boolean>>();
+// The NEWEST ask wins the cache (CodeRabbit on #1830): two asks for different
+// projects can be in flight at once (a fast task swap), each answered with
+// the table as the server had it THEN, and the older one may land last. An
+// answer that is not the newest never writes its snapshot — it drops the
+// cache and re-reads, which is always current.
+let ensureGen = 0;
+// The generation whose snapshot the cache currently holds (0 = none): a
+// stale answer that waited its turn must not throw away a table a NEWER
+// answer adopted meanwhile.
+let adoptedGen = 0;
+
+/** Ask the desk to adopt `project`'s app if it is one and missing. Resolves to
+ *  true when the table changed (and has been replaced + announced). */
+export function ensureAppFor(project: string): Promise<boolean> {
+  if (!project) return Promise.resolve(false);
+  const pending = asking.get(project);
+  if (pending) return pending;
+  const gen = ++ensureGen;
+  const ask = ensureCurrentApp(project)
+    .then(({ app, added, apps }) => {
+      if (!app) return false;
+      // Announce FIRST: the module-level listener above drops the cache on
+      // the event, and the fresh table must survive it.
+      announceCurrentAppsChanged();
+      if (added && apps && gen === ensureGen) {
+        appsCache = currentApps(apps, []);
+        adoptedGen = gen;
+        return true;
+      }
+      // ON THE DESK ALREADY, yet this table had no app for the project: the
+      // cache is stale (another tab added it, or a read from before). Or a
+      // newer ask went out after this one (`ensureGen`). Either way the
+      // snapshot in hand is not to be trusted: re-read — AFTER any read
+      // already in flight has settled, or `ensureApps` would hand back that
+      // older read as the fresh one (CodeRabbit on #1830).
+      return (appsInFlight ?? Promise.resolve()).then(() => {
+        // A newer answer adopted its table during the wait: that table is
+        // the current one; clearing it would only risk an empty cache if
+        // the re-read failed.
+        if (adoptedGen > gen) return true;
+        appsCache = null;
+        return ensureApps().then(() => true);
+      });
+    })
+    // Same stance as `ensureApps`: no desk, no preview, and the door opens.
+    .catch(() => false)
+    .finally(() => {
+      asking.delete(project);
+    });
+  asking.set(project, ask);
+  return ask;
+}
+
 /** The app the peeked task belongs to, or null — null while the desk's table is
  *  still being read, which reads as "no preview" and simply becomes one when
- *  the answer lands. */
-export function useAppForProject(project: string): CurrentApp | null {
+ *  the answer lands. `ensure` (the door-time check above) is off for an
+ *  archived task: removing an app archives its tasks, and opening one of
+ *  those must not bring the app back. */
+export function useAppForProject(project: string, ensure = false): CurrentApp | null {
   const [apps, setApps] = useState<CurrentApp[] | null>(appsCache);
   // `project` is in the deps so a task swap re-checks a cache that may have
   // been dropped since — and so a mount that arrives while a read is already in
   // flight waits on that ONE promise rather than starting a second (`loadApps`
   // returns the in-flight one).
   useEffect(() => {
-    if (appsCache) {
-      setApps(appsCache);
-      return;
-    }
     let live = true;
-    void ensureApps().then(() => {
-      if (live) setApps(appsCache);
-    });
+    const settle = () => {
+      if (!live) return;
+      setApps(appsCache);
+      if (ensure && !appForProject(project, appsCache)) {
+        void ensureAppFor(project).then((changed) => {
+          if (live && changed) setApps(appsCache);
+        });
+      }
+    };
+    if (appsCache) settle();
+    else void ensureApps().then(settle);
     return () => {
       live = false;
     };
-  }, [project]);
+  }, [project, ensure]);
   return appForProject(project, apps);
 }
 
@@ -347,6 +424,9 @@ export function useAppForProject(project: string): CurrentApp | null {
 export function resetPeekPreviewForTests(): void {
   appsCache = null;
   appsInFlight = null;
+  asking.clear();
+  ensureGen = 0;
+  adoptedGen = 0;
   draggedHeight = null;
   listeners.clear();
 }

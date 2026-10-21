@@ -125,6 +125,24 @@ def api_current_apps_add(patch: FolderPatch):
     return {"ok": True, "added": current_apps.add(folder), "path": folder}
 
 
+@router.post("/api/current-apps/ensure")
+def api_current_apps_ensure(patch: FolderPatch,
+                            x_fused: str | None = Header(default=None)):
+    """The user opened a task on `path` (the side peek): if the folder (or an
+    ancestor) is an app that is not on the desk yet, put it there
+    (`current_apps.ensure`, module docstring on why the doors ask). `app` is
+    the desk folder or null; `added` says this call put it there; `apps` is
+    the table after an add, so the caller adopts it without a second read.
+    Never an error for a plain project: the door opens either way."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    project = _require_folder(patch.path)
+    app, added = current_apps.ensure(project)
+    return {"ok": True, "app": app, "added": added,
+            "apps": current_apps.list_apps() if added else None}
+
+
 @router.post("/api/current-apps/order")
 def api_current_apps_order(body: dict = Body(default=None),
                            x_fused: str | None = Header(default=None)):
