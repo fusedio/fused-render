@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { Button } from "@platform/shadcn/ui/button";
 import { cn } from "@platform/lib/utils";
+import { approvalParts } from "@platform/lib/approvalParts";
 import { GateCard, type GateStatus } from "@platform/ui/GateCard";
 import {
   answerAfter,
@@ -300,6 +301,7 @@ const Row = memo(function Row({ item, answer, live, held, botName, onReply, onVe
           : answer
             ? { tone: "expired", text: `Answered: ${oneLine(answer.text, 80)}` }
             : { tone: "expired", text: "Not answered" };
+    const parts = approvalParts(e);
     return (
       <div className="flex flex-col gap-1 pt-1">
         <GateCard
@@ -313,8 +315,9 @@ const Row = memo(function Row({ item, answer, live, held, botName, onReply, onVe
           }
           severity={e.severity}
           riskSummary={e.risk_summary}
-          body={e.text}
-          bodyWhat="request"
+          sub={parts.sub}
+          body={parts.body}
+          bodyWhat={parts.bodyWhat}
           resolved={!live}
           status={status}
           actions={[

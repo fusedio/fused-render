@@ -1,3 +1,4 @@
+import { approvalParts } from "@platform/lib/approvalParts";
 import { approvalVerdict } from "@platform/lib/risk";
 import { GateCard, type GateStatus } from "@platform/ui/GateCard";
 
@@ -15,6 +16,7 @@ function verdictStatus(answer: string | null | undefined): GateStatus | undefine
  *  `answer`: the user line that settled this card (normalized), for the verdict caption. */
 export function ApprovalCard({ e, live, title, botName, answer }: { e: BotEvent; live: boolean; title?: string; botName?: string; answer?: string | null }) {
   const who = botName || "The bot";
+  const { body, bodyWhat, sub } = approvalParts(e);
   return (
     <GateCard
       className={`msg approval${live ? "" : " settled"}`}
@@ -22,8 +24,9 @@ export function ApprovalCard({ e, live, title, botName, answer }: { e: BotEvent;
       head={live ? `${who} wants your OK` : `${who} asked for your OK`}
       severity={e.severity}
       riskSummary={e.risk_summary}
-      body={e.text}
-      bodyWhat="request"
+      sub={sub}
+      body={body}
+      bodyWhat={bodyWhat}
       resolved={!live}
       status={live ? undefined : verdictStatus(answer)}
       actions={[

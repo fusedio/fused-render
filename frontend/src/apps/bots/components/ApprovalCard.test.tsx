@@ -18,6 +18,13 @@ describe("ApprovalCard", () => {
     expect(out.indexOf("gate-pill")).toBeLessThan(out.indexOf("Deletes the build folder."));
     expect(out.indexOf("Deletes the build folder.")).toBeLessThan(out.indexOf("About to run"));
   });
+  test("a real card: the command alone as the body, the why as the sub", () => {
+    const out = html(ev({ text: "About to $ gh api x. It runs a command on this Mac. Approve?", detail: "$ gh api x" }));
+    expect(out).toContain("gh api x");
+    expect(out).not.toContain("About to");
+    expect(out).not.toContain("$ gh api");
+    expect(out).toContain("It runs a command on this Mac.");
+  });
   test("keeps the hooks the thread's delegated click handler reads", () => {
     const out = html(ev());
     expect(out).toContain("msg approval");
