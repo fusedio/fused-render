@@ -41,6 +41,7 @@ gate minted (see `gate._file_owner`).
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib.util
 import json
 import logging
@@ -55,7 +56,7 @@ from fastapi import APIRouter, Body, Header, Request, Response
 from fastapi.responses import JSONResponse
 
 from fused_render import calls as shell_calls
-from fused_render import claude_agent
+from fused_render import claude_agent, claude_remote
 from fused_render import tasks_watch
 from fused_render._binding import ParamError, bind_params
 from fused_render.claude_agent import gate, pool
@@ -373,8 +374,10 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
     def _on_cancel(fut):
         fut.add_done_callback(_late)
 
+    handler = (functools.partial(claude_remote.admit_call, agent.main)
+               if action in _SPAWN_ACTIONS else agent.main)
     envelope, status, cfut = await _run(
-        action, pool.budget(action), agent.main, bound,
+        action, pool.budget(action), handler, bound,
         executor=pool.pool_for(action),
         on_cancel=_on_cancel if action in ("start", "send") else None)
     timed_out = status == 504 and envelope["error"].get("type") == "Timeout"

@@ -24,6 +24,8 @@ from __future__ import annotations
 import os
 import time
 
+from fused_render import claude_remote
+
 # How long the recording poll follows a run before giving up. A turn can run
 # long — a scaffolding pass builds a whole app, and a scheduled message may hand
 # the model a substantial job — so this is deliberately generous. At 2s a tick,
@@ -123,11 +125,12 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
     a scheduler tick or an apps-API request keeps its own error path."""
     agent = load_agent()
     try:
-        return agent._start(target, prompt, session_id, model, effort,
-                            permission_mode=permission_mode,
-                            extra_read_dirs=list(extra_read_dirs or []) or None,
-                            backend=backend or "", bot=bot or "",
-                            **({"isolate_mcp": True} if isolate_mcp else {}))
+        return claude_remote.admit([session_id], agent._start, target, prompt,
+                                   session_id, model, effort,
+                                   permission_mode=permission_mode,
+                                   extra_read_dirs=list(extra_read_dirs or []) or None,
+                                   backend=backend or "", bot=bot or "",
+                                   **({"isolate_mcp": True} if isolate_mcp else {}))
     except FileNotFoundError as exc:
         if "claude CLI not found" in str(exc):
             return {"error":
