@@ -500,17 +500,12 @@ div.bots-page:not(.sideapp) #satabb, div.bots-page.sideapp #sataba { background:
 div.bots-page.sideapp #saframe { display: block; }
 div.bots-page.sideapp .preview > :is(.shotwrap, .viewsw, .termwrap, .toast, .cap, .info) { display: none; }
 .bots-page .msg.approval { align-self: flex-start; background: var(--card); max-width: min(48rem, 90%); }
-.bots-page .msg.approval .btns { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-/* Risk read: a pill (low = ok, medium = warn, high = err), the model's one sentence, then the raw command, muted. */
-.bots-page .riskhead { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; }
-.bots-page .riskpill { display: inline-block; margin: 0; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; line-height: 1.5; color: var(--rk); background: color-mix(in srgb, var(--rk) 15%, transparent); border: 1px solid color-mix(in srgb, var(--rk) 40%, transparent); }
-.bots-page .riskpill.low { --rk: var(--ok); }
-.bots-page .riskpill.medium { --rk: var(--warn); }
-.bots-page .riskpill.high { --rk: var(--err); }
-.bots-page .risksum { margin: 0 0 4px; font-size: 14px; line-height: 1.4; }
-.bots-page .riskhead .risksum { margin: 0; }
-.bots-page .riskraw { margin: 0; font-size: 12px; line-height: 1.4; color: var(--muted); overflow-wrap: anywhere; }
-.bots-page .msg.approval.settled .btns { display: none; }
+/* The approval card is the shared GateCard (platform/ui/gate-card.css); this maps its --gate-* palette onto the page's own. */
+.bots-page .gate-card { --gate-accent: var(--accent); --gate-accent-text: var(--accent-text); --gate-ok: var(--ok); --gate-warn: var(--warn); --gate-err: var(--err); --gate-muted: var(--muted); --gate-line: var(--line); --gate-ground: var(--card); --gate-hover: var(--hover); --gate-pre-bg: var(--inset); --gate-on-accent: var(--accent-ink); }
+.bots-page .msg.approval.gate-card { padding: 12px 14px; border-radius: 14px; line-height: 1.45; }
+/* A relayed card sits in the hand-off wrapper, which supplies the frame: the gate card is the whole body. */
+.bots-page .handoff-card.gated { background: none; border: 0; overflow: visible; width: min(48rem, 90%); }
+.bots-page .handoff-card.gated .ft { border-top: 0; padding: 6px 2px 0; }
 .bots-page .composer { padding: 6px var(--chatgut) 18px; display: flex; flex-direction: column; gap: 8px; }
 /* Pause / Resume / Stop row: right-aligned, and gone entirely (no gap) while the bot is idle. */
 .bots-page .composer .ctl { display: flex; gap: 6px; align-items: center; justify-content: flex-end; padding: 0 6px; }

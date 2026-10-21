@@ -13,11 +13,12 @@ import { openBuilds, getBuildRows } from "../builds/builds";
 import { ApiError, api, stepThumbUrl, type AppRef, type Bot, type BotEvent } from "../lib/api";
 import { esc, fmtDay, fmtSecs, fmtTime, fmtWhen } from "../lib/format";
 import { md } from "../lib/md";
-import { severityLabel } from "../lib/risk";
 import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { GateCard } from "@platform/ui/GateCard";
+
 import { ApprovalCard } from "./ApprovalCard";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
@@ -62,8 +63,10 @@ interface RowProps {
   hbBot?: Bot;
   /** Your message queued while you hold the browser (Bot.held): greyed, dashed, sent when you hand back. */
   queued?: boolean;
-  /** Answered question: your answer, normalized (optionKey); null otherwise. */
+  /** Answered question or approval: your answer, normalized (optionKey); null otherwise. */
   chosen: string | null;
+  /** The selected bot's display name, for the approval card's head. */
+  botName?: string;
   /** The apps root (appFromText needs it; "" until loaded). */
   appsRoot: string;
   onBeside: (a: AppRef) => void;
@@ -163,26 +166,46 @@ function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: Bot
       await poll();
     })();
   };
+  const openChat = (
+    <div className="ft">
+      <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"}
+        onClick={() => { if (getState().bots.some((x) => x.id === h.target)) select(h.target); }}>Open {who}'s chat</button>
+    </div>
+  );
+  // A relayed APPROVAL is the shared gate card, the same one the bot's own chat shows; this wrapper only adds the door
+  // to that bot's chat under it.
+  if (relay?.kind === "approval") {
+    return (
+      <div className={`handoff-card gated ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
+        <GateCard
+          head={head}
+          severity={e.severity}
+          riskSummary={e.risk_summary}
+          body={text}
+          bodyWhat="request"
+          resolved={!live}
+          status={!live && !sent && targetWaiting !== relay.seq ? { tone: "expired", text: "Answered" } : undefined}
+          actions={[
+            { key: "approve", text: "Approve", kind: "primary", onClick: () => answer("approve") },
+            { key: "deny", text: "Deny", kind: "default", onClick: () => answer("deny") },
+          ]}
+        />
+        {openChat}
+      </div>
+    );
+  }
   return (
     <div className={`handoff-card ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
       <div className="hd"><span className="ttl">{head}</span><span className={`pill ${state}`}>{state}</span></div>
-      {relay?.kind === "approval" && severityLabel(e.severity) ? (
-        <div className="riskhead"><span className={`riskpill ${e.severity}`}>{severityLabel(e.severity)}</span>{e.risk_summary ? <span className="risksum">{e.risk_summary}</span> : null}</div>
-      ) : null}
       {text ? <HtmlMsg className="msg md" title={fmtWhen(e.ts)} html={md(text)} /> : null}
       {relay ? (
         // Its own class, not `.msg.approval` / `.msg.question`: the thread's click handler reads those as Super Bot's cards.
         <div className={`relay${live ? "" : " settled"}`}>
-          {relay.kind === "approval"
-            ? <><button className="primary" disabled={!live} onClick={() => answer("approve")}>Approve</button><button disabled={!live} onClick={() => answer("deny")}>Deny</button></>
-            : relay.options.map((o) => <button key={o} disabled={!live} onClick={() => answer(o)}>{o}</button>)}
+          {relay.options.map((o) => <button key={o} disabled={!live} onClick={() => answer(o)}>{o}</button>)}
           {!live && !sent && targetWaiting !== relay.seq ? <span className="hint">Answered</span> : null}
         </div>
       ) : null}
-      <div className="ft">
-        <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"}
-          onClick={() => { if (getState().bots.some((x) => x.id === h.target)) select(h.target); }}>Open {who}'s chat</button>
-      </div>
+      {openChat}
     </div>
   );
 }
@@ -237,7 +260,7 @@ function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boole
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k === "routine" ? "a routine" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, targetWaiting, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
+function body({ e, botId, botName, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, targetWaiting, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.source === "clear") return <ClearMark e={e} n={foldN || 0} open={!!foldOpen} onFold={onFold} />;
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} targetWaiting={targetWaiting} />;
@@ -261,7 +284,7 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
     const app = e.app?.dir ? e.app : appFromText(e.text, appsRoot);
     return <><div className="msg note" title={title}>{e.text}</div>{app ? <AppCard app={app} onBeside={onBeside} /> : null}</>;
   }
-  if (e.role === "approval") return <ApprovalCard e={e} live={live} title={title} />;  // live while the bot still waits on this card
+  if (e.role === "approval") return <ApprovalCard e={e} live={live} title={title} botName={botName} answer={chosen} />;  // live while the bot still waits on this card
   if (e.role === "question") {
     // Optional one-click answers: lettered rows, like a quick poll. Typing in the composer still works.
     const options = e.options || [];
@@ -719,7 +742,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       return (
         <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew} texted={texted.get(e.seq)}
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
-          chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
+          botName={b.name} chosen={card ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
           targetWaiting={ho && e.relay ? S.bots.find((x) => x.id === ho.target)?.waiting_on ?? null : undefined}
           linkLive={e.link ? botIds.has(e.link.bot) : undefined} bopen={e.build ? buildOpen(evs, e) : undefined}
