@@ -67,6 +67,15 @@ void FRCefApp::OnBeforeCommandLineProcessing(const CefString& process_type,
   command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");
   // Chromium's own crash handling would need a reporter; keep it quiet.
   command_line->AppendSwitch("disable-breakpad");
+  // No keychain: the cookie-encryption key is Chromium's fixed mock one,
+  // not a login-keychain item. The shared item ("Chromium Safe Storage",
+  // every CEF app on the Mac) threw a keychain ACL prompt on first start;
+  // the name is compile-time in Chromium, so renaming is not an option.
+  // The windows only ever show the local server (window_policy), whose
+  // one cookie is the LAN pairing secret for remote clients; the profile
+  // holds UI state, and file permissions guard it the way they guard the
+  // WKWebView store today.
+  command_line->AppendSwitch("use-mock-keychain");
 }
 
 void FRCefApp::OnScheduleMessagePumpWork(int64_t delay_ms) {

@@ -72,6 +72,12 @@ Rules the window layer follows:
 * A second app process on the same profile (a relaunch successor racing its
   predecessor) cannot start CEF; it logs the reason and uses WebKit for its
   lifetime.
+* No login-keychain item (`--use-mock-keychain`): the profile's cookie
+  encryption uses Chromium's fixed mock key, so the first window never asks
+  for keychain access. The shared item every CEF app uses ("Chromium Safe
+  Storage") did, and its name is compile-time in Chromium. The windows only
+  ever show the local server, whose one cookie is the LAN pairing secret;
+  file permissions guard the profile the way they guard the WKWebView store.
 
 ## Building the engine
 
