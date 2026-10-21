@@ -3014,3 +3014,31 @@ describe("the agent crumb is the agent dropdown", () => {
     expect(s).toContain("AGENT_PREFS_URL");
   });
 });
+
+describe("slash-command typeahead in the task box", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("built from the chat's own pieces, over the folder's commands only", () => {
+    const s = src();
+    expect(s).toContain("useSlashCommands");
+    expect(s).toContain("<CommandMenu");
+    expect(s).not.toMatch(/import[^;]*menuCommands/);
+    expect(s).not.toMatch(/import[^;]*LOCAL_COMMANDS/);
+  });
+
+  test("the textarea's onKeyDown routes the menu before the Enter-submit check", () => {
+    const s = src();
+    const ask = s.slice(s.indexOf('className="new-task-field new-task-ask"'));
+    const keyDown = ask.slice(ask.indexOf("onKeyDown="));
+    const menu = keyDown.indexOf("menuKey(");
+    const submit = keyDown.indexOf('if (e.key !== "Enter"');
+    expect(menu).toBeGreaterThan(-1);
+    expect(submit).toBeGreaterThan(menu);
+    expect(ask).toContain('aria-autocomplete="list"');
+  });
+
+  test("CommandMenu keeps its chat class unless a host passes one", () => {
+    const cm = readFileSync(join(import.meta.dir, "../apps/claude/ui/CommandMenu.tsx"), "utf8");
+    expect(cm).toContain('className = "chat-cmd-menu"');
+  });
+});

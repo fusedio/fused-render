@@ -306,6 +306,57 @@
   min-height: 0;
 }
 
+/* The slash-command menu (CommandMenu, `className="nt-cmd-menu"`): hung off the
+   first line of the box and dropping DOWN over the card. composer.css is the
+   chat bundle's and not loaded here, so the rows are dressed again from the
+   shell's own tokens. The box keeps the keyboard; this is only a list. */
+.nt-cmd-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(1.5em + 14px);
+  z-index: 30;
+  max-height: calc(8 * 30px + 8px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-popover, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px var(--shadow-sm);
+}
+
+.nt-cmd-menu .chat-cmd-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  font-size: 12px;
+  line-height: 16px;
+  border-radius: 7px;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.nt-cmd-menu .chat-cmd-row.is-on {
+  background: var(--ctl-quiet-bg);
+}
+
+.nt-cmd-menu .chat-cmd-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.nt-cmd-menu .chat-cmd-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+
 /* The two-line placeholder: sits exactly where the textarea's own text starts
    (its 6px top padding, flush left), in the same face, the same muted ink the
    native one wore. Two lines — the words, then the key in italics. Lets clicks

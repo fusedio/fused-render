@@ -16,6 +16,9 @@ import {
 } from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { Dropdown, popStyle } from "./Dropdown";
+import { CommandMenu, acceptText, menuKey, menuQuery } from "@apps/claude/ui/CommandMenu";
+import { useSlashCommands } from "@apps/claude/ui/useSlashCommands";
+import { filterCommands, type MenuCommand } from "@apps/claude/protocol/commands";
 import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import {
   getClaudeDefaults, readClaudeDefaults, subscribeClaudeDefaults,
@@ -4754,6 +4757,43 @@ export default function NewJobModal({
     }
   };
 
+  // ---- THE SLASH-COMMAND MENU, as the chat's composer has it ----------------
+  // The folder's own commands for the picked agent, offered while the box holds
+  // only a `/token`. NOT the chat's `menuCommands()`: that prepends /clear,
+  // /help, /tasks — chat-UI commands a task cannot run. Esc or leaving the box
+  // dismisses it for the text it was dismissed at; the next keystroke brings it
+  // back.
+  const { commands: slashRows } = useSlashCommands(target.trim() || null, undefined, { backend: agent });
+  const menuAll = useMemo<MenuCommand[]>(
+    () => (slashRows ?? []).map((r) => ({ name: r.name, description: r.description, hint: "", local: false })),
+    [slashRows],
+  );
+  const menuId = useId();
+  const [menuIdx, setMenuIdx] = useState(0);
+  const [menuDismissed, setMenuDismissed] = useState<string | null>(null);
+  const menuQ = menuQuery(text);
+  const menuRows = useMemo(
+    () => (menuQ === null ? [] : filterCommands(menuAll, menuQ)),
+    [menuAll, menuQ],
+  );
+  const menuOpen = menuQ !== null && menuRows.length > 0 && menuDismissed !== text;
+  const menuActive = Math.min(menuIdx, Math.max(0, menuRows.length - 1));
+  const pickCommand = (name: string) => {
+    const next = acceptText(name);
+    setText(next);
+    setMenuIdx(0);
+    const box = askRef.current;
+    if (box) {
+      box.focus({ preventScroll: true });
+      // The caret after the space, ready for an argument.
+      try {
+        box.setSelectionRange?.(next.length, next.length);
+      } catch {
+        /* a box that cannot place a caret still has the words */
+      }
+    }
+  };
+
   return (
     <Modal
       // A breadcrumb — WHO runs it, then what this card is — so the heading
@@ -4983,13 +5023,44 @@ export default function NewJobModal({
               value={text}
               onChange={(e) => setText(e.target.value)}
               onPaste={pasteFiles}
+              aria-autocomplete="list"
+              aria-controls={menuOpen ? menuId : undefined}
+              aria-activedescendant={menuOpen ? `${menuId}-${menuActive}` : undefined}
               onKeyDown={(e) => {
+                // THE MENU HAS THE ARROWS, ENTER, TAB AND ESC WHILE IT IS OPEN.
+                // Enter always accepts the row here (no "fully typed name"
+                // exception: a task is created by Create, or by Enter once the
+                // menu is closed). Not mid-composition: an IME's keys are its own.
+                if (menuOpen && !e.nativeEvent.isComposing) {
+                  const k = menuKey(e.key, menuActive, menuRows.length, e.shiftKey);
+                  if (k) {
+                    e.preventDefault();
+                    if (k.type === "move") setMenuIdx(k.index);
+                    else if (k.type === "accept") pickCommand(menuRows[menuActive].name);
+                    else {
+                      // Esc closes the menu and goes no further: not the modal's.
+                      e.stopPropagation();
+                      setMenuDismissed(text);
+                    }
+                    return;
+                  }
+                }
                 if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
                 e.preventDefault();
                 if (!busy) trySubmit();
               }}
               autoFocus
             />
+            {menuOpen && (
+              <CommandMenu
+                id={menuId}
+                rows={menuRows}
+                active={menuActive}
+                onPick={pickCommand}
+                onHover={setMenuIdx}
+                className="nt-cmd-menu"
+              />
+            )}
             {/* The placeholder, drawn rather than set: two lines in two faces,
                 which a native `placeholder` cannot do. Hidden the moment there
                 is text or an image, like the native one; `aria-hidden` because
