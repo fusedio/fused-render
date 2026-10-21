@@ -422,7 +422,7 @@ def test_genuine_diffusers_repo_with_model_index_stays_loadable():
 
 
 def test_modular_diffusers_repo_with_only_the_modular_index_is_admitted():
-    """Admission is the metadata net (D1396); loading has no adapter yet."""
+    """Admission is the metadata net (D1397); loading has no adapter yet."""
     names = frozenset({formats.DIFFUSERS_MODULAR_INDEX})
     loadable, _reason, _runs_on = hub_loadable.admission(
         runner_codes=("diffusers-image",),
@@ -639,7 +639,7 @@ def test_every_repo_loaders_loads_is_admitted():
     (frozenset({"x"}), "diffusers"),
 ])
 def test_modular_only_and_library_name_rows_are_admitted_but_not_loadable(names, library_name):
-    """The documented gap (D1396): Hub rows are admitted on metadata, but
+    """The documented gap (D1397): Hub rows are admitted on metadata, but
     nothing loads them until a ModularPipeline adapter exists."""
     assert _admitted_and_loads(names, library_name) == (True, False)
 
