@@ -551,6 +551,9 @@ export interface PollResponse {
   error: string;
   tokens: number;
   phase: Phase;
+  /** Epoch seconds the current turn began (server stamp); 0 or absent on an
+   *  older agent.py. */
+  turn_started_at?: number;
   /** The run's original first user message. */
   message: string;
   permissions: PermissionRow[];

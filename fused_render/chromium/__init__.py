@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import sys
 import tempfile
@@ -245,14 +246,20 @@ def _run_install(art: Artifact, fetch) -> None:
 
 
 def prune_others(art: Artifact | None = None) -> list[str]:
-    """Delete every unpacked engine that is not ``art``'s (the one the
-    running app's manifest names): each is ~125 MB and nothing loads an
-    engine the manifest does not name. Never called for a prefetched
-    engine — the running app's own engine is still in use."""
+    """Delete the unpacked engines OLDER than ``art``'s (the one the running
+    app's manifest names): each is ~125 MB and no newer build names them.
+    Newer ones stay — an engine prefetched for a pending app update
+    (`prefetch_for_bundle`) must survive the relaunch that will use it.
+    `engines_root` is shared by every branch install on the machine; a dev
+    process on an older branch that loses its engine fetches it again at
+    its next start (app.py's settle thread) and shows WebKit until then."""
     art = art or artifact()
     if art is None:
         return []
-    keep = os.path.basename(engine_dir(art))
+    try:
+        current = int(art.engine_version)
+    except ValueError:
+        return []
     root = engines_root()
     gone: list[str] = []
     try:
@@ -260,7 +267,8 @@ def prune_others(art: Artifact | None = None) -> list[str]:
     except OSError:
         return gone
     for name in names:
-        if name.startswith("engine-") and name != keep:
+        m = re.fullmatch(r"engine-(\d+)-" + re.escape(art.arch), name)
+        if m and int(m.group(1)) < current:
             shutil.rmtree(os.path.join(root, name), ignore_errors=True)
             gone.append(name)
     if gone:

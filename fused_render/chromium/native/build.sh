@@ -58,7 +58,11 @@ echo "==> engine $ENGINE_VERSION / CEF $CEF_VERSION / $ARCH"
 TARBALL="$CACHE/$DIST.tar.bz2"
 if [[ ! -f "$TARBALL" ]]; then
   echo "==> fetching $DIST_URL"
-  curl -fL --retry 3 -o "$TARBALL" "$DIST_URL"
+  # To a temp name, renamed only when curl succeeds: a partial file under
+  # the final name would skip the fetch next time and fail the checksum.
+  rm -f "$TARBALL.part"
+  curl -fL --retry 3 -o "$TARBALL.part" "$DIST_URL"
+  mv "$TARBALL.part" "$TARBALL"
 fi
 ACTUAL_SHA1="$(shasum -a 1 "$TARBALL" | cut -d' ' -f1)"
 if [[ "$ACTUAL_SHA1" != "$CEF_SHA1" ]]; then
