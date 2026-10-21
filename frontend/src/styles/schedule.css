@@ -337,6 +337,21 @@ body.embed .schedule-page {
   color: var(--fg-muted);
 }
 
+/* "Beta" sits in front of the Calendar label; it lives inside
+   `.schedule-fit-lbl`, so it folds away with the word when the toolbar is
+   short on room. */
+.schedule-beta-tag {
+  margin-right: 5px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
 .schedule-view-btn > svg {
   flex: 0 0 auto;
   color: inherit;

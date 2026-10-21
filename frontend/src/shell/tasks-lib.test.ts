@@ -8354,8 +8354,10 @@ describe("the tasks toolbar", () => {
     // per view name, each pairing the view's glyph (VIEW_ICONS) with its word
     // (VIEW_LABELS) — the pairing is unchanged, it is just said once.
     expect(PAGE).toMatch(
-      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">\{VIEW_LABELS\[v\]\}<\/span>/,
+      /\{VIEW_ICONS\[v\]\}\s*\n\s*<span className="schedule-fit-lbl">[\s\S]*?\{VIEW_LABELS\[v\]\}\s*<\/span>/,
     );
+    // Calendar is in beta: its word wears a tag, inside the label so it folds with it.
+    expect(PAGE).toContain('{v === "calendar" && <span className="schedule-beta-tag">Beta</span>}');
     for (const [view, icon] of [
       ["list", "ICON_VIEW_LIST"],
       ["board", "ICON_VIEW_BOARD"],

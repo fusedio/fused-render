@@ -1585,7 +1585,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                         aria-pressed={view === v}
                         onClick={() => pickView(v)}>
                   {VIEW_ICONS[v]}
-                  <span className="schedule-fit-lbl">{VIEW_LABELS[v]}</span>
+                  <span className="schedule-fit-lbl">
+                    {v === "calendar" && <span className="schedule-beta-tag">Beta</span>}
+                    {VIEW_LABELS[v]}
+                  </span>
                 </button>
               ))}
             </div>
