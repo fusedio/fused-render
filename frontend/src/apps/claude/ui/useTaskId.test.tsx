@@ -389,9 +389,11 @@ test("still answers the number the listing holds for a pending: key", async () =
 // does not exist and Archive would file work that has not happened. Delete
 // stays, because calling the message off IS what a reader wants here (Akshil,
 // 2026-09-12).
-test("offers Download transcript on any chat with a session, not the landing page or a queued chat", () => {
+test("offers Download transcript on any chat with a task behind it, not the landing page or a queued chat", () => {
   const src = readFileSync(join(import.meta.dir, "Kebab.tsx"), "utf8");
-  const row = src.slice(src.indexOf("{!landing && sessionId && !queued ? ("));
+  // Gated on `hasTask` like Archive: the export route reads the task
+  // listing, so a session it does not know would 404 (CodeRabbit, #1815).
+  const row = src.slice(src.indexOf("{!landing && sessionId && hasTask && !queued ? ("));
   expect(row.slice(0, row.indexOf("</DropdownMenuItem>"))).toContain('"Download transcript"');
   expect(src).toContain('await downloadTaskTranscript(sessionId, "md")');
   // Between the terminal items and Archive, the order the Tasks kebab uses.

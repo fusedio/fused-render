@@ -701,9 +701,10 @@ export function Kebab({
             </DropdownMenuItem>
           ) : null}
           </>) : null}
-          {/* Any chat with a session has a transcript to save; the landing page
-              and a queued chat have none yet. */}
-          {!landing && sessionId && !queued ? (
+          {/* A chat with a task behind it has a transcript to save (the export
+              reads the task listing, as Archive does); the landing page and a
+              queued chat have none yet. */}
+          {!landing && sessionId && hasTask && !queued ? (
             <DropdownMenuItem
               className="c-kebab-opt"
               closeOnClick={false}
