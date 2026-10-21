@@ -243,10 +243,17 @@ static const int64_t kMaxTimerDelayMs = 1000 / 30;
   _pumpReentrancyDetected = NO;
   CefDoMessageLoopWork();
   _pumpActive = NO;
-  if (_pumpReentrancyDetected && !_shutDown) {
+  if (_shutDown) return;
+  if (_pumpReentrancyDetected) {
     _pumpReentrancyDetected = NO;
     // Soon, on the next turn: not synchronously inside this frame.
     [self setTimerMilliseconds:1];
+  } else if (!_pumpTimer) {
+    // cefclient's fallback: a run at the maximum delay whenever nothing is
+    // pending. CEF does not ask for a run for every task that becomes
+    // ready (a navigation stalled right after OnBeforeBrowse without it,
+    // with the main thread idle), so the pump is never left unarmed.
+    [self setTimerMilliseconds:kMaxTimerDelayMs];
   }
 }
 
