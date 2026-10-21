@@ -214,8 +214,8 @@ describe("the wiring the pure tests cannot see", () => {
     expect(MODAL).toContain("attachFiles(e.dataTransfer.files);");
   });
 
-  it("BOTH text fields take the paste — a file dropped on the title attaches too", () => {
-    expect(MODAL.split("onPaste={pasteFiles}").length - 1).toBe(2);
+  it("the one box takes the paste — a pasted file attaches", () => {
+    expect(MODAL.split("onPaste={pasteFiles}").length - 1).toBe(1);
   });
 
   it("NO caps and NO picker are left in the source", () => {

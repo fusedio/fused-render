@@ -44,6 +44,7 @@ let saveEnabled: typeof import("./NewJobModal").saveEnabled;
 let saveBlockedReason: typeof import("./NewJobModal").saveBlockedReason;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
 let ASK_PLACEHOLDER: typeof import("./NewJobModal").ASK_PLACEHOLDER;
+let taskFieldsOf: typeof import("./NewJobModal").taskFieldsOf;
 let composeTaskMessage: typeof import("./NewJobModal").composeTaskMessage;
 let withoutTitleHeading: typeof import("./NewJobModal").withoutTitleHeading;
 let splitDraft: typeof import("./NewJobModal").splitDraft;
@@ -84,6 +85,7 @@ beforeAll(async () => {
   saveBlockedReason = mod.saveBlockedReason;
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
   ASK_PLACEHOLDER = mod.ASK_PLACEHOLDER;
+  taskFieldsOf = mod.taskFieldsOf;
   composeTaskMessage = mod.composeTaskMessage;
   withoutTitleHeading = mod.withoutTitleHeading;
   splitDraft = mod.splitDraft;
@@ -1120,10 +1122,8 @@ describe("naming the task", () => {
   test("…and the second field is the OVERFLOW of that question, and says it is optional", () => {
     // Never the same question twice: the field above asks what the task is, so
     // this one asks only for what that answer left out.
-    expect(ASK_PLACEHOLDER).toBe(
-      "Describe what Claude should do. Paste a screenshot or drop a file. (optional)",
-    );
-    expect(ASK_PLACEHOLDER).toContain("optional");
+    expect(ASK_PLACEHOLDER).toBe("Paste a screenshot or drop a file.");
+    expect(ASK_PLACEHOLDER).not.toContain("optional");
     expect(ASK_PLACEHOLDER).not.toContain("What should Claude do");
   });
 
@@ -2328,7 +2328,7 @@ describe("only words or files make a draft", () => {
 
   test("the content predicate is the three things and nothing else", () => {
     const s = src();
-    expect(s).toContain('const draftContent = !!title.trim() || !!message.trim()');
+    expect(s).toContain('const draftContent = !!text.trim()');
     expect(s).toContain("|| images.some((i) => i.path);");
     // A chip whose upload has not answered names no file yet — the same rule
     // the body's own `attachments` uses.
@@ -2910,5 +2910,48 @@ describe("property pills", () => {
     // Across a month end.
     expect(presetWhen("tomorrow", new Date("2026-10-31T23:00:00")).getTime())
       .toBe(new Date("2026-11-01T09:00:00").getTime());
+  });
+});
+
+describe("one box", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("one writing field, no title input", () => {
+    const s = src();
+    expect(s.split('className="new-task-field new-task-ask"').length - 1).toBe(1);
+    expect(s).not.toContain("new-task-title");
+    expect(s).not.toContain("titleRef");
+  });
+
+  test("a single line is the message and the title", () => {
+    expect(taskFieldsOf("  Fix the bug  ")).toEqual({
+      message: "Fix the bug", title: "Fix the bug", description: "",
+    });
+  });
+
+  test("two lines with a blank between", () => {
+    expect(taskFieldsOf("Fix it\n\nwith care")).toEqual({
+      message: "Fix it\n\nwith care", title: "Fix it", description: "with care",
+    });
+  });
+
+  test("two lines without a blank", () => {
+    expect(taskFieldsOf("Fix it\nwith care")).toEqual({
+      message: "Fix it\nwith care", title: "Fix it", description: "with care",
+    });
+  });
+
+  test("a long first line clamps the title on a word boundary, message intact", () => {
+    const long = "Go through the whole scheduling stack and work out why a recurring task stops resuming";
+    const f = taskFieldsOf(long + "\nmore");
+    expect(f.message).toBe(long + "\nmore");
+    expect(f.title.length).toBeLessThanOrEqual(60);
+    expect(long.startsWith(f.title)).toBe(true);
+    expect(long[f.title.length]).toBe(" ");
+    expect(f.description).toBe("more");
+  });
+
+  test("empty is all empty", () => {
+    expect(taskFieldsOf("  \n ")).toEqual({ message: "", title: "", description: "" });
   });
 });

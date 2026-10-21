@@ -1596,8 +1596,7 @@ export const titlePlaceholderFor = (agent: string) =>
 // left alone. It read "What should Claude do?" while it was the whole message,
 // and leaving that question here while the field above asks it too would put the
 // user in front of the same question twice.
-export const ASK_PLACEHOLDER =
-  "Describe what Claude should do. Paste a screenshot or drop a file. (optional)";
+export const ASK_PLACEHOLDER = "Paste a screenshot or drop a file.";
 // The key that brings the caret down from the title (its onKeyDown). No longer
 // drawn in the placeholder — the footer says it as ⇧↵ — but still exported.
 export const ASK_HINT_KEY = "shift + enter";
@@ -1654,6 +1653,21 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
   // before it rather than losing it.
   const boundary = line.slice(0, max + 1).lastIndexOf(" ");
   return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
+}
+
+// THE ONE BOX'S THREE DERIVED VALUES. The card holds a single text; what Claude
+// is sent, the task's name and its description are all read out of it. The
+// message is the trimmed text itself (never a recomposed title + body, so a
+// first line over the clamp is not lost); the name is the first line clamped on
+// a word boundary; the description is everything after the first line.
+export function taskFieldsOf(text: string): {
+  message: string; title: string; description: string;
+} {
+  return {
+    message: text.trim(),
+    title: shortTitle(text),
+    description: splitDraft(text).description,
+  };
 }
 
 /**
@@ -2172,6 +2186,10 @@ export function buildSchedulePayload(form: {
   // empty branch below stays as the honest fallback for a caller this form's
   // gate never saw.
   title: string;
+  // The one box's raw text, when the caller has one (the card does). It IS what
+  // Claude is sent, trimmed — `title`/`message` above then only name the task
+  // and describe it (taskFieldsOf), and are not recomposed into the message.
+  text?: string;
   when: string;
   // The structured rule the current choice means; null for a one-off and for
   // the legacy cron key, whose line is submitted verbatim instead.
@@ -2256,7 +2274,9 @@ export function buildSchedulePayload(form: {
   const trimmedDescription = form.message.trim();
   // WHAT CLAUDE IS ACTUALLY SENT — title and description as one message, not
   // the description alone. See composeTaskMessage.
-  const composed = composeTaskMessage(form.title, form.message);
+  const composed = form.text !== undefined
+    ? form.text.trim()
+    : composeTaskMessage(form.title, form.message);
   // WHICH session, if any, the re-created entry continues. The two sources are
   // treated oppositely:
   //   · the task's own (learned) id survives everything except a template that
@@ -2739,7 +2759,6 @@ export default function NewJobModal({
   // title below opens on `draft.title` and the description on the body that goes
   // with it, so the split has to be taken once rather than per reader.
   const draft = splitDraft(initialMessage);
-  const [message, setMessage] = useState(initialAsk);
   // The attachments (design: the same functionality the claude template's chat
   // has — paste or drop ANY file, a thumbnail or a doc glyph with a remove ✕ —
   // in this card's own chrome). An Edit opens on the entry's stored paths, kind
@@ -2942,7 +2961,12 @@ export default function NewJobModal({
     (editing?.session_id || chatKeySession(chatKey ?? "") || chatSessionId) ?? "";
   const { title: derivedTitle, lookupSession: titleLookup } =
     initialTitleStateOf(editing, nameSession, draft.title);
-  const [title, setTitle] = useState(saved.title ?? derivedTitle);
+  // ONE box: the text is the truth, the name and the description are read out
+  // of it (taskFieldsOf). Opens on exactly the message the two-field form sent.
+  const [text, setText] = useState(
+    joinDraft(saved.title ?? derivedTitle, initialAsk),
+  );
+  const fields = taskFieldsOf(text);
   const initialTargetValue = saved.target ?? editing?.target ?? initialTarget ?? "";
   const [target, setTarget] = useState(initialTargetValue);
   // ONE date-time drives everything: a one-off runs at it, and every derived
@@ -3549,11 +3573,10 @@ export default function NewJobModal({
   // measure. Measured on every change because "auto then scrollHeight" is the
   // one reflow-safe way to shrink back when lines are deleted.
   const askRef = useRef<HTMLTextAreaElement>(null);
-  // Title is the third field a refused Save can send the caret to (see
-  // trySubmit); the ask has `askRef` above and the path already has `pathRef`.
-  // Refs rather than a querySelector, because the card is a portal and there can
-  // be a second one mid-exit-animation when a deep link swaps the entry.
-  const titleRef = useRef<HTMLInputElement>(null);
+  // The box (`askRef` above) and the path (`pathRef`) are the two fields a
+  // refused Save can send the caret to (see trySubmit). Refs rather than a
+  // querySelector, because the card is a portal and there can be a second one
+  // mid-exit-animation when a deep link swaps the entry.
   const pathRef = useRef<HTMLInputElement>(null);
   // Escape-from-a-row hands focus back to the field WITHOUT reopening the
   // list it just dismissed — the input's onFocus otherwise undoes the close
@@ -3568,7 +3591,7 @@ export default function NewJobModal({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [message]);
+  }, [text]);
 
   // The default target, filled once the server says where home is — and only
   // into a still-empty field, so it never clobbers an edit or the user's own
@@ -3604,8 +3627,7 @@ export default function NewJobModal({
     // close-twice guard on an untouched modal (the bug the getConfig effect's
     // setInitial exists for — this is the same one, one prefill earlier).
     target: initialTargetValue,
-    message: initialAsk,
-    title,
+    text: joinDraft(saved.title ?? derivedTitle, initialAsk),
     when,
     repeat,
     repeatOn,
@@ -3630,8 +3652,7 @@ export default function NewJobModal({
   // discard an adjusted schedule (Bugbot, PR #538).
   const dirty =
     target !== initial.target ||
-    message !== initial.message ||
-    title !== initial.title ||
+    text !== initial.text ||
     when !== initial.when ||
     repeat !== initial.repeat ||
     repeatOn !== initial.repeatOn ||
@@ -3847,7 +3868,7 @@ export default function NewJobModal({
    * PATH: a chip whose upload has not answered names no file yet, which is the
    * same rule the body's `attachments` uses two lines down.
    */
-  const draftContent = !!title.trim() || !!message.trim()
+  const draftContent = !!text.trim()
     || images.some((i) => i.path);
   /**
    * …AND ONCE A DRAFT EXISTS, EMPTYING IT IS A WRITE, not a silence. The body
@@ -3872,8 +3893,8 @@ export default function NewJobModal({
   const draftBody: TaskDraftForm | null = (!editing || !!recordKey) && dirty
     && (draftContent || draftId !== null || !!recordKey)
     ? {
-      title,
-      description: message,
+      title: splitDraft(text).title,
+      description: splitDraft(text).description,
       target,
       when: timePicked ? when : null,
       repeat: repeatOn ? repeat : null,
@@ -3995,7 +4016,7 @@ export default function NewJobModal({
       const el = typeof document === "undefined" ? null : document.activeElement;
       return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
     },
-    localText: () => `${title}\u0000${message}`,
+    localText: () => text,
     adopt: () => {
       // A CARD CANNOT REPAINT ITSELF FROM A RECORD: every field is seeded in a
       // `useState` initialiser, which is what makes a re-opened draft a fresh
@@ -4321,10 +4342,22 @@ export default function NewJobModal({
       .then(({ tasks }) => {
         const resolved = sessionTitleOf(tasks, titleLookup);
         if (!alive || !resolved) return;
-        setTitle((prev) => (prev === derivedTitle ? resolved : prev));
-        setInitial((prev) =>
-          prev.title === derivedTitle ? { ...prev, title: resolved } : prev,
-        );
+        // One box: the resolved name lands where the user has not written
+        // their own — an empty box, or a first line still equal to the derived
+        // (synchronous) name. Anything else is the user's text; left alone.
+        const swap = (prev: string) => {
+          if (prev.trim() === "") return resolved;
+          if (!derivedTitle) return prev;
+          const lines = prev.split("\n");
+          if (lines[0].trim() !== derivedTitle) return prev;
+          lines[0] = resolved;
+          return lines.join("\n");
+        };
+        setText(swap);
+        setInitial((prev) => {
+          const next = swap(prev.text);
+          return next === prev.text ? prev : { ...prev, text: next };
+        });
       })
       // A failed lookup is not worth reporting: the field is either already
       // showing a stored title or blank with Save asking for one, and neither
@@ -4424,8 +4457,9 @@ export default function NewJobModal({
       await scheduleMessage(
         buildSchedulePayload({
           target,
-          message,
-          title,
+          message: fields.description,
+          title: fields.title,
+          text,
           when,
           rule,
           repeat,
@@ -4532,8 +4566,8 @@ export default function NewJobModal({
   // not — a title alone is a whole task, and it is what goes on the wire as the
   // message.
   const gate = {
-    message,
-    title,
+    message: "",
+    title: text,
     target,
     pathError,
     repeatOn,
@@ -4567,7 +4601,7 @@ export default function NewJobModal({
       return;
     }
     setError(blocked.text);
-    const el = blocked.field === "title" ? titleRef.current
+    const el = blocked.field === "title" ? askRef.current
       : blocked.field === "target" ? pathRef.current
         : null;
     el?.focus();
@@ -4836,42 +4870,11 @@ export default function NewJobModal({
       <div
         className="schedule-form"
       >
-        {/* ONE WRITING SURFACE, not two controls (Akshil, 2026-08-17, reference
-            image): the title and the description share a single borderless
-            area running from the header rule to the rows below it, the title
-            set large and the description quieter beneath it. Neither field
-            looks like an input — no border, no underline, no filled box — so
-            the top of the card reads as a document you type into rather than a
-            form with two fields in it. The wrapper is what makes that ONE
-            surface: it owns the block's vertical space and hands the slack to
-            the description, so a two-word entry does not leave the card
-            top-heavy. See `.new-task-write` in new-task.css for the whole
-            treatment, including what focus looks like when there is no box to
-            recolour.
-
-            TITLE FIRST, and the prominent one (Akshil, 2026-08-17: "title will
-            be the first field and then description will be the second field").
-            The folder and the time are facts ABOUT the task and stay quiet
-            beneath in the 26px icon gutter; neither of these two carries a
-            leading icon, because a 14px glyph beside a 20px face read as
-            debris and the gutter is what says "this is a detail".
-
-            REQUIRED, and the only required field on the card now — it is both
-            the task's name in the list and the first line of what Claude is sent
-            (composeTaskMessage). Prefilled from the chat draft's first line
-            where the form was deep-linked from a composer (splitDraft, which
-            takes that line OUT of the description so nothing is said twice), and
-            otherwise from the SESSION where there is one to read: its
-            `ai-title`, else its first user message — see sessionTitleOf for the
-            whole precedence and for what it refuses. Opened from the New task
-            button, or from a session with nothing to say for itself, the field is
-            blank and the requirement is what asks for a name — `aria-required`
-            says so rather than leaving a disabled Save as the only hint.
-
-            An <input>, not a textarea, and that is the whole overflow answer:
-            one line that never wraps and never grows. Long text scrolls
-            horizontally under the caret while the field has focus and ellipses
-            when it does not — see `.new-task-title` in new-task.css. */}
+        {/* ONE WRITING SURFACE: a single borderless box that reads as a
+            document you type into. See `.new-task-write` in new-task.css for the
+            treatment, including what focus looks like with no box to recolour.
+            The box below is prefilled from a chat draft or the session's own
+            name (sessionTitleOf), which land as its first line. */}
         <div
           className="new-task-write"
           // The write block is the drop target — the part of the card that
@@ -4888,76 +4891,40 @@ export default function NewJobModal({
             }
           }}
         >
-          <input
-            ref={titleRef}
-            type="text"
-            className="new-task-field new-task-title"
-            aria-label={titlePlaceholderFor(agentLabel(agent))}
-            aria-required="true"
-            onPaste={pasteFiles}
-            placeholder={titlePlaceholderFor(agentLabel(agent))}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            // ENTER CREATES THE TASK; SHIFT+ENTER MOVES DOWN into the
-            // instructions (Akshil, 2026-09-23). It was the other way round —
-            // Enter walked the caret down and ⌘↩ saved — and the card asked
-            // for a chord to do the one thing it exists for. An IME
-            // composition's Enter commits the candidate, not the line, and is
-            // left alone. Goes through trySubmit, not submit, so a form that
-            // cannot be saved answers the same way the button does.
-            onKeyDown={(e) => {
-              if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
-              e.preventDefault();
-              if (e.shiftKey) {
-                askRef.current?.focus();
-                return;
-              }
-              if (!busy) trySubmit();
-            }}
-            autoFocus
-          />
-
-          {/* …and the ADDITIONAL INSTRUCTIONS second: the rest of what Claude
-              is sent. The two fields are ONE message — the answer above is its
-              first line and this is the body under it (composeTaskMessage) —
-              which is what makes this field OPTIONAL as of 2026-08-18. "Update
-              the changelog" is a complete instruction, and the form used to make
-              the user type it twice: once to name the task and once to say it.
-              So no aria-required here, and Save no longer refuses an empty one.
-
-              It is named for what it ADDS rather than as a "description",
-              because the field above is now the one that asks the question: what
-              belongs here is the part that answer left out.
-
-              Quieter and smaller than the title, and it keeps the growth Title
-              deliberately does not have: multi-line, autogrowing with the text
-              from the floor `.new-task-ask` sets up to its max-height, then
-              scrolling. */}
+          {/* ONE BOX (Paperclip's "Describe a task…"): the whole task text.
+              There is no title field — the task's name is the first line,
+              clamped (taskFieldsOf), the way the server names a session from
+              its first prompt. REQUIRED (`aria-required`): it is what Claude is
+              sent. Enter creates the task, Shift+Enter is the textarea's own
+              newline, and an IME composition's Enter is left alone. Goes
+              through trySubmit, not submit, so a form that cannot be saved
+              answers the same way the button does. Autogrows from the CSS
+              floor up to its max-height, then scrolls. */}
           <div className="new-task-ask-wrap">
             <textarea
               ref={askRef}
               className="new-task-field new-task-ask"
               rows={2}
-              aria-label="Additional instructions"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              aria-label={titlePlaceholderFor(agentLabel(agent))}
+              aria-required="true"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
               onPaste={pasteFiles}
-              // Enter creates the task here too; Shift+Enter is the textarea's
-              // own newline and is left to it (Akshil, 2026-09-23).
               onKeyDown={(e) => {
                 if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
                 e.preventDefault();
                 if (!busy) trySubmit();
               }}
+              autoFocus
             />
-            {/* The placeholder, drawn rather than set: a native `placeholder`
-                is one run of text, and this one is two — the words, and under
-                them the key that gets the caret here, in italics. Hidden the
-                moment there is text, like the native one; `aria-hidden`
-                because the field's `aria-label` already says what it is. */}
-            {!message && (
+            {/* The placeholder, drawn rather than set: two lines in two faces,
+                which a native `placeholder` cannot do. Hidden the moment there
+                is text or an image, like the native one; `aria-hidden` because
+                the field's `aria-label` already says what it is. */}
+            {!text && images.length === 0 && (
               <div className="new-task-ask-hint" aria-hidden="true">
-                <span>{ASK_PLACEHOLDER}</span>
+                <span>{titlePlaceholderFor(agentLabel(agent))}</span>
+                <small>{ASK_PLACEHOLDER}</small>
               </div>
             )}
           </div>

@@ -340,8 +340,7 @@ test("a `new:` hop opens the card on that record — title, words and folder", a
     // The card is UP — the live failure was no dialog at all, so this is the
     // assertion the rest hang off.
     expect(hasDialog(box)).toBe(true);
-    expect(seen["What should Claude do?"]).toBe("Water the plants");
-    expect(seen["Additional instructions"]).toBe("the ones on the sill");
+    expect(seen["What should Claude do?"]).toBe("Water the plants\n\nthe ones on the sill");
     expect(seen["Add folder or file"]).toBe("/tmp/lab");
   } finally {
     // ALWAYS — an assertion above throwing must not skip this. A box left
@@ -365,8 +364,7 @@ test("a SESSION hop lands in the session's folder, not the reader's home", async
   try {
     await openWhere(box);
     const seen = fields(box);
-    expect(seen["What should Claude do?"]).toBe("Ship the notes");
-    expect(seen["Additional instructions"]).toBe("then tell Ada");
+    expect(seen["What should Claude do?"]).toBe("Ship the notes\n\nthen tell Ada");
     expect(seen["Add folder or file"]).toBe("/tmp/lab");
   } finally {
     await closeBox(box);

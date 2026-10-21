@@ -248,8 +248,7 @@ test("picking a model and a thinking level is what the card then says", async ()
 test("what was picked is what Create sends", async () => {
   const sent: Sent[] = [];
   const b = await openCard({}, sent);
-  await type(b, /What should Claude do/i, "My task");
-  await type(b, /Additional instructions/i, "do the thing");
+  await type(b, /What should Claude do/i, "My task\n\ndo the thing");
   await pick(b, "Model", "Opus");
   await pick(b, "Thinking", "Max");
 
