@@ -16,6 +16,7 @@ import { useState } from "react";
 
 import {
   CLAUDE_INSTALL_COMMAND,
+  CODEX_INSTALL_COMMAND,
   isClaudeTrouble,
   troubleHelpUrl,
   troubleInstructions,
@@ -133,8 +134,9 @@ export function TroubleCard({
    */
   kind?: TroubleKind;
   /** Which agent failed — "claude" when absent (docs/COPILOT_BACKEND.md D13).
-   *  Picks the classifier's subject and the brief's steps, and keeps Claude's
-   *  install line off a Copilot card. */
+   *  Picks the classifier's subject and the brief's steps, and the install
+   *  line: Claude's, Codex's own (docs/CODEX_BACKEND.md D10), none on a
+   *  Copilot card. */
   backend?: string;
   /** Extra actions belonging to the calling surface (e.g. "Fix this"). */
   children?: React.ReactNode;
@@ -145,6 +147,11 @@ export function TroubleCard({
   const ctx = { what, error, ...(facts ?? {}), ...(backend ? { backend } : {}) };
   const report = troubleReport(ctx);
   const instructions = troubleInstructions(ctx);
+  const install = backend === "codex"
+    ? { name: "Codex", command: CODEX_INSTALL_COMMAND }
+    : backend === "copilot"
+      ? null
+      : { name: "Claude Code", command: CLAUDE_INSTALL_COMMAND };
 
   if (compact) {
     return (
@@ -188,10 +195,10 @@ export function TroubleCard({
         <pre className="trouble-error">{String(error).trim()}</pre>
       ) : null}
 
-      {kind === "notfound" && backend !== "copilot" && (
+      {kind === "notfound" && install && (
         <div className="trouble-install">
-          <div className="trouble-label">Install Claude Code</div>
-          <CommandLine command={CLAUDE_INSTALL_COMMAND} />
+          <div className="trouble-label">Install {install.name}</div>
+          <CommandLine command={install.command} />
           {/* "try again below" points at the retry button, which only some
               callers offer (the chat's boot failure has none — reloading the
               page is its own retry) — said only where that button exists, so

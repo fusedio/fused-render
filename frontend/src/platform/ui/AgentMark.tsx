@@ -1,7 +1,9 @@
 // THE AGENT'S MARK, by backend id (docs/COPILOT_BACKEND.md D18). Claude draws
 // the real Claude mark (`ClaudeMark`); Copilot draws a glyph of OUR OWN — a
 // rounded square carrying a chevron pair — and NEVER the GitHub Copilot logo
-// or the Octocat, which are GitHub's to draw and not ours.
+// or the Octocat, which are GitHub's to draw and not ours. Codex likewise
+// (docs/CODEX_BACKEND.md D18): a hexagon carrying a `>_` prompt, OUR drawing,
+// NEVER the OpenAI logo.
 //
 // Same contract as `ClaudeMark`: `currentColor`, `em`-sized off the caller's
 // type so it drops into every seat the ✻ once had, `aria-hidden` because the
@@ -10,7 +12,7 @@ import { ClaudeMark } from "./ClaudeMark";
 import { agentLabel } from "@platform/lib/agent-backends";
 
 export interface AgentMarkProps {
-  /** "claude" | "copilot" — anything else, or nothing, is Claude. */
+  /** "claude" | "copilot" | "codex" — anything else, or nothing, is Claude. */
   backend?: string | null;
   className?: string;
   /** Multiple of the caller's font-size (see `ClaudeMark`). */
@@ -41,11 +43,36 @@ function CopilotGlyph({ className, size = 1 }: { className?: string; size?: numb
   );
 }
 
+/** The Codex glyph: the same 512 box and stroke, a hexagon outline, a `>_`
+ *  prompt inside. */
+function CodexGlyph({ className, size = 1 }: { className?: string; size?: number }) {
+  return (
+    <svg
+      className={className ? `c-claudemark c-agentmark-codex ${className}` : "c-claudemark c-agentmark-codex"}
+      viewBox="0 0 512 512"
+      width={`${size}em`}
+      height={`${size}em`}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={46}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M256 36l190 110v220L256 476 66 366V146z" />
+      <path d="M162 196l76 60-76 60M276 322h82" />
+    </svg>
+  );
+}
+
 export function AgentMark({ backend, className, size = 1, word = false }: AgentMarkProps) {
   const id = backend || "claude";
   const glyph = id === "copilot"
     ? <CopilotGlyph className={className} size={size} />
-    : <ClaudeMark className={className} size={size} />;
+    : id === "codex"
+      ? <CodexGlyph className={className} size={size} />
+      : <ClaudeMark className={className} size={size} />;
   if (!word) return glyph;
   return (
     <span className="c-agentmark-word">
