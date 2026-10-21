@@ -9,6 +9,7 @@
 // notifications and the face animator. The theme is the shell's (`data-theme` on <html>); the page only maps it
 // onto its own tokens.
 import { useEffect } from "react";
+import { useBotsFeeder } from "@platform/lib/botsPulse";
 import "./styles/bots.css";
 import { AppsPanel } from "./apps/AppsPanel";
 import { BuildDialog } from "./builds/BuildDialog";
@@ -84,6 +85,8 @@ export function Bots() {
   // before startStore so an imported seen map is in the store when the first poll merges the server's.
   useEffect(() => { void hydrateBotsPrefs(); }, []);
   useEffect(() => startStore(), []);
+  // While this page polls /api/bots, the sidebar's Bots entry takes its rows instead of polling /api/bots/pulse itself.
+  useBotsFeeder();
   useEffect(() => startBuilds(), []);
   useEffect(() => installStage(), []);
   // `/bots?new=1` opens the "+ New bot" chooser (FusedBot's setup wizard handed

@@ -34,3 +34,32 @@ def test_status_cursor_covers_another_writers_lines(client, tmp_path, monkeypatc
     st, _, body = client.get("/api/bots?cursors=" + quote(json.dumps({a.id: me["seq"]})))
     me = next(b for b in json.loads(body)["bots"] if b["id"] == a.id)
     assert me["events"] == []
+
+
+def test_pulse_is_the_small_row_for_the_sidebar(client, tmp_path, monkeypatch):
+    """`GET /api/bots/pulse` is the sidebar's poll: status, seq, the read mark and the hidden
+    flag per bot, with no events, usage or channel state — and no side effects on the bot."""
+    import json
+    monkeypatch.setattr(botmod.Bot, "greet", lambda self: None)
+    a = botmod.create(name="A")
+    a.emit("done", "first")
+    a.emit("done", "second")
+    st, _, body = client.get("/api/bots")
+    full = next(b for b in json.loads(body)["bots"] if b["id"] == a.id)
+    st, _, body = client.get("/api/bots/pulse")
+    assert st == 200
+    out = json.loads(body)
+    me = next(b for b in out["bots"] if b["id"] == a.id)
+    # The same seq the page's own row carries (create() emits a greeting line of its own).
+    assert me["status"] == "idle" and me["seq"] == full["seq"] >= 2 and me["hidden"] is False
+    assert "seen_seq" not in me and "events" not in me and "usage" not in out
+    # Opening the bot stamps the mark; hiding it flips the flag; a status change shows as is.
+    st, _, _ = client.post(f"/api/bots/{a.id}/seen", {"seq": 1})
+    assert st == 200
+    st, _, _ = client.post(f"/api/bots/{a.id}/flag", {"hidden": True})
+    assert st == 200
+    botmod.Bot(a.id).meta["status"] = "waiting"
+    a.meta["status"] = "waiting"
+    st, _, body = client.get("/api/bots/pulse")
+    me = next(b for b in json.loads(body)["bots"] if b["id"] == a.id)
+    assert me["seen_seq"] == 1 and me["hidden"] is True and me["status"] == "waiting"

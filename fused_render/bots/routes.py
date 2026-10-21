@@ -297,6 +297,30 @@ def bots_status(cursors: str = Query(default=""), shot_for: str = Query(default=
             "channels": None if quick else registry.channel_states()}
 
 
+@router.get("/api/bots/pulse")
+@_handled
+def bots_pulse():
+    """The sidebar's Bots entry: one small row per bot — status, event seq and the read mark — so the rail can say
+    "1 waiting · 2 running" and count unread bots without the events, usage and channel state `GET /api/bots`
+    carries. No side effects: `_status_bot`'s idle-sleep and popup checks belong to the page's poll, not to a
+    sidebar that asks every 30 s from every window. Hidden bots are listed with their flag; the client drops them."""
+    out = []
+    for b in registry.all():
+        try:
+            m = b.meta
+            # `seq` as the page's own row would carry it: `events_since` lifts the counter over lines another process
+            # appended (an iMessage reply via botsend.py), and with no page open nothing else does — which is exactly
+            # when the sidebar is the one asking, and a reply nobody has seen is the unread it exists to count.
+            row = {"id": b.id, "status": m.get("status") or "idle", "seq": max(b.seq, b._count_events()),
+                   "hidden": bool(m.get("hidden"))}
+            if isinstance(m.get("seen_seq"), int):
+                row["seen_seq"] = m["seen_seq"]
+            out.append(row)
+        except Exception:  # noqa: BLE001 — one broken bot must not blank the list
+            continue
+    return {"bots": out, "ts": time.time()}
+
+
 @router.post("/api/bots")
 @_handled
 def bots_create(body: dict = Body(...), x_fused: str | None = Header(default=None)):

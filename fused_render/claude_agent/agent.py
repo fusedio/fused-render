@@ -44,6 +44,9 @@ Actions:
   main(action="poll", run_id=...)
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
           "phase": ..., "message": <the run's first message, for re-attach>,
+          "turn_started_at": <epoch seconds the user message that opened
+                              the current turn was written, 0 if unknown
+                              (auto-turn, older CLI); survives reload>,
           "permissions": [{"id", "tool", "input", "decision", "scope",
                            "answers"}, ...],
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
@@ -3749,6 +3752,77 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
     os.replace(tmp_path, final_path)
 
 
+_INBOX_TIMES = "inbox_times.json"
+_INBOX_TIMES_KEEP = 50
+
+
+def _inbox_times_read(run_dir: str) -> dict:
+    try:
+        with open(os.path.join(run_dir, _INBOX_TIMES), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _inbox_time_record(run_dir: str, entry_uuid: str) -> None:
+    """Remember WHEN each user entry was written, keyed by its uuid (last
+    `_INBOX_TIMES_KEEP` kept), so `_poll` can date the turn from the entry
+    that opened it. Best effort: a failed write only loses the clock."""
+    times = _inbox_times_read(run_dir)
+    times[entry_uuid] = time.time()
+    while len(times) > _INBOX_TIMES_KEEP:
+        del times[next(iter(times))]
+    path = os.path.join(run_dir, _INBOX_TIMES)
+    tmp = path + ".tmp"
+    try:
+        with _private_open(tmp) as f:
+            f.write(json.dumps(times))
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _turn_opening_time(run_dir: str, cursor: int, echo_pending: bool) -> float:
+    """Epoch seconds the CURRENT turn's opening user message was written, or 0.
+
+    The opening row is the first `_starts_new_turn` echo after the last turn
+    boundary in the window from `cursor`: a `result` (not a subagent's) or an
+    unparseable line (a killed CLI's half-written row). A follow-up folded
+    mid-turn comes later, so it cannot move the clock. A turn with no such
+    echo (a background-task auto-turn) or an echo whose uuid we never
+    recorded (older CLI, foreign row) is 0. While the opening echo is still
+    pending the newest recorded entry is the one."""
+    times = _inbox_times_read(run_dir)
+    if echo_pending:
+        return float(next(reversed(times.values()), 0) or 0) if times else 0.0
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            fh.seek(cursor)
+            blob = fh.read()
+    except OSError:
+        return 0.0
+    opener = None
+    for raw in blob.split(b"\n")[:-1]:
+        try:
+            row = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            opener = None
+            continue
+        if not isinstance(row, dict) or row.get("parent_tool_use_id"):
+            continue
+        if row.get("type") == "result":
+            opener = None
+        elif opener is None and _starts_new_turn(row):
+            opener = row
+    if opener is None:
+        return 0.0
+    try:
+        return float(times.get(opener.get("uuid"), 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _write_inbox_entry(run_dir: str, message: str) -> None:
     """Queue one user-turn line for the session host to drain into the CLI's
     stdin — the one place both `_start` (the turn's first message) and
@@ -3761,7 +3835,9 @@ def _write_inbox_entry(run_dir: str, message: str) -> None:
     ids, and a folded N-block echo row that repeats a uuid is still that one
     entry (`_drained_unechoed`). A CLI that ignores the key loses nothing: the
     text match stands behind it."""
-    _write_inbox_row(run_dir, {"type": "user", "uuid": str(uuid.uuid4()), "message": {
+    entry_uuid = str(uuid.uuid4())
+    _inbox_time_record(run_dir, entry_uuid)
+    _write_inbox_row(run_dir, {"type": "user", "uuid": entry_uuid, "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
 
@@ -7766,7 +7842,7 @@ def _run_tasks(run_id: str) -> dict:
             "host_alive": bool(host)}
 
 
-def _starts_new_turn(row: dict) -> bool:
+def _starts_new_turn(row: dict, slash: bool = True) -> bool:
     """Whether `row` is the CLI's own echo (`--replay-user-messages`) of a
     message `_write_inbox_entry` put on the wire — the one row shape that
     provably begins a fresh, user-authored turn.
@@ -7781,11 +7857,25 @@ def _starts_new_turn(row: dict) -> bool:
     A `tool_result` row is `type: "user"` with a list `content` too — one
     lands after every tool call, far more often than a genuine new turn — so
     the list's own block types have to be checked: `_write_inbox_entry`
-    always writes `text` blocks, never `tool_result` ones."""
+    always writes `text` blocks, never `tool_result` ones.
+
+    ONE STRING SHAPE IS A TURN TOO: a queued bare slash command. The CLI
+    records it as a user row whose `content` is the string
+    `<command-message>..</command-message>\\n<command-name>/x</command-name>`,
+    with no list echo at all. Missed here, a run holding such a second turn
+    never advanced its cursor and `_poll` replayed the whole run from offset
+    0. Only a string carrying `<command-name>` counts (a wake's synthetic
+    `<task-notification>` and any other bare string still do not), and
+    `slash=False` turns this off for the caller that is waiting for a SPECIFIC
+    inbox entry's echo, which a slash row is never the echo of."""
     if row.get("type") != "user":
         return False
     message = row.get("message")
     content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return (slash and "<command-name>" in content
+                and not row.get("isMeta")
+                and row.get("toolUseResult") is None)
     if not isinstance(content, list) or not content:
         return False
     return all(isinstance(item, dict) and item.get("type") == "text"
@@ -8654,7 +8744,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                     row = json.loads(raw_line.decode("utf-8", "replace"))
                 except ValueError:
                     row = None
-                if row is not None and _starts_new_turn(row):
+                if row is not None and _starts_new_turn(row, slash=False):
                     saw_echo_since_send = True
                     echo_end = line_end
                     break
@@ -8899,7 +8989,14 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # too. `_cancelled_marker_state` also backs `_stopped_last`, which needs
     # the identical staleness check off its own cursor read.
     cancelled = _cancelled_marker_state(run_dir, scan_cursor)
+    try:
+        out_size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        out_size = 0
+    turn_started_at = _turn_opening_time(
+        run_dir, _read_poll_cursor(run_dir, out_size), echo_pending)
     return {"text": "" if echo_pending else text, "done": done,
+            "turn_started_at": turn_started_at,
             "session_id": new_session, "error": error, "backend": backend,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
