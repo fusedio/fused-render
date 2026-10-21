@@ -104,6 +104,13 @@ TABLE = [
     ("merge job failed", gh("needs-merge", needs_merge_purpose="update",
                             merge_job={"id": "m", "status": "failed"}),
      ["merge-claude", "keep-mine", "use-theirs", "check"]),
+    ("merge job choice", gh("needs-merge", needs_merge_purpose="update",
+                            merge_job={"id": "m", "status": "choice", "files": ["logo.png"],
+                                       "error": "logo.png isn't text."}),
+     ["choose-mine", "choose-theirs", "keep-mine", "use-theirs", "check"]),
+    ("merge job choice, return", gh("needs-merge", needs_merge_purpose="return",
+                                    merge_job={"id": "m", "status": "choice"}),
+     ["choose-mine", "choose-theirs", "keep-mine", "use-theirs", "check"]),
     ("merged", gh("merged"), ["check"]),
     # §16.12: edits kept after a merge can go in a new proposal.
     ("merged, kept edits", gh("merged", **CH), ["propose", "remix", "discard", "check"]),
@@ -179,9 +186,14 @@ TABLE = [
     ("own merge failed", own("needs-merge", merge_job={"id": "m", "status": "failed",
                                                        "purpose": "own-sync"}),
      ["merge-claude", "use-github", "check"]),
-    ("own merge failed, state moved on", own(merge_job={"id": "m", "status": "choice",
-                                                        "purpose": "own-sync"}),
-     ["merge-claude", "use-github", "check"]),
+    # A "choice" job (removed vs changed, or not text): no Claude, pick a side.
+    ("own merge choice", own("needs-merge", merge_job={"id": "m", "status": "choice",
+                                                       "purpose": "own-sync"}),
+     ["choose-mine", "choose-theirs", "use-github", "check"]),
+    ("remix bring-in choice", own(remix_of="alice/x", original_update=True,
+                                  merge_job={"id": "m", "status": "choice",
+                                             "purpose": "original"}),
+     ["choose-mine", "choose-theirs", "check"]),
     ("remix bring-in ready", own(remix_of="alice/x", original_update=True,
                                  merge_job={"id": "m", "status": "ready",
                                             "purpose": "original"}), []),
@@ -239,6 +251,9 @@ def test_buttons(name, f, want):
     ("github-changed", own("github-changed", unpublished=1), "put-on-top"),
     ("held", own("held", unpublished=2), "publish-now"),
     ("kept", own("kept", github_new=1), "bring-in"),
+    ("choice", gh("needs-merge", merge_job={"id": "m", "status": "choice"}), "choose-mine"),
+    ("own choice", own("needs-merge", merge_job={"id": "m", "status": "choice",
+                                                 "purpose": "own-sync"}), "choose-mine"),
     ("proposed, new files only", gh("proposed", proposal=WAITING, untracked=["n.csv"], **CH),
      "check"),
     ("proposed, new edits and new files",
@@ -358,6 +373,12 @@ def test_nothing_to_show_is_null():
     (gh("merged", merged_in_tip=False), "merged",
      "alice merged your change; fused will bring it in shortly."),
     (gh("merged", taken_back=True), "merged", "alice merged your change, then took it back."),
+    (gh("needs-merge", merge_job={"id": "m", "status": "choice",
+                                  "error": "logo.png isn't text, so it can't be combined."}),
+     "needs-merge", "logo.png isn't text, so it can't be combined."),
+    (own("needs-merge", merge_job={"id": "m", "status": "choice", "purpose": "own-sync",
+                                   "error": "a.py was removed on GitHub."}),
+     "needs-merge", "a.py was removed on GitHub."),
     (gh("merged", **CH), "merged", "Your newer changes: 1 file."),
     (gh(off_default=True, behind=3), "other-branch", "which has 3 newer changes."),
     (gh("proposed", proposal={**WAITING, "fits": False}, **CH), "proposed",
@@ -431,6 +452,8 @@ CALLED = [
     ("ownsync", "start_merge", ()), ("ownsync", "restore", ()), ("ownsync", "bring_in", ()),
     ("merge_job", "start", ("purpose", "ours", "theirs")), ("merge_job", "get", ()),
     ("merge_job", "accept", ()), ("merge_job", "discard", ()),
+    ("merge_job", "current", ("purpose",)), ("merge_job", "for_app", ()),
+    ("merge_job", "choose", ("side",)),
     ("proposals", "view", ()), ("proposals", "untracked", ()),
     ("proposals", "start_draft", ()),
     ("proposals", "start_send", ("title", "description", "note", "include")),
@@ -476,3 +499,69 @@ def test_round2_new_files_and_taken_back():
     assert out["panel"]["untracked"] == ["new.csv"]
     p = actions.decide(gh("merged", taken_back=True, merged_in_tip=True))["panel"]
     assert "You're on" not in p["sentence"]
+
+
+def test_own_merge_reaches_the_panel_through_the_real_registry(tmp_path, monkeypatch):
+    """rev-fe 1: engine.status carries a GitHub-link copy's merges only, so an
+    own app's Merge with Claude must come from merge_job itself — through
+    `facts`, the REAL registry (`merge_job.current`), not literal facts.
+    Ready → the review (no other buttons, Undo off); failed → named, with
+    Merge with Claude again; an inbox proposal's merge in the same folder
+    stays out of the panel."""
+    import time
+
+    from fused_render.contrib import classify, flags, merge_job, refresh, store
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    app = tmp_path / "ws" / "tag" / "mine"
+    app.mkdir(parents=True)
+    monkeypatch.setattr(flags, "_raw", lambda: dict(ALL))
+    rec = store.new_record("own", repo="bob/mine", branch="main", classified_by="migration")
+    rec["own_state"] = {"state": "needs-merge"}  # the overlap still stands
+    store.put(str(app), rec)
+    monkeypatch.setattr(classify, "kind_of", lambda d, **_: "own")
+    monkeypatch.setattr(ownsync, "status", lambda d: own("needs-merge")["own"])
+    monkeypatch.setattr(refresh, "github_identity", lambda: IN)
+    monkeypatch.setattr(actions, "_own_checked", lambda d: None)
+    monkeypatch.setattr(store, "activity", lambda d: [
+        {"id": "a1", "at": 1, "kind": "own-sync", "text": "Combined.", "undo": True}])
+    now = time.time()
+
+    def job(jid, purpose, status, land=True):
+        j = {"id": jid, "root": merge_job._canon(str(app)), "purpose": purpose, "ours": "a",
+             "theirs": "b", "land": land, "sides": None, "identity": None, "branch": None,
+             "new_tip": None, "worktree": None, "status": status, "summary": "Kept both.",
+             "files": ["a.py"], "error": None, "started_at": now, "ended_at": None,
+             "cancel": False}
+        monkeypatch.setitem(merge_job._jobs, jid, j)
+        return j
+
+    copy = {"kind": "own", "state": "own", "merge_job": None}
+    # An inbox proposal's merge (never lands here) is not the panel's.
+    job("inbox", "proposal", "ready", land=False)
+    out = actions.for_app(str(app), copy=copy, proposal=None)
+    assert out["panel"]["merge"] is None and out["panel"]["state"] == "needs-merge"
+    assert actions.activity(str(app))[0]["undo"] is True
+    mine = job("own", "own-sync", "ready")
+    out = actions.for_app(str(app), copy=copy, proposal=None)
+    assert out["panel"]["state"] == "merging" and out["panel"]["merge"]["id"] == "own"
+    assert out["panel"]["sentence"] == "Claude combined both versions. Kept both."
+    assert out["actions"] == []
+    assert actions.activity(str(app))[0]["undo"] is False  # rev-fe 13
+    mine.update(status="failed", error="Both sides rewrote the same lines.", ended_at=now)
+    out = actions.for_app(str(app), copy=copy, proposal=None)
+    assert out["actions"][0]["id"] == "merge-claude"
+    assert out["actions"][0]["label"] == "Merge with Claude again"
+    assert "Claude couldn't combine them. Both sides rewrote" in out["panel"]["sentence"]
+    assert actions.activity(str(app))[0]["undo"] is True
+
+
+def test_choice_buttons_name_the_files():
+    f = gh("needs-merge", merge_job={"id": "m", "status": "choice", "files": ["logo.png"]})
+    assert _button(f, "choose-mine")["label"] == "Keep mine for logo.png"
+    assert _button(f, "choose-theirs")["label"] == "Use alice's for logo.png"
+    assert not _button(f, "keep-mine")["primary"]
+    o = own("needs-merge", merge_job={"id": "m", "status": "choice", "purpose": "own-sync",
+                                      "files": ["a.py", "b.py"]})
+    assert _button(o, "choose-theirs")["label"] == "Use GitHub's for a.py, b.py"
+    assert not _button(o, "use-github")["primary"]

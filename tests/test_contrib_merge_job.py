@@ -345,6 +345,34 @@ def test_resolver_argv_is_sandboxed():
     rules = argv[argv.index("--allowedTools") + 1:argv.index("--permission-mode")]
     assert rules == ["Read(./**)", "Edit(./**)", "Write(./**)"]
     assert "auto" not in argv and "bypassPermissions" not in argv
+    assert "acceptEdits" not in argv
+    boxed = merge_job.resolver_argv("/bin/claude", "/tmp/x-claude")
+    real = os.path.realpath("/tmp/x-claude")
+    assert boxed[boxed.index("--allowedTools") + 1:boxed.index("--permission-mode")] == \
+        [f"Read(/{real}/**)", f"Edit(/{real}/**)", f"Write(/{real}/**)"]
+    # No bare tool name anywhere in the allow list (a bare name allows every path).
+    assert not {"Read", "Edit", "Write", "Read,Edit,Write"} & set(
+        boxed[boxed.index("--allowedTools") + 1:boxed.index("--permission-mode")])
+
+
+def test_symlinked_folder_never_carries_a_file_in_or_out(tmp_path, home, monkeypatch):
+    """rev-sec r2: a conflicted path under a symlinked folder (a proposal's
+    `link -> ~/.ssh`) is never read into the sandbox nor written back."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    secret = outside / "app.py"
+    secret.write_text("<<<<<<< a\nSECRET\n=======\nx\n>>>>>>> b\n")
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    os.symlink(outside, wt / "link")
+    called = []
+    monkeypatch.setattr(merge_job, "_popen", lambda *a, **k: called.append(a))
+    out = merge_job.claude_resolver(str(wt), ["link/app.py"], {
+        "first": "a", "second": "b", "job": {"id": "sym", "cancel": False}})
+    assert out["ok"] is False and called == []
+    assert secret.read_text().startswith("<<<<<<< a\nSECRET")
+    assert merge_job._plain_file_inside(str(outside), "app.py")
+    assert not merge_job._plain_file_inside(str(wt), "link/app.py")
 
 
 HOOK_MARK = "hook-FIRED"

@@ -739,7 +739,7 @@ def discard(job_id: str) -> dict:
 # (`part<N>/<name>`, any name Claude would load renamed to `….txt`), Claude
 # runs THERE with `--setting-sources=` (no project/user settings, hooks or
 # memory), `--strict-mcp-config` with no servers, and only Read/Edit/Write,
-# each allowed on the sandbox folder alone (`SANDBOX_RULES`) in `dontAsk`
+# each allowed on the sandbox folder alone (`sandbox_rules`) in `dontAsk`
 # mode — anything else, a Read outside it included, is denied, never asked
 # (a prompt injection in the conflict text cannot read the machine); the
 # edited files are copied back. Only text overlaps reach Claude

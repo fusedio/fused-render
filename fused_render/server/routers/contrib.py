@@ -818,6 +818,21 @@ def _as_job(module: str, name: str, **kwargs):
     return run
 
 
+def _choose(side: str):
+    """Keep mine / Use theirs for the files a "choice" merge job stopped on
+    (`merge_job.choose`): only those files are decided, the rest of the
+    merge carries on — the page reads the review, not /job."""
+    def run(t: _Target, _args) -> dict:
+        kind = t.record.get("kind")
+        purposes = _actions().CHOICE_PURPOSES.get(kind)
+        job = _mod("merge_job").current(t.app_dir, purpose=purposes) if purposes else None
+        if not isinstance(job, dict) or job.get("status") != "choice":
+            return _refuse("not-offered", "That isn't available right now.")
+        out = _call("merge choose", _mod("merge_job").choose, job["id"], side=side)
+        return {"job": job["id"], **out, "merge": True} if out.get("ok") else out
+    return run
+
+
 def _update_proposal(t: _Target, args) -> dict:
     include = _include(args)
     if include is None:
@@ -837,6 +852,8 @@ _DISPATCH = {
     "retry": lambda t, a: _retry(t),
     "bring-in": lambda t, a: _bring_in(t),
     "merge-claude": lambda t, a: _merge_claude(t),
+    "choose-mine": _choose("mine"),
+    "choose-theirs": _choose("theirs"),
     "keep-mine": _now("engine", "keep_mine"),
     "use-theirs": _now("engine", "use_theirs"),
     "go-back-main": _now("engine", "go_back_main"),

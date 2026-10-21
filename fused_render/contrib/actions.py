@@ -45,7 +45,11 @@ logger = logging.getLogger(__name__)
 IDS = ("check", "bring-in", "merge-claude", "keep-mine", "use-theirs", "move-aside",
        "go-back-main", "propose", "update-proposal", "withdraw", "remix", "discard",
        "push-main", "publish-now", "use-github", "put-on-top", "publish-over",
-       "save-edits", "sign-in", "retry")
+       "save-edits", "sign-in", "retry", "choose-mine", "choose-theirs")
+
+#: The merge purposes whose jobs land in the folder, per kind — what a
+#: "choice" job's per-file buttons (`merge_job.choose`) act on.
+CHOICE_PURPOSES = {"github": ("update", "return", "proposal"), "own": ("own-sync", "original")}
 
 _OPEN_JOB = ("running", "landing", "ready")
 
@@ -144,7 +148,7 @@ def facts(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dict:
         # app's are ownsync's (own-sync) and a remix's (original). An inbox
         # proposal's merge in the same folder is the inbox item's, not here.
         out["own_merge"] = _call("own merge", "merge_job", "current", app_dir,
-                                 purpose=("own-sync", "original"))
+                                 purpose=CHOICE_PURPOSES["own"])
     return out
 
 
@@ -338,7 +342,21 @@ def _github(f: dict, flags: dict) -> dict:
         where = f": {_file_words(nm_files)}" if nm_files else ""
         state = "needs-merge"
         panel["files"] = nm_files or files
-        if purpose == "return":
+        choice = job is not None and job.get("status") == "choice"
+        if choice:
+            # A file removed on one side and changed on the other, or not
+            # text: Claude can't combine it — the person picks a side.
+            panel["files"] = _strs(job.get("files")) or panel["files"]
+            fw = _file_words(panel["files"]) or "these files"
+            sentence = (job.get("error") or "").strip() or (
+                f"{who} and you changed {fw} in ways that can't be combined.")
+            # Per file first (the rest of the merge carries on); the whole
+            # copy either way stays offered.
+            b.add("choose-mine", f"Keep mine for {fw}", primary=True)
+            b.add("choose-theirs", f"Use {who}'s for {fw}")
+            b.add("keep-mine", "Keep mine")
+            b.add("use-theirs", f"Use {who}'s version", danger=True, confirm=theirs_confirm)
+        elif purpose == "return":
             sentence = f"{who} merged your change, and your newer edits overlap it{where}."
             b.add("merge-claude", "Merge with Claude", primary=True)
             b.add("use-theirs", f"Use {who}'s version", danger=True, confirm=theirs_confirm)
@@ -482,10 +500,21 @@ def _own(f: dict, flags: dict) -> dict:
                 or "Claude is combining both versions…"
         panel.update(state="merging", sentence=sentence, files=_strs(job.get("files")))
         return {"panel": panel, "actions": []}
-    failed = job is not None and job.get("status") in ("failed", "choice")
-    if failed:
+    status = job.get("status") if job is not None else None
+    why = ((job or {}).get("error") or "").strip()
+    if status == "choice":
+        # Removed on one side and changed on the other, or not text: Claude
+        # isn't asked; `error` says which in plain words.
+        panel["files"] = _strs(job.get("files")) or panel["files"]
+        fw = _file_words(panel["files"]) or "these files"
+        extra.append(why or "These versions can't be combined automatically.")
+        theirs = "GitHub's" if job.get("purpose") == "own-sync" else f"{who}'s"
+        b.add("choose-mine", f"Keep mine for {fw}", primary=True)
+        b.add("choose-theirs", f"Use {theirs} for {fw}")
+        if job.get("purpose") == "own-sync":
+            b.add("use-github", **_OWN_FIXES["use-github"])
+    elif status == "failed":
         # The overlap it failed on still stands (merge_job.current says so).
-        why = (job.get("error") or "").strip()
         extra.append("Claude couldn't combine them." + (f" {why}" if why else ""))
         if job.get("purpose") == "own-sync":
             b.add("merge-claude", "Merge with Claude again", primary=True)
@@ -496,6 +525,8 @@ def _own(f: dict, flags: dict) -> dict:
         spec = _OWN_FIXES.get(fix)
         if spec is None or (fix == "put-on-top" and not unpublished):
             continue  # nothing of the author's to put on top
+        if fix == "merge-claude" and status == "choice":
+            continue  # Claude can't combine this one
         if fix == "publish-over":
             spec = {**spec, "confirm": _publish_over_confirm()}
         # With nothing unpublished, GitHub's version is the safe way out.
@@ -504,7 +535,7 @@ def _own(f: dict, flags: dict) -> dict:
     if state == "publish-auth" and _signed_out(f):
         b.add("sign-in", "Sign in to GitHub", primary=True, dialog="sign-in")
     if (state in ("published", "github-new") and original and f.get("original_update")
-            and flags.get("remix")):
+            and flags.get("remix") and status != "choice"):
         state = "original-moved"
         sentence = f"{who} updated the original. Bring it into your remix?"
         b.add("bring-in", "Bring it in", primary=True)

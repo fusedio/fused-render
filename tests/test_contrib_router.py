@@ -104,7 +104,9 @@ def env(tmp_path, monkeypatch):
                     start_bring_in=lambda d: {"ok": True, "job": "mj-1"})
     ns.contributors = stub("contributors",
                            list=lambda d: [{"login": "bob", "name": "Bob", "commits": 2}])
-    ns.merge_job = stub("merge_job", get=lambda i: None, current=lambda d: None,
+    ns.merge_job = stub("merge_job", get=lambda i: None,
+                        current=lambda d, purpose=None: None,
+                        for_app=lambda d, purpose=None: None,
                         start=_boom, accept=_boom, discard=_boom)
     ns.ownsync = stub("ownsync", status=lambda d: {"state": "published", "unpublished": 0,
                                                    "github_new": 0, "files": [],
@@ -430,6 +432,25 @@ def test_merge_claude_starts_the_planned_merge(env):
     assert _act(env, d, "merge-claude")["reason"] == "nothing-to-merge"
 
 
+def test_choose_decides_only_the_choice_files(env):
+    """choose-mine / choose-theirs → merge_job.choose on THIS copy's choice
+    job (its purposes per kind); the answer is the merge job, for the review."""
+    d = env.app("a")
+    choice = {"id": "mj-c", "status": "choice", "purpose": "update", "files": ["logo.png"],
+              "error": "logo.png isn't text."}
+    env.engine.status = lambda app_dir: _v2("needs-merge", merge_job=choice)
+    asked, chosen = [], []
+    env.merge_job.current = lambda app_dir, purpose=None: asked.append(purpose) or choice
+    env.merge_job.choose = lambda job, side: chosen.append((job, side)) or {"ok": True}
+    assert _act(env, d, "choose-mine") == {"ok": True, "job": "mj-c", "merge": True}
+    assert _act(env, d, "choose-theirs")["ok"] is True
+    assert chosen == [("mj-c", "mine"), ("mj-c", "theirs")]
+    assert asked[-1] == ("update", "return", "proposal")
+    # Once the job moved on, the per-file buttons are gone.
+    env.engine.status = lambda app_dir: _v2("needs-merge")
+    assert _act(env, d, "choose-mine")["reason"] == "not-offered"
+
+
 def test_own_bring_in_is_ownsyncs_when_it_names_it(env):
     """`kept` (an undone combine) → ownsync.bring_in; a remix whose original
     moved → remix.start_bring_in."""
@@ -446,7 +467,8 @@ def test_own_bring_in_is_ownsyncs_when_it_names_it(env):
     env.ownsync.status = lambda app_dir: {"state": "published", "unpublished": 0,
                                           "github_new": 0, "files": [], "message": "",
                                           "fixes": []}
-    assert _act(env, r, "bring-in") == {"ok": True, "job": "r"}
+    # A merge job id: the page reads the review, never polls /job (rev-fe 4).
+    assert _act(env, r, "bring-in") == {"ok": True, "job": "r", "merge": True}
     assert ran == ["own", "remix"]
 
 
@@ -532,6 +554,12 @@ def test_restore_only_an_offered_undo(env, monkeypatch):
         assert _post(env, "restore", path=d, id=bad)["reason"] == "not-offered"
     assert _post(env, "restore", path=d, id="a1") == {"ok": True}
     assert restored == ["a1"]
+    # rev-fe 13: no Undo while a merge that lands here is running or ready.
+    env.merge_job.for_app = lambda app_dir, purpose=None: {"id": "mj", "status": "ready",
+                                                          "land": True}
+    assert _post(env, "restore", path=d, id="a1") == {
+        "ok": False, "reason": "merging", "message": "Keep or discard Claude's merge first."}
+    env.merge_job.for_app = lambda app_dir, purpose=None: None
     # An own app's lines are ownsync's to undo, never the engine's.
     mine = env.app("m", kind="own", repo="bob/m")
     env.ownsync.restore = lambda app_dir, line: restored.append(("own", line)) or {"ok": True}
