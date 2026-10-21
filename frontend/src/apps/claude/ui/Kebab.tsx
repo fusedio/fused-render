@@ -29,6 +29,7 @@ import {
 } from "@platform/shadcn/ui/dropdown-menu";
 import {
   archiveTask,
+  downloadTaskTranscript,
   getTasks,
   unarchiveTask,
   type Task,
@@ -321,6 +322,7 @@ export function Kebab({
   const [terminalLabel, setTerminalLabel] = useState("");
   const [copyLabel, setCopyLabel] = useState("");
   const [archiveLabel, setArchiveLabel] = useState("");
+  const [downloadLabel, setDownloadLabel] = useState("");
   /** A press in flight, or its confirmation still on screen, OWNS its item:
    *  a listing read landing in that window must not overwrite the words
    *  (T:13143-13150). */
@@ -465,6 +467,7 @@ export function Kebab({
       );
       setCopyLabel("Copy command");
       setArchiveLabel("");
+      setDownloadLabel("");
       void refresh();
     },
     [sessionId, refresh, restingTerminal],
@@ -542,6 +545,32 @@ export function Kebab({
       }, 2500);
     }
   }, [fetchTerminalCommand, later]);
+
+  /** THE CONVERSATION AS A FILE (D1390): the same route and the same Markdown
+   *  the Tasks page's kebab downloads. The menu closes on the press like
+   *  Archive (R2-8); a failure reopens it with the reason on the item. */
+  const onDownload = useCallback(async () => {
+    if (!sessionId || busy.current) return;
+    busy.current = true;
+    setOpen(false);
+    try {
+      await downloadTaskTranscript(sessionId, "md");
+      busy.current = false;
+    } catch (err) {
+      if (liveSession.current !== sessionId) {
+        busy.current = false;
+        return;
+      }
+      setDownloadLabel(
+        `Couldn't download — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      setOpen(true);
+      later(() => {
+        busy.current = false;
+        setDownloadLabel("");
+      }, 2500);
+    }
+  }, [sessionId, later]);
 
   /**
    * THE MENU GOES FIRST (R2-8). This used to hold the dropdown open through the
@@ -672,6 +701,17 @@ export function Kebab({
             </DropdownMenuItem>
           ) : null}
           </>) : null}
+          {/* Any chat with a session has a transcript to save; the landing page
+              and a queued chat have none yet. */}
+          {!landing && sessionId && !queued ? (
+            <DropdownMenuItem
+              className="c-kebab-opt"
+              closeOnClick={false}
+              onClick={() => void onDownload()}
+            >
+              {downloadLabel || "Download transcript"}
+            </DropdownMenuItem>
+          ) : null}
           {/* HIDDEN, not disabled, when there is no task behind the chat: a
               disabled row invites the reader to work out what would enable it,
               and the answer is not something they can act on from this menu
