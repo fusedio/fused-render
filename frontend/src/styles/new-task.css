@@ -309,14 +309,17 @@
 /* The slash-command menu (CommandMenu, `className="nt-cmd-menu"`): hung off the
    first line of the box and dropping DOWN over the card. composer.css is the
    chat bundle's and not loaded here, so the rows are dressed again from the
-   shell's own tokens. The box keeps the keyboard; this is only a list. */
+   shell's own tokens. The box keeps the keyboard; this is only a list.
+   Five rows: the dialog body clips at the footer border, so five rows is what
+   fits above the pills row; the list scrolls past that (CommandMenu scrolls the
+   active row into view). */
 .nt-cmd-menu {
   position: absolute;
   left: 0;
   right: 0;
   top: calc(1.5em + 14px);
   z-index: 30;
-  max-height: calc(8 * 30px + 8px);
+  max-height: calc(5 * 30px + 8px);
   overflow-y: auto;
   padding: 4px;
   background: var(--bg-popover, var(--bg));
