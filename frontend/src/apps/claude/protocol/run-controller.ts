@@ -1961,8 +1961,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
 
         // The server's stamp of when this turn began wins on re-attach.
+        // 0 means the server does not know (keep our own clock); a stamp
+        // older than a day is a stale one, not this turn's start.
         const serverStart = Number(poll.turn_started_at || 0) * 1000;
-        if (serverStart > 0) {
+        if (serverStart > 0 && now() - serverStart <= 24 * 3600 * 1000) {
           const at = Math.min(serverStart, now());
           if (!(workingStartedAt > 0) || at < workingStartedAt) workingStartedAt = at;
         }

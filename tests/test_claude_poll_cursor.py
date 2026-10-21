@@ -320,36 +320,70 @@ def test_a_subagent_result_row_does_not_advance_the_cursor(agent, run_dir):
 
 # ------------------------------------------- (z) the turn clock survives a reload
 
-def test_turn_started_at_is_stamped_kept_midturn_and_restamped_after_done(
-        agent, run_dir):
-    """`turn_started_at` is the server-side source of the page's "(6s)"
-    counter, decided from out.jsonl's tail at write time (no poll needed)."""
-    import os
+def _entry(agent, run_dir, text):
+    """Write one inbox entry; return (uuid, recorded time)."""
+    agent._write_inbox_entry(str(run_dir), text)
+    times = json.loads((run_dir / "inbox_times.json").read_text())
+    uid = list(times)[-1]
+    return uid, times[uid]
+
+
+def _echo(uid, text="x"):
+    row = _user_row(text)
+    row["uuid"] = uid
+    return row
+
+
+def _started(agent, run_dir):
+    return _poll(agent, run_dir, alive=True)["turn_started_at"]
+
+
+def test_turn_started_at_is_the_opening_entrys_time(agent, run_dir):
     agent.RUNS = str(run_dir.parent)
-    stamp = run_dir / "turn_started_at"
-    out = run_dir / "out.jsonl"
-    agent._write_inbox_entry(str(run_dir), "one")
-    first = float(stamp.read_text())
-    assert first > 0
+    uid, t = _entry(agent, run_dir, "one")
+    assert t > 0
+    _write(run_dir, [_echo(uid), _text_row("working")])
+    assert _started(agent, run_dir) == t
 
-    _write(run_dir, [_text_row("working")])
-    live = _poll(agent, run_dir, alive=True)
-    assert live["done"] is False
-    assert live["turn_started_at"] == first
 
-    agent._write_inbox_entry(str(run_dir), "mid-turn follow-up")
-    assert float(stamp.read_text()) == first
+def test_a_midturn_followup_does_not_move_the_clock(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    uid, t = _entry(agent, run_dir, "one")
+    _write(run_dir, [_echo(uid), _text_row("working")])
+    uid2, t2 = _entry(agent, run_dir, "follow-up")
+    assert t2 > t
+    _append(run_dir, [_echo(uid2), _text_row("more")])
+    assert _started(agent, run_dir) == t
 
-    # Turn ends while NOBODY polls; the next message must still re-stamp.
-    _append(run_dir, [_result_row()])
-    os.utime(out, (first + 100, first + 100))
-    agent._write_inbox_entry(str(run_dir), "next turn")
-    second = float(stamp.read_text())
-    assert second > first
 
-    # Re-stamped, nothing streamed yet (result row older than the stamp).
-    os.utime(out, (second - 50, second - 50))
-    agent._write_inbox_entry(str(run_dir), "queued right after")
-    assert float(stamp.read_text()) == second
-    assert _poll(agent, run_dir, alive=True)["turn_started_at"] == second
-    assert not (run_dir / "turn_ended_at").exists()
+def test_the_next_turn_takes_the_new_entrys_time(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    uid, t = _entry(agent, run_dir, "one")
+    _write(run_dir, [_echo(uid), _text_row("a"), _result_row()])
+    uid2, t2 = _entry(agent, run_dir, "two")
+    _append(run_dir, [_echo(uid2), _text_row("b")])
+    assert _started(agent, run_dir) == t2 > t
+
+
+def test_a_killed_turn_does_not_leave_a_stale_clock(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    uid, t = _entry(agent, run_dir, "one")
+    # No `result`: the CLI died mid-write, leaving a torn line.
+    _write(run_dir, [_echo(uid), _text_row("a"), '{"type": "stre\n'])
+    uid2, t2 = _entry(agent, run_dir, "again")
+    _append(run_dir, [_echo(uid2), _text_row("b")])
+    assert _started(agent, run_dir) == t2 > t
+
+
+def test_an_auto_turn_with_no_user_echo_reports_zero(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    uid, _t = _entry(agent, run_dir, "one")
+    _write(run_dir, [_echo(uid), _text_row("a"), _result_row(),
+                     _text_row("a background task woke the CLI")])
+    assert _started(agent, run_dir) == 0
+
+
+def test_an_unknown_uuid_reports_zero(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    _write(run_dir, [_echo("not-ours"), _text_row("a")])
+    assert _started(agent, run_dir) == 0

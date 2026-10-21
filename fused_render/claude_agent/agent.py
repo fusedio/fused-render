@@ -44,8 +44,9 @@ Actions:
   main(action="poll", run_id=...)
       -> {"text": ..., "done": bool, "session_id": ..., "error": ..., "tokens": N,
           "phase": ..., "message": <the run's first message, for re-attach>,
-          "turn_started_at": <epoch seconds the current turn's first message
-                              was written, 0 if unknown; survives reload>,
+          "turn_started_at": <epoch seconds the user message that opened
+                              the current turn was written, 0 if unknown
+                              (auto-turn, older CLI); survives reload>,
           "permissions": [{"id", "tool", "input", "decision", "scope",
                            "answers"}, ...],
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
@@ -3751,66 +3752,75 @@ def _write_inbox_row(run_dir: str, row: dict) -> None:
     os.replace(tmp_path, final_path)
 
 
-def _turn_stamp_read(run_dir: str, name: str) -> float:
+_INBOX_TIMES = "inbox_times.json"
+_INBOX_TIMES_KEEP = 50
+
+
+def _inbox_times_read(run_dir: str) -> dict:
     try:
-        with open(os.path.join(run_dir, name)) as f:
-            return float(f.read().strip() or 0)
+        with open(os.path.join(run_dir, _INBOX_TIMES), encoding="utf-8") as f:
+            data = json.load(f)
     except (OSError, ValueError):
-        return 0.0
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def _turn_stamp_write(run_dir: str, name: str) -> None:
-    path = os.path.join(run_dir, name)
+def _inbox_time_record(run_dir: str, entry_uuid: str) -> None:
+    """Remember WHEN each user entry was written, keyed by its uuid (last
+    `_INBOX_TIMES_KEEP` kept), so `_poll` can date the turn from the entry
+    that opened it. Best effort: a failed write only loses the clock."""
+    times = _inbox_times_read(run_dir)
+    times[entry_uuid] = time.time()
+    while len(times) > _INBOX_TIMES_KEEP:
+        del times[next(iter(times))]
+    path = os.path.join(run_dir, _INBOX_TIMES)
     tmp = path + ".tmp"
     try:
         with _private_open(tmp) as f:
-            f.write(repr(time.time()))
+            f.write(json.dumps(times))
         os.replace(tmp, path)
     except OSError:
         pass
 
 
-def _cli_idle(run_dir: str) -> tuple[bool, float]:
-    """(idle, out.jsonl mtime): idle when `out.jsonl` is missing/empty or its
-    last complete row is the turn-end `result`. Reads only the last 64KB."""
-    path = os.path.join(run_dir, "out.jsonl")
+def _turn_opening_time(run_dir: str, cursor: int, echo_pending: bool) -> float:
+    """Epoch seconds the CURRENT turn's opening user message was written, or 0.
+
+    The opening row is the first `_starts_new_turn` echo after the last turn
+    boundary in the window from `cursor`: a `result` (not a subagent's) or an
+    unparseable line (a killed CLI's half-written row). A follow-up folded
+    mid-turn comes later, so it cannot move the clock. A turn with no such
+    echo (a background-task auto-turn) or an echo whose uuid we never
+    recorded (older CLI, foreign row) is 0. While the opening echo is still
+    pending the newest recorded entry is the one."""
+    times = _inbox_times_read(run_dir)
+    if echo_pending:
+        return float(next(reversed(times.values()), 0) or 0) if times else 0.0
     try:
-        with open(path, "rb") as f:
-            size = os.fstat(f.fileno()).st_size
-            mtime = os.fstat(f.fileno()).st_mtime
-            if not size:
-                return True, mtime
-            f.seek(max(0, size - 65536))
-            tail = f.read()
+        with open(os.path.join(run_dir, "out.jsonl"), "rb") as fh:
+            fh.seek(cursor)
+            blob = fh.read()
     except OSError:
-        return True, 0.0
-    if not tail.endswith(b"\n"):
-        return False, mtime  # a row is mid-write: the CLI is streaming
-    lines = tail.rstrip(b"\n").split(b"\n")
+        return 0.0
+    opener = None
+    for raw in blob.split(b"\n")[:-1]:
+        try:
+            row = json.loads(raw.decode("utf-8", "replace"))
+        except ValueError:
+            opener = None
+            continue
+        if not isinstance(row, dict) or row.get("parent_tool_use_id"):
+            continue
+        if row.get("type") == "result":
+            opener = None
+        elif opener is None and _starts_new_turn(row):
+            opener = row
+    if opener is None:
+        return 0.0
     try:
-        row = json.loads(lines[-1])
-    except ValueError:
-        return False, mtime
-    return (isinstance(row, dict) and row.get("type") == "result"), mtime
-
-
-def _stamp_turn_start(run_dir: str) -> None:
-    """Record when the current turn began, in the run dir, so a reloaded page
-    (or another tab) can keep counting from the real start.
-
-    Idle-vs-mid-turn is decided here from the run's own output, never from
-    polling (nobody may be polling when a turn ends). Re-stamp when
-    `out.jsonl` is missing/empty, or ends in a `result` row AND the existing
-    stamp is not newer than out.jsonl's mtime (stamp < mtime: that turn ended
-    after it began). A stamp newer than the mtime means a turn was just
-    started and nothing streamed yet, so it is kept; a turn still streaming
-    keeps its stamp; no stamp at all always writes one."""
-    started = _turn_stamp_read(run_dir, "turn_started_at")
-    if started:
-        idle, mtime = _cli_idle(run_dir)
-        if not idle or (mtime and started >= mtime):
-            return
-    _turn_stamp_write(run_dir, "turn_started_at")
+        return float(times.get(opener.get("uuid"), 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _write_inbox_entry(run_dir: str, message: str) -> None:
@@ -3825,8 +3835,9 @@ def _write_inbox_entry(run_dir: str, message: str) -> None:
     ids, and a folded N-block echo row that repeats a uuid is still that one
     entry (`_drained_unechoed`). A CLI that ignores the key loses nothing: the
     text match stands behind it."""
-    _stamp_turn_start(run_dir)
-    _write_inbox_row(run_dir, {"type": "user", "uuid": str(uuid.uuid4()), "message": {
+    entry_uuid = str(uuid.uuid4())
+    _inbox_time_record(run_dir, entry_uuid)
+    _write_inbox_row(run_dir, {"type": "user", "uuid": entry_uuid, "message": {
         "role": "user",
         "content": [{"type": "text", "text": message}]}})
 
@@ -8964,7 +8975,12 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # too. `_cancelled_marker_state` also backs `_stopped_last`, which needs
     # the identical staleness check off its own cursor read.
     cancelled = _cancelled_marker_state(run_dir, scan_cursor)
-    turn_started_at = _turn_stamp_read(run_dir, "turn_started_at")
+    try:
+        out_size = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        out_size = 0
+    turn_started_at = _turn_opening_time(
+        run_dir, _read_poll_cursor(run_dir, out_size), echo_pending)
     return {"text": "" if echo_pending else text, "done": done,
             "turn_started_at": turn_started_at,
             "session_id": new_session, "error": error, "backend": backend,
