@@ -8027,7 +8027,7 @@ def _run_tasks(run_id: str) -> dict:
             "host_alive": bool(host)}
 
 
-def _starts_new_turn(row: dict) -> bool:
+def _starts_new_turn(row: dict, slash: bool = True) -> bool:
     """Whether `row` is the CLI's own echo (`--replay-user-messages`) of a
     message `_write_inbox_entry` put on the wire — the one row shape that
     provably begins a fresh, user-authored turn.
@@ -8042,11 +8042,25 @@ def _starts_new_turn(row: dict) -> bool:
     A `tool_result` row is `type: "user"` with a list `content` too — one
     lands after every tool call, far more often than a genuine new turn — so
     the list's own block types have to be checked: `_write_inbox_entry`
-    always writes `text` blocks, never `tool_result` ones."""
+    always writes `text` blocks, never `tool_result` ones.
+
+    ONE STRING SHAPE IS A TURN TOO: a queued bare slash command. The CLI
+    records it as a user row whose `content` is the string
+    `<command-message>..</command-message>\\n<command-name>/x</command-name>`,
+    with no list echo at all. Missed here, a run holding such a second turn
+    never advanced its cursor and `_poll` replayed the whole run from offset
+    0. Only a string carrying `<command-name>` counts (a wake's synthetic
+    `<task-notification>` and any other bare string still do not), and
+    `slash=False` turns this off for the caller that is waiting for a SPECIFIC
+    inbox entry's echo, which a slash row is never the echo of."""
     if row.get("type") != "user":
         return False
     message = row.get("message")
     content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return (slash and "<command-name>" in content
+                and not row.get("isMeta")
+                and row.get("toolUseResult") is None)
     if not isinstance(content, list) or not content:
         return False
     return all(isinstance(item, dict) and item.get("type") == "text"
@@ -8915,7 +8929,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                     row = json.loads(raw_line.decode("utf-8", "replace"))
                 except ValueError:
                     row = None
-                if row is not None and _starts_new_turn(row):
+                if row is not None and _starts_new_turn(row, slash=False):
                     saw_echo_since_send = True
                     echo_end = line_end
                     break

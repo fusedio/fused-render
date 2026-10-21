@@ -92,6 +92,17 @@ def _user_row(text):
             "content": [{"type": "text", "text": text}]}}
 
 
+def _string_user_row(text):
+    """A user row whose `content` is a bare STRING: the CLI's record of a
+    queued slash command (`<command-name>` echo) -- or, without that tag, the
+    shape of a D415 wake's synthetic notification."""
+    return {"type": "user", "message": {"role": "user", "content": text}}
+
+
+SLASH = ("<command-message>development:building-with-subagent</command-message>"
+         "\n<command-name>/development:building-with-subagent</command-name>")
+
+
 def _tool_result_row(id="toolu_1"):
     """A tool's result landing mid-turn — `type: "user"` with a LIST content,
     same as `_user_row`'s echoed-turn shape, but the list holds a
@@ -235,6 +246,37 @@ def test_a_wake_is_not_skipped_even_once_the_cursor_has_moved(agent, run_dir):
 
 
 # ------------------------------------------------------- (d) tool_result is not a turn
+
+def test_a_queued_slash_command_row_starts_a_turn_and_advances_the_cursor(
+        agent, run_dir):
+    """One run holds two turns; the second is a bare queued slash command whose
+    CLI user row has STRING content. It must open turn 2 like a list echo does,
+    or the poll keeps replaying the whole run from offset 0."""
+    _write(run_dir, [_user_row("opening"), _text_row("first turn"),
+                     _result_row()])
+    _poll(agent, run_dir)
+    _append(run_dir, [_string_user_row(SLASH), _text_row("second turn"),
+                      _result_row()])
+    _poll(agent, run_dir)
+    cursor = _cursor(run_dir)
+    assert cursor is not None and cursor > 0
+    assert (run_dir / "out.jsonl").read_bytes()[cursor:].startswith(
+        b'{"type": "user", "message": {"role": "user", "content": "<command-message>')
+    trimmed = _poll(agent, run_dir)
+    assert trimmed["window"] > 0
+    assert trimmed["text"] == "second turn", "turn 1 must not be replayed"
+
+
+def test_a_plain_string_user_row_does_not_start_a_turn(agent, run_dir):
+    _write(run_dir, [_user_row("opening"), _text_row("first turn"),
+                     _result_row()])
+    _poll(agent, run_dir)
+    _append(run_dir, [_string_user_row("<task-notification>done</task-notification>"),
+                      _text_row("woken"), _result_row()])
+    _poll(agent, run_dir)
+    assert _cursor(run_dir) in (None, 0)
+    assert _poll(agent, run_dir)["text"] == "first turnwoken"
+
 
 def test_a_tool_result_row_does_not_advance_the_cursor(agent, run_dir):
     """A tool_result row is `type: "user"` with a list `content`, the same

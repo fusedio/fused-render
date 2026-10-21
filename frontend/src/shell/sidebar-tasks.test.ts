@@ -80,6 +80,21 @@ describe("the sidebar's tasks pulse", () => {
     expect(tasksPulse([], {})).toEqual(EMPTY_TASKS_PULSE);
   });
 
+  it("counts a done row holding a live background job as running, not unread", () => {
+    const held = { count: 1, run_id: "r-1", jobs: [{ id: "bash_1", title: "" }] };
+    const running = { running: 1, attention: 0, blocked: 0, queued: 0, doneUnread: 0, unseen: 0 };
+    const unread = { running: 0, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 1 };
+    expect(tasksPulse([task({ status: "done", unread: 1, background_jobs: held })], {}))
+      .toEqual(running);
+    // No jobs held (null, or an empty list) is an ordinary finished row.
+    expect(tasksPulse([task({ status: "done", unread: 1, background_jobs: null })], {}))
+      .toEqual(unread);
+    expect(tasksPulse([task({
+      status: "done", unread: 1,
+      background_jobs: { count: 0, run_id: "r-1", jobs: [] },
+    })], {})).toEqual(unread);
+  });
+
   it("counts a BLOCKED run as blocked, never green or running", () => {
     // Blocked is a status of its own (taskColumn): not "done" (so no green) and
     // not in flight (so not running), but it is in the sidebar's "N blocked".
