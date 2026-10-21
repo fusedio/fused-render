@@ -42,6 +42,10 @@ Wire contract (Claude Code CLI, verified against 2.1.220):
     "behavior": "allow", "destination": "session"}]`, which hands the matching
     to the CLI's own rule engine rather than to a hand-rolled one here.
 
+    "always approve THIS EXACT call" (scope "exact", Bash only) returns the same
+    update with `rules: [{"toolName": "Bash", "ruleContent": <the command>}]` —
+    the whole command string, never a prefix or a wildcard.
+
 ONE tool is not an approval at all: `AskUserQuestion` is the model asking the
 user something, and its answer rides back on the SAME allow — `updatedInput` =
 the parked input plus a top-level `answers` record keyed by the exact question
@@ -498,6 +502,28 @@ BAD_ANSWER = ("The answer could not be matched to the question that was asked, "
               "so nothing was recorded. Ask again if you still need it.")
 
 
+# Characters that mean something in a CLI permission rule (a `*` wildcard, the
+# legacy `:*` prefix form, parentheses that close the rule, an escape). A command
+# holding any of them cannot be written as an EXACT rule without us inventing an
+# escaping scheme, so it is allowed once instead. MUST stay identical to
+# `_exact_rule_content` in agent.py (a test asserts the two agree).
+_RULE_SPECIALS = frozenset("*()\\\n\r")
+
+
+def _exact_rule_content(tool_name: str, tool_input: dict):
+    """The `ruleContent` for "always approve this exact call", or None when the
+    call cannot be pinned exactly (anything but Bash, an empty or oversized
+    command, or one the rule syntax would read as a pattern)."""
+    if tool_name != "Bash" or not isinstance(tool_input, dict):
+        return None
+    cmd = tool_input.get("command")
+    if not isinstance(cmd, str) or not cmd.strip() or len(cmd) > 1000:
+        return None
+    if any(ch in _RULE_SPECIALS for ch in cmd):
+        return None
+    return cmd
+
+
 def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict:
     """Turn the browser's click into the CLI's permission-result shape."""
     verdict = decision.get("decision")
@@ -557,6 +583,17 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
                 "behavior": "allow",
                 "destination": "session",
             })
+        elif decision.get("scope") == "exact":
+            # Re-derived here from the parked input, never read off the decision
+            # file: the file says "exact", it does not get to name the rule.
+            content = _exact_rule_content(tool_name, tool_input)
+            if content is not None:
+                updates.append({
+                    "type": "addRules",
+                    "rules": [{"toolName": tool_name, "ruleContent": content}],
+                    "behavior": "allow",
+                    "destination": "session",
+                })
         # "…and stop asking": the sibling update type, which re-points the
         # running session's permission mode. Re-validated here and not merely
         # trusted from the decision file, because this is the side that hands

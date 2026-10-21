@@ -7,7 +7,8 @@ from fused_render import permission_risk as pr
 
 
 @pytest.fixture(autouse=True)
-def _clear():
+def _clear(monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_PERMISSION_RISK", raising=False)
     pr.clear_cache()
     yield
     pr.clear_cache()
@@ -80,3 +81,8 @@ def test_thread_safe_cache():
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert len(pr._cache) == 5
+
+
+def test_off_switch(monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_PERMISSION_RISK", "0")
+    assert pr.assess("T", {}, call=_call('{"severity":"low","summary":"ok"}')) is None

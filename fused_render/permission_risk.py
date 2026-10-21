@@ -108,6 +108,8 @@ def parse(raw) -> dict | None:
 
 
 def assess(tool: str, tool_input, *, context: str = "", call=None, timeout: float = 8.0) -> dict | None:
+    if os.environ.get("FUSED_RENDER_PERMISSION_RISK") == "0":
+        return None  # the off switch (and what the test suite sets)
     try:
         tool = str(tool)
         dumped = _dump(tool_input)

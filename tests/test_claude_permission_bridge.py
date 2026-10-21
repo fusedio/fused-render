@@ -2577,3 +2577,123 @@ def test_start_with_unknown_permission_is_prompt_not_the_pref(agent, tmp_path, m
     run_id = agent._start(str(target), "hi", "", "", "", "bogus")["run_id"]
     launch = json.load(open(os.path.join(agent.RUNS, run_id, "launch.json")))
     assert launch["cli_mode"] == "default"
+
+
+# ----------------------------------------------------- risk read + exact scope
+def test_exact_scope_adds_a_rule_for_that_exact_command(tmp_path, server):
+    perm_dir = tmp_path / "perm"
+    pending = server.send_async("tools/call", {
+        "name": "approve",
+        "arguments": {"tool_name": "Bash", "input": {"command": "git status --short"}}})
+    req = _wait_for_request(perm_dir)
+    (perm_dir / (req["id"] + ".res.json")).write_text(
+        json.dumps({"decision": "allow", "scope": "exact"}))
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow"
+    assert payload["updatedPermissions"] == [{
+        "type": "addRules",
+        "rules": [{"toolName": "Bash", "ruleContent": "git status --short"}],
+        "behavior": "allow",
+        "destination": "session",
+    }]
+
+
+@pytest.mark.parametrize("tool,tool_input", [
+    ("Bash", {"command": "rm -rf *"}),
+    ("Bash", {"command": "git:*"}),
+    ("Bash", {"command": "echo (x)"}),
+    ("Bash", {"command": ""}),
+    ("WebFetch", {"url": "https://example.com"}),
+])
+def test_exact_scope_never_widens_to_a_pattern_or_another_tool(tmp_path, server, tool, tool_input):
+    perm_dir = tmp_path / "perm"
+    pending = server.send_async("tools/call", {
+        "name": "approve", "arguments": {"tool_name": tool, "input": tool_input}})
+    req = _wait_for_request(perm_dir)
+    (perm_dir / (req["id"] + ".res.json")).write_text(
+        json.dumps({"decision": "allow", "scope": "exact"}))
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow" and "updatedPermissions" not in payload
+
+
+def _add_req(agent, run_dir, rid, tool, tool_input):
+    with open(os.path.join(agent._perm_dir(run_dir), rid + ".req.json"), "w") as fh:
+        json.dump({"id": rid, "tool": tool, "input": tool_input}, fh)
+
+
+def test_decide_exact_is_bash_only_and_both_copies_agree(agent, tmp_path):
+    srv = _load("permission_server")
+    assert _behaviour(agent._exact_rule_content) == _behaviour(srv._exact_rule_content)
+    assert agent._RULE_SPECIALS == srv._RULE_SPECIALS
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash", tool_input={"command": "ls -la"})
+    _add_req(agent, run_dir, "req-pat", "Bash", {"command": "ls *"})
+    _add_req(agent, run_dir, "req-edit", "Edit", {"file_path": "/x"})
+    assert agent._decide("run", "req-q", "allow", "exact")["scope"] == "exact"
+    assert agent._decide("run", "req-pat", "allow", "exact")["scope"] == "once"
+    assert agent._decide("run", "req-edit", "allow", "exact")["scope"] == "once"
+
+
+class _RiskStub:
+    """Stands in for the loaded permission_risk module."""
+    def __init__(self, result, gate=None):
+        self.result, self.gate, self.calls = result, gate, []
+
+    def assess(self, tool, tool_input, **kw):
+        self.calls.append((tool, tool_input))
+        if self.gate is not None:
+            self.gate.wait(5)
+        return self.result
+
+
+def _wait_risk_file(agent, run_dir, rid="req-q", timeout=5.0):
+    path = agent._risk_path(agent._perm_dir(run_dir), rid)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if os.path.exists(path):
+            return path
+        time.sleep(0.02)
+    raise AssertionError("no risk sidecar written")
+
+
+def test_poll_never_waits_on_the_model_and_merges_the_sidecar(agent, tmp_path, monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_PERMISSION_RISK", raising=False)
+    gate = threading.Event()
+    stub = _RiskStub({"severity": "medium", "summary": "Lists files."}, gate)
+    agent._RISK_MOD = stub
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash", tool_input={"command": "ls"})
+    t0 = time.monotonic()
+    (row,) = agent._permissions(run_dir)
+    assert time.monotonic() - t0 < 1.0  # the model is gated for up to 5 s
+    assert row["risk_state"] == "pending" and row["severity"] == "" and row["risk_summary"] == ""
+    agent._permissions(run_dir)  # a second poll does not start a second call
+    gate.set()
+    _wait_risk_file(agent, run_dir)
+    (row,) = agent._permissions(run_dir)
+    assert (row["risk_state"], row["severity"], row["risk_summary"]) == ("ready", "medium", "Lists files.")
+    assert stub.calls == [("Bash", {"command": "ls"})]
+
+
+def test_a_failed_read_is_written_once_and_not_retried(agent, tmp_path, monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_PERMISSION_RISK", raising=False)
+    stub = _RiskStub(None)
+    agent._RISK_MOD = stub
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash", tool_input={"command": "ls"})
+    agent._permissions(run_dir)
+    path = _wait_risk_file(agent, run_dir)
+    with open(path) as fh:
+        assert json.load(fh) == {"failed": True}
+    for _ in range(3):
+        (row,) = agent._permissions(run_dir)
+    assert row["risk_state"] == "failed" and row["severity"] == ""
+    assert len(stub.calls) == 1
+
+
+def test_questions_and_decided_cards_start_no_read(agent, tmp_path, monkeypatch):
+    monkeypatch.delenv("FUSED_RENDER_PERMISSION_RISK", raising=False)
+    stub = _RiskStub({"severity": "low", "summary": "x"})
+    agent._RISK_MOD = stub
+    run_dir = _park_a_question(agent, tmp_path)  # AskUserQuestion
+    _add_req(agent, run_dir, "req-done", "Bash", {"command": "ls"})
+    agent._write_decision(agent._perm_dir(run_dir), "req-done", {"decision": "allow", "scope": "once"})
+    rows = agent._permissions(run_dir)
+    assert [r["risk_state"] for r in rows] == ["", ""] and stub.calls == []

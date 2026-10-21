@@ -131,6 +131,9 @@ def pytest_configure(config):
 # A stable default executor for every test that reaches /api/run without caring
 # which engine answers — see the module docstring. Not a tmpdir, so it gets its
 # own line rather than a fourth entry above.
+# No permission-card risk read (a model call) in any test that does not ask for one: agent._permissions would
+# otherwise start a background model call for every parked Bash request it lists. Tests of the read clear this.
+os.environ.setdefault("FUSED_RENDER_PERMISSION_RISK", "0")
 os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
 # Tests describe Fused Render; a stale fused_render/_baked_flavor.py from a
 # local bot DMG build must not flip them (port 1777 assertions, startup set).
