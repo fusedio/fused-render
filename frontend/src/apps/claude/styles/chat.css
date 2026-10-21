@@ -441,6 +441,8 @@
 .chat-root.chat-compact .thinking,
 .chat-root.chat-compact .perm .perm-head,
 .chat-root.chat-compact .perm .perm-status,
+.chat-root.chat-compact .perm .gate-head,
+.chat-root.chat-compact .perm .gate-status,
 .chat-root.chat-compact .perm .qopt,
 .chat-root.chat-compact .perm .plan-body {
   font-size: var(--c-fs-body);
@@ -450,6 +452,8 @@
 .chat-root.chat-compact .turn.assistant .dot,
 .chat-root.chat-compact .perm .perm-sub,
 .chat-root.chat-compact .perm .perm-btn,
+.chat-root.chat-compact .perm .gate-sub,
+.chat-root.chat-compact .perm .gate-btn,
 .chat-root.chat-compact .toolchip .chip-sub,
 .chat-root.chat-compact .toolchip .chip-label {
   font-size: var(--c-fs-meta);

@@ -932,7 +932,21 @@
    ~4% of lightness off the page and read as a slightly different background.
    The tokens are its own (styles/chat.css) so raising them here leaves the
    avatar disc, a chip's open tint and the copy button where they were. */
+/* THE SHARED APPROVAL CARD (platform/ui/GateCard) reads its colours from private
+   --gate-* variables; the chat points them at its own palette (set in the rule
+   below), so the permission card keeps the salmon accent and the chat's pre ground. */
 .chat-root .perm {
+  --gate-accent: var(--c-accent);
+  --gate-accent-text: var(--c-accent-text);
+  --gate-ok: var(--c-ok);
+  --gate-err: var(--c-error);
+  --gate-muted: var(--c-dim);
+  --gate-line: var(--c-border);
+  --gate-ground: var(--c-card-bg);
+  --gate-hover: var(--c-card-bg-2);
+  --gate-pre-bg: var(--c-pre-bg);
+  --gate-pre-fg: var(--c-pre-fg);
+  --gate-on-accent: var(--c-on-accent);
   border: 1px solid color-mix(in srgb, var(--c-accent) 55%, transparent);
   border-radius: 14px;
   background: var(--c-card-bg);
@@ -963,7 +977,8 @@
 }
 .chat-root .perm.resolved .plan-body,
 .chat-root .perm.resolved .qtext,
-.chat-root .perm.resolved .perm-sub {
+.chat-root .perm.resolved .perm-sub,
+.chat-root .perm.resolved .gate-sub {
   color: var(--c-dim);
 }
 .chat-root .perm.resolved .qhead {
@@ -1075,7 +1090,8 @@
    The negative inline margins carry the card's own ground (opaque
    `--c-card-bg`, both themes) to the card's border so the payload does not
    show down the sides; the padding puts the buttons back where they were. */
-.chat-root .chat-tailpin.is-pinned .perm .perm-actions {
+.chat-root .chat-tailpin.is-pinned .perm .perm-actions,
+.chat-root .chat-tailpin.is-pinned .perm .gate-actions {
   position: sticky;
   bottom: 0;
   z-index: 1;
@@ -1113,58 +1129,6 @@
 .chat-root .perm .perm-btn.primary:hover:not(:disabled) {
   filter: brightness(1.1);
   background: var(--c-accent);
-}
-/* "Allow, and let Claude decide from here": a quiet link after the three real answers, not a fourth peer. */
-.chat-root .perm .perm-btn.perm-link {
-  border-color: transparent;
-  background: transparent;
-  color: var(--c-fg-muted, var(--c-fg));
-  padding: 5px 6px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.chat-root .perm .perm-btn.perm-link:hover:not(:disabled) {
-  border-color: transparent;
-  background: transparent;
-  color: var(--c-fg);
-}
-/* Risk read: pill (low = ok, medium = warning, high = error) and the one-sentence summary, above the raw command. */
-.chat-root .perm .perm-risk {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 8px;
-  margin: 6px 0 4px;
-  font-size: 13px;
-  line-height: 1.4;
-}
-.chat-root .perm .perm-risk.pending {
-  color: var(--c-fg-muted, var(--c-fg));
-  font-size: 12px;
-  opacity: 0.8;
-}
-.chat-root .perm .perm-risk-pill {
-  margin: 0;
-  padding: 1px 9px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--rk) 40%, transparent);
-  background: color-mix(in srgb, var(--rk) 15%, transparent);
-  color: var(--rk);
-  font-size: 11.5px;
-  font-weight: 600;
-}
-.chat-root .perm .perm-risk-pill.low {
-  --rk: var(--c-ok);
-}
-.chat-root .perm .perm-risk-pill.medium {
-  --rk: var(--warning, #d29922);
-}
-.chat-root .perm .perm-risk-pill.high {
-  --rk: var(--c-error);
-}
-.chat-root .perm .perm-risk-sum {
-  margin: 0;
-  color: var(--c-fg);
 }
 .chat-root .perm .perm-btn:disabled {
   opacity: 0.55;
