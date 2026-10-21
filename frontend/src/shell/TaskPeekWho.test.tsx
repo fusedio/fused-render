@@ -35,7 +35,7 @@ function render(props: Parameters<typeof TaskPeekWho>[0]) {
     r = create(createElement(TaskPeekWho, props));
   });
   mounted.push(r);
-  return { text: () => JSON.stringify(r.toJSON()) };
+  return { r, text: () => JSON.stringify(r.toJSON()) };
 }
 
 // The server only ever sends the reader's own prompt as `last_message` now;
@@ -59,4 +59,93 @@ test("nothing said yet: the task's own name, first line only, as the row does", 
 
 test("a task with no title and nothing said prints the wall's own word", () => {
   expect(render({ task: task({ title: "" }) }).text()).toContain("(untitled)");
+});
+
+// ---- renaming in place (the title is the reader's to change) -----------------
+
+const titleSpan = (r: ReactTestRenderer) =>
+  r.root.findAll((n) => n.type === "span" && n.props.className === "task-side-peek-title")[0];
+const inputOf = (r: ReactTestRenderer) =>
+  r.root.findAll((n) => n.type === "input" && n.props.className === "task-side-peek-title-input")[0];
+const pencilOf = (r: ReactTestRenderer) =>
+  r.root.findAll((n) => n.type === "button" && n.props["aria-label"] === "Rename task")[0];
+const edit = (r: ReactTestRenderer, value: string) =>
+  act(() => {
+    inputOf(r).props.onChange({ target: { value } });
+  });
+const key = (r: ReactTestRenderer, k: string) =>
+  act(() => {
+    inputOf(r).props.onKeyDown({ key: k, preventDefault() {} });
+  });
+
+test("double-click opens an input prefilled with the title; Enter saves the trimmed text", async () => {
+  const calls: [string, string][] = [];
+  const v = render({ task: task(), rename: async (k, t) => void calls.push([k, t]) });
+  expect(inputOf(v.r)).toBeUndefined();
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  expect(inputOf(v.r).props.value).toBe("Rename the pane noun");
+  edit(v.r, "  Better name  ");
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  expect(calls).toEqual([["sess-1", "Better name"]]);
+  expect(inputOf(v.r)).toBeUndefined();
+});
+
+test("the pencil button opens the editor too", () => {
+  const v = render({ task: task(), rename: async () => {} });
+  act(() => {
+    pencilOf(v.r).props.onClick();
+  });
+  expect(inputOf(v.r)).toBeDefined();
+});
+
+test("Escape cancels and the unchanged text saves nothing", async () => {
+  const calls: string[] = [];
+  const v = render({ task: task(), rename: async (_k, t) => void calls.push(t) });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  edit(v.r, "Something else");
+  key(v.r, "Escape");
+  expect(inputOf(v.r)).toBeUndefined();
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  expect(calls).toEqual([]);
+  expect(inputOf(v.r)).toBeUndefined();
+});
+
+test("a failed save keeps the input open and says why", async () => {
+  const v = render({
+    task: task(),
+    rename: async () => {
+      throw new Error("boom");
+    },
+  });
+  act(() => {
+    titleSpan(v.r).props.onDoubleClick();
+  });
+  edit(v.r, "New");
+  await act(async () => {
+    key(v.r, "Enter");
+  });
+  expect(inputOf(v.r)).toBeDefined();
+  expect(v.text()).toContain("boom");
+});
+
+test("a task that has not started offers no rename", () => {
+  for (const k of ["pending:e1", "draft:d1", "new:abc"]) {
+    const v = render({ task: task({ key: k }), rename: async () => {} });
+    expect(pencilOf(v.r)).toBeUndefined();
+    act(() => {
+      titleSpan(v.r).props.onDoubleClick?.();
+    });
+    expect(inputOf(v.r)).toBeUndefined();
+  }
 });

@@ -11397,7 +11397,7 @@ describe("cardTitleLine — a renamed title (title_source: renamed)", () => {
   };
 
   it("beats summary mode, the recap, the reply and the last message", () => {
-    const want = { text: "My name", said: false, kind: "title", hint: "My name\nsecond line" };
+    const want = { text: "My name", said: false, kind: "title" as const, hint: "My name\nsecond line" };
     expect(cardTitleLine({ ...base, title_mode: "summary" })).toEqual(want);
     expect(cardTitleLine(base)).toEqual(want);
     expect(cardTitleLine({ ...base, recap: undefined })).toEqual(want);

@@ -3677,8 +3677,9 @@ export interface Task {
   // sessionTitleOf and tasks.py `_title`.
   // …plus `"draft"` on a draft row, whose name is the form's own Title field
   // (or the first line of its description, or "Untitled draft") — there is no
-  // session or entry behind it to take one from.
-  title_source: "user" | "ai" | "message" | "entry" | "draft";
+  // session or entry behind it to take one from — and `"renamed"` when the reader
+  // renamed the task from the peek header.
+  title_source: "user" | "ai" | "message" | "entry" | "draft" | "renamed" | "command";
   description: string;
   /**
    * WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — `""` on both for
@@ -3829,9 +3830,6 @@ export interface Task {
   /** "summary" when prefs `task_summary_titles.enabled` is on: the row is
    *  titled by `title` alone. ABSENT otherwise. */
   title_mode?: "summary";
-  /** Where `title` came from: "renamed" (the reader's own, set from the peek
-   *  header), "user", "ai", "message", "entry" or "command". */
-  title_source?: string;
   /**
    * THE UNSENT NEW TASK FORM BOUND TO THIS CONVERSATION — its draft id, or ""
    * (or absent, on an older server) when there is none.

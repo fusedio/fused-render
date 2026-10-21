@@ -18,9 +18,12 @@
 // hosts `@apps/claude`'s `ChatMount`, so a chat importing it would close an
 // import cycle — and the boundary check (scripts/check-boundaries.mjs) opens a
 // hole for named shell modules one file at a time for the same reason.
-import type { Task } from "@platform/lib/api";
+import { useRef, useState } from "react";
+import { Pencil } from "lucide-react";
+import { renameTask, type Task } from "@platform/lib/api";
 import { agentLabel, agentNamed, modelLabelsOf, useAgentBackends } from "@platform/lib/agent-backends";
 import { columnLabel } from "./schedule-lib";
+import { pokeTasks } from "./tasksPulse";
 import { StatusIcon, TaskAgentMark } from "./ScheduleTaskViews";
 import {
   BACKGROUND_LABEL,
@@ -56,6 +59,14 @@ export function useTaskHeadline(task: Task | null | undefined): string {
   return cardTitleLine(task).text || peekTitle(task);
 }
 
+/** A task the server can rename: a started session. `pending:` rows (a message
+ *  not sent yet), `draft:` rows and `new:` chats have no session to hold a
+ *  title. */
+function renamable(task: Task): boolean {
+  const key = task.key ?? "";
+  return !!key && !/^(pending|draft|new):/.test(key);
+}
+
 /**
  * STATUS · NUMBER · TITLE, in one flexing box (`.task-side-peek-who`).
  *
@@ -66,8 +77,14 @@ export function useTaskHeadline(task: Task | null | undefined): string {
  *
  * The title is the only part that may be cut short (task-peek.css): a clipped
  * sentence still reads, a clipped number is a different number.
+ *
+ * THE TITLE IS THE READER'S TO RENAME: double-click it (or the pencil that
+ * shows on hover) and it becomes an input; Enter or blur saves, Escape
+ * cancels, saving what is already there does nothing, and saving "" gives the
+ * automatic title back. Same draft / busy / error shape as the Current apps
+ * rename. `rename` is injectable so a test needs no network.
  */
-export function TaskPeekWho({ task, running = false }: {
+export function TaskPeekWho({ task, running = false, rename = renameTask }: {
   task: Task;
   /**
    * THE PAGE KNOWS A TURN IS LIVE before the listing does. A chat sent from
@@ -78,12 +95,48 @@ export function TaskPeekWho({ task, running = false }: {
    * the row catches up and agrees.
    */
   running?: boolean;
+  rename?: (key: string, title: string) => Promise<unknown>;
 }) {
   // THE SAME LINE THE LIST ROW PRINTS. With "Title a task by your last message"
   // on, the row under this header shows the reader's newest message; a header still
   // showing the task's name was two surfaces naming one chat two ways
   // (Akshil, 2026-09-15: "header also shows last message").
   const title = useTaskHeadline(task);
+  const canRename = renamable(task);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  // Enter saves and the unmount-time blur must not save twice; Escape must not
+  // be undone by the blur it causes.
+  const settled = useRef(false);
+  const startRename = () => {
+    if (!canRename || busy) return;
+    settled.current = false;
+    setError("");
+    setDraft(title === "(untitled)" ? "" : title);
+  };
+  const cancelRename = () => {
+    settled.current = true;
+    setDraft(null);
+    setError("");
+  };
+  const saveRename = async () => {
+    if (draft === null || settled.current || busy) return;
+    const next = draft.trim();
+    if (next === title) return cancelRename();
+    setBusy(true);
+    try {
+      await rename(task.key, next);
+      settled.current = true;
+      setDraft(null);
+      setError("");
+      pokeTasks();
+    } catch (e) {
+      setError((e as Error).message || "Could not rename");
+    } finally {
+      setBusy(false);
+    }
+  };
   // …EXCEPT A ROW PARKED ON A CARD. `running` stays true while a permission
   // or plan card is open — the run clock has no waiting state — and the list
   // row says needs-attention for exactly that; the header must not spin over
@@ -107,9 +160,53 @@ export function TaskPeekWho({ task, running = false }: {
       </span>
       <TaskAgentMark backend={task.backend} />
       <span className="task-side-peek-id">{shortTaskId(task.task_id)}</span>
-      <span className="task-side-peek-title" title={title}>
-        {title}
-      </span>
+      {draft === null ? (
+        <>
+          <span
+            className="task-side-peek-title"
+            title={title}
+            onDoubleClick={canRename ? startRename : undefined}
+          >
+            {title}
+          </span>
+          {canRename && (
+            <button
+              type="button"
+              className="icon-btn task-side-peek-rename"
+              aria-label="Rename task"
+              title="Rename task"
+              onClick={startRename}
+            >
+              <Pencil size={12} aria-hidden />
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <input
+            className="task-side-peek-title-input"
+            value={draft}
+            disabled={busy}
+            autoFocus
+            aria-label="Task title"
+            aria-invalid={error ? true : undefined}
+            title={error || undefined}
+            onFocus={(e) => e.currentTarget?.select?.()}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => void saveRename()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void saveRename();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelRename();
+              }
+            }}
+          />
+          {error && <span className="task-side-peek-rename-error">{error}</span>}
+        </>
+      )}
     </div>
   );
 }
