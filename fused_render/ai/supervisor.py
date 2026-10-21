@@ -1716,7 +1716,7 @@ def _runner_or_raise(capability: str, model: str | None = None) -> registry.Runn
     three wrong answers the moment text generation had two — all three named the
     Apple Silicon runner on machines that were never going to use it.
     """
-    # With a MODEL in hand the runner follows the model (D1397): a pin, then
+    # With a MODEL in hand the runner follows the model (D1398): a pin, then
     # the runners that read it, with the capability's preference as the
     # tie-breaker. Without one it is the capability-level answer as before.
     runner = (registry.resolve_for_model(capability, model).runner if model
@@ -2762,7 +2762,7 @@ def evict_stale_engines() -> list[str]:
         workers = list(_workers.values())
     stale = []
     for worker in workers:
-        # The resolution FOR THE RESIDENT MODEL (D1397): the capability-level
+        # The resolution FOR THE RESIDENT MODEL (D1398): the capability-level
         # answer would call a model stale whenever its serving runner is
         # not the one the preference names, and restart it forever. Resolved
         # OUTSIDE `_lock`: it reads prefs.json and the cache folder.

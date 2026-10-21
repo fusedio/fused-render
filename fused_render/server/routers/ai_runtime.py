@@ -2005,7 +2005,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
             "'mask' needs 'image' — a mask says which region of a base image "
             "to repaint (white = repaint, black = keep), so fused.ai.image("
             "{image, mask}) needs both", status=400)
-    # The runner for THIS model (D1397): a pin, then the engines that read it,
+    # The runner for THIS model (D1398): a pin, then the engines that read it,
     # then the capability's preference — the same resolution the load makes.
     active_runner = registry.resolve_for_model(registry.IMAGE_GENERATION, model).runner
     # A FLUX.1 Fill checkpoint asked for a plain render or a whole-image
@@ -2382,7 +2382,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
                       or "no video model is configured", status=409)
 
     # The runner that will actually SERVE this request, for THIS model
-    # (D1397): a pin, then the engines whose format check reads it, then the
+    # (D1398): a pin, then the engines whose format check reads it, then the
     # capability's preference — the same call `start_video`'s
     # `_runner_or_raise` makes a few lines down, made here too because the
     # request SHAPE (frame grid, canvas/step defaults) is that runner's fact,

@@ -1506,7 +1506,7 @@ def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
     # blank on exactly the cards that need explaining.
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
-    # Since D1397 the runner follows the MODEL, so a Mac no longer parks this
+    # Since D1398 the runner follows the MODEL, so a Mac no longer parks this
     # repo behind MLX FLUX by default; the non-serving site is reached when the
     # only engine that reads the format cannot run here.
     monkeypatch.setattr(_ai_registry, "_RUNNERS", tuple(
@@ -1525,7 +1525,7 @@ def test_a_repo_the_OTHER_engine_reads_is_served_by_that_engine(client, hub, mon
     """The rule this test used to pin was "on a Mac, whose image engine is MLX
     FLUX, a Diffusers repo is not offered a Load": the registry picked the
     engine by capability, so the Load would have reached mflux, which refuses
-    it by name. Since D1397 the runner follows the model — the Diffusers repo is
+    it by name. Since D1398 the runner follows the model — the Diffusers repo is
     served by Diffusers, which is available on the same Mac — so the card
     offers it with no reason attached."""
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
