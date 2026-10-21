@@ -11866,10 +11866,42 @@ describe("Sort by: Created", () => {
     expect(createdAt(rows[2]!)).toBe(sec("2026-10-10T09:00:00"));
     expect(createdAt(row({ started: undefined, last_active: 0 }))).toBe(0);
   });
-  it("sortForList orders by creation, newest first, ties keep input order", () => {
+  it("within one lane rows order by creation, newest first; ties keep input order; last_active fallback", () => {
     expect(sortForList(rows, T, "created").map((t) => t.key)).toEqual(["new", "noStart", "old"]);
     const tie = [row({ key: "a", started: 100 }), row({ key: "b", started: 100 }), row({ key: "c", started: 100 })];
     expect(sortForList(tie, T, "created").map((t) => t.key)).toEqual(["a", "b", "c"]);
+  });
+  it("keeps the status lanes: a Done task created today sorts below older In Progress and Blocked ones", () => {
+    const rs = [
+      row({ key: "doneNew", status: "done", started: sec("2026-10-16T14:00:00") }),
+      row({ key: "runOld", status: "in_progress", live: true, started: sec("2026-10-01T09:00:00") }),
+      row({ key: "blockedOld", status: "blocked", started: sec("2026-10-02T09:00:00") }),
+    ];
+    const keys = sortForList(rs, T, "created").map((t) => t.key);
+    expect(keys.indexOf("runOld")).toBeLessThan(keys.indexOf("blockedOld"));
+    expect(keys.indexOf("blockedOld")).toBeLessThan(keys.indexOf("doneNew"));
+  });
+  it("an archived task created most recently still sorts last", () => {
+    const rs = [
+      row({ key: "arch", status: "archived", started: sec("2026-10-16T14:00:00") }),
+      row({ key: "done", status: "done", started: sec("2026-10-01T09:00:00") }),
+    ];
+    expect(sortForList(rs, T, "created").map((t) => t.key)).toEqual(["done", "arch"]);
+  });
+  it("within Blocked an older needs-attention task stays above a newer blocked one", () => {
+    const rs = [
+      row({ key: "blockedNew", status: "blocked", started: sec("2026-10-15T09:00:00") }),
+      row({ key: "attnOld", status: "needs_attention", started: sec("2026-10-01T09:00:00") }),
+    ];
+    expect(sortForList(rs, T, "created").map((t) => t.key)).toEqual(["attnOld", "blockedNew"]);
+  });
+  it("orders each lane by creation inside the lane", () => {
+    const rs = [
+      row({ key: "d1", status: "done", started: 100 }),
+      row({ key: "d2", status: "done", started: 300 }),
+      row({ key: "d3", status: "done", started: 0, last_active: 200 }),
+    ];
+    expect(sortForList(rs, T, "created").map((t) => t.key)).toEqual(["d2", "d3", "d1"]);
   });
   it("the default argument is today's order", () => {
     expect(sortForList(rows, T).map((t) => t.key)).toEqual(sortForList(rows, T, "changed").map((t) => t.key));

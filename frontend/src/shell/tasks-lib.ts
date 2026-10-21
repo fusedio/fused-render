@@ -3814,8 +3814,8 @@ export function laneTime(task: Task, lane: BoardColumn): number | null {
 
 export type TaskWhenKind = "next" | "last" | "active" | "none" | "draft" | "created";
 
-/** The Tasks page's "Sort by" setting: today's lane order by last change, or
- *  one flat list by creation time, newest first. */
+/** The Tasks page's "Sort by" setting: the same status lanes either way, ordered
+ *  inside each by last change or by creation time (newest first). */
 export type TaskSortBy = "changed" | "created";
 
 /** Where the setting is remembered (localStorage: it is a preference). */
@@ -4134,6 +4134,7 @@ export function sortLane(
 export function groupByColumn(
   tasks: Task[],
   now: number = Date.now(),
+  sortBy: TaskSortBy = "changed",
 ): Map<BoardLane, Task[]> {
   const map = new Map<BoardLane, Task[]>(
     BOARD_LANES.map((c) => [c.key, [] as Task[]]),
@@ -4163,7 +4164,13 @@ export function groupByColumn(
     // moves for any other reason; and BEFORE the two partitions below, which is
     // what lets them stay the outer order (waiting still outranks a draft in
     // Blocked) while the hoist survives inside each of their halves.
-    map.set(col.key, hoistDrafts(sortLane(map.get(col.key)!, col.key, now)));
+    // Created keeps the lanes and only re-orders within them (user decision
+    // 2026-10-21); the partitions below stay as they are.
+    const lane = map.get(col.key)!;
+    map.set(
+      col.key,
+      hoistDrafts(sortBy === "created" ? byCreated(lane) : sortLane(lane, col.key, now)),
+    );
   }
   // WAITING FIRST, inside the one lane that holds two statuses. The lane's own
   // order (last run, descending) says nothing about which of its cards somebody
@@ -4218,7 +4225,7 @@ export function groupByColumn(
   const upcoming = map.get("upcoming");
   if (upcoming && upcoming.length > 1) {
     map.set("upcoming", [
-      ...byDraftClock(upcoming.filter((t) => isDraftTask(t))),
+      ...(sortBy === "created" ? byCreated : byDraftClock)(upcoming.filter((t) => isDraftTask(t))),
       ...upcoming.filter((t) => !isDraftTask(t)),
     ]);
   }
@@ -4469,14 +4476,7 @@ export const LIST_ORDER: BoardColumn[] = BOARD_COLUMNS.map((c) => c.key);
  * still holding).
  */
 export function sortForList(tasks: Task[], now: number = Date.now(), sortBy: TaskSortBy = "changed"): Task[] {
-  if (sortBy === "created") {
-    // One flat list, newest created first; ties keep the incoming order.
-    return tasks
-      .map((task, index) => ({ task, index, at: createdAt(task) }))
-      .sort((a, b) => b.at - a.at || a.index - b.index)
-      .map((r) => r.task);
-  }
-  const byLane = groupByColumn(tasks, now);
+  const byLane = groupByColumn(tasks, now, sortBy);
   return BOARD_LANES.flatMap((col) => byLane.get(col.key) ?? []);
 }
 
@@ -4490,6 +4490,14 @@ function hoistDrafts(lane: Task[]): Task[] {
   const rest: Task[] = [];
   for (const task of lane) (hasDraft(task) ? drafts : rest).push(task);
   return drafts.length ? [...drafts, ...rest] : lane;
+}
+
+/** One lane by creation time, newest first, the incoming order breaking ties. */
+function byCreated(lane: Task[]): Task[] {
+  return lane
+    .map((task, index) => ({ task, index, at: createdAt(task) }))
+    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map((r) => r.task);
 }
 
 /** The drafts at the head of Upcoming: newest words first, the server's order
