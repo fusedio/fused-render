@@ -358,3 +358,74 @@ def test_a_subagent_result_row_does_not_advance_the_cursor(agent, run_dir):
         "a subagent's result row must not be mistaken for the main turn " \
         "closing, or the cursor jumps past text already streamed and the " \
         "next poll's segments shrink"
+
+
+# ------------------------------------------- (z) the turn clock survives a reload
+
+def _entry(agent, run_dir, text):
+    """Write one inbox entry; return (uuid, recorded time)."""
+    agent._write_inbox_entry(str(run_dir), text)
+    times = json.loads((run_dir / "inbox_times.json").read_text())
+    uid = list(times)[-1]
+    return uid, times[uid]
+
+
+def _echo(uid, text="x"):
+    row = _user_row(text)
+    row["uuid"] = uid
+    return row
+
+
+def _started(agent, run_dir):
+    return _poll(agent, run_dir, alive=True)["turn_started_at"]
+
+
+def test_turn_started_at_is_the_opening_entrys_time(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    uid, t = _entry(agent, run_dir, "one")
+    assert t > 0
+    _write(run_dir, [_echo(uid), _text_row("working")])
+    assert _started(agent, run_dir) == t
+
+
+def test_a_midturn_followup_does_not_move_the_clock(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    uid, t = _entry(agent, run_dir, "one")
+    _write(run_dir, [_echo(uid), _text_row("working")])
+    uid2, t2 = _entry(agent, run_dir, "follow-up")
+    assert t2 > t
+    _append(run_dir, [_echo(uid2), _text_row("more")])
+    assert _started(agent, run_dir) == t
+
+
+def test_the_next_turn_takes_the_new_entrys_time(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    uid, t = _entry(agent, run_dir, "one")
+    _write(run_dir, [_echo(uid), _text_row("a"), _result_row()])
+    uid2, t2 = _entry(agent, run_dir, "two")
+    _append(run_dir, [_echo(uid2), _text_row("b")])
+    assert _started(agent, run_dir) == t2 > t
+
+
+def test_a_killed_turn_does_not_leave_a_stale_clock(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    uid, t = _entry(agent, run_dir, "one")
+    # No `result`: the CLI died mid-write, leaving a torn line.
+    _write(run_dir, [_echo(uid), _text_row("a"), '{"type": "stre\n'])
+    uid2, t2 = _entry(agent, run_dir, "again")
+    _append(run_dir, [_echo(uid2), _text_row("b")])
+    assert _started(agent, run_dir) == t2 > t
+
+
+def test_an_auto_turn_with_no_user_echo_reports_zero(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    uid, _t = _entry(agent, run_dir, "one")
+    _write(run_dir, [_echo(uid), _text_row("a"), _result_row(),
+                     _text_row("a background task woke the CLI")])
+    assert _started(agent, run_dir) == 0
+
+
+def test_an_unknown_uuid_reports_zero(agent, run_dir):
+    agent.RUNS = str(run_dir.parent)
+    _write(run_dir, [_echo("not-ours"), _text_row("a")])
+    assert _started(agent, run_dir) == 0
