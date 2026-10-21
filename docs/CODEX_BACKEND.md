@@ -239,8 +239,10 @@ agent.py:      _HOST_FILES["codex"] = codex_host.py
 - **D18** agent always named: label **"Codex"**, long form "OpenAI Codex";
   first-turn notice row `"Handled by OpenAI Codex · model <id>"`; placeholders
   "Ask Codex…"; "Codex is thinking"; "Codex wants to use…"; "Codex finished";
-  "Continue with Codex in terminal". Codex mark = fused-drawn glyph + word,
-  **never the OpenAI logo**.
+  "Continue with Codex in terminal". Codex mark = **OpenAI's own mark** +
+  word (owner, 2026-10-21: "use the proper openai icon" — this reverses the
+  Copilot rule of a fused-drawn glyph for this one agent; `AgentMark.tsx`
+  carries the path, from simple-icons).
 
 ## 3. Codex host: spawn
 

@@ -535,7 +535,14 @@ def test_a_codex_session_is_recapped_by_codex_exec_ephemeral_and_read_only(
     assert "--ephemeral" in argv
     assert "--skip-git-repo-check" in argv
     assert argv[argv.index("-s") + 1] == "read-only"
-    assert argv[argv.index("-C") + 1] == recap_mod.tempfile.gettempdir()
+    # The working root is the run's OWN fresh folder, not the shared temp
+    # dir: Codex reads an `AGENTS.md` from its cwd, and `/tmp/AGENTS.md` is
+    # anyone's to write. Gone afterwards, with the reply file inside it.
+    work_dir = argv[argv.index("-C") + 1]
+    assert work_dir != recap_mod.tempfile.gettempdir()
+    assert os.path.dirname(work_dir) == recap_mod.tempfile.gettempdir()
+    assert os.path.dirname(argv[argv.index("-o") + 1]) == work_dir
+    assert not os.path.exists(work_dir)
     assert argv[argv.index("-m") + 1] == registry.get("codex").default_model
     # The prompt comes from stdin (`-`, last), the system text leading it.
     assert argv[-1] == "-"

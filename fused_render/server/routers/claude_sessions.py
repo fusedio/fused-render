@@ -1194,12 +1194,19 @@ def _recap_codex(agent, tail: str, titles: bool | None = None) -> str:
 
     system, template = _recap_prompts(titles)
     prompt = system + "\n\n" + template % tail
-    fd, out_path = tempfile.mkstemp(prefix="fused-codex-recap-", suffix=".txt")
-    os.close(fd)
+    # ITS OWN EMPTY FOLDER as the working root, never the shared temp dir:
+    # Codex reads an `AGENTS.md` from its working directory into the
+    # instructions of every run (its project-doc discovery stops at the cwd
+    # when there is no `.git` above it — which is exactly the `-C` case), so
+    # a `/tmp/AGENTS.md` any local user can drop there would ride along into
+    # the recap. A fresh `mkdtemp` has nothing in it to read; the reply file
+    # lives inside it and the whole folder goes in `finally`.
+    work_dir = tempfile.mkdtemp(prefix="fused-codex-recap-")
+    out_path = os.path.join(work_dir, "reply.txt")
     try:
         proc = subprocess.Popen(
             [agent._codex_bin(), "exec", "--skip-git-repo-check", "--ephemeral",
-             "-s", "read-only", "-C", tempfile.gettempdir(),
+             "-s", "read-only", "-C", work_dir,
              "-m", registry.get("codex").default_model,
              "-o", out_path, "-"],
             env=agent._spawn_env(backend="codex"),
@@ -1219,10 +1226,7 @@ def _recap_codex(agent, tail: str, titles: bool | None = None) -> str:
             return ""
         return _recap_plain(reply, titles)
     finally:
-        try:
-            os.remove(out_path)
-        except OSError:
-            pass
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def _stored_recap(session_id: str, for_uuid: str,
