@@ -504,10 +504,36 @@ def _mark_fate(prompts: list[dict], fate: bool, line: str = "") -> None:
         prompts[-1]["limit"] = bool(fate) and _limit_hit(line)
 
 
+# A GitHub PR URL as it sits in a transcript line. The trailing lookahead keeps
+# `/pull/12/files` from reading as 123 and `/pull/1234567890` from matching.
+_PR_URL_RE = re.compile(
+    r"https://github\.com/([\w.-]+/[\w.-]+?)/pull/(\d{1,7})(?!\d)")
+_PRS_PER_SCAN = 50
+
+
+def _note_prs(rec: dict, line: str) -> None:
+    """Append every PR URL on this raw line to the scan's `prs`, first-seen
+    order, deduped case-insensitively (the first spelling is displayed)."""
+    prs = rec.setdefault("prs", [])
+    # A raw JSON line escapes its slashes in some writers (`https:\/\/…`).
+    for repo, number in _PR_URL_RE.findall(line.replace("\\/", "/")):
+        if len(prs) >= _PRS_PER_SCAN:
+            return
+        key = f"{repo.lower()}#{int(number)}"
+        if any(f"{p['repo'].lower()}#{p['number']}" == key for p in prs):
+            continue
+        prs.append({"repo": repo, "number": int(number),
+                    "url": f"https://github.com/{repo}/pull/{int(number)}"})
+
+
 def _absorb(rec: dict, line: str) -> None:
     """Fold one raw transcript line into a scan record. Screened before parsing:
     a transcript is mostly assistant turns and tool results, and `json.loads` on
     every one of them is the cost this endpoint cannot pay."""
+    # Every PR link on any line — a `gh pr create` tool result, a reply, a
+    # prompt — counts; substring screen first, same reason as below.
+    if "github.com" in line and "pull" in line:
+        _note_prs(rec, line)
     # An assistant reply is the one non-user line with a fact to contribute:
     # whether the newest prompt's last answer was an API error. Substring tests
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
@@ -595,7 +621,8 @@ def _new_scan() -> dict:
     # before the assistant reply was dropped from this scan may still carry its
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0}
+            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0,
+            "prs": []}
 
 
 def _condense_reply(rec: dict) -> None:
@@ -3890,6 +3917,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     surfaced = max(active, (newest["at"] or 0.0) if newest is not None else 0.0)
     if not surfaced and task["entries"]:
         surfaced = _entry_at(task["entries"][-1])
+    prs = _row_prs(task["session_id"], rec, settings)
     title, source = _title(task, rec, task["first_prompt"],
                            tasks_store.session_title(settings or {},
                                                      task["session_id"]))
@@ -4004,6 +4032,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The List row prints it, grey and italic, after the title; the Board
         # card's hover says the same.
         "last_reply": _last_reply(rec, status, said),
+        # Every PR this session touched, oldest first (`_row_prs`).
+        "prs": prs,
         # Deferred by §12 — Claude Code stores no summary, so filling this needs
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
@@ -5560,6 +5590,22 @@ def _repo_slug(folder: object) -> str:
             _REPO_CACHE.clear()
         _REPO_CACHE[path] = (now, slug)
     return slug
+
+
+def _row_prs(sid: str, rec: dict | None, settings: dict | None) -> list[dict]:
+    """The stored PRs plus any the scan has seen that the store has not, the
+    new ones persisted (a shrunk transcript restarts the scan, so the scan alone
+    forgets). Oldest first; `[]` for none."""
+    stored = tasks_store.session_prs(settings or {}, sid)
+    seen = {f"{p['repo'].lower()}#{p['number']}" for p in stored}
+    merged = stored + [p for p in (rec.get("prs") or [] if rec else [])
+                       if f"{p['repo'].lower()}#{p['number']}" not in seen]
+    if merged != stored and sid:
+        try:
+            tasks_store.record_prs(sid, merged)
+        except (OSError, ValueError):
+            pass  # costs the filing, not the row
+    return merged
 
 
 def _row_hash(row: dict) -> str:

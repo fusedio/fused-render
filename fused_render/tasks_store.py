@@ -1150,6 +1150,70 @@ def record_recap(session_id: str, for_uuid: str, text: str,
     return _update(SETTINGS_FILE, mutate)
 
 
+# EVERY GITHUB PR A SESSION HAS TOUCHED rides on the same record too, under
+# `prs`, oldest first:
+#
+#     {"<session-id>": {..., "prs": [{"repo": "o/r", "number": 12, "url": "…"}]}}
+#
+# The Tasks listing collects them from the transcript, but its scan starts over
+# when the file shrinks (a compaction), so the transcript alone is not durable:
+# the row builder merges what it sees into this list and reads the list back.
+# Deduped by lowercased `repo#number`, the first spelling kept.
+
+
+def _pr_key(pr: dict) -> str:
+    return f"{pr['repo'].lower()}#{pr['number']}"
+
+
+def _clean_prs(value) -> list[dict]:
+    """The well-formed entries of a stored PR list, with `url` rebuilt from
+    repo and number (a stored url is never trusted to be the canonical one)."""
+    out, seen = [], set()
+    for pr in value if isinstance(value, list) else []:
+        if not isinstance(pr, dict):
+            continue
+        repo, number = pr.get("repo"), pr.get("number")
+        if not isinstance(repo, str) or not repo \
+                or isinstance(number, bool) or not isinstance(number, int):
+            continue
+        clean = {"repo": repo, "number": number,
+                 "url": f"https://github.com/{repo}/pull/{number}"}
+        if _pr_key(clean) not in seen:
+            seen.add(_pr_key(clean))
+            out.append(clean)
+    return out
+
+
+def session_prs(state: dict, session_id: str) -> list[dict]:
+    """The stored PRs for one session, oldest first — `[]` when there are none
+    (or the record is not that shape)."""
+    rec = state.get(str(session_id or ""))
+    return _clean_prs(rec.get("prs")) if isinstance(rec, dict) else []
+
+
+def record_prs(session_id: str, prs: list) -> list[dict]:
+    """Merge `prs` into the session's stored list (existing first) and return
+    the result. Writes only when that changed anything; nothing for an empty
+    session id."""
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return []
+    incoming = _clean_prs(prs)
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        have = _clean_prs(rec.get("prs"))
+        merged = _clean_prs(have + incoming)
+        if merged == have and rec.get("prs") == have:
+            return merged, False
+        rec["prs"] = merged
+        state[session_id] = rec
+        return merged, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
 # THE USER'S OWN TITLE for a task rides on the same record, under `custom_title`
 # (set from the Tasks UI's rename gesture). It is stored here and nowhere else:
 # Claude Code's transcript is Claude Code's file, and nothing reads a title
@@ -1196,7 +1260,8 @@ def forget_session(session_id: str) -> dict:
     no longer exist, and there is no thread left for them to be about.
 
     `session_settings.json`'s record GOES for the same reason: it says which
-    model a conversation runs with (and holds its last turn recap), and the
+    model a conversation runs with (and holds its last turn recap and its PR
+    list), and the
     conversation is gone. Left behind,
     it would be the one thing that outlived the erase and re-seeded a new chat
     that happened to be handed the same id.
