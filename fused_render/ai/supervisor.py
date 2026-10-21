@@ -1097,6 +1097,12 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     job = job_id_for(worker.model)
     log = _log_path(worker)
     env = _child_env(worker.token, worker.model, worker.capability)
+    # The bundled interpreter's stdlib dir carries the app's own packages and
+    # precedes the venv's site-packages, shadowing the runner's pins (Pillow 13
+    # breaking mflux's `_IntegralLike` import). See `prefer_venv_site_packages`.
+    from fused_render import envinstall
+
+    envinstall.prefer_venv_site_packages(env, python)
     proc = subprocess.Popen(
         [python, runner.worker, "--model", worker.model, "--status", status, "--job", job],
         stdin=subprocess.DEVNULL,
@@ -1572,6 +1578,9 @@ def _fetch_only(runner: registry.Runner, model: str, job: str,
         _report(job, detail="Fetching weights…")
         log = _log_path(stub)
         env = _child_env(stub.token, model)
+        from fused_render import envinstall
+
+        envinstall.prefer_venv_site_packages(env, python)  # see `_spawn`
         argv = [python, runner.worker, "--model", model, "--job", job, "--download-only"]
         if file:
             argv += ["--file", file]

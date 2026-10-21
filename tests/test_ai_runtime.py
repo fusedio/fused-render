@@ -13493,3 +13493,74 @@ def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_ru
     section = _skill_section("Speech: `fused.ai.speech({text, ...})`")
     assert sorted(field for field in fields if field not in section) == []
     _wait_job(started["jobId"])
+
+
+# --- runner venv site-packages precede the bundled interpreter's stdlib dir ---
+
+def _make_venv(root, with_cfg=True):
+    site = root / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    (root / "bin").mkdir()
+    (root / "bin" / "python").write_text("")
+    if with_cfg:
+        (root / "pyvenv.cfg").write_text("home = /x\n")
+    return site
+
+
+def test_venv_site_packages_finds_the_venv_dir(tmp_path):
+    from fused_render import envinstall
+    site = _make_venv(tmp_path / "v")
+    assert envinstall.venv_site_packages(str(tmp_path / "v" / "bin" / "python")) == str(site)
+
+
+def test_venv_site_packages_is_none_without_pyvenv_cfg(tmp_path):
+    from fused_render import envinstall
+    _make_venv(tmp_path / "v", with_cfg=False)
+    assert envinstall.venv_site_packages(str(tmp_path / "v" / "bin" / "python")) is None
+
+
+def test_venv_site_packages_does_not_resolve_the_python_symlink(tmp_path):
+    """A venv python is a symlink to the base interpreter; resolving it would
+    walk out of the venv."""
+    from fused_render import envinstall
+    site = _make_venv(tmp_path / "v")
+    base = tmp_path / "base" / "bin"
+    base.mkdir(parents=True)
+    (base / "python3.12").write_text("")
+    py = tmp_path / "v" / "bin" / "python"
+    py.unlink()
+    py.symlink_to(base / "python3.12")
+    assert envinstall.venv_site_packages(str(py)) == str(site)
+
+
+def _captured_spawn_env(monkeypatch, python):
+    from types import SimpleNamespace
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_popen(argv, **kwargs):
+        seen["env"] = kwargs["env"]
+        raise _Stop
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda w: os.devnull)
+    monkeypatch.setenv("PYTHONPATH", "/inherited")
+    runner = SimpleNamespace(worker="worker.py", folder="/tmp")
+    worker = supervisor.Worker(model="m", capability="text", runner_code="r", token="t")
+    with pytest.raises(_Stop):
+        supervisor._spawn(runner, worker, python)
+    return seen["env"]
+
+
+def test_spawn_puts_the_venv_site_packages_on_pythonpath(monkeypatch, tmp_path):
+    site = _make_venv(tmp_path / "v")
+    env = _captured_spawn_env(monkeypatch, str(tmp_path / "v" / "bin" / "python"))
+    assert env["PYTHONPATH"] == str(site)
+
+
+def test_spawn_of_a_non_venv_python_gets_no_pythonpath(monkeypatch, tmp_path):
+    _make_venv(tmp_path / "v", with_cfg=False)
+    env = _captured_spawn_env(monkeypatch, str(tmp_path / "v" / "bin" / "python"))
+    assert "PYTHONPATH" not in env
