@@ -7335,3 +7335,6 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **Details.** Leftover tool input (`leftoverInput`) is a collapsed "Details" disclosure under the verbatim command, not a second always-open block.
 - **Phone stays Approve / Deny only.** "Always approve" writes a standing rule and is a desktop decision (phone.py). The phone does not render relayed approvals (it has no `relay` handling), so there was nothing to convert there.
 - **Moves.** `CollapsiblePre` now lives in `platform/ui` (old path re-exports); `approvalVerdict` lives in `platform/lib/risk.ts` (re-exported from `lan/bots/lib.ts`). Settled Bots cards show "Approved" / "Denied" from the answering user line when it is loaded.
+
+## Compaction divider (Claude chat)
+- A Claude Code compaction summary (`isCompactSummary` user row) replays as `role: "compact"`, not a user bubble; the preceding `compact_boundary` supplies trigger and token counts. Live, the boundary is a notice segment with the same label (`Context compacted · 167k → 16k tokens`). The page draws a divider with the summary folded behind "Show summary".

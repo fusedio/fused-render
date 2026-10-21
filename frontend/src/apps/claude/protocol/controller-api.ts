@@ -144,7 +144,19 @@ export interface ErrorTurn {
   quota?: import("./types").Quota;
 }
 
-export type Turn = UserTurn | AssistantTurn | NoteTurn | ErrorTurn;
+/** A context compaction: drawn as a divider with the summary folded away. Not
+ *  a user message, so recaps and anchors ignore it. */
+export interface CompactTurn {
+  role: "compact";
+  key: string;
+  /** The summary, markdown. */
+  text: string;
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+}
+
+export type Turn = UserTurn | AssistantTurn | NoteTurn | ErrorTurn | CompactTurn;
 
 /** Kinds the trouble card knows (T:13531-13602 TROUBLE_*). Reuse platform/lib/trouble.ts ids where identical. */
 export type TroubleKind =

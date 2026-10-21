@@ -16,6 +16,7 @@ import { INTERRUPT_MARK, isInterruptMark, isMarkerOnly, parseInbound, type Annot
 import type { Viewable } from "./attachApi";
 import { MarkerText } from "./AttachIcon";
 import { Caret } from "./Caret";
+import { CompactDivider } from "./CompactDivider";
 import { AgentMark } from "@platform/ui/AgentMark";
 import { useAgent } from "./agent-context";
 import { MarkdownView } from "./MarkdownView";
@@ -302,6 +303,7 @@ export const Turn = memo(function Turn({
       </div>
     );
   }
+  if (turn.role === "compact") return <CompactDivider turn={turn} />;
   if (turn.role === "note") {
     // A one-liner for something that happened BESIDE the conversation: the
     // agent reading the app state on its own, a skill it reached for, the user

@@ -706,6 +706,53 @@
   color: var(--c-dim);
 }
 
+/* ── compaction divider ─────────────────────────────────────────────────── */
+.chat-root .turn.compact {
+  font-size: 12px;
+  color: var(--c-faint);
+}
+.chat-root .turn.compact .compact-rule {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.chat-root .turn.compact .compact-rule::before,
+.chat-root .turn.compact .compact-rule::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--c-border);
+}
+.chat-root .turn.compact .compact-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.chat-root .turn.compact .compact-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--c-dim);
+  cursor: pointer;
+}
+.chat-root .turn.compact .compact-toggle:hover {
+  color: var(--c-text);
+}
+.chat-root .turn.compact .compact-body {
+  margin-top: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px 12px;
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+  color: var(--c-dim);
+  font-size: 13px;
+}
+
 /* ── working line (T:1949-2025) ─────────────────────────────────────────── */
 .chat-root .turn.working {
   display: flex;
