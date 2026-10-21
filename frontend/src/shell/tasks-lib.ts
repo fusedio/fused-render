@@ -750,7 +750,9 @@ export function liveJobs(
 /** THE ONE RULE: a row the server calls Done whose chat still holds a live
  *  background job. The blue ring, the In Progress placement (`boardLane`), the
  *  badge and Stop job all ask this and nothing else. */
-export function liveJobRow(task: Task): boolean {
+export function liveJobRow(
+  task: Pick<Task, "background_jobs" | "status" | "kind">,
+): boolean {
   return liveJobs(task) !== null && laneOf(taskColumn(task)) === "done";
 }
 
@@ -5291,6 +5293,15 @@ export function tasksPulse(tasks: TaskPulseTask[], seen: TasksSeen): TasksPulse 
   let unseen = 0;
   for (const t of tasks) {
     const column = taskColumn(t);
+    // A DONE ROW HOLDING A LIVE BACKGROUND JOB IS RUNNING, as the Tasks page
+    // draws it (`liveJobRow`). Its status stays `done` (that comment explains
+    // why), so without this it fell through to `isDoneUnread` below and the
+    // sidebar painted the green "finished, not read" dot over work that was
+    // still going.
+    if (liveJobRow(t)) {
+      running++;
+      continue;
+    }
     // BOTH RUNNING WORDS COUNT AS RUNNING, and one of them counts twice. A task
     // parked on a card has a live turn — it is running, and the rail's yellow is
     // still true of it — but it is the only kind of running that will not finish
