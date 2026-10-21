@@ -268,13 +268,10 @@ function InboxCard({
               disabled={!!busy}
               onClick={() =>
                 void act("merge", async () => {
-                  const r = await runJob(startInboxMerge(dir, item.number), { signal: signal() });
-                  if (r.ok) {
-                    notify({
-                      title: okMessage(r, `Claude merged ${possessive(who)} proposal with the latest.`),
-                      tone: "info",
-                    });
-                  }
+                  // A merge job: its progress and review are the server's
+                  // to show on the next read, never a sentence of ours.
+                  const r = await startInboxMerge(dir, item.number);
+                  if (r.ok && r.message) notify({ title: r.message, tone: "info" });
                   return r;
                 })
               }
@@ -284,7 +281,7 @@ function InboxCard({
               ) : (
                 <Sparkles data-icon="inline-start" />
               )}
-              {busy === "merge" ? "Claude is combining…" : "Merge with Claude"}
+              Merge with Claude
             </Button>
           </div>
         </div>

@@ -2001,6 +2001,10 @@ function toolbar(data) {
      because they are the one thing left to do; "Check for updates" and
      "Publish to GitHub" stay outlined, as offers rather than the next step. An
      outlined Send after a commit read as one more grey button and was missed. */
+  /* `push_blocked` (a plain sentence): this copy follows someone else's app
+     on GitHub (contrib §16.8) and never sends from here — its edits go out
+     as a proposal from the app's page — so Send and Publish branch are not
+     offered at all; ops.py refuses a push with the same sentence. */
   const canPush = remote && !repo.detached && !repo.push_blocked;
   if (!remote) {
     /* No remote used to be a dead end — a greyed-out button with nothing
@@ -2045,15 +2049,6 @@ function toolbar(data) {
       title: "git push — create " + repo.branch + " on " + remote + " and track it",
       onClick: () => run("push", { op: "push" }),
     }));
-  } else if (ahead && repo.push_blocked) {
-    /* A copy that follows someone else's app on GitHub (contrib §16.8) never
-       sends from here: its edits go out as a proposal from the app's page.
-       Send stays where it always is, refused, saying so in plain words. */
-    group.append(action("push", [icon(PUSH_GLYPH, 14), btnLabel("Send")], {
-      label: repo.push_blocked,
-      title: repo.push_blocked,
-      disabled: true,
-    }));
   } else {
     group.append(action("fetch", [icon(FETCH_GLYPH, 14), btnLabel("Check for updates")], {
       label: "Check for updates",
@@ -2065,7 +2060,7 @@ function toolbar(data) {
   /* The counts the morphing button decides by only move when someone FETCHES,
      so whenever the primary slot is spent on pull/push, a quiet icon keeps
      "check for updates" one click away rather than unreachable. */
-  if (remote && (behind || (ahead && (canPush || repo.push_blocked)))) {
+  if (remote && (behind || (ahead && canPush))) {
     group.prepend(action("fetch", icon(FETCH_GLYPH, 14), {
       className: "icon",
       label: "Check for updates",
