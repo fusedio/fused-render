@@ -155,7 +155,9 @@ main()
 
 @pytest.fixture(autouse=True)
 def _reset_module_state():
+    canvases_mod._cli_cache_clear()
     yield
+    canvases_mod._cli_cache_clear()
     login = canvases_mod._active_login
     if login is not None and login.proc.poll() is None:
         login.proc.kill()
@@ -203,10 +205,13 @@ class Harness:
 
         self.client = TestClient(create_app(start_dir=str(tmp_path)))
 
-    def set_scenario(self, scenario: dict) -> None:
+    def set_scenario(self, scenario: dict, keep_cache: bool = False) -> None:
         self.scenario_file.write_text(json.dumps(scenario), encoding="utf-8")
+        if not keep_cache:
+            canvases_mod._cli_cache_clear()
 
     def log_in(self) -> None:
+        canvases_mod._cli_cache_clear()
         self.creds.write_text(json.dumps({"access_token": "tok123"}), encoding="utf-8")
 
     def calls(self) -> list[list[str]]:
@@ -637,6 +642,105 @@ def test_whoami_extracts_handle(harness):
     res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
     assert res.status_code == 200
     assert res.json()["handle"] == "vasu"
+
+
+def _spawns(harness, word):
+    return [c for c in harness.calls() if word in c]
+
+
+def test_whoami_second_call_within_ttl_spawns_once(harness):
+    harness.log_in()
+    a = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    b = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert a.status_code == b.status_code == 200
+    assert a.json() == b.json()
+    assert len(_spawns(harness, "whoami")) == 1
+
+
+def test_whoami_cache_is_keyed_by_env(harness):
+    harness.log_in()
+    harness.client.get(f"/api/canvases/whoami?env={ENV}", headers=GUARD)
+    harness.client.get(f"/api/canvases/whoami?env={OTHER_ENV}", headers=GUARD)
+    assert len(_spawns(harness, "whoami")) == 2
+
+
+def test_cli_error_is_not_cached(harness):
+    harness.log_in()
+    harness.set_scenario({"fail": "boom"})
+    res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert res.status_code == 502
+    harness.set_scenario({}, keep_cache=True)
+    res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert res.status_code == 200
+
+
+def test_list_cache_returns_independent_copies(harness):
+    harness.log_in()
+    first = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    second = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    assert first.status_code == second.status_code == 200
+    assert len(_spawns(harness, "list")) == 1
+    # The endpoint mutates its entries (`cloned`); a hit must carry it afresh.
+    assert all("cloned" in c for c in first.json()["canvases"])
+    assert all("cloned" in c for c in second.json()["canvases"])
+
+
+def test_create_invalidates_list_cache(harness):
+    harness.log_in()
+    harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    res = harness.client.post("/api/canvases/create", json={"name": "gamma", "env": ENV},
+                              headers=GUARD)
+    assert res.status_code == 200
+    harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    assert len(_spawns(harness, "list")) == 2
+
+
+def test_logout_invalidates_whoami_cache(harness):
+    harness.log_in()
+    harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert harness.client.post("/api/canvases/logout", headers=GUARD).status_code == 200
+    harness.log_in()
+    harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert len(_spawns(harness, "whoami")) == 2
+
+
+def test_concurrent_whoami_is_single_flight(harness, monkeypatch):
+    import types
+
+    harness.log_in()
+    count = []
+
+    def slow_cli(args, timeout, env):
+        count.append(1)
+        time.sleep(0.3)
+        return types.SimpleNamespace(stdout='{"handle":"h"}', returncode=0), None
+
+    monkeypatch.setattr(canvases_mod, "_run_cli", slow_cli)
+    codes = []
+    threads = [threading.Thread(target=lambda: codes.append(harness.client.get(
+        "/api/canvases/whoami?env=unstable", headers=GUARD).status_code))
+        for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert len(count) == 1
+    assert codes == [200] * 4
+
+
+@pytest.mark.parametrize("ttl,computes", [(0, 2), (60, 1)])
+def test_token_cache_only_until_expiry(harness, ttl, computes):
+    harness.log_in()
+    runs = []
+
+    def compute():
+        runs.append(1)
+        return ("ok", {"access_token": "t"})
+
+    for _ in range(2):
+        out = canvases_mod._cached_cli("token", ENV, compute, lambda payload: ttl)
+        assert out == ("ok", {"access_token": "t"})
+    assert len(runs) == computes
 
 
 def test_clone_rejects_bad_names(harness):

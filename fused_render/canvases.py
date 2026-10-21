@@ -83,6 +83,7 @@ shell/* routers.
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import hashlib
 import io
@@ -118,6 +119,30 @@ router = APIRouter()
 # `fused canvas list/whoami` are one control-plane call each.
 LIST_TIMEOUT = 30.0
 WHOAMI_TIMEOUT = 20.0
+# whoami / list / token each spawn an interpreter (importing `fused`) for a
+# control-plane answer that rarely changes: the parsed RESULT is reused this
+# long (see `_cached_cli`). Errors are never reused.
+_CLI_CACHE_TTL_S = 45.0
+# A token expiring within this window is not reused: re-running the shim
+# refreshes it.
+_TOKEN_EXPIRY_MARGIN_S = 120.0
+_CLI_CACHE_LOCK = threading.Lock()
+_cli_cache: dict[tuple, tuple[float, object]] = {}  # key -> (monotonic expiry, value)
+_cli_cache_gen = 0
+
+
+class _Flight:
+    """One in-flight computation other callers of the same key wait on."""
+
+    __slots__ = ("event", "result")
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.result = None
+
+
+_cli_flights: dict[tuple, _Flight] = {}
+
 # A pull downloads and extracts the canvas zip; canvases are small (source
 # files, not data), so a minute is generous headroom for a slow link.
 PULL_TIMEOUT = 180.0
@@ -407,6 +432,87 @@ def _logged_in() -> bool:
     return os.path.isfile(_credentials_file())
 
 
+def _creds_sig() -> tuple | None:
+    """`(mtime_ns, size)` of the credentials store, None when absent. A login,
+    logout or on-disk token refresh changes it, which invalidates cached CLI
+    results by construction."""
+    try:
+        st = os.stat(_credentials_file())
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _cli_cache_clear() -> None:
+    global _cli_cache_gen
+    with _CLI_CACHE_LOCK:
+        _cli_cache.clear()
+        _cli_cache_gen += 1
+
+
+def _fresh(result):
+    """A result with its payload deep-copied (`api_canvases_list` mutates its
+    entries, so a hit must never hand out the stored object)."""
+    if result is not None and result[0] == "ok":
+        return ("ok", copy.deepcopy(result[1]))
+    return result
+
+
+def _cached_cli(kind: str, env: str, compute, ttl_for=None):
+    """Run `compute()` once per (kind, env, credentials signature) per TTL, and
+    share one run between concurrent callers (single flight).
+
+    `compute()` returns `("ok", payload)` or `("err", message, status)`; the
+    same shape comes back, payload deep-copied on every return. Errors reach
+    the running caller and its current waiters but are never stored. `ttl_for(
+    payload)` overrides the TTL (<= 0 means do not store)."""
+    key = (kind, env, _creds_sig())
+    with _CLI_CACHE_LOCK:
+        hit = _cli_cache.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return _fresh(("ok", hit[1]))
+        flight = _cli_flights.get(key)
+        leader = flight is None
+        if leader:
+            flight = _cli_flights[key] = _Flight()
+            gen = _cli_cache_gen
+    if not leader:
+        flight.event.wait(TOKEN_TIMEOUT + LIST_SHIM_TIMEOUT)
+        if flight.result is not None:
+            return _fresh(flight.result)
+        return _fresh(compute())
+    result = None
+    try:
+        result = compute()
+        return _fresh(result)
+    finally:
+        flight.result = result
+        flight.event.set()
+        with _CLI_CACHE_LOCK:
+            if _cli_flights.get(key) is flight:
+                del _cli_flights[key]
+        if result is not None and result[0] == "ok" and gen == _cli_cache_gen:
+            ttl = ttl_for(result[1]) if ttl_for is not None else _CLI_CACHE_TTL_S
+            if ttl > 0:
+                # The child may have refreshed the credentials file, which
+                # changes its signature: store under the POST signature so the
+                # next call (which reads the new one) hits.
+                post_key = (kind, env, _creds_sig())
+                with _CLI_CACHE_LOCK:
+                    if gen == _cli_cache_gen:
+                        _cli_cache[post_key] = (
+                            time.monotonic() + ttl, copy.deepcopy(result[1]))
+
+
+def _err_of(response: JSONResponse) -> tuple:
+    """`("err", message, status)` from an `_error(...)` response."""
+    try:
+        message = json.loads(response.body)["error"]
+    except (ValueError, KeyError, TypeError):
+        message = "request failed"
+    return ("err", message, response.status_code)
+
+
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
     # Same D3 guard as server's _require_fused, duplicated to stay acyclic.
     if x_fused != "1":
@@ -506,6 +612,8 @@ def _watch_login(login: _ActiveLogin) -> None:
     except subprocess.TimeoutExpired:
         login.proc.kill()
         login.proc.wait()
+    # Whoever the login now belongs to, earlier whoami/list/token answers are stale.
+    _cli_cache_clear()
 
 
 @router.get("/api/canvases/status")
@@ -623,29 +731,37 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
         env, bad = _require_env(env)
         if bad is not None:
             return bad
-    proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
-    if err is not None:
-        return err
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError:
-        return _error(
-            f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
-            502,
+
+    def compute():
+        proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
+        if err is not None:
+            return _err_of(err)
+        try:
+            data = json.loads(proc.stdout)
+        except ValueError:
+            return (
+                "err",
+                f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
+                502,
+            )
+        if not isinstance(data, dict):
+            return ("err", "unexpected `fused whoami` payload", 502)
+        # The slug URL needs the user's handle; the payload's field name has
+        # drifted historically, so take the first plausible one.
+        handle = next(
+            (
+                data[key]
+                for key in ("handle", "username", "user_name", "nickname")
+                if isinstance(data.get(key), str) and data[key]
+            ),
+            None,
         )
-    if not isinstance(data, dict):
-        return _error("unexpected `fused whoami` payload", 502)
-    # The slug URL needs the user's handle; the payload's field name has
-    # drifted historically, so take the first plausible one.
-    handle = next(
-        (
-            data[key]
-            for key in ("handle", "username", "user_name", "nickname")
-            if isinstance(data.get(key), str) and data[key]
-        ),
-        None,
-    )
-    return {"handle": handle, "raw": data}
+        return ("ok", {"handle": handle, "raw": data})
+
+    result = _cached_cli("whoami", env, compute)
+    if result[0] == "err":
+        return _error(result[1], result[2])
+    return result[1]
 
 
 @router.post("/api/canvases/login")
@@ -687,6 +803,7 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
                 )
             except OSError as e:
                 return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
+            _cli_cache_clear()
             login = _ActiveLogin(proc=proc, started_at=time.time())
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
@@ -732,26 +849,47 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
     cli = fused_cli()
     if cli is not None and not cli.external:
         shim = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fused_token.py")
-        try:
-            proc = subprocess.run(
-                [sys.executable, shim],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=TOKEN_TIMEOUT,
-                env=_cli_env(cli, _auth_env()),
-            )
-        except subprocess.TimeoutExpired:
-            return _error(f"token refresh timed out after {int(TOKEN_TIMEOUT)}s", 502)
-        except OSError as e:
-            return _error(f"could not run the token helper: {e}", 502)
-        if proc.returncode != 0:
-            return _error(cli_error(proc.stderr, "could not read the fused access token"), 502)
-        token = proc.stdout.strip()
-        if not token:
-            return _error("the token helper printed nothing", 502)
-        return {"access_token": token}
+
+        def compute():
+            try:
+                proc = subprocess.run(
+                    [sys.executable, shim],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=TOKEN_TIMEOUT,
+                    env=_cli_env(cli, _auth_env()),
+                    close_fds=False,
+                )
+            except subprocess.TimeoutExpired:
+                return ("err", f"token refresh timed out after {int(TOKEN_TIMEOUT)}s", 502)
+            except OSError as e:
+                return ("err", f"could not run the token helper: {e}", 502)
+            if proc.returncode != 0:
+                return ("err", cli_error(proc.stderr, "could not read the fused access token"), 502)
+            token = proc.stdout.strip()
+            if not token:
+                return ("err", "the token helper printed nothing", 502)
+            return ("ok", {"access_token": token})
+
+        def ttl_for(_payload):
+            # Reuse only while the stored token stays comfortably valid: one
+            # expiring within the margin is re-run (which refreshes it).
+            try:
+                with open(_credentials_file(), encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                return 0
+            exp = _iso_epoch(data.get("expires_at")) if isinstance(data, dict) else None
+            if exp is None:
+                return 0
+            return min(_CLI_CACHE_TTL_S, exp - time.time() - _TOKEN_EXPIRY_MARGIN_S)
+
+        result = _cached_cli("token", _auth_env(), compute, ttl_for)
+        if result[0] == "err":
+            return _error(result[1], result[2])
+        return result[1]
     # External-CLI fallback: the raw store, no refresh.
     try:
         with open(_credentials_file(), encoding="utf-8") as f:
@@ -1050,6 +1188,22 @@ def _iso_epoch(value) -> float | None:
 
 
 def _list_entries(env: str):
+    """`_list_entries_uncached` behind the CLI result cache (see `_cached_cli`):
+    `(entries, error)`, errors never cached."""
+
+    def compute():
+        entries, err = _list_entries_uncached(env)
+        if err is not None:
+            return _err_of(err)
+        return ("ok", entries)
+
+    result = _cached_cli("list", env, compute)
+    if result[0] == "err":
+        return None, _error(result[1], result[2])
+    return result[1], None
+
+
+def _list_entries_uncached(env: str):
     """(entries, error) for `env`'s account: each entry is {name, id,
     preview_url, n_code_udfs, updated_at}.
 
@@ -1306,6 +1460,7 @@ def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(def
     proc, err = _run_cli(["workbench", "canvas", "create", name], LIST_TIMEOUT, env)
     if err is not None:
         return err
+    _cli_cache_clear()
     return {"ok": True, "name": name}
 
 
@@ -1337,6 +1492,7 @@ def api_canvases_logout(x_fused: str | None = Header(default=None)):
         for manager in managers:
             manager.resume(rebaseline=False)
         return err
+    _cli_cache_clear()
     with _SYNC_LOCK:
         managers = list(_syncs.values())
         _syncs.clear()
@@ -2751,6 +2907,9 @@ class _SyncManager:
         # the next poll adopts a fresh baseline. Probed BEFORE the fold, so the
         # lock is not held across it.
         after = self._probe_remote()
+        # A push changes the account's canvas list (updated_at): drop cached
+        # list answers. Module-level, called with no lock held.
+        _cli_cache_clear()
         with self._op_lock:
             self.push_seq += 1
             self.last_push_at = time.time()
