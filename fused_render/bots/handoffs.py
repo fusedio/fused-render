@@ -190,7 +190,8 @@ def _relay_card(sb, t, hd, ev, card):
     # Top-level `options` is what a phone is numbered with (Router.render), only while the switch is on. Off, the text
     # goes out unnumbered and render() ends it "Needs your OK at the Mac."; the card in Super Bot's chat still works.
     numbered = {"options": opts} if chan.approvals_by_text(sb.meta) else {}
-    sb.emit("question", text, source="handoff", handoff=sb._handoff_ref(hd), via=hd.get("origin_via"), relay=relay, **numbered)
+    risk = {k: ev[k] for k in ("severity", "risk_summary") if ev.get(k)}  # the target's model-written read of the call
+    sb.emit("question", text, source="handoff", handoff=sb._handoff_ref(hd), via=hd.get("origin_via"), relay=relay, **numbered, **risk)
 
 
 # ---------------------------------------------------------------- sweep ---
