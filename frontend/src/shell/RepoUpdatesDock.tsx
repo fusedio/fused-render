@@ -583,9 +583,9 @@ function AttentionRowView({
       }
       age={age}
       caption={row.origin || undefined}
-      status={row.title}
+      status={row.label || row.title}
       statusOneLine
-      statusTooltip={row.title}
+      statusTooltip={row.label || row.title}
       onDismiss={dismiss}
       // `navigateUrl`, not `navigate`: `attentionRows` hands back either a whole
       // /explorer url with the `_side=claude` handoff and the session id on the

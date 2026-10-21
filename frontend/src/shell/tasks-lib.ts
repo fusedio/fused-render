@@ -5427,14 +5427,34 @@ export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
 // test that does not need a DOM — the same split repo-updates-lib.ts makes for
 // its own rows.
 
+/** What a notice calls the task: the reader's OWN newest message, so the card
+ *  names the thing they remember asking for, and stays put until they say
+ *  something new (a recap or reply line lands later and reads as a title that
+ *  changed under them). A renamed task, summary-only titles and a task nothing
+ *  has been said in yet keep the server `title` — `cardTitleLine` already
+ *  answers those. One short line. */
+export function taskNoticeTitle(task: TaskPulseTask): string {
+  const line = cardTitleLine({ ...task, last_message: null, recap: undefined }).text;
+  const said = task.last_message?.role === "user" ? firstLine(task.last_message.text ?? "") : "";
+  const keepsTitle = task.title_source === "renamed" || task.title_mode === "summary";
+  // A kept title that is EMPTY falls through to the message, never to "A task".
+  const text = (keepsTitle && line) || said || line || "A task";
+  const chars = Array.from(text);
+  return chars.length > 120 ? chars.slice(0, 119).join("").trimEnd() + "\u2026" : text;
+}
+
 /** One waiting task, as the Notifications section draws it. */
 export interface AttentionRow {
   /** React key, and the task's identity in the poll: its session/pending key. */
   key: string;
   /** The printed id — "TASK-097". */
   taskId: string;
-  /** The task's own title, for the row's second line. */
+  /** The task's own title. Also what a dismissal expires against, so it stays
+   *  the raw server title. */
   title: string;
+  /** What the row's second line prints: the same name the popup notice uses
+   *  (`taskNoticeTitle`), so the two never disagree about the task. */
+  label?: string;
   /** Where clicking the row lands — always a real destination (see below). */
   href: string;
   /** Who raised this row — the row-level counterpart to `Job.origin`/a
@@ -5473,6 +5493,7 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       key: task.key,
       taskId: task.task_id,
       title: task.title,
+      label: taskNoticeTitle(task),
       href: taskHref(task) ?? folderHref(task) ?? "/tasks",
       // ADDITION 1 (live testing, 2026-09-17): `project` FIRST, matching
       // `folderHref`'s (schedule-lib.ts) own established order — do NOT swap
