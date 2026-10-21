@@ -204,7 +204,7 @@ export function Dropdown({
     // The window's height is in the key: it decides whether the panel flips up.
     const where = () => {
       const r = btnRef.current?.getBoundingClientRect();
-      return r ? `${r.left},${r.top},${r.width},${window.innerHeight}` : "";
+      return r ? `${r.left},${r.top},${r.width},${r.height},${window.innerHeight}` : "";
     };
     // Seeded now, so a move between the opening render and the first frame
     // (the modal's scale-in, a sidebar mid-fold) still counts as a move.
