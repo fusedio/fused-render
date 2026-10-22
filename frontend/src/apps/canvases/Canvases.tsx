@@ -298,13 +298,19 @@ export default function Canvases() {
     };
   }, [loggingIn, refresh]);
 
+  // Both continuations are dropped if the env changed while the request was
+  // out: the sign-in started (a server-side child, not cancelled here) is
+  // the OLD env's, and `onPickEnv` has already stopped watching it.
   const onLogin = async () => {
     setError(null);
+    const gen = envGenRef.current;
     try {
       loginStampRef.current = status?.creds_stamp ?? null;
       await startLogin(env);
+      if (gen !== envGenRef.current) return;
       setLoggingIn(true);
     } catch (e) {
+      if (gen !== envGenRef.current) return;
       setError((e as Error).message);
     }
   };
@@ -315,8 +321,11 @@ export default function Canvases() {
     // login poll's now-defunct login_in_flight read surface a spurious
     // "sign-in was not completed" error over this.
     setLoggingIn(false);
+    const gen = envGenRef.current;
     try {
       await logout(env);
+      // Signed out of the env picked then; a newer pick's listing stays.
+      if (gen !== envGenRef.current) return;
       setCanvases(null);
       // Signed URLs belong to the account that just signed out.
       setPreviews({});
@@ -325,6 +334,7 @@ export default function Canvases() {
       setCreating(false);
       await refresh();
     } catch (e) {
+      if (gen !== envGenRef.current) return;
       setError((e as Error).message);
     }
   };
