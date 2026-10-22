@@ -225,7 +225,7 @@ async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: st
     # is still running. Without `stream=1` the response is the original
     # single-JSON shape, unchanged for old clients.
     include_hidden = hidden == "1"
-    if not os.path.isdir(path):
+    if not await asyncio.to_thread(os.path.isdir, path):
         return _error(f"not a directory: {path}", status=400)
     max_entries = _server_walk.WALK_MAX_ENTRIES
     max_depth = _server_walk.WALK_MAX_DEPTH_LOCAL
@@ -722,9 +722,14 @@ async def api_fs_thumb(path: str, request: Request, size: int = 160):
 
     key = hashlib.sha1(
         f"{path}\0{st.st_mtime_ns}\0{st.st_size}\0{size}".encode()).hexdigest()
-    folder = _thumb_dir()
-    dst = os.path.join(folder, key + ".jpg")
-    if not os.path.exists(dst):
+    def _locate() -> tuple[str, str, bool]:
+        # `home_dir()` and the existence probe are filesystem calls.
+        folder = _thumb_dir()
+        dst = os.path.join(folder, key + ".jpg")
+        return folder, dst, os.path.exists(dst)
+
+    folder, dst, cached = await asyncio.to_thread(_locate)
+    if not cached:
         try:
             await asyncio.to_thread(os.makedirs, folder, exist_ok=True)
             await asyncio.to_thread(_make_thumb, path, dst, size)
