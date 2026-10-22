@@ -2496,29 +2496,35 @@ export function TaskList({
       return next;
     });
     // …and into view: the section has just sorted to the top (newest activity
-    // first), which can be a screen away from where the + was pressed. The
-    // DEEPEST section opened — the pull request, not the repository over it,
-    // whose heading can be in view with the PR still below the fold
-    // (CodeRabbit, #1855).
+    // first), which can be a screen away from where the + was pressed. ONE
+    // arrival is the target — the first fresh row — and its section and its
+    // row are both read off that one task (CodeRabbit, #1855: two sections
+    // arriving at once must not scroll one for the other's row). The DEEPEST
+    // of its sections: the pull request, not the repository over it, whose
+    // heading can be in view with the PR still below the fold. The row's own
+    // node where it is on screen (a section taller than the list can hold the
+    // viewport with the new row outside it, and "nearest" on the section
+    // would move nothing), else the section.
+    //
     // AFTER THE SLIDE, not during it (QA, 2026-10-23): the section is already
-    // in its new place in layout, but the FLIP transform below has it drawn
-    // at its OLD one for a quarter second, and `scrollIntoView` reads the
-    // drawn box — asked then, it smooth-scrolled the reader straight back to
-    // the bottom the section had just left.
-    // THE ROW ITSELF where it is on screen, else its section (CodeRabbit,
-    // #1855): a section taller than the list can hold the viewport with the
-    // new row still outside it, and "nearest" on the section would move
-    // nothing. The registry is keyed by the List's row key (`taskListKeys`).
-    const deepest = open[open.length - 1]!.replace(/[^\w-]+/g, "_");
+    // in its new place in layout, but the FLIP transform below draws the
+    // TOP-LEVEL section at its old place for a quarter second, and
+    // `scrollIntoView` reads the drawn box — asked then, it smooth-scrolled
+    // the reader straight back to the bottom the section had just left. The
+    // animation is the top-level section's (`getAnimations` does not include
+    // an ancestor's), whichever depth the target is at.
     const arrived = rows.findIndex((t) => fresh.has(t.key));
+    const mine = sectionsHolding(groups, groupBy, new Set([rows[arrived]!.key]));
+    const deepest = (mine[mine.length - 1] ?? open[0]!).replace(/[^\w-]+/g, "_");
     requestAnimationFrame(() => {
       const section = listRef.current
         ?.querySelector(`#tasks-group-${groupBy}-${deepest}`)
         ?.closest<HTMLElement>(".tasks-group");
-      const row = arrived >= 0 ? elsByKey.current.get(rowKeys[arrived] ?? "") : undefined;
+      const row = elsByKey.current.get(rowKeys[arrived] ?? "");
       const node = (row instanceof HTMLElement && section?.contains(row) ? row : section) ?? null;
       if (!node || !section) return;
-      const sliding = typeof section.getAnimations === "function" ? section.getAnimations() : [];
+      const outer = section.closest<HTMLElement>(".tasks-group[data-depth='0']") ?? section;
+      const sliding = typeof outer.getAnimations === "function" ? outer.getAnimations() : [];
       void Promise.allSettled(sliding.map((a) => a.finished)).then(() => {
         if (node.isConnected) node.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
       });
