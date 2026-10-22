@@ -7408,3 +7408,41 @@ Turning on `chromium_windows_enabled` starts a ~150 MB engine download (`fused_r
 - **Unmeasured.** No NVIDIA machine was available. The row's only evidence is the worker's existing `torch.cuda.is_available()` device branch, and its registry note says "Not yet measured on real hardware".
 - **Naming.** The sibling-name test now accepts "(Apple Silicon)" as a platform qualifier for `vision-torch` beside the "(CUDA)" row, and skips its short-name equals long-name rule for that row, rather than renaming the measured Apple row.
 - **CUDA-less torch.** The two CUDA runners differ on a torch without CUDA: vision refuses (before download and at load), `diffusers-image-cuda` reports `device=cpu`; unifying this into `worker_base` is deferred.
+## D1413: llama-cpp-python stays at 0.3.29; Ternary-Bonsai-2-27B GGUF gets no row (2026-10-22, llamacpp-bump-bonsai2-gguf)
+
+- **Problem.** Wanted a newer llama.cpp so `llamacpp-text` could serve `prism-ml/Ternary-Bonsai-2-27B-gguf` (PQ2_0 7.21 GB, PTQ1_0 5.95 GB). A bump is only allowed where every shipped wheel passes `zipfile.ZipFile(...).testzip()` (see `llamacpp_text/pyproject.toml`).
+- **Sweep.** Each wheel downloaded from `github.com/abetlen/llama-cpp-python/releases/download/v<ver>[-vulkan]/`, sha256 prefix (12) and size (decimal MB) in brackets. mac = macosx_11_0_arm64, x86 = manylinux2014_x86_64, arm = manylinux2014_aarch64, vk = vulkan x86_64.
+
+  | version | mac | x86 | arm | vk |
+  |---|---|---|---|---|
+  | 0.3.36 | FAIL invalid block type [1bec5e1d9fc7, 24.93 MB] | PASS [c8a3e98093e9, 27.08 MB] | PASS [410bdf3cf664, 24.94 MB] | PASS [00eeeb1771c2, 127.48 MB] |
+  | 0.3.35 | FAIL bad member libggml-base.0.20.0.dylib [f16df6e77c2b, 18.16 MB] | PASS [d172f3d3c8cd, 23.91 MB] | PASS [b5a4abd4d1d5, 22.23 MB] | PASS [0acc0e07b9b6, 142.84 MB] |
+  | 0.3.34 | FAIL bad member libggml-base.0.16.0.dylib [d42e069db63c, 17.64 MB] | PASS [f34c26f51ec4, 23.20 MB] | PASS [725d8a324032, 21.65 MB] | PASS [8e8e6bc57837, 130.14 MB] |
+  | 0.3.33 | FAIL invalid block type [47c29d1fe1a9, 17.57 MB] | PASS [2b7f027866f7, 23.14 MB] | PASS [68ac4dddf636, 21.58 MB] | PASS [c5dbdeb53099, 130.05 MB] |
+  | 0.3.32 | FAIL bad member libggml-base.0.15.3.dylib [c49f83e02513, 17.27 MB] | PASS [9f5cf69f2358, 22.71 MB] | PASS [2f37eaca0765, 21.17 MB] | PASS [936eddabea61, 129.62 MB] |
+  | 0.3.31 | no CPU wheels published (404) | 404 | 404 | PASS [d926a9fb97e3, 181.91 MB] |
+  | 0.3.30 | FAIL bad member libggml-base.0.dylib [a66d416e5d4d, 17.11 MB] | PASS [591337ea31b6, 22.55 MB] | PASS [0720e1d122a4, 21.01 MB] | PASS [41c9edb8f532, 181.88 MB] |
+
+  Remaining CPU tags `registry._llamacpp_platform` admits (added in review; musl = musllinux_1_2, rv = linux_riscv64; all PASS, 0.3.31 published none, 404):
+
+  | version | musl x86_64 | musl aarch64 | rv64 |
+  |---|---|---|---|
+  | 0.3.36 | PASS [1b7ba90f5131, 28.30 MB] | PASS [cd36015cf5cc, 25.64 MB] | PASS [49b11462dc5e, 21.64 MB] |
+  | 0.3.35 | PASS [fb9998367428, 25.17 MB] | PASS [a024ca666cbc, 22.96 MB] | PASS [9bbbffd9638b, 19.34 MB] |
+  | 0.3.34 | PASS [85269707b9d7, 24.51 MB] | PASS [a3bd2321a348, 22.45 MB] | PASS [95d966503d1d, 18.80 MB] |
+  | 0.3.33 | PASS [716b8d4b4261, 24.42 MB] | PASS [0bb118f12c99, 22.34 MB] | PASS [6aa62bcbdee8, 18.70 MB] |
+  | 0.3.32 | PASS [0ba09e3744d8, 23.93 MB] | PASS [04d11fa9e706, 21.87 MB] | PASS [ce27a0e208ec, 18.30 MB] |
+  | 0.3.31 | 404 | 404 | 404 |
+  | 0.3.30 | PASS [dca09fcba476, 23.77 MB] | PASS [571f901a8669, 21.69 MB] | PASS [f47eef3930c5, 18.14 MB] |
+  | 0.3.29 (current pin) | PASS [7e8b4d11dc20, 23.69 MB] | PASS [743c2ed3762a, 21.64 MB] | PASS [1250f32350ce, 18.08 MB] |
+
+  The pin 0.3.29 is intact on all six CPU tags (macOS arm64, manylinux x86_64/aarch64, musllinux x86_64/aarch64, riscv64) and the vulkan wheel.
+
+  **Mac tally.** 4 of 17 sampled releases pass on macOS arm64 (13 of 17 fail): the 2026-08-21 sweep covered 16 releases, and only 0.3.36 is certainly new to it. August's list is not in the repo; 0.3.32 and 0.3.33 were probably already in it, so they are not counted again.
+
+  "invalid block type" is `zlib.error: Error -3 while decompressing data`, raised by `testzip()` itself.
+
+  **Digest check (done 2026-10-22).** For each of the six FAILing mac wheels, the full sha256 of the downloaded file was compared with the `digest` GitHub publishes for that release asset (`gh release view v<ver> --repo abetlen/llama-cpp-python --json assets`), and the byte size with the asset's `size`. All six match exactly (0.3.30, 0.3.32, 0.3.33, 0.3.34, 0.3.35, 0.3.36), so none of the failures is a bad fetch: upstream publishes these bytes, as the 2026-08-21 audit found for the earlier corrupt releases. No re-download was needed.
+- **Decision.** No bump: the macOS arm64 wheel is corrupt in six of the seven versions 0.3.30-0.3.36 (0.3.31 published no CPU wheels at all, 404), so no version in the range has an intact mac wheel, and macOS is a shipped tag. Both pins stay at 0.3.29; the sweep is recorded in both pyproject comments so nobody repeats it. Linux and vulkan wheels were intact throughout, so a Linux-only bump would be possible but would split the pin across platforms; not done.
+- **Bonsai 2 gate.** Loaded `Ternary-Bonsai-2-27B-PQ2_0.gguf` (the only file tested; the v1 GGUFs and PTQ1_0 were not) on 0.3.29 (scratch venv, Apple M5, Metal) with `Llama(n_ctx=2048, n_gpu_layers=-1)`. It fails: `gguf_init_from_reader: tensor 'output.weight' has invalid ggml type 142. should be in [0, 42)` then `ValueError: Failed to load model`. The PQ2_0 quant is a PrismML-specific ggml type that upstream llama.cpp at 0.3.29's vendored commit does not know; no wheel that passes integrity is newer, and the newer mac wheels cannot be installed to test. No `SUGGESTIONS` or `GGUF_RECIPES` row, no mirror upload.
+- **Not done / resume point.** Re-run the sweep when a release appears after 0.3.36. Re-test Bonsai 2 only on a build that knows type 142 (probably PrismML's own llama.cpp fork; upstream may never take it). The sweep script is `scripts/llamacpp_wheel_sweep.py` (`python scripts/llamacpp_wheel_sweep.py <scratch dir> <lo> <hi>`, e.g. `37 40` for 0.3.37-0.3.40; it downloads into the scratch dir).
