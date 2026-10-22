@@ -70,6 +70,16 @@
 # why that half of the gate is refused for being pointless rather than for
 # being broken — see `registry._vulkan`'s docstring for the full reasoning
 # and the evidence each half rests on.
+#
+# **SWEEP OF 0.3.30-0.3.36 (2026-10-22): NO BUMP.** Every `macosx_11_0_arm64`
+# wheel from 0.3.30 through 0.3.36 fails `testzip()` (the manylinux CPU wheels
+# and the vulkan wheel all pass), so the newest version intact on every shipped
+# tag is still 0.3.29. macOS arm64: 0.3.30 bad member libggml-base.0.dylib,
+# 0.3.32 libggml-base.0.15.3.dylib, 0.3.34 libggml-base.0.16.0.dylib, 0.3.35
+# libggml-base.0.20.0.dylib; 0.3.33 and 0.3.36 raise "Error -3 while
+# decompressing data: invalid block type". 0.3.31 published no CPU wheels (404)
+# at all. Full table (sizes, sha256 prefixes): DECISIONS.md D1413.
+
 [project]
 name = "fused-render-runner-llamacpp-text-vulkan"
 version = "0.1.0"

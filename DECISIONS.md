@@ -7408,3 +7408,22 @@ Turning on `chromium_windows_enabled` starts a ~150 MB engine download (`fused_r
 - **Unmeasured.** No NVIDIA machine was available. The row's only evidence is the worker's existing `torch.cuda.is_available()` device branch, and its registry note says "Not yet measured on real hardware".
 - **Naming.** The sibling-name test now accepts "(Apple Silicon)" as a platform qualifier for `vision-torch` beside the "(CUDA)" row, and skips its short-name equals long-name rule for that row, rather than renaming the measured Apple row.
 - **CUDA-less torch.** The two CUDA runners differ on a torch without CUDA: vision refuses (before download and at load), `diffusers-image-cuda` reports `device=cpu`; unifying this into `worker_base` is deferred.
+## D1413: llama-cpp-python stays at 0.3.29; Ternary-Bonsai-2-27B GGUF gets no row (2026-10-22, llamacpp-bump-bonsai2-gguf)
+
+- **Problem.** Wanted a newer llama.cpp so `llamacpp-text` could serve `prism-ml/Ternary-Bonsai-2-27B-gguf` (PQ2_0 7.21 GB, PTQ1_0 5.95 GB). A bump is only allowed where every shipped wheel passes `zipfile.ZipFile(...).testzip()` (see `llamacpp_text/pyproject.toml`).
+- **Sweep.** Each wheel downloaded from `github.com/abetlen/llama-cpp-python/releases/download/v<ver>[-vulkan]/`, sha256 prefix (12) in brackets. mac = macosx_11_0_arm64, x86 = manylinux2014_x86_64, arm = manylinux2014_aarch64, vk = vulkan x86_64.
+
+  | version | mac | x86 | arm | vk |
+  |---|---|---|---|---|
+  | 0.3.36 | FAIL invalid block type [1bec5e1d9fc7] | PASS [c8a3e98093e9] | PASS [410bdf3cf664] | PASS [00eeeb1771c2] |
+  | 0.3.35 | FAIL bad member libggml-base.0.20.0.dylib [f16df6e77c2b] | PASS [d172f3d3c8cd] | PASS [b5a4abd4d1d5] | PASS [0acc0e07b9b6] |
+  | 0.3.34 | FAIL bad member libggml-base.0.16.0.dylib [d42e069db63c] | PASS [f34c26f51ec4] | PASS [725d8a324032] | PASS [8e8e6bc57837] |
+  | 0.3.33 | FAIL invalid block type [47c29d1fe1a9] | PASS [2b7f027866f7] | PASS [68ac4dddf636] | PASS [c5dbdeb53099] |
+  | 0.3.32 | FAIL bad member libggml-base.0.15.3.dylib [c49f83e02513] | PASS [9f5cf69f2358] | PASS [2f37eaca0765] | PASS [936eddabea61] |
+  | 0.3.31 | no CPU wheels published (404) | 404 | 404 | PASS [d926a9fb97e3] |
+  | 0.3.30 | FAIL bad member libggml-base.0.dylib [a66d416e5d4d] | PASS [591337ea31b6] | PASS [0720e1d122a4] | PASS [41c9edb8f532] |
+
+  "invalid block type" is `zlib.error: Error -3 while decompressing data`, raised by `testzip()` itself.
+- **Decision.** No bump: the macOS arm64 wheel is corrupt in every version 0.3.30-0.3.36, and macOS is a shipped tag. Both pins stay at 0.3.29; the sweep is recorded in both pyproject comments so nobody repeats it. Linux and vulkan wheels were intact throughout, so a Linux-only bump would be possible but would split the pin across platforms; not done.
+- **Bonsai 2 gate.** Loaded `Ternary-Bonsai-2-27B-PQ2_0.gguf` on 0.3.29 (scratch venv, Apple M5, Metal) with `Llama(n_ctx=2048, n_gpu_layers=-1)`. It fails: `gguf_init_from_reader: tensor 'output.weight' has invalid ggml type 142. should be in [0, 42)` then `ValueError: Failed to load model`. The quant is a PrismML-specific ggml type that upstream llama.cpp at 0.3.29's vendored commit does not know; no wheel that passes integrity is newer, and the newer mac wheels cannot be installed to test. No `SUGGESTIONS` or `GGUF_RECIPES` row, no mirror upload.
+- **Not done / resume point.** Re-run the sweep when a release appears after 0.3.36. Re-test Bonsai 2 only on a build that knows type 142 (probably PrismML's own llama.cpp fork; upstream may never take it). The sweep script was `/tmp/llamacpp-sweep/sweep.py` (throwaway).
