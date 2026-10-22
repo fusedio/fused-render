@@ -146,3 +146,14 @@ def euid() -> int:
     use it to give each user a private directory name under the shared temp
     dir, and Windows' temp dir is already per-user."""
     return os.geteuid() if hasattr(os, "geteuid") else 0
+
+
+def relpath_within(path: str, start: str) -> str:
+    """`os.path.relpath(path, start)`, except that a *path* with no relative
+    spelling from *start* (a different drive on Windows, where relpath raises)
+    comes back as ``..`` followed by the absolute path, so the usual "starts
+    with `..`" outside-the-root test covers it."""
+    try:
+        return os.path.relpath(path, start)
+    except ValueError:
+        return os.pardir + os.sep + os.path.abspath(path)

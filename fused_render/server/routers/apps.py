@@ -65,7 +65,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 
-from fused_render import app_hidden, app_listing, fused_api_version, schedule
+from fused_render import _platform, app_hidden, app_listing, fused_api_version, schedule
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
@@ -378,7 +378,7 @@ def _workspace_rel(root: str, path: str) -> str | None:
     lists (1-3), where (tag, name) is not — two depth-3 apps under different
     shelves of one tag share both. A backslash is a legal filename character
     and is kept as-is."""
-    rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    rel = _platform.relpath_within(os.path.abspath(path), os.path.abspath(root))
     if rel == "." or rel.startswith(".."):
         return None
     return rel
