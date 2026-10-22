@@ -102,13 +102,17 @@ def speech_regions(base, cache, audio, total, job, row):
 
     **A detector that cannot be fetched degrades to no filtering rather than
     failing the transcription.** The trade is stated rather than assumed: the
-    VAD is an optimisation and a small quality nudge, and mlx-whisper still has
-    its own per-window `no_speech_threshold` underneath — so without Silero a
-    user gets a correct transcript that took longer, which is a much better
-    outcome than a feature that stops working offline. It is NOT silent: the
-    reason goes to the row the user is watching and to the worker log, because
-    a `vad: true` that quietly did nothing is exactly the kind of difference
-    between two engines this runner exists to eliminate.
+    VAD is an optimisation and a small quality nudge, so without Silero a user
+    gets a correct transcript that took longer, which is a much better outcome
+    than a feature that stops working offline. What stands underneath differs by
+    engine, and the difference is a cost: mlx-whisper still has its own
+    per-window `no_speech_threshold`, but **Parakeet has no no-speech gate at
+    all** (a transducer decodes whatever it is handed), so for it the degrade
+    means fixed-offset time slices (`faster_whisper/worker._time_slices`) and
+    silence reaching the decoder uncut. It is NOT silent: the reason goes to the
+    row the user is watching and to the worker log, because a `vad: true` that
+    quietly did nothing is exactly the kind of difference between two engines
+    this runner exists to eliminate.
 
     **"Could not be fetched" is the whole of what degrades**, and the shape of
     this function is what keeps it that way. Only OBTAINING the detector — the
