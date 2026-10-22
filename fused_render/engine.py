@@ -240,7 +240,7 @@ def _wrapper_path() -> str:
     return os.path.join(home_dir(), *_WRAPPER_CACHE, _WRAPPER_NAME)
 
 
-def _interpreter_home() -> str | None:
+def interpreter_home() -> str | None:
     """The PYTHONHOME this process needs, when it needs one.
 
     Inside the py2app bundle the launcher exports
@@ -304,7 +304,7 @@ def _wrapper_interpreter(candidate: str) -> tuple[str | None, str]:
     Regenerated whenever the content would differ (the app can move), 0700 since
     it is derived state naming absolute paths. Returns (path, "") or (None, why).
     """
-    home = _interpreter_home()
+    home = interpreter_home()
     if home is None:
         return None, (
             "this process does not use PYTHONHOME, so a wrapper has nothing to "
