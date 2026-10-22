@@ -93,9 +93,9 @@ export function NativeWindowsControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Chromium (CEF) engine for app windows: experimental, off by default, lives
-// under Optional features. Turning it on makes the server download the engine
-// (~150 MB) once; while that runs this row polls the cheap
+// Chromium (CEF) engine for app windows: on by default, lives under Optional
+// features. The DMG ships the engine (`engine.bundled`, D1415); a host without
+// one downloads it (~150 MB) when the switch goes on, and while that runs this row polls the cheap
 // GET /api/prefs/chromium every second and merges the slice into the page's
 // Prefs, stopping as soon as the state leaves "downloading". Only drawn where
 // the running app can honour it (`chromium_windows.available`).
@@ -208,7 +208,7 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
     line || state === "ready" || state === "failed" ? (
       <span className="inline-flex flex-wrap items-center gap-x-2">
         {line && <span>{line}</span>}
-        {state === "ready" && (
+        {state === "ready" && !engine?.bundled && (
           <Button
             variant="link"
             size="xs"

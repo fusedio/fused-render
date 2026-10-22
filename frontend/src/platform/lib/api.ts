@@ -1609,7 +1609,7 @@ export interface Prefs {
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
   // Chromium (CEF) engine for app windows (fused_render/shell/prefs.py's
-  // `chromium_windows_enabled`): experimental, off by default. `available` is
+  // `chromium_windows_enabled`): on by default (D1415). `available` is
   // false unless this is the macOS app with native windows, where the row is
   // not rendered. `engine` is the on-disk engine's download state. OPTIONAL:
   // an older server answers without it.
@@ -1649,6 +1649,9 @@ export interface ChromiumEngineStatus {
   engine_version: string | null;
   cef_version: string | null;
   path: string | null;
+  /** The engine ships inside the app bundle (D1415): always ready, nothing
+   *  to download or remove. OPTIONAL: an older server answers without it. */
+  bundled?: boolean;
 }
 
 export interface ChromiumWindowsState {

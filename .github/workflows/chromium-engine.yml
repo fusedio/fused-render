@@ -4,14 +4,15 @@
 # Intel Macs are not served (owner, 2026-10-21): the manifest's x86_64 entry
 # stays unpinned and the preference reports the engine as unpublished there.
 #
-# Manual: the engine changes rarely and ships out of band from app releases.
-# After a successful run, pin it:
+# Manual: the engine changes rarely. Once pinned, scripts/build_dmg.sh seats
+# this artifact inside every arm64 DMG (D1415), so a new engine reaches users
+# with the next app release. After a successful run, pin it:
 #
 #   gh release download chromium-engine-<v> -p '*.json' -D /tmp/engine
 #   scripts/publish_chromium_engine.py /tmp/engine/*.json
 #
 # and land the manifest change on main; until then the preference reports
-# the engine as unpublished.
+# the engine as unpublished and the DMG build ships without it.
 name: Chromium engine
 
 on:
@@ -98,5 +99,5 @@ jobs:
             exit 0
           fi
           gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Chromium engine $v" \
-            --notes "On-demand Chromium (CEF) engine for the macOS app windows, engine version $v. Downloaded by the app when the experimental preference is on; not for manual installation." --prerelease
+            --notes "Chromium (CEF) engine for the macOS app windows, engine version $v. Bundled into the DMG by build_dmg.sh and downloaded by hosts that lack it; not for manual installation." --prerelease
           gh release upload "$tag" "$RUNNER_TEMP"/engine/*.zip "$RUNNER_TEMP"/engine/*.json --clobber

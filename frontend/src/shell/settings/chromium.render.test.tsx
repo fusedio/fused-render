@@ -193,4 +193,13 @@ describe("Chromium engine for windows", () => {
     expect(sw(box).props.checked).toBe(false);
     await act(async () => box.unmount());
   });
+
+  test("a bundled engine is ready with nothing to remove", async () => {
+    const { box } = await mount(fakePrefs(cwState(true, { state: "ready", cef_version: "130.1.2", bundled: true })));
+    expect(text(box)).toContain("Engine ready (CEF 130.1.2)");
+    expect(sw(box).props.checked).toBe(true);
+    expect(button(box, "Remove engine")).toBeUndefined();
+    expect(calls).toHaveLength(0);
+    await act(async () => box.unmount());
+  });
 });

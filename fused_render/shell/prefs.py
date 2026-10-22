@@ -37,8 +37,9 @@ see ``github_link_enabled``),
 **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
 **chromium_windows_enabled** (whether the macOS app's NEW windows are hosted
-by the on-demand Chromium engine instead of WKWebView — experimental, opt-in,
-default off; see ``chromium_windows_enabled`` and `fused_render.chromium`),
+by the Chromium engine the DMG ships instead of WKWebView — default ON since
+D1415, ``false`` opts out; see ``chromium_windows_enabled`` and
+`fused_render.chromium`),
 and the **execution engine** for /api/run:
 
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
@@ -217,18 +218,21 @@ def native_windows_enabled() -> bool:
 
 def chromium_windows_enabled() -> bool:
     """Whether a NEW macOS app window is hosted by the Chromium (CEF) engine
-    instead of WKWebView (experimental, opt-in, default off — same `is True`
-    idiom as the other optional features).
+    instead of WKWebView. Default ON (D1415: the DMG ships the engine, so
+    the default costs no download); an explicit ``false`` opts out — the
+    `is not False` idiom of `native_windows_enabled`, not the `is True` of
+    the opt-in features.
 
     Read by `mac_window.WindowManager` at EVERY window open, not once at
     boot: flipping it changes what the next window gets, and open windows
     keep the engine they were born with. It only takes effect when the
-    engine is on disk (`fused_render.chromium.status()["state"] == "ready"`);
-    a PUT that turns it on starts the download, and until that lands new
-    windows keep using WebKit. The dock, launcher, pinned popover and
-    recording pill are never behind this switch.
+    engine is on disk (`fused_render.chromium.status()["state"] == "ready"`),
+    which the bundled engine always is; a host without one (a dev checkout,
+    an Intel build — the engine is Apple silicon only) downloads it when
+    published, and until that lands new windows keep using WebKit. The dock,
+    launcher, pinned popover and recording pill are never behind this switch.
     """
-    return read_prefs().get("chromium_windows_enabled") is True
+    return read_prefs().get("chromium_windows_enabled") is not False
 
 
 def app_sharing_enabled() -> bool:

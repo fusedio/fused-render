@@ -1742,15 +1742,16 @@ def _chromium_fakes(monkeypatch, state="missing"):
     return calls
 
 
-def test_chromium_windows_defaults_off_and_unavailable_without_native_windows(tmp_path, monkeypatch):
-    """Opt-in like the other optional features; `available` needs the
+def test_chromium_windows_defaults_on_and_unavailable_without_native_windows(tmp_path, monkeypatch):
+    """Default on (D1415: the DMG ships the engine); `available` needs the
     native-window hook (the macOS app) AND a platform that can host CEF."""
     _chromium_fakes(monkeypatch)
     client, _ = _client(tmp_path, monkeypatch)
     body = client.get("/api/prefs").json()["chromium_windows"]
-    assert body["enabled"] is False
+    assert body["enabled"] is True
     assert body["available"] is False
     assert body["engine"]["state"] == "missing"
+    assert prefs_mod.chromium_windows_enabled() is True
 
 
 def test_chromium_windows_available_only_with_hook_and_supported_platform(tmp_path, monkeypatch):

@@ -1,10 +1,12 @@
-# The Chromium engine for macOS app windows (experimental)
+# The Chromium engine for macOS app windows
 
-The desktop app's windows are `WKWebView`s. With **Preferences → Optional
-features → Chromium engine for windows** on, every *new* app window is drawn by
-Chromium (the Chromium Embedded Framework, CEF) once the engine is on disk and
-loaded into the process; until then (downloading, failed, unsupported) a new
-window is a `WKWebView` as before. Everything around the
+The desktop app's windows are drawn by Chromium (the Chromium Embedded
+Framework, CEF) by default: **Preferences → Optional features → Chromium
+engine for windows** is on unless turned off, and the DMG ships the engine
+(D1415). Every *new* app window is Chromium once the engine is on disk and
+loaded into the process; anything short of that (off, downloading on a host
+that has to fetch it, failed, unsupported) makes a new window a `WKWebView` as
+before. Everything around the
 view is unchanged: the same `NSWindow`, main menu, Dock icon, ⌘-shortcuts,
 titlebar buttons, focus-or-open and saved frames. The menu-bar dock, the
 launcher, the pinned popover and the recording pill stay on WebKit.
@@ -18,8 +20,20 @@ build made for that.
 
 ## How it ships
 
-The engine is **not in the app bundle**. It is fetched on demand (the usd-core
-pattern, D119) when the preference is first turned on:
+**The DMG carries the engine** (D1415): `scripts/build_dmg.sh` step 4e-bis
+fetches the artifact the manifest pins from its `chromium-engine-<v>` release,
+verifies it by size and SHA-256, unpacks it with the runtime's own unpacker
+into `<App>.app/Contents/Frameworks/FusedChromium/` and signs it as bundles,
+inside out, with Chromium's helper entitlements. `chromium.bundled_engine_dir()`
+finds it, `status()` reports it `ready` with `bundled: true`, and the row has
+nothing to download or remove. The Intel DMG ships none (the manifest pins no
+x86_64 artifact) and its windows stay WebKit.
+
+Every other host — a dev checkout, a DMG built with the engine skipped, an
+app whose bundled engine is not the one its manifest pins — takes the
+**on-demand path**: the same artifact fetched into the shell home dir (the
+usd-core pattern, D119) when the preference is on. `FUSED_RENDER_CHROMIUM_ENGINE_DIR`
+points a dev checkout at an unpacked artifact as if it were bundled.
 
 | Piece | Where |
 |---|---|
@@ -30,10 +44,11 @@ pattern, D119) when the preference is first turned on:
 | Preference, status and install/remove routes | `fused_render/shell/prefs.py` (`chromium_windows_enabled`, `/api/prefs/chromium*`) |
 | Preferences row with download progress | `frontend/src/shell/settings/general.tsx` (`ChromiumWindowsControl`) |
 | "Reopen windows" (open windows keep their engine; `stale_windows` counts the ones on the other engine) | `POST /api/prefs/chromium/reopen-windows` → `WindowManager.reopen_all`: close all, one Home window |
-| Updates: an app update with the preference on fetches the engine the new app pins before the swap (`update/mac.py` → `chromium.prefetch_for_bundle`); at start, a missing engine is fetched and older `engine-*` folders are removed (`app.py` → `install` / `prune_others`) | engine updates ride on app updates: bump the CEF pin, build, publish, pin, release the app |
+| Updates: an app update with the preference on fetches the engine the new app pins before the swap (`update/mac.py` → `chromium.prefetch_for_bundle`) — a no-op when the new bundle ships it, which every release now does; at start, a missing engine is fetched and older `engine-*` download folders are removed (`app.py` → `install` / `prune_others`) | engine updates ride on app updates: bump the CEF pin, build, publish, pin, release the app |
+| Bundling: fetch + verify + unpack into the bundle, inside-out bundle signing | `scripts/build_dmg.sh` steps 4e-bis and 5 |
 | The native framework source | `fused_render/chromium/native/` |
 
-Unpacked engines live under `<base home>/chromium/engine-<engine_version>-<arch>/`
+Downloaded engines live under `<base home>/chromium/engine-<engine_version>-<arch>/`
 (`~/.fused-render/chromium/…`; the base home, not the branch dir, so one
 download serves every branch install). The Chromium profile is
 `<base home>/chromium/profile/`. A `.ready` marker is written last; a dir
@@ -43,7 +58,8 @@ manifest or the unpack is refused.
 Rules the window layer follows:
 
 * The preference is read at **every window open**, never once at boot. An
-  open window keeps the engine it was born with.
+  open window keeps the engine it was born with. Default on; `false` in
+  prefs.json opts out.
 * A window is Chromium only when the preference is on **and** the engine is on
   disk and verified **and** the framework loaded into this process. Anything
   short of that is WebKit, silently (logged at WARNING when the load fails).
@@ -133,9 +149,12 @@ signature runs.
    and land the manifest change. Until the manifest carries a sha256 the
    preference reports the engine as *not published for this build*.
 
-The engine updates out of band from app releases: a new engine is a manifest
-change. Security patches to Chromium are therefore ours to roll by bumping
-`cef_version`; CEF tracks Chromium's four-week cycle.
+A new engine reaches users with the next app release (the DMG carries the
+pin); hosts on the on-demand path pick up a manifest change on their own.
+Security patches to Chromium are therefore ours to roll by bumping
+`cef_version`; CEF tracks Chromium's four-week cycle. The artifact must stay
+at minos ≤ 13.0 — `build_dmg.sh` step 4f refuses the bundle otherwise (CEF 139
+is 12.0).
 
 ## Status of this implementation
 

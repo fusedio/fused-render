@@ -1,16 +1,20 @@
 """The optional Chromium (CEF) engine for the macOS app windows.
 
 The desktop app's windows are `WKWebView`s (`mac_window.py`). With the
-experimental ``chromium_windows_enabled`` preference on, a NEW app window is
+``chromium_windows_enabled`` preference on (the default), a NEW app window is
 hosted by Chromium instead — the same NSWindow, main menu, Dock icon and
 shortcuts, only the view inside changes. The dock, launcher, pinned popover
 and recording pill stay on WebKit regardless.
 
-The engine is NOT in the app bundle: it is fetched on demand, the way
-usd-core is (D119), from a pinned release artifact named in `manifest.json`,
-verified by size and SHA-256, and unpacked under the shell home dir. The app
-ships at today's size, the engine updates out of band from app releases, and
-a machine that never turns the preference on never pays for it.
+The DMG ships the engine (D1415): `scripts/build_dmg.sh` fetches the pinned
+release artifact named in `manifest.json`, verifies it by size and SHA-256
+and unpacks it into `<app>/Contents/Frameworks/FusedChromium/`, where
+`bundled_engine_dir` finds it and `status` reports it ready with nothing to
+download. The on-demand path below is what every OTHER host uses — a dev
+checkout (`python -m fused_render.app`), a bundle built without the engine,
+an app whose bundled engine is not the one its manifest pins: the same
+artifact is fetched into the shell home dir, the way usd-core is (D119).
+Either way the engine is the manifest's; what differs is where it sits.
 
 Layout:
 * this module (OS-neutral, stdlib only — the few fused_render imports are
@@ -145,8 +149,64 @@ def engines_root() -> str:
     return os.path.join(base_home_dir(), "chromium")
 
 
-def engine_dir(art: Artifact) -> str:
+#: Where build_dmg.sh unpacks the engine inside the app bundle. A plain
+#: subdirectory of Contents/Frameworks holding the two frameworks, the five
+#: helpers and engine.json — the artifact's own top-level dir, so the layout
+#: `FRChromiumEngine` expects is identical to a downloaded engine's. Strict
+#: codesign accepts nested bundles in such a subdirectory (verified against
+#: both this and a flat Contents/Frameworks layout before choosing it).
+BUNDLED_SUBDIR = os.path.join("Contents", "Frameworks", "FusedChromium")
+
+
+def bundled_engine_dir() -> str | None:
+    """The engine shipped inside this app bundle, or None. py2app's anatomy
+    (`app.bundle_path`): `sys.executable` is `<App>.app/Contents/MacOS/python`.
+    ``FUSED_RENDER_CHROMIUM_ENGINE_DIR`` stands in for it outside a bundle
+    (a dev checkout pointing at an unpacked artifact)."""
+    override = os.environ.get("FUSED_RENDER_CHROMIUM_ENGINE_DIR")
+    if override:
+        return override
+    if getattr(sys, "frozen", None) != "macosx_app":
+        return None
+    contents = os.path.dirname(os.path.dirname(os.path.abspath(sys.executable)))
+    return os.path.join(os.path.dirname(contents), BUNDLED_SUBDIR)
+
+
+def _bundled_matches(art: Artifact) -> bool:
+    """The bundled dir holds ``art`` — its `engine.json` names the manifest's
+    engine_version / cef_version / arch and the framework is there. No
+    `.ready` marker is consulted: the bundle is sealed by codesign and either
+    whole or not, and a marker under a signed tree would be one more file for
+    the build to remember."""
+    d = bundled_engine_dir()
+    if not d or not os.path.isdir(os.path.join(d, FRAMEWORK_NAME)):
+        return False
+    try:
+        check_engine_info(os.path.join(d, ENGINE_INFO), art)
+    except ValueError:
+        return False
+    return True
+
+
+def is_bundled(art: Artifact | None = None) -> bool:
+    """Whether the engine the manifest pins ships inside this app bundle."""
+    art = art or artifact()
+    return art is not None and _bundled_matches(art)
+
+
+def download_dir(art: Artifact) -> str:
+    """Where the on-demand install unpacks ``art`` (never the bundle)."""
     return os.path.join(engines_root(), f"engine-{art.engine_version}-{art.arch}")
+
+
+def engine_dir(art: Artifact) -> str:
+    """Where ``art`` lives for this process: the bundled copy when the app
+    ships it, else the download dir. Every reader (`mac.py`, `status`)
+    goes through here; the writers (`_install_sync`, `remove`) use
+    `download_dir` and never touch the bundle."""
+    if _bundled_matches(art):
+        return bundled_engine_dir()  # type: ignore[return-value]
+    return download_dir(art)
 
 
 def framework_path(art: Artifact) -> str:
@@ -154,7 +214,9 @@ def framework_path(art: Artifact) -> str:
 
 
 def is_ready(art: Artifact) -> bool:
-    d = engine_dir(art)
+    if _bundled_matches(art):
+        return True
+    d = download_dir(art)
     return (os.path.isfile(os.path.join(d, READY_MARKER))
             and os.path.isdir(os.path.join(d, FRAMEWORK_NAME)))
 
@@ -222,15 +284,22 @@ def status(arch: str | None = None, system: str | None = None) -> dict:
     reads: never starts anything."""
     if not platform_supported(system):
         return {"state": UNSUPPORTED, "progress": 0.0, "error": None,
-                "engine_version": None, "cef_version": None, "path": None}
+                "engine_version": None, "cef_version": None, "path": None,
+                "bundled": False}
     art = artifact(arch)
+    bundled = art is not None and _bundled_matches(art)
     base = {
         "engine_version": art.engine_version if art else None,
         "cef_version": art.cef_version if art else None,
         "path": engine_dir(art) if art else None,
         "progress": 0.0,
         "error": None,
+        # Shipped inside the app: nothing to download, nothing to remove
+        # (the Preferences row hides "Remove engine").
+        "bundled": bundled,
     }
+    if bundled:
+        return {**base, "state": READY, "progress": 1.0}
     if art is None or not art.published:
         return {**base, "state": UNPUBLISHED}
     with _state.lock:
@@ -240,7 +309,7 @@ def status(arch: str | None = None, system: str | None = None) -> dict:
                     "phase": _state.phase}
         if is_ready(art):
             return {**base, "state": READY, "progress": 1.0}
-        if _state.error and _state.failed_for == engine_dir(art):
+        if _state.error and _state.failed_for == download_dir(art):
             return {**base, "state": FAILED, "error": _state.error}
     return {**base, "state": MISSING}
 
@@ -301,7 +370,7 @@ def _set_progress(value: float, phase: str | None = None) -> None:
 
 
 def _run_install(art: Artifact, fetch) -> None:
-    dest = engine_dir(art)
+    dest = download_dir(art)
     try:
         _install_sync(art, fetch or _http_fetch)
         logger.info("chromium engine %s (%s) ready at %s",
@@ -336,6 +405,8 @@ def prune_others(art: Artifact | None = None) -> list[str]:
     app's manifest names): each is ~125 MB and no newer build names them.
     Newer ones stay — an engine prefetched for a pending app update
     (`prefetch_for_bundle`) must survive the relaunch that will use it.
+    When ``art`` ships inside the bundle its own download (left behind by
+    the on-demand days, or by a dev build that fetched it) goes too.
     `engines_root` is shared by every branch install on the machine; a dev
     process on an older branch that loses its engine fetches it again at
     its next start (app.py's settle thread) and shows WebKit until then."""
@@ -346,6 +417,8 @@ def prune_others(art: Artifact | None = None) -> list[str]:
         current = int(art.engine_version)
     except ValueError:
         return []
+    if _bundled_matches(art):
+        current += 1  # "< current" now takes the bundled version's download too
     root = engines_root()
     gone: list[str] = []
     try:
@@ -367,9 +440,10 @@ def prefetch_for_bundle(app_dir: str, arch: str | None = None, fetch=None) -> bo
     pins, so the restart finds it on disk instead of falling back to WebKit
     until the download the preference would start later finishes. Reads
     ``<app>/Contents/Resources/lib/python3.*/fused_render/chromium/manifest.json``
-    (the DMG layout). Synchronous, on the caller's thread; returns whether
-    the engine is on disk afterwards. Never prunes: the running app's engine
-    stays in use until the relaunch."""
+    (the DMG layout). A bundle that ships its engine (`BUNDLED_SUBDIR`, every
+    release since D1415) needs nothing fetched: True at once. Synchronous, on
+    the caller's thread; returns whether the engine is on disk afterwards.
+    Never prunes: the running app's engine stays in use until the relaunch."""
     import glob
 
     pattern = os.path.join(app_dir, "Contents", "Resources", "lib", "python3.*",
@@ -384,10 +458,18 @@ def prefetch_for_bundle(app_dir: str, arch: str | None = None, fetch=None) -> bo
     if art is None or not art.published:
         logger.info("chromium prefetch: engine %s not published", manifest.get("engine_version"))
         return False
+    shipped = os.path.join(app_dir, BUNDLED_SUBDIR)
+    if os.path.isdir(os.path.join(shipped, FRAMEWORK_NAME)):
+        try:
+            check_engine_info(os.path.join(shipped, ENGINE_INFO), art)
+            logger.info("chromium prefetch: the update ships engine %s", art.engine_version)
+            return True
+        except ValueError as exc:
+            logger.info("chromium prefetch: the update's bundled engine is not its pin (%s)", exc)
     if is_ready(art):
         return True
     current = artifact(arch)
-    if current is not None and engine_dir(current) == engine_dir(art):
+    if current is not None and download_dir(current) == download_dir(art):
         # The update pins the engine this app already has — or is installing
         # right now: join that download (bounded) rather than swap the app
         # while it is still in flight, which would relaunch on WebKit.
@@ -402,7 +484,7 @@ def _install_sync(art: Artifact, fetch, progress=None) -> None:
     progress = progress or _set_progress
     root = engines_root()
     os.makedirs(root, exist_ok=True)
-    dest = engine_dir(art)
+    dest = download_dir(art)
     # A half-unpacked dir from an earlier crash is never trusted: start over.
     shutil.rmtree(dest, ignore_errors=True)
     tmpdir = tempfile.mkdtemp(prefix=".download-", dir=root)
@@ -413,16 +495,33 @@ def _install_sync(art: Artifact, fetch, progress=None) -> None:
         progress(0.9, "verify")
         verify_artifact(zip_path, art)
         progress(0.92, "unpack")
-        staging = os.path.join(tmpdir, "unpacked")
-        safe_extract(zip_path, staging)
-        inner = _locate_framework_root(staging)
-        check_engine_info(os.path.join(inner, ENGINE_INFO), art)
-        os.replace(inner, dest)
-        with open(os.path.join(dest, READY_MARKER), "w", encoding="utf-8") as f:
-            f.write(art.cef_version + "\n")
+        unpack_artifact(zip_path, dest, art, staging=os.path.join(tmpdir, "unpacked"))
         progress(1.0, "ready")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def unpack_artifact(zip_path: str, dest: str, art: Artifact, staging: str | None = None) -> None:
+    """Unpack an already-verified artifact into ``dest`` (replaced whole) and
+    write the `.ready` marker. Shared by the on-demand install and
+    `scripts/build_dmg.sh`, which runs it under the build venv to seat the
+    engine inside the app bundle (D1415) — one unpacker, so the layout the
+    runtime expects is the one the build produces."""
+    own_staging = staging is None
+    if own_staging:
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        staging = tempfile.mkdtemp(prefix=".unpack-", dir=os.path.dirname(dest) or None)
+    try:
+        safe_extract(zip_path, staging)
+        inner = _locate_framework_root(staging)
+        check_engine_info(os.path.join(inner, ENGINE_INFO), art)
+        shutil.rmtree(dest, ignore_errors=True)
+        os.replace(inner, dest)
+        with open(os.path.join(dest, READY_MARKER), "w", encoding="utf-8") as f:
+            f.write(art.cef_version + "\n")
+    finally:
+        if own_staging:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def verify_artifact(path: str, art: Artifact) -> None:
@@ -540,15 +639,16 @@ def engine_for_new_window(pref_enabled: bool, state: str, loadable: bool) -> str
 
 
 def remove(arch: str | None = None) -> bool:
-    """Delete the unpacked engine (Preferences → Remove). False when there
-    was none or a download is running."""
+    """Delete the downloaded engine (Preferences → Remove). False when there
+    was none, a download is running, or the engine ships inside the app
+    bundle (nothing of ours to delete; the row does not offer it)."""
     art = artifact(arch)
-    if art is None:
+    if art is None or _bundled_matches(art):
         return False
     with _state.lock:
         if _state.thread is not None and _state.thread.is_alive():
             return False
-    d = engine_dir(art)
+    d = download_dir(art)
     if not os.path.isdir(d):
         return False
     shutil.rmtree(d, ignore_errors=True)

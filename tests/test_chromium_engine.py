@@ -399,6 +399,96 @@ def test_a_dir_without_the_marker_is_not_ready(home, monkeypatch):
     assert os.path.isfile(os.path.join(eng.engine_dir(art), eng.READY_MARKER))
 
 
+# ---- the bundled engine (D1415) ---------------------------------------------------
+
+def _bundle(tmp_path, art, info=None):
+    """An unpacked engine where build_dmg.sh puts it, named through the env
+    override `bundled_engine_dir` honours outside a .app."""
+    d = tmp_path / "App.app" / eng.BUNDLED_SUBDIR
+    os.makedirs(d / eng.FRAMEWORK_NAME)
+    (d / eng.ENGINE_INFO).write_text(json.dumps(info or {
+        "engine_version": art.engine_version, "cef_version": art.cef_version, "arch": art.arch}))
+    return d
+
+
+def test_bundled_engine_is_ready_without_a_download_or_marker(home, monkeypatch):
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+    art = eng.artifact("arm64")
+    d = _bundle(home, art)
+    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
+    assert eng.is_bundled(art)
+    st = eng.status("arm64", system="darwin")
+    assert st["state"] == eng.READY and st["bundled"] is True and st["path"] == str(d)
+    assert eng.engine_dir(art) == str(d)
+    assert eng.framework_path(art) == os.path.join(str(d), eng.FRAMEWORK_NAME)
+    # nothing to fetch, nothing to delete
+    calls = []
+    assert eng.ensure("arm64", fetch=_fake_fetch(data, calls), timeout=10)
+    assert calls == []
+    assert eng.remove("arm64") is False
+    assert os.path.isdir(d / eng.FRAMEWORK_NAME)
+
+
+def test_bundled_engine_must_be_the_manifests(home, monkeypatch):
+    """A bundle built against another manifest (a dev DMG, a mislabelled
+    build) is ignored: the on-demand path applies as if nothing shipped."""
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+    art = eng.artifact("arm64")
+    d = _bundle(home, art, info={"engine_version": "6", "cef_version": art.cef_version, "arch": "arm64"})
+    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
+    assert not eng.is_bundled(art)
+    assert eng.status("arm64", system="darwin")["state"] == eng.MISSING
+    assert eng.engine_dir(art) == eng.download_dir(art)
+
+
+def test_prune_takes_the_bundled_versions_download_too(home, monkeypatch):
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+    art = eng.artifact("arm64")
+    assert eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)  # the on-demand days
+    os.makedirs(os.path.join(eng.engines_root(), "engine-5-arm64"))
+    os.makedirs(os.path.join(eng.engines_root(), "engine-9-arm64"))  # a newer prefetch stays
+    d = _bundle(home, art)
+    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
+    assert sorted(eng.prune_others(art)) == ["engine-5-arm64", "engine-7-arm64"]
+    assert os.path.isdir(os.path.join(eng.engines_root(), "engine-9-arm64"))
+    assert eng.status("arm64", system="darwin")["state"] == eng.READY
+
+
+def test_prefetch_sees_the_updates_bundled_engine(home, monkeypatch):
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+    art = eng.artifact("arm64")
+    app = home / "Update.app"
+    mani = app / "Contents" / "Resources" / "lib" / "python3.12" / "fused_render" / "chromium"
+    os.makedirs(mani)
+    (mani / "manifest.json").write_text(json.dumps(_published(data)))
+    calls = []
+    d = app / eng.BUNDLED_SUBDIR
+    os.makedirs(d / eng.FRAMEWORK_NAME)
+    (d / eng.ENGINE_INFO).write_text(json.dumps({
+        "engine_version": art.engine_version, "cef_version": art.cef_version, "arch": "arm64"}))
+    assert eng.prefetch_for_bundle(str(app), "arm64", fetch=_fake_fetch(data, calls)) is True
+    assert calls == []
+
+
+def test_unpack_artifact_writes_the_marker(home, tmp_path, monkeypatch):
+    """What build_dmg.sh calls: verified zip in, `.ready` engine dir out."""
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+    art = eng.artifact("arm64")
+    z = tmp_path / "e.zip"
+    z.write_bytes(data)
+    dest = tmp_path / "out" / "FusedChromium"
+    eng.verify_artifact(str(z), art)
+    eng.unpack_artifact(str(z), str(dest), art)
+    assert (dest / eng.READY_MARKER).read_text().strip() == art.cef_version
+    assert (dest / eng.FRAMEWORK_NAME).is_dir()
+    assert os.listdir(tmp_path / "out") == ["FusedChromium"]  # staging cleaned up
+
+
 # ---- engine selection ----------------------------------------------------------
 
 def test_engine_for_new_window_needs_pref_ready_and_loadable():
