@@ -13778,6 +13778,22 @@ def test_a_kokoro_id_is_accepted_where_the_kokoro_engine_serves_speech(client, m
     assert [m for _c, m in mac] == [KOKORO_ID] and [m for _c, m in linux] == [KOKORO_ID]
 
 
+QWEN_TTS_ID = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+
+
+def test_a_qwen_id_where_only_kokoro_serves_speech_is_a_409_naming_apple_silicon(
+        client, monkeypatch):
+    """Linux has no Qwen3-TTS engine, but the id is still Qwen's: refuse it up
+    front with the claimer's own unavailable reason, not after a 2.5 GB pull."""
+    started = _real_speech_registry(monkeypatch, "Linux", "x86_64", registry.AUTO)
+    refused = _speech(client, {"text": "x",
+                               "model": QWEN_TTS_ID})
+    assert refused.status_code == 409, refused.json()
+    error = refused.json()["error"]
+    assert "Apple Silicon" in error and QWEN_TTS_ID in error
+    assert started == []
+
+
 def test_an_undownloaded_kokoro_id_refuses_a_voice_it_does_not_have_before_the_download(
         client, monkeypatch):
     started = _real_speech_registry(monkeypatch, "Linux", "x86_64", registry.AUTO)
