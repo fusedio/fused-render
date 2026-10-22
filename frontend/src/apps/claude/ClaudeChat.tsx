@@ -292,6 +292,10 @@ export interface ClaudeChatProps {
   noOpen?: boolean;
   /** Replaces `window.top.location` hops (T:12029, 17054, 18222). */
   onNavigate?: (url: string) => void;
+  /** The chat's worktree was removed from its menu. Absent, the chat hops to
+   *  the main checkout's folder chat through `onNavigate`; a host that is not
+   *  the explorer (the tasks page) passes this to stay where it is. */
+  onWorktreeRemoved?: () => void;
   /** Replaces `dataset.chatReady`: fired ONCE, when the view the boot branch
    *  chose has something on screen (T:4520 `markChatReady`). */
   onReady?: () => void;
@@ -3906,6 +3910,7 @@ function ChatBody(props: ChatBodyProps) {
       request={wtRequest}
       running={running}
       onReady={onWorktreeReady}
+      {...(props.onWorktreeRemoved ? { onRemoved: props.onWorktreeRemoved } : {})}
     />
   ) : null;
   // The picker moves into the shared strip below the breakpoint: there is no

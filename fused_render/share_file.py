@@ -37,7 +37,7 @@ from fastapi.responses import JSONResponse
 
 from fused_render import share_app
 from fused_render import share_file_rules
-from fused_render.fusedcli import child_env, fused_cli, workbench_env
+from fused_render.fusedcli import child_env, fused_cli, set_fused_env, workbench_env
 
 logger = logging.getLogger(__name__)
 
@@ -443,7 +443,7 @@ def _spawn_upload(upload_id: str, path: str, share_id: str) -> None:
         raise ShareUploadError("the fused CLI is not available")
     cli = fused_cli()
     env = child_env(cli)
-    env["FUSED_ENV"] = workbench_env()
+    set_fused_env(env, workbench_env())
 
     # A shell wrapper, not a plain Popen + a reaper thread: the worker must
     # write its own `done` file so the state machine survives a fused-render

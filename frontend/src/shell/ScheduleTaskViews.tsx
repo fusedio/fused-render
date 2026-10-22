@@ -88,6 +88,8 @@ import {
   GROUPS_SEEDED_KEY,
   parseSeededViews,
   seedCollapsedGroups,
+  sectionsHolding,
+  activityAt,
   groupSize,
   flattenGroups,
   heldMessages,
@@ -2408,8 +2410,14 @@ export function TaskList({
     [sorted, groupBy],
   );
   const prStatuses = usePrStatuses(visiblePrKeys);
+  // A LIVE CLOCK FOR THE SECTIONS' ORDER, not the minute tick alone
+  // (CodeRabbit, #1855): `activityAt` reads a server stamp up to
+  // ACTIVITY_SLACK_SEC ahead of its clock as now, and a tick a minute stale
+  // would spend most of that slack before the stamp was even compared. The
+  // memo still runs on the tick (the Time view's buckets) and on every
+  // listing change, which is exactly when a stamp can be new.
   const groups = useMemo(
-    () => (groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null),
+    () => (groupBy ? groupRows(sorted, groupBy, home, Math.max(now, Date.now()), sortBy, (k) => prStatuses[k]) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `prStatuses` is a fresh object each render; its values are the dep
     [sorted, groupBy, home, now, sortBy, visiblePrKeys.map((k) => prStatuses[k] ?? "").join(",")],
   );
@@ -2440,6 +2448,132 @@ export function TaskList({
     // `now` deliberately left out: the seed is a one-off, not a re-fold on
     // every tick of the clock.
   }, [groupBy, groups]);
+  // A NEW TASK OPENS ITS SECTION (Sina, 2026-10-21: "when I create a new task
+  // it should open it, otherwise very confusing"). The folder's + and the New
+  // task card both end in a listing refresh and nothing else, so a task made
+  // into a folded folder — folded because nothing in it had moved for a day —
+  // landed out of sight. A row this list has not held before, with activity
+  // inside the last couple of minutes, unfolds the section (and the repository
+  // over it on the PR view) and brings it into view. The recency guard is
+  // what keeps a cleared filter — hundreds of "new" rows at once — from
+  // unfolding the whole page. Layout effect, like the seed, which is declared
+  // above and so runs first: the unfold must be in the first paint of the row.
+  //
+  // HELD BY NUMBER, not by key: a queued message's `pending:<entry>` row
+  // becomes its session id the moment it runs (tasks-lib.taskListKeys) and
+  // the number moves with it, so the rekey is the same task and not a second
+  // arrival to unfold and scroll for. And an EMPTY list is not a list this
+  // has held: the first non-empty listing is the baseline, not a page of new
+  // tasks (the seed's own folds must stand on first load).
+  const heldKeys = useRef<Set<string> | null>(null);
+  useLayoutEffect(() => {
+    if (!groupBy || !groups) {
+      heldKeys.current = null;
+      return;
+    }
+    // The number is per FOLDER (`Task.task_id`: "numbered per project"), so
+    // it names a task only beside its folder (CodeRabbit, #1855).
+    const nameOf = (t: Task) => (t.task_id ? `${t.project}\u0000${t.task_id}` : t.key);
+    const keys = new Set(rows.map(nameOf));
+    const before = heldKeys.current;
+    if (!before) {
+      if (keys.size > 0) heldKeys.current = keys;
+      return;
+    }
+    heldKeys.current = keys;
+    const since = Date.now() / 1000 - NEW_TASK_WINDOW_SEC;
+    const fresh = new Set(
+      rows.filter((t) => !before.has(nameOf(t)) && activityAt(t) >= since).map((t) => t.key),
+    );
+    if (fresh.size === 0) return;
+    const open = sectionsHolding(groups, groupBy, fresh);
+    if (open.length === 0) return;
+    setCollapsedGroups((cur) => {
+      if (!open.some((k) => cur.has(k))) return cur;
+      const next = new Set(cur);
+      for (const k of open) next.delete(k);
+      writeCollapsedGroups(next);
+      return next;
+    });
+    // …and into view: the section has just sorted to the top (newest activity
+    // first), which can be a screen away from where the + was pressed. ONE
+    // arrival is the target — the first fresh row — and its section and its
+    // row are both read off that one task (CodeRabbit, #1855: two sections
+    // arriving at once must not scroll one for the other's row). The DEEPEST
+    // of its sections: the pull request, not the repository over it, whose
+    // heading can be in view with the PR still below the fold. The row's own
+    // node where it is on screen (a section taller than the list can hold the
+    // viewport with the new row outside it, and "nearest" on the section
+    // would move nothing), else the section.
+    //
+    // AFTER THE SLIDE, not during it (QA, 2026-10-23): the section is already
+    // in its new place in layout, but the FLIP transform below draws the
+    // TOP-LEVEL section at its old place for a quarter second, and
+    // `scrollIntoView` reads the drawn box — asked then, it smooth-scrolled
+    // the reader straight back to the bottom the section had just left. The
+    // animation is the top-level section's (`getAnimations` does not include
+    // an ancestor's), whichever depth the target is at.
+    const arrived = rows.findIndex((t) => fresh.has(t.key));
+    const mine = sectionsHolding(groups, groupBy, new Set([rows[arrived]!.key]));
+    const deepest = (mine[mine.length - 1] ?? open[0]!).replace(/[^\w-]+/g, "_");
+    requestAnimationFrame(() => {
+      // The row's OWN section where the row is on screen — one task is drawn
+      // once, but reading the section off the node is the answer that cannot
+      // disagree with it (CodeRabbit, #1855); the deepest key is the fallback
+      // for a row not drawn yet.
+      const row = elsByKey.current.get(rowKeys[arrived] ?? "");
+      const section = (row instanceof HTMLElement ? row.closest<HTMLElement>(".tasks-group") : null)
+        ?? listRef.current
+          ?.querySelector(`#tasks-group-${groupBy}-${deepest}`)
+          ?.closest<HTMLElement>(".tasks-group");
+      const node = (row instanceof HTMLElement && section?.contains(row) ? row : section) ?? null;
+      if (!node || !section) return;
+      const outer = section.closest<HTMLElement>(".tasks-group[data-depth='0']") ?? section;
+      const sliding = typeof outer.getAnimations === "function" ? outer.getAnimations() : [];
+      void Promise.allSettled(sliding.map((a) => a.finished)).then(() => {
+        if (node.isConnected) node.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+      });
+    });
+  }, [rows, groups, groupBy]);
+  // SECTIONS SLIDE TO THEIR NEW PLACE rather than teleport (Akshil, 2026-10-22:
+  // a folder at the bottom jumping to the top on a new task is expected, but
+  // "if the experience was smoother it would be better"). FLIP over the
+  // top-level sections only: their last-painted place and top are kept
+  // across commits, and a section whose PLACE in the order changed — while
+  // the scroller did not move — plays one short transform from where it was.
+  // Place, not top: a fold above shifts every section below it, and a row
+  // landing in an open section shifts everything under that, and neither is
+  // a reorder — animating a hundred sections for it was a wave down the
+  // whole page. Measured on EVERY commit (no dependency list), since a fold
+  // or a landed row moves the tops without touching `groups`, and a slide
+  // measured from a stale top would be the wrong distance; `offsetTop` is a
+  // layout position, so scrolling changes nothing here. Nothing is written
+  // to React state; `el.animate` is a fire-and-forget on a node React keeps
+  // by key.
+  const sectionPlaces = useRef(new Map<string, { ix: number; top: number }>());
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!groups || !list) {
+      sectionPlaces.current = new Map();
+      return;
+    }
+    const prev = sectionPlaces.current;
+    const at = new Map<string, { ix: number; top: number }>();
+    const motion = !reducedMotion() && typeof Element.prototype.animate === "function";
+    let ix = 0;
+    for (const el of list.querySelectorAll<HTMLElement>(".tasks-group[data-depth='0']")) {
+      const key = el.dataset.key ?? "";
+      const top = el.offsetTop;
+      const was = prev.get(key);
+      at.set(key, { ix: ix++, top });
+      if (!motion || !was || was.ix === ix - 1 || Math.abs(was.top - top) < 2) continue;
+      el.animate(
+        [{ transform: `translateY(${was.top - top}px)` }, { transform: "none" }],
+        { duration: SECTION_SLIDE_MS, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)" },
+      );
+    }
+    sectionPlaces.current = at;
+  });
   /**
    * THE ROWS' REACT KEYS, and the reason they are not `task.key` any more.
    *
@@ -6672,6 +6806,19 @@ function TaskCard({
  *  the per-tab facets — a closed tab forgets its folds. */
 const GROUPS_COLLAPSED_KEY = "fused-render:tasks-groups-collapsed";
 
+/** How recent a row the list has not held before must be to count as a NEW
+ *  task — one that unfolds its section — rather than a row a cleared filter
+ *  let back in. Well over a create's round trip, well under a day. */
+const NEW_TASK_WINDOW_SEC = 120;
+/** One section's slide to its new place in a grouped list. */
+const SECTION_SLIDE_MS = 240;
+
+function reducedMotion(): boolean {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 function readCollapsedGroups(): Set<string> {
   try {
     const raw = JSON.parse(sessionStorage.getItem(GROUPS_COLLAPSED_KEY) || "[]");
@@ -6770,6 +6917,7 @@ function groupFrames(
         data-collapsed={open ? "0" : "1"}
         data-depth={depth}
         data-by={by}
+        data-key={g.key}
       >
         <h3 className="tasks-group-head">
           {/* Toggle and link travel together at the start; the all-toggle
@@ -6804,7 +6952,17 @@ function groupFrames(
                 className="tasks-group-add"
                 data-hint={`New task in ${g.label}`}
                 aria-label={`New task in ${g.label}`}
-                onClick={() => onNewTaskIn(g.folder!)}
+                // …AND UNFOLDS THE SECTION on the way (Sina, 2026-10-21): the
+                // task about to be made lands here, and a press that filed it
+                // under a closed heading read as the task not being made.
+                onClick={() => {
+                  if (!open) {
+                    const next = new Set(collapsed);
+                    next.delete(k);
+                    setCollapsed(next);
+                  }
+                  onNewTaskIn(g.folder!);
+                }}
               >
                 {ICON_PLUS}
               </button>

@@ -85,6 +85,21 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const [profile, setProfile] = useState("");
   const [profiles, setProfiles] = useState<ChromeProfile[]>([]);
   const [trustedApps, setTrustedApps] = useState<string[]>(init.trustedApps);
+  // The live list (bot.trusted_apps) moves while this dialog is open: a build finishing or a card answered "Always
+  // approve" ticks an app. Each change is folded into the checkboxes as it lands, and Save diffs against the live
+  // list (trustedAppsWas), so an untick of a tick that arrived meanwhile is sent as a removal.
+  const liveTrusted = bot.trusted_apps || [];
+  const liveKey = liveTrusted.join("|");
+  const prevLive = useRef(liveTrusted);
+  useEffect(() => {
+    const before = prevLive.current;
+    const added = liveTrusted.filter((a) => !before.includes(a));
+    const removed = before.filter((a) => !liveTrusted.includes(a));
+    if (added.length || removed.length) {
+      setTrustedApps((cur) => [...cur.filter((a) => !removed.includes(a)), ...added.filter((a) => !cur.includes(a))]);
+    }
+    prevLive.current = liveTrusted;
+  }, [liveKey]);  // eslint-disable-line react-hooks/exhaustive-deps
   const [allowRules, setAllowRules] = useState<AllowRule[]>(init.allowRules);
   // Folders it may read (docs §2 `folders`): the user's own folders, read-only for the bot. The native folder dialog
   // (POST /api/fs/pick-folder, the same one the templates use) when this machine has one; a typed path otherwise.
@@ -108,10 +123,14 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
   const bm = useMemo(() => ({ id: bot.id, name: init.name, face }), [bot.id, init.name, face]);
   const read = (): BotDialogValue => ({ name: name.trim(), model, effort, instructions, memory, approval, buildAccess, ...(terminalFeature ? { terminal } : {}), encrypt, profile, maxSteps,
     face: faceOf(bm), imessage: imessage.trim(), imessageEnabled, imessageTo: imessageTo.trim(), preset: "",
-    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, folders,
+    kind: isSuper ? "super" : "bot", superAccess, browserId, trustedApps, trustedAppsWas: liveTrusted, folders,
     allowRulesRemoved: init.allowRules.filter((r) => !allowRules.some((x) => x.kind === r.kind && x.key === r.key)) });  // the face shown is the face kept
-  const [initial] = useState(() => JSON.stringify(read()));
-  const okDisabled = JSON.stringify(read()) === initial;
+  // Dirty = what Save would send. The trusted-apps pair is compared as the add / remove diff, not the lists: a tick
+  // that lands from a build or a card while the dialog is open changes both lists and is not the user's edit.
+  const fingerprint = (v: BotDialogValue) => JSON.stringify({ ...v,
+    trustedApps: v.trustedApps.filter((a) => !v.trustedAppsWas.includes(a)), trustedAppsWas: v.trustedAppsWas.filter((a) => !v.trustedApps.includes(a)) });
+  const [initial] = useState(() => fingerprint(read()));
+  const okDisabled = fingerprint(read()) === initial;
   const n = name.trim();
 
   // Your Chrome's profiles and the apps root, listed fresh each time.
@@ -302,7 +321,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                   )}
                 </Row>
                 {appRows.length ? (
-                  <Row title="Apps it may use without asking" text="A ticked app's tools and scripts run at once. Everything else keeps the rule above." stack>
+                  <Row title="Apps it may use without asking" text="A ticked app's tools and scripts run without asking. Everything else asks first." stack>
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmtrusted">
                       {appRows.map((a) => {
                         const on = trustedApps.includes(normApp(a.folder));

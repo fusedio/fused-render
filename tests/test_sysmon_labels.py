@@ -100,3 +100,16 @@ def test_classify_template_matches_classify_for_templates_and_skips_the_session_
     assert labels.classify_template(["/usr/local/bin/claude", "--x"]) is None
     assert labels.classify_template(["/usr/bin/python3", "/tmp/_child.py"]) is None
     assert labels.classify_template(["/bin/ls"]) is None and labels.classify_template(None) is None
+
+
+def test_classify_labels_a_warm_run_spare_idle(monkeypatch):
+    """A pre-spawned interpreter (SPEC PY-20) is named for what it is, not left
+    as an anonymous `python -c ...` / bare `_child.py`; once claimed it leaves
+    the spare set and gets the ordinary run label."""
+    from fused_render import warm_run
+
+    args = ["/usr/bin/python3", "/pkg/_child.py"]
+    monkeypatch.setattr(warm_run, "spare_pids", lambda: [4242])
+    assert labels.classify(4242, args).label == "Warm Python (idle)"
+    assert labels.classify(4243, args).label == "Run: Python"
+    assert labels.classify(4242, ["/usr/bin/python3", "-c", "x"]).label == "Warm Python (idle)"

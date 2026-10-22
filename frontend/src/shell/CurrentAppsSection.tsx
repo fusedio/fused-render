@@ -320,7 +320,13 @@ function CurrentAppRow({
     onSeen(app.path);
     // The row for the page already on screen, on the tab it already shows, is
     // a no-op; the tab's own params would be the only thing the click cleared.
-    if (!active) navigateUrl(href);
+    // A canvas row lights on its EDITOR too (isActive), but its door is the
+    // PROJECT page: lit by the editor it still navigates — otherwise the
+    // sidebar offers no way from the editor to the project view (owner,
+    // 2026-10-22). Lit by the project page, `onCanvas` resolved from that
+    // path, so active ⇒ this canvas's project page ⇒ at the door.
+    const atDoor = active && (!app.canvas || canvasProjectFromPath(location.pathname) !== null);
+    if (!atDoor) navigateUrl(href);
   };
   const onRemove = async (e: React.MouseEvent) => {
     e.preventDefault();

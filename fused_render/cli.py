@@ -31,7 +31,7 @@ import webbrowser
 
 from fused_render import _flavor
 from fused_render._branch import branch_port, branch_ref
-from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
+from fused_render.logs import log_dir, setup_logging, uvicorn_fast_kwargs, uvicorn_log_config
 from fused_render.shell.seed import ensure_fused_dir, fused_dir
 
 logger = logging.getLogger("fused_render")
@@ -182,7 +182,7 @@ def _require_serve_extras() -> None:
             "fused-render serve needs at least `[cli]`; this install is missing "
             f"{', '.join(f'[{m}]' for m in missing)}.\n"
             f"  {extras.install_hint('cli')}\n"
-            "or [all] for native desktop integrations\n"
+            f"or {extras.install_hint('all')} for native desktop integrations\n"
             "The base install runs one app: fused-render open <github-url or path>"
         )
 
@@ -250,13 +250,15 @@ def _run_serve(args: argparse.Namespace) -> None:
     # create_app, so importing the server in a test probes nothing.
     # Each agent's probe follows its Preferences switch (D17): a disabled
     # agent is never probed, so a machine with no Copilot never spawns one.
-    from fused_render import claude_health, copilot_health
+    from fused_render import claude_health, codex_health, copilot_health
     from fused_render.agent_backends import registry as _agent_registry
 
     if _agent_registry.is_enabled("claude"):
         claude_health.warm_in_background()
     if _agent_registry.is_enabled("copilot"):
         copilot_health.warm_in_background()
+    if _agent_registry.is_enabled("codex"):
+        codex_health.warm_in_background()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 
@@ -299,7 +301,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     # zero gain over loopback, so it is off.
     server = uvicorn.Server(uvicorn.Config(
         app, host=_HOST, port=port, log_config=uvicorn_log_config(),
-        ws_per_message_deflate=False))
+        ws_per_message_deflate=False, **uvicorn_fast_kwargs()))
     app.state.uvicorn_server = server
     # Local-network sharing of ~/Fused/local (lan.py): a second listener the
     # `lan_enabled` preference controls; this loopback bind is not touched.

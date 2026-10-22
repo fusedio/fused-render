@@ -722,7 +722,7 @@ def follow_page(manager, window, key: str, view) -> None:
         window.view = window_policy.window_view_of(current)
         if (window.view == "embed") != was_embed and not window._popup:
             # The window crossed between shell and an app's run window —
-            # the title bar's Home/Edit out of an app window, say: it takes the frame of
+            # ⌘⇧H Home / the title bar's Edit out of an app window, say: it takes the frame of
             # what it shows now and lets go of the old one, so neither
             # side's saved frame is the other's to move. Edit hands
             # before loading, so it is already a no-op here. A popup
@@ -832,19 +832,19 @@ class _Window:
             self.ns.setAppearance_(appearance_for_pref(pref))
 
     def _add_titlebar_buttons(self) -> None:
-        """"Edit", "Open in Browser" and "Home" at the right end of the title
-        bar — Home rightmost, Edit leftmost. A titlebar accessory keeps the
-        standard titled window (title stays centred, traffic lights
-        untouched) — no toolbar row, no full-size-content-view mask. Same
-        actions as the ⌘⇧E / ⌘⇧L / ⌘⇧H menu items. Edit means something only
-        while the window runs an app (`sync_edit_button`)."""
+        """"Edit" and "Open in Browser" at the right end of the title bar —
+        Edit leftmost. A titlebar accessory keeps the standard titled window
+        (title stays centred, traffic lights untouched) — no toolbar row, no
+        full-size-content-view mask. Same actions as the ⌘⇧E / ⌘⇧L menu
+        items; Home stays a menu item (⌘⇧H) with no titlebar button. Edit
+        means something only while the window runs an app
+        (`sync_edit_button`)."""
         specs = (  # left to right
             # Folder, not a pencil: the native twin of MenuIcons.folder — the
             # glyph "Open in Explorer" wears in the sidebar/app-card menus,
             # since Edit opens that same explorer view.
             ("folder", "Edit", "Edit (⌘⇧E)", b"editApp:"),
             ("safari", "Open in Browser", "Open in Browser (⌘⇧L)", b"openInBrowser:"),
-            ("house", "Home", "Home (⌘⇧H)", b"goHome:"),
         )
         buttons = []
         for symbol, desc, tip, action in specs:

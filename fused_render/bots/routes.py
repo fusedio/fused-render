@@ -311,7 +311,10 @@ def bots_pulse():
             # `seq` as the page's own row would carry it: `events_since` lifts the counter over lines another process
             # appended (an iMessage reply via botsend.py), and with no page open nothing else does — which is exactly
             # when the sidebar is the one asking, and a reply nobody has seen is the unread it exists to count.
-            row = {"id": b.id, "status": m.get("status") or "idle", "seq": max(b.seq, b._count_events()),
+            n = b._count_events()
+            # `news_seq`: the newest message row, system notes and delivery rows skipped — what `seen_seq` is read
+            # against (bot.news_seq). The line count is passed so a stale cache rescans for lines nobody lifted.
+            row = {"id": b.id, "status": m.get("status") or "idle", "seq": max(b.seq, n), "news_seq": b.news_seq(n),
                    "hidden": bool(m.get("hidden"))}
             if isinstance(m.get("seen_seq"), int):
                 row["seen_seq"] = m["seen_seq"]
@@ -749,8 +752,15 @@ def _settings(bid, body):
         b.meta["terminal"] = terminal
         if not terminal:
             b.close_terminal()
-    if isinstance(body.get("trusted_apps"), list):
-        b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
+    if isinstance(body.get("trusted_apps_add"), list) or isinstance(body.get("trusted_apps_remove"), list):
+        # Additions and removals only (like allow_rules_remove): trusted_apps has two more writers, a build
+        # finishing and a card answered "Always approve", so a full list from the dialog would clobber a tick
+        # written while it was open.
+        with b.lock:
+            _apptools().set_trusted_apps(b.meta, add=body.get("trusted_apps_add") or [], remove=body.get("trusted_apps_remove") or [])
+    elif isinstance(body.get("trusted_apps"), list):
+        with b.lock:
+            b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
     if folders is not None:
         # The folders this bot may READ (docs §2). The dialog is the only writer, so the full list is taken as sent;
         # a bot's own `bot_settings` never carries this key (a bot granting folders to a bot is escalation).
