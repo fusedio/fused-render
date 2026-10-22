@@ -2449,15 +2449,22 @@ export function TaskList({
     // every tick of the clock.
   }, [groupBy, groups]);
   // A NEW TASK OPENS ITS SECTION (Sina, 2026-10-21: "when I create a new task
-  // it should open it, otherwise very confusing"). The folder's + and the New
-  // task card both end in a listing refresh and nothing else, so a task made
-  // into a folded folder — folded because nothing in it had moved for a day —
-  // landed out of sight. A row this list has not held before, with activity
-  // inside the last couple of minutes, unfolds the section (and the repository
-  // over it on the PR view) and brings it into view. The recency guard is
-  // what keeps a cleared filter — hundreds of "new" rows at once — from
-  // unfolding the whole page. Layout effect, like the seed, which is declared
-  // above and so runs first: the unfold must be in the first paint of the row.
+  // it should open it, otherwise very confusing") — AND SO DOES NEWS IN AN
+  // OLD ONE (Akshil, 2026-10-22: "any new recent action or message in any
+  // task for a project — make it jump up and open that"). The folder's + and
+  // the New task card both end in a listing refresh and nothing else, so a
+  // task made into a folded folder — folded because nothing in it had moved
+  // for a day — landed out of sight; a reply or a question card in a folded
+  // folder was the same miss. A row this list has not held before, or one
+  // whose MARK has moved — a message landed, the status changed — with
+  // activity inside the last couple of minutes, unfolds its section (and the
+  // repository over it on the PR view). A NEW row is also brought into view;
+  // news in a row the reader already had is not — a folder opening is a
+  // signal, the page scrolling away from what they are reading is a hijack.
+  // The recency guard is what keeps a cleared filter — hundreds of "new" rows
+  // at once — from unfolding the whole page. Layout effect, like the seed,
+  // which is declared above and so runs first: the unfold must be in the
+  // first paint of the row.
   //
   // HELD BY NUMBER, not by key: a queued message's `pending:<entry>` row
   // becomes its session id the moment it runs (tasks-lib.taskListKeys) and
@@ -2465,28 +2472,39 @@ export function TaskList({
   // arrival to unfold and scroll for. And an EMPTY list is not a list this
   // has held: the first non-empty listing is the baseline, not a page of new
   // tasks (the seed's own folds must stand on first load).
-  const heldKeys = useRef<Set<string> | null>(null);
+  //
+  // THE MARK is what a message or a verdict changes — the status, the count
+  // and the newest message's stamp — and deliberately not `last_active` or
+  // `happened_at`, which the server moves to ITS clock on every build while
+  // a sent mark stands: a folder the reader folded mid-turn would have popped
+  // open again on every refresh for fifteen seconds.
+  const heldMarks = useRef<Map<string, string> | null>(null);
   useLayoutEffect(() => {
     if (!groupBy || !groups) {
-      heldKeys.current = null;
+      heldMarks.current = null;
       return;
     }
     // The number is per FOLDER (`Task.task_id`: "numbered per project"), so
     // it names a task only beside its folder (CodeRabbit, #1855).
     const nameOf = (t: Task) => (t.task_id ? `${t.project}\u0000${t.task_id}` : t.key);
-    const keys = new Set(rows.map(nameOf));
-    const before = heldKeys.current;
+    const marks = new Map(rows.map((t) => [nameOf(t), taskNewsMark(t)]));
+    const before = heldMarks.current;
     if (!before) {
-      if (keys.size > 0) heldKeys.current = keys;
+      if (marks.size > 0) heldMarks.current = marks;
       return;
     }
-    heldKeys.current = keys;
+    heldMarks.current = marks;
     const since = Date.now() / 1000 - NEW_TASK_WINDOW_SEC;
-    const fresh = new Set(
-      rows.filter((t) => !before.has(nameOf(t)) && activityAt(t) >= since).map((t) => t.key),
+    const recent = rows.filter((t) => activityAt(t) >= since);
+    const fresh = new Set(recent.filter((t) => !before.has(nameOf(t))).map((t) => t.key));
+    const moved = new Set(
+      recent.filter((t) => {
+        const was = before.get(nameOf(t));
+        return was !== undefined && was !== marks.get(nameOf(t));
+      }).map((t) => t.key),
     );
-    if (fresh.size === 0) return;
-    const open = sectionsHolding(groups, groupBy, fresh);
+    if (fresh.size === 0 && moved.size === 0) return;
+    const open = sectionsHolding(groups, groupBy, new Set([...fresh, ...moved]));
     if (open.length === 0) return;
     setCollapsedGroups((cur) => {
       if (!open.some((k) => cur.has(k))) return cur;
@@ -2495,6 +2513,7 @@ export function TaskList({
       writeCollapsedGroups(next);
       return next;
     });
+    if (fresh.size === 0) return;
     // …and into view: the section has just sorted to the top (newest activity
     // first), which can be a screen away from where the + was pressed. ONE
     // arrival is the target — the first fresh row — and its section and its
@@ -6813,6 +6832,20 @@ const NEW_TASK_WINDOW_SEC = 120;
 /** One section's slide to its new place in a grouped list. */
 const SECTION_SLIDE_MS = 240;
 
+/** What a message or a verdict changes on a row — the news a folded folder
+ *  opens for (the arrival effect in TaskList). Not the server's activity
+ *  clocks, which move on their own while a turn is marked running; not the
+ *  newest message's `state`, which steps pending → sending → sent on its own;
+ *  and running and queued are ONE word, since a turn crossing between them
+ *  is not news (reviewer, 2026-10-22). A message landing (the count, the
+ *  newest stamp — `ran_at` where it ran, else the due `at`) or a verdict
+ *  (blocked, done, failed, archived) is. */
+function taskNewsMark(t: Task): string {
+  const last = t.messages?.[t.messages.length - 1];
+  const status = t.status === "in_progress" || t.status === "queued" ? "running" : t.status;
+  return `${status}|${t.message_count ?? -1}|${last?.ran_at || last?.at || 0}`;
+}
+
 function reducedMotion(): boolean {
   return typeof window !== "undefined"
     && typeof window.matchMedia === "function"
@@ -6952,17 +6985,11 @@ function groupFrames(
                 className="tasks-group-add"
                 data-hint={`New task in ${g.label}`}
                 aria-label={`New task in ${g.label}`}
-                // …AND UNFOLDS THE SECTION on the way (Sina, 2026-10-21): the
-                // task about to be made lands here, and a press that filed it
-                // under a closed heading read as the task not being made.
-                onClick={() => {
-                  if (!open) {
-                    const next = new Set(collapsed);
-                    next.delete(k);
-                    setCollapsed(next);
-                  }
-                  onNewTaskIn(g.folder!);
-                }}
+                // The press opens the CARD and nothing else (Akshil,
+                // 2026-10-22: "when we click on + that opens the section, that
+                // shouldn't be the case"): the section opens when the task
+                // lands in it — the arrival effect above — not before.
+                onClick={() => onNewTaskIn(g.folder!)}
               >
                 {ICON_PLUS}
               </button>
