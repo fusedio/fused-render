@@ -319,6 +319,33 @@ the OS reclaims it. Set `FUSED_RENDER_LOG_DIR` to keep logs somewhere
 persistent instead. (Not to be confused with the **call log** below, which is
 durable, has settings, and lives in `~/.fused-render/logs/`.)
 
+## Claude Config
+
+**Claude Config** (in the sidebar) edits what Claude Code reads from `~/.claude`:
+four tabs, each with its own filter box at the top of the page.
+
+- **Skills** has **Installed** and **Discover**. Installed lists the skills in
+  `~/.claude/skills`, `~/.agents/skills` (read by Copilot and Codex),
+  `~/.copilot/skills` and `~/.codex/skills`, then the skills that come with
+  enabled Claude plugins (read-only). A skill reachable through a link and a
+  copy is one row. When more than one coding agent is on in Preferences, each
+  row says which of them read it. **Discover** lists the skills the marketplaces
+  you have cloned publish: **Add** copies one skill into the right place for
+  the agents that are on (`~/.claude/skills`, or `~/.agents/skills` with a link
+  from Claude's directory), and the row's menu installs the whole plugin
+  instead. **New skill** is placed the same way, and deleting a skill names
+  every path it removes.
+- **Plugins** is one full-width list. **Installed** rows show the plugin, its
+  description, its marketplace and version, a menu (update, copy install
+  command, uninstall) and the on/off switch at the right end; the arrow opens
+  its id and what it contains. **Discover** rows end in **Install**. The
+  marketplace menu above the list filters by marketplace, and **Marketplaces**
+  opens a dialog to copy a marketplace's install command, remove it, or add one.
+  A version that is a git commit is not shown in the row; the details give it
+  as `commit` and the first seven characters.
+- **Memory** and **MCP servers** list the memory files Claude Code keeps for
+  each project and the servers it connects to.
+
 ## AI calls (`fused.ai`)
 
 `fused.ai` is a namespace of verbs — `.text`, `.image`, `.video`, `.transcribe`,

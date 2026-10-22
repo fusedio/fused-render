@@ -7499,3 +7499,12 @@ Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex
 - **Discover covers local sources only.** A plugin whose catalog `source` is a github/git object is not on disk until installed, so its skills cannot be listed; `skills.available` counts them in `skipped` and the page says so.
 - **Not done: Copilot and Codex plugin skills.** Neither `~/.codex/plugins/cache` nor `~/.copilot` exists on this machine, so no on-disk plugin layout could be confirmed. Guessing a layout would list nothing or the wrong thing; they are left out until someone with those plugins installed can look.
 - **Installed plugins carry a description** joined from the cloned marketplace catalog by name (`""` when the marketplace is not cloned or does not list it).
+- **Frontend.** Plugin rows live in `apps/claude_config/plugin-row.tsx`, skill rows in `skill-row.tsx`, and the segmented control, overflow menu and pager are shared in `bits.tsx` (`Seg`, `KebabMenu`, `Pager`). `ListRow` gains `end` (the last control, after the chevron: the enable switch, or Install/Add) and `stacked` (description under the name, kept on narrow pages).
+- **Version label.** A semver reads `v1.2.3` in the row. A git-sourced plugin's "version" is a commit hash: the row shows nothing and the details show `commit ed2e105`. Anything else unrecognised appears raw in the details only.
+- **Discover lists installed things too.** Plugins and skills the machine already has stay in Discover with muted "Installed" / "Added" where the button would be, so the list is the catalog rather than a catalog minus what you have.
+- **Reader badges** come from `getPrefs().agents`; they show only for CLIs that are on and only when more than one is on. Absent prefs mean Claude only.
+- **Skill URL key.** `?skill=` is `<location>/<slug>` for a user skill (slugs repeat across the user dirs) and `plugin:<plugin>/<slug>` for a plugin's.
+- **Tab switching was already in place.** `ClaudeConfig.tsx` held the tab in state and wrote `?tab=` without `navigateUrl`, so it never remounted; the write now goes through `replaceSearch`, and a render test pins that the nav node survives a tab click.
+- **docs/usage.md had no Claude Config section**, so one was added.
+- **Memory tests.** `test_memory_list_reconstructs_a_hyphenated_component_against_the_disk` and `..._a_dotted_component` fail in this worktree's scratch setup; `memory.py` is untouched by this change.
+
