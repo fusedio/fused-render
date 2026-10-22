@@ -250,6 +250,13 @@ def fused_settings_base_url() -> str:
     return _FUSED_DEFAULT_API_URL
 
 
+def fused_settings_present() -> bool:
+    """Whether there is a `~/.fused/settings.toml` (or `settings.json`) for
+    the custom environment to follow. Without one a custom run is just prod
+    under another clone folder, so the pickers offer it disabled."""
+    return any(os.path.isfile(os.path.expanduser(raw)) for raw in _FUSED_SETTINGS_FILES)
+
+
 def _fused_settings_web_url() -> str:
     """The workbench origin for `fused_settings_base_url()`, by fused's own
     `Options.base_web_url` rule."""
@@ -609,12 +616,14 @@ def api_canvases_status():
         "workbench_env": workbench_env(),
         "locked": workbench_env_locked(),
         # Clone counts are a local listdir, no CLI — informational on the
-        # Preferences row.
+        # Preferences row. `available` is false only for custom without a
+        # settings file: the pickers disable it.
         "envs": {
             env: {
                 "base_url": workbench_base_url(env),
                 "canvases_dir": canvases_root(env),
                 "cloned_count": len(_cloned_names(env)),
+                "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_present(),
             }
             for env in WORKBENCH_ENV_CHOICES
         },

@@ -288,7 +288,9 @@ def test_custom_workbench_url_follows_fused_settings(monkeypatch, tmp_path):
     settings = tmp_path / ".fused"
     settings.mkdir()
     assert canvases.workbench_base_url("custom") == "https://www.fused.io"
+    assert not canvases.fused_settings_present()
     (settings / "settings.json").write_text('{"base_url": "https://json.example.com/server/v1"}')
+    assert canvases.fused_settings_present()
     assert canvases.workbench_base_url("custom") == "https://json.example.com"
     toml = settings / "settings.toml"
     toml.write_text('base_url = "https://abc.fused.io/server/v1"\n')

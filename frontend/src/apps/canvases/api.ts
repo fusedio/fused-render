@@ -35,8 +35,12 @@ export interface CanvasesStatus {
    *  environment dropdown. */
   locked: boolean;
   /** Per environment: its workbench web origin, its clone folder
-   *  (`~/Fused/canvas/<env>`) and how many clones it holds here. */
-  envs: Record<WorkbenchEnv, { base_url: string; canvases_dir: string; cloned_count: number }>;
+   *  (`~/Fused/canvas/<env>`), how many clones it holds here, and whether it
+   *  can be picked (false only for custom with no `~/.fused/settings.toml`). */
+  envs: Record<
+    WorkbenchEnv,
+    { base_url: string; canvases_dir: string; cloned_count: number; available: boolean }
+  >;
 }
 
 /** `custom` (fusedcli.CUSTOM_WORKBENCH_ENV) is no Fused of its own: its CLI

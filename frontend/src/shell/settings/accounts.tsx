@@ -285,7 +285,11 @@ export function WorkbenchEnvControl() {
             value={known ? current : ""}
             options={[
               ...(known ? [] : [{ key: "", label: current }]),
-              ...WORKBENCH_ENVS.map((e) => ({ key: e, label: ENV_LABELS[e] })),
+              ...WORKBENCH_ENVS.map((e) => ({
+                key: e,
+                label: ENV_LABELS[e],
+                disabled: status.envs?.[e]?.available === false,
+              })),
             ]}
             disabled={busy || status.locked}
             onChange={(v) => {
