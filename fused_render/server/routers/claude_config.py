@@ -40,11 +40,9 @@ import os
 from fastapi import APIRouter, Body, Header
 from fastapi.concurrency import run_in_threadpool
 
-from fused_render.agent_backends import homes
 from fused_render.claude_config import (
     claude_md,
     git_ops,
-    harness_files,
     lib,
     marketplaces,
     mcp,
@@ -72,7 +70,6 @@ MODULES = {
     # and is the human's to make, not this branch's. Its only exerciser now
     # is tests/test_claude_config_api.py, calling it directly.
     "claude_md": claude_md.main,
-    "files": harness_files.files_main,
     "git_ops": git_ops.main,
     "marketplaces": marketplaces.main,
     "mcp": mcp.main,
@@ -84,20 +81,6 @@ MODULES = {
     "skills": skills.main,
     "statusline": statusline.main,
 }
-
-
-# Modules other harnesses answer, keyed like MODULES. Everything else is
-# Claude-only and a 400 for another harness.
-HARNESS_MODULES = {
-    "files": harness_files.files_main,
-    "mcp": harness_files.mcp_main,
-}
-
-
-@router.get("/api/agents/harnesses")
-def api_agents_harnesses():
-    """Each harness's config home and the tabs the Agents page can draw for it."""
-    return {"harnesses": homes.describe()}
 
 
 @router.get("/api/claude-config/status")
@@ -127,18 +110,7 @@ async def api_claude_config(
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    body = dict(body)
-    harness = body.pop("harness", "claude")
-    if harness not in homes.HARNESSES:
-        return _error(f"unknown harness: {harness}")
-    if harness != "claude":
-        other = HARNESS_MODULES.get(module)
-        if other is None:
-            return _error(f"{module} is Claude-only; {harness} has no such module")
-        body["harness"] = harness
-        main = other
-    else:
-        main = MODULES.get(module)
+    main = MODULES.get(module)
     if main is None:
         return _error(f"unknown claude-config module: {module}", status=404)
     try:
