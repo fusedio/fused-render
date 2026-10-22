@@ -365,6 +365,17 @@ export function ClaudePrefRow({ entry }: { entry: ClaudePrefEntry }) {
   );
 }
 
+/** The catalog row is built here, not in the registry: the registry only
+ *  lists Preferences rows, and this one lives on the Agents page. */
+const CATALOG_ENTRY: SettingEntry = {
+  id: "claude-catalog",
+  group: "ai",
+  section: "settings.json",
+  label: "Settings catalog",
+  description: "The settings below come from the checked-in catalog. Refresh re-fetches defaults and docs from code.claude.com and rewrites it.",
+  keywords: "",
+};
+
 /** The row that leads the settings.json rows: how many, and the refresh. */
 export function ClaudeCatalogControl() {
   const store = useContext(ClaudeContext);
@@ -372,6 +383,7 @@ export function ClaudeCatalogControl() {
   return (
     <SettingRow
       id="claude-catalog"
+      entry={CATALOG_ENTRY}
       status={n !== undefined ? `${n} settings in the catalog` : store.catalogError ? null : "Loading…"}
       control={
         <Button
