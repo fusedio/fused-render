@@ -295,9 +295,47 @@ def _fused_settings_credentials_path() -> str:
 
 def fused_settings_present() -> bool:
     """Whether there is a `~/.fused/settings.toml` (or `settings.json`) for
-    the custom environment to follow. Without one a custom run is just prod
-    under another clone folder, so the pickers offer it disabled."""
+    the custom environment to follow."""
     return any(os.path.isfile(os.path.expanduser(raw)) for raw in _FUSED_SETTINGS_FILES)
+
+
+def fused_settings_configured() -> bool:
+    """Whether the settings file actually points the custom environment
+    somewhere: present AND naming a `base_url`. Without one a custom run is
+    just prod under another clone folder. The Canvases page offers custom
+    regardless and opens the settings editor when this is false (the empty
+    file the editor starts from must NOT count as configured, or dismissing
+    it would leave custom silently equal to prod); the Settings picker
+    disables it."""
+    value = _fused_settings().get("base_url")
+    return isinstance(value, str) and bool(value.strip())
+
+
+def fused_settings_path() -> str:
+    """The file the settings editor reads and writes: fused's TOML settings
+    file (the first in its load order), expanded."""
+    return os.path.expanduser(_FUSED_SETTINGS_FILES[0])
+
+
+def _read_fused_settings_text() -> tuple[str, bool]:
+    """(text, exists) of the TOML settings file. A missing file is ("", False);
+    one that cannot be read raises OSError for the caller to report."""
+    try:
+        with open(fused_settings_path(), encoding="utf-8") as fh:
+            return fh.read(), True
+    except FileNotFoundError:
+        return "", False
+
+
+def _write_fused_settings_text(text: str) -> None:
+    """Write the TOML settings file atomically (temp + os.replace): a status
+    poll reading it mid-write must never see half a file."""
+    path = fused_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
 
 
 def _fused_settings_web_url() -> str:
@@ -778,18 +816,75 @@ def api_canvases_status(env: str = ""):
         "workbench_env": workbench_env(),
         "locked": workbench_env_locked(),
         # Clone counts are a local listdir, no CLI — informational on the
-        # Preferences row. `available` is false only for custom without a
-        # settings file: the pickers disable it.
+        # Preferences row. `available` is false only for custom whose
+        # settings file names no `base_url` (`fused_settings_configured`):
+        # the Settings picker disables it, the Canvases page offers it and
+        # opens the settings editor instead of the sign-in.
         "envs": {
             env: {
                 "base_url": workbench_base_url(env),
                 "canvases_dir": canvases_root(env),
                 "cloned_count": len(_cloned_names(env)),
-                "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_present(),
+                "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_configured(),
             }
             for env in WORKBENCH_ENV_CHOICES
         },
+        # Where the custom environment's settings live — what the Canvases
+        # page's editor shows the reader.
+        "settings_path": fused_settings_path(),
     }
+
+
+@router.post("/api/canvases/settings/open")
+def api_canvases_settings_open(x_fused: str | None = Header(default=None)):
+    """The settings editor's read: the TOML settings file's text, creating
+    it EMPTY when there is none so the reader is editing a real file at a
+    real path from the first keystroke. An empty file configures nothing
+    (`fused_settings_configured`), so creating it changes no answer."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        text, exists = _read_fused_settings_text()
+        created = False
+        if not exists:
+            _write_fused_settings_text("")
+            created = True
+    except OSError as exc:
+        return _error(f"could not open {fused_settings_path()}: {exc}", 500)
+    return {"path": fused_settings_path(), "text": text, "created": created,
+            "configured": fused_settings_configured()}
+
+
+@router.post("/api/canvases/settings/save")
+def api_canvases_settings_save(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Write the TOML settings file. Parsed first, so a paste that is not
+    TOML is refused with the parser's own sentence (400) and the file on disk
+    stays what it was; fused itself would silently skip an unparsable file
+    and fall through to prod."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    text = body.get("text")
+    if not isinstance(text, str):
+        return _error("'text' must be a string")
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return JSONResponse({"error": f"not valid TOML: {exc}", "code": "invalid_toml"},
+                            status_code=400)
+    try:
+        _write_fused_settings_text(text)
+    except OSError as exc:
+        return _error(f"could not write {fused_settings_path()}: {exc}", 500)
+    # Cached CLI answers (whoami, listings) were computed against the old
+    # endpoint; the next call must run afresh.
+    _cli_cache_clear()
+    base_url = data.get("base_url")
+    return {"ok": True, "path": fused_settings_path(),
+            "configured": fused_settings_configured(),
+            "base_url": base_url if isinstance(base_url, str) else None,
+            "web_url": workbench_base_url(CUSTOM_WORKBENCH_ENV)}
 
 
 def _cloned_names(env: str) -> set[str]:

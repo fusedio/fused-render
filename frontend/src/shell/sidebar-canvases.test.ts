@@ -147,6 +147,7 @@ function status(over: Partial<CanvasesStatus>): CanvasesStatus {
       prod: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/prod", cloned_count: 0, available: true },
       custom: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/custom", cloned_count: 0, available: true },
     },
+    settings_path: "/Users/x/.fused/settings.toml",
     ...over,
   };
 }

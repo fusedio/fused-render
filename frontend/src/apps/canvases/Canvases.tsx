@@ -41,6 +41,7 @@ import {
   type WorkbenchEnv,
 } from "./api";
 import { publishLoggedIn } from "./logged-in";
+import { FusedSettingsModal } from "./FusedSettingsModal";
 
 /** sync/start before opening a canvas. Another process owning the clone
  *  (409 `owned`) is not a reason to stay on the list: the workspace shows
@@ -148,6 +149,12 @@ export default function Canvases() {
   // Bumped on every environment change: a listing or preview batch that
   // departed under the old env must not land in the new env's page.
   const envGenRef = useRef(0);
+  // The ~/.fused/settings.toml editor. It opens by itself the first time a
+  // status says custom is picked and unconfigured (a dropdown pick or a
+  // `?env=custom` load alike); a dismissal is remembered until the pick
+  // changes, and the inline prompt reopens it on demand.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsDismissedRef = useRef(false);
   const env = status ? effectiveEnv(status, picked) : null;
 
   // Presigned preview URLs, keyed by collection id — the second, slower half
@@ -219,6 +226,15 @@ export default function Canvases() {
           setError(null);
           return;
         }
+        if (env === "custom" && s.envs?.custom?.available === false) {
+          // An unconfigured custom run is a hosted-prod run under another
+          // name (FUSED_ENV unset, no base_url) — and its "login" may well be
+          // the shared hosted store. Listing would show prod canvases as
+          // custom ones; the settings prompt stands in instead.
+          setCanvases(null);
+          setError(null);
+          return;
+        }
         const { canvases } = await listCanvases(env);
         if (gen !== envGenRef.current) return;
         setCanvases(canvases);
@@ -266,6 +282,19 @@ export default function Canvases() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Custom picked with nothing to point it at: open the editor rather than
+  // offer a "deployment" sign-in that, with FUSED_ENV unset and no settings
+  // file, would be a hosted-prod sign-in under another name.
+  const customUnconfigured =
+    env === "custom" && status?.envs?.custom?.available === false;
+  useEffect(() => {
+    if (!customUnconfigured) {
+      settingsDismissedRef.current = false;
+      return;
+    }
+    if (!settingsDismissedRef.current) setSettingsOpen(true);
+  }, [customUnconfigured]);
 
   // The sidebar's Canvases row reads the same fact this page does, so
   // hand it every status this page learns — the first read, the login poll's
@@ -459,14 +488,16 @@ export default function Canvases() {
                     if (isWorkbenchEnv(v)) onPickEnv(v);
                   }}
                 >
+                  {/* Custom is never disabled here: an unconfigured one opens
+                      the settings editor instead (customUnconfigured). */}
                   {WORKBENCH_ENVS.map((e) => (
-                    <option key={e} value={e} disabled={status.envs?.[e]?.available === false}>
+                    <option key={e} value={e}>
                       {ENV_LABELS[e]}
                     </option>
                   ))}
                 </select>
               </label>
-              {status.logged_in && (
+              {status.logged_in && !customUnconfigured && (
                 <>
                   <input
                     className="field-control canvases-search"
@@ -539,7 +570,25 @@ export default function Canvases() {
             or set <code>FUSED_RENDER_FUSED_BIN</code>.
           </p>
         )}
-        {status && status.cli_found && !status.logged_in && (
+        {status && status.cli_found && customUnconfigured && (
+          <div className="canvases-settings-prompt">
+            <p className="canvases-sub">
+              The custom environment follows <code>{status.settings_path}</code>, which
+              does not name a Fused deployment yet. Paste your deployment&rsquo;s config to
+              continue.
+            </p>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                settingsDismissedRef.current = false;
+                setSettingsOpen(true);
+              }}
+            >
+              Add settings.toml
+            </button>
+          </div>
+        )}
+        {status && status.cli_found && !status.logged_in && !customUnconfigured && (
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <button className="btn btn-primary" onClick={onLogin} disabled={loggingIn}>
               {loggingIn
@@ -560,22 +609,22 @@ export default function Canvases() {
             )}
           </div>
         )}
-        {status?.logged_in && env === null && (
+        {status?.logged_in && env === null && !customUnconfigured && (
           <p className="canvases-empty">
             {status.locked
               ? `Canvases are pinned to ${status.workbench_env} by FUSED_RENDER_WORKBENCH_ENV, which is not one of ${WORKBENCH_ENVS.join("/")}.`
               : `The default environment ${status.workbench_env} is not one of ${WORKBENCH_ENVS.join("/")}.`}
           </p>
         )}
-        {status?.logged_in && env && filtered === null && !error && <p>Loading canvases…</p>}
-        {status?.logged_in && env && filtered !== null && filtered.length === 0 && (
+        {status?.logged_in && env && !customUnconfigured && filtered === null && !error && <p>Loading canvases…</p>}
+        {status?.logged_in && env && !customUnconfigured && filtered !== null && filtered.length === 0 && (
           <p className="canvases-empty">
             {query
               ? "No canvases match your search."
               : "No canvases in this account yet — create one to get started."}
           </p>
         )}
-        {status?.logged_in && env && filtered !== null && filtered.length > 0 && (
+        {status?.logged_in && env && !customUnconfigured && filtered !== null && filtered.length > 0 && (
           <div className="canvases-grid">
             {filtered.map((canvas) => {
               // Either the free public URL from the listing, or the signed one
@@ -660,6 +709,19 @@ export default function Canvases() {
           </div>
         )}
       </div>
+      {settingsOpen && (
+        <FusedSettingsModal
+          onClose={() => {
+            settingsDismissedRef.current = true;
+            setSettingsOpen(false);
+          }}
+          onSaved={() => {
+            setSettingsOpen(false);
+            setError(null);
+            void refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
