@@ -1022,7 +1022,7 @@ def test_opening_a_legacy_clone_moves_it_and_starts_its_watcher(harness, stores)
     assert (harness.clones / "alpha" / "a.py").read_text() == "unpublished\n"
     assert not old.exists()
     # No pull ran: the clone moved with its own files, it was not re-fetched.
-    assert [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "pull"]
+    assert [c for c in harness.calls() if c[:2] == ["canvas", "pull"]
             and "--force" in c] == []
 
 

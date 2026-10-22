@@ -16,12 +16,12 @@ Behaviorally identical to the ``fused`` console script: click reads
 not this file's path — with ONE exception, and it is the reason this file is
 where the exception lives.
 
-A `fused workbench canvas push` whose target is a canvas clone is routed to
+A `fused canvas push` whose target is a canvas clone is routed to
 fused-render's own sync manager instead of being dispatched to the CLI (see
 ``_canvas_push``): the raw push skips the pre-push merge guard and can
 unrecoverably destroy a concurrent workbench edit, and it moves the remote
 behind the watcher's back. Because this shim is the path every shipping install
-takes — the packaged app bakes the pre-release fused into its own interpreter
+takes — the packaged app bakes the release fused into its own interpreter
 and has no console scripts — intercepting here covers every push a Claude
 session can make, with a real argv to match against. Anything not recognised
 with certainty falls through unchanged, and so does any failure to reach the
@@ -43,7 +43,7 @@ if __name__ == "__main__":
     if code is not None:
         sys.exit(code)
 
-    from fused._cli import main
+    from fused.cli import main
 
     # Before main(): a `--env` of a dev/PR env sets its own (higher) value
     # later; every other env would otherwise run on the SDK's 5 s default.

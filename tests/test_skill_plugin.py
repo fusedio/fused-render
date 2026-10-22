@@ -1004,7 +1004,7 @@ def test_appenv_canvases_root_matches_the_servers_own(monkeypatch, tmp_path):
     failure is silent.
 
     The third participant is `_canvas_push.canvases_root()`, the shim the
-    intercepted `fused workbench canvas push` runs through; all three resolve the
+    intercepted `fused canvas push` runs through; all three resolve the
     same folder or the feature breaks in a different place each time.
     """
     import fused_render.canvases as canvases_mod
@@ -1400,7 +1400,7 @@ def test_the_splice_strips_and_unwraps_marker_blocks():
     text = ("# Canvas\n"
             "Edit canvas.toml.\n"
             "<!-- fused-render:strip -->\n"
-            "Pull it locally first: `fused workbench canvas pull NAME`.\n"
+            "Pull it locally first: `fused canvas pull NAME`.\n"
             "<!-- /fused-render:strip -->\n"
             "<!-- fused-render:only (this block applies only inside a fused-render canvas clone)\n"
             "This folder is a live clone; never pull or push.\n"
