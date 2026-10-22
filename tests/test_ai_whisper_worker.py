@@ -1276,6 +1276,23 @@ def test_a_cancel_during_the_detector_prefetch_stands(
         worker.download("x/parakeet")
 
 
+def test_downloading_a_transformers_repo_does_not_fetch_the_detector(
+        worker, base, tmp_path, monkeypatch):
+    """No `model.bin` is not the same as "a sherpa export": a transformers-format
+    repo (neither format) must not pull Silero for a model this runner cannot
+    load."""
+    snap = tmp_path / "hf"
+    snap.mkdir()
+    (snap / "model.safetensors").write_bytes(b"")
+    (snap / "config.json").write_text("{}")
+    base.snapshot_dir = str(snap)
+    fetched = _detector_fetches(monkeypatch)
+
+    worker.download("openai/whisper-small")
+
+    assert fetched == []
+
+
 def test_downloading_a_whisper_repo_does_not_fetch_the_detector(
         worker, base, tmp_path, monkeypatch):
     """faster-whisper ships its own Silero; only the sherpa path needs ours."""

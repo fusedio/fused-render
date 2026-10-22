@@ -85,7 +85,7 @@ def download(model_id):
     snapshot = worker_base.download_snapshot(
         model_id,
         allow_patterns=list(formats.CT2_FILES + formats.SHERPA_TRANSDUCER_FILES))
-    if not os.path.isfile(os.path.join(snapshot, _CT2_WEIGHTS)):
+    if formats.is_sherpa_transducer_snapshot(set(os.listdir(snapshot))):
         stt_common.prefetch_detector(worker_base)
     return snapshot
 
