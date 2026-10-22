@@ -109,7 +109,7 @@
 // mirrored off the frame's own URL (same origin) as it changes — and the next
 // frame on that node boots on it. In memory only: a reload starts over.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
@@ -501,6 +501,10 @@ export default function CanvasWorkspace({
   const [repostSeq, setRepostSeq] = useState(0);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
+  const leftFracRef = useRef(leftFrac);
+  useLayoutEffect(() => {
+    leftFracRef.current = leftFrac;
+  }, [leftFrac]);
   const [dragging, setDragging] = useState(false);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -792,8 +796,12 @@ export default function CanvasWorkspace({
     observer.observe(row);
     return () => observer.disconnect();
   }, [sideOpen, leftFrac, embedded]);
+  // Written after commit, not during render: a discarded render must not
+  // leave a pane state the message handler reads that was never shown.
   const sidePanelStateRef = useRef({ open: sideOpen, code: codePanelOpen, width: sideWidth });
-  sidePanelStateRef.current = { open: sideOpen, code: codePanelOpen, width: sideWidth };
+  useLayoutEffect(() => {
+    sidePanelStateRef.current = { open: sideOpen, code: codePanelOpen, width: sideWidth };
+  }, [sideOpen, codePanelOpen, sideWidth]);
   const sendCodePanelState = useCallback(() => {
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
@@ -1098,6 +1106,9 @@ export default function CanvasWorkspace({
       const here = canvasNameFromPath(window.location.pathname);
       if (!here || here.env !== env || here.name !== name) return;
       const next = nodeFromUrl();
+      // A URL naming no node states the pane's own shut/open (`side=off`,
+      // sideOpenFromUrl); one naming a node asks to see its pane (below).
+      if (!next) setSideOpen(sideOpenFromUrl());
       const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
       const cur = nodeRef.current;
@@ -1288,10 +1299,13 @@ export default function CanvasWorkspace({
         setNodeTab("code");
       }
       if (type === "fused-embed-open-side" || type === "fused-embed-close-side") {
-        // The workbench's right-edge chips (header).
+        // The workbench's right-edge chips (header). A close also drops a
+        // Code request still waiting on its selection echo: the close wins.
         if (embedded) return;
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
-        setSideOpen(type === "fused-embed-open-side");
+        const open = type === "fused-embed-open-side";
+        if (!open) pendingCodeRef.current = null;
+        setSideOpen(open);
       }
     };
     window.addEventListener("message", onMessage);
@@ -1521,7 +1535,9 @@ export default function CanvasWorkspace({
   // pointer-events are disabled on both panes while dragging).
   useEffect(() => {
     if (!dragging) return;
-    let prevFrac: number | null = null;
+    // Seeded from the seam's position as the drag starts, so the first tick
+    // pans like every later one.
+    let prevFrac: number | null = leftFracRef.current;
     const onMove = (e: MouseEvent) => {
       const row = rowRef.current;
       if (!row) return;
@@ -1592,6 +1608,8 @@ export default function CanvasWorkspace({
         sendSelect(null);
         setNode(null);
       }
+      // …and shown: the button now says "see chat →", so a shut pane opens.
+      setSideOpen(true);
       setFixRunId(run_id);
     } catch (e) {
       setFixError((e as Error).message);
