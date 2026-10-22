@@ -90,6 +90,7 @@ import io
 import json
 import logging
 import os
+import tempfile
 import re
 import shutil
 import subprocess
@@ -329,13 +330,41 @@ def _read_fused_settings_text() -> tuple[str, bool]:
 
 def _write_fused_settings_text(text: str) -> None:
     """Write the TOML settings file atomically (temp + os.replace): a status
-    poll reading it mid-write must never see half a file."""
+    poll reading it mid-write must never see half a file. The temp name is
+    unique per call (handlers run in FastAPI's threadpool, so two Saves can
+    overlap), and a failed write leaves no temp behind."""
     path = fused_settings_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=os.path.dirname(path),
+            prefix=f"{os.path.basename(path)}.", suffix=".tmp", delete=False,
+        ) as fh:
+            tmp = fh.name
+            fh.write(text)
+        os.replace(tmp, path)
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+
+
+def _create_fused_settings_empty() -> bool:
+    """Create the TOML settings file empty, exclusively. True when this call
+    created it; False when another writer (an overlapping open, a Save) got
+    there first — in which case the caller re-reads rather than clobbering
+    what was just written."""
+    path = fused_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        return False
+    return True
 
 
 def _fused_settings_web_url() -> str:
@@ -848,8 +877,9 @@ def api_canvases_settings_open(x_fused: str | None = Header(default=None)):
         text, exists = _read_fused_settings_text()
         created = False
         if not exists:
-            _write_fused_settings_text("")
-            created = True
+            created = _create_fused_settings_empty()
+            if not created:
+                text, _ = _read_fused_settings_text()
     except OSError as exc:
         return _error(f"could not open {fused_settings_path()}: {exc}", 500)
     return {"path": fused_settings_path(), "text": text, "created": created,
