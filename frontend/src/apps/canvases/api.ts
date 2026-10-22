@@ -8,8 +8,10 @@
 // syncing at the same time — the clone lives at ~/Fused/canvas/<env>/<name>
 // and its watcher, CLI runs and embed all target that env. The `workbench_env`
 // preference is only the DEFAULT (the catalog's initial pick); nothing here
-// reads it. login / logout / token / status stay env-less: one credentials
-// file serves both environments.
+// reads it. login / logout / token / status take an OPTIONAL env: prod and
+// unstable share one `fused login` store, but custom has its own `[auth]`
+// (its deployment's tenant), so a caller about one canvas names its env and
+// one that means "this machine's login" (Settings, Share, sidebar) omits it.
 import { getJson, postJson } from "@platform/lib/api";
 import { ownerFromError, type SyncLogEvent, type SyncOwner, type SyncState } from "./sync-state";
 
@@ -19,7 +21,11 @@ const GUARD = { headers: { "X-Fused": "1" } };
 
 export interface CanvasesStatus {
   cli_found: boolean;
+  /** `auth_env`'s `fused login` store exists. */
   logged_in: boolean;
+  /** Which env's login `logged_in` / `creds_stamp` describe: the `env` the
+   *  status was asked about, else the default env. */
+  auth_env: string;
   /** Credentials-file mtime, or null — changes when a (re-)login completes. */
   creds_stamp: number | null;
   login_in_flight: boolean;
@@ -209,7 +215,10 @@ export interface SyncStatus {
   error: string | null;
 }
 
-export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
+/** `logged_in` / `creds_stamp` describe `env`'s login when given (else the
+ *  default env's); `auth_env` says which. */
+export const getCanvasesStatus = (env?: WorkbenchEnv | null) =>
+  getJson<CanvasesStatus>(env ? `/api/canvases/status?env=${env}` : "/api/canvases/status");
 
 /** The account handle. Handles are per environment: the canvas workspace
  *  names its canvas's env (the handle goes into the workbench URL); a caller
@@ -221,7 +230,8 @@ export const getWhoami = (env?: WorkbenchEnv) =>
     GUARD,
   );
 
-export const startLogin = () => postJson<{ ok: boolean }>("/api/canvases/login", {});
+export const startLogin = (env?: WorkbenchEnv | null) =>
+  postJson<{ ok: boolean }>(env ? `/api/canvases/login?env=${env}` : "/api/canvases/login", {});
 
 export const cancelLogin = () =>
   postJson<{ ok: boolean }>("/api/canvases/login/cancel", {});
@@ -241,7 +251,8 @@ export const getCanvasPreviews = (env: WorkbenchEnv, ids: string[]) =>
 export const createCanvas = (env: WorkbenchEnv, name: string) =>
   postJson<{ ok: boolean; name: string }>("/api/canvases/create", { name, env });
 
-export const logout = () => postJson<{ ok: boolean }>("/api/canvases/logout", {});
+export const logout = (env?: WorkbenchEnv | null) =>
+  postJson<{ ok: boolean }>(env ? `/api/canvases/logout?env=${env}` : "/api/canvases/logout", {});
 
 export const cloneCanvas = (env: WorkbenchEnv, name: string) =>
   postJson<{ ok: boolean; dir: string }>("/api/canvases/clone", { name, env });
@@ -386,5 +397,7 @@ export const syncEventsUrl = (env: WorkbenchEnv, name: string) =>
 export const fixWithClaude = (env: WorkbenchEnv, name: string) =>
   postJson<{ ok: boolean; run_id: string }>("/api/canvases/fix", { name, env });
 
-export const getAccessToken = () =>
-  getJson<{ access_token: string }>("/api/canvases/token", GUARD);
+/** The token for `env`'s workbench — the CANVAS's env, so a custom canvas
+ *  gets its own deployment's login, never the hosted one. */
+export const getAccessToken = (env: WorkbenchEnv) =>
+  getJson<{ access_token: string }>(`/api/canvases/token?env=${env}`, GUARD);

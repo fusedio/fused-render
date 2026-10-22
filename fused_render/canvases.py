@@ -228,12 +228,11 @@ _FUSED_API_WEB_URLS = {
 }
 
 
-def fused_settings_base_url() -> str:
-    """The API `base_url` fused loads from `~/.fused/settings.toml` (else
-    `settings.json`), else fused's default — what a custom-environment run,
-    with FUSED_ENV unset, actually talks to. Like fused, a file that does not
-    parse is skipped for the next one; a parsed file without `base_url` means
-    the default."""
+def _fused_settings() -> dict:
+    """The settings fused loads from `~/.fused/settings.toml` (else
+    `settings.json`), or {} — what a custom-environment run, with FUSED_ENV
+    unset, actually uses. Like fused, a file that does not parse is skipped
+    for the next one."""
     for raw in _FUSED_SETTINGS_FILES:
         path = os.path.expanduser(raw)
         try:
@@ -245,9 +244,24 @@ def fused_settings_base_url() -> str:
             logger.warning("could not read %s for the custom canvas environment: %s",
                            path, exc)
             continue
-        value = data.get("base_url") if isinstance(data, dict) else None
-        return value if isinstance(value, str) and value else _FUSED_DEFAULT_API_URL
-    return _FUSED_DEFAULT_API_URL
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def fused_settings_base_url() -> str:
+    """The API `base_url` fused loads from its settings file, else fused's
+    default (a parsed file without `base_url` means the default)."""
+    value = _fused_settings().get("base_url")
+    return value if isinstance(value, str) and value else _FUSED_DEFAULT_API_URL
+
+
+def _fused_settings_credentials_path() -> str:
+    """Where a custom-environment run keeps its `fused login` credentials:
+    the settings file's `[auth] credentials_path` (a custom deployment has its
+    own Auth0 tenant, D1412), else fused's `AuthOptions` default."""
+    auth = _fused_settings().get("auth")
+    value = auth.get("credentials_path") if isinstance(auth, dict) else None
+    return value if isinstance(value, str) and value else "~/.fused/credentials"
 
 
 def fused_settings_present() -> bool:
@@ -469,19 +483,24 @@ def _kick_workbench_skills() -> None:
                      daemon=True).start()
 
 
-def _credentials_file() -> str:
-    # The `fused login` store (fused-py _options.py: ~/.fused/credentials).
-    # The env override is ours (tests, relocated stores) — the fused package
-    # itself points elsewhere only via its settings file.
-    return os.environ.get("FUSED_RENDER_FUSED_CREDENTIALS") or os.path.expanduser(
-        "~/.fused/credentials"
-    )
+def credentials_file(env: str | None = None) -> str:
+    # The `fused login` store `env`'s runs read (None = the auth env, the
+    # default). prod/unstable: fused's default ~/.fused/credentials —
+    # `fused._env()` resets `[auth]` to the hosted tenant. custom: FUSED_ENV is
+    # unset, so fused keeps the settings file's `[auth] credentials_path`.
+    # The env override is ours (tests, relocated stores) and wins for all.
+    override = os.environ.get("FUSED_RENDER_FUSED_CREDENTIALS")
+    if override:
+        return override
+    if (env or _auth_env()) == CUSTOM_WORKBENCH_ENV:
+        return os.path.expanduser(_fused_settings_credentials_path())
+    return os.path.expanduser("~/.fused/credentials")
 
 
-def _logged_in() -> bool:
+def _logged_in(env: str | None = None) -> bool:
     # Presence-only: the CLI refreshes an expired-but-refreshable token
     # silently; the CLI stays the authority at action time.
-    return os.path.isfile(_credentials_file())
+    return os.path.isfile(credentials_file(env))
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -585,26 +604,45 @@ def _watch_login(login: _ActiveLogin) -> None:
         login.proc.wait()
 
 
+def _status_auth_env(env: str) -> str:
+    """The env whose login `/api/canvases/status?env=` reports: `env` when it
+    is one this process serves, else the auth env. Lenient on purpose — the
+    catalog asks with its URL's pick before it knows about a pin, and a cheap
+    unguarded read should not 400 over that; `auth_env` in the answer says
+    which login was described."""
+    if env:
+        value, bad = _require_env(env)
+        if bad is None:
+            return value
+    return _auth_env()
+
+
 @router.get("/api/canvases/status")
-def api_canvases_status():
+def api_canvases_status(env: str = ""):
     """Cheap local read: CLI presence, login-file presence, in-flight login,
     and per environment its workbench origin, clone folder and clone count.
 
-    Env-less on purpose: one credentials file serves both environments, and
-    the page needs every env's `base_url` (the workspace's iframe and
-    postMessage origin) and counts (the Preferences row) in one read. The
+    `logged_in` / `creds_stamp` describe ONE environment's `fused login`
+    store: `env`'s when given (the catalog names its pick), else the default
+    env's. prod and unstable share one store; custom has its own
+    (`credentials_file`). The rest is every env at once: the page needs each
+    env's `base_url` (the workspace's iframe and postMessage origin) and
+    counts (the Preferences row) in one read. The
     username needed for the workbench slug URL is NOT here — it costs a
     control-plane call per env, so it lives behind guarded
     /api/canvases/whoami?env= instead.
     """
     cli = fused_cli()
+    auth_env = _status_auth_env(env)
     try:
-        stamp = os.path.getmtime(_credentials_file())
+        stamp = os.path.getmtime(credentials_file(auth_env))
     except OSError:
         stamp = None
     return {
         "cli_found": cli is not None,
-        "logged_in": _logged_in(),
+        "logged_in": _logged_in(auth_env),
+        # Which env's login the two fields around this describe.
+        "auth_env": auth_env,
         # Credentials-file mtime: a re-login over a STALE-but-present store
         # never flips logged_in, so the client watches this stamp change to
         # know the browser flow completed.
@@ -727,11 +765,28 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
     return {"handle": handle, "raw": data}
 
 
+def _optional_env(env: str) -> tuple[str | None, JSONResponse | None]:
+    """A credential call's env: validated when given (400/423), else the auth
+    env. Credentials are per env only through custom's own `[auth]`, so the
+    callers that just mean "this machine's Fused login" (Settings, Share)
+    omit it."""
+    if not env:
+        return _auth_env(), None
+    return _require_env(env)
+
+
 @router.post("/api/canvases/login")
-def api_canvases_login(x_fused: str | None = Header(default=None)):
+def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)):
+    """Start the browser `fused login` for `env` (default: the auth env).
+    A custom deployment signs in against the settings file's `[auth]`
+    tenant, and only a run with FUSED_ENV unset (`_cli_env`) reads it. One
+    login at a time, whatever its env."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    env, bad = _optional_env(env)
+    if bad is not None:
+        return bad
     cli = fused_cli()
     if cli is None:
         return _no_cli_error()
@@ -739,8 +794,8 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
     with _LOGIN_LOCK:
         login = _active_login
         if login is None or login.proc.poll() is not None:
-            env = _cli_env(cli, _auth_env())
-            env["PYTHONUNBUFFERED"] = "1"
+            child = _cli_env(cli, env)
+            child["PYTHONUNBUFFERED"] = "1"
             # The CLI's own login gives the browser only 30s before its
             # callback server dies (fused.workbench._auth), which loses real
             # human sign-ins. When the CLI is our own interpreter, run the
@@ -762,7 +817,7 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    env=env,
+                    env=child,
                 )
             except OSError as e:
                 return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
@@ -787,8 +842,14 @@ def api_canvases_login_cancel(x_fused: str | None = Header(default=None)):
 
 
 @router.get("/api/canvases/token")
-def api_canvases_token(x_fused: str | None = Header(default=None)):
+def api_canvases_token(env: str = "", x_fused: str | None = Header(default=None)):
     """The `fused login` access token, for seeding the workbench iframe.
+
+    `env` is the CANVAS's environment, and the token comes from that env's
+    login: the iframe is that env's workbench origin, so a custom canvas must
+    get the custom deployment's own `[auth]` token — never the hosted one,
+    which its tenant would reject and which must not be handed to another
+    origin (D1412). Omitted, it is the auth env (older callers).
 
     Guarded (D36): this hands a real credential to the caller — the loopback
     trust model means any local page could otherwise read it with a blind GET.
@@ -806,7 +867,10 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    if not _logged_in():
+    env, bad = _optional_env(env)
+    if bad is not None:
+        return bad
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in from the Canvases page", 409)
     cli = fused_cli()
     if cli is not None and not cli.external:
@@ -819,7 +883,7 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
                 encoding="utf-8",
                 errors="replace",
                 timeout=TOKEN_TIMEOUT,
-                env=_cli_env(cli, _auth_env()),
+                env=_cli_env(cli, env),
             )
         except subprocess.TimeoutExpired:
             return _error(f"token refresh timed out after {int(TOKEN_TIMEOUT)}s", 502)
@@ -833,7 +897,7 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
         return {"access_token": token}
     # External-CLI fallback: the raw store, no refresh.
     try:
-        with open(_credentials_file(), encoding="utf-8") as f:
+        with open(credentials_file(env), encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
         return _error(f"could not read the fused credentials file: {e}", 502)
@@ -1245,7 +1309,7 @@ def api_canvases_list(env: str = "", x_fused: str | None = Header(default=None))
     env, bad = _require_env(env)
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     canvases, err = _list_entries(env)
     if err is not None:
@@ -1308,7 +1372,7 @@ def api_canvases_previews(
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     ids = body.get("ids")
     if not isinstance(ids, list):
@@ -1380,7 +1444,7 @@ def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(def
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     proc, err = _run_cli(["workbench", "canvas", "create", name], LIST_TIMEOUT, env)
     if err is not None:
@@ -1389,25 +1453,34 @@ def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(def
 
 
 @router.post("/api/canvases/logout")
-def api_canvases_logout(x_fused: str | None = Header(default=None)):
+def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    env, bad = _optional_env(env)
+    if bad is not None:
+        return bad
     # A completing browser login could rewrite the credentials file right
     # after we clear it — cancel it first.
     login = _reap_login()
     if login is not None:
         login.proc.terminate()
-    # Pause every watcher — both environments': they share the one
-    # credentials file — for the CLI call (no push/pull spam using
-    # about-to-be-cleared credentials) but don't stop them until logout
-    # actually succeeds — a failed logout leaves the user signed in, and
-    # stopping first would leave sync dead until a canvas is reopened.
+    # Pause every watcher on the store being cleared — prod's and unstable's
+    # share one; custom's may be its own (`credentials_file`) — for the CLI
+    # call (no push/pull spam using about-to-be-cleared credentials) but
+    # don't stop them until logout actually succeeds — a failed logout leaves
+    # the user signed in, and stopping first would leave sync dead until a
+    # canvas is reopened.
+    store = credentials_file(env)
+
+    def on_store() -> list:
+        return [(key, m) for key, m in _syncs.items() if credentials_file(m.env) == store]
+
     with _SYNC_LOCK:
-        managers = list(_syncs.values())
+        managers = [m for _, m in on_store()]
     for manager in managers:
         manager.pause()
-    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT, _auth_env())
+    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT, env)
     if err is not None:
         # Still signed in — resume so sync keeps working until the user
         # retries. Resuming a manager we're about to stop (success path)
@@ -1417,9 +1490,10 @@ def api_canvases_logout(x_fused: str | None = Header(default=None)):
             manager.resume(rebaseline=False)
         return err
     with _SYNC_LOCK:
-        managers = list(_syncs.values())
-        _syncs.clear()
-    for manager in managers:
+        signed_out = on_store()
+        for key, _ in signed_out:
+            del _syncs[key]
+    for _, manager in signed_out:
         manager.stop()
     return {"ok": True}
 
@@ -1435,7 +1509,7 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     # Fetch/refresh the `workbench` skills, whose names the CLAUDE.md seeded
     # below uses (`workbench:canvas-toml` and friends), and publish the root for

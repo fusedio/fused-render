@@ -137,6 +137,7 @@ function status(over: Partial<CanvasesStatus>): CanvasesStatus {
   return {
     cli_found: true,
     logged_in: true,
+    auth_env: "prod",
     creds_stamp: null,
     login_in_flight: false,
     workbench_env: "prod",

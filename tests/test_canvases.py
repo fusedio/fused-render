@@ -144,7 +144,8 @@ def main():
     if plain[:2] == ["canvas", "create"]:
         return
     if plain[:1] == ["logout"]:
-        os.remove(os.environ["FUSED_RENDER_FUSED_CREDENTIALS"])
+        os.remove(os.environ.get("FUSED_STUB_LOGOUT_FILE")
+                  or os.environ["FUSED_RENDER_FUSED_CREDENTIALS"])
         return
     sys.stderr.write("Error: unknown stub command\n")
     sys.exit(2)
@@ -1117,6 +1118,109 @@ def test_token_external_cli_reads_store(harness):
 def test_token_requires_login(harness):
     res = harness.client.get("/api/canvases/token", headers=GUARD)
     assert res.status_code == 409
+
+
+# -- per-env credentials: custom's own `[auth]` store (D1412) -------------------
+
+
+def _custom_auth_home(monkeypatch, tmp_path, auth: bool = True):
+    """HOME with a `~/.fused/settings.toml` naming its own `[auth]` store, and
+    the harness's store override dropped so the per-env rule decides.
+    Returns (prod/unstable store, custom store)."""
+    home = tmp_path / "home"
+    (home / ".fused").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("FUSED_RENDER_FUSED_CREDENTIALS", raising=False)
+    toml = 'base_url = "https://abc.fused.io/server/v1"\n'
+    if auth:
+        toml += '[auth]\ncredentials_path = "~/.fused/credentials-abc"\n'
+    (home / ".fused" / "settings.toml").write_text(toml, encoding="utf-8")
+    return home / ".fused" / "credentials", home / ".fused" / "credentials-abc"
+
+
+def _write_token(path, token: str) -> None:
+    path.write_text(json.dumps({"access_token": token}), encoding="utf-8")
+
+
+def test_custom_reads_the_settings_files_auth_store(tmp_path, monkeypatch):
+    """custom runs leave FUSED_ENV unset, so fused keeps the settings file's
+    `[auth] credentials_path`; prod/unstable reset to the hosted default. No
+    `[auth]` path means fused's default store; the test override wins all."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    assert canvases_mod.credentials_file("custom") == str(custom)
+    assert canvases_mod.credentials_file("prod") == str(hosted)
+    assert canvases_mod.credentials_file("unstable") == str(hosted)
+    _custom_auth_home(monkeypatch, tmp_path / "plain", auth=False)
+    assert canvases_mod.credentials_file("custom").endswith("/.fused/credentials")
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", "/x/creds")
+    assert canvases_mod.credentials_file("custom") == "/x/creds"
+
+
+def test_status_and_token_follow_the_named_envs_login(harness, tmp_path, monkeypatch):
+    """A custom canvas's iframe must get the custom deployment's own token,
+    never the hosted one — its tenant rejects it, and it must not be handed
+    to another origin. Signed in to fused.io only, custom reads signed out."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    _write_token(hosted, "hosted-tok")
+    body = harness.client.get("/api/canvases/status?env=custom").json()
+    assert (body["auth_env"], body["logged_in"], body["creds_stamp"]) == ("custom", False, None)
+    body = harness.client.get("/api/canvases/status").json()
+    assert (body["auth_env"], body["logged_in"]) == (ENV, True)
+    assert harness.client.get("/api/canvases/token?env=custom", headers=GUARD).status_code == 409
+    assert harness.client.get("/api/canvases/token?env=prod",
+                              headers=GUARD).json()["access_token"] == "hosted-tok"
+    _write_token(custom, "abc-tok")
+    body = harness.client.get("/api/canvases/status?env=custom").json()
+    assert body["logged_in"] is True and body["creds_stamp"] is not None
+    assert harness.client.get("/api/canvases/token?env=custom",
+                              headers=GUARD).json()["access_token"] == "abc-tok"
+    # Listing a custom catalog checks custom's own login too.
+    os.remove(custom)
+    assert harness.client.get("/api/canvases/list?env=custom", headers=GUARD).status_code == 409
+
+
+def test_status_with_an_unusable_env_describes_the_default_login(harness, monkeypatch):
+    """Cheap and unguarded: a stale or pinned-away pick is not a 400, it falls
+    back to the auth env and says so in `auth_env`."""
+    for env in ("staging", OTHER_ENV):
+        if env == OTHER_ENV:
+            monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", ENV)
+        res = harness.client.get(f"/api/canvases/status?env={env}")
+        assert res.status_code == 200
+        assert res.json()["auth_env"] == ENV
+
+
+def test_login_for_custom_runs_with_fused_env_unset(harness, tmp_path, monkeypatch):
+    """The custom sign-in must reach the settings file's `[auth]` tenant, which
+    only a run with FUSED_ENV unset reads; a bad env is refused."""
+    _custom_auth_home(monkeypatch, tmp_path)
+    assert harness.client.post("/api/canvases/login?env=staging", headers=GUARD).status_code == 400
+    res = harness.client.post("/api/canvases/login?env=custom", headers=GUARD)
+    assert res.status_code == 200
+    canvases_mod._active_login.proc.wait(10)
+    assert [e for e, argv in harness.env_calls() if "login" in argv] == [None]
+
+
+def test_logout_for_custom_stops_only_its_stores_watchers(harness, tmp_path, monkeypatch):
+    """custom's login is its own store: signing out of it leaves the hosted
+    envs' watchers (and their store) alone."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    _write_token(hosted, "hosted-tok")
+    _write_token(custom, "abc-tok")
+    for env in (ENV, "custom"):
+        assert harness.client.post("/api/canvases/clone", json={"env": env, "name": "alpha"},
+                                   headers=GUARD).status_code == 200
+        harness.client.post("/api/canvases/sync/start", json={"env": env, "name": "alpha"},
+                            headers=GUARD)
+    hosted_mgr = canvases_mod._syncs.get((ENV, "alpha"))
+    custom_mgr = canvases_mod._syncs.get(("custom", "alpha"))
+    assert hosted_mgr is not None and custom_mgr is not None
+    monkeypatch.setenv("FUSED_STUB_LOGOUT_FILE", str(custom))
+    assert harness.client.post("/api/canvases/logout?env=custom", headers=GUARD).status_code == 200
+    assert not custom.exists() and hosted.exists()
+    assert custom_mgr.stop_event.is_set()
+    assert not hosted_mgr.stop_event.is_set()
+    assert list(canvases_mod._syncs) == [(ENV, "alpha")]
 
 
 # -- shim-backed sync: manifest probe + per-file three-way merge ---------------

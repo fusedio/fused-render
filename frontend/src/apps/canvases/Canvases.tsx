@@ -187,7 +187,9 @@ export default function Canvases() {
   const refresh = useCallback(async () => {
     const gen = envGenRef.current;
     try {
-      const s = await getCanvasesStatus();
+      // The PICKED env's login (custom has its own `[auth]`, D1412); with no
+      // pick yet, the default env's — the same env `effectiveEnv` lands on.
+      const s = await getCanvasesStatus(pickedRef.current);
       setStatus(s);
       if (s.logged_in) {
         setLoggingIn(false);
@@ -246,8 +248,11 @@ export default function Canvases() {
   // its own minute-long poll. The whole status goes over, not just the boolean:
   // the 401 downgrade below is a verdict on a SPECIFIC credentials store, and
   // `creds_stamp` is what names it (see ./logged-in).
+  // Only a status about the DEFAULT env's login, though: the sidebar's row is
+  // "this machine has a Fused account", and a custom pick's own `[auth]`
+  // login says nothing about that.
   useEffect(() => {
-    if (status) publishLoggedIn(status);
+    if (status && status.auth_env === status.workbench_env) publishLoggedIn(status);
   }, [status]);
 
   // While a login is in flight, poll status until logged_in flips — or the
@@ -261,7 +266,7 @@ export default function Canvases() {
     // stops future ticks, not a request that's already on the wire.
     let cancelled = false;
     pollRef.current = window.setInterval(() => {
-      void getCanvasesStatus().then((s) => {
+      void getCanvasesStatus(pickedRef.current).then((s) => {
         if (cancelled) return;
         setStatus(s);
         const completed =
@@ -286,7 +291,7 @@ export default function Canvases() {
     setError(null);
     try {
       loginStampRef.current = status?.creds_stamp ?? null;
-      await startLogin();
+      await startLogin(env);
       setLoggingIn(true);
     } catch (e) {
       setError((e as Error).message);
@@ -300,7 +305,7 @@ export default function Canvases() {
     // "sign-in was not completed" error over this.
     setLoggingIn(false);
     try {
-      await logout();
+      await logout(env);
       setCanvases(null);
       // Signed URLs belong to the account that just signed out.
       setPreviews({});
@@ -375,7 +380,10 @@ export default function Canvases() {
       <div className="canvases-inner">
         <div className="canvases-head">
           <h1 className="canvases-title">Workbench Canvases</h1>
-          {status?.logged_in && env && (
+          {/* The picker shows signed out too: each env can be its own login
+              (custom's `[auth]`, D1412), so a signed-out pick must still be
+              able to switch back. The rest needs that env's login. */}
+          {status?.cli_found && env && (
             <div className="canvases-head-actions">
               <label
                 className="canvases-env"
@@ -400,60 +408,64 @@ export default function Canvases() {
                   ))}
                 </select>
               </label>
-              <input
-                className="field-control canvases-search"
-                type="search"
-                placeholder="Search canvases"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              {creating ? (
-                <form
-                  className="canvases-new-form"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void onCreate();
-                  }}
-                >
+              {status.logged_in && (
+                <>
                   <input
-                    className="field-control"
-                    autoFocus
-                    placeholder="new_canvas_name"
-                    value={newName}
-                    // Spaces aren't legal in canvas names — typing one lands
-                    // an underscore instead of silently disabling Create.
-                    onChange={(e) => setNewName(e.target.value.replace(/\s+/g, "_"))}
-                    disabled={createBusy}
+                    className="field-control canvases-search"
+                    type="search"
+                    placeholder="Search canvases"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
                   />
-                  <button
-                    className="btn btn-primary"
-                    type="submit"
-                    disabled={createBusy || !NAME_RE.test(newName.trim())}
-                  >
-                    {createBusy ? "Creating…" : "Create"}
-                  </button>
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => {
-                      setCreating(false);
-                      setNewName("");
-                    }}
-                    disabled={createBusy}
-                  >
-                    Cancel
-                  </button>
-                </form>
-              ) : (
-                <button className="btn btn-primary" onClick={() => setCreating(true)}>
-                  + New canvas
-                </button>
+                  {creating ? (
+                    <form
+                      className="canvases-new-form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void onCreate();
+                      }}
+                    >
+                      <input
+                        className="field-control"
+                        autoFocus
+                        placeholder="new_canvas_name"
+                        value={newName}
+                        // Spaces aren't legal in canvas names — typing one lands
+                        // an underscore instead of silently disabling Create.
+                        onChange={(e) => setNewName(e.target.value.replace(/\s+/g, "_"))}
+                        disabled={createBusy}
+                      />
+                      <button
+                        className="btn btn-primary"
+                        type="submit"
+                        disabled={createBusy || !NAME_RE.test(newName.trim())}
+                      >
+                        {createBusy ? "Creating…" : "Create"}
+                      </button>
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() => {
+                          setCreating(false);
+                          setNewName("");
+                        }}
+                        disabled={createBusy}
+                      >
+                        Cancel
+                      </button>
+                    </form>
+                  ) : (
+                    <button className="btn btn-primary" onClick={() => setCreating(true)}>
+                      + New canvas
+                    </button>
+                  )}
+                  <span className="canvases-account">
+                    <button className="btn" onClick={() => void onLogout()}>
+                      Sign out
+                    </button>
+                  </span>
+                </>
               )}
-              <span className="canvases-account">
-                <button className="btn" onClick={() => void onLogout()}>
-                  Sign out
-                </button>
-              </span>
             </div>
           )}
         </div>
@@ -472,7 +484,11 @@ export default function Canvases() {
         {status && status.cli_found && !status.logged_in && (
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <button className="btn btn-primary" onClick={onLogin} disabled={loggingIn}>
-              {loggingIn ? "Waiting for browser sign-in…" : "Sign in to Fused"}
+              {loggingIn
+                ? "Waiting for browser sign-in…"
+                : env === "custom"
+                  ? "Sign in to your Fused deployment"
+                  : "Sign in to Fused"}
             </button>
             {loggingIn && (
               <span className="canvases-sub">
