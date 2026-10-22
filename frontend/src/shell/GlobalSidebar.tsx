@@ -36,7 +36,6 @@ import { appPageUrl, appPathFromPath, type CurrentApp } from "@shell/current-app
 import { railExtras } from "@shell/sidebar-rail-lib";
 import { displayName, isBot } from "@platform/lib/flavor";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
-import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
@@ -510,20 +509,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // lights the row. (The bare prefix is redirected to the default tab before
   // this runs, so it is matched for completeness rather than in practice.)
   const aiModelsActive = isAiModelsPath(pathname);
-  // PRIMARY NAV ONLY ONCE THERE IS AN ACCOUNT BEHIND IT. Signed out, the row
-  // would lead to a sign-in wall — the menu entry is the right weight for
-  // "there is a thing here you could set up"; a top-of-sidebar row is for a
-  // place you already work. Signed in it is one of the two or three things this
-  // machine is FOR, so it sits with Home and Tasks (see @apps/canvases/logged-in
-  // for why this is a shared store and not a one-shot probe).
-  const canvasesLoggedIn = useCanvasesLoggedIn();
-  // AND THE FEATURE HAS TO BE ON AT ALL (D427, default off). Two conditions,
-  // deliberately not one store: this one is "does this machine offer Canvases",
-  // the one above is "is there an account behind it". The MENU entry needs only
-  // this — it has always been ungated on login, since the page explains a
-  // signed-out state itself, and gating it on the account would delete the only
-  // affordance for reaching a feature you have not set up yet. The primary row
-  // needs both.
+  // THE FEATURE HAS TO BE ON (D427, default off): "does this machine offer
+  // Canvases". That is the WHOLE gate now (owner, 2026-10-22). It used to be a
+  // conjunction with "is there an account behind it" (D358), which on a fresh
+  // machine meant flipping the preference showed nothing at all until a sign-in
+  // had happened somewhere — the section the reader had just enabled was
+  // invisible, and the only door to setting it up was the settings menu. Now
+  // the Canvases section appears with the switch; its "+ Canvas" row opens the
+  // catalog, which explains a CLI-missing / signed-out state itself and is
+  // where sign-in happens. The menu entry below takes the same single gate.
   // FUSED BOT (platform/lib/flavor): the same shell wearing the bot app's
   // name shows Bots, Tasks and Preferences, and nothing else — no Canvases,
   // AI Models, Projects or Bookmarks rows, and a shorter settings menu. The
@@ -531,7 +525,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the explorer and the app page); only the doors in this column go.
   const bot = isBot();
   const canvasesEnabled = useCanvasesFeature() && !bot;
-  const canvasesInNav = canvasesEnabled && canvasesLoggedIn;
+  const canvasesInNav = canvasesEnabled;
   // The Marketplace (apps/marketplace, default off — marketplace-flag.ts):
   // a row after AI Models when the pref is on, never under Fused Bot. `null`
   // (the read not landed yet) is off, so nothing flashes in. PREFIX match:
@@ -810,6 +804,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the pinned bookmarks, in their sections' order, capped (sidebar-rail-lib).
   // The desk fetch runs only while the rail is on screen — expanded, the
   // sections own it. The canvases group wears the Canvases section's gate.
+  // (the feature on, nothing more)
   const { collapsed: sidebarCollapsed } = useSidebarState();
   useBookmarksVersion();
   const desk = useDeskAppsOrdered(sidebarCollapsed && !bot);
@@ -1075,8 +1070,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             listed by the bot, and there is no file tree to bookmark into. */}
         {!bot && <CurrentAppsSection />}
         {/* Canvases (2026-10-20): the clones on this machine, under Projects,
-            behind the primary row's own gate — the feature on AND an account
-            behind it (a clone with no login has no page that works). */}
+            behind the feature flag alone (owner, 2026-10-22) — signed out it
+            is the "+ Canvas" door into the catalog, which does the sign-in. */}
         {canvasesInNav && <CurrentAppsSection section="canvases" />}
         {!bot && <BookmarksSection />}
         <div className="sidebar-section sidebar-settings">

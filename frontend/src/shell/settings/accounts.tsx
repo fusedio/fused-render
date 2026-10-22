@@ -21,7 +21,6 @@ import {
   type CanvasesStatus,
   type WorkbenchEnv,
 } from "@apps/canvases/api";
-import { publishLoggedIn } from "@apps/canvases/logged-in";
 import {
   cancelHfLogin,
   getHfAuth,
@@ -80,7 +79,6 @@ export function FusedAccountControl() {
       setHandle(null);
     }
     setStatus(s);
-    publishLoggedIn(s);
     return s;
   }, []);
 
