@@ -45,6 +45,7 @@ import {
   SkippedFoldersControl,
 } from "./indexing";
 import { LanControl } from "./lan";
+import { ClaudeCliMissing } from "./claude";
 import { FusedAccountControl, HuggingFaceControl, WorkbenchEnvControl } from "./accounts";
 import {
   CallLogControl,
@@ -67,6 +68,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "agent-codex": CodexAgentControl,
   "agent-default": DefaultAgentControl,
   "claude-model": ClaudeModelPointer,
+  "claude-cli-missing": ClaudeCliMissing,
   engines: EnginesPointer,
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,

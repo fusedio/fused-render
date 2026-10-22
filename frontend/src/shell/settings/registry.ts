@@ -29,6 +29,7 @@ export type GroupId =
   | "general"
   | "features"
   | "ai"
+  | "claude-cli"
   | "tasks"
   | "apps"
   | "indexing"
@@ -76,6 +77,12 @@ export const GROUPS: readonly SettingsGroup[] = [
     blurb: "Off by default and still settling. Each one adds a sidebar row or a page when you turn it on.",
   },
   { id: "ai", nav: "bots", label: "AI & agents", blurb: "Which coding agents run your chats and tasks." },
+  {
+    id: "claude-cli",
+    nav: "bots",
+    label: "Claude Code CLI",
+    blurb: "The settings.json keys that shape the Claude sessions fused-render runs.",
+  },
   { id: "tasks", nav: "tasks", label: "Tasks", blurb: "How tasks queue, get titled and tell you they are done." },
   { id: "apps", nav: "apps", label: "Apps & sharing", blurb: "Git sync, sharing, and how app cards preview." },
   { id: "indexing", nav: "apps", label: "Files & search", blurb: "The file index behind Files search." },
@@ -130,6 +137,7 @@ export interface SettingsContext {
 }
 
 const claudeOnly = ({ claudeConfig }: SettingsContext) => claudeConfig;
+const claudeMissing = ({ claudeConfig }: SettingsContext) => !claudeConfig;
 
 const ENTRIES = [
   // ── General ──────────────────────────────────────────────────────────────
@@ -250,6 +258,20 @@ const ENTRIES = [
     description: "Which backend serves each local-model capability, and when idle models unload.",
     keywords: "engine inference local model gguf mlx llama unload idle memory",
     elsewhere: true,
+  },
+
+  // ── Claude Code CLI ──────────────────────────────────────────────────────
+  // The settings.json rows are data the server ships and are spliced in at
+  // runtime (settings/claude.tsx); this row is the group's only static one,
+  // shown on a machine without ~/.claude.
+  {
+    id: "claude-cli-missing",
+    group: "claude-cli",
+    section: "settings.json",
+    label: "Claude Code isn't installed",
+    description: "~/.claude was not found on this machine. Install Claude Code and its settings.json keys appear here.",
+    keywords: "claude code cli install settings.json",
+    available: claudeMissing,
   },
 
   // ── Tasks ────────────────────────────────────────────────────────────────

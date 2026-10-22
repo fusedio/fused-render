@@ -1,21 +1,18 @@
 // Claude Code page — `/claude-code?tab=<tab>`: Claude Code's own configuration
 // under ~/.claude, framed like Preferences: title and filter across the top, a
-// nav of the five tabs (Skills, the default, Memory, Plugins, MCP servers,
-// Settings) on the left, the tab's heading and cards on the right.
+// nav of the four tabs (Skills, the default, Memory, Plugins, MCP servers)
+// on the left, the tab's heading and cards on the right.
 // Each tab draws its own heading, so the description can carry a live count;
 // Skills also swaps between a list and a skill's editor.
 import { useEffect, useState } from "react";
-import { Blocks, Brain, Search, Server, SlidersHorizontal, Sparkles, X, type LucideIcon } from "lucide-react";
-import { useClaudeConfigStatus } from "@apps/claude_config/available";
+import { Blocks, Brain, Search, Server, Sparkles, X, type LucideIcon } from "lucide-react";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import {
-  ClaudeConfigProvider,
   ClaudeMcpTab,
   ClaudeMemoryTab,
   ClaudePluginsTab,
-  ClaudeSettingsTab,
   ClaudeSkillsTab,
 } from "./claude_code/tabs";
 
@@ -42,13 +39,6 @@ const TABS = [
     filter: "Filter MCP servers",
     blurb: "Servers Claude Code connects to for extra tools.",
   },
-  {
-    id: "settings",
-    label: "Settings",
-    icon: SlidersHorizontal,
-    filter: "Search settings",
-    blurb: "The settings.json keys that shape the Claude sessions fused-render runs.",
-  },
 ] as const satisfies readonly { id: string; label: string; icon: LucideIcon; filter: string; blurb: string }[];
 type TabId = (typeof TABS)[number]["id"];
 
@@ -67,7 +57,6 @@ function writeTab(tab: TabId) {
 }
 
 export default function ClaudeCode() {
-  const claudeConfig = useClaudeConfigStatus();
   const [tab, setTab] = useState<TabId>(readTab);
   const [filter, setFilter] = useState("");
   const current = TABS.find((t) => t.id === tab) ?? TABS[0];
@@ -81,7 +70,6 @@ export default function ClaudeCode() {
   };
 
   return (
-    <ClaudeConfigProvider available={claudeConfig === true}>
       <div className="settings-page">
         <div className="settings-header">
           <h1 className="settings-title">Claude Code</h1>
@@ -138,10 +126,8 @@ export default function ClaudeCode() {
             {tab === "memory" && <ClaudeMemoryTab filter={filter} {...head} />}
             {tab === "plugins" && <ClaudePluginsTab filter={filter} {...head} />}
             {tab === "mcp" && <ClaudeMcpTab filter={filter} {...head} />}
-            {tab === "settings" && <ClaudeSettingsTab filter={filter} {...head} />}
           </main>
         </div>
       </div>
-    </ClaudeConfigProvider>
   );
 }

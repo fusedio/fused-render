@@ -53,7 +53,7 @@ describe("the registry", () => {
     expect([...seen].sort((a, b) => a - b)).toEqual(seen);
     expect(navSections(GROUPS).map((s) => [s.section.id, s.groups.map((g) => g.id)])).toEqual([
       ["general", ["general", "features"]],
-      ["bots", ["ai"]],
+      ["bots", ["ai", "claude-cli"]],
       ["tasks", ["tasks"]],
       ["apps", ["apps", "indexing", "lan"]],
       ["other", ["integrations", "advanced"]],
@@ -210,6 +210,15 @@ describe("search", () => {
     const rows = visibleSettings(ctx({ claudeConfig: true }));
     expect(searchSettings(rows, "opus").map((h) => h.id)).toEqual(["claude-model"]);
     expect(searchSettings(all, "opus")).toEqual([]);
+  });
+
+  test("the Claude Code CLI group shows only its not-installed row without ~/.claude", () => {
+    const ids = (claudeConfig: boolean) =>
+      visibleSettings(ctx({ claudeConfig }))
+        .filter((e) => e.group === "claude-cli")
+        .map((e) => e.id as string);
+    expect(ids(false)).toEqual(["claude-cli-missing"]);
+    expect(ids(true)).toEqual([]);
   });
 
   test("Codex is findable by its own words and its account's", () => {

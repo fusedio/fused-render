@@ -56,6 +56,7 @@ export function rewriteLegacyUrl(url: string): string {
     const params = new URLSearchParams(q.startsWith("?") ? q.slice(1) : q);
     const tab = claudeConfigTab(params.get("cctab"));
     params.delete("cctab");
+    if (tab === "settings") return claudeCliUrl(params);
     if (tab) params.set("tab", tab);
     return claudeCodeUrl(params);
   }
@@ -65,11 +66,13 @@ export function rewriteLegacyUrl(url: string): string {
     const params = new URLSearchParams(q.slice(1));
     const tabParam = params.get("tab") ?? "";
     const s = params.get("s") ?? "";
-    if (tabParam.startsWith("claude") || s.startsWith("claude-")) {
+    // `?tab=claude-cli` is the Claude Code CLI group, which lives here.
+    if ((tabParam.startsWith("claude") && tabParam !== "claude-cli") || s.startsWith("claude-")) {
       const key = s.startsWith("claude-") ? s : tabParam;
+      const tab = PREFS_CLAUDE_TABS[key] ?? (key.startsWith("claude-pref:") ? "settings" : null);
+      if (tab === "settings") return claudeCliUrl(params);
       params.delete("tab");
       params.delete("s");
-      const tab = PREFS_CLAUDE_TABS[key] ?? (key.startsWith("claude-pref:") ? "settings" : null);
       if (tab) params.set("tab", tab);
       return claudeCodeUrl(params);
     }
@@ -98,6 +101,14 @@ export function rewriteLegacyUrl(url: string): string {
 function claudeCodeUrl(params: URLSearchParams): string {
   const q = params.toString();
   return "/claude-code" + (q ? "?" + q : "");
+}
+
+// The settings.json rows live in Preferences' Claude Code CLI group; a row id
+// (`s=claude-pref:<key>`) is kept, the dead ids of the old Settings group are not.
+function claudeCliUrl(params: URLSearchParams): string {
+  params.set("tab", "claude-cli");
+  if (!(params.get("s") ?? "").startsWith("claude-pref:")) params.delete("s");
+  return "/preferences?" + params.toString();
 }
 
 const PREFS_CLAUDE_TABS: Record<string, string> = {

@@ -190,7 +190,7 @@ export function PointerRow({ id, to, label }: { id: SettingId; to: string | (() 
 }
 
 export const ClaudeModelPointer = () => (
-  <PointerRow id="claude-model" to="/claude-code?tab=settings&s=claude-pref:model" label="Claude Code" />
+  <PointerRow id="claude-model" to="/preferences?tab=claude-cli&s=claude-pref:model" label="Claude Code" />
 );
 export const EnginesPointer = () => <PointerRow id="engines" to="/ai-models/engines" label="AI Models › Engines" />;
 

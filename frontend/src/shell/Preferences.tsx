@@ -30,6 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   SlidersHorizontal,
+  Terminal,
   Sparkles,
   ListChecks,
   LayoutGrid,
@@ -62,6 +63,7 @@ import {
   type GroupId,
   type SettingEntry,
 } from "./settings/registry";
+import { ClaudeConfigProvider, ClaudePrefRow, isClaudePref, useClaudePrefEntries } from "./settings/claude";
 import { searchSettings, tokenize } from "./settings/search";
 import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
@@ -71,6 +73,7 @@ const GROUP_ICONS: Record<GroupId, LucideIcon> = {
   general: SlidersHorizontal,
   features: ToggleRight,
   ai: Sparkles,
+  "claude-cli": Terminal,
   tasks: ListChecks,
   apps: LayoutGrid,
   indexing: FolderSearch,
@@ -102,6 +105,7 @@ function Section({
   const card = (
     <div className="settings-card">
       {entries.map((e) => {
+        if (isClaudePref(e)) return <ClaudePrefRow key={e.id} entry={e} />;
         const Control = CONTROLS[e.id as keyof typeof CONTROLS];
         return <Control key={e.id} prefs={prefs} onChange={onChange} />;
       })}
@@ -129,7 +133,11 @@ export default function Preferences() {
   // null until the probe answers: the page waits for it (with the prefs GET
   // it waits for anyway) rather than show General for a moment and then flip.
   const claudeConfig = useClaudeConfigStatus();
-  return <PreferencesPage claudeConfig={claudeConfig} />;
+  return (
+    <ClaudeConfigProvider available={claudeConfig === true}>
+      <PreferencesPage claudeConfig={claudeConfig} />
+    </ClaudeConfigProvider>
+  );
 }
 
 function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
@@ -166,12 +174,15 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
 
   const tokens = useMemo(() => tokenize(query), [query]);
   const searching = tokens.length > 0;
-  const loaded = prefs !== null && claudeConfig !== null;
+  // The catalog is read with the page: the nav's count for Claude Code CLI is
+  // every row, so the page waits for the rows the way it waits for the prefs.
+  const { rows: claudeRows, ready: claudeReady } = useClaudePrefEntries();
+  const loaded = prefs !== null && claudeConfig !== null && claudeReady;
   const entries = useMemo(() => {
     if (!prefs || claudeConfig === null) return [];
     const base: SettingEntry[] = visibleSettings({ prefs, bot, mac: isMac, claudeConfig });
-    return base;
-  }, [prefs, bot, claudeConfig]);
+    return [...base, ...claudeRows];
+  }, [prefs, bot, claudeConfig, claudeRows]);
   const groups = useMemo(() => visibleGroups(entries), [entries]);
   const sections = useMemo(() => navSections(groups), [groups]);
   const byId = (id: string) => entries.find((e) => e.id === id);
@@ -184,7 +195,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     el.scrollIntoView({ block: "center" });
     const t = window.setTimeout(() => setFlash(null), FLASH_MS);
     return () => window.clearTimeout(t);
-  }, [flash, prefs !== null]);
+  }, [flash, prefs !== null, entries.length]);
 
   const setQuery = (q: string) => {
     setQueryState(q);

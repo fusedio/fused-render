@@ -264,15 +264,19 @@ test("the Claude Config panel is the Claude tab set of the Agents page", () => {
   expect(row("marketplaces")).toBe("/claude-code?tab=plugins");
   expect(row("memory")).toBe("/claude-code?tab=memory");
   expect(row("skills")).toBe("/claude-code?tab=skills");
-  expect(row("statusline")).toBe("/claude-code?tab=settings");
+  expect(row("statusline")).toBe("/preferences?tab=claude-cli");
   expect(row("mcp")).toBe("/claude-code?tab=mcp");
-  expect(row("preferences")).toBe("/claude-code?tab=settings");
+  expect(row("preferences")).toBe("/preferences?tab=claude-cli");
   expect(row("history")).toBe("/claude-code");
   expect(row("profiles")).toBe("/claude-code");
   expect(row("claudemd")).toBe("/claude-code");
   expect(rewriteLegacyUrl("/claude-config?cctab=profiles&embed=1")).toBe("/claude-code?embed=1");
   expect(rewriteLegacyUrl("/preferences?tab=claude")).toBe("/claude-code");
   expect(rewriteLegacyUrl("/preferences?tab=claude-mcp")).toBe("/claude-code?tab=mcp");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-settings")).toBe("/preferences?tab=claude-cli");
+  expect(rewriteLegacyUrl("/preferences?s=claude-pref:model")).toBe("/preferences?s=claude-pref%3Amodel&tab=claude-cli");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-settings&s=claude-catalog")).toBe("/preferences?tab=claude-cli");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-cli")).toBe("/preferences?tab=claude-cli");
   expect(rewriteLegacyUrl("/preferences?tab=ai")).toBe("/preferences?tab=ai");
 });
 
