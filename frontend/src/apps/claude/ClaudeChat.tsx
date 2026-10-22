@@ -1661,6 +1661,14 @@ function ChatBody(props: ChatBodyProps) {
     recMarkPoint: (cx, cy, win, nearPath) => recorder.markPoint(cx, cy, win, nearPath ?? null),
   });
   annRef.current = ann;
+  // `noAnnTools` PINS THE CHAT VIEW (useNarrowView `chatViewOnly`), so the
+  // preview is never on screen and nothing can undo an armed mode: no seat,
+  // no toggle. The hook's arrival disarm runs at MOUNT, but the mode arms
+  // later, when the target arrives and `bootFromParam` reads `annmode=1` —
+  // so this watches the armed state itself and disarms whenever it comes on.
+  useEffect(() => {
+    if (props.noAnnTools && ann.armed) ann.arriveNarrowChat();
+  }, [props.noAnnTools, ann.armed, ann]);
   // The seam above, parked from an EFFECT — the most recently mounted chat owns
   // it, and a render React discarded must not.
   useEffect(() => {
