@@ -1,7 +1,8 @@
 // The sidebar's Canvases entry: one destination, named the same in every place
-// it appears, offered at all only once the feature is turned on (D427), shown
-// as primary nav only once this machine is ALSO signed in, and never lit twice
-// at once (D358, renamed in D372).
+// it appears, offered at all only once the feature is turned on (D427) — the
+// feature flag ALONE, with no sign-in half since 2026-10-22 (owner: on a new
+// machine the section has to appear the moment the flag is flipped) — and
+// never lit twice at once (D358, renamed in D372).
 //
 // Read out of the source, the way sidebar-tasks.test.ts reads its own wiring
 // claims: the parts that matter here are WHICH gate each site is behind and
@@ -9,12 +10,9 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { decideLoggedIn } from "@apps/canvases/logged-in";
-import type { CanvasesStatus } from "@apps/canvases/api";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
-const STORE = readFileSync(join(SHELL, "../apps/canvases/logged-in.ts"), "utf8");
 const PAGE = readFileSync(join(SHELL, "../apps/canvases/Canvases.tsx"), "utf8");
 const FLAG = readFileSync(join(SHELL, "../apps/canvases/feature-flag.ts"), "utf8");
 const PREFS_PAGE = readFileSync(join(SHELL, "settings/toggles.tsx"), "utf8");
@@ -37,15 +35,17 @@ describe("the sidebar's Canvases entry", () => {
     expect(PAGE).toMatch(/<h1 className="canvases-title">Workbench Canvases<\/h1>/);
   });
 
-  it("shows the Canvases section behind the feature-and-account gate, and no nav row", () => {
-    // The gate is the conjunction (D427): the feature is offered AND there is
-    // an account. It now guards the Canvases SECTION (the desk's canvas half,
-    // CurrentAppsSection); there is no primary row and no rail icon any more.
-    expect(SIDEBAR).toMatch(/const canvasesLoggedIn = useCanvasesLoggedIn\(\)/);
+  it("shows the Canvases section behind the feature flag alone, and no nav row", () => {
+    // ONE gate (owner, 2026-10-22): the feature is offered. It was the
+    // conjunction with "there is an account" (D427 over D358) until a new
+    // machine turned the flag on and saw nothing — the section the reader had
+    // just enabled waited on a sign-in that happens INSIDE it (the "+ Canvas"
+    // row opens the catalog, which hosts the sign-in). It guards the Canvases
+    // SECTION (the desk's canvas half, CurrentAppsSection); there is no
+    // primary row and no rail icon any more.
+    expect(SIDEBAR).not.toMatch(/useCanvasesLoggedIn|canvasesLoggedIn/);
     expect(SIDEBAR).toMatch(/const canvasesEnabled = useCanvasesFeature\(\)/);
-    expect(SIDEBAR).toMatch(
-      /const canvasesInNav = canvasesEnabled && canvasesLoggedIn/
-    );
+    expect(SIDEBAR).toMatch(/const canvasesInNav = canvasesEnabled;/);
     expect(SIDEBAR).toMatch(/\{canvasesInNav && <CurrentAppsSection section="canvases" \/>\}/);
     expect(SIDEBAR).not.toMatch(/id="canvases-link"/);
     expect(SIDEBAR).not.toMatch(/key: "canvases"/);
@@ -58,9 +58,9 @@ describe("the sidebar's Canvases entry", () => {
     // App.tsx's routing consults it.
     expect(APP).not.toMatch(/canvasesEnabled|useCanvasesFeature/);
     expect(APP).toMatch(/const isCanvases = pathname === "\/canvases"/);
-    // The menu entry is gated on the FEATURE ALONE — it has always been ungated
-    // on sign-in (the page explains a signed-out state itself), and gating it on
-    // the account would delete the only affordance for setting Canvases up.
+    // The menu entry is gated on the feature too — it has always been ungated
+    // on sign-in (the page explains a signed-out state itself), and since
+    // 2026-10-22 the section is gated the same way.
     expect(SIDEBAR).toMatch(
       /\.\.\.\(canvasesEnabled\s*\n?\s*\?\s*\n?\s*\[\{ href: "\/canvases", label: "Canvases"/
     );
@@ -74,8 +74,8 @@ describe("the sidebar's Canvases entry", () => {
     expect(FLAG).toMatch(/getPrefs(Shared)?\(\)/);
     expect(FLAG).not.toMatch(/setTimeout|setInterval/);
     expect(PREFS_PAGE).toMatch(/publishCanvasesEnabled\(next\.canvases\.enabled\)/);
-    // And a publish OUTRANKS a read already in flight — the same generation
-    // counter logged-in.ts keeps, for the same reason: a reader who lands on
+    // And a publish OUTRANKS a read already in flight — a generation counter,
+    // because a reader who lands on
     // /preferences and flips the checkbox before that first GET resolves would
     // otherwise watch the row they just enabled vanish when the pre-toggle
     // payload arrives.
@@ -94,60 +94,14 @@ describe("the sidebar's Canvases entry", () => {
     expect(SIDEBAR).not.toMatch(/canvasesActive/);
   });
 
-  it("probes sign-in through the standalone module, not the app barrel", () => {
-    // index.ts re-exports Canvases/CanvasWorkspace: importing the probe through
+  it("reads the flag through the standalone module, not the app barrel", () => {
+    // index.ts re-exports Canvases/CanvasWorkspace: importing the flag through
     // it would pull the whole sub-app into the shell's main bundle for one
-    // boolean (the reason claude_config/available.ts is split out too).
-    expect(SIDEBAR).toMatch(/from "@apps\/canvases\/logged-in"/);
+    // boolean (the reason claude_config/available.ts is split out too). And
+    // the sign-in store is gone with its last reader: nothing probes it.
+    expect(SIDEBAR).toMatch(/from "@apps\/canvases\/feature-flag"/);
     expect(SIDEBAR).not.toMatch(/from "@apps\/canvases"/);
-  });
-
-  it("treats sign-in as a fact that MOVES, unlike claude-config availability", () => {
-    // Signing in and out happens mid-session, so there is no one-shot cache:
-    // the page publishes what its own status poll returned, and the store's own
-    // slow poll only exists to catch a login that happened elsewhere.
-    expect(STORE).toMatch(/export function publishLoggedIn/);
-    expect(PAGE).toMatch(/publishLoggedIn\(status\)/);
-    expect(STORE).toMatch(/window\.setTimeout\(gatedPoll, POLL_MS\)/);
-    // A failed read is not a sign-out — the row survives a server restart.
-    expect(STORE).toMatch(/catch \{\n\s*\/\/ A failed read is not a sign-out/);
-  });
-
-  it("does not un-hide the row for credentials the server already refused", () => {
-    // /api/canvases/status answers `logged_in` from the file EXISTING, so a
-    // present-but-unrefreshable store reads as signed in forever. The page
-    // learns otherwise from a guarded 401 and replaces itself with the sign-in
-    // wall; before this the store's own poll wrote that verdict back a minute
-    // later and the row returned over a wall (bugbot, 2026-08-19).
-    const dead = status({ logged_in: true, creds_stamp: 100 });
-    expect(decideLoggedIn(dead, null)).toBe(true);
-    expect(decideLoggedIn(dead, 100)).toBe(false);
-    // A re-login over a stale-but-present store never flips `logged_in` — the
-    // mtime changing is the whole signal, which is why the refusal is
-    // remembered as a stamp and not a boolean.
-    expect(decideLoggedIn(status({ logged_in: true, creds_stamp: 101 }), 100)).toBe(true);
-    // No store at all is signed out whatever was refused before.
-    expect(decideLoggedIn(status({ logged_in: false, creds_stamp: null }), 100)).toBe(false);
-    // And a stampless read is never mistaken for the refused one.
-    expect(decideLoggedIn(status({ logged_in: true, creds_stamp: null }), null)).toBe(true);
+    expect(SIDEBAR).not.toMatch(/@apps\/canvases\/logged-in/);
+    expect(PAGE).not.toMatch(/publishLoggedIn|logged-in/);
   });
 });
-
-function status(over: Partial<CanvasesStatus>): CanvasesStatus {
-  return {
-    cli_found: true,
-    logged_in: true,
-    auth_env: "prod",
-    creds_stamp: null,
-    login_in_flight: false,
-    workbench_env: "prod",
-    locked: false,
-    envs: {
-      unstable: { base_url: "https://unstable.fused.io", canvases_dir: "/Users/x/Fused/canvas/unstable", cloned_count: 0, available: true },
-      prod: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/prod", cloned_count: 0, available: true },
-      custom: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/custom", cloned_count: 0, available: true },
-    },
-    settings_path: "/Users/x/.fused/settings.toml",
-    ...over,
-  };
-}

@@ -40,7 +40,6 @@ import {
   type CanvasesStatus,
   type WorkbenchEnv,
 } from "./api";
-import { publishLoggedIn } from "./logged-in";
 import { FusedSettingsModal } from "./FusedSettingsModal";
 
 /** sync/start before opening a canvas. Another process owning the clone
@@ -285,9 +284,13 @@ export default function Canvases() {
 
   // Custom picked with nothing to point it at: open the editor rather than
   // offer a "deployment" sign-in that, with FUSED_ENV unset and no settings
-  // file, would be a hosted-prod sign-in under another name.
+  // file, would be a hosted-prod sign-in under another name. Gated on the
+  // CLI too: with none installed the page says so, and an editor over that
+  // message would be the wrong first thing to fix.
   const customUnconfigured =
-    env === "custom" && status?.envs?.custom?.available === false;
+    status?.cli_found === true &&
+    env === "custom" &&
+    status.envs?.custom?.available === false;
   useEffect(() => {
     if (!customUnconfigured) {
       settingsDismissedRef.current = false;
@@ -295,19 +298,6 @@ export default function Canvases() {
     }
     if (!settingsDismissedRef.current) setSettingsOpen(true);
   }, [customUnconfigured]);
-
-  // The sidebar's Canvases row reads the same fact this page does, so
-  // hand it every status this page learns — the first read, the login poll's
-  // flip, the 401 downgrade, the sign-out — rather than leaving it to notice on
-  // its own minute-long poll. The whole status goes over, not just the boolean:
-  // the 401 downgrade below is a verdict on a SPECIFIC credentials store, and
-  // `creds_stamp` is what names it (see ./logged-in).
-  // Only a status about the DEFAULT env's login, though: the sidebar's row is
-  // "this machine has a Fused account", and a custom pick's own `[auth]`
-  // login says nothing about that.
-  useEffect(() => {
-    if (status && status.auth_env === status.workbench_env) publishLoggedIn(status);
-  }, [status]);
 
   // While a login is in flight, poll status until logged_in flips — or the
   // browser child exits without ever flipping it (closed tab, denied, or the
