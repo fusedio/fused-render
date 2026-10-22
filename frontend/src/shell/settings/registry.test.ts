@@ -46,17 +46,16 @@ describe("the registry", () => {
 
   test("every group sits under a nav section, in the sidebar's order", () => {
     const order = NAV_SECTIONS.map((s) => s.id);
-    expect(order).toEqual(["general", "bots", "tasks", "apps", "other"]);
+    expect(order).toEqual(["app", "agents", "apps", "developer"]);
     for (const g of GROUPS) expect(order).toContain(g.nav);
     // Groups are listed section by section — the nav never splits a section.
     const seen = GROUPS.map((g) => order.indexOf(g.nav));
     expect([...seen].sort((a, b) => a - b)).toEqual(seen);
     expect(navSections(GROUPS).map((s) => [s.section.id, s.groups.map((g) => g.id)])).toEqual([
-      ["general", ["general", "features"]],
-      ["bots", ["ai", "claude-cli"]],
-      ["tasks", ["tasks"]],
+      ["app", ["general", "integrations", "features"]],
+      ["agents", ["ai", "tasks", "claude-cli"]],
       ["apps", ["apps", "indexing", "lan"]],
-      ["other", ["integrations", "advanced"]],
+      ["developer", ["advanced"]],
     ]);
   });
 
@@ -79,7 +78,7 @@ describe("the registry", () => {
 describe("visibility", () => {
   test("the nav has no Claude Code section; it is the Claude Code page", () => {
     const nav = navSections(visibleGroups(visibleSettings(ctx({ claudeConfig: true })))).map((s) => s.section.id);
-    expect(nav).toEqual(["general", "bots", "tasks", "apps", "other"]);
+    expect(nav).toEqual(["app", "agents", "apps", "developer"]);
   });
 
   test("Fused Bot drops the Render-only groups and rows, and its nav drops Apps & files", () => {
@@ -87,7 +86,7 @@ describe("visibility", () => {
     const groups = visibleGroups(bot).map((g) => g.id);
     expect(groups).not.toContain("apps");
     expect(groups).not.toContain("indexing");
-    expect(navSections(visibleGroups(bot)).map((s) => s.section.id)).toEqual(["general", "bots", "tasks", "other"]);
+    expect(navSections(visibleGroups(bot)).map((s) => s.section.id)).toEqual(["app", "agents", "developer"]);
     expect(bot.map((s) => s.id)).not.toContain("canvases");
     expect(bot.map((s) => s.id)).not.toContain("fused-account");
     // Tasks and the monitor exist under Bot too.
@@ -147,7 +146,7 @@ describe("visibility", () => {
     expect(visibleSettings(on).map((s) => s.id)).toContain("chromium-windows");
   });
 
-  test("Optional features keeps its sections in order, Windows last", () => {
+  test("Labs keeps its sections in order, Windows last", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
     const secs = sectionsOf(visibleSettings(on), "features").map((s) => s.section);
     expect(secs).toEqual(["Sidebar", "Windows"]);
@@ -201,7 +200,8 @@ describe("search", () => {
   });
 
   test("every word must match", () => {
-    expect(searchSettings(all, "git sync").map((h) => h.id)).toEqual(["git-sync"]);
+    // "sync" also matches the page name (Sharing & sync), so the page's child row follows.
+    expect(searchSettings(all, "git sync").map((h) => h.id)).toEqual(["git-sync", "github-link"]);
     expect(searchSettings(all, "git nonsenseword")).toEqual([]);
   });
 
@@ -212,7 +212,7 @@ describe("search", () => {
     expect(searchSettings(all, "opus")).toEqual([]);
   });
 
-  test("the Claude Code CLI group shows only its not-installed row without ~/.claude", () => {
+  test("the Claude Code group shows only its not-installed row without ~/.claude", () => {
     const ids = (claudeConfig: boolean) =>
       visibleSettings(ctx({ claudeConfig }))
         .filter((e) => e.group === "claude-cli")

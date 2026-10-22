@@ -61,6 +61,10 @@ def claude_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(skills, "SKILLS_DIR", str(root / "skills"))
     # HOME drives claude_md's ~/.claude.json probe (and nothing else here).
     monkeypatch.setenv("HOME", str(tmp_path))
+    # The other CLIs' homes follow HOME unless their own override is set, and a
+    # developer's shell may set it.
+    monkeypatch.delenv("COPILOT_HOME", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     return root
 
 
@@ -1341,3 +1345,285 @@ def test_skills_slug_shared_by_user_and_plugin_is_addressed_by_source(client, cl
     # Writing the user copy leaves the plugin copies alone.
     assert _post(client, "skills", action="write", slug="unslop", path="SKILL.md", text="new").json()["ok"]
     assert _post(client, "skills", action="read", slug="unslop").json()["text"] == "new"
+
+
+# -- skills across the CLIs: readers, dedupe, placement --------------------------
+
+
+def _skill(path, name=None, desc="d"):
+    _write(path / "SKILL.md", f"---\nname: {name or path.name}\ndescription: {desc}\n---\nbody\n")
+    return path
+
+
+def _rows(client):
+    return {s["slug"]: s for s in _post(client, "skills", action="list").json()["skills"]}
+
+
+def test_skills_list_reads_every_cli_dir_and_names_who_reads_each(client, claude_dir, tmp_path):
+    _skill(claude_dir / "skills" / "solo")
+    _skill(tmp_path / ".agents" / "skills" / "shared")
+    _skill(tmp_path / ".copilot" / "skills" / "cop")
+    _skill(tmp_path / ".codex" / "skills" / "cod")
+    # Dot-dirs (Codex's bundled `.system`) are not the user's skills.
+    _skill(tmp_path / ".codex" / "skills" / ".system" / "bundled")
+    _skill(tmp_path / ".agents" / "skills" / ".hidden")
+    rows = _rows(client)
+    assert set(rows) == {"solo", "shared", "cop", "cod"}
+    assert rows["solo"]["readers"] == ["claude"]
+    assert rows["shared"]["readers"] == ["copilot", "codex"]
+    assert rows["cop"]["readers"] == ["copilot"]
+    assert rows["cod"]["readers"] == ["codex"]
+    assert rows["cod"]["location"] == str(tmp_path / ".codex" / "skills")
+    assert all(r["source"] == "user" for r in rows.values())
+
+
+def test_skills_list_makes_a_symlink_across_dirs_one_row_with_the_union_of_readers(
+    client, claude_dir, tmp_path
+):
+    real = _skill(tmp_path / ".agents" / "skills" / "shared")
+    (claude_dir / "skills").mkdir()
+    (claude_dir / "skills" / "shared").symlink_to(real)
+    (tmp_path / ".codex" / "skills").mkdir(parents=True)
+    (tmp_path / ".codex" / "skills" / "shared").symlink_to(real)
+    got = _post(client, "skills", action="list").json()["skills"]
+    assert len(got) == 1
+    row = got[0]
+    assert row["readers"] == ["claude", "copilot", "codex"]
+    # The row stands on the real copy, so editing it edits the one file.
+    assert row["path"] == str(real) and row["location"] == str(real.parent)
+    assert row["linked"] is True
+    assert sorted(row["paths"]) == sorted([
+        str(real), str(claude_dir / "skills" / "shared"),
+        str(tmp_path / ".codex" / "skills" / "shared")])
+
+
+def test_skills_list_honours_copilot_home_and_codex_home(client, claude_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "cop-home"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "cod-home"))
+    _skill(tmp_path / "cop-home" / "skills" / "c1")
+    _skill(tmp_path / "cod-home" / "skills" / "c2")
+    _skill(tmp_path / ".copilot" / "skills" / "ignored")
+    rows = _rows(client)
+    assert set(rows) == {"c1", "c2"}
+    assert rows["c1"]["readers"] == ["copilot"] and rows["c2"]["readers"] == ["codex"]
+
+
+def test_skills_list_marks_plugin_skills_as_read_by_claude(client, claude_dir, tmp_path):
+    _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop"])
+    _enable(claude_dir, **{"utilities@local": True})
+    assert _rows(client)["unslop"]["readers"] == ["claude"]
+
+
+def test_skills_read_write_address_a_user_skill_in_any_cli_dir(client, claude_dir, tmp_path):
+    _skill(tmp_path / ".agents" / "skills" / "shared")
+    r = _post(client, "skills", action="read", slug="shared").json()
+    assert r["ok"] and "body" in r["text"]
+    assert _post(client, "skills", action="write", slug="shared", path="SKILL.md", text="new").json()["ok"]
+    assert (tmp_path / ".agents" / "skills" / "shared" / "SKILL.md").read_text() == "new"
+
+
+def test_skills_delete_removes_the_copy_and_every_link_to_it(client, claude_dir, tmp_path):
+    real = _skill(tmp_path / ".agents" / "skills" / "shared")
+    (claude_dir / "skills").mkdir()
+    (claude_dir / "skills" / "shared").symlink_to(real)
+    keep = _skill(claude_dir / "skills" / "keep")
+    row = _rows(client)["shared"]
+    r = _post(client, "skills", action="delete", slug="shared", location=row["location"]).json()
+    assert r["ok"] is True
+    assert not real.exists()
+    assert not os.path.lexists(claude_dir / "skills" / "shared")
+    assert keep.exists()
+
+
+def test_skills_delete_of_a_link_to_an_outside_dir_leaves_the_target(client, claude_dir, tmp_path):
+    outside = _skill(tmp_path / "elsewhere" / "mine")
+    (claude_dir / "skills").mkdir()
+    (claude_dir / "skills" / "mine").symlink_to(outside)
+    assert _post(client, "skills", action="delete", slug="mine").json()["ok"]
+    assert not os.path.lexists(claude_dir / "skills" / "mine")
+    assert outside.exists()
+
+
+def _prefs_on(monkeypatch, *clis):
+    monkeypatch.setattr(
+        skills, "_enabled_clis", lambda: [c for c in ("claude", "copilot", "codex") if c in clis])
+
+
+def test_skills_create_puts_one_copy_where_the_enabled_clis_read_it(client, claude_dir, tmp_path, monkeypatch):
+    _prefs_on(monkeypatch, "claude")
+    assert _post(client, "skills", action="create", slug="solo").json()["ok"]
+    assert (claude_dir / "skills" / "solo" / "SKILL.md").is_file()
+    assert not (tmp_path / ".agents").exists()
+
+    _prefs_on(monkeypatch, "claude", "codex")
+    assert _post(client, "skills", action="create", slug="both").json()["ok"]
+    real = tmp_path / ".agents" / "skills" / "both"
+    assert (real / "SKILL.md").is_file()
+    assert (claude_dir / "skills" / "both").is_symlink()
+    assert os.path.realpath(claude_dir / "skills" / "both") == str(real)
+
+    _prefs_on(monkeypatch, "copilot")
+    assert _post(client, "skills", action="create", slug="cop").json()["ok"]
+    assert (tmp_path / ".agents" / "skills" / "cop" / "SKILL.md").is_file()
+    assert not os.path.lexists(claude_dir / "skills" / "cop")
+    # A taken slug is refused, in any of the target dirs.
+    assert _post(client, "skills", action="create", slug="solo").json()["ok"] is False
+
+
+def _cloned_marketplace(claude_dir, name, entries, registered=True):
+    _marketplace(claude_dir, name, {"name": name, "plugins": entries})
+    if registered:
+        known = claude_dir / "plugins" / "known_marketplaces.json"
+        have = json.loads(known.read_text()) if known.exists() else {}
+        have[name] = {"source": {"source": "github", "repo": f"x/{name}"}}
+        known.write_text(json.dumps(have))
+    return claude_dir / "plugins" / "marketplaces" / name
+
+
+def test_skills_available_walks_cloned_marketplaces_and_skips_remote_sources(client, claude_dir):
+    mkt = _cloned_marketplace(claude_dir, "acme", [
+        {"name": "kit", "source": "./plugins/kit"},
+        {"name": "remote", "source": {"source": "github", "repo": "a/b"}},
+        {"name": "escape", "source": "../../outside"},
+    ])
+    _skill(mkt / "plugins" / "kit" / "skills" / "brew", name="Brew", desc="Makes coffee.")
+    _skill(mkt / "plugins" / "kit" / "skills" / "own")
+    _skill(claude_dir / "skills" / "own")
+    body = _post(client, "skills", action="available").json()
+    by_slug = {s["slug"]: s for s in body["skills"]}
+    assert set(by_slug) == {"brew", "own"}
+    brew = by_slug["brew"]
+    assert (brew["name"], brew["description"], brew["plugin"], brew["marketplace"]) == (
+        "Brew", "Makes coffee.", "kit", "acme")
+    assert (brew["pluginInstalled"], brew["added"]) == (False, False)
+    # Already in a user skills dir.
+    assert by_slug["own"]["added"] is True
+    assert body["skipped"] == 2
+
+
+def test_skills_available_ignores_a_directory_no_marketplace_names(client, claude_dir):
+    mkt = _cloned_marketplace(claude_dir, "acme", [{"name": "kit", "source": "./kit"}])
+    _skill(mkt / "kit" / "skills" / "brew")
+    stray = _cloned_marketplace(
+        claude_dir, "surya-local..clone", [{"name": "ghost", "source": "./ghost"}], registered=False)
+    _skill(stray / "ghost" / "skills" / "boo")
+    skills_found = _post(client, "skills", action="available").json()["skills"]
+    assert [(s["marketplace"], s["slug"]) for s in skills_found] == [("acme", "brew")]
+
+
+def test_skills_available_carries_the_plugin_description(client, claude_dir):
+    mkt = _cloned_marketplace(
+        claude_dir, "acme", [{"name": "kit", "source": "./kit", "description": "A kit."}])
+    _skill(mkt / "kit" / "skills" / "brew")
+    assert _post(client, "skills", action="available").json()["skills"][0]["pluginDescription"] == "A kit."
+
+
+def test_skills_available_counts_a_skill_of_an_enabled_plugin_as_installed(client, claude_dir, tmp_path):
+    mkt = _cloned_marketplace(claude_dir, "acme", [{"name": "kit", "source": "./kit"}])
+    _skill(mkt / "kit" / "skills" / "brew")
+    _installed(claude_dir, "kit@acme", mkt / "kit")
+    _enable(claude_dir, **{"kit@acme": True})
+    brew = _post(client, "skills", action="available").json()["skills"][0]
+    assert (brew["pluginInstalled"], brew["added"]) == (True, False)
+
+
+def _brew_marketplace(claude_dir):
+    mkt = _cloned_marketplace(claude_dir, "acme", [{"name": "kit", "source": "./kit"}])
+    brew = _skill(mkt / "kit" / "skills" / "brew")
+    _write(brew / "refs" / "a.md", "ref")
+    return mkt, brew
+
+
+def _add(client, slug="brew"):
+    return _post(client, "skills", action="add", marketplace="acme", plugin="kit", slug=slug).json()
+
+
+def test_skills_add_copies_to_claude_when_only_claude_is_on(client, claude_dir, tmp_path, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude")
+    assert _add(client)["ok"] is True
+    dest = claude_dir / "skills" / "brew"
+    assert not dest.is_symlink()
+    assert (dest / "SKILL.md").is_file() and (dest / "refs" / "a.md").read_text() == "ref"
+    assert not (tmp_path / ".agents").exists()
+
+
+def test_skills_add_keeps_one_copy_in_agents_and_links_claude_to_it(client, claude_dir, tmp_path, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude", "codex")
+    assert _add(client)["ok"] is True
+    real = tmp_path / ".agents" / "skills" / "brew"
+    assert (real / "SKILL.md").is_file() and not real.is_symlink()
+    link = claude_dir / "skills" / "brew"
+    assert link.is_symlink() and os.path.realpath(link) == str(real)
+    # And it lists as the one row it is.
+    assert _rows(client)["brew"]["readers"] == ["claude", "copilot", "codex"]
+
+
+def test_skills_add_without_claude_makes_no_claude_link(client, claude_dir, tmp_path, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "copilot")
+    assert _add(client)["ok"] is True
+    assert (tmp_path / ".agents" / "skills" / "brew" / "SKILL.md").is_file()
+    assert not os.path.lexists(claude_dir / "skills" / "brew")
+
+
+def test_skills_add_refuses_a_slug_that_already_exists_in_a_target(client, claude_dir, tmp_path, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude", "codex")
+    _skill(claude_dir / "skills" / "brew")
+    r = _add(client)
+    assert r["ok"] is False and "already" in r["error"]
+    assert not (tmp_path / ".agents" / "skills" / "brew").exists()
+    # A dangling link is as taken as a skill.
+    (claude_dir / "skills" / "brew").rename(claude_dir / "skills" / "moved")
+    (claude_dir / "skills" / "brew").symlink_to(tmp_path / "nowhere")
+    assert _add(client)["ok"] is False
+
+
+def test_skills_add_refuses_what_no_cloned_marketplace_publishes(client, claude_dir, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude")
+    assert _add(client, slug="nope")["ok"] is False
+    assert _post(client, "skills", action="add", marketplace="acme", plugin="nope", slug="brew").json()["ok"] is False
+    assert _post(client, "skills", action="add", marketplace="../x", plugin="kit", slug="brew").json()["ok"] is False
+    assert _add(client, slug="../brew")["ok"] is False
+    assert not (claude_dir / "skills").exists()
+
+
+def test_skills_add_does_not_follow_a_symlink_out_of_the_clone(client, claude_dir, tmp_path, monkeypatch):
+    _, brew = _brew_marketplace(claude_dir)
+    secret = tmp_path / "secret"
+    _write(secret / "key.txt", "hunter2")
+    (brew / "leak").symlink_to(secret)
+    (brew / "leak.txt").symlink_to(secret / "key.txt")
+    _prefs_on(monkeypatch, "claude")
+    assert _add(client)["ok"] is True
+    dest = claude_dir / "skills" / "brew"
+    assert not os.path.lexists(dest / "leak") and not os.path.lexists(dest / "leak.txt")
+    assert (dest / "SKILL.md").is_file()
+
+
+def test_skills_add_refuses_a_skill_over_the_size_budget_and_leaves_nothing(
+    client, claude_dir, monkeypatch
+):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude")
+    monkeypatch.setattr(skills, "_COPY_MAX_FILES", 1)
+    r = _add(client)
+    assert r["ok"] is False and "large" in r["error"]
+    assert not (claude_dir / "skills").exists() or not list((claude_dir / "skills").iterdir())
+
+
+def test_plugins_list_carries_the_description_from_the_cloned_catalog(client, claude_dir):
+    _cloned_marketplace(claude_dir, "acme", [
+        {"name": "widget", "description": "Widgets.", "source": "./w"},
+        {"name": "gadget", "source": "./g"},
+    ])
+    _installed(claude_dir, "widget@acme", claude_dir / "x")
+    _installed(claude_dir, "gadget@acme", claude_dir / "x")
+    _installed(claude_dir, "orphan@gone", claude_dir / "x")
+    by_id = {p["id"]: p for p in _post(client, "plugins", action="list").json()["plugins"]}
+    assert by_id["widget@acme"]["description"] == "Widgets."
+    assert by_id["gadget@acme"]["description"] == ""
+    assert by_id["orphan@gone"]["description"] == ""

@@ -25,8 +25,14 @@ export function ClaudeMemoryTab({ filter, title, blurb }: HeadProps & { filter: 
   );
 }
 
-export function ClaudeSkillsTab({ filter }: { filter: string }) {
-  return <SkillsSection filter={filter} />;
+export function ClaudeSkillsTab({
+  filter,
+  onOpenPluginsDiscover,
+}: {
+  filter: string;
+  onOpenPluginsDiscover: () => void;
+}) {
+  return <SkillsSection filter={filter} onOpenPluginsDiscover={onOpenPluginsDiscover} />;
 }
 
 export function ClaudeMcpTab({ filter, title, blurb }: HeadProps & { filter: string }) {

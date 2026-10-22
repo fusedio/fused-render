@@ -7478,3 +7478,40 @@ D406 withdrew `parakeet-mlx` because a separate Apple-only runner with its own v
 - **sherpa tokens** carry a leading plain space on word starts, not `▁`.
 - **`feature_dim`** 80 vs 128 gave identical text and timestamps; the value is left at sherpa's default.
 - **Not done.** The model is not on our mirror yet (needs the `changing-suggested-models` upload). Sentence splitting has no abbreviation guard.
+
+## D1424: Preferences nav is sectioned by what a setting changes, and pages are named for what is on them (2026-10-22, prefs-section-names)
+
+- **Problem.** The nav mirrored the app's left rail (Akshil, 2026-10-20), which gave headings that repeated their one page ("General > General", "Tasks > Tasks"), put agent settings under "Bots", and kept an "Other" catch-all.
+- **Decision.** Four headings: App (General, Accounts, Labs), Agents (Coding agents, Chats & tasks, Claude Code), Apps & files (Sharing & sync, File index, Phone access), Developer (Debugging). A heading never repeats its single page, and a page is named for what is on it. This replaces the "nav mirrors the left rail" rule. Group ids and `?tab=` values are unchanged, so existing links keep working.
+
+## D1425: Claude Config: skills are read from every CLI's dir, and a new skill is one copy plus at most one link (2026-10-22, claude-config-revamp)
+
+Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex reads (`~/.agents/skills`) was invisible, and the Plugins page spent a column on marketplaces that a filter does the work of. The revamp widens the Skills page to every CLI and gives it a Discover tab over the cloned marketplaces.
+
+| Dir | Read by | Notes |
+|---|---|---|
+| `~/.claude/skills` | Claude | |
+| `~/.agents/skills` | Copilot, Codex | |
+| `~/.copilot/skills` | Copilot | `COPILOT_HOME` moves it (`copilot_health.config_dir`) |
+| `~/.codex/skills` | Codex | `CODEX_HOME` moves it (`codex_health.config_dir`). The evidence that Codex reads this dir is weak; it is listed because Codex's own tooling writes there. |
+| enabled Claude plugins | Claude | read-only |
+
+- **Placement rule.** One copy, every enabled CLI reads it, none reads it twice. Copilot or Codex on: the copy goes to `~/.agents/skills/<slug>` and, when Claude is on, `~/.claude/skills/<slug>` is a symlink to it (Claude does not read `.agents`; Copilot does not read `.claude`). Only Claude on: the copy goes to `~/.claude/skills/<slug>`. "New skill" scaffolds with the same rule. The enabled set is the `claude_enabled` / `copilot_enabled` / `codex_enabled` prefs, read when the skill is added, not remembered.
+- **Dedupe.** Rows are keyed by `realpath`, so a link in one dir to a skill in another is one row whose readers are the union. The row stands on the real copy (`path`, `location`) and lists every entry (`paths`) so delete can name them.
+- **Taken means taken anywhere.** Add and create refuse a slug that exists (even as a dangling link) in ANY user dir, not only the target ones: a second copy in `~/.copilot/skills` would be read twice by Copilot.
+- **Delete** removes the real dir and every link to it across the user dirs, links first. A link to a skill outside the user dirs removes only the link.
+- **Copy safety.** The source must be a skill of a cloned plugin whose catalog `source` is a relative path resolving inside the clone; the walk does not follow symlinks and skips them; 500 files / 25 MB cap; the copy is staged in a dot-dir beside the destination and renamed in, so a refused or failed copy leaves nothing behind.
+- **Discover walks registered marketplaces only** (names from `marketplaces._list()`); a directory under the clones dir that no settings or known-marketplaces entry names is not listed. Each skill carries `pluginInstalled` and `added` so the page can say "Installed" or "Added", and its plugin's description.
+- **Discover covers local sources only.** A plugin whose catalog `source` is a github/git object is not on disk until installed, so its skills cannot be listed; `skills.available` counts them in `skipped` and the page says so.
+- **Not done: Copilot and Codex plugin skills.** Neither `~/.codex/plugins/cache` nor `~/.copilot` exists on this machine, so no on-disk plugin layout could be confirmed. Guessing a layout would list nothing or the wrong thing; they are left out until someone with those plugins installed can look.
+- **Installed plugins carry a description** joined from the cloned marketplace catalog by name (`""` when the marketplace is not cloned or does not list it).
+- **Frontend.** Plugin rows live in `apps/claude_config/plugin-row.tsx`, skill rows in `skill-row.tsx`, and the segmented control, overflow menu and pager are shared in `bits.tsx` (`Seg`, `KebabMenu`, `Pager`). `ListRow` gains `end` (the last control, after the chevron: the enable switch, or Install/Add) and `stacked` (description under the name, kept on narrow pages).
+- **Version label.** A semver reads `v1.2.3` in the row. A git-sourced plugin's "version" is a commit hash: the row shows nothing and the details show `commit ed2e105`. Anything else unrecognised appears raw in the details only.
+- **Discover lists installed things too.** Plugins and skills the machine already has stay in Discover with muted "Installed" / "Added" where the button would be, so the list is the catalog rather than a catalog minus what you have.
+- **Reader badges** come from `getPrefs().agents`; they show only for CLIs that are on and only when more than one is on. Absent prefs mean Claude only.
+- **Discover is grouped by plugin.** One section per plugin (header installs the plugin, each skill has its own Add); the filter drops sections with no match and a plugin-name match keeps all its skills; the pager pages sections. Rows carry one muted `marketplace · version` string instead of fixed columns. The page is left-anchored up to 1600px (`.cc-page`), and a skill's page previews Markdown by default (frontmatter stripped) with an Edit toggle.
+- **Skill URL key.** `?skill=` is `<location>/<slug>` for a user skill (slugs repeat across the user dirs) and `plugin:<plugin>/<slug>` for a plugin's.
+- **Tab switching was already in place.** `ClaudeConfig.tsx` held the tab in state and wrote `?tab=` without `navigateUrl`, so it never remounted; the write now goes through `replaceSearch`, and a render test pins that the nav node survives a tab click.
+- **docs/usage.md had no Claude Config section**, so one was added.
+- **Memory tests.** `test_memory_list_reconstructs_a_hyphenated_component_against_the_disk` and `..._a_dotted_component` fail in this worktree's scratch setup; `memory.py` is untouched by this change.
+

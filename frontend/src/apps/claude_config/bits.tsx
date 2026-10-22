@@ -25,6 +25,7 @@ import {
 import { notify } from "@platform/lib/notifications";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Modal } from "@platform/ui/modal/Modal";
+import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 
 // Every section receives the page's name filter. Sections own their own data
 // and reload it themselves.
@@ -261,6 +262,8 @@ export function ListRow({
   secondaryClass,
   meta,
   actions,
+  end,
+  stacked,
   details,
 }: {
   lead?: ReactNode;
@@ -273,6 +276,13 @@ export function ListRow({
   secondaryClass?: string;
   meta?: ReactNode;
   actions?: ReactNode;
+  // The row's last control, after the chevron: the switch or the one verb the
+  // row is for. Rows that carry one all put it at the same right edge.
+  end?: ReactNode;
+  // The secondary sits on a second line under the name instead of beside it,
+  // and stays there on a narrow page: a description is the row's content, not
+  // a nicety that can be dropped.
+  stacked?: boolean;
   details?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -299,7 +309,7 @@ export function ListRow({
   );
 
   return (
-    <div className={"cc-lrow" + (open ? " open" : "")}>
+    <div className={"cc-lrow" + (open ? " open" : "") + (stacked ? " cc-lrow-stacked" : "")}>
       <div className="cc-lrow-line">
         {/* A fixed-width slot rather than the control's own natural width —
             it keeps a lead control (Toggle3) from becoming the loudest thing
@@ -335,6 +345,7 @@ export function ListRow({
             </button>
           )}
         </div>
+        {end != null && <div className="cc-lrow-end">{end}</div>}
       </div>
       {details && open && (
         <div className="cc-lrow-details" id={panelId}>
@@ -342,6 +353,117 @@ export function ListRow({
         </div>
       )}
     </div>
+  );
+}
+
+// -- segmented control -------------------------------------------------------
+
+// Two or three joined buttons in one bordered pill, for a choice BETWEEN LISTS
+// inside a page (Installed / Discover) — distinct from the nav, which moves
+// between pages.
+export function Seg<T extends string>({
+  value,
+  options,
+  label,
+  onChange,
+}: {
+  value: T;
+  options: { id: T; label: string; title?: string }[];
+  label: string;
+  onChange: (next: T) => void;
+}) {
+  return (
+    <div className="cc-seg" role="tablist" aria-label={label}>
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          role="tab"
+          aria-selected={value === o.id}
+          className={"cc-seg-btn" + (value === o.id ? " active" : "")}
+          title={o.title}
+          onClick={() => onChange(o.id)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// -- overflow menu -----------------------------------------------------------
+
+// One kebab button that opens a menu of a row's less-used actions. The menu is
+// the shared ContextMenu hung under the button.
+export function KebabMenu({ label, items }: { label: string; items: MenuEntry[] }) {
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  return (
+    <>
+      <button
+        type="button"
+        className={"cc-iconbtn cc-kebab" + (at ? " cc-iconbtn-on" : "")}
+        aria-haspopup="menu"
+        aria-expanded={at !== null}
+        aria-label={label}
+        title={label}
+        onPointerDown={(e) => {
+          // The same pointerdown already dismissed an open menu (it closes on
+          // any outside pointerdown), so reopening here would make the button
+          // un-closable.
+          if (at) return;
+          const r = e.currentTarget.getBoundingClientRect();
+          setAt({ x: r.left, y: r.bottom + 4 });
+        }}
+      >
+        <Icon name="kebab" />
+      </button>
+      {at && <ContextMenu x={at.x} y={at.y} items={items} onClose={() => setAt(null)} />}
+    </>
+  );
+}
+
+// -- pager -------------------------------------------------------------------
+
+// Rows per page on a Discover list. A marketplace can publish hundreds of
+// entries, so an unpaged list is a wall you scroll past rather than one you
+// read.
+export const PAGE_SIZE = 25;
+
+// Describes the FILTERED set — the search has already run by the time it sees
+// a total, so "1–25 of 287" narrows with it. Renders nothing when everything
+// fits: a lone disabled "1 of 1" only ever says "there is nothing to page".
+export function Pager({
+  page,
+  total,
+  label,
+  onPage,
+}: {
+  page: number;
+  total: number;
+  label: string;
+  onPage: (next: number) => void;
+}) {
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (pages <= 1) return null;
+  const first = page * PAGE_SIZE + 1;
+  const last = Math.min(total, (page + 1) * PAGE_SIZE);
+  return (
+    <nav className="cc-pager" aria-label={label}>
+      <span className="cc-summary" aria-current="page">
+        {first}–{last} of {total}
+      </span>
+      <button type="button" className="btn" disabled={page === 0} onClick={() => onPage(page - 1)}>
+        Previous
+      </button>
+      <button
+        type="button"
+        className="btn"
+        disabled={page >= pages - 1}
+        onClick={() => onPage(page + 1)}
+      >
+        Next
+      </button>
+    </nav>
   );
 }
 
@@ -482,8 +604,8 @@ export function Icon({
   name: "folder" | "trash" | "refresh" | "copy" | "chevron" | "plus" | "kebab";
 }) {
   const paths: Record<string, ReactNode> = {
-    // Per-marketplace menu, in the Plugins rail: one trailing slot for every
-    // action a row has, so the 180px column goes to the name and count.
+    // The overflow menu: one trailing slot for every secondary action a row
+    // has.
     kebab: (
       <>
         <circle cx="12" cy="5" r="1.4" />

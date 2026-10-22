@@ -112,6 +112,8 @@ export interface Plugin {
   installed: boolean;
   version?: string | null;
   gitSourced: boolean;
+  /** The cloned marketplace catalog's one-liner; "" when it has none. */
+  description: string;
   shareCommand: string;
 }
 
@@ -254,6 +256,9 @@ export const memory = {
 
 // -- skills -------------------------------------------------------------------
 
+/** The coding agents whose skills directories the page reads. */
+export type CliId = "claude" | "copilot" | "codex";
+
 export interface Skill {
   slug: string;
   name: string;
@@ -263,28 +268,66 @@ export interface Skill {
   marketplace?: string;
   linked: boolean;
   path: string;
+  /** The skills directory it lives in. */
+  location: string;
+  /** Every copy and link of it (a user skill), for the delete confirmation. */
+  paths: string[];
+  /** The CLIs that read it. */
+  readers: CliId[];
 }
 
-/** What addresses one skill: slugs collide across plugins and between a user
- *  skill and a plugin skill. */
-export type SkillRef = Pick<Skill, "slug" | "source" | "plugin" | "marketplace">;
+/** A skill a cloned marketplace's plugin ships, not yet on this machine
+ *  unless `installed`. */
+export interface AvailableSkill {
+  slug: string;
+  name: string;
+  description: string;
+  plugin: string;
+  /** What the marketplace's catalog says the plugin is, or "". */
+  pluginDescription: string;
+  marketplace: string;
+  path: string;
+  /** The plugin is installed and enabled, so the skill is already read. */
+  pluginInstalled: boolean;
+  /** The skill's slug is already in one of the user's skills dirs. */
+  added: boolean;
+}
+
+export interface AvailableSkills {
+  skills: AvailableSkill[];
+  /** Plugins whose source is not inside the clone, so their skills are not listed. */
+  skipped: number;
+}
+
+/** What addresses one skill: slugs collide across plugins, between a user
+ *  skill and a plugin skill, and between the user directories. */
+export type SkillRef = Pick<Skill, "slug" | "source" | "plugin" | "marketplace" | "location">;
 
 const ident = (r: SkillRef) => ({
   slug: r.slug,
   source: r.source,
   plugin: r.plugin ?? "",
   marketplace: r.marketplace ?? "",
+  location: r.source === "user" ? r.location : "",
 });
 
 export const skills = {
   list: () => callModule<{ skills: Skill[] }>("skills", { action: "list" }),
+  available: () => callModule<AvailableSkills>("skills", { action: "available" }),
+  add: (s: Pick<AvailableSkill, "marketplace" | "plugin" | "slug">) =>
+    callModule<OkResult & { slug?: string }>("skills", {
+      action: "add",
+      marketplace: s.marketplace,
+      plugin: s.plugin,
+      slug: s.slug,
+    }),
   open: (r: SkillRef) => callModule<OkResult>("skills", { action: "open", ...ident(r) }),
   create: (slug: string) => callModule<OkResult & { slug?: string }>("skills", { action: "create", slug }),
   read: (r: SkillRef, path = "SKILL.md") =>
     callModule<OkResult & { text: string; files: string[] }>("skills", { action: "read", ...ident(r), path }),
   write: (r: SkillRef, path: string, text: string) =>
     callModule<OkResult>("skills", { action: "write", ...ident(r), path, text }),
-  delete: (r: SkillRef) => callModule<OkResult>("skills", { action: "delete", ...ident(r) }),
+  delete: (r: SkillRef) => callModule<OkResult & { removed?: string[] }>("skills", { action: "delete", ...ident(r) }),
 };
 
 // -- mcp ----------------------------------------------------------------------

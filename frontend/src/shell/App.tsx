@@ -990,7 +990,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=monitor");
               }}
             >
-              Preferences › Optional features
+              Preferences › Labs
             </a>
             .
           </div>
@@ -1020,7 +1020,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=marketplace");
               }}
             >
-              Preferences › Optional features
+              Preferences › Labs
             </a>
             .
           </div>

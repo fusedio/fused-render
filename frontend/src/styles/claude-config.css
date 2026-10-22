@@ -92,9 +92,9 @@
  * overflow-y `auto` as well, turning .cc-main back into a scroll container
  * even though nothing sets overflow-y on it. That's invisible normally
  * because .cc-main is height-bounded (flex:1 1 0% inside .cc-root's column)
- * and so never actually grows a scrollbar — but .cc-index's
- * `position: sticky` resolve against the nearest scroll container, which was
- * silently THIS box instead of .cc-root, so they pinned against a box that
+ * and so never actually grows a scrollbar — but a
+ * `position: sticky` descendant would resolve against the nearest scroll container, which was
+ * silently THIS box instead of .cc-root, so it pinned against a box that
  * happens to never scroll rather than against the page. `clip` keeps the same
  * horizontal clamp without establishing a scrollport, so sticky escapes to
  * .cc-root where the comment above already says it lives. */
@@ -286,7 +286,7 @@
   margin-top: 12px;
 }
 
-/* -- segmented switch (Plugins: Installed / Discover) ---------------------- */
+/* -- segmented switch (Seg in bits.tsx: Installed / Discover) --------------- */
 /* The .am-tabs pattern from shell/AiModels: two joined buttons in one bordered
    pill, for a choice BETWEEN LISTS inside a page — distinct from .cc-tab, which
    navigates the panel. */
@@ -295,12 +295,13 @@
   display: inline-flex;
   flex: 0 0 auto;
   border: 1px solid var(--border);
+  height: 32px;
   border-radius: 7px;
   overflow: hidden;
 }
 
 .cc-seg-btn {
-  padding: 5px 12px;
+  padding: 0 12px;
   font: inherit;
   font-size: 12px;
   color: var(--fg-muted);
@@ -327,186 +328,6 @@
 .cc-seg-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-}
-
-/* -- filter index + list (Plugins) ----------------------------------------- */
-/* A narrow column of filter rows beside the list. Deliberately UNDECORATED —
-   no panel background, no border: this sits inside the content area, and any
-   surface of its own would read as a third sidebar stacked against the shell's
-   own. It is a filter, so its rows are buttons with counts, not links. */
-
-.cc-split {
-  display: flex;
-  align-items: flex-start;
-  gap: 20px;
-  width: 100%;
-}
-
-.cc-index {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 180px;
-  width: 180px;
-  gap: 1px;
-  /* Sticks while the (much longer) list scrolls past it. */
-  position: sticky;
-  top: 0;
-}
-
-/* The header above the rail — the same eyebrow weight as .cc-group-title,
-   standing alone. It used to be a flex row with a count pushed to the right,
-   which gave it the exact silhouette of the clickable row beneath it (name
-   left, number right) and made a label look like a control. See the comment at
-   its call site for why the count went rather than the shape. */
-.cc-index-header {
-  padding: 0 8px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-/* A row is a DIV now, not a button — round 2 gave each marketplace its own
-   share/remove icon actions beside the name+count filter, and a button cannot
-   nest buttons. "All" (.cc-index-all below) is the SAME shape even though it
-   has no actions of its own: it used to be the outer button itself, which
-   gave it browser-default button chrome no other row had (a border, centred
-   text) and read as a stray control. */
-.cc-index-item {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  border-radius: 6px;
-  color: var(--fg-muted);
-}
-
-.cc-index-item:hover {
-  background: rgba(var(--tint), 0.06);
-  color: var(--fg);
-}
-
-.cc-index-item.active {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-  font-weight: 600;
-}
-
-.cc-index-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
-  min-width: 0;
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  padding: 4px 8px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-}
-
-.cc-index-filter:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* The only thing that sets "All" apart from the marketplace rows below it — a
-   hairline, nothing else. Selected state, height, padding and alignment are
-   now identical to theirs (both render through the same .cc-index-item +
-   .cc-index-filter shape). */
-.cc-index-item.cc-index-all {
-  margin-bottom: 4px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-/* Add a marketplace: the action AFTER the list, not an entry in it. A .btn
-   here put a bordered box in a column whose whole premise is that it has no
-   borders and no surface (see .cc-index above), which made it the heaviest
-   thing on the rail — and sitting one 1px gap below the last marketplace, it
-   read as a sixth row that had somehow grown a border. Separated by space
-   rather than by a hairline: the rail already spends its one rule on the
-   divider under "All", and two rules in a 180px column is book-keeping.
-   It opens a DIALOG (the form never fitted the rail), so it has one label and
-   no open state — nothing here turns into a bare "Cancel" any more. */
-.cc-index-add {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-  padding: 5px 8px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.cc-index-add:hover {
-  background: rgba(var(--tint), 0.06);
-  color: var(--fg);
-}
-
-.cc-index-add:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* The row's one trailing slot, a fixed width whether its button is showing or
-   not. That constant is what puts the counts in a column: the filter button is
-   `flex: 1` beside it, so an equal trail means an equal button and one x for
-   every count down the rail. 26px is a single .cc-iconbtn — it held two of
-   them plus a lock before the row menu replaced all three, which cost the
-   names 32px of a 180px column. */
-.cc-index-trail {
-  display: flex;
-  flex: 0 0 26px;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-/* Visible at rest like every other action on this page (see .cc-lrow-actions
-   for why nothing here fades in any more), and marked while ITS menu is open
-   so the row you are acting on stays identifiable once the pointer has left it
-   for the menu. */
-.cc-index-trail > .cc-iconbtn-on {
-  background: rgba(var(--tint), 0.1);
-  color: var(--fg);
-}
-
-/* The count is pushed to the right edge; the name is what gives way.
-   Lining figures, so the counts read as a column rather than as digits that
-   happen to be near each other. */
-.cc-index-filter .cc-count {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-}
-
-.cc-index-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* flex-basis 0%, not auto: an `auto` basis sizes off this column's own
-   (essentially unbounded) content before flex-grow ever runs, and that
-   hypothetical size is what silently won over flex-grow's fill — the list
-   card inside it was shrink-wrapping to content instead of spanning the
-   column. 0% removes the content dependency entirely: the item starts at
-   nothing and flex-grow:1 is the ONLY thing deciding its final width. */
-.cc-rows {
-  flex: 1 1 0%;
-  min-width: 0;
-  width: 100%;
 }
 
 /* -- pager (Discover) ------------------------------------------------------ */
@@ -574,7 +395,7 @@
 .cc-lrow-line {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   padding: 7px 0;
   white-space: nowrap;
 }
@@ -650,7 +471,11 @@
 }
 
 .cc-lrow-meta {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
   font-size: 11.5px;
   color: var(--fg-muted);
 }
@@ -659,7 +484,7 @@
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
+  gap: 8px;
   margin-left: auto;
 }
 
@@ -673,19 +498,35 @@
    absent — and it also retires the touch/narrow media query that existed only
    because hover-to-discover cannot work on a device with no hover. */
 
-/* The plugin row's own icons, which ride in `meta` ahead of the version. */
-.cc-lrow-inline-actions {
+/* A row's last control, at the right edge after the chevron: the enable switch
+   or the one verb the row is for. */
+.cc-lrow-end {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
 }
 
-/* A column, not a label: versions run from "v1.0.0" to a 12-char commit sha,
-   and with the icons now sitting to their LEFT a ragged version means ragged
-   icons all the way down the list. */
-.cc-lrow-ver {
-  min-width: 92px;
-  text-align: right;
+/* The name over its description. A grid so a pill beside the name stays on the
+   name's line and the description spans both columns; the description stays
+   visible on a narrow page because it is the row's content. */
+.cc-lrow-stacked .cc-lrow-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 1px;
+}
+
+.cc-lrow-stacked .cc-lrow-name {
+  font-weight: 400;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-lrow-stacked .cc-lrow-sub {
+  display: block;
+  grid-column: 1 / -1;
 }
 
 .cc-lrow.open .cc-lrow-chev .cc-icon {
@@ -1176,31 +1017,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-
-  /* The marketplace filter column would leave the list ~120px at this width.
-     align-items MUST be overridden back to stretch here: the base rule's
-     flex-start is for the ROW layout (so the sticky filter rail doesn't
-     stretch to the list's full height) and in a COLUMN flex container that
-     same value governs the opposite axis — it was shrink-wrapping .cc-index
-     and .cc-rows (and the .cc-list card inside it) to their own content width
-     instead of letting them span the column, which is defect 2 restated at a
-     narrow viewport. */
-  .cc-split {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  /* Used to reflow into a horizontal wrap here (flex-direction: row,
-     flex-wrap: wrap): at this width that packed each marketplace as
-     `name count [icon][icon]` with no separation between one item and the
-     next, so two adjacent rows' icons read as one ambiguous run. Stacking
-     instead — the rail keeps its normal one-row-per-marketplace shape, just
-     spanning the full content width instead of a fixed 180px. */
-  .cc-index {
-    flex: 0 0 auto;
-    width: 100%;
-    position: static;
-  }
 }
 
 /* -- the in-app file editor (FileEditor.tsx) ------------------------------- */
@@ -1240,10 +1056,10 @@
 /* The list: one full-width button per skill inside a .settings-card. */
 .cc-skill-row {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 10px;
   width: 100%;
-  padding: 12px 16px;
+  padding: 10px 16px;
   border: none;
   border-top: 1px solid var(--border);
   background: none;
@@ -1251,6 +1067,14 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.cc-skill-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .cc-skill-row:first-child {
@@ -1277,11 +1101,6 @@
   font-weight: 500;
 }
 
-.cc-skill-owner {
-  display: block;
-  margin-top: 2px;
-}
-
 .cc-skill-empty {
   margin: 0;
   padding: 12px 16px;
@@ -1304,8 +1123,8 @@
   margin-bottom: 14px;
 }
 
-/* The editor's heading: back button, name, link pill on one line; the actions
-   (and the fading Saved note) sit at the row's right edge. */
+/* The page heading: back button and name on one line; the actions (and the
+   fading Saved note) sit at the row's right edge. */
 .cc-skill-headline {
   display: flex;
   align-items: center;
@@ -1315,13 +1134,23 @@
 
 .cc-skill-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
-.cc-skill-delete {
-  color: var(--destructive, #d33);
+/* Delete: a .btn with no fill or border until hovered. */
+.cc-btn-danger-ghost {
+  border-color: transparent;
+  background: none;
+  color: var(--error);
+}
+
+.cc-btn-danger-ghost:hover:not(:disabled) {
+  background: rgba(var(--error-rgb), 0.12);
 }
 
 .cc-skill-note {
@@ -1333,24 +1162,136 @@
   color: var(--destructive, #d33);
 }
 
-.cc-skill-files {
-  margin-bottom: 12px;
+/* A skill's page fills the height the page has left: the header takes what it
+   needs and the file list and pane share the rest. Only when the page is the
+   flex column ClaudeConfig makes it (.cc-page) does the main column stretch. */
+.cc-page .settings-main:has(> .cc-skill-detail) {
+  display: flex;
+  flex-direction: column;
 }
 
-/* The card is the frame: the textarea inside has no border, background or
-   ring of its own, and keeps a fixed height (field-sizing off) that the
-   user can drag taller. */
+.cc-skill-detail {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cc-skill-detail .settings-head p {
+  margin-bottom: 10px;
+}
+
+.cc-skill-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.cc-skill-meta .cc-mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.cc-skill-blurb {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.cc-skill-work {
+  display: flex;
+  flex: 1 1 0;
+  gap: 12px;
+  min-height: 280px;
+}
+
+.cc-skill-filelist {
+  display: flex;
+  flex: 0 0 200px;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 30%;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.cc-skill-file {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cc-skill-file:hover {
+  color: var(--fg);
+  background: var(--bg-alt);
+}
+
+.cc-skill-file.active {
+  color: var(--fg);
+  background: var(--bg-alt);
+  font-weight: 600;
+}
+
+.cc-skill-file:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.cc-skill-pane {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.cc-skill-pane > .cc-seg {
+  align-self: flex-start;
+}
+
+/* The card is the frame: the textarea or the preview inside fills it and
+   scrolls on its own. */
+.cc-skill-card {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .cc-skill-editor {
   display: block;
+  flex: 1 1 0;
   width: 100%;
-  min-height: 60vh;
+  min-height: 0;
   padding: 12px 16px;
   border: none;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
   field-sizing: fixed;
-  resize: vertical;
+  resize: none;
+  overflow: auto;
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
   line-height: 1.5;
@@ -1359,4 +1300,298 @@
 .cc-skill-editor:focus-visible {
   outline: none;
   box-shadow: none;
+}
+
+/* Rendered Markdown: the chat's prose styles are scoped to .chat-root, so the
+   few that a SKILL.md needs are here. */
+.cc-md {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 12px 18px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.cc-md > :first-child {
+  margin-top: 0;
+}
+
+.cc-md h1,
+.cc-md h2,
+.cc-md h3,
+.cc-md h4 {
+  margin: 1.2em 0 0.4em;
+  line-height: 1.3;
+}
+
+.cc-md h1 {
+  font-size: 18px;
+}
+
+.cc-md h2 {
+  font-size: 15px;
+}
+
+.cc-md h3,
+.cc-md h4 {
+  font-size: 13px;
+}
+
+.cc-md p,
+.cc-md ul,
+.cc-md ol,
+.cc-md pre,
+.cc-md blockquote,
+.cc-md table {
+  margin: 0 0 0.8em;
+}
+
+.cc-md ul,
+.cc-md ol {
+  padding-left: 1.5em;
+}
+
+.cc-md code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--border);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+}
+
+.cc-md pre {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg);
+  overflow-x: auto;
+}
+
+.cc-md pre code {
+  padding: 0;
+  background: none;
+}
+
+.cc-md blockquote {
+  padding-left: 12px;
+  border-left: 3px solid var(--border);
+  color: var(--fg-muted);
+}
+
+.cc-md table {
+  border-collapse: collapse;
+}
+
+.cc-md th,
+.cc-md td {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+}
+
+.cc-md a {
+  color: var(--accent);
+}
+
+/* -- small ghost button (row and section actions) ----------------------------- */
+/* Add, Install, Install plugin: a verb at a row's end that must not make the
+   row taller than its text. */
+.cc-btn-sm {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cc-btn-sm:hover:not(:disabled) {
+  background: var(--bg-alt);
+}
+
+.cc-btn-sm:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cc-btn-sm:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* -- Discover's plugin sections (Skills) -------------------------------------- */
+
+.cc-sgroup {
+  margin-bottom: 12px;
+}
+
+.cc-sgroup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cc-sgroup-title {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.cc-sgroup-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.cc-sgroup-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-srow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 4px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.cc-srow:last-child {
+  border-bottom: none;
+}
+
+.cc-srow-name {
+  flex: 0 1 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-srow-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* A muted aside under the heading, with an inline link. */
+.cc-skill-note-line {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* -- Claude Config page width ---------------------------------------------------- */
+/* Preferences keeps its centred 1040px column; Claude Config's lists and
+   editor use the room a wide window has, anchored left under the title. */
+
+.cc-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.cc-page > .settings-header,
+.cc-page > .settings-body {
+  width: 100%;
+  max-width: 1600px;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.cc-page > .settings-body {
+  flex: 1 1 auto;
+  align-items: stretch;
+}
+
+.cc-page .settings-nav {
+  align-self: flex-start;
+}
+
+/* -- marketplaces (Plugins) ---------------------------------------------------- */
+
+/* The marketplace filter in the list's header. */
+.cc-mkt-select {
+  width: auto;
+  max-width: 220px;
+  height: 32px;
+}
+
+.cc-skill-actions .cc-iconbtn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* The Marketplaces dialog: a name, its plugin count and its actions per row. */
+.cc-mkt-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cc-mkt-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.cc-mkt-item:last-child {
+  border-bottom: none;
+}
+
+.cc-mkt-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-mkt-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+/* -- reader badges (Skills) ---------------------------------------------------- */
+
+.cc-reader {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 9px;
 }
