@@ -6893,6 +6893,15 @@ const seededViews = new Set<TaskGroupBy>();
 function readSeededViews(): Set<TaskGroupBy> {
   try {
     for (const v of parseSeededViews(localStorage.getItem(GROUPS_SEEDED_KEY))) seededViews.add(v);
+    // …AND THE MARK A TAB MADE BEFORE THE MOVE (CodeRabbit, #1882): a window
+    // open across the upgrade holds its seed in sessionStorage and nothing in
+    // localStorage, and reading only the new store would seed it again —
+    // folding folders the reader had open. The old mark is carried over.
+    const legacy = parseSeededViews(sessionStorage.getItem(GROUPS_SEEDED_KEY));
+    if (legacy.size > 0) {
+      for (const v of legacy) seededViews.add(v);
+      localStorage.setItem(GROUPS_SEEDED_KEY, JSON.stringify([...seededViews]));
+    }
   } catch {
     // Unreadable store: the in-memory marks are the whole answer.
   }
