@@ -783,7 +783,9 @@ def test_copilot_argv_drops_the_effort_for_a_model_that_takes_none(
     argv = agent._copilot_argv(str(run_dir), False, None, "", model, "high", [], file)
     assert "--reasoning-effort" not in argv
     # A model the catalog has not caught up with is passed through with it.
-    argv = agent._copilot_argv(str(run_dir), False, None, "", "gpt-9", "high", [], file)
+    run_dir2 = tmp_path / "run2"
+    run_dir2.mkdir()
+    argv = agent._copilot_argv(str(run_dir2), False, None, "", "gpt-9", "high", [], file)
     assert argv[argv.index("--reasoning-effort") + 1] == "high"
 
 
