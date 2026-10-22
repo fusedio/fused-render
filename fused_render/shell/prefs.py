@@ -201,6 +201,31 @@ def canvases_enabled() -> bool:
     return read_prefs().get("canvases_enabled") is True
 
 
+def canvases_embed_proxy_enabled() -> bool:
+    """Whether the custom canvas environment's embedded workbench loads
+    through the loopback proxy that attaches the user's own bearer
+    (fused_render/canvas_embed_proxy.py; default off — opt-in). For a custom
+    deployment whose gateway requires a login for the workbench pages: a
+    cross-site iframe never carries that login cookie, so without the proxy
+    the frame is redirected to the identity provider and never renders. A
+    feature flag read by canvases status; the hosted environments ignore it.
+
+    `[render] canvases_embed_proxy_enabled` in the fused settings file, when
+    set, wins over the stored preference (`canvases_embed_proxy_pinned`)."""
+    pinned = canvases_embed_proxy_pinned()
+    if pinned is not None:
+        return pinned
+    return read_prefs().get("canvases_embed_proxy") is True
+
+
+def canvases_embed_proxy_pinned() -> bool | None:
+    # Imported here, not at module top: canvases is the heavier module and
+    # calls.py imports prefs on a hot path.
+    from fused_render.canvases import fused_settings_embed_proxy
+
+    return fused_settings_embed_proxy()
+
+
 def native_windows_enabled() -> bool:
     """Whether the macOS app shows the shell in its own native windows
     (mac_window.py) instead of browser tabs (default ON — opt-out).
@@ -912,7 +937,11 @@ def _prefs_response() -> dict:
         # Whether the Canvases feature is offered at all — its sidebar row and
         # its Settings menu entry (opt-in, D427). Not a route guard; see
         # `canvases_enabled`.
-        "canvases": {"enabled": canvases_enabled()},
+        # `embed_proxy_locked`: the fused settings file sets the switch, so
+        # the row shows that value and cannot change it.
+        "canvases": {"enabled": canvases_enabled(),
+                     "embed_proxy": canvases_embed_proxy_enabled(),
+                     "embed_proxy_locked": canvases_embed_proxy_pinned() is not None},
         # Whether the unified Share sheet (public link + .fused file) is offered
         # in place of the plain Export / Download action (opt-in, default off).
         # Not a route guard; see `app_sharing_enabled`.
@@ -1343,6 +1372,18 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     status_code=400)
             prefs["claude_default_permission"] = value
             changed = True
+        if "canvases_embed_proxy" in body:
+            value = body.get("canvases_embed_proxy")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'canvases_embed_proxy' must be a boolean"},
+                                    status_code=400)
+            if canvases_embed_proxy_pinned() is not None:
+                return JSONResponse(
+                    {"error": "the embed proxy is set by [render] canvases_embed_proxy_enabled "
+                              "in ~/.fused/settings.toml; remove it there to use the preference"},
+                    status_code=423)
+            prefs["canvases_embed_proxy"] = value
+            changed = True
         if "lan_enabled" in body:
             value = body.get("lan_enabled")
             if not isinstance(value, bool):
@@ -1572,7 +1613,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
                           "'tasks_view_tabs', "
-                          "'lan_enabled', "
+                          "'lan_enabled', 'canvases_embed_proxy', "
                           "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
                           "'warm_run_enabled', "
@@ -1586,6 +1627,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 status_code=400,
             )
         storage.write_json(_path(), prefs)
+    if body.get("canvases_embed_proxy") is False:
+        # AFTER the write, like `lan_enabled`: stop the listener now rather
+        # than at the next status read. Turning it ON is left to status,
+        # which also knows the current origin to point it at.
+        from fused_render.canvas_embed_proxy import controller
+
+        controller.apply(None, None)
     if "workbench_env" in body:
         # AFTER the write: the wrapper bakes workbench_env() in as the
         # FUSED_ENV a session's `fused` defaults to outside a clone, and it

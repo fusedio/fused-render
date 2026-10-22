@@ -113,6 +113,15 @@ describe("visibility", () => {
   });
 
 
+  test("the embed proxy switch appears only while Canvases is on, and never in Fused Bot", () => {
+    const ids = (enabled: boolean, over: Partial<SettingsContext> = {}) =>
+      visibleSettings(ctx(over, { canvases: { enabled } } as Partial<Prefs>)).map((s) => s.id);
+    expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("canvases-embed-proxy");
+    expect(ids(false)).not.toContain("canvases-embed-proxy");
+    expect(ids(true)).toContain("canvases-embed-proxy");
+    expect(ids(true, { bot: true })).not.toContain("canvases-embed-proxy");
+  });
+
   test("the default-agent picker appears only with two or more agents on", () => {
     expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("agent-default");
     const agents = (claude: boolean, copilot: boolean, codex: boolean) =>

@@ -1239,6 +1239,10 @@ def _custom_auth_home(monkeypatch, tmp_path, auth: bool = True):
     if auth:
         toml += '[auth]\ncredentials_path = "~/.fused/credentials-abc"\n'
     (home / ".fused" / "settings.toml").write_text(toml, encoding="utf-8")
+    # Back to fused's own `~` paths, now under this HOME (conftest hides the
+    # machine's settings file from every test).
+    monkeypatch.setattr(canvases_mod, "_FUSED_SETTINGS_FILES",
+                        ("~/.fused/settings.toml", "~/.fused/settings.json"))
     return home / ".fused" / "credentials", home / ".fused" / "credentials-abc"
 
 
@@ -1269,7 +1273,7 @@ def test_status_and_token_follow_the_named_envs_login(harness, tmp_path, monkeyp
     body = harness.client.get("/api/canvases/status?env=custom").json()
     assert (body["auth_env"], body["logged_in"], body["creds_stamp"]) == ("custom", False, None)
     body = harness.client.get("/api/canvases/status").json()
-    assert (body["auth_env"], body["logged_in"]) == (ENV, True)
+    assert (body["auth_env"], body["logged_in"]) == (fusedcli_mod.DEFAULT_WORKBENCH_ENV, True)
     assert harness.client.get("/api/canvases/token?env=custom", headers=GUARD).status_code == 409
     assert harness.client.get("/api/canvases/token?env=prod",
                               headers=GUARD).json()["access_token"] == "hosted-tok"
@@ -1286,12 +1290,14 @@ def test_status_and_token_follow_the_named_envs_login(harness, tmp_path, monkeyp
 def test_status_with_an_unusable_env_describes_the_default_login(harness, monkeypatch):
     """Cheap and unguarded: a stale or pinned-away pick is not a 400, it falls
     back to the auth env and says so in `auth_env`."""
-    for env in ("staging", OTHER_ENV):
+    # Unpinned, a stale pick falls back to the built-in default; pinned to
+    # ENV, a pick of the other env falls back to the pin.
+    for env, expected in (("staging", fusedcli_mod.DEFAULT_WORKBENCH_ENV), (OTHER_ENV, ENV)):
         if env == OTHER_ENV:
             monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", ENV)
         res = harness.client.get(f"/api/canvases/status?env={env}")
         assert res.status_code == 200
-        assert res.json()["auth_env"] == ENV
+        assert res.json()["auth_env"] == expected
 
 
 def test_login_for_custom_runs_with_fused_env_unset(harness, tmp_path, monkeypatch):
@@ -2864,7 +2870,7 @@ def test_status_lists_every_environment_and_the_default(harness):
     (harness.base / OTHER_ENV / "beta").mkdir(parents=True)
     (harness.base / OTHER_ENV / "beta" / "canvas.toml").write_text("", encoding="utf-8")
     body = harness.client.get("/api/canvases/status").json()
-    assert body["workbench_env"] == ENV  # the preference's default
+    assert body["workbench_env"] == fusedcli_mod.DEFAULT_WORKBENCH_ENV == OTHER_ENV
     assert body["locked"] is False
     assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert body["envs"][OTHER_ENV]["canvases_dir"] == str(harness.base / OTHER_ENV)
@@ -2989,7 +2995,7 @@ def test_whoami_without_an_env_is_the_login_liveness_probe(harness):
     harness.log_in()
     res = harness.client.get("/api/canvases/whoami", headers=GUARD)
     assert res.status_code == 200 and res.json()["handle"] == "tester"
-    assert harness.env_calls()[-1][0] == ENV
+    assert harness.env_calls()[-1][0] == fusedcli_mod.DEFAULT_WORKBENCH_ENV
     assert harness.client.get("/api/canvases/whoami?env=staging",
                               headers=GUARD).status_code == 400
 
@@ -3119,10 +3125,11 @@ def test_the_default_environment_is_an_ordinary_preference(harness, tmp_path, mo
     exported = []
     monkeypatch.setattr(fusedcli_mod, "export_fused_cli_env", lambda: exported.append(1))
 
-    res = harness.client.put("/api/prefs", json={"workbench_env": OTHER_ENV}, headers=GUARD)
+    # ENV differs from the built-in default (OTHER_ENV): the PUT must move it.
+    res = harness.client.put("/api/prefs", json={"workbench_env": ENV}, headers=GUARD)
     assert res.status_code == 200, res.text
-    assert res.json()["workbench"]["env"] == OTHER_ENV
-    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == OTHER_ENV
+    assert res.json()["workbench"]["env"] == ENV
+    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == ENV
     assert exported == [1]
     assert _manager() is manager and not manager.stop_event.is_set()
 

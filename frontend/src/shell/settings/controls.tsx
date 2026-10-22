@@ -23,6 +23,7 @@ import {
 } from "./ai";
 import {
   CanvasesControl,
+  CanvasesEmbedProxyControl,
   GithubLinkControl,
   GitSyncControl,
   LivePreviewsControl,
@@ -87,6 +88,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "skipped-folders": SkippedFoldersControl,
   "rebuild-index": RebuildIndexControl,
   canvases: CanvasesControl,
+  "canvases-embed-proxy": CanvasesEmbedProxyControl,
   marketplace: MarketplaceControl,
   monitor: MonitorControl,
   reader: ReaderControl,

@@ -477,6 +477,22 @@ def _no_real_fused_credentials(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_fused_settings(tmp_path_factory, monkeypatch):
+    """The suite sees no `~/.fused/settings.toml`, whatever the machine holds.
+
+    `canvases._fused_settings()` reads it per call, and its `[render]
+    canvases_embed_proxy_enabled` turns the embed proxy on: a developer's own
+    file would otherwise start a real proxy at their deployment from any test
+    that reads canvases status, and make local runs differ from CI's (which
+    has no file). Tests that need one point `_FUSED_SETTINGS_FILES` at it
+    themselves (a later monkeypatch wins over this one)."""
+    from fused_render import canvases
+
+    monkeypatch.setattr(canvases, "_FUSED_SETTINGS_FILES",
+                        (str(tmp_path_factory.getbasetemp() / "no-fused-settings.toml"),))
+
+
+@pytest.fixture(autouse=True)
 def _no_real_share_shim(monkeypatch):
     """No test may spawn the real `_fused_share_app.py` shim by accident.
 
