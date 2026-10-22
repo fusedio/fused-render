@@ -1,6 +1,6 @@
 """The reference canvases' background runner (canvas_mirror.py, D1477).
 
-`fused workbench canvas mirror` is run as a child, its stderr read for
+`fused canvas mirror` is run as a child, its stderr read for
 progress and its stdout for one JSON document; the outcome is classified from
 the exit. The CLI is test_canvases.py's stub, which speaks the contract's
 output (v1.4). What these pin:
@@ -35,7 +35,7 @@ from test_canvases import (  # noqa: F401 — fixtures are used by name
     harness,
 )
 
-MIRROR_ARGV = ["workbench", "--format", "json", "canvas", "mirror", "--output"]
+MIRROR_ARGV = ["--format", "json", "canvas", "mirror", "--output"]
 
 
 @pytest.fixture(autouse=True)
