@@ -37,8 +37,8 @@ see ``github_link_enabled``),
 **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
 **chromium_windows_enabled** (whether the macOS app's NEW windows are hosted
-by the Chromium engine the DMG ships instead of WKWebView — default ON since
-D1415, ``false`` opts out; see ``chromium_windows_enabled`` and
+by the Chromium engine the app ships instead of WKWebView — default ON,
+``false`` opts out; see ``chromium_windows_enabled`` and
 `fused_render.chromium`),
 and the **execution engine** for /api/run:
 
@@ -218,19 +218,17 @@ def native_windows_enabled() -> bool:
 
 def chromium_windows_enabled() -> bool:
     """Whether a NEW macOS app window is hosted by the Chromium (CEF) engine
-    instead of WKWebView. Default ON (D1415: the DMG ships the engine, so
-    the default costs no download); an explicit ``false`` opts out — the
-    `is not False` idiom of `native_windows_enabled`, not the `is True` of
-    the opt-in features.
+    instead of WKWebView. Default ON (D1415: the app ships the engine); an
+    explicit ``false`` opts out — the `is not False` idiom of
+    `native_windows_enabled`, not the `is True` of the opt-in features.
 
     Read by `mac_window.WindowManager` at EVERY window open, not once at
     boot: flipping it changes what the next window gets, and open windows
     keep the engine they were born with. It only takes effect when the
-    engine is on disk (`fused_render.chromium.status()["state"] == "ready"`),
-    which the bundled engine always is; a host without one (a dev checkout,
-    an Intel build — the engine is Apple silicon only) downloads it when
-    published, and until that lands new windows keep using WebKit. The dock,
-    launcher, pinned popover and recording pill are never behind this switch.
+    engine is on disk (`fused_render.chromium.status()["state"] == "ready"`);
+    a host without one (a dev checkout, an Intel build — the engine is Apple
+    silicon only) keeps WebKit. The dock, launcher, pinned popover and
+    recording pill are never behind this switch.
     """
     return read_prefs().get("chromium_windows_enabled") is not False
 
@@ -1047,7 +1045,8 @@ def _chromium_windows_state() -> dict:
     hooks = window_policy.native_hooks
     engine = chromium.status()
     # Only the macOS app has windows to put the engine in: the hook says this
-    # process shows native windows, `status` says the platform can host CEF.
+    # process shows native windows, `status` says the platform can host CEF
+    # (`missing` there = this build carries no engine, e.g. Intel).
     available = ("apply" in hooks and engine["state"] != chromium.UNSUPPORTED
                  and hooks.get("usable", lambda: True)())
     enabled = chromium_windows_enabled()
@@ -1280,14 +1279,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'chromium_windows_enabled' must be a boolean"}, status_code=400)
             prefs["chromium_windows_enabled"] = value
             changed = True
-            if value:
-                # Turning it on is also "get the engine": the download runs
-                # in the background and the page polls GET /api/prefs for
-                # its progress. A no-op when it is unsupported, unpublished,
-                # already there or already downloading (`install`).
-                from fused_render import chromium
-
-                chromium.install()
         if "task_notify_terminal_sessions" in body:
             value = body.get("task_notify_terminal_sessions")
             if not isinstance(value, bool):
@@ -1675,24 +1666,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
     return response
 
 
-# ---- the Chromium engine (experimental; see fused_render.chromium) ----------
+# ---- the Chromium engine (see fused_render.chromium) ---------------------------
 
 @router.get("/api/prefs/chromium")
 def get_chromium_engine():
-    """The engine's download state alone — what the Preferences row polls
-    while a download runs, cheaper than the whole prefs document."""
-    return _chromium_windows_state()
-
-
-@router.post("/api/prefs/chromium/install")
-def post_chromium_install(x_fused: str | None = Header(default=None)):
-    """Start (or retry after a failure) the engine download."""
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    from fused_render import chromium
-
-    chromium.install()
+    """The `chromium_windows` slice alone — the row re-reads it after a
+    reopen, cheaper than the whole prefs document."""
     return _chromium_windows_state()
 
 
@@ -1708,22 +1687,4 @@ def post_chromium_reopen_windows(x_fused: str | None = Header(default=None)):
     reopen = window_policy.native_hooks.get("reopen_windows")
     if reopen is None or not reopen():
         return JSONResponse({"error": "no window host in this process"}, status_code=409)
-    return _chromium_windows_state()
-
-
-@router.post("/api/prefs/chromium/remove")
-def post_chromium_remove(x_fused: str | None = Header(default=None)):
-    """Delete the unpacked engine from disk and switch the preference off.
-    Open windows keep running on it until they close."""
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    from fused_render import chromium
-
-    with _PREFS_LOCK:
-        prefs = read_prefs()
-        if prefs.get("chromium_windows_enabled") is not None:
-            prefs["chromium_windows_enabled"] = False
-            storage.write_json(_path(), prefs)
-    chromium.remove()
     return _chromium_windows_state()

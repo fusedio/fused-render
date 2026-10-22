@@ -6,7 +6,7 @@
 # produce a real standalone bundle, see the note below) -> build the wheel
 # once (dist/*.whl) -> build a venv on it -> pip install that wheel
 # [bundled,app] + py2app + dmgbuild into the venv -> generate the app icon ->
-# run py2app -> seat the Chromium engine (4e-bis) -> codesign -> dmgbuild ->
+# run py2app -> build + seat the Chromium engine (4e-bis) -> codesign -> dmgbuild ->
 # notarize.
 #
 # Signing (step 5, D73) is credential-driven: with a Developer ID identity in
@@ -1112,108 +1112,68 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4e-bis. The Chromium engine (D1415, fused_render/chromium). Shipped INSIDE
-#     the bundle at Contents/Frameworks/FusedChromium/ — the artifact's own
-#     top-level dir, unpacked by the runtime's own unpacker
-#     (`chromium.unpack_artifact`, run under the build venv) so the layout
-#     `FRChromiumEngine` opens is byte-for-byte the one a download produces,
-#     and `chromium.bundled_engine_dir()` finds it ready at first launch with
-#     nothing to fetch. Nested bundles in a plain subdirectory of Frameworks
-#     pass `codesign --verify --strict`; plain FILES there do not (Developer
-#     ID sealing failed on `.ready`, 2026-10-22), so engine.json is relocated
-#     to Contents/Resources/chromium-engine.json and no marker is kept.
+# 4e-bis. The Chromium engine (D1415, fused_render/chromium). Built here from
+#     native/ by native/build.sh (CMake + the CEF binary distribution the
+#     manifest pins, ~200 MB, cached under native/.cef-cache — release.yml
+#     caches it by manifest hash) and seated at Contents/Frameworks/
+#     FusedChromium/, build.sh's own output layout, which is what
+#     `FRChromiumEngine` opens; `chromium.engine_dir()` finds it there. No
+#     separate artifact, release, pin or download: the engine is part of the
+#     app it was built with, and its version is the app's.
 #
-#     Fetched, not built: the artifact is the one fused_render/chromium/
-#     manifest.json pins (release chromium-engine-<engine_version>), verified
-#     here by size and SHA-256 exactly as the app verifies a download. Building
-#     it in place (native/build.sh: a 200 MB CEF fetch plus a CMake build on
-#     every DMG job) would make the manifest pin meaningless; this keeps the
-#     engine's own publish-then-pin discipline (docs/CHROMIUM_ENGINE.md) the
-#     single source of what ships. FUSED_RENDER_CHROMIUM_ENGINE_SRC hands in a
-#     local zip (a build.sh output) instead of downloading; the download is
-#     cached under build/ by its version-stamped file name (sha-verified, so a
-#     stale cache entry fails loudly rather than silently).
+#     Nested bundles in a plain subdirectory of Frameworks pass `codesign
+#     --verify --strict`; plain FILES there do not (Developer ID sealing
+#     failed on a marker file, 2026-10-22), so build.sh's engine.json is
+#     moved to Contents/Resources/chromium-engine.json (chromium.BUNDLED_INFO).
 #
-#     An arch the manifest does not pin (x86_64 today: Apple silicon only,
-#     owner 2026-10-21) ships WITHOUT it — the row reports the engine as
-#     unpublished and every window is WebKit, as before. A pinned arch whose
-#     fetch fails is FATAL for a release build (a Developer ID identity
-#     configured: the default-on preference would silently mean WebKit) and a
-#     warning for a dev DMG, the apple-helper rule (4e).
+#     An arch the manifest pins no CEF for (x86_64 today: Apple silicon only,
+#     owner 2026-10-21) ships WITHOUT it — the row says so and every window
+#     is WebKit. For a pinned arch the build is FATAL when it fails in a
+#     release build (a Developer ID identity configured: the default-on
+#     preference would silently mean WebKit) and a warning for a dev DMG,
+#     the apple-helper rule (4e). cmake is what a dev Mac may lack.
 #
 #     Must run BEFORE 4f / 4f-bis (its Mach-Os are checked like everything
 #     else: CEF 139 carries minos 12.0) and before signing (step 5), which
 #     signs the engine as bundles, inside out, with the helper entitlements.
 # ---------------------------------------------------------------------------
-echo "==> bundling the Chromium engine"
+echo "==> building the Chromium engine"
 CHROMIUM_DEST="$APP_DIR/Contents/Frameworks/FusedChromium"
 rm -rf "$CHROMIUM_DEST"
-CHROMIUM_INFO="$("$BUILD_VENV/bin/python" - "$ARCH" <<'PYEOF'
+CHROMIUM_PINNED="$(python3 -c 'import json,sys;print("yes" if (json.load(open(sys.argv[1])).get("cef_sha1") or {}).get(sys.argv[2]) else "")' "$REPO_ROOT/fused_render/chromium/manifest.json" "$ARCH")"
+if [[ -z "$CHROMIUM_PINNED" ]]; then
+  echo "    skipped: the manifest pins no CEF for $ARCH (new windows use WebKit on this build)"
+elif ! command -v cmake >/dev/null 2>&1; then
+  if [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
+    echo "FATAL: a release build needs the Chromium engine, and cmake is not installed (brew install cmake)" >&2
+    exit 1
+  fi
+  echo "    skipped: cmake not installed (brew install cmake; this DMG's windows use WebKit)"
+else
+  CHROMIUM_OUT="$BUILD_DIR/chromium-engine"
+  if bash "$REPO_ROOT/fused_render/chromium/native/build.sh" "$ARCH" "$CHROMIUM_OUT"; then
+    mkdir -p "$APP_DIR/Contents/Frameworks"
+    # ditto keeps the symlinks (Versions/Current) the frameworks are made of.
+    ditto "$CHROMIUM_OUT/FusedChromium" "$CHROMIUM_DEST"
+    mv "$CHROMIUM_DEST/engine.json" "$APP_DIR/Contents/Resources/chromium-engine.json"
+    STRAY="$(find "$CHROMIUM_DEST" -maxdepth 1 -mindepth 1 ! -name '*.framework' ! -name '*.app')"
+    if [[ -n "$STRAY" ]]; then
+      echo "FATAL: non-bundle entries in $CHROMIUM_DEST (strict sealing refuses them):" >&2
+      echo "$STRAY" >&2
+      exit 1
+    fi
+    "$BUILD_VENV/bin/python" -c '
 import sys
 from fused_render import chromium
-art = chromium.artifact(sys.argv[1])
-if art is None or not art.published:
-    print("")
-else:
-    print(f"{art.engine_version}\t{art.url}\t{art.sha256}\t{art.size}")
-PYEOF
-)"
-if [[ -z "$CHROMIUM_INFO" ]]; then
-  echo "    skipped: the manifest pins no engine for $ARCH (new windows use WebKit on this build)"
-else
-  IFS=$'\t' read -r CHROMIUM_VERSION CHROMIUM_URL CHROMIUM_SHA CHROMIUM_SIZE <<<"$CHROMIUM_INFO"
-  CHROMIUM_ZIP="${FUSED_RENDER_CHROMIUM_ENGINE_SRC:-}"
-  if [[ -z "$CHROMIUM_ZIP" ]]; then
-    CHROMIUM_CACHE="$BUILD_DIR/chromium-engine"
-    mkdir -p "$CHROMIUM_CACHE"
-    CHROMIUM_ZIP="$CHROMIUM_CACHE/$(basename "$CHROMIUM_URL")"
-    if [[ ! -f "$CHROMIUM_ZIP" ]]; then
-      echo "    fetching $CHROMIUM_URL"
-      # To a temp name, renamed only when curl succeeds: a partial file
-      # under the final name would be "cached" and fail the hash forever.
-      rm -f "$CHROMIUM_ZIP.part"
-      if ! curl -fL --retry 3 -o "$CHROMIUM_ZIP.part" "$CHROMIUM_URL"; then
-        rm -f "$CHROMIUM_ZIP.part"
-        if [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
-          echo "FATAL: a release build needs the Chromium engine $CHROMIUM_VERSION and its download failed" >&2
-          echo "       (set FUSED_RENDER_CHROMIUM_ENGINE_SRC to a zip built by fused_render/chromium/native/build.sh)" >&2
-          exit 1
-        fi
-        echo "    skipped: download failed (the app will fetch the engine on first launch)"
-        CHROMIUM_ZIP=""
-      else
-        mv "$CHROMIUM_ZIP.part" "$CHROMIUM_ZIP"
-      fi
-    fi
-  fi
-  if [[ -n "$CHROMIUM_ZIP" ]]; then
-    # Verify + unpack through the runtime's own code: same size/sha check,
-    # same traversal-safe extractor, same engine.json cross-check against
-    # the manifest. A mismatch is always fatal — a wrong
-    # file is never "skipped" into a release.
-    "$BUILD_VENV/bin/python" - "$ARCH" "$CHROMIUM_ZIP" "$CHROMIUM_DEST" <<'PYEOF'
-import os, sys
-from fused_render import chromium
-arch, zip_path, dest = sys.argv[1:]
-art = chromium.artifact(arch)
-chromium.verify_artifact(zip_path, art)
-os.makedirs(os.path.dirname(dest), exist_ok=True)
-chromium.unpack_artifact(zip_path, dest, art)
-assert os.path.isfile(os.path.join(dest, chromium.FRAMEWORK_NAME, "FusedChromium"))
-assert os.path.isdir(os.path.join(dest, "FusedRender Helper (Renderer).app"))
-# Only bundles may sit in a Contents/Frameworks subdirectory: sealing the
-# app with a Developer ID fails on a plain file there ("code object is not
-# signed at all In subcomponent: .../FusedChromium/.ready"). engine.json
-# moves to Contents/Resources (chromium.BUNDLED_INFO), the marker goes.
-app = os.path.dirname(os.path.dirname(os.path.dirname(dest)))
-info = os.path.join(app, chromium.BUNDLED_INFO)
-os.replace(os.path.join(dest, chromium.ENGINE_INFO), info)
-os.remove(os.path.join(dest, chromium.READY_MARKER))
-stray = [f for f in os.listdir(dest) if not f.endswith((".framework", ".app"))]
-assert not stray, f"non-bundle files in {dest}: {stray}"
-chromium.check_engine_info(info, art)
-print(f"    engine {art.engine_version} (CEF {art.cef_version}) -> {dest}")
-PYEOF
+info = chromium.check_engine_info(sys.argv[1], arch=sys.argv[2])
+print(f"    engine (CEF {info[\"cef_version\"]}, {info[\"arch\"]}) -> {sys.argv[3]}")
+' "$APP_DIR/Contents/Resources/chromium-engine.json" "$ARCH" "$CHROMIUM_DEST"
+  elif [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
+    echo "FATAL: a release build needs the Chromium engine and native/build.sh failed" >&2
+    exit 1
+  else
+    echo "    skipped: native/build.sh failed (this DMG's windows use WebKit)"
+    rm -rf "$CHROMIUM_DEST"
   fi
 fi
 

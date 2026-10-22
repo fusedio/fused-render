@@ -486,13 +486,6 @@ class UpdateManager(_base.UpdateManager):
             mount = self._attach(dmg)
             source = self._find_app(mount)
             self._verify_app_version(source, manifest["version"])
-            # With the Chromium engine on, fetch the engine the NEW app pins
-            # now, so the relaunch finds it on disk (D1408). BEFORE the swap:
-            # this process's modules still import from the current bundle
-            # here; after the rename a lazy import lands on the moved tree
-            # (PR #1645). Best effort — a failed engine download never fails
-            # the app update, the preference row offers it again after.
-            self._prefetch_chromium_engine(source)
             if os.path.exists(swap_in):
                 shutil.rmtree(swap_in)
             # ditto straight from the mounted image into the bundle's own
@@ -532,26 +525,6 @@ class UpdateManager(_base.UpdateManager):
         # path on every protected file access: delete it and Full Disk
         # Access silently stops working until relaunch (see
         # `sweep_old_bundles`, which clears it on a later boot instead).
-
-    def _prefetch_chromium_engine(self, source: str) -> None:
-        try:
-            from fused_render import chromium
-            from fused_render.shell.prefs import chromium_windows_enabled
-
-            if not chromium_windows_enabled():
-                return
-            # The update ships its engine (D1415, every arm64 release):
-            # nothing to fetch, and no "Downloading Chromium engine" beat
-            # for the row to flash through. `prefetch_for_bundle` would
-            # also return at once; the check here is for the row.
-            if os.path.isdir(os.path.join(source, chromium.BUNDLED_SUBDIR, chromium.FRAMEWORK_NAME)):
-                return
-            self._job_report(detail="Downloading Chromium engine", message="",
-                             done=None, total=None, cancellable=False)
-            chromium.prefetch_for_bundle(source)
-        except Exception:  # noqa: BLE001 — the app update must go on
-            logger.warning("chromium engine prefetch failed; the app will fetch it after the relaunch",
-                           exc_info=True)
 
     def _attach(self, dmg: str) -> str:
         result = subprocess.run(

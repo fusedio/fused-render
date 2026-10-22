@@ -1,96 +1,48 @@
-"""The on-demand Chromium engine: manifest, cache layout, download / verify /
-unpack state machine (`fused_render.chromium`). OS-neutral; the HTTP fetch
-is replaced by a fake that writes a zip built here."""
-import hashlib
-import io
+"""The Chromium engine's locator (`fused_render.chromium`): where the engine
+the app ships is, whether it is usable, and the one rule for which engine a
+new window gets. OS-neutral; the engine dir is a fake tree under tmp."""
 import json
 import os
-import stat
-import threading
-import zipfile
 
 import pytest
 
 from fused_render import chromium as eng
-from fused_render import jobs
 
-
-def _manifest(sha=None, size=None, arch="arm64"):
-    return {
-        "engine_version": "7",
-        "cef_version": "139.0.37+gabc+chromium-139.0.1.2",
-        "base_url": "https://example.test/rel/",
-        "artifacts": {arch: {"file": f"FusedChromium-7-{arch}.zip", "sha256": sha, "size": size}},
-    }
-
-
-def _engine_zip(info=None, top="FusedChromium", with_marker_dir=True, extra=None) -> bytes:
-    """A zip shaped like the build script's artifact."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        base = f"{top}/" if top else ""
-        if with_marker_dir:
-            zf.writestr(f"{base}FusedChromium.framework/Versions/A/FusedChromium", b"\xcf\xfa\xed\xfe")
-            # executable bit on the binary
-            zi = zipfile.ZipInfo(f"{base}FusedChromium.framework/Versions/A/Resources/x.sh")
-            zi.external_attr = (0o100755) << 16
-            zf.writestr(zi, "#!/bin/sh\n")
-            # a symlink member, the way `ditto`/`zip -y` records one
-            li = zipfile.ZipInfo(f"{base}FusedChromium.framework/Versions/Current")
-            li.external_attr = (0o120755) << 16
-            zf.writestr(li, "A")
-        zf.writestr(f"{base}engine.json", json.dumps(info or {
-            "engine_version": "7", "cef_version": "139.0.37+gabc+chromium-139.0.1.2",
-            "arch": "arm64"}))
-        for name, data in (extra or {}).items():
-            zf.writestr(name, data)
-    return buf.getvalue()
+CEF = "139.0.37+gabc+chromium-139.0.1.2"
 
 
 @pytest.fixture
-def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
-    # this is a Linux CI box: the engine is a macOS thing, so pretend
+def manifest(monkeypatch):
+    monkeypatch.setattr(eng, "_read_manifest", lambda: {
+        "cef_version": CEF, "cef_sha1": {"arm64": "abc", "x86_64": None}})
+    # this may be a Linux CI box: the engine is a macOS thing, so pretend
     monkeypatch.setattr(eng, "platform_supported", lambda system=None: system != "linux")
-    # fresh module state per test — and a fresh job registry, which the
-    # install mirrors itself into (process-global, like the module state)
-    eng._state.__init__()
-    jobs.reset()
-    yield tmp_path
-    jobs.reset()
+    monkeypatch.delenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", raising=False)
 
 
-def _fake_fetch(data: bytes, calls=None):
-    def fetch(url, dest, progress):
-        if calls is not None:
-            calls.append(url)
-        progress(0.5)
-        with open(dest, "wb") as f:
-            f.write(data)
-        progress(1.0)
-    return fetch
+def _engine(root, info=None, info_in_resources=False):
+    """A tree shaped like native/build.sh's output — or like the app bundle,
+    where engine.json has moved to Contents/Resources."""
+    app = root / "App.app"
+    d = app / eng.BUNDLED_SUBDIR
+    os.makedirs(d / eng.FRAMEWORK_NAME)
+    where = app / eng.BUNDLED_INFO if info_in_resources else d / eng.ENGINE_INFO
+    os.makedirs(where.parent, exist_ok=True)
+    where.write_text(json.dumps(info or {"cef_version": CEF, "arch": "arm64"}))
+    return d
 
 
-def _published(data: bytes):
-    return _manifest(sha=hashlib.sha256(data).hexdigest(), size=len(data))
-
-
-# ---- manifest / arch / platform ---------------------------------------------
-
-def test_shipped_manifest_parses_and_names_both_mac_arches():
+def test_shipped_manifest_pins_cef_for_arm64_only():
     m = eng._read_manifest()
-    for arch in ("arm64", "x86_64"):
-        a = eng.artifact(arch, m)
-        assert a is not None and a.url.endswith(".zip") and a.arch == arch
-        assert a.engine_version and a.cef_version
+    assert m["cef_version"] and m["cef_sha1"]["arm64"]
+    assert m["cef_sha1"]["x86_64"] is None
 
 
 def test_host_arch_normalises_machine_names():
     assert eng.host_arch("arm64") == "arm64"
     assert eng.host_arch("aarch64") == "arm64"
-    assert eng.host_arch("AMD64") == "x86_64"
     assert eng.host_arch("x86_64") == "x86_64"
+    assert eng.host_arch("AMD64") == "x86_64"
 
 
 def test_only_macos_is_supported():
@@ -99,426 +51,73 @@ def test_only_macos_is_supported():
     assert not eng.platform_supported("win32")
 
 
-def test_status_unsupported_off_macos(home):
-    assert eng.status(system="linux")["state"] == eng.UNSUPPORTED
+def test_status_unsupported_off_macos(manifest):
+    assert eng.status("arm64", system="linux")["state"] == eng.UNSUPPORTED
 
 
-def test_status_unpublished_when_manifest_has_no_hash(home, monkeypatch):
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _manifest())
+def test_no_engine_dir_outside_a_bundle_is_missing(manifest, monkeypatch):
+    monkeypatch.setattr(eng.sys, "frozen", None, raising=False)
+    assert eng.engine_dir() is None
+    assert eng.framework_path() is None
     st = eng.status("arm64", system="darwin")
-    assert st["state"] == eng.UNPUBLISHED
-    assert st["engine_version"] == "7"
-    # install() is a no-op there — nothing to download
-    assert eng.install("arm64")["state"] == eng.UNPUBLISHED
+    assert st == {"state": eng.MISSING, "cef_version": None, "path": None}
 
 
-def test_status_unpublished_for_an_arch_the_manifest_lacks(home, monkeypatch):
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _manifest(sha="ab", size=1))
-    assert eng.status("x86_64", system="darwin")["state"] == eng.UNPUBLISHED
-
-
-# ---- the happy path ---------------------------------------------------------
-
-def test_install_downloads_verifies_unpacks_and_marks_ready(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    calls = []
-    assert eng.status("arm64", system="darwin")["state"] == eng.MISSING
-    assert eng.ensure("arm64", fetch=_fake_fetch(data, calls), timeout=10)
-    assert calls == ["https://example.test/rel/FusedChromium-7-arm64.zip"]
+def test_engine_dir_from_the_env_override_is_ready(manifest, tmp_path, monkeypatch):
+    d = _engine(tmp_path)
+    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
+    assert eng.engine_dir() == str(d)
+    assert eng.framework_path() == os.path.join(str(d), eng.FRAMEWORK_NAME)
+    assert eng.is_ready("arm64")
     st = eng.status("arm64", system="darwin")
-    assert st["state"] == eng.READY and st["progress"] == 1.0
-    art = eng.artifact("arm64")
-    d = eng.engine_dir(art)
-    assert d == os.path.join(str(home / "home"), "chromium", "engine-7-arm64")
-    assert os.path.isfile(os.path.join(d, eng.READY_MARKER))
-    assert os.path.isdir(eng.framework_path(art))
-    # executable bit restored, symlink recreated as a symlink
-    sh = os.path.join(d, "FusedChromium.framework/Versions/A/Resources/x.sh")
-    assert os.stat(sh).st_mode & stat.S_IXUSR
-    cur = os.path.join(d, "FusedChromium.framework/Versions/Current")
-    assert os.path.islink(cur) and os.readlink(cur) == "A"
-    # no temp dirs left behind
-    assert [e for e in os.listdir(os.path.dirname(d)) if e.startswith(".download")] == []
+    assert st == {"state": eng.READY, "cef_version": CEF, "path": str(d)}
 
 
-def test_install_is_idempotent_once_ready(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    calls = []
-    assert eng.ensure("arm64", fetch=_fake_fetch(data, calls), timeout=10)
-    assert eng.install("arm64", fetch=_fake_fetch(data, calls))["state"] == eng.READY
-    assert len(calls) == 1
-
-
-def test_engine_root_is_the_base_home_not_the_branch_dir(home, monkeypatch):
-    monkeypatch.setenv("FUSED_RENDER_BRANCH", "feature-x")
-    assert eng.engines_root() == os.path.join(str(home / "home"), "chromium")
-
-
-# ---- failures -----------------------------------------------------------------
-
-def test_hash_mismatch_fails_and_leaves_nothing(home, monkeypatch):
-    data = _engine_zip()
-    m = _published(data)
-    m["artifacts"]["arm64"]["sha256"] = "0" * 64
-    monkeypatch.setattr(eng, "_read_manifest", lambda: m)
-    assert not eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
-    st = eng.status("arm64", system="darwin")
-    assert st["state"] == eng.FAILED and "SHA-256" in st["error"]
-    assert not os.path.exists(eng.engine_dir(eng.artifact("arm64")))
-
-
-def test_size_mismatch_is_caught_before_hashing(home, monkeypatch):
-    data = _engine_zip()
-    m = _published(data)
-    m["artifacts"]["arm64"]["size"] = len(data) + 1
-    monkeypatch.setattr(eng, "_read_manifest", lambda: m)
-    assert not eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
-    assert "size" in eng.status("arm64", system="darwin")["error"]
-
-
-def test_engine_json_must_agree_with_the_manifest(home, monkeypatch):
-    data = _engine_zip(info={"engine_version": "7", "cef_version": "other", "arch": "arm64"})
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    assert not eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
-    assert "cef_version" in eng.status("arm64", system="darwin")["error"]
-
-
-def test_missing_framework_in_artifact_fails(home, monkeypatch):
-    data = _engine_zip(with_marker_dir=False)
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    assert not eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
-    assert "not found" in eng.status("arm64", system="darwin")["error"]
-
-
-def test_fetch_exception_is_reported_and_retry_works(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-
-    def boom(url, dest, progress):
-        raise OSError("network down")
-
-    assert not eng.ensure("arm64", fetch=boom, timeout=10)
-    assert eng.status("arm64", system="darwin") == {
-        **eng.status("arm64", system="darwin"), "state": eng.FAILED, "error": "network down"}
-    # a retry clears the error
-    assert eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
-    assert eng.status("arm64", system="darwin")["state"] == eng.READY
-
-
-def test_failure_is_scoped_to_the_engine_it_happened_to(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    assert not eng.ensure("arm64", fetch=lambda *a: (_ for _ in ()).throw(OSError("x")), timeout=10)
-    # manifest moves on to engine 8: the old failure does not stick to it
-    m8 = _published(data)
-    m8["engine_version"] = "8"
-    monkeypatch.setattr(eng, "_read_manifest", lambda: m8)
-    assert eng.status("arm64", system="darwin")["state"] == eng.MISSING
-
-
-# ---- the unpacker -------------------------------------------------------------
-
-def test_safe_extract_refuses_traversal(tmp_path):
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("../evil.txt", "x")
-    p = tmp_path / "z.zip"
-    p.write_bytes(buf.getvalue())
-    with pytest.raises(ValueError, match="unsafe member"):
-        eng.safe_extract(str(p), str(tmp_path / "out"))
-    assert not (tmp_path / "evil.txt").exists()
-
-
-def test_safe_extract_refuses_escaping_symlinks(tmp_path):
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        li = zipfile.ZipInfo("link")
-        li.external_attr = (0o120755) << 16
-        zf.writestr(li, "../../etc")
-    p = tmp_path / "z.zip"
-    p.write_bytes(buf.getvalue())
-    with pytest.raises(ValueError, match="unsafe symlink"):
-        eng.safe_extract(str(p), str(tmp_path / "out"))
-
-
-def test_safe_extract_refuses_absolute_members(tmp_path):
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zi = zipfile.ZipInfo("/tmp/evil")
-        zf.writestr(zi, "x")
-    p = tmp_path / "z.zip"
-    p.write_bytes(buf.getvalue())
-    with pytest.raises(ValueError, match="unsafe member"):
-        eng.safe_extract(str(p), str(tmp_path / "out"))
-
-
-# ---- concurrency / progress -----------------------------------------------------
-
-def test_status_reports_downloading_while_the_fetch_runs(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    started, release = threading.Event(), threading.Event()
-
-    def slow(url, dest, progress):
-        progress(0.25)
-        started.set()
-        release.wait(5)
-        with open(dest, "wb") as f:
-            f.write(data)
-
-    st = eng.install("arm64", fetch=slow)
-    assert st["state"] == eng.DOWNLOADING
-    assert started.wait(5)
-    st = eng.status("arm64", system="darwin")
-    assert st["state"] == eng.DOWNLOADING and 0 < st["progress"] < 0.9
-    # a second install while running does not start another thread
-    t = eng._state.thread
-    assert eng.install("arm64", fetch=slow)["state"] == eng.DOWNLOADING
-    assert eng._state.thread is t
-    assert not eng.remove("arm64")  # refused mid-download
-    release.set()
-    t.join(5)
-    assert eng.status("arm64", system="darwin")["state"] == eng.READY
-
-
-# ---- the Activity row (D1421) -------------------------------------------------
-
-def _row():
-    rows = [j for j in jobs.list_jobs() if j["id"].startswith(eng.JOB_ID_PREFIX)]
-    assert len(rows) <= 1
-    return rows[0] if rows else None
-
-
-def test_install_reports_a_download_row_with_bytes_then_done(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    started, release = threading.Event(), threading.Event()
-
-    def slow(url, dest, progress):
-        progress(0.25)
-        started.set()
-        release.wait(5)
-        with open(dest, "wb") as f:
-            f.write(data)
-        progress(1.0)
-
-    assert _row() is None
-    eng.install("arm64", fetch=slow)
-    assert started.wait(5)
-    row = _row()
-    assert row is not None
-    assert row["id"] == "sys:chromium-engine:7-arm64"
-    assert row["owner"] == "server" and row["cancellable"] is False
-    assert row["kind"] == "download" and row["unit"] == "bytes"
-    assert row["title"] == eng.JOB_TITLE and row["detail"] == "Downloading"
-    assert row["origin"] == "Preferences" and row["page"] == "/preferences"
-    assert row["state"] == "running"
-    # the fetch's own fraction, in bytes of the manifest's size
-    assert row["total"] == len(data) and row["done"] == pytest.approx(0.25 * len(data))
-    release.set()
-    eng._state.thread.join(5)
-    row = _row()
-    assert row["state"] == "done" and row["done"] == row["total"] == len(data)
-    assert row["message"] == eng.JOB_DONE_MESSAGE
-
-
-def test_install_row_exists_before_the_worker_runs(home, monkeypatch):
-    # The row is opened by `install` itself, so the request that turned the
-    # preference on returns with it already there for the chip's next poll.
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    release = threading.Event()
-
-    def slow(url, dest, progress):
-        release.wait(5)
-        with open(dest, "wb") as f:
-            f.write(data)
-
-    eng.install("arm64", fetch=slow)
-    row = _row()
-    assert row is not None and row["state"] == "running" and row["done"] == 0.0
-    assert row["total"] == len(data)
-    release.set()
-    eng._state.thread.join(5)
-
-
-def test_failed_install_reports_an_error_row_and_a_retry_reopens_it(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-
-    def boom(url, dest, progress):
-        raise OSError("network down")
-
-    assert not eng.ensure("arm64", fetch=boom, timeout=10)
-    row = _row()
-    assert row["state"] == "error" and row["message"] == "network down"
-    assert eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
-    row = _row()
-    assert row["state"] == "done" and row["message"] == eng.JOB_DONE_MESSAGE
-
-
-def test_verify_and_unpack_phases_name_their_verb(home, monkeypatch):
-    data = _engine_zip()
-    art = eng.artifact("arm64", manifest=_published(data))
-    assert eng._job_fields(art, 0.45, "download")["done"] == pytest.approx(0.5 * len(data))
-    assert eng._job_fields(art, 0.9, "verify") == {
-        "state": "running", "done": float(len(data)), "total": float(len(data)),
-        "detail": "Verifying", "message": ""}
-    assert eng._job_fields(art, 0.92, "unpack")["detail"] == "Unpacking"
-    # the final tick is the worker's terminal row, not a progress one
-    assert eng._job_fields(art, 1.0, "ready") is None
-
-
-def test_a_registry_failure_never_breaks_the_install(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    monkeypatch.setattr(jobs, "upsert", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
-    assert eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
-    assert eng.status("arm64", system="darwin")["state"] == eng.READY
-
-
-def test_remove_deletes_a_ready_engine(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    assert eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
-    assert eng.remove("arm64")
-    assert eng.status("arm64", system="darwin")["state"] == eng.MISSING
-    assert not eng.remove("arm64")
-
-
-def test_a_dir_without_the_marker_is_not_ready(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    art = eng.artifact("arm64")
-    os.makedirs(eng.framework_path(art))
-    assert eng.status("arm64", system="darwin")["state"] == eng.MISSING
-    # and ensure() rebuilds it rather than trusting it
-    assert eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
-    assert os.path.isfile(os.path.join(eng.engine_dir(art), eng.READY_MARKER))
-
-
-# ---- the bundled engine (D1415) ---------------------------------------------------
-
-def _bundle(tmp_path, art, info=None, info_inside=False):
-    """An unpacked engine where build_dmg.sh puts it (engine.json relocated
-    to Contents/Resources, or left inside for the env-override dev case),
-    named through the env override `bundled_engine_dir` honours outside a
-    .app."""
+def test_engine_dir_from_the_frozen_bundle(manifest, tmp_path, monkeypatch):
+    """py2app: sys.executable is <App>.app/Contents/MacOS/python; the engine
+    is at Contents/Frameworks/FusedChromium and its engine.json under
+    Contents/Resources (strict sealing allows no plain file beside bundles)."""
+    d = _engine(tmp_path, info_in_resources=True)
     app = tmp_path / "App.app"
-    d = app / eng.BUNDLED_SUBDIR
-    os.makedirs(d / eng.FRAMEWORK_NAME)
-    where = d / eng.ENGINE_INFO if info_inside else app / eng.BUNDLED_INFO
-    os.makedirs(where.parent, exist_ok=True)
-    where.write_text(json.dumps(info or {
-        "engine_version": art.engine_version, "cef_version": art.cef_version, "arch": art.arch}))
-    return d
-
-
-def test_bundled_info_lives_in_resources_or_inside(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    art = eng.artifact("arm64")
-    d = _bundle(home, art, info_inside=True)
-    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
-    assert eng.bundled_info_path(str(d)) == os.path.join(str(d), eng.ENGINE_INFO)
-    assert eng.is_bundled(art)
-    os.remove(d / eng.ENGINE_INFO)
-    assert not eng.is_bundled(art)
-    assert eng.bundled_info_path(str(d)) == str(home / "App.app" / eng.BUNDLED_INFO)
-
-
-def test_bundled_engine_is_ready_without_a_download_or_marker(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    art = eng.artifact("arm64")
-    d = _bundle(home, art)
-    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
-    assert eng.is_bundled(art)
-    st = eng.status("arm64", system="darwin")
-    assert st["state"] == eng.READY and st["bundled"] is True and st["path"] == str(d)
-    assert eng.engine_dir(art) == str(d)
-    assert eng.framework_path(art) == os.path.join(str(d), eng.FRAMEWORK_NAME)
-    # nothing to fetch, nothing to delete
-    calls = []
-    assert eng.ensure("arm64", fetch=_fake_fetch(data, calls), timeout=10)
-    assert calls == []
-    assert eng.remove("arm64") is False
-    assert os.path.isdir(d / eng.FRAMEWORK_NAME)
-
-
-def test_bundled_engine_must_be_the_manifests(home, monkeypatch):
-    """A bundle built against another manifest (a dev DMG, a mislabelled
-    build) is ignored: the on-demand path applies as if nothing shipped."""
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    art = eng.artifact("arm64")
-    d = _bundle(home, art, info={"engine_version": "6", "cef_version": art.cef_version, "arch": "arm64"})
-    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
-    assert not eng.is_bundled(art)
-    assert eng.status("arm64", system="darwin")["state"] == eng.MISSING
-    assert eng.engine_dir(art) == eng.download_dir(art)
-
-
-def test_prune_takes_the_bundled_versions_download_too(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    art = eng.artifact("arm64")
-    assert eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)  # the on-demand days
-    os.makedirs(os.path.join(eng.engines_root(), "engine-5-arm64"))
-    os.makedirs(os.path.join(eng.engines_root(), "engine-9-arm64"))  # a newer prefetch stays
-    d = _bundle(home, art)
-    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
-    assert sorted(eng.prune_others(art)) == ["engine-5-arm64", "engine-7-arm64"]
-    assert os.path.isdir(os.path.join(eng.engines_root(), "engine-9-arm64"))
+    monkeypatch.setattr(eng.sys, "frozen", "macosx_app", raising=False)
+    monkeypatch.setattr(eng.sys, "executable", str(app / "Contents" / "MacOS" / "python"))
+    assert eng.engine_dir() == str(d)
+    assert eng.info_path(str(d)) == str(app / eng.BUNDLED_INFO)
     assert eng.status("arm64", system="darwin")["state"] == eng.READY
 
 
-def test_prefetch_sees_the_updates_bundled_engine(home, monkeypatch):
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    art = eng.artifact("arm64")
-    app = home / "Update.app"
-    mani = app / "Contents" / "Resources" / "lib" / "python3.12" / "fused_render" / "chromium"
-    os.makedirs(mani)
-    (mani / "manifest.json").write_text(json.dumps(_published(data)))
-    calls = []
-    d = app / eng.BUNDLED_SUBDIR
-    os.makedirs(d / eng.FRAMEWORK_NAME)
-    (app / eng.BUNDLED_INFO).write_text(json.dumps({
-        "engine_version": art.engine_version, "cef_version": art.cef_version, "arch": "arm64"}))
-    assert eng.prefetch_for_bundle(str(app), "arm64", fetch=_fake_fetch(data, calls)) is True
-    assert calls == []
+def test_engine_json_must_name_this_arch_and_cef(manifest, tmp_path, monkeypatch):
+    d = _engine(tmp_path, info={"cef_version": CEF, "arch": "x86_64"})
+    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
+    assert not eng.is_ready("arm64")
+    assert eng.status("arm64", system="darwin")["state"] == eng.MISSING
+    (d / eng.ENGINE_INFO).write_text(json.dumps({"cef_version": "1.0", "arch": "arm64"}))
+    assert not eng.is_ready("arm64")
+    with pytest.raises(ValueError, match="cef_version"):
+        eng.check_engine_info(str(d / eng.ENGINE_INFO), arch="arm64")
+    (d / eng.ENGINE_INFO).write_text("not json")
+    with pytest.raises(ValueError, match="readable"):
+        eng.check_engine_info(str(d / eng.ENGINE_INFO), arch="arm64")
 
 
-def test_unpack_artifact_writes_the_marker(home, tmp_path, monkeypatch):
-    """What build_dmg.sh calls: verified zip in, `.ready` engine dir out."""
-    data = _engine_zip()
-    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
-    art = eng.artifact("arm64")
-    z = tmp_path / "e.zip"
-    z.write_bytes(data)
-    dest = tmp_path / "out" / "FusedChromium"
-    eng.verify_artifact(str(z), art)
-    eng.unpack_artifact(str(z), str(dest), art)
-    assert (dest / eng.READY_MARKER).read_text().strip() == art.cef_version
-    assert (dest / eng.FRAMEWORK_NAME).is_dir()
-    assert os.listdir(tmp_path / "out") == ["FusedChromium"]  # staging cleaned up
+def test_a_dir_without_the_framework_is_not_ready(manifest, tmp_path, monkeypatch):
+    d = tmp_path / "empty"
+    os.makedirs(d)
+    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
+    assert eng.status("arm64", system="darwin") == {"state": eng.MISSING, "cef_version": None, "path": str(d)}
+
+
+def test_profile_dir_is_under_the_base_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
+    assert eng.profile_dir() == str(tmp_path / "home" / "chromium" / "profile")
 
 
 # ---- engine selection ----------------------------------------------------------
 
 def test_engine_for_new_window_needs_pref_ready_and_loadable():
-    f = eng.engine_for_new_window
-    assert f(True, eng.READY, True) == "chromium"
-    assert f(False, eng.READY, True) == "webkit"
-    assert f(True, eng.DOWNLOADING, True) == "webkit"
-    assert f(True, eng.MISSING, True) == "webkit"
-    assert f(True, eng.FAILED, True) == "webkit"
-    assert f(True, eng.READY, False) == "webkit"
-
-
-def test_http_fetch_refuses_plain_http(tmp_path):
-    with pytest.raises(ValueError, match="https"):
-        eng._http_fetch("http://example.test/x.zip", str(tmp_path / "x"), lambda f: None)
+    assert eng.engine_for_new_window(True, eng.READY, True) == "chromium"
+    assert eng.engine_for_new_window(False, eng.READY, True) == "webkit"
+    assert eng.engine_for_new_window(True, eng.MISSING, True) == "webkit"
+    assert eng.engine_for_new_window(True, eng.READY, False) == "webkit"
+    assert eng.engine_for_new_window(True, eng.UNSUPPORTED, False) == "webkit"
