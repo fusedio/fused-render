@@ -238,6 +238,11 @@ export default function Canvases() {
     setPreviews({});
     previewsAskedRef.current = new Set();
     setError(null);
+    // Stop watching the old env's browser sign-in: its stamp is the old
+    // env's store (custom's is its own, D1412), so judging the new env by it
+    // would call the sign-in done or failed wrongly. The sign-in itself
+    // carries on; switching back finds it in this env's status.
+    setLoggingIn(false);
     void refresh();
   };
 
@@ -269,8 +274,11 @@ export default function Canvases() {
     // stops future ticks, not a request that's already on the wire.
     let cancelled = false;
     pollRef.current = window.setInterval(() => {
+      // A tick already on the wire when the env changes answers for the old
+      // env's login; drop it like `refresh` does.
+      const gen = envGenRef.current;
       void getCanvasesStatus(pickedRef.current).then((s) => {
-        if (cancelled) return;
+        if (cancelled || gen !== envGenRef.current) return;
         setStatus(s);
         const completed =
           s.logged_in && s.creds_stamp !== loginStampRef.current;
