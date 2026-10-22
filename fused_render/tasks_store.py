@@ -125,7 +125,6 @@ two lines.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import glob
 import json
 import math
@@ -136,6 +135,7 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 
+from fused_render import _platform
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.agent_backends import roots
 
@@ -266,7 +266,7 @@ def locked_path(lock_path: str):
     must keep its own depth guard — see `schedule._store_lock`."""
     handle = _open_lockfile(lock_path)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        _platform.flock(handle)
         yield
     finally:
         # Closing the handle drops the flock.
@@ -382,7 +382,7 @@ def acquire_lease_blocking(name: str) -> None:
         if name in _lease_handles:
             return
     handle = _open_lease_file(name)
-    fcntl.flock(handle, fcntl.LOCK_EX)
+    _platform.flock(handle)
     with _lease_lock:
         if name in _lease_handles:
             handle.close()
@@ -401,9 +401,7 @@ def try_acquire_lease(name: str, *, machine_wide: bool = False) -> bool:
         if name in _lease_handles:
             return True
         handle = _open_lease_file(name, machine_wide=machine_wide)
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        if not _platform.flock(handle, blocking=False):
             handle.close()
             return False
         _lease_handles[name] = handle

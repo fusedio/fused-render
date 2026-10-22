@@ -59,6 +59,25 @@ describe("historyToTurns", () => {
     expect((turns[1] as { uuid?: string }).uuid).toBeUndefined();
   });
 
+  test("a compact row becomes a compact turn, not a user or assistant one", () => {
+    const turns = historyToTurns({
+      turns: [
+        { role: "compact", text: "sum", uuid: "c1", trigger: "auto", pre_tokens: 167165, post_tokens: 16130 },
+        { role: "compact", text: "bare" },
+      ],
+      transcript: stat,
+    });
+    expect(turns[0]).toEqual({
+      role: "compact",
+      key: "c1",
+      text: "sum",
+      trigger: "auto",
+      preTokens: 167165,
+      postTokens: 16130,
+    });
+    expect(turns[1]).toEqual({ role: "compact", key: "h:1", text: "bare" });
+  });
+
   test("segments ride along only when the turn had any (agent.py:5041)", () => {
     const turns = historyToTurns({
       turns: [

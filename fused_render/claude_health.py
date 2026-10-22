@@ -219,6 +219,8 @@ def _shell_probe() -> Optional[str]:
     profile. Only reached when the override, PATH and every candidate missed,
     and its answer is cached like everything else here.
     """
+    if sys.platform == "win32":
+        return None  # no login shell to ask; the plain PATH was already searched
     shell = os.environ.get("SHELL") or "/bin/bash"
     if not executable(shell):
         return None

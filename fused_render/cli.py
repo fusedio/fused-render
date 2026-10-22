@@ -769,10 +769,6 @@ def _run_diagnose(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    if sys.platform == "win32":
-        # The wheel is platform-agnostic, so pip still installs it on Windows;
-        # say so plainly instead of failing later on a POSIX-only import.
-        sys.exit("fused-render does not support Windows (macOS and Linux only).")
     parser = _build_parser()
 
     # Preserve the historical bare invocation: `fused-render`, `fused-render --port N`,

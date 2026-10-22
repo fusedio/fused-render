@@ -307,10 +307,11 @@ def main() -> None:
     # session of its own, as the old start_new_session did: a server restart,
     # a terminal hangup or a killpg aimed at the server never reaches a live
     # chat. EPERM means this process is already a session leader.
-    try:
-        os.setsid()
-    except OSError:
-        pass
+    if hasattr(os, "setsid"):
+        try:
+            os.setsid()
+        except OSError:
+            pass
     _close_inherited_fds()
     req = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     run_dir = req["run_dir"]

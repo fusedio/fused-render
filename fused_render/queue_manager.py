@@ -30,7 +30,7 @@ import time
 import uuid
 from typing import Callable
 
-from fused_render import tasks_store
+from fused_render import _platform, tasks_store
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +321,7 @@ def _pid_alive(pid: int) -> bool:
     process is there, so the safe guess is "alive" whenever the probe itself
     can't be trusted."""
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:

@@ -80,6 +80,7 @@ import sys
 import threading
 import urllib.parse
 
+from fused_render import _platform
 from fused_render.shell.storage import home_dir
 
 logger = logging.getLogger(__name__)
@@ -249,7 +250,7 @@ def _venv_identity(project_dir: str) -> str:
     and its cost is a rebuild rather than a wrong answer.
     """
     path = os.path.abspath(project_dir)
-    rel = os.path.relpath(path, _PACKAGE_DIR)
+    rel = _platform.relpath_within(path, _PACKAGE_DIR)
     if rel == os.pardir or rel.startswith(os.pardir + os.sep) or os.path.isabs(rel):
         return path
     if rel == os.curdir:
@@ -408,7 +409,7 @@ def _immediate_child(root: str, path: str) -> str | None:
     *root* (or is *root* itself, or is a file sitting directly in it)."""
     root = os.path.abspath(root)
     path = os.path.abspath(path)
-    rel = os.path.relpath(path, root)
+    rel = _platform.relpath_within(path, root)
     if rel == os.curdir or rel == os.pardir or rel.startswith(os.pardir + os.sep):
         return None
     child = os.path.join(root, rel.split(os.sep)[0])

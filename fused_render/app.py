@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from fused_render import _flavor, desktop_probe, relaunch_windows
+from fused_render import _flavor, _platform, desktop_probe, relaunch_windows
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_dir, setup_logging, uvicorn_fast_kwargs, uvicorn_log_config
 
@@ -181,7 +181,7 @@ def _close_duckdb_stash() -> None:
 
 def _is_process_alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except OSError:
         return False
     return True

@@ -357,7 +357,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-latest, macos-14, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -462,6 +462,29 @@ jobs:
           echo "$out"
           if [ "$code" = "0" ] || ! grep -q "fused-render\[cli\]" <<<"$out"; then
             echo "::error::serve did not refuse with the [cli] install line on the base install"
+            exit 1
+          fi
+
+      - name: serve boots on Windows with the [cli] extra
+        # Smoke test only: the server has to import and answer HTTP on native
+        # Windows (no fcntl, pwd, pty). Features that need POSIX are disabled
+        # there, so nothing beyond "it serves" is asserted.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install -e ".[cli]"
+          python -c "import fused_render.server"
+          python -m fused_render.cli serve --no-browser --port 8785 > "$RUNNER_TEMP/serve.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true; cat "$RUNNER_TEMP/serve.log"' EXIT
+          ok=""
+          for i in $(seq 1 40); do
+            if curl -sf "http://127.0.0.1:8785/" >/dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::fused-render serve never answered on Windows"
             exit 1
           fi
 

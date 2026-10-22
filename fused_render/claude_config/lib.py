@@ -15,7 +15,6 @@ owner of ~/.fused-render in this codebase and the reason FUSED_RENDER_HOME
 redirects the override for tests for free.
 """
 import contextlib
-import fcntl
 import itertools
 import json
 import os
@@ -24,6 +23,7 @@ import subprocess
 import threading
 from typing import Any, Generator, Optional
 
+from fused_render import _platform
 from fused_render.shell.storage import home_dir
 
 
@@ -119,7 +119,7 @@ _INIT_LOCK = threading.Lock()
 def config_lock() -> Generator[None, None, None]:
     os.makedirs(CLAUDE_DIR, exist_ok=True)
     with _THREAD_LOCK, open(_LOCK_PATH, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _platform.flock(lock)
         yield
 
 
@@ -718,8 +718,14 @@ def safe_subdir(base: str, slug: str, tail: str = "") -> str:
 
 def reveal(path: str) -> bool:
     """Open a path in the OS file explorer. Best-effort; argv, never a shell
-    string. macOS `open`; falls back to xdg-open on Linux."""
+    string. macOS `open`, `os.startfile` on Windows, else xdg-open."""
     import sys
+    if sys.platform == "win32":
+        try:
+            os.startfile(path)  # type: ignore[attr-defined]
+            return True
+        except OSError:
+            return False
     cmd = ["open"] if sys.platform == "darwin" else ["xdg-open"]
     try:
         subprocess.run([*cmd, path], capture_output=True, timeout=10, **SUBPROCESS_KWARGS)

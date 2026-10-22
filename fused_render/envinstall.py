@@ -65,6 +65,8 @@ import threading
 import time
 from typing import Any
 
+from fused_render import _platform
+
 logger = logging.getLogger(__name__)
 
 # `projectenv.venv_key_for` returns sha256(...)[:16], so every real key is 16
@@ -1158,7 +1160,7 @@ def _pid_alive(pid: int) -> bool:
         except OSError:
             pass
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:
@@ -1177,22 +1179,7 @@ def _kill(pid: int) -> bool:
     server down. (It did exactly that to a pytest session, which is how the
     guard got here.) Anything not a group leader gets a plain single-pid kill.
     """
-    try:
-        leader = os.getpgid(pid) == pid
-    except OSError:
-        leader = False
-    try:
-        if leader:
-            os.killpg(pid, signal.SIGTERM)
-        else:
-            logger.warning(
-                "install worker pid %s is not a process-group leader, so only it "
-                "(not any download it started) is being killed", pid,
-            )
-            os.kill(pid, signal.SIGTERM)
-        return True
-    except OSError:
-        return False
+    return _platform.kill_tree(pid, signal.SIGTERM)
 
 
 def _read_record(key: str) -> dict | None:

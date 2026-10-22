@@ -47,6 +47,7 @@ import {
   groupOfView,
   groupRows,
   activityAt,
+  ACTIVITY_SLACK_SEC,
   defaultViewFacets,
   LANES_BUT_ARCHIVE,
   LANES_BUT_UPCOMING,
@@ -55,6 +56,7 @@ import {
   parseSeededViews,
   parseViewFilters,
   seedCollapsedGroups,
+  sectionsHolding,
   groupSize,
   parseViewTabs,
   flattenGroupRefs,
@@ -8712,7 +8714,7 @@ describe("sortForList: the page's one order", () => {
     // cut, and `rows` is still the sorted list, flattened in section order.
     expect(VIEWS).toContain('<div className="tasks-list-frame">{rows.map(rowAt)}</div>');
     expect(VIEWS).toContain(
-      "groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null",
+      "groupBy ? groupRows(sorted, groupBy, home, Math.max(now, Date.now()), sortBy, (k) => prStatuses[k]) : null",
     );
     // The index rides along ONLY so the row can take its React key from
     // `taskListKeys` (the queue's identity rule).
@@ -11659,6 +11661,50 @@ describe("groupRows", () => {
     expect(activityAt(due, NOW)).toBe(0);
     expect([...openOnFirstVisit(groupRows([{ ...due, project: "/later" }], "project", "", NOW), "project", NOW)]).toEqual([]);
     expect(activityAt(t, NOW)).toBe(sec("2026-10-16T09:00:00"));
+  });
+  it("activityAt reads a stamp a few seconds ahead of the page clock as now (Sina, 2026-10-21)", () => {
+    // The server stamps a running row with ITS clock; `useNow` ticks once a
+    // minute, so the stamp can be ahead of `now`. That is activity NOW — the
+    // folder must stay on top — never "no activity", which sank it to the bottom.
+    const nowSec = Math.floor(NOW / 1000);
+    const live = task({
+      key: "live",
+      status: "in_progress",
+      messages: [msg({ message_id: "MSG-l", state: "sent", at: nowSec + 40 })],
+      last_active: nowSec + 40,
+    }, 0);
+    expect(activityAt(live, NOW)).toBe(nowSec);
+    const g = groupRows([
+      row({ key: "old", project: "/Users/me/old", last_active: sec("2026-10-16T09:00:00") }),
+      { ...live, project: "/Users/me/live" },
+    ], "project", "/Users/me", NOW);
+    expect(g.map((x) => x.label)).toEqual(["live", "old"]);
+    // Beyond the slack it is a due time, and a due time is still no activity.
+    const due = task({ key: "due", status: "upcoming", messages: [], last_active: nowSec + 600 }, 0);
+    expect(activityAt(due, NOW)).toBe(0);
+    // The slack's edge: inside it reads as now, one second past it does not.
+    const edge = (ahead: number) => task({ key: "e", status: "in_progress", messages: [], last_active: nowSec + ahead }, 0);
+    expect(activityAt(edge(ACTIVITY_SLACK_SEC), NOW)).toBe(nowSec);
+    expect(activityAt(edge(ACTIVITY_SLACK_SEC + 1), NOW)).toBe(0);
+    // …and no slack at all for a row whose stamp is its NEXT run: a cron due
+    // in thirty seconds has not happened, whatever `last_active` says.
+    const soon = row({ key: "soon", status: "upcoming", next_run: nowSec + 30, next_run_entry: "e1", last_active: nowSec + 30 });
+    expect(taskWhen(soon, NOW).kind).toBe("next");
+    expect(activityAt(soon, NOW)).toBe(0);
+  });
+  it("sectionsHolding names the section of each key, and the repository above a PR", () => {
+    const p = groupRows([
+      row({ key: "a", project: "/Users/me/a" }),
+      row({ key: "b", project: "/Users/me/b" }),
+    ], "project", "/Users/me", NOW);
+    expect(sectionsHolding(p, "project", new Set(["b"]))).toEqual(["project:/Users/me/b"]);
+    expect(sectionsHolding(p, "project", new Set(["nope"]))).toEqual([]);
+    const pr = groupRows([
+      row({ key: "x", title: "PR #12", repo: "o/r" }),
+      row({ key: "y", title: "no pr" }),
+    ], "pr", "", NOW);
+    const repo = pr.find((g) => g.groups?.length)!;
+    expect(sectionsHolding(pr, "pr", new Set(["x"]))).toEqual([`pr:${repo.key}`, `pr:${repo.groups![0]!.key}`]);
   });
   it("by PR: repositories newest activity first, rows keep list order in a status section", () => {
     const pr = (key: string, n: number, repo: string, iso: string) =>

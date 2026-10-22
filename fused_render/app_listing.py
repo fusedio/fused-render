@@ -23,6 +23,7 @@ import os
 import re
 import stat
 
+from fused_render import _platform
 from fused_render.index.ignore import SHARED_IGNORE_DIRS, MountGuard
 
 _TITLE_RE = re.compile(rb"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -565,7 +566,7 @@ def is_workspace_app_entry(fs_path: str, root: str) -> bool:
     except OSError:
         return False
     path = os.path.abspath(fs_path)
-    rel = os.path.relpath(path, root)
+    rel = _platform.relpath_within(path, root)
     if rel == "." or rel.startswith(".."):
         return False
     segments = rel.split(os.sep)
