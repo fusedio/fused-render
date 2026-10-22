@@ -58,6 +58,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
+import engine_options  # noqa: E402 - the SHARED refusals; see engine_options.py
 import formats  # noqa: E402 - the shared format checks; see formats.py
 import partial  # noqa: E402 - the SHARED progressive transcript; see runners/partial.py
 import stt_common  # noqa: E402 - the VAD policy both STT runners share
@@ -911,14 +912,6 @@ def generate(body):
         raise ValueError("'out' and 'outText' must be where to write the transcript")
 
     task = str(body.get("task") or "transcribe")
-    if sherpa and task != "transcribe":
-        # Refused HERE rather than in `engine_options.UNSUPPORTED`: that table is
-        # per runner CODE, and this runner's code also serves Whisper, which does
-        # translate. What cannot is this MODEL, so the refusal lives where the
-        # model does — before a row is touched or a byte of audio is decoded.
-        raise ValueError(
-            "Parakeet transcribes only; 'translate' needs a Whisper model such "
-            "as deepdml/faster-whisper-large-v3-turbo-ct2")
     # `words` (D392) is honoured on BOTH formats now: faster-whisper's own DTW
     # alignment on the CTranslate2 path (`word_timestamps=True`, mapped by
     # `_ct2_words`) and the transducer's token timestamps on the Parakeet one.
@@ -936,20 +929,17 @@ def generate(body):
         # Parakeet always detects, and faster-whisper rejects the literal "auto"
         # as a language code, so it is None before either branch sees it.
         language = None
-    if sherpa and language:
-        # Refused for `translate`'s reason, and before a row is touched: Parakeet
-        # v3 picks its own language among the 25 it was trained on, so pinning
-        # one would be accepted and ignored — a page that asked for German and
-        # got a guess has nothing on the reply to tell it.
-        raise ValueError(
-            "Parakeet detects its own language and cannot be pinned to one; "
-            "'language' needs a Whisper model such as "
-            "deepdml/faster-whisper-large-v3-turbo-ct2")
-    if sherpa and initial_prompt:
-        raise ValueError(
-            "Parakeet is a transducer with no text to condition on, so "
-            "'initialPrompt' is not supported; it needs a Whisper model such as "
-            "deepdml/faster-whisper-large-v3-turbo-ct2")
+    if sherpa:
+        # Refused HERE as well as at the endpoint, which asks the same question
+        # of the model's layout (`ai_runtime`) before a job row exists: this is
+        # the last line of defence for a request that reached the worker some
+        # other way. Not in `engine_options.UNSUPPORTED`, which is per runner
+        # CODE and this runner's code also serves Whisper — what cannot translate,
+        # be pinned to a language or take a prompt is this MODEL: Parakeet v3
+        # picks its own language among the 25 it was trained on, so a pinned one
+        # would be accepted and ignored. Before a row is touched.
+        engine_options.transcribe_only_or_raise(
+            task=task, language=language, initial_prompt=initial_prompt)
     # `is None`, not `get("vad", True)`: a JSON null is "not specified", and a
     # default reached only by an absent KEY inverts for the caller that spreads
     # an options object carrying an unset one.

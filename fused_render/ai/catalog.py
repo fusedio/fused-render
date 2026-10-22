@@ -1079,6 +1079,10 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "label": "Parakeet TDT 0.6B v3 (sherpa-onnx int8)",
             "nickname": "Parakeet v3",
             "size_gb": 0.67,
+            # Read by `/api/ai/transcribe` to refuse `translate`, a pinned
+            # `language` and `initialPrompt` before a job exists, for a model
+            # that is not downloaded yet (a cached one is read off its files).
+            "transcribeOnly": True,
             "note": "25 European languages with punctuation and word timings, "
                     "several times faster than Whisper turbo on a CPU. "
                     "Transcribes only (no translate). CC-BY-4.0.",

@@ -8894,6 +8894,90 @@ def test_an_engine_with_NOTHING_to_refuse_is_asked_the_same_question(
     _wait_job(started.json()["jobId"])
 
 
+_SHERPA_FILES = ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx",
+                 "tokens.txt")
+_TRANSCRIBE_ONLY_OPTIONS = [
+    ({"task": "translate"}, "translate"),
+    ({"language": "de"}, "'language'"),
+    ({"initialPrompt": "Acme Corp"}, "'initialPrompt'"),
+]
+
+
+def _no_transcribe_jobs():
+    return not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+@pytest.mark.parametrize("sent,needle", _TRANSCRIBE_ONLY_OPTIONS)
+def test_a_CACHED_transducer_model_refuses_what_it_cannot_do_before_a_job_opens(
+        client, fake_transcribe_runner, recording, hub, sent, needle):
+    """The runner code (faster-whisper) also serves Whisper, so the refusal is
+    keyed on the MODEL's layout: a snapshot with the four sherpa files."""
+    _cached_repo(hub, "org/some-parakeet", files=_SHERPA_FILES)
+
+    response = _post_transcribe(client, path=recording, model="org/some-parakeet",
+                                **sent)
+
+    assert response.status_code == 400, (sent, response.json())
+    assert "Parakeet" in response.json()["error"]
+    assert needle in response.json()["error"]
+    assert _no_transcribe_jobs()
+
+
+@pytest.mark.parametrize("sent,needle", _TRANSCRIBE_ONLY_OPTIONS)
+def test_an_UNDOWNLOADED_curated_transcribe_only_row_refuses_the_same_way(
+        client, fake_transcribe_runner, recording, hub, monkeypatch, sent, needle):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-whisper", [
+        {"id": "org/fake-parakeet", "label": "Fake Parakeet", "size_gb": None,
+         "note": "", "transcribeOnly": True},
+    ])
+
+    response = _post_transcribe(client, path=recording, model="org/fake-parakeet",
+                                **sent)
+
+    assert response.status_code == 400, (sent, response.json())
+    assert needle in response.json()["error"]
+    assert _no_transcribe_jobs()
+
+
+@pytest.mark.parametrize("sent", [s for s, _n in _TRANSCRIBE_ONLY_OPTIONS])
+def test_a_CT2_model_is_still_asked_for_translate_language_and_prompt(
+        client, fake_transcribe_runner, recording, hub, sent):
+    _cached_repo(hub, "org/some-whisper", files=("model.bin", "config.json"))
+
+    started = _post_transcribe(client, path=recording, model="org/some-whisper",
+                               **sent)
+
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_language_auto_and_a_plain_transcribe_reach_a_transducer_model(
+        client, fake_transcribe_runner, recording, hub):
+    """"auto" is the one spelling of "detect it" and `task: "transcribe"` rides
+    on every request: neither may be refused."""
+    _cached_repo(hub, "org/some-parakeet", files=_SHERPA_FILES)
+
+    started = _post_transcribe(client, path=recording, model="org/some-parakeet",
+                               task="transcribe", language="auto")
+
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_the_curated_parakeet_row_is_marked_transcribe_only():
+    entry = catalog.entry_for(
+        registry.SPEECH_TO_TEXT,
+        "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8")
+    # Resolved under whichever runner this machine has; on a machine whose
+    # speech runner is not faster-whisper the row is simply not offered.
+    if entry is not None:
+        assert entry.get("transcribeOnly") is True
+    row = next(r for rows in catalog.SUGGESTIONS.values() for r in rows
+               if r["id"].endswith("parakeet-tdt-0.6b-v3-int8"))
+    assert row["transcribeOnly"] is True
+
+
 def test_the_endpoint_and_the_worker_refuse_an_option_by_the_SAME_rule(
         client, fake_refusing_runner, recording):
     """One sentence, one place. The endpoint hands the caller whatever

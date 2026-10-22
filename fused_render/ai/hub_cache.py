@@ -1557,6 +1557,26 @@ def speech_traits(repo_id: str) -> dict | None:
     return formats.speech_traits(_read_json(os.path.join(snapshot_dir, "config.json")) or {})
 
 
+def is_sherpa_transducer(repo_id: str) -> bool | None:
+    """Is the cached snapshot of `repo_id` a sherpa-onnx transducer export
+    (Parakeet, D1423)? None when nothing is cached to read, so a caller can tell
+    "no" from "not downloaded yet" and fall back to the curated row.
+
+    Read off the snapshot's top-level NAMES (`formats.is_sherpa_transducer_
+    snapshot`), the same test the runner's `load()` and `download()` use — the
+    export carries no config for anything subtler. Same path-segment guard as
+    every other reader here (`_embed_snapshot_dir`).
+    """
+    snapshot_dir = _embed_snapshot_dir(repo_id)
+    if snapshot_dir is None:
+        return None
+    try:
+        names = set(os.listdir(snapshot_dir))
+    except OSError:
+        return None
+    return formats.is_sherpa_transducer_snapshot(names)
+
+
 def has_cached_snapshot(repo_id: str) -> bool:
     """Is there a snapshot of `repo_id` on disk at all — the fact
     `_accepts_image` (SPEC AI-17 item 17) needs to know before it can treat
