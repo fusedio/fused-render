@@ -12,19 +12,23 @@ import pytest
 
 import fused_render.bots as _bots_pkg
 
+# ASCII-only source (escapes, not the characters): `-c` code reaches the child
+# through argv, which a C-locale Linux interpreter decodes as ASCII before it
+# ever runs — a raw "…" there dies as "Unable to decode the command from the
+# command line" (macOS always decodes argv as UTF-8, so it hid there).
 _CHILD = r"""
 import json, locale, os, sys
 enc = locale.getpreferredencoding(False)
 if enc.lower().replace("-", "").replace("_", "") in ("utf8", "utf8mode"):
     print("SKIP locale=" + enc); sys.exit(3)
 from fused_render.bots import store
-meta = {"id": "b1", "name": "Bot \U0001F916", "rules": [{"label": "Loading…"}]}
+meta = {"id": "b1", "name": "Bot \U0001F916", "rules": [{"label": "Loading\u2026"}]}
 os.makedirs(store.bot_dir("b1"))
 with open(store.meta_path("b1"), "wb") as f:   # raw UTF-8, not \u-escaped
     f.write(json.dumps(meta, ensure_ascii=False).encode("utf-8"))
 assert store.read_meta("b1") == meta
-store.write_meta("b1", {**meta, "name": "Renamed …"})
-assert store.read_meta("b1")["name"] == "Renamed …"
+store.write_meta("b1", {**meta, "name": "Renamed \u2026"})
+assert store.read_meta("b1")["name"] == "Renamed \u2026"
 print("OK locale=" + enc)
 """
 

@@ -1,4 +1,5 @@
-"""agent.py's side of the second agent backend (docs/COPILOT_BACKEND.md, WS-C).
+"""agent.py's side of the second and third agent backends
+(docs/COPILOT_BACKEND.md and docs/CODEX_BACKEND.md, WS-C).
 
 What is pinned here, per contract section:
 
@@ -20,6 +21,13 @@ What is pinned here, per contract section:
   * D13 — the error markers are COPIES of `agent_backends/*.py`'s and are
     pinned equal, so neither side can drift;
   * D3 — `_cli_sessions` lists both roots, each row saying which.
+
+Codex (docs/CODEX_BACKEND.md), in its own section at the end: `_codex_argv`
+(`app-server` + the pane MCP server as `-c` TOML overrides, D8), the bin
+ladder (D10), the three-key prefs gate (D17), `_spawn_env` (§3), the
+self-minted id and its record (D2), NO respawn from `_send` on a model,
+effort, directory or mode change (D5/D7, §7), plan refused, and every "any
+non-Claude agent" surface answering for Codex as it does for Copilot.
 """
 import importlib.util
 import inspect
@@ -69,7 +77,8 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(resolved))
     for name in ("FUSED_RENDER_SKILL_PLUGIN_DIR", "FUSED_RENDER_WORKBENCH_PLUGIN_DIR",
                  "FUSED_RENDER_FUSED_CLI_DIR", "FUSED_RENDER_ORIGIN",
-                 "FUSED_RENDER_COPILOT_BIN", "FUSED_RENDER_CLAUDE_BIN"):
+                 "FUSED_RENDER_COPILOT_BIN", "FUSED_RENDER_CLAUDE_BIN",
+                 "FUSED_RENDER_CODEX_BIN"):
         monkeypatch.delenv(name, raising=False)
     return {"unnested": str(unnested), "resolved": str(resolved)}
 
@@ -166,9 +175,23 @@ def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     assert agent._LIMIT_ERROR_MARKERS["claude"] == backend_claude.CLAUDE.limit_error_markers
     assert agent._ACCOUNT_ERROR_MARKERS["copilot"] == backend_copilot.COPILOT.account_error_markers
     assert agent._LIMIT_ERROR_MARKERS["copilot"] == backend_copilot.COPILOT.limit_error_markers
+    # Codex's row is imported here, not at the top, so a missing
+    # `agent_backends/codex.py` fails this pin and not the whole module.
+    from fused_render.agent_backends import codex as backend_codex
+    assert agent._ACCOUNT_ERROR_MARKERS["codex"] == backend_codex.CODEX.account_error_markers
+    assert agent._LIMIT_ERROR_MARKERS["codex"] == backend_codex.CODEX.limit_error_markers
     assert agent._BACKEND_LABELS == {"claude": backend_claude.CLAUDE.label,
-                                     "copilot": backend_copilot.COPILOT.label}
+                                     "copilot": backend_copilot.COPILOT.label,
+                                     "codex": backend_codex.CODEX.label}
     assert set(agent.BACKENDS) == set(agent._BACKEND_LABELS)
+    assert set(agent._ACCOUNT_ERROR_MARKERS) == set(agent.BACKENDS)
+    assert set(agent._LIMIT_ERROR_MARKERS) == set(agent.BACKENDS)
+    # A new non-Claude chat's model pill: each catalog row's default.
+    assert agent._NEW_CHAT_MODELS == {"copilot": backend_copilot.COPILOT.default_model,
+                                      "codex": backend_codex.CODEX.default_model}
+    # Every backend with no fused-minted id is a non-Claude one, and every
+    # non-Claude one here mints its own.
+    assert set(agent._SELF_MINTED_ID_BACKENDS) == set(agent.BACKENDS) - {"claude"}
 
 
 def test_account_errors_are_worded_per_backend(agent):
@@ -547,7 +570,8 @@ def test_start_leaves_launch_json_for_the_headsup_fork(agent, target, tmp_path,
 
 def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
                                                           tmp_path, monkeypatch):
-    """What copilot_host.py codes against: session_host's keys + argv + backend."""
+    """What copilot_host.py codes against: session_host's keys + argv + backend
+    (`strict_mcp` is session_host's own, the lean-session switch)."""
     file, _workdir = target
     _prefs(home, copilot_enabled=True)
     _copilot_bin(tmp_path, monkeypatch)
@@ -556,7 +580,7 @@ def test_the_host_request_keys_are_session_hosts_plus_two(agent, target, home,
     req, _ = _req_of(agent, res)
     assert set(req) == {"agent", "run_dir", "file", "cwd", "pane", "cli_mode",
                         "session_id", "model", "effort", "extra_read_dirs",
-                        "new_session_id", "argv", "backend"}
+                        "new_session_id", "argv", "backend", "strict_mcp"}
 
 
 # ------------------------------------------------------- the gate (D17, #10)
@@ -1147,14 +1171,14 @@ def test_cli_sessions_lists_both_roots_with_backend_per_row(agent, target):
     assert agent._cli_sessions(str(os.path.join(workdir, "nowhere"))) == []
 
 
-def test_registry_running_reads_both_roots(agent, target):
+def test_registry_running_reads_every_root(agent, target):
     _file, workdir = target
     for backend, sessions_dir in agent._registry_roots():
         os.makedirs(sessions_dir, exist_ok=True)
         with open(os.path.join(sessions_dir, "p.json"), "w") as fh:
             json.dump({"pid": os.getpid(), "sessionId": "s-" + backend,
                        "cwd": workdir, "status": "busy"}, fh)
-    assert agent._registry_running(workdir) == {"s-claude", "s-copilot"}
+    assert agent._registry_running(workdir) == {"s-claude", "s-copilot", "s-codex"}
 
 
 def test_defaults_carry_the_backend(agent, target, home):
@@ -1338,7 +1362,7 @@ def test_a_stopped_copilot_turn_reads_as_a_stop(agent):
     assert p["cancelled"] is True and p["error"] == "claude exited with an error"
 
 
-@pytest.mark.parametrize("backend", ["copilot", "claude"])
+@pytest.mark.parametrize("backend", ["copilot", "codex", "claude"])
 def test_generic_errors_name_the_runs_agent(agent, backend):
     """Every fallback error names the run's own CLI — Claude's strings byte
     for byte as before."""
@@ -1482,3 +1506,558 @@ def test_set_mode_action_records_the_permission(agent, tmp_path, send_env, home)
     assert out == {"ok": True, "mode": "auto"}
     with open(os.path.join(home["unnested"], *agent.SESSION_SETTINGS)) as fh:
         assert json.load(fh)[SID_COPILOT]["permission"] == "auto"
+
+
+# ================================================== Codex (CODEX_BACKEND.md)
+
+SID_CODEX = "01a15f4b-da04-7b11-8b21-41c96595aa15"    # uuid7-shaped, as verified
+
+
+def _codex_bin(tmp_path, monkeypatch):
+    b = tmp_path / "bin" / "codex"
+    b.parent.mkdir(exist_ok=True)
+    b.write_text("#!/bin/sh\nexit 0\n")
+    b.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_CODEX_BIN", str(b))
+    return str(b)
+
+
+def test_a_codex_thread_id_is_a_good_id(agent):
+    assert not agent._bad_id(SID_CODEX)
+
+
+def test_codex_account_text_names_codexs_fix(agent):
+    """D18/§8: a Codex run reads its own sign-in fix and limit sentence,
+    never Claude's (and no guide link: the site has no Codex panel)."""
+    assert agent._account_error("requiresOpenaiAuth: true", "codex") == (
+        "OpenAI Codex isn't signed in. Sign in from Preferences → Agents (or "
+        "run `codex login` in a terminal), then start a new chat here. "
+        "(requiresOpenaiAuth: true)")
+    assert agent._account_error("You've hit your usage limit.", "codex") == (
+        "Your ChatGPT plan's Codex usage limit was reached. Wait for it to "
+        "reset, or upgrade the plan, then try again. "
+        "(You've hit your usage limit.)")
+    for raw in ("401 Unauthorized", "429 Too Many Requests"):
+        text = agent._account_error(raw, "codex")
+        assert "claude" not in text.lower() and "http" not in text
+    # Each agent's markers stay its own.
+    assert agent._account_error("insufficient_quota", "claude") == "insufficient_quota"
+    assert agent._account_error("auth_required", "codex") == "auth_required"
+
+
+def test_the_codex_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatch):
+    """`_appended_prompt(..., "codex")` is Codex's `developerInstructions`
+    (D8): no Claude, no CLAUDE.md, no Claude-only tool names — and no
+    promise that `fused` is pre-approved (Codex has no allow-list flag, D9).
+    The pane tool keeps its MCP spelling (the host maps it, D8)."""
+    canvases = tmp_path / "canvases"
+    clone = canvases / "c1"
+    clone.mkdir(parents=True)
+    (clone / "index.html").write_text("<html></html>")
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "cli"))
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    monkeypatch.setattr(agent, "_custom_env", lambda origin, file: None)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    page = tmp_path / "page.html"
+    page.write_text("<html></html>")
+    claude_only = re.compile(r"\bClaude\b|CLAUDE\.md|AskUserQuestion|ExitPlanMode|"
+                             r"EnterWorktree|\bSkill\b")
+    for target, pane in ((str(page), True), (str(clone), True), (str(plain), False)):
+        body = agent._appended_prompt(target, pane, "codex")
+        assert not claude_only.search(body), (target, claude_only.search(body))
+        assert "pre-approved" not in body and "`fused` CLI is on PATH" in body
+        assert body.endswith(agent._blocked_note("codex"))
+    assert agent._blocked_note("codex") == agent._blocked_note("copilot")
+    # Copilot keeps its sentence (it has `--allow-tool 'shell(fused:*)'`),
+    # and Claude's note is byte-identical.
+    assert "pre-approved" in agent._fused_cli_note("copilot")
+    assert agent._fused_cli_note("codex") == agent._fused_cli_note("copilot").replace(
+        agent._FUSED_PREAPPROVED, ",")
+    assert ("Run it as a plain `fused ...` command — that exact form is pre-approved, "
+            "while compound commands (`cd x && fused ...`) ask the user first — and "
+            "never invoke fused") in agent._fused_cli_note()
+
+
+def test_the_codex_command_menu_is_its_own(agent, target, tmp_path, monkeypatch):
+    """No `.claude/` commands or Claude built-ins, and its own state file
+    one level down (`commands/codex/<munge>`) — the Claude and Copilot menus
+    of the same folder are untouched."""
+    file, workdir = target
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    cmd_dir = tmp_path / "proj" / ".claude" / "commands"
+    cmd_dir.mkdir(parents=True)
+    (cmd_dir / "deploy.md").write_text("Deploy it\n")
+    claude_menu = agent._commands(file)
+    assert agent._commands(file, "codex") == {"commands": [], "agents": [],
+                                              "stale": False, "from": "disk"}
+    assert agent._commands_state_path(workdir, "codex") == agent._state_file(
+        agent._COMMANDS_STATE, "codex", agent._munge(workdir))
+    assert agent._commands_state_path(workdir, "nope") == \
+        agent._commands_state_path(workdir)
+    run_dir = os.path.join(agent.RUNS, "r-cmd")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": file, "message": "m", "backend": "codex"}, fh)
+    agent._capture_commands(run_dir, {"type": "system", "subtype": "init",
+                             "slash_commands": ["review"]})
+    assert [c["name"] for c in agent._commands(file, "codex")["commands"]] == ["review"]
+    assert agent._commands(file, "copilot")["commands"] == []
+    assert agent._commands(file) == claude_menu
+
+
+def test_a_fresh_codex_chat_learns_its_id_from_the_stream(
+        agent, target, home, tmp_path, monkeypatch):
+    """D2: Codex mints the thread id in `thread/start`, so a fresh chat has
+    none in `_start` (`session_id: ""`), the host gets a ready-made argv
+    (`codex app-server`, nothing else without a pane), and the first poll
+    that sees the init row records the id AS CODEX before naming it."""
+    file, workdir = target
+    _prefs(home, codex_enabled=True)
+    binary = _codex_bin(tmp_path, monkeypatch)
+    monkeypatch.setitem(agent._HOST_FILES, "codex", _stub_host(tmp_path))
+    monkeypatch.setitem(agent._HOST_FILES, "claude", str(tmp_path / "never.py"))
+    monkeypatch.setitem(agent._HOST_FILES, "copilot", str(tmp_path / "never.py"))
+    res = agent._start(file, "hi", "", "gpt-6-luna", "high", "acceptEdits",
+                       has_pane=False, backend="codex")
+    assert res["backend"] == "codex" and res["session_id"] == ""
+    req, run_dir = _req_of(agent, res)
+    assert req["backend"] == "codex"
+    assert req["session_id"] == "" and req["new_session_id"] == ""
+    assert req["argv"] == [binary, "app-server"]
+    # The mode rides the request in the CLI-wire spelling (the host maps it
+    # onto Codex's policy pair, D5); `prompt` is `default`, not Copilot's None.
+    assert req["cli_mode"] == "acceptEdits"
+    assert set(req) == {"agent", "run_dir", "file", "cwd", "pane", "cli_mode",
+                        "session_id", "model", "effort", "extra_read_dirs",
+                        "new_session_id", "argv", "backend", "strict_mcp"}
+    with open(os.path.join(run_dir, "launch.json")) as fh:
+        assert json.load(fh)["backend"] == "codex"
+    with open(os.path.join(run_dir, "meta.json")) as fh:
+        meta = json.load(fh)
+    assert "session_id" not in meta and meta["backend"] == "codex"
+    assert (meta["model"], meta["effort"]) == ("gpt-6-luna", "high")
+    with open(os.path.join(run_dir, "pid"), "w") as fh:
+        fh.write(str(os.getpid()))
+    _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_CODEX,
+                    "backend": "codex"},
+                   {"type": "result", "subtype": "success", "is_error": False,
+                    "result": "ok", "session_id": SID_CODEX, "backend": "codex"}])
+    assert agent._session_backend(SID_CODEX) == ""
+    p = agent._poll(res["run_id"])
+    assert p["session_id"] == SID_CODEX and p["backend"] == "codex"
+    assert agent._session_backend(SID_CODEX) == "codex"
+    assert agent._session_settings(SID_CODEX) == ("gpt-6-luna", "high")
+    assert os.path.exists(os.path.join(run_dir, "settings_recorded"))
+    # A prompt-mode start: `default` on the wire for Codex (only Copilot's
+    # boundary folds it to None).
+    res = agent._start(file, "hi", "", "", "", "prompt", has_pane=False,
+                       backend="codex")
+    assert _req_of(agent, res)[0]["cli_mode"] == "default"
+
+
+def test_a_codex_resume_ignores_the_requests_backend(agent, target, home, tmp_path,
+                                                     monkeypatch):
+    file, workdir = target
+    _prefs(home, codex_enabled=True)
+    _transcript(agent, "codex", workdir, SID_CODEX, [_said("b", workdir)])
+    _codex_bin(tmp_path, monkeypatch)
+    monkeypatch.setitem(agent._HOST_FILES, "codex", _stub_host(tmp_path))
+    monkeypatch.setitem(agent._HOST_FILES, "claude", str(tmp_path / "never.py"))
+    res = agent._start(file, "again", SID_CODEX, "gpt-6-luna", "", "auto",
+                       has_pane=False, backend="claude")
+    assert res["backend"] == "codex" and res["session_id"] == SID_CODEX
+    req, run_dir = _req_of(agent, res)
+    assert req["backend"] == "codex" and req["session_id"] == SID_CODEX
+    assert req["new_session_id"] == "" and req["argv"][1:] == ["app-server"]
+    # A resume's record is `_start`'s to write, and it carries the backend.
+    assert agent._session_backend(SID_CODEX) == "codex"
+    assert agent._backend_for_session(SID_CODEX, workdir) == "codex"
+
+
+def test_the_minted_session_record_is_per_backend(agent, target):
+    """`_record_minted_session` (was `_record_copilot_session`): one rule for
+    every self-minted-id agent, the record's backend the run's own; Claude
+    runs and resumes are no-ops."""
+    assert not hasattr(agent, "_record_copilot_session")
+    file, _ = target
+    for backend, sid in (("codex", SID_CODEX), ("copilot", SID_COPILOT)):
+        run_dir = os.path.join(agent.RUNS, "r-" + backend)
+        os.makedirs(run_dir)
+        meta = {"file": file, "message": "m", "resumed_from": "",
+                "backend": backend, "model": "m-" + backend, "effort": "low"}
+        agent._record_minted_session(run_dir, meta, sid)
+        assert agent._session_backend(sid) == backend
+        assert agent._session_settings(sid) == ("m-" + backend, "low")
+        assert os.path.exists(os.path.join(run_dir, "settings_recorded"))
+    run_dir = os.path.join(agent.RUNS, "r-claude")
+    os.makedirs(run_dir)
+    agent._record_minted_session(run_dir, {"backend": "claude", "model": "opus"},
+                                 SID_CLAUDE)
+    agent._record_minted_session(run_dir, {"backend": "codex", "model": "x",
+                                           "resumed_from": SID_CLAUDE}, SID_CLAUDE)
+    assert agent._session_settings(SID_CLAUDE) == ("", "")
+    assert not os.path.exists(os.path.join(run_dir, "settings_recorded"))
+
+
+def test_cancel_names_a_fresh_codex_id_only_once_recorded(agent, target, monkeypatch):
+    file, _ = target
+    run_dir = os.path.join(agent.RUNS, "20261021-130000-ccc")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": file, "message": "hi", "resumed_from": "",
+                   "backend": "codex", "model": "gpt-6-luna", "effort": ""}, fh)
+    _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_CODEX}])
+    monkeypatch.setattr(agent, "_cancel", lambda run_id, **kw: {"ok": True})
+    out = agent.main("cancel", run_id=os.path.basename(run_dir))
+    assert out["session_id"] == SID_CODEX
+    assert agent._session_backend(SID_CODEX) == "codex"
+
+
+def test_the_prefs_gate_reads_three_keys(agent, home):
+    """`codex_enabled` is off unless stored True; Claude is on unless stored
+    False, or when nothing else is on (`registry.enabled_ids` never empty)."""
+    assert not agent._backend_enabled("codex")
+    _prefs(home, codex_enabled=True)
+    assert agent._backend_enabled("codex") and agent._backend_enabled("claude")
+    assert not agent._backend_enabled("copilot")
+    _prefs(home, claude_enabled=False, codex_enabled=True)
+    assert not agent._backend_enabled("claude") and agent._backend_enabled("codex")
+    _prefs(home, claude_enabled=False, copilot_enabled=True, codex_enabled=False)
+    assert not agent._backend_enabled("claude") and not agent._backend_enabled("codex")
+    # All three cleared by hand: Claude on.
+    _prefs(home, claude_enabled=False, copilot_enabled=False, codex_enabled=False)
+    assert agent._backend_enabled("claude")
+    _prefs(home, codex_enabled="yes")                   # only a stored True counts
+    assert not agent._backend_enabled("codex")
+
+
+def test_a_disabled_or_plan_codex_start_is_refused_before_a_run_dir(agent, target, home):
+    file, _ = target
+    assert agent._start(file, "hi", "", "", "", "", has_pane=False, backend="codex") == {
+        "error": "Codex is turned off in Preferences",
+        "reason": "backend_disabled", "backend": "codex"}
+    _prefs(home, codex_enabled=True)
+    assert agent._start(file, "hi", "", "", "", "plan", has_pane=False,
+                        backend="codex") == {
+        "error": "plan mode is not available for Codex",
+        "reason": "unsupported", "backend": "codex"}
+    assert os.listdir(agent.RUNS) == []
+
+
+def test_a_plan_default_starts_a_codex_chat_in_prompt(agent, target, home, tmp_path,
+                                                      monkeypatch):
+    file, _ = target
+    _prefs(home, codex_enabled=True, claude_default_permission="plan")
+    _codex_bin(tmp_path, monkeypatch)
+    monkeypatch.setitem(agent._HOST_FILES, "codex", _stub_host(tmp_path))
+    res = agent._start(file, "hi", "", "", "", "", has_pane=False, backend="codex")
+    assert _req_of(agent, res)[0]["cli_mode"] == "default"
+
+
+def test_a_missing_codex_binary_refuses_the_start(agent, target, home, tmp_path,
+                                                  monkeypatch):
+    file, _ = target
+    _prefs(home, codex_enabled=True)
+    monkeypatch.setattr(agent, "_codex_bin", lambda: (_ for _ in ()).throw(
+        FileNotFoundError("codex CLI not found — install with `npm install -g "
+                          "@openai/codex`")))
+    res = agent._start(file, "hi", "", "", "", "", has_pane=False, backend="codex")
+    assert res["backend"] == "codex" and "codex CLI not found" in res["error"]
+    # Bare run dir: no meta, nothing that lists as a chat.
+    [run] = os.listdir(agent.RUNS)
+    assert not os.path.exists(os.path.join(agent.RUNS, run, "meta.json"))
+
+
+def test_codex_argv_composition(agent, target, home, tmp_path, monkeypatch):
+    """§3/D8: `codex app-server`, plus the pane MCP server as three `-c`
+    TOML overrides built from the same mcp.json Copilot gets (`--no-approve`)
+    — and nothing per turn (model/effort/mode/prompt are request fields)."""
+    import tomllib
+    file, _ = target
+    binary = _codex_bin(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    run_dir = tmp_path / "run ü"            # a space and non-ASCII survive
+    run_dir.mkdir()
+    argv = agent._codex_argv(str(run_dir), True, "acceptEdits", SID_CODEX,
+                             "gpt-6-luna", "high", [str(tmp_path / "extra")], file)
+    assert argv[:2] == [binary, "app-server"]
+    overrides = [argv[i + 1] for i, a in enumerate(argv) if a == "-c"]
+    assert len(overrides) == 3 and len(argv) == 2 + 2 * 3
+    parsed = {}
+    for o in overrides:
+        key, _, value = o.partition("=")
+        parsed[key] = tomllib.loads("v = " + value)["v"]
+    with open(run_dir / "mcp.json") as fh:
+        server = json.load(fh)["mcpServers"]["fused_approvals"]
+    assert parsed == {"mcp_servers.fused_approvals.command": server["command"],
+                      "mcp_servers.fused_approvals.args": server["args"],
+                      "mcp_servers.fused_approvals.env": server["env"]}
+    assert "--no-approve" in server["args"]
+    assert agent._state_dir(str(run_dir)) in server["args"]
+    assert server["env"]["FUSED_RENDER_TERMINAL_ORIGIN"] == "http://127.0.0.1:9"
+    # No per-turn value, no Claude or Copilot plumbing, no plugin dir.
+    for flag in ("--model", "-m", "--effort", "--reasoning-effort", "--session-id",
+                 "--resume", "resume", "--add-dir", "--allow-tool", "--plugin-dir",
+                 "--acp", "-p", "--permission-mode", "--full-auto", "-s",
+                 "--sandbox", SID_CODEX, "gpt-6-luna", "high"):
+        assert flag not in argv
+    assert not (run_dir / "plugin").exists()
+
+
+def test_codex_argv_without_a_pane_or_terminal_is_bare(agent, target, home,
+                                                       tmp_path, monkeypatch):
+    file, _ = target
+    binary = _codex_bin(tmp_path, monkeypatch)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    assert agent._codex_argv(str(run_dir), False, None, "", "", "", [], file) == \
+        [binary, "app-server"]
+    assert not (run_dir / "mcp.json").exists()
+    # A terminal origin alone is enough for the server (the terminal tools),
+    # with no app-state dir on its argv.
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    argv = agent._codex_argv(str(run_dir), False, None, "", "", "", [], file)
+    assert len(argv) == 8
+    with open(run_dir / "mcp.json") as fh:
+        args = json.load(fh)["mcpServers"]["fused_approvals"]["args"]
+    assert agent._state_dir(str(run_dir)) not in args
+
+
+def test_toml_inline_values(agent):
+    import tomllib
+    for value in ("plain", 'q"uote\\back\nline\ttab', "emoji 😀 ü", [],
+                  ["a", "b c"], {}, {"A_B": "1", "weird key": "x\"y"}):
+        assert tomllib.loads("v = " + agent._toml_inline(value))["v"] == value
+
+
+def test_codex_bin_ladder(agent, tmp_path, monkeypatch):
+    """FUSED_RENDER_CODEX_BIN → PATH → the install prefixes."""
+    on_path = _exe(str(tmp_path / "path" / "codex"))
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    assert agent._codex_bin() == on_path
+    forced = _exe(str(tmp_path / "forced" / "codex"))
+    monkeypatch.setenv("FUSED_RENDER_CODEX_BIN", forced)
+    assert agent._codex_bin() == forced
+    # A stale override is ignored, not fallen through to an error.
+    monkeypatch.setenv("FUSED_RENDER_CODEX_BIN", str(tmp_path / "gone"))
+    assert agent._codex_bin() == on_path
+    monkeypatch.delenv("FUSED_RENDER_CODEX_BIN")
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing"))
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    npm = _exe(str(tmp_path / "h" / ".npm-global" / "bin" / "codex"))
+    monkeypatch.setattr(agent, "_CODEX_CANDIDATES",
+                        tuple(c for c in agent._CODEX_CANDIDATES if c.startswith("~")))
+    assert agent._codex_bin() == npm
+    os.remove(npm)
+    with pytest.raises(FileNotFoundError) as exc:
+        agent._codex_bin()
+    assert str(exc.value).startswith(
+        "codex CLI not found — install with `npm install -g @openai/codex`")
+    assert "FUSED_RENDER_CODEX_BIN" in str(exc.value)
+
+
+def test_codex_candidates_mirror_codex_health(agent):
+    """A COPY of `codex_health.POSIX_CANDIDATES` (D10), as Copilot's is."""
+    from fused_render import codex_health
+    assert agent._CODEX_CANDIDATES == codex_health.POSIX_CANDIDATES
+    assert agent._CODEX_CANDIDATES == (
+        "~/.npm-global/bin/codex", "/opt/homebrew/bin/codex",
+        "/usr/local/bin/codex", "~/.local/bin/codex", "~/.bun/bin/codex",
+        "~/Library/pnpm/codex")
+
+
+def test_codex_spawn_env(agent, home, tmp_path, monkeypatch):
+    """§3: Copilot's branch minus the token — CLAUDE_CODE_* stripped,
+    CODEX_HOME untouched, no gh, no terminal mirror — and the fused wrapper
+    dir FIRST on PATH."""
+    cli = str(tmp_path / "fused-bin")
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", cli)
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", cli, "/bin"]))
+    monkeypatch.setenv("CLAUDE_CODE_SHELL_PREFIX", "/x")
+    monkeypatch.setenv("CODEX_HOME", "/somewhere/codex-home")
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    _health(home, {"account": {"method": "gh"}})     # Copilot's, not read here
+    monkeypatch.setattr(agent, "_gh_token", _no_gh)
+    monkeypatch.setattr(agent, "_gh_bin", _no_gh)
+    env = agent._spawn_env("chat", backend="codex")
+    assert not [k for k in env if k.startswith("CLAUDE_CODE_")]
+    assert env["CODEX_HOME"] == "/somewhere/codex-home"
+    assert "COPILOT_GITHUB_TOKEN" not in env and "FUSED_CLAUDE_CMD_LOG" not in env
+    path = env["PATH"].split(os.pathsep)
+    assert path[0] == cli and path.count(cli) == 1 and "/usr/bin" in path
+    # No wrapper dir exported: PATH is the ordinary augmented one.
+    monkeypatch.delenv("FUSED_RENDER_FUSED_CLI_DIR")
+    assert agent._spawn_env(backend="codex")["PATH"].split(os.pathsep)[0] == "/usr/bin"
+    # Claude's env is untouched.
+    assert agent._spawn_env()["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "1"
+
+
+def test_the_codex_host_file_is_picked_by_backend(agent):
+    assert agent._HOST_FILES["codex"] == os.path.join(agent.HERE, "codex_host.py")
+    assert set(agent._HOST_FILES) == set(agent.BACKENDS)
+
+
+@pytest.fixture()
+def codex_send(agent, home, send_env):
+    _prefs(home, codex_enabled=True)
+    return send_env
+
+
+def _host_json(run_dir):
+    with open(os.path.join(run_dir, "host.json")) as fh:
+        return json.load(fh)
+
+
+def test_a_codex_model_or_effort_change_never_respawns(agent, tmp_path, codex_send):
+    """D7/§7/invariant 15: model and effort ride the next `turn/start`, so a
+    change is ONE `set_model` control request carrying both, ahead of the
+    user row, and host.json records both — never `{respawn: True}`."""
+    run_dir = _live_run(agent, tmp_path, backend="codex", mode="default",
+                        model="gpt-6-luna")
+    assert agent._send("run-1", "m", model="gpt-6.1-sol") == {"sent": True}
+    rows = _inbox_rows(run_dir)
+    assert [r["type"] for r in rows] == ["control_request", "user"]
+    assert rows[0]["request"] == {"subtype": "set_model", "model": "gpt-6.1-sol",
+                                  "effort": ""}
+    assert (_host_json(run_dir)["model"], _host_json(run_dir)["effort"]) == ("gpt-6.1-sol", "")
+    # Effort alone: the model the host has, the new effort.
+    assert agent._send("run-1", "m", effort="xhigh") == {"sent": True}
+    assert _inbox_rows(run_dir)[2]["request"] == {
+        "subtype": "set_model", "model": "gpt-6.1-sol", "effort": "xhigh"}
+    assert _host_json(run_dir)["effort"] == "xhigh"
+    # Unchanged: no request at all.
+    assert agent._send("run-1", "m", model="gpt-6.1-sol", effort="xhigh") == {"sent": True}
+    assert [r["type"] for r in _inbox_rows(run_dir)][4:] == ["user"]
+    # A directory the spawn never saw: still no respawn (D9).
+    assert agent._send("run-1", "m", read_dirs=str(tmp_path)) == {"sent": True}
+    assert codex_send == []
+
+
+def test_codex_modes_switch_live_and_plan_is_refused(agent, tmp_path, codex_send):
+    """D5: every mode is a per-turn policy pair, so acceptEdits too is a
+    `set_permission_mode` control request — never a respawn (unlike
+    Copilot's argv grant). `prompt` goes as `default`."""
+    run_dir = _live_run(agent, tmp_path, backend="codex", mode="default")
+    for page, wire in (("acceptEdits", "acceptEdits"), ("auto", "auto"),
+                       ("prompt", "default")):
+        assert agent._send("run-1", "m", permission_mode=page) == {"sent": True}
+        assert _inbox_rows(run_dir)[-2]["request"] == {
+            "subtype": "set_permission_mode", "mode": wire}
+        assert _host_json(run_dir)["mode"] == wire
+    assert agent._set_mode("run-1", "acceptEdits") == {"ok": True, "mode": "acceptEdits"}
+    res = agent._send("run-1", "m", permission_mode="plan")
+    assert res == {"error": "plan mode is not available for Codex",
+                   "reason": "unsupported", "backend": "codex"}
+    assert agent._set_mode("run-1", "plan")["reason"] == "unsupported"
+    assert codex_send == []
+
+
+def test_a_send_into_a_live_codex_host_while_codex_is_off_is_refused(
+        agent, tmp_path, home, codex_send):
+    run_dir = _live_run(agent, tmp_path, backend="codex", mode="default")
+    _prefs(home, codex_enabled=False, copilot_enabled=True)
+    assert agent._send("run-1", "m", model="x") == {
+        "error": "Codex is turned off in Preferences",
+        "reason": "backend_disabled", "backend": "codex"}
+    assert _inbox_rows(run_dir) == [] and codex_send == []
+
+
+def test_codex_caps_snapshots_and_background_tasks(agent, target, tmp_path):
+    file, workdir = target
+    _transcript(agent, "codex", workdir, SID_CODEX, [_said("b", workdir)])
+    tl = agent._snapshots(file, False, False, session_id=SID_CODEX)
+    assert tl["versions"] == [] and tl["note"] == "Codex sessions keep no file snapshots."
+    assert agent._snapshot_plan(file, "v1", session_id=SID_CODEX) == {
+        "ok": False, "error": "unsupported"}
+    assert agent._snapshot_revert(file, "v1", False, session_id=SID_CODEX) == {
+        "ok": False, "error": "unsupported"}
+    _transcript(agent, "copilot", workdir, SID_COPILOT, [_said("b", workdir)])
+    assert agent._snapshots(file, False, False, session_id=SID_COPILOT)["note"] == \
+        "Copilot sessions keep no file snapshots."
+    _live_run(agent, tmp_path, backend="codex")
+    assert agent._task_output("run-1", "b1") == {"error": "unsupported"}
+    assert agent._task_stop("run-1", "b1") == {"error": "unsupported"}
+
+
+def test_the_codex_terminal_command(agent, target):
+    from fused_render.agent_backends import codex as backend_codex
+    file, workdir = target
+    _transcript(agent, "codex", workdir, SID_CODEX, [_said("b", workdir)])
+    out = agent._terminal_command(file, SID_CODEX, backend="claude")
+    assert out["backend"] == "codex"
+    assert out["command"] == "cd %s && codex resume %s" % (workdir, SID_CODEX)
+    assert out["command"] == backend_codex.CODEX.terminal_resume(workdir, SID_CODEX)
+    assert agent._terminal_command(file, backend="codex")["command"] == \
+        backend_codex.CODEX.terminal_resume(workdir, "")
+
+
+def test_the_codex_commit_subject(agent, tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(agent, "_app_dir_for", lambda p: str(tmp_path))
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(agent, "_request_sync", lambda d: None)
+
+    class Done:
+        returncode = 0
+
+    def run(argv, **kw):
+        seen.append(argv)
+        Done.returncode = 1 if "diff" in argv else 0
+        return Done
+    monkeypatch.setattr(agent.subprocess, "run", run)
+    monkeypatch.setattr(agent.shutil, "which", lambda n: "/usr/bin/git")
+    agent._commit_turn(str(tmp_path / "f"), "fix the header", "codex")
+    commit = [a for a in seen if "commit" in a][0]
+    assert commit[commit.index("-m") + 1] == "Codex: fix the header"
+
+
+def test_codex_defaults_keep_the_model_raw(agent, target):
+    file, workdir = target
+    d = agent._defaults(file, backend="codex")
+    assert d == {"model": "gpt-6-luna", "effort": "", "source": "backend",
+                 "backend": "codex", "recorded": {"model": "", "effort": ""}}
+    _transcript(agent, "codex", workdir, SID_CODEX, [
+        _said("b", workdir),
+        {"type": "assistant", "message": {"role": "assistant", "model": "gpt-5.6-terra",
+                                          "content": []}}])
+    d = agent._defaults(file, SID_CODEX)
+    assert (d["model"], d["backend"], d["source"]) == ("gpt-5.6-terra", "codex", "session")
+    agent._record_settings(SID_CODEX, model="claude-sonnet-4.5", backend="codex")
+    assert agent._defaults(file, SID_CODEX)["model"] == "claude-sonnet-4.5"
+
+
+def test_codex_history_notice_and_window(agent, target):
+    """The first-turn notice row is matched by its shape (system /
+    task_notification) on any non-Claude transcript, never by its words;
+    the meter's window comes from the host's report, as for Copilot."""
+    file, workdir = target
+    _transcript(agent, "codex", workdir, SID_CODEX, [
+        {"type": "system", "subtype": "task_notification",
+         "summary": "Handled by OpenAI Codex · model gpt-6-luna", "status": "",
+         "backend": "codex", "model": "gpt-6-luna", "sessionId": SID_CODEX},
+        dict(_said("hello", workdir), uuid="u1"),
+        dict(_reply("gpt-6-luna", used=4321), uuid="a1")])
+    run_dir = os.path.join(agent.RUNS, "20261021-120000-ccc")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": file, "message": "hello", "resumed_from": "",
+                   "session_id": SID_CODEX, "backend": "codex"}, fh)
+    _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_CODEX,
+                    "context_window": 258400}, _reply("gpt-6-luna")])
+    h = agent._history(file, SID_CODEX)
+    assert h["backend"] == "codex"
+    notices = [s for t in h["turns"] for s in t.get("segments", [])
+               if s.get("kind") == "notice"]
+    assert notices and notices[0]["text"] == "Handled by OpenAI Codex · model gpt-6-luna"
+    assert h["context"]["window"] == 258400 and h["context"]["input_tokens"] == 4321
+
+
+def test_poll_context_carries_the_codex_window(agent, tmp_path):
+    run_dir = _live_run(agent, tmp_path, backend="codex")
+    _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_CODEX},
+                   _reply("gpt-6-luna", used=1000),
+                   {"type": "system", "subtype": "status", "context_window": 258400}])
+    p = agent._poll("run-1")
+    assert p["backend"] == "codex" and p["context"]["window"] == 258400

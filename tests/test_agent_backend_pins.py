@@ -2,7 +2,7 @@
 
 Each list here is spelled in more than one place because the readers cannot
 share an import: the frontend paints its first frame from a hand-kept copy of
-the catalog (`CLAUDE_FALLBACK` / `COPILOT_FALLBACK` in
+the catalog (`CLAUDE_FALLBACK` / `COPILOT_FALLBACK` / `CODEX_FALLBACK` in
 frontend/src/platform/lib/agent-backends.ts) before `GET /api/agent-backends`
 answers; agent.py is stdlib-only and loaded by path, so it keeps its own
 effort and permission-mode tables; and the prefs and tasks routers validate
@@ -15,7 +15,7 @@ import importlib.util
 import os
 import re
 
-from fused_render.agent_backends import claude, copilot, registry
+from fused_render.agent_backends import claude, codex, copilot, registry
 from fused_render.server.routers import tasks as tasks_mod
 from fused_render.shell import prefs
 
@@ -75,7 +75,8 @@ def test_the_frontends_fallback_rows_match_the_catalog():
     rows = {r["id"]: r for r in registry.catalog(with_health=False)["all"]}
     keys = ("id", "label", "models", "default_model", "efforts", "modes", "caps")
     for name, backend_id in (("CLAUDE_FALLBACK", "claude"),
-                             ("COPILOT_FALLBACK", "copilot")):
+                             ("COPILOT_FALLBACK", "copilot"),
+                             ("CODEX_FALLBACK", "codex")):
         client = _fallback(src, name)
         server = {k: rows[backend_id][k] for k in keys}
         assert client == server, (
@@ -92,12 +93,26 @@ def test_claudes_models_are_the_default_model_prefs_vocabulary():
 def test_every_effort_list_is_one_list():
     agent = _agent()
     assert tuple(claude.EFFORTS) == tuple(copilot.EFFORTS)
+    assert tuple(claude.EFFORTS) == tuple(codex.EFFORTS)
     assert tuple(claude.EFFORTS) == tuple(agent._EFFORT_LEVELS)
     assert tuple(claude.EFFORTS) == tuple(
         e for e in tasks_mod._VALID_EFFORTS if e)
 
 
-def test_the_permission_modes_are_agent_pys_and_copilots_are_a_subset():
+def test_the_permission_modes_are_agent_pys_and_the_others_are_a_subset():
     agent = _agent()
     assert tuple(claude.MODES) == tuple(agent.PERMISSION_MODES)
     assert set(copilot.MODES) <= set(claude.MODES)
+    assert set(codex.MODES) <= set(claude.MODES)
+
+
+def test_every_agent_list_is_one_order():
+    """The registry's ORDER, the roots file's BACKENDS and the prefs
+    default's vocabulary are three spellings of one list — the PUT's default
+    re-point walks the prefs one, the catalog the registry's, the readers the
+    roots'. And every backend the registry knows has a switch."""
+    from fused_render.agent_backends import roots
+    assert registry.ORDER == roots.BACKENDS == prefs.VALID_DEFAULT_BACKENDS
+    assert set(prefs.AGENT_BACKEND_KEYS) == set(registry.ORDER)
+    for bid in registry.ORDER:
+        assert registry.get(bid).pref_key == prefs.AGENT_BACKEND_KEYS[bid]

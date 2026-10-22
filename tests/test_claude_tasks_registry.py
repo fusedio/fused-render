@@ -304,8 +304,12 @@ def test_history_finds_the_job_an_older_host_still_holds(
     hist = agent._history(str(target / "index.html"), "s")
     assert [t["id"] for t in hist["tasks"]] == ["b1"] and hist["tasks_run"] == "run"
 
-    # The job ends and wakes that host's model: its open turn still answers.
-    _append(run_dir, [_sys("task_notification", task_id="b1", status="killed")])
+    # The job finishes and wakes that host's model: its open turn still
+    # answers. A COMPLETED job, note plus the synthetic user row the CLI wakes
+    # on — a stopped/killed note alone is bookkeeping and reopens no turn
+    # (`_STOPPED_TASK_STATUSES`), so it is not the wake this step is about.
+    _append(run_dir, [_sys("task_notification", task_id="b1", status="completed"),
+                      _user("<task-notification>b1 completed</task-notification>")])
     reg, host_run, _last = agent._session_task_registry(str(target), "s")
     assert host_run == "run" and list(reg) == ["b1"]
     # Once that turn is over the older host holds nothing, so the newest run
@@ -313,7 +317,7 @@ def test_history_finds_the_job_an_older_host_still_holds(
     _append(run_dir, [_result()])
     reg, host_run, _last = agent._session_task_registry(str(target), "s")
     assert reg == {} and host_run == ("run2" if newer_host else "")
-    assert agent._read_bg_tasks(str(run_dir))["b1"]["status"] == "killed"
+    assert agent._read_bg_tasks(str(run_dir))["b1"]["status"] == "completed"
 
 
 def test_a_held_job_past_the_scan_window_still_answers(agent, run_dir, tmp_path):
