@@ -1711,6 +1711,27 @@ _RUNNERS: tuple[Runner, ...] = (
         hub_filter_tags=("qwen3_tts",),
         _available=_apple_silicon,
     ),
+    # Text to speech on every other machine, arranged like `faster-whisper`
+    # under `mlx-whisper`: registered BELOW the MLX row, so Apple Silicon keeps
+    # Qwen3-TTS as its default and this one is the engine a Mac only gets by
+    # choosing it (the supervisor resolves ONE runner per capability, not per
+    # model). `_always` because the engine is sherpa-onnx's CPU wheel, which
+    # exists on every platform this app runs on and pulls in no torch — the
+    # same package the diarization and VAD paths already trust. Kokoro is a
+    # separate format (ONNX, not MLX), so it has its own catalog list and
+    # `formats.loaders()` claim; it is not aliased to the MLX row's.
+    Runner(
+        code="sherpa-tts",
+        capability=TEXT_TO_SPEECH,
+        folder=os.path.join(RUNNERS_DIR, "sherpa_tts"),
+        label="Kokoro (sherpa-onnx)",
+        short_label="Kokoro",
+        family_label="Kokoro",
+        note="Reads text aloud with Kokoro-82M on the CPU, on any machine. "
+             "Under 1 GB of RAM.",
+        hub_filter_tags=("kokoro",),
+        _available=_always,
+    ),
 )
 
 
