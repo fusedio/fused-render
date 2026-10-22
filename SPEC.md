@@ -9346,12 +9346,15 @@ an AI Models page that could say what was on disk but not what was *running*.
   per runner (`704×480` at 8 steps here), and `catalog.describe`'s
   `videoTraits` hands the identical numbers to the Playground's sliders so a
   control cannot show a value the render will not use. The shared rails
-  around them — `n` in [1, 21], steps in [2, 50], a 32-multiple canvas up to
-  768×1344 pixels — are the APP's choices, held across every engine. **No
-  fallback exists anywhere else**: the engine is MLX, so off Apple Silicon
-  `catalog()` reports `default: null` for this capability for the first time,
-  and every call answers 409 with the reason rather than ever reaching a
-  render.
+  around them — steps in [2, 50], a 32-multiple canvas up to 768×1344
+  pixels — are the APP's choices, held across every engine; the frame window's
+  top is the runner's own (`VideoTraits.max_frames_n`, D1424: `n` in [1, 21]
+  for LTX's `1 + 8n`, [1, 30] for Wan's `1 + 4n`). **There are two engines,
+  and neither runs everywhere**: `ltx-video` is MLX (Apple Silicon) and
+  `diffusers-video-cuda` (D1424) serves Wan 2.1 T2V-1.3B and Wan 2.2 TI2V-5B
+  through diffusers on NVIDIA, shipped unmeasured. Off both, `catalog()`
+  reports `default: null` for this capability and every call answers 409 with
+  the reason rather than ever reaching a render.
 - **AI-15a** **Two repos are fetched, not one, and both are reported
   downloads.** `DistilledPipeline` needs the LTX weights AND a Gemma-3 text
   encoder it does not ship, so `download` fetches
@@ -9393,9 +9396,14 @@ an AI Models page that could say what was on disk but not what was *running*.
   behind), because that repo carries a root `model_index.json` of h3.c's own
   and would otherwise be mislabelled as diffusers-loadable for anyone who
   already fetched its 144GB; and `/api/ai/video`'s cross-engine refusal is
-  kept as deliberately unreachable code, generic over runners, so a second
-  video engine's arrival does not have to remember to add it back.
-- **AI-15c** **`image` (D621): one reference image, conditioning at frame 0
+  kept as code with nothing to guard, generic over runners, so a second
+  video engine's arrival does not have to remember to add it back — and it
+  is reachable again since D1424, when `diffusers-video-cuda` arrived with its
+  own format claim (a Wan `model_index.json`, read through
+  `formats.loaders(model_index=…)`; such a repo claims that runner and none of
+  the image rows).
+- **AI-15c** **`image` (D621; per MODEL within a runner since D1424): one
+  reference image, conditioning at frame 0
   with strength 1.0 — the same single-string scope AI-9f already made for
   `/api/ai/image`'s own `image`, restated here rather than generalized. No
   `images` list, no per-image frame index or strength: `DistilledPipeline`'s
@@ -9425,7 +9433,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   (`ltx-video`'s row: `True`), carried to the Playground through
   `catalog.py`'s `videoTraits` payload as `supportsImage` so its
   reference-image control cannot appear for an engine that would refuse it.
-  **Unexercised in this build**: the CRF round-trip through `imageio-ffmpeg`
+  `diffusers-video-cuda`'s row says `True` too, but only Wan 2.2 TI2V-5B
+  (an index with `expand_timesteps`) takes a picture: the worker refuses
+  `image` on Wan 2.1 T2V-1.3B with a sentence, so inside that runner the fact
+  is per model (D1424), and the Playground's per-runner flag is the looser of
+  the two. **Unexercised in this build**: the CRF round-trip through `imageio-ffmpeg`
   (`worker.py:271-312`'s PATH plumbing exists for exactly this) has never
   actually run end to end, and neither has a real conditioned render on
   Apple Silicon hardware — both need a live check this PR could not perform.

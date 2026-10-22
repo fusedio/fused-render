@@ -55,7 +55,7 @@ Resolves `images: [{path, url, mediaType: "image/png"}]`, `usage: {imagesGenerat
 
 ## Video: `fused.ai.video({prompt, ...})`
 
-Apple Silicon only, no fallback — before drawing UI check `catalog()` `text-to-video` row `available`, take limits from its `videoTraits`. Options: `width`/`height` (704/480, snapped /32), `frames` (97; `1+8n` grid, rounded **up**), `steps` (8), `seed`, `image` (conditions frame 0; only if `videoTraits.supportsImage`), `onProgress`, `abortSignal`. No guidance, no preview.
+Apple Silicon (LTX) or an NVIDIA GPU (Wan 2.1 / 2.2, unmeasured), no fallback — before drawing UI check `catalog()` `text-to-video` row `available`, take the grid, canvas and frame limits from its `videoTraits` (LTX: `1+8n` frames, 704×480, 8 steps; Wan: `1+4n`, up to 1280×704, 30-50 steps). Options: `width`/`height` (snapped /32), `frames` (rounded **up** to the grid), `steps`, `seed`, `image` (conditions frame 0; only if `videoTraits.supportsImage`; Wan 2.1 refuses it, Wan 2.2 TI2V-5B takes it), `onProgress`, `abortSignal`. No guidance, no preview.
 
 Resolves `videos: [{path, url, mediaType: "video/mp4"}]`, `usage: {videosGenerated: 1}`, `response.id` = job id, `providerMetadata.local: {seed, width, height, frames, steps, prompt, image?}`. Up to 2 h; serializes; `fused.ai.cancel("text-to-video")` keeps model warm.
 
@@ -90,7 +90,7 @@ Resolves `audio: [{path, url, mediaType: "audio/wav"}]`, `usage: {audioGenerated
 
 Every caller is identified by `X-Fused-Requester`/`X-Fused-Requester-Label` (percent-encoded; apps go through `fused.ai.*`/`fused_ai.py`, which set these for you) — this is what lets the supervisor tell your own router↔generator alternation apart from two different callers actually fighting over a slot. A conflict is between CALLERS, not models: the same model id loaded twice by two different callers can still conflict.
 | `ai_unavailable` | claude CLI missing / local worker won't start — friendly state, not overlay |
-| `unavailable` | Machine can't (no runner, needs Apple Silicon, claude on non-text verb, apple on image/video/speech/embed/decide/vision or below macOS 26 / Apple Intelligence off) |
+| `unavailable` | Machine can't (no runner, needs Apple Silicon (video: or an NVIDIA GPU), claude on non-text verb, apple on image/video/speech/embed/decide/vision or below macOS 26 / Apple Intelligence off) |
 | `bad_request` | Call wrong — read `.message` |
 | `ai_error` | Ran, failed (bad id, OOM, crash, render past cap) |
 | `timeout` | Text: 600 s on Claude, 900 s local (image 900 s, video 2 h, transcribe far longer) — size a UI timeout off the tier you're calling, not off 600 |
