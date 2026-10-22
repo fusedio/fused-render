@@ -30,6 +30,12 @@ TEXT_THRESHOLD = 0.25
 
 _loaded = {}
 
+#: The device this runner's FOLDER promises. `vision_torch_cuda/worker.py` sets
+#: it to "cuda" before `main()`; the CPU folder leaves it None. Without it a
+#: torch that cannot see the GPU would quietly serve on CPU/float32, which
+#: contradicts `registry._cuda` (a bad driver fails loudly at load).
+EXPECTED_DEVICE = None
+
 
 def recipe(model_id):
     spec = formats.vision_torch_recipe(model_id)
@@ -157,6 +163,10 @@ def download(model_id):
 
 def load(model_id, path):
     spec = recipe(model_id)
+    if EXPECTED_DEVICE == "cuda" and _device(half=False)[0] != "cuda":
+        raise RuntimeError(
+            "vision-torch-cuda loaded torch without CUDA; check the NVIDIA "
+            "driver supports this torch build")
     family = _FAMILIES[spec["family"]](model_id, spec, path)
     worker_base.set_state(device=family.device)
     _loaded.clear()

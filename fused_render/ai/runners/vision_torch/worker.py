@@ -1,9 +1,10 @@
 """The CPU-index vision runner (SPEC §40, AI-33).
 
-Five lines of code and a `pyproject.toml`. This folder installs torch from the CPU index (Apple Silicon, where it runs on MPS). The runner itself is
-`runners/torch_vision.py`, shared with its sibling folder; this file may never
-grow a line of behaviour of its own, or the two variants would differ in a way no
-test can see (the same rule as `diffusers_image_cuda/worker.py`).
+Five lines of code and a `pyproject.toml`. This folder installs torch from the CPU index (Apple Silicon: MPS).
+The runner itself is `runners/torch_vision.py`, shared with its sibling folder;
+this file may never grow a line of behaviour of its own, or the two variants
+would differ in a way no test can see (the same rule as
+`diffusers_image_cuda/worker.py`).
 """
 
 import os

@@ -225,6 +225,9 @@ def test_each_vision_folder_is_a_shell_over_the_shared_body(folder):
     assert "import torch_vision" in source
     assert "torch_vision.main()" in source
     assert "def " not in source
+    # The one assignment a shell may make: what device its folder promises.
+    extra = [l for l in source.splitlines() if l.startswith("torch_vision.") and "main()" not in l]
+    assert extra == ([] if folder == "vision_torch" else ['torch_vision.EXPECTED_DEVICE = "cuda"  # a CPU fallback here is a driver fault'])
 
 
 def test_both_vision_folders_exist_with_a_manifest():
@@ -307,3 +310,34 @@ def test_the_worker_opens_a_rotated_photo_upright(worker, tmp_path):
     exif[0x0112] = 6  # rotate 90° clockwise to display
     Image.new("RGB", (40, 20)).save(tmp_path / "phone.jpg", exif=exif)
     assert worker._open(str(tmp_path / "phone.jpg")).size == (20, 40)
+
+
+def _torch_with(worker, monkeypatch, *, mps, cuda):
+    torch = sys.modules["torch"]
+    torch.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: mps))
+    torch.cuda = types.SimpleNamespace(is_available=lambda: cuda)
+    torch.bfloat16, torch.float32 = "bf16", "f32"
+    monkeypatch.setattr(worker, "recipe", lambda model_id: {"family": "fake", "tasks": ()})
+    monkeypatch.setattr(worker, "_FAMILIES", {"fake": lambda *a: types.SimpleNamespace(device="cpu")})
+    monkeypatch.setattr(worker.worker_base, "set_state", lambda **kw: None, raising=False)
+
+
+def test_the_cuda_folder_refuses_to_serve_on_cpu(worker, monkeypatch):
+    """A driver that cannot run this torch build fails loudly at load (registry._cuda's trade)."""
+    _torch_with(worker, monkeypatch, mps=False, cuda=False)
+    monkeypatch.setattr(worker, "EXPECTED_DEVICE", "cuda")
+    with pytest.raises(RuntimeError, match="without CUDA.*NVIDIA driver"):
+        worker.load(MOONDREAM, "/snap/x")
+    assert worker._loaded == {}
+
+
+def test_the_cuda_folder_loads_when_cuda_is_there_and_the_cpu_folder_never_objects(worker, monkeypatch):
+    _torch_with(worker, monkeypatch, mps=False, cuda=True)
+    monkeypatch.setattr(worker, "EXPECTED_DEVICE", "cuda")
+    worker.load(MOONDREAM, "/snap/x")
+    assert worker._loaded["model_id"] == MOONDREAM
+    worker._loaded.clear()
+    _torch_with(worker, monkeypatch, mps=False, cuda=False)
+    monkeypatch.setattr(worker, "EXPECTED_DEVICE", None)
+    worker.load(MOONDREAM, "/snap/x")
+    assert worker._loaded["model_id"] == MOONDREAM
