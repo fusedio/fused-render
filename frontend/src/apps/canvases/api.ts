@@ -236,6 +236,23 @@ export const startLogin = (env?: WorkbenchEnv | null) =>
 export const cancelLogin = () =>
   postJson<{ ok: boolean }>("/api/canvases/login/cancel", {});
 
+/** The server kills the `fused login` child at this mark
+ *  (canvases.LOGIN_CHILD_TIMEOUT); status then reads `login_in_flight: false`
+ *  like any other early end, so the page tells the two apart by the clock. */
+export const LOGIN_TIMEOUT_MS = 5 * 60_000;
+
+/** What to tell the reader when a sign-in they started ended without the
+ *  credentials changing: the deadline, or the child quitting early (consent
+ *  declined, tab closed). `startedAt` is when the page started it, or null. */
+export function loginOutcome(startedAt: number | null, now = Date.now()): string {
+  // A few seconds short of the mark: the poll sees the death up to a tick late,
+  // never early, so anything this close is the watchdog.
+  if (startedAt !== null && now - startedAt >= LOGIN_TIMEOUT_MS - 5_000) {
+    return "Sign-in timed out after 5 minutes — try again.";
+  }
+  return "Sign-in was not completed — try again.";
+}
+
 export const listCanvases = (env: WorkbenchEnv) =>
   getJson<{ canvases: CanvasEntry[] }>(`/api/canvases/list?env=${env}`, GUARD);
 

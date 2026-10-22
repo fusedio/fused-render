@@ -25,12 +25,14 @@ import {
   WORKBENCH_ENVS,
   canvasWorkspacePath,
   catalogPath,
+  cancelLogin,
   cloneCanvas,
   createCanvas,
   getCanvasesStatus,
   getCanvasPreviews,
   listCanvases,
   logout,
+  loginOutcome,
   startLogin,
   startSync,
   isWorkbenchEnv,
@@ -136,6 +138,9 @@ export default function Canvases() {
   // creds_stamp at the moment login started: a re-login over a stale-but-
   // present store never flips logged_in, so completion = the stamp changing.
   const loginStampRef = useRef<number | null | undefined>(undefined);
+  // When this page started the browser sign-in: tells a child that died at
+  // the server's deadline from one that ended early (refused, tab closed).
+  const loginStartedRef = useRef<number | null>(null);
   // The dropdown's pick (null = none, use the default). Mirrored in a ref so
   // `refresh` reads the current pick without re-creating itself on a change.
   const [picked, setPicked] = useState<WorkbenchEnv | null>(envFromQuery);
@@ -200,6 +205,10 @@ export default function Canvases() {
         // it again, from the store as it is now (`login_in_flight` is
         // already per store on the server).
         loginStampRef.current = s.creds_stamp;
+        // Started elsewhere, or before this page stopped watching: when it
+        // began is unknown, and a stale stamp from an earlier sign-in would
+        // call any early end a timeout.
+        loginStartedRef.current = null;
         setLoggingIn(true);
       }
       if (s.logged_in) {
@@ -296,7 +305,7 @@ export default function Canvases() {
           void refresh();
         } else if (!s.login_in_flight) {
           setLoggingIn(false);
-          setError("Sign-in was not completed — try again.");
+          setError(loginOutcome(loginStartedRef.current));
         }
       });
     }, LOGIN_POLL_MS);
@@ -316,9 +325,24 @@ export default function Canvases() {
       loginStampRef.current = status?.creds_stamp ?? null;
       await startLogin(env);
       if (gen !== envGenRef.current) return;
+      loginStartedRef.current = Date.now();
       setLoggingIn(true);
     } catch (e) {
       if (gen !== envGenRef.current) return;
+      setError((e as Error).message);
+    }
+  };
+
+  // Drop `loggingIn` FIRST (the Settings row's order, for its reason): once the
+  // child is terminated a tick already on the wire would see
+  // `login_in_flight: false` and report "not completed" for a cancel the
+  // reader asked for.
+  const onCancelLogin = async () => {
+    setLoggingIn(false);
+    setError(null);
+    try {
+      await cancelLogin();
+    } catch (e) {
       setError((e as Error).message);
     }
   };
@@ -525,9 +549,14 @@ export default function Canvases() {
                   : "Sign in to Fused"}
             </button>
             {loggingIn && (
-              <span className="canvases-sub">
-                Complete the sign-in in the browser window that just opened.
-              </span>
+              <>
+                <button className="btn" onClick={() => void onCancelLogin()}>
+                  Cancel
+                </button>
+                <span className="canvases-sub">
+                  Complete the sign-in in the browser window that just opened.
+                </span>
+              </>
             )}
           </div>
         )}
