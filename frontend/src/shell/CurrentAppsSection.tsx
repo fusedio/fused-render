@@ -65,6 +65,7 @@ import {
 } from "@shell/current-apps-lib";
 import {
   ENV_LABELS,
+  ENV_TAGS,
   canvasNameFromPath,
   canvasPagePath,
   canvasPageTabFromSearch,
@@ -437,7 +438,7 @@ function CurrentAppRow({
       </a>
       {showEnv && app.canvas && isWorkbenchEnv(app.canvas.env) && (
         <span className="canvas-row-env" aria-hidden="true">
-          {ENV_LABELS[app.canvas.env]}
+          {ENV_TAGS[app.canvas.env]}
         </span>
       )}
       {/* The running dot sits AFTER the name (owner, 2026-08-27), so it never

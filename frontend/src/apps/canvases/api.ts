@@ -106,8 +106,11 @@ export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
 export const ENV_LABELS: Record<WorkbenchEnv, string> = {
   unstable: "Unstable",
   prod: "Production",
-  custom: "Custom",
+  custom: "Custom ~/.fused/settings.toml",
 };
+
+/** The label where room is tight (a sidebar row's tag): custom drops its path. */
+export const ENV_TAGS: Record<WorkbenchEnv, string> = { ...ENV_LABELS, custom: "Custom" };
 
 /** A canvas workspace route: the env is a path segment because it is one on
  *  disk (~/Fused/canvas/<env>/<name>). The one-segment `/canvases/<name>` is
