@@ -2044,8 +2044,15 @@ KOKORO_VOICES = (
 )
 
 
+def kokoro_lexicons(names) -> list[str]:
+    """The `lexicon-*.txt` files, sorted (`lexicon-us-en` before `lexicon-zh`,
+    the order the model card gives). `load` passes them all to sherpa-onnx."""
+    return sorted(name for name in names
+                  if name.startswith("lexicon-") and name.endswith(".txt"))
+
+
 def is_kokoro_snapshot(names, dirnames) -> bool:
-    return (all(name in names for name in KOKORO_FILES)
+    return (all(name in names for name in KOKORO_FILES) and bool(kokoro_lexicons(names))
             and KOKORO_DATA_DIR in dirnames and KOKORO_DICT_DIR in dirnames)
 
 

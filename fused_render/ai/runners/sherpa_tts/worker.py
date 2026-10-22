@@ -30,8 +30,6 @@ _loaded = {}
 NUM_THREADS = min(4, os.cpu_count() or 1)
 #: Kokoro's speaking rate; the request has no speed option, so 1.0 always.
 SPEED = 1.0
-#: Both lexicons when the export ships both, in the order the model card gives.
-_LEXICONS = ("lexicon-us-en.txt", "lexicon-zh.txt")
 
 
 def download(model_id):
@@ -50,13 +48,16 @@ def load(model_id, path):
     if traits is None:
         raise RuntimeError(
             f"{model_id} is not a Kokoro sherpa-onnx export: it needs "
-            f"{', '.join(formats.KOKORO_FILES)} and the {formats.KOKORO_DATA_DIR}/ and "
+            f"{', '.join(formats.KOKORO_FILES)}, a lexicon-*.txt and the "
+            f"{formats.KOKORO_DATA_DIR}/ and "
             f"{formats.KOKORO_DICT_DIR}/ folders beside them")
     try:
         import sherpa_onnx
     except ImportError as e:
         raise RuntimeError(f"sherpa-onnx could not be imported from {sys.prefix}: {e}") from e
-    lexicon = ",".join(os.path.join(path, name) for name in _LEXICONS if name in names)
+    lexicon = ",".join(os.path.join(path, name) for name in formats.kokoro_lexicons(names))
+    if not lexicon:
+        raise RuntimeError(f"{model_id} is not a Kokoro sherpa-onnx export: it has no lexicon-*.txt")
     kokoro = sherpa_onnx.OfflineTtsKokoroModelConfig(
         model=os.path.join(path, "model.onnx"),
         voices=os.path.join(path, "voices.bin"),

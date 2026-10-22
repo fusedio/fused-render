@@ -156,6 +156,20 @@ def test_load_leaves_out_a_lexicon_the_export_does_not_ship(monkeypatch, tmp_pat
     assert dict(sherpa.built)["kokoro"]["lexicon"] == f"{path}/lexicon-us-en.txt"
 
 
+def test_load_refuses_an_export_with_no_lexicon_before_building_anything(
+        monkeypatch, tmp_path):
+    """The claim requires a lexicon, but `load` is the last line: an empty
+    `lexicon=` would reach sherpa-onnx as a constructor failure."""
+    worker, sherpa = load_worker(monkeypatch, FakeBase())
+    path = kokoro_dir(tmp_path)
+    for name in ("lexicon-us-en.txt", "lexicon-zh.txt"):
+        os.remove(os.path.join(path, name))
+    with pytest.raises(RuntimeError) as error:
+        worker.load("org/no-lexicon", path)
+    assert "org/no-lexicon" in str(error.value) and "not a Kokoro" in str(error.value)
+    assert sherpa.built == []
+
+
 def test_generate_makes_each_part_and_pauses_between_paragraphs(monkeypatch, tmp_path):
     base = FakeBase()
     worker, sherpa = load_worker(monkeypatch, base)
