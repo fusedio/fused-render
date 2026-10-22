@@ -62,6 +62,36 @@ def onnx_failures():
                  if isinstance(value, type) and issubclass(value, Exception))
 
 
+def prefetch_detector(base):
+    """Fetch the 2MB speech detector beside a model's download. Best-effort.
+
+    Called from both runners' `download()` (MLX always; faster-whisper for a
+    Parakeet repo, whose cuts depend on it — CTranslate2 Whisper ships its own
+    Silero). Fetched HERE rather than lazily on the first transcription because
+    a "Download" that leaves a cache which cannot work offline has not done what
+    the button said: `vad` defaults to true, so a user who downloads on wifi and
+    transcribes on a train would otherwise find the feature quietly degraded.
+
+    Deliberately best-effort: the detector is an optimisation over a
+    transcription that works without it (see `speech_regions`), so a Hub hiccup
+    over 2MB must not fail a model download that already succeeded.
+
+    **Best-effort stops at the ✕.** `base.Cancelled` is an ordinary `Exception`
+    and the one that is not a Hub hiccup: absorbed, the row would finish
+    "successfully" for a user who pressed stop. Re-raised first, and before the
+    broad catch, because order is the whole of the distinction.
+    """
+    try:
+        import vad as vad_module
+
+        vad_module.model_path(base.download_file)
+    except base.Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - see the docstring
+        print(f"could not pre-fetch the speech detector: "
+              f"{error.__class__.__name__}: {error}", file=sys.stderr, flush=True)
+
+
 def speech_regions(base, cache, audio, total, job, row):
     """Where the speech is, or `None` when the whole file should be decoded.
 

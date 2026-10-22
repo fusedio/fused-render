@@ -161,37 +161,12 @@ def download(model_id):
     """The Whisper snapshot, and the 2MB speech detector beside it.
 
     The detector is fetched HERE rather than lazily on the first transcription,
-    for the reason `runners/torch_image.py` gives about its GGUF recipe: a
-    "Download" that leaves a cache which cannot work offline has not done the
-    thing the button said it would. `vad` defaults to true, so a user who
-    downloads a model on wifi and transcribes on a train would otherwise find
-    the feature quietly degraded at exactly the wrong moment.
-
-    Best-effort, and deliberately so: the detector is an optimisation over a
-    transcription that works without it (see `_speech_regions`), so a Hub
-    hiccup while fetching 2MB must not fail an 8GB model download that has
-    already succeeded.
-
-    **Best-effort stops at the ✕.** `Cancelled` is now something a fetch really
-    raises — the tick carries it back (`worker_base.fetch_with_progress`), where
-    it used to be latent — and it is the one exception here that is not a Hub
-    hiccup. Absorbed, it would print "could not pre-fetch the speech detector:
-    Cancelled" and report the download DONE, so a user who pressed stop would
-    watch the row finish successfully. Re-raised first, and before the broad
-    catch, because `Cancelled` is an ordinary `Exception` and order is the whole
-    of the distinction.
+    best-effort and stopping at the ✕ — `stt_common.prefetch_detector` carries
+    the reasoning, shared with the faster-whisper runner's Parakeet download.
     """
     snapshot = worker_base.download_snapshot(
         model_id, allow_patterns=list(formats.MLX_WHISPER_FILES))
-    try:
-        import vad as vad_module
-
-        vad_module.model_path(worker_base.download_file)
-    except worker_base.Cancelled:
-        raise
-    except Exception as error:  # noqa: BLE001 - see the docstring
-        print(f"could not pre-fetch the speech detector: "
-              f"{error.__class__.__name__}: {error}", file=sys.stderr, flush=True)
+    stt_common.prefetch_detector(worker_base)
     return snapshot
 
 

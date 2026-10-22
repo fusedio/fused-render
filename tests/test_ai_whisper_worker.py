@@ -53,6 +53,9 @@ class FakeBase:
         self.cancel_on_tick = None
         #: `set_state` fields, as `worker_base.STATE` would hold them.
         self.state = {}
+        #: `download_snapshot` calls, and the folder it "downloaded" into.
+        self.snapshots = []
+        self.snapshot_dir = ""
 
     def set_state(self, **fields):
         self.state.update(fields)
@@ -65,6 +68,10 @@ class FakeBase:
         self.fetches.append({"repo": repo_id, "file": filename,
                              "job": job, "row": row})
         return f"/snapshots/{repo_id}/{filename}"
+
+    def download_snapshot(self, model_id, **kwargs):
+        self.snapshots.append({"model": model_id, **kwargs})
+        return self.snapshot_dir
 
     def report(self, job=None, **fields):
         self.ticks.append({"job": job, **fields})
@@ -1211,6 +1218,64 @@ def test_the_VAD_packs_become_segments_on_the_RECORDING_clock(
         (10.0, 13.0, "First sentence."), (20.0, 22.0, "Second one.")]
     assert result["segments"] == 2
     assert written["text"] == "First sentence. Second one."
+
+
+def _detector_fetches(monkeypatch, error=None):
+    import vad as vad_module
+
+    fetched = []
+
+    def model_path(fetch):
+        fetched.append(fetch)
+        if error is not None:
+            raise error
+        return "/silero.onnx"
+
+    monkeypatch.setattr(vad_module, "model_path", model_path)
+    return fetched
+
+
+def test_downloading_a_sherpa_repo_also_prefetches_the_speech_detector(
+        worker, base, tmp_path, monkeypatch):
+    """Parakeet leans on Silero for its cuts, so a "Download" that leaves the
+    detector unfetched degrades the first OFFLINE run to fixed 29 s slices."""
+    base.snapshot_dir = _sherpa_files(tmp_path / "snap")
+    fetched = _detector_fetches(monkeypatch)
+
+    assert worker.download("csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8") \
+        == base.snapshot_dir
+    assert fetched == [base.download_file]
+
+
+def test_a_failing_detector_prefetch_does_not_fail_the_download(
+        worker, base, tmp_path, monkeypatch):
+    base.snapshot_dir = _sherpa_files(tmp_path / "snap")
+    _detector_fetches(monkeypatch, error=OSError("hub down"))
+
+    assert worker.download("x/parakeet") == base.snapshot_dir
+
+
+def test_a_cancel_during_the_detector_prefetch_stands(
+        worker, base, tmp_path, monkeypatch):
+    base.snapshot_dir = _sherpa_files(tmp_path / "snap")
+    _detector_fetches(monkeypatch, error=base.Cancelled())
+
+    with pytest.raises(base.Cancelled):
+        worker.download("x/parakeet")
+
+
+def test_downloading_a_whisper_repo_does_not_fetch_the_detector(
+        worker, base, tmp_path, monkeypatch):
+    """faster-whisper ships its own Silero; only the sherpa path needs ours."""
+    snap = tmp_path / "ct2"
+    snap.mkdir()
+    (snap / worker._CT2_WEIGHTS).write_bytes(b"")
+    base.snapshot_dir = str(snap)
+    fetched = _detector_fetches(monkeypatch)
+
+    worker.download("Systran/faster-whisper-small")
+
+    assert fetched == []
 
 
 def test_a_word_is_a_space_led_token_run_with_its_end_at_the_next_start(

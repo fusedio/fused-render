@@ -76,10 +76,18 @@ def download(model_id):
     transducer's (`formats.SHERPA_TRANSDUCER_FILES`). An allow list; never an
     ignore of `*.bin`. A repo carries one format or the other, so the union
     fetches exactly what the format it is needs — and a Parakeet repo's
-    `test_wavs/` stays out."""
-    return worker_base.download_snapshot(
+    `test_wavs/` stays out.
+
+    **A Parakeet repo also pre-fetches the speech detector**, as the MLX runner's
+    download does: its cuts depend on Silero, so a download that leaves it behind
+    degrades the first offline run to fixed slices. Whisper does not need it —
+    faster-whisper ships its own."""
+    snapshot = worker_base.download_snapshot(
         model_id,
         allow_patterns=list(formats.CT2_FILES + formats.SHERPA_TRANSDUCER_FILES))
+    if not os.path.isfile(os.path.join(snapshot, _CT2_WEIGHTS)):
+        stt_common.prefetch_detector(worker_base)
+    return snapshot
 
 
 def _placement():
