@@ -1557,19 +1557,19 @@ def speech_traits(repo_id: str) -> dict | None:
     if snapshot_dir is None:
         return None
     config = _read_json(os.path.join(snapshot_dir, "config.json"))
-    if config:
-        return formats.speech_traits(config)
-    # Kokoro's sherpa export has no config.json — the layout is the evidence,
-    # so the directory is listed only when there is no config to read.
+    traits = formats.speech_traits(config or {})
+    if traits is not None:
+        return traits
+    # Kokoro's sherpa export has no config.json of its own — the layout is the
+    # evidence, and `formats.loaders` claims it whatever config sits beside it,
+    # so this asks the same question of the same snapshot. Only reached when the
+    # config did NOT read as speech, so a Qwen3 snapshot never pays the listing.
     try:
         entries = os.listdir(snapshot_dir)
     except OSError:
         entries = []
     dirnames = {name for name in entries if os.path.isdir(os.path.join(snapshot_dir, name))}
-    kokoro = formats.kokoro_traits_from_names(set(entries), dirnames)
-    if kokoro is not None:
-        return kokoro
-    return formats.speech_traits({})
+    return formats.kokoro_traits_from_names(set(entries), dirnames)
 
 
 def is_sherpa_transducer(repo_id: str) -> bool | None:
