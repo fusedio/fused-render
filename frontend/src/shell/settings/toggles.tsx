@@ -7,6 +7,7 @@
 // navigation. Each flag module's header says why its reader caches.
 import {
   putAppSharingEnabled,
+  putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putGitAutoSyncEnabled,
   putGithubLinkEnabled,
@@ -218,6 +219,20 @@ export function CanvasesControl({ prefs, onChange }: PrefControlProps) {
       // The sidebar beside this page reads the flag from its own store; the
       // row and the Settings-menu entry appear (or go) with the switch.
       after={(next) => publishCanvasesEnabled(next.canvases.enabled)}
+      onChange={onChange}
+    />
+  );
+}
+
+// No publish: the proxy follows the pref on the next canvas status read, which
+// every page that frames a canvas makes before it frames it. Off stops it at
+// once (shell/prefs.py).
+export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="canvases-embed-proxy"
+      checked={prefs.canvases.embed_proxy === true}
+      put={putCanvasesEmbedProxy}
       onChange={onChange}
     />
   );

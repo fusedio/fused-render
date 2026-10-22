@@ -436,6 +436,18 @@ const ENTRIES = [
     renderOnly: true,
   },
   {
+    id: "canvases-embed-proxy",
+    group: "features",
+    section: "Sidebar",
+    label: "Load a custom deployment's workbench through a local proxy",
+    description: "For a deployment in ~/.fused/settings.toml whose workbench needs a browser login. The embedded workbench loads through a loopback proxy that adds your Fused token. Prod and Unstable canvases are unaffected.",
+    keywords: "proxy embed custom deployment settings.toml workbench login gateway bearer token",
+    renderOnly: true,
+    child: true,
+    // Only means something while Canvases is offered at all.
+    available: ({ prefs }) => prefs.canvases?.enabled === true,
+  },
+  {
     id: "marketplace",
     group: "features",
     section: "Sidebar",
