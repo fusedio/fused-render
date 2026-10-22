@@ -15,6 +15,7 @@
 // other pages Enter carries it to Discover.
 import { useEffect, useRef, useState } from "react";
 import { IS_EMBED, navigateUrl, pushHistory, replaceSearch } from "@platform/lib/router";
+import { useNavEpoch } from "@platform/lib/hooks";
 import { MARKETPLACE_HOME, useCatalog } from "@platform/lib/marketplace";
 import { StoreHeader, type StoreTab } from "./StoreHeader";
 import { CatalogFooter, Discover } from "./Discover";
@@ -71,6 +72,11 @@ function searchFor(category: string, q: string): string {
 }
 
 export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
+  // Discover, Installed and an app's page are paths of ONE mounted page, so the
+  // header and scroll container survive a hop between them. `useNavEpoch` is
+  // the subscription (it counts pushState and popstate alike); the route is
+  // re-read from the URL on every render.
+  const navEpoch = useNavEpoch();
   const route: Route = fusedFile ? { kind: "file", path: fusedFile } : parseMarketplacePath(location.pathname, location.search);
   // A chrome-free embed (the window a `.fused` double-click opened) shows the
   // page alone: no store header to wander off into the catalog from.
@@ -92,6 +98,20 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Landing on another page of the store: back to the top, and on Discover the
+  // filters the URL names. Not on the first render, which already read them.
+  const routeKey = route.kind === "app" ? "app:" + route.slug : route.kind === "file" ? "file:" + route.path : route.kind;
+  const lastRouteKey = useRef(routeKey);
+  useEffect(() => {
+    if (lastRouteKey.current === routeKey) return;
+    lastRouteKey.current = routeKey;
+    scrollRef.current?.scrollTo({ top: 0 });
+    const next = route.kind === "discover" ? readParams() : { category: "all", q: "" };
+    setCategory(next.category);
+    setQ(next.q);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navEpoch, routeKey]);
 
   // Back/Forward between two filters of THIS page: the chip's pushState is
   // not a navigation (no nav event), so the shell's route mark never moved
