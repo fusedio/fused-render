@@ -3738,15 +3738,21 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
     cmd = [_copilot_bin(), "--acp", "--no-auto-update"]
     if model:
         cmd += ["--model", model]
-    if effort:
+    # `auto` (also what an empty model means: the backend default) routes
+    # across models and the CLI refuses `--reasoning-effort` with it ("Reasoning
+    # effort is not supported when using the \"auto\" model").
+    if effort and model not in ("", "auto"):
         cmd += ["--reasoning-effort", effort]
     cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane),
             "--agent", "fused:fused"]
     if pane or _terminal_tools_supported():
         cmd += ["--additional-mcp-config",
                 "@" + _write_mcp_config(run_dir, pane, approve=False)]
+    # The CLI exits at startup on an `--add-dir` that does not exist, and SHOTS
+    # is made lazily by `_shots_dir` (first screenshot), so skip what is absent.
     for d in [SHOTS, *(extra_read_dirs or [])]:
-        cmd += ["--add-dir", d]
+        if os.path.isdir(d):
+            cmd += ["--add-dir", d]
     if _fused_cli_dir():
         cmd += ["--allow-tool", "shell(fused:*)"]
     if cli_mode == "acceptEdits":
