@@ -605,6 +605,18 @@ def test_an_absent_language_means_auto_detect_not_an_empty_code(worker, tmp_path
     assert model.calls[0]["language"] is None
 
 
+def test_language_auto_means_detect_on_the_ct2_path_too(worker, tmp_path):
+    """faster-whisper rejects the literal "auto" as a language code; the spelling
+    SPEC AI-10g documents must mean "detect it" on BOTH formats."""
+    for value in ("auto", "AUTO"):
+        model = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+        worker._loaded["model"] = model
+        worker.generate(_request(tmp_path, language=value,
+                                out=str(tmp_path / f"{value}.json"),
+                                outText=str(tmp_path / f"{value}.txt")))
+        assert model.calls[0]["language"] is None, value
+
+
 def test_an_explicit_null_vad_means_the_DEFAULT_not_off(worker, tmp_path):
     """`bool(body.get("vad", True))` reads a JSON null as False rather than as
     "not specified", so it inverted: a page spreading an options object with an

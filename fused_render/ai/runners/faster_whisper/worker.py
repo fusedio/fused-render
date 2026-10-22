@@ -923,8 +923,10 @@ def generate(body):
     # empty string would be passed through as a language code that matches none.
     language = str(body.get("language") or "") or None
     initial_prompt = str(body.get("initialPrompt") or "") or None
-    if sherpa and (language or "").lower() == "auto":
-        # The one spelling of "detect it" a caller can send: Parakeet always does.
+    if (language or "").lower() == "auto":
+        # The one spelling of "detect it" a caller can send, on BOTH formats:
+        # Parakeet always detects, and faster-whisper rejects the literal "auto"
+        # as a language code, so it is None before either branch sees it.
         language = None
     if sherpa and language:
         # Refused for `translate`'s reason, and before a row is touched: Parakeet
