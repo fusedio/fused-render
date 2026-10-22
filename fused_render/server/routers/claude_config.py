@@ -9,7 +9,7 @@ app through `runPython` (one subprocess per click); keeping them means the port
 is a transport change and nothing else, and the modules stay readable side by
 side with the canonical example app they came from.
 
-The allowlist is EXPLICIT — a dict of the eleven callables, not
+The allowlist is EXPLICIT — a dict of the callables, not
 `importlib.import_module(f"fused_render.claude_config.{module}")`. The module
 name arrives in the URL from a browser, and dynamic import over an
 attacker-influenced name is how a dispatch endpoint turns into "call `main` on
@@ -23,15 +23,13 @@ bound against the real signature BEFORE the call, so a caller's mistake
 the feature's own logic stays a 500; conflating the two would report our bugs as
 the client's.
 
-Everything runs in a threadpool: every module blocks somewhere real (git
-subprocesses, `claude` CLI invocations, `mdfind`, and the catalog refresh's HTTP
-fetch), and blocking the event loop would stall every other request in the app,
+Everything runs in a threadpool: every module blocks somewhere real (`claude` CLI
+invocations, `mdfind`, file I/O), and blocking the event loop would stall every other request in the app,
 including the ones this page fires in parallel.
 
 Mutating POSTs carry the same D3 X-Fused header guard as /api/fs/*: `claude_md`
-deletes files, `preferences`/`plugins`/`marketplaces` rewrite settings.json, and
-`profiles` checks out git branches — all of which a blind cross-origin POST
-could otherwise fire. The frontend's postJson helper already sends the header.
+deletes files, and `preferences`/`plugins`/`marketplaces` rewrite settings.json —
+both of which a blind cross-origin POST could otherwise fire. The frontend's postJson helper already sends the header.
 """
 import inspect
 import logging
@@ -42,15 +40,12 @@ from fastapi.concurrency import run_in_threadpool
 
 from fused_render.claude_config import (
     claude_md,
-    git_ops,
     lib,
     marketplaces,
     mcp,
     memory,
     plugins,
     preferences,
-    profiles,
-    refresh_catalog,
     skills,
 )
 from fused_render.server.common import _error, _require_fused
@@ -69,14 +64,11 @@ MODULES = {
     # and is the human's to make, not this branch's. Its only exerciser now
     # is tests/test_claude_config_api.py, calling it directly.
     "claude_md": claude_md.main,
-    "git_ops": git_ops.main,
     "marketplaces": marketplaces.main,
     "mcp": mcp.main,
     "memory": memory.main,
     "plugins": plugins.main,
     "preferences": preferences.main,
-    "profiles": profiles.main,
-    "refresh_catalog": refresh_catalog.main,
     "skills": skills.main,
 }
 

@@ -13,7 +13,6 @@ main(action=...):
             files: every file under the skill dir, relative paths
   write  -> {ok}  params: slug, path, text
   delete -> {ok}  params: slug  (removes the skill dir, or just the link)
-Mutations commit to the config repo like the other modules.
 """
 import os
 import re
@@ -111,7 +110,6 @@ def main(action: str = "list", slug: str = "", path: str = "", text: str = "") -
                     os.path.join(entry, "SKILL.md"),
                     f"---\nname: {slug}\ndescription: Describe when to use this skill.\n---\n\n# {slug}\n",
                 )
-                lib.commit(f"Add skill {slug}", pathspec=os.path.join("skills", slug))
             return {"ok": True, "slug": slug}
 
         if action == "read":
@@ -125,7 +123,6 @@ def main(action: str = "list", slug: str = "", path: str = "", text: str = "") -
             target = _skill_file(slug, path)
             with lib.config_lock():
                 lib.write_text(target, text)
-                lib.commit(f"Edit skill {slug}", pathspec=os.path.join("skills", slug))
             return {"ok": True}
 
         if action == "delete":
@@ -135,7 +132,6 @@ def main(action: str = "list", slug: str = "", path: str = "", text: str = "") -
                     os.remove(entry)
                 else:
                     shutil.rmtree(entry)
-                lib.commit(f"Remove skill {slug}", pathspec=os.path.join("skills", slug))
             return {"ok": True}
     except (ValueError, OSError) as e:
         return {"ok": False, "error": str(e)}

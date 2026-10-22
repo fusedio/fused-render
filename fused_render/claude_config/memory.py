@@ -1,20 +1,19 @@
 """Memory feature (memory.md).
 
 Viewer and editor of Claude Code's persistent memory under
-projects/*/memory/*.md, grouped by project, with per-folder git lifecycle
-controls (change status, commit, clear) and per-file read/write/delete.
+projects/*/memory/*.md, grouped by project, with per-folder clear and per-file
+read/write/delete.
 
 main(action=...):
-  list   -> {projects: [{project, path, pathConfirmed, files, changes}]}
+  list   -> {projects: [{project, path, pathConfirmed, files}]}
             files: [{name, description}], description from the file's own
             YAML frontmatter (None when missing or malformed — never guessed).
-  commit -> {ok, committed}   params: project  (path-limited commit)
-  clear  -> {ok, committed}   params: project  (delete *.md + commit deletion)
+  clear  -> {ok}              params: project  (delete the folder's *.md)
   open   -> {ok}              params: project  (reveal folder in OS explorer)
   files  -> {ok, files: [{name, size, mtime}]}  params: project
   read   -> {ok, text}        params: project, file
-  write  -> {ok, committed}   params: project, file, text
-  delete_file -> {ok, committed}  params: project, file
+  write  -> {ok}              params: project, file, text
+  delete_file -> {ok}         params: project, file
 
 `project` is always the SLUG (the projects/ directory name). It stays the
 identifier on the wire because it is what lib.safe_subdir guards and what the
@@ -210,7 +209,6 @@ def _file_description(path: str) -> Optional[str]:
 def _list() -> dict:
     projects = []
     if os.path.isdir(PROJECTS_DIR):
-        changes = _memory_changes()
         for slug in sorted(os.listdir(PROJECTS_DIR)):
             mem_dir = os.path.join(PROJECTS_DIR, slug, "memory")
             if not os.path.isdir(mem_dir):
@@ -234,28 +232,8 @@ def _list() -> dict:
                 # inferring policy from a null.
                 "pathConfirmed": path is not None,
                 "files": files,
-                "changes": changes.get(slug, []),
             })
     return {"projects": projects}
-
-
-def _memory_changes() -> dict:
-    """Per-folder uncommitted change status, grouped by project slug
-    (memory.md §7). Same porcelain source as the status badge."""
-    try:
-        out = lib.git("status", "--porcelain", "-uall")
-    except RuntimeError:
-        return {}
-    by_project = {}
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        code, path = line[:2], line[3:]
-        st = "A" if code.strip() == "??" else code.strip()[0]
-        parts = path.split("/")
-        if len(parts) >= 3 and parts[0] == "projects" and parts[2] == "memory":
-            by_project.setdefault(parts[1], []).append({"path": path, "status": st})
-    return by_project
 
 
 def _memory_file(project: str, file: str) -> str:
@@ -277,22 +255,13 @@ def main(action: str = "list", project: str = "", file: str = "", text: str = ""
         except ValueError as e:
             return {"ok": False, "error": str(e)}
 
-    if action == "commit":
-        _memory_dir(project)  # validate slug + ensure dir exists
-        rel = os.path.join("projects", project, "memory")
-        with lib.config_lock():
-            committed = lib.commit(f"Update memory for {project}", pathspec=rel)
-        return {"ok": True, "committed": committed}
-
     if action == "clear":
         mem_dir = _memory_dir(project)
-        rel = os.path.join("projects", project, "memory")
         with lib.config_lock():
             for n in os.listdir(mem_dir):
                 if n.endswith(".md"):
                     os.remove(os.path.join(mem_dir, n))
-            committed = lib.commit(f"Clear memory for {project}", pathspec=rel)
-        return {"ok": True, "committed": committed}
+        return {"ok": True}
 
     try:
         if action == "files":
@@ -308,20 +277,17 @@ def main(action: str = "list", project: str = "", file: str = "", text: str = ""
             with open(_memory_file(project, file), encoding="utf-8") as f:
                 return {"ok": True, "text": f.read()}
 
-        rel = os.path.join("projects", project, "memory")
         if action == "write":
             target = _memory_file(project, file)
             with lib.config_lock():
                 lib.write_text(target, text)
-                committed = lib.commit(f"Edit memory {file} for {project}", pathspec=rel)
-            return {"ok": True, "committed": committed}
+            return {"ok": True}
 
         if action == "delete_file":
             target = _memory_file(project, file)
             with lib.config_lock():
                 os.remove(target)
-                committed = lib.commit(f"Delete memory {file} for {project}", pathspec=rel)
-            return {"ok": True, "committed": committed}
+            return {"ok": True}
     except (ValueError, OSError) as e:
         return {"ok": False, "error": str(e)}
 

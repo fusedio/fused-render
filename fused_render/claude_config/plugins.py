@@ -514,7 +514,6 @@ def main(action: str = "list", id: str = "", enabled: bool = False) -> dict:
             s = lib.read_settings()
             s["enabledPlugins"] = {**(s.get("enabledPlugins") or {}), id: want}
             lib.write_json(lib.SETTINGS_PATH, s)
-            lib.commit(f"{'Enable' if want else 'Disable'} plugin {id}")
         return {"ok": True, "id": id, "enabled": want}
 
     if action == "update":
@@ -528,7 +527,7 @@ def main(action: str = "list", id: str = "", enabled: bool = False) -> dict:
         known = set(installed.get("plugins") or {}) | set(s.get("enabledPlugins") or {})
         if id not in known:
             return {"ok": False, "error": "unknown plugin"}
-        # No git commit — plugins/ is ignored; restart applies it. Best-effort
+        # A restart applies it. Best-effort
         # (the claude CLI may be absent, or exceed claude_cli's timeout; plugins.md §5).
         #
         # -y for the same reason `install` below passes it, and the CLI documents
@@ -562,7 +561,7 @@ def main(action: str = "list", id: str = "", enabled: bool = False) -> dict:
         # just hit the timeout. Generous timeout because an install can clone a
         # repo over the network — claude_cli's 25s default is a local-command
         # budget and would report a working install as a failure.
-        # No git commit — plugins/ is ignored — but the CLI may write
+        # The CLI may write
         # settings.json's enabledPlugins, so the caller still signals onChanged.
         res = lib.claude_cli("plugin", "install", id, "--scope", "user", "-y", timeout=120)
         if not res["ok"]:
