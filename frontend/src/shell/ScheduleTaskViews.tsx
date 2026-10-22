@@ -2433,9 +2433,13 @@ export function TaskList({
   // the sections about now — tasks-lib.openOnFirstVisit. Seeded once per view,
   // the moment it first has sections to fold (an empty list seeds nothing, so
   // a view opened before the tasks arrive is seeded when they do), and then
-  // the folds are the reader's own, remembered like any other. Layout effect,
-  // not effect: the seeded state must be what the first paint draws, or every
-  // section flashes open for a frame before folding.
+  // the folds are the reader's own, remembered like any other. ONCE EVER, not
+  // once per tab (Akshil, 2026-10-22: "only auto fold the very first time
+  // loading in … I don't want his folders that were open to be collapsed"):
+  // the seed mark lives in localStorage, so a new window or a reload never
+  // folds a folder again. Layout effect, not effect: the seeded state must be
+  // what the first paint draws, or every section flashes open for a frame
+  // before folding.
   useLayoutEffect(() => {
     if (!groupBy || !groups || groups.length === 0) return;
     if (readSeededViews().has(groupBy)) return;
@@ -6878,13 +6882,17 @@ function writeCollapsedGroups(set: Set<string>) {
 // THE SEED MARKS, IN MEMORY FIRST (CodeRabbit, #1756): the store is only
 // persistence. `groups` recomputes on every listing publish and every tick of
 // `useNow`, and with a blocked store (quota, a locked-down webview) a mark that
-// lived in sessionStorage alone was never written, so every recompute seeded
+// lived in the store alone was never written, so every recompute seeded
 // again — a section the reader had just opened folded within the minute.
+// THE STORE IS localStorage, NOT sessionStorage (Akshil, 2026-10-22): the seed
+// is for the very first time a view is ever opened on this machine. Per tab
+// it ran again in every new window, and a reader working with folders open
+// watched them fold. (The folds themselves stay per tab, as before.)
 const seededViews = new Set<TaskGroupBy>();
 
 function readSeededViews(): Set<TaskGroupBy> {
   try {
-    for (const v of parseSeededViews(sessionStorage.getItem(GROUPS_SEEDED_KEY))) seededViews.add(v);
+    for (const v of parseSeededViews(localStorage.getItem(GROUPS_SEEDED_KEY))) seededViews.add(v);
   } catch {
     // Unreadable store: the in-memory marks are the whole answer.
   }
@@ -6894,7 +6902,7 @@ function readSeededViews(): Set<TaskGroupBy> {
 function writeSeededView(by: TaskGroupBy) {
   seededViews.add(by);
   try {
-    sessionStorage.setItem(GROUPS_SEEDED_KEY, JSON.stringify([...seededViews]));
+    localStorage.setItem(GROUPS_SEEDED_KEY, JSON.stringify([...seededViews]));
   } catch {
     // A blocked store seeds again next page load; this load remembers.
   }
