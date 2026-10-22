@@ -46,7 +46,7 @@ import signal
 import threading
 import time
 
-from fused_render import sysmon
+from fused_render import _platform, sysmon
 from fused_render.sysmon import labels
 from fused_render.sysmon.common import cpu_percent, host_cpu_percent, user_name
 
@@ -547,7 +547,7 @@ def kill(sampler: Sampler, pid: int, force: bool = False, started_at=None) -> di
     # From the KERN_PROC ident, not b.start_time(): that reads proc_pidinfo,
     # which macOS refuses for another user's pid.
     _check_started(current.start, started_at)
-    sig = signal.SIGKILL if force else signal.SIGTERM
+    sig = _platform.SIGKILL if force else signal.SIGTERM
     try:
         _kill(pid, sig)
     except PermissionError:

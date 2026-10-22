@@ -4,8 +4,8 @@
 // a place, the app page's shape (shell/AppPage.tsx, D488). A SEPARATE ROUTE
 // from the editor, `/canvases/<env>/<name>` (CanvasWorkspace.tsx on its own:
 // two panes, canvas + Claude chat, sync, the edit workflow) — the editor is
-// the owner's and is not folded into tabs; the header's "Open in canvas
-// editor" is the door from here to there. Three tabs, named by the `_tab`
+// the owner's and is not folded into tabs; the header's "Open" button
+// (the app page's, folder icon and all) is the door from here to there. Three tabs, named by the `_tab`
 // query param (absent = overview; api.ts CANVAS_PAGE_TABS):
 //
 //   Overview  the canvas itself — the workbench framed as a VIEWER
@@ -53,8 +53,8 @@ import { useCallback, useEffect, useMemo, useState, type MouseEvent, type ReactN
 import {
   AppWindow,
   Files,
+  FolderOpen,
   ListTodo,
-  PencilLine,
   RefreshCw,
   type LucideIcon,
 } from "lucide-react";
@@ -324,8 +324,8 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
             }
             title="Open this canvas in the editor: the workbench with Claude beside it"
           >
-            <PencilLine data-icon="inline-start" />
-            <span className={APP_PAGE_FIT_LABEL}>Open in canvas editor</span>
+            <span className={APP_PAGE_FIT_LABEL}>Open</span>
+            <FolderOpen data-icon="inline-end" />
           </Button>
           {/* No "Open in Workbench" button: the caption under the name IS
               the workbench link (owner, 2026-10-20). */}

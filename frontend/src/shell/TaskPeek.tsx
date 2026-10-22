@@ -530,7 +530,13 @@ export function TaskPeek({
   // THE APP THIS TASK IS ABOUT, if its folder is one (shell/peek-preview.ts:
   // the desk's own table, never a second predicate). Null on an ordinary
   // project, and the body is then exactly what it was — chat, full height.
-  const app = useAppForProject(task && !gone ? task.project : "");
+  // …and the DOOR-TIME CHECK (peek-preview.ts `ensureAppFor`): a folder the
+  // listing's one look found empty is asked about again here, where the
+  // preview is wanted. Not for an archived task — see the hook.
+  const app = useAppForProject(
+    task && !gone ? task.project : "",
+    !!task && !gone && task.status !== "archived",
+  );
   const previewSrc = app?.entry
     ? // The SAME document the app page's Overview frames and the Home card
       // opens, plus the shell's embedded-frame focus contract: an app that
@@ -1391,6 +1397,11 @@ export function TaskPeek({
                 // this panel's own listener sees it, so the blur-first rule has
                 // to be applied here too (see `escapeOrBlur`).
                 onEscape={() => escapeOrBlur(document)}
+                // REMOVING THE WORKTREE STAYS ON THIS PAGE (bug report,
+                // 2026-10-22: it used to leave for the explorer, the landing
+                // the explorer's own chat wants). The rows are re-read so the
+                // task's folder registers as missing and this body says so.
+                {...(onReload ? { onWorktreeRemoved: onReload } : {})}
                 // FOCUS STAYS ON THE TRIGGER (design.md, Keyboard — Notion's
                 // behaviour): the peek is a place to look first and type
                 // second, and a panel that steals the caret makes the next

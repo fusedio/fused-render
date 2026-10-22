@@ -70,6 +70,8 @@ import threading
 import time
 import traceback
 
+from . import warm_run
+
 logger = logging.getLogger(__name__)
 
 # A traceback frame header: `  File "<path>", line N[, in func]`. SyntaxError
@@ -179,6 +181,7 @@ def reset_app_interpreter_cache() -> None:
     global _app_interpreter
     with _app_interpreter_lock:
         _app_interpreter = _UNPROBED
+    warm_run.discard_all("app interpreter cache reset")
 
 
 def _stripped_env_vars() -> tuple[str, ...]:
@@ -460,6 +463,7 @@ def reset_app_packages_cache() -> None:
     global _app_packages
     with _app_packages_lock:
         _app_packages = _UNPROBED
+    warm_run.discard_all("app packages cache reset")
 
 
 def _probe_app_packages(exe: str) -> dict | None:
@@ -774,6 +778,12 @@ def warm() -> None:
         _available_cached = ok
     logger.info("engine warm-up: fused backend %s (%.1fs)",
                 "ready" if ok else "unavailable", time.monotonic() - t0)
+    # Seed the pre-spawned interpreters (SPEC PY-20) so the first run after
+    # startup is already warm. Best effort: a failure here is just a cold first run.
+    try:
+        warm_run.prime(get_backend() if ok else None, app_interpreter)
+    except Exception:  # noqa: BLE001
+        logger.debug("warm run priming failed", exc_info=True)
 
 
 def warm_in_background() -> None:
@@ -799,6 +809,7 @@ def invalidate() -> None:
     global _available_cached
     with _available_lock:
         _available_cached = None
+    warm_run.discard_all("engine invalidated")
 
 
 def available_nonblocking() -> bool:
@@ -875,6 +886,14 @@ async def _execute(code: str, requirements: list[str], interpreter: str | None, 
             # a reordering upstream would silently pass `interpreter` as something
             # else. `requirements` is deliberately omitted — the interpreter wins
             # over it upstream, and passing both would imply otherwise.
+            # A spare interpreter pair started ahead of time (SPEC PY-20), or None
+            # -> the unchanged cold call below (no spare ready, flag off, or a
+            # backend whose shape `warm_run` does not mirror).
+            warm = await asyncio.to_thread(
+                warm_run.execute_fused, backend, code, input_files, interpreter
+            )
+            if warm is not None:
+                return warm
             return await asyncio.to_thread(
                 backend._execute_sync,
                 code=code,

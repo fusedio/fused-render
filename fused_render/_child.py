@@ -22,6 +22,10 @@ import traceback
 # before run() mutates sys.path, so a user module dir can't shadow it.
 from _binding import bind_params
 
+# Must match `executor._JSON_KW`: the parent splices the result text we encode
+# here into the /api/run body unchanged, so the two have to agree byte for byte.
+_JSON_KW = {"ensure_ascii": False, "allow_nan": False, "separators": (",", ":")}
+
 # NOTE: this worker deliberately does NOT put the package's parent on sys.path.
 # It used to (appended), so that a helper could `import fused_render` from the
 # child even when the package is not pip-installed into this interpreter — the
@@ -76,6 +80,7 @@ def run():
     real_stdout = sys.stdout
     sys.stdout = captured
     out = {"ok": False}
+    payload_json = None
     try:
         module_dir = os.path.dirname(path)
         # D1316: children (a detached worker) inherit the calling page so
@@ -109,7 +114,9 @@ def run():
 
         result = fn(**bind_params(fn, params))
         try:
-            json.dumps(result)
+            # The one encode of `result`: it validates and is what goes on the
+            # wire (the parent splices this text rather than re-encoding it).
+            payload_json = json.dumps(result, **_JSON_KW)
         except (TypeError, ValueError):
             raise TypeError(
                 f"main() returned {type(result).__name__}, which is not JSON-serializable; "
@@ -150,6 +157,23 @@ def run():
     finally:
         sys.stdout = real_stdout
     out["stdout"] = captured.getvalue()
+    if payload_json is not None:
+        line = (
+            '{"ok":true,"result":' + payload_json
+            + ',"stdout":' + json.dumps(out["stdout"], **_JSON_KW) + "}"
+        )
+        try:
+            data = (line + "\n").encode("utf-8")
+        except UnicodeEncodeError:
+            data = None  # a lone surrogate: fall through to the escaping encoder
+        if data is not None:
+            buf = getattr(real_stdout, "buffer", None)
+            if buf is not None:
+                buf.write(data)
+                buf.flush()
+            else:
+                real_stdout.write(line + "\n")
+            return
     print(json.dumps(out))
 
 

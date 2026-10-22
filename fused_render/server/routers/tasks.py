@@ -4102,8 +4102,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # (`_row_settings`).
         "model": model,
         "effort": effort,
-        # WHICH AGENT runs this task — "claude" | "copilot", never "" (D2: the
-        # backend is fixed at the first turn and every surface names it). The
+        # WHICH AGENT runs this task — "claude" | "copilot" | "codex", never ""
+        # (D2: the backend is fixed at the first turn and every surface names it). The
         # recorded choice, else the root the transcript sits under, else the
         # entries, else Claude — see `_row_backend`.
         "backend": backend,
@@ -6649,7 +6649,7 @@ def _quoted(body: str, italic: bool = False) -> list[str]:
 def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
     """The turns as Markdown, in the Bots export's vocabulary. Lossy by
     design (tool results are not inlined); `format=json` is the full record."""
-    who = {"copilot": "Copilot"}.get(str(backend or ""), "Claude")
+    who = {"copilot": "Copilot", "codex": "Codex"}.get(str(backend or ""), "Claude")
     title = " ".join(str(task.get("title") or "Task").split())
     out = [f"# {title} — transcript", ""]
     if task.get("target"):
@@ -6994,9 +6994,10 @@ class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
     effort: str = ""
-    # "claude" | "copilot" | "" (not saying). Recorded once by the spawn that
-    # starts a conversation; a later POST naming the same value is a no-op and
-    # one naming another is refused — the backend never changes (D2).
+    # "claude" | "copilot" | "codex" | "" (not saying). Recorded once by the
+    # spawn that starts a conversation; a later POST naming the same value is
+    # a no-op and one naming another is refused — the backend never changes
+    # (D2).
     backend: str = ""
     # The Approvals pill: plan | prompt | acceptEdits | auto, "" (not saying).
     permission: str = ""
@@ -7861,6 +7862,16 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     from a terminal after the app said it was erased. That dir is outside every
     projects root, so it is checked on its own: a leaf named exactly the id
     whose parent resolves to the session-state dir, nothing else.
+
+    A transcript that went from under the CODEX root takes Codex CLI's own
+    rollout file(s) with it, for the same reason (docs/CODEX_BACKEND.md D15):
+    `codex resume <sid>` replays from `<CODEX_HOME>/sessions/YYYY/MM/DD/
+    rollout-<ts>-<sid>.jsonl`, and an archived thread from the same name
+    under `archived_sessions/`. Those are FILES named by the id rather than a
+    dir named the id, found by `_codex_rollout_files` under the same
+    discipline: the id already passed the shape check above, and every hit
+    must resolve inside one of the two Codex dirs with a `rollout-*-<sid>.jsonl`
+    leaf, or it is not touched.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
@@ -7898,6 +7909,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     targets.sort(key=lambda t: t.endswith(".jsonl"))
     removed, erased, failed, refused = 0, False, 0, 0
     copilot = False  # did a transcript go from under the Copilot root
+    codex = False  # ... or from under the Codex root
     seen: set[str] = set()
     for target in targets:
         resolved = os.path.realpath(target)
@@ -7919,6 +7931,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                 if resolved.endswith(".jsonl"):
                     erased = True
                     copilot = copilot or projects[parent][1] == "copilot"
+                    codex = codex or projects[parent][1] == "codex"
             else:
                 continue
         except OSError:
@@ -7938,6 +7951,14 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
             except OSError:
                 logger.warning("erase: could not remove %s", candidate, exc_info=True)
                 failed += 1
+    if codex and not failed and not refused:
+        for rollout in _codex_rollout_files(session_id):
+            try:
+                os.remove(rollout)
+                removed += 1
+            except OSError:
+                logger.warning("erase: could not remove %s", rollout, exc_info=True)
+                failed += 1
     return removed, erased, failed, refused
 
 
@@ -7951,6 +7972,55 @@ def _copilot_session_state_dir() -> str:
     from fused_render import copilot_health
 
     return os.path.join(copilot_health.config_dir(), "session-state")
+
+
+def _codex_home() -> str:
+    """Codex CLI's own home (`CODEX_HOME`, else `~/.codex`), NOT fused's Codex
+    root (`agent_roots.codex_dir()`) — the CLI keeps this one, and erase is
+    the only reader. Resolved by `codex_health.config_dir`, the one place that
+    reads the CLI's own override, as `_copilot_session_state_dir` resolves
+    Copilot's: the host's spawn leaves `CODEX_HOME` exactly as found
+    (docs/CODEX_BACKEND.md §3), so erase looks where `codex app-server`
+    actually wrote. A function so a test can point it at a tmp dir."""
+    from fused_render import codex_health
+
+    return codex_health.config_dir()
+
+
+def _codex_rollout_files(session_id: str) -> list[str]:
+    """Every rollout file Codex keeps for `session_id` — the realpaths, ready
+    to remove. `<codex home>/sessions/**/rollout-*-<sid>.jsonl` (the live
+    store, dated buckets) and the same under `archived_sessions/` (layout
+    assumed, D15 — `**` matches a flat dir too).
+
+    The id is refused unless it is a name (`_SESSION_ID_SHAPE`, not `.`/`..`)
+    — `_erase_session_files` checked it already; checked again so this helper
+    is safe on its own — and `glob.escape`d so it is never a pattern. A hit is
+    kept only when its REALPATH is a regular file inside the realpath of the
+    dir it was globbed under and its leaf still reads `rollout-…-<sid>.jsonl`:
+    a symlink out of the tree, or one that renames the leaf, is skipped, not
+    followed to wherever it points."""
+    import glob
+
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        return []
+    home = _codex_home()
+    suffix = "-" + session_id + ".jsonl"
+    out: list[str] = []
+    for sub in ("sessions", "archived_sessions"):
+        base = os.path.join(home, sub)
+        if not os.path.isdir(base):
+            continue
+        base_real = os.path.realpath(base)
+        pattern = os.path.join(glob.escape(base), "**", "rollout-*" + glob.escape(suffix))
+        for hit in glob.glob(pattern, recursive=True):
+            resolved = os.path.realpath(hit)
+            leaf = os.path.basename(resolved)
+            if (resolved.startswith(base_real + os.sep)
+                    and leaf.startswith("rollout-") and leaf.endswith(suffix)
+                    and os.path.isfile(resolved) and resolved not in out):
+                out.append(resolved)
+    return out
 
 
 def _every_rule_behind(key: str) -> list[str]:
@@ -9422,7 +9492,7 @@ def api_task_create(body: dict = Body(...),
     """Start a task from a page: `{prompt, target?, title?, model?, effort?,
     backend?, permission_mode?, due?, queue?}` -> `{entry_id, key}`.
 
-    `backend` — "claude" or "copilot" — is which agent runs the task (D2).
+    `backend` — "claude", "copilot" or "codex" — is which agent runs the task (D2).
     Omitted, it is the Preferences default AT CREATE: `schedule.create` pins
     `registry.default_id()` on the entry, so the `pending:` row and the run
     both name the agent the user saw, not the default of the day it fires. A

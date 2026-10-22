@@ -47,7 +47,13 @@ import { botsPulseTitle, botsRunningLabel, botsWaitingLabel, useBotsPulse } from
 import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
-import CurrentAppsSection, { NewAppModal, useDeskAppsOrdered } from "@shell/CurrentAppsSection";
+import CurrentAppsSection, {
+  NewAppModal,
+  canvasRowHref,
+  useDeskAppsOrdered,
+} from "@shell/CurrentAppsSection";
+import { canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
+import { CanvasGlyph } from "@apps/canvases/glyph";
 import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
 import { useRestartFlow } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
@@ -793,13 +799,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the wizard. Null = nothing to show (never started, or finished).
   const setupMeter = useSetupMeter(config);
 
-  // THE RAIL'S DOORS INTO THE SECTIONS: the desk's apps and the pinned
-  // bookmarks, in their sections' order, capped (sidebar-rail-lib). The apps
-  // fetch runs only while the rail is on screen — expanded, the section owns it.
+  // THE RAIL'S DOORS INTO THE SECTIONS: the desk's apps, its canvases and
+  // the pinned bookmarks, in their sections' order, capped (sidebar-rail-lib).
+  // The desk fetch runs only while the rail is on screen — expanded, the
+  // sections own it. The canvases group wears the Canvases section's gate.
   const { collapsed: sidebarCollapsed } = useSidebarState();
   useBookmarksVersion();
-  const deskApps = useDeskAppsOrdered(sidebarCollapsed && !bot);
-  const extras = railExtras({ apps: deskApps, pins: pinnedBookmarks(loadBookmarks()), bot });
+  const desk = useDeskAppsOrdered(sidebarCollapsed && !bot);
+  const extras = railExtras({
+    desk,
+    pins: pinnedBookmarks(loadBookmarks()),
+    bot,
+    canvases: canvasesInNav,
+  });
   const onAppPath = appPathFromPath(pathname);
   const here = pathname + location.search;
   // The Projects section's "+ New app" row, on the rail: same composer, same
@@ -830,6 +842,47 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     icon: <RailAppIcon app={app} />,
     href: appPageUrl(app.path),
     active: onAppPath === app.path,
+    scrolls: true,
+  }));
+  // A canvas door lights on its project page OR its editor, the section's own
+  // rule (both are "the canvas open"); the href is the row's (canvasRowHref),
+  // with the row's fallback for a clone of an unknown environment.
+  const onCanvas = canvasProjectFromPath(pathname) ?? canvasNameFromPath(pathname);
+  // The Canvases section's "+ Canvas" row, on the rail: the catalog
+  // (/canvases), at the head of the canvases group, behind the section's gate
+  // — the one door in, since the primary nav has no Canvases row. Plain
+  // navigation, not a composer: create and clone live on the catalog page.
+  const railNewCanvas: SidebarRailItem[] = canvasesInNav
+    ? [
+        {
+          key: "new-canvas",
+          label: "Canvas — open or create",
+          icon: (
+            <span className="sidebar-rail-new-glyph" aria-hidden="true">
+              +
+            </span>
+          ),
+          href: "/canvases",
+          active: pathname === "/canvases",
+          dividerBefore: true,
+          scrolls: true,
+        },
+      ]
+    : [];
+  const railCanvases: SidebarRailItem[] = extras.canvases.map((app) => ({
+    key: "canvas:" + app.path,
+    label: app.name,
+    icon: (
+      <span className="sidebar-rail-canvas-glyph" aria-hidden="true">
+        <CanvasGlyph size={16} />
+      </span>
+    ),
+    href: canvasRowHref(app) ?? appPageUrl(app.path),
+    active:
+      !!app.canvas &&
+      !!onCanvas &&
+      onCanvas.env === app.canvas.env &&
+      onCanvas.name === app.canvas.name,
     scrolls: true,
   }));
   const railPins: SidebarRailItem[] = extras.pins.map((b, i) => ({
@@ -900,6 +953,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       : []),
     ...railNewApp,
     ...railApps,
+    ...railNewCanvas,
+    ...railCanvases,
     ...railPins,
     // Same gate and same place as the expanded row: the rail is the whole
     // sidebar when collapsed, and a meter that vanished on collapse would read

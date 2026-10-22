@@ -13,9 +13,11 @@ ships at today's size, the engine updates out of band from app releases, and
 a machine that never turns the preference on never pays for it.
 
 Layout:
-* this module (OS-neutral, stdlib only): the manifest, the cache layout, the
-  download/verify/unpack state machine (`status`, `ensure`, `install`), unit-
-  tested on every OS with fakes;
+* this module (OS-neutral, stdlib only — the few fused_render imports are
+  lazy and leaf modules: `shell.storage` for the home dir, `update.common`
+  for the HTTPS opener, `jobs` for the Activity row): the manifest, the
+  cache layout, the download/verify/unpack state machine (`status`,
+  `ensure`, `install`), unit-tested on every OS with fakes;
 * `mac.py` (macOS only, PyObjC): loads the unpacked framework and makes the
   views `mac_window.py` puts in its windows;
 * `native/`: the ObjC++ framework source and its build script (CMake + the
@@ -51,6 +53,25 @@ ENGINE_INFO = "engine.json"
 
 #: Wrapper framework bundle name inside the unpacked dir.
 FRAMEWORK_NAME = "FusedChromium.framework"
+
+# The Activity row (SPEC §36, D1421). `status()` is what the Preferences row
+# polls, but that row is only on screen while Preferences is — turn the
+# preference on, navigate away, and a ~150 MB download was running with
+# nothing anywhere to say so. Every tick of the install is therefore also
+# mirrored into the job registry (`fused_render.jobs`), the one surface the
+# status bar's activity chip and the Notifications panel draw from, the way
+# the app updater (`update/_manager.py`) mirrors its own DMG download. The
+# id is per engine+arch, so a retry after a failure inherits the failed
+# attempt's row instead of opening a second one; the `sys:` prefix makes it
+# server-owned (a page can read it, never write it). Reporting is
+# best-effort and never load-bearing: a registry error is logged once per
+# call at debug and the install carries on.
+JOB_ID_PREFIX = "sys:chromium-engine:"
+JOB_TITLE = "Chromium engine"
+# The phase word goes in `detail`, not `message`: the chip's type label
+# (`jobTypeLabel`, jobs.ts) reads the leading "-ing" verb off `detail`.
+JOB_PHASE_DETAIL = {"download": "Downloading", "verify": "Verifying", "unpack": "Unpacking"}
+JOB_DONE_MESSAGE = "Ready. New windows use Chromium; open windows keep their engine."
 
 # Download state names. `status()["state"]` is one of these.
 UNSUPPORTED = "unsupported"    # not macOS (or an arch the manifest lacks)
@@ -138,6 +159,45 @@ def is_ready(art: Artifact) -> bool:
             and os.path.isdir(os.path.join(d, FRAMEWORK_NAME)))
 
 
+def job_id(art: Artifact) -> str:
+    """The registry id of ``art``'s install row — see `JOB_ID_PREFIX`."""
+    return f"{JOB_ID_PREFIX}{art.engine_version}-{art.arch}"
+
+
+def _report_job(art: Artifact, **fields) -> None:
+    """Mirror one tick of ``art``'s install into the job registry. Never
+    raises, never holds `_state.lock` (the registry's own lock is taken
+    inside; `install` is the one caller that reports with `_state.lock`
+    held, so the order is always state lock → registry lock, never the
+    reverse — `jobs.py` is a leaf and calls nothing here back)."""
+    try:
+        from fused_render import jobs
+
+        jobs.upsert({"id": job_id(art), "title": JOB_TITLE, "kind": "download",
+                     "unit": "bytes", "origin": "Preferences", **fields},
+                    page="/preferences", server=True)
+    except Exception:  # noqa: BLE001 — reporting must never break the install
+        logger.debug("could not report the chromium engine job", exc_info=True)
+
+
+def _job_fields(art: Artifact, progress: float, phase: str) -> dict | None:
+    """The registry fields one `_set_progress` tick maps to, or None for the
+    tick that needs no report of its own (the final "ready" one — the
+    terminal row is `_run_install`'s, which also knows whether the prune
+    and the marker write after it went through)."""
+    if phase == "ready":
+        return None
+    size = float(art.size or 0)
+    if phase == "download":
+        # `_install_sync` scales the fetch's own fraction by 0.9 to leave the
+        # last tenth of the bar for verify + unpack; undo that for the bytes.
+        done = min(1.0, progress / 0.9) * size
+    else:
+        done = size  # the bytes are in; the verb says what is left
+    return {"state": "running", "done": done, "total": size,
+            "detail": JOB_PHASE_DETAIL.get(phase, ""), "message": ""}
+
+
 # ---- the download state machine --------------------------------------------
 
 class _State:
@@ -151,6 +211,7 @@ class _State:
         self.phase = ""         # "download" | "verify" | "unpack"
         self.error: str | None = None
         self.failed_for: str | None = None  # engine dir the error belongs to
+        self.art: Artifact | None = None    # what the running install fetches
 
 
 _state = _State()
@@ -198,6 +259,14 @@ def install(arch: str | None = None, fetch=None) -> dict:
             return status(arch)
         _state.progress, _state.phase, _state.error = 0.0, "download", None
         _state.failed_for = None
+        _state.art = art
+        # Opened here, before the thread starts, so the row exists by the
+        # time the request that turned the preference on returns and the
+        # activity chip's very next poll draws it. No ✕: the state machine
+        # has no cancel (a half-fetched artifact is simply rebuilt next time).
+        _report_job(art, state="running", done=0.0, total=float(art.size or 0),
+                    detail=JOB_PHASE_DETAIL["download"], message="",
+                    cancellable=False)
         t = threading.Thread(target=_run_install, args=(art, fetch),
                              name="chromium-engine-install", daemon=True)
         _state.thread = t
@@ -222,6 +291,13 @@ def _set_progress(value: float, phase: str | None = None) -> None:
         _state.progress = max(0.0, min(1.0, float(value)))
         if phase is not None:
             _state.phase = phase
+        art, progress, phase = _state.art, _state.progress, _state.phase
+    # One report per fetch chunk (1 MB, `_http_fetch`) — the updater's own
+    # cadence for the same kind of row. Outside the lock: see `_report_job`.
+    if art is not None:
+        fields = _job_fields(art, progress, phase)
+        if fields is not None:
+            _report_job(art, **fields)
 
 
 def _run_install(art: Artifact, fetch) -> None:
@@ -232,11 +308,21 @@ def _run_install(art: Artifact, fetch) -> None:
                     art.engine_version, art.cef_version, dest)
     except Exception as exc:  # noqa: BLE001 — reported through status()
         logger.warning("chromium engine install failed: %s", exc)
+        error = str(exc) or exc.__class__.__name__
         with _state.lock:
-            _state.error = str(exc) or exc.__class__.__name__
+            _state.error = error
             _state.failed_for = dest
         shutil.rmtree(dest, ignore_errors=True)
+        # The failure is news nothing else on screen carries once the user
+        # has left Preferences: an `error` row sticks until dismissed.
+        _report_job(art, state="error", detail="", message=error)
         return
+    # The terminal row, unlike the updater's (which forgets its row because
+    # the restart dialog already announces the finish): "ready" is the one
+    # moment the user waiting to open a Chromium window wants to hear about,
+    # and the Preferences row that also says it is only there if they stayed.
+    _report_job(art, state="done", done=float(art.size or 0),
+                total=float(art.size or 0), detail="", message=JOB_DONE_MESSAGE)
     # Outside the handler above: a prune failure must never delete the
     # engine that just installed, nor report the install as failed.
     try:

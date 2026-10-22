@@ -236,6 +236,8 @@ export interface ChatMountProps {
   annotateTarget?: () => HTMLIFrameElement | null;
   /** Replaces `window.top.location` hops; defaults to `navigateUrl`. */
   onNavigate?: (url: string) => void;
+  /** The chat's worktree was removed (ClaudeChat `onWorktreeRemoved`). */
+  onWorktreeRemoved?: () => void;
   /**
    * "While you were away" — OPT-IN, and off unless this is the chat the reader
    * opened (ClaudeChat's `recap`, .claude-design/session-recap.md).
@@ -307,6 +309,7 @@ export function ChatMount(props: ChatMountProps) {
         {...(props.focusRef ? { focusRef: props.focusRef } : {})}
         {...(props.annotateTarget ? { annotateTarget: props.annotateTarget } : {})}
         {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
+        {...(props.onWorktreeRemoved ? { onWorktreeRemoved: props.onWorktreeRemoved } : {})}
         {...(props.recap ? { recap: true } : {})}
       />
      </Suspense>

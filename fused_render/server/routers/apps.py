@@ -54,6 +54,7 @@ startup and again here at create time. The user's own later ``claude`` in the
 folder is covered by the published plugin instead (user_plugin.py, D492), which
 is machine-wide and synced only at startup.
 """
+import asyncio
 import logging
 import os
 import shutil
@@ -65,7 +66,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 
-from fused_render import app_hidden, app_listing, fused_api_version, schedule
+from fused_render import _platform, app_hidden, app_listing, fused_api_version, schedule
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
@@ -378,7 +379,7 @@ def _workspace_rel(root: str, path: str) -> str | None:
     lists (1-3), where (tag, name) is not — two depth-3 apps under different
     shelves of one tag share both. A backslash is a legal filename character
     and is kept as-is."""
-    rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    rel = _platform.relpath_within(os.path.abspath(path), os.path.abspath(root))
     if rel == "." or rel.startswith(".."):
         return None
     return rel
@@ -1198,10 +1199,38 @@ async def api_app_set_preview(
         return guard
     if not path or not os.path.isabs(path):
         return _error("path must be an absolute app folder path")
-    if MountGuard().blocks(path) or not os.path.isdir(path):
-        return _error("not a folder", status=404)
-    if app_listing.app_entry(path) is None:
-        return _error("not an app folder: no page carries the fused-app marker")
+
+    def _check_folder() -> JSONResponse | None:
+        # Stat + reading the app's pages: blocking, so off the event loop.
+        if MountGuard().blocks(path) or not os.path.isdir(path):
+            return _error("not a folder", status=404)
+        if app_listing.app_entry(path) is None:
+            return _error("not an app folder: no page carries the fused-app marker")
+        return None
+
+    def _write(raw: bytes) -> dict | JSONResponse:
+        target = os.path.join(path, app_listing.PREVIEW_IMAGE_NAME)
+        replaced = os.path.isfile(target)
+        tmp = os.path.join(
+            path, f".{app_listing.PREVIEW_IMAGE_NAME}.{os.getpid()}.tmp"
+        )
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(raw)
+            os.replace(tmp, target)
+        except OSError as exc:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return _error(
+                f"could not write preview.png: {exc.strerror or exc}", status=500
+            )
+        return {"path": target, "replaced": replaced}
+
+    refused = await asyncio.to_thread(_check_folder)
+    if refused is not None:
+        return refused
     if preview is None:
         return _error("preview.png is required")
     raw = await preview.read(_PREVIEW_MAX_BYTES + 1)
@@ -1209,20 +1238,7 @@ async def api_app_set_preview(
         return _error("preview must be a PNG")
     if len(raw) > _PREVIEW_MAX_BYTES:
         return _error("preview is larger than 8 MiB")
-    target = os.path.join(path, app_listing.PREVIEW_IMAGE_NAME)
-    replaced = os.path.isfile(target)
-    tmp = os.path.join(path, f".{app_listing.PREVIEW_IMAGE_NAME}.{os.getpid()}.tmp")
-    try:
-        with open(tmp, "wb") as fh:
-            fh.write(raw)
-        os.replace(tmp, target)
-    except OSError as exc:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        return _error(f"could not write preview.png: {exc.strerror or exc}", status=500)
-    return {"path": target, "replaced": replaced}
+    return await asyncio.to_thread(_write, raw)
 
 
 @router.get("/api/apps/recents")

@@ -348,6 +348,29 @@ FAKE_TRANSCRIBE_WORKER = textwrap.dedent('''
 ''')
 
 
+# Workers start in their own session (SPAWN_KWARGS), so a SIGKILLed pytest run
+# skips every teardown and its fakes would orphan to ppid 1 forever. Test-only:
+# real workers must outlive a server restart (adoption), so nothing under
+# fused_render/ changes.
+_FAKE_IMPORTS = "    import argparse, http.server, json, os, socketserver, sys, threading, time"
+_PARENT_GUARD = textwrap.indent(textwrap.dedent("""
+    # parent-death guard
+    _ppid = os.getppid()
+    def _watch_parent():
+        while True:
+            time.sleep(0.5)
+            if os.getppid() != _ppid:
+                os._exit(0)
+    threading.Thread(target=_watch_parent, daemon=True).start()
+"""), "    ")
+_FAKE_SCRIPTS = ("FAKE_WORKER", "FAKE_IMAGE_WORKER", "FAKE_VIDEO_WORKER", "FAKE_TRANSCRIBE_WORKER")
+for _name in _FAKE_SCRIPTS:
+    _src = globals()[_name]
+    _line = textwrap.dedent(_FAKE_IMPORTS)
+    assert _src.count(_line) == 1, _name
+    globals()[_name] = _src.replace(_line, _line + textwrap.dedent(_PARENT_GUARD), 1)
+
+
 @pytest.fixture()
 def fake_runner(tmp_path, monkeypatch):
     """A registry with one runner whose worker is the fake, and whose venv is
@@ -13564,3 +13587,46 @@ def test_spawn_of_a_non_venv_python_gets_no_pythonpath(monkeypatch, tmp_path):
     _make_venv(tmp_path / "v", with_cfg=False)
     env = _captured_spawn_env(monkeypatch, str(tmp_path / "v" / "bin" / "python"))
     assert "PYTHONPATH" not in env
+
+
+def test_every_fake_worker_script_has_the_parent_guard():
+    for name in _FAKE_SCRIPTS:
+        assert "# parent-death guard" in globals()[name], name
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(pid, 0) is CTRL_C_EVENT on Windows")
+def test_a_fake_worker_exits_when_its_parent_dies(tmp_path):
+    script = tmp_path / "worker.py"
+    script.write_text(FAKE_WORKER, encoding="utf-8")
+    status = tmp_path / "status.json"
+    launcher = (
+        "import subprocess, sys\n"
+        "p = subprocess.Popen([sys.executable, sys.argv[1], '--status', sys.argv[2]],"
+        " start_new_session=True, close_fds=False,"
+        " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "print(p.pid, flush=True)\n"
+        # Outlive the child's startup so it records THIS process as its parent
+        # (a ppid read after reparenting would be 1 and the guard never fire).
+        "import time; time.sleep(1.5)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", launcher, str(script), str(status)],
+        capture_output=True, text=True, timeout=30, close_fds=False,
+    )
+    pid = int(out.stdout.strip())
+    try:
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                pass
+            time.sleep(0.1)
+        raise AssertionError(f"orphaned fake worker {pid} survived its parent")
+    finally:
+        try:
+            os.kill(pid, 9)
+        except (ProcessLookupError, PermissionError):
+            pass

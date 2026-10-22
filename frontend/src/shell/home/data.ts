@@ -2,6 +2,7 @@
 // effects are Home's former strip effects, moved here unchanged apart from
 // `rows`: a 2x2 widget draws two rows, so it asks for twice the cards a row fits.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import {
   getAppsPage,
   getHomeApps,
@@ -182,10 +183,13 @@ function useAsyncResource<T>(
   useEffect(() => {
     const bump = () => setNonce((n) => n + 1);
     if (event) window.addEventListener(event, bump);
-    const t = setInterval(bump, pollMs);
+    // Hidden windows skip the tick and catch up once on return.
+    const gated = pauseWhileHidden(bump);
+    const t = setInterval(gated, pollMs);
     return () => {
       if (event) window.removeEventListener(event, bump);
       clearInterval(t);
+      gated.cancel();
     };
   }, [pollMs, event]);
   useEffect(() => {

@@ -1609,6 +1609,10 @@ def _lex_order_and_score(nm_exact: str, preds: dict,
     multi-literal "naturally spelled" tie-break — see this function's own
     section on it below — left at its default by every other caller.
 
+    Constant terms (a literal `true`/`false` predicate, e.g. the default
+    `nm_exact_natural`) are omitted from `order_by` because newer duckdb
+    rejects a literal in ORDER BY; they never changed the order.
+
     `order_by` is the position-free, basename-first lexicographic vector
     search-architecture-review.md §6 recommends: exact name, then (among
     exact names) a "naturally spelled" tie-break, then a candidate-side
@@ -1711,12 +1715,14 @@ def _lex_order_and_score(nm_exact: str, preds: dict,
              f"+ 250 * CAST({preds['suffix']} AS INTEGER) "
              f"+ 100 * CAST({preds['contains']} AS INTEGER) "
              f"- LEAST(depth, {_SCORE_DEPTH_CAP})")
-    order_by = (f"({nm_exact}) DESC, ({nm_exact_natural}) DESC, "
-                f"({preds['edge']}) DESC, "
-                f"({preds['prefix']}) DESC, ({preds['suffix']}) DESC, "
-                f"({preds['contains']}) DESC, "
-                f"({preds['boundary']}) DESC, "
-                f"depth ASC, length(nm) ASC, lower(rel) ASC, rel ASC")
+    terms = [nm_exact, nm_exact_natural, preds['edge'], preds['prefix'],
+             preds['suffix'], preds['contains'], preds['boundary']]
+    # A constant term never changes the order, and newer duckdb rejects a
+    # literal in ORDER BY (binder error), so it is omitted.
+    parts = [f"({t}) DESC" for t in terms
+             if str(t).strip().lower() not in ("true", "false")]
+    parts += ["depth ASC", "length(nm) ASC", "lower(rel) ASC", "rel ASC"]
+    order_by = ", ".join(parts)
     return order_by, score, tier
 
 
