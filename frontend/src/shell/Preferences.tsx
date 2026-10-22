@@ -44,7 +44,7 @@ import {
 } from "lucide-react";
 import { useClaudeConfigStatus } from "@apps/claude_config/available";
 import { getPrefs, type Prefs } from "@platform/lib/api";
-import { IS_QUERY_EMBED, navigateUrl } from "@platform/lib/router";
+import { IS_QUERY_EMBED, replaceSearch } from "@platform/lib/router";
 import { isBot } from "@platform/lib/flavor";
 import { isMac } from "@platform/lib/platform";
 import { cn } from "@platform/lib/utils";
@@ -154,6 +154,12 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const params = new URLSearchParams(location.search);
   const [query, setQueryState] = useState(() => params.get("q") ?? "");
   const [flash, setFlash] = useState<string | null>(() => params.get("s"));
+  // The selection lives in state, seeded from the URL once: a group switch is
+  // an in-place URL sync (`replaceSearch`), which does not bump the nav epoch,
+  // so the page keeps its mount, its nav and its fetched data.
+  const [tab, setTab] = useState<string | null>(() => params.get("tab"));
+  const [target, setTarget] = useState<string | null>(() => params.get("s"));
+  const pageRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const bot = isBot();
 
@@ -202,25 +208,30 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     history.replaceState(history.state, "", urlWith((p) => (q ? p.set("q", q) : p.delete("q"))));
   };
 
-  // A navigation, so App.tsx remounts this page (it is keyed on the nav
-  // epoch): what the next mount should highlight travels in `?s=`, not in
-  // state that is about to be thrown away.
+  // Written in place — `?tab=` and `?s=` follow the selection so a reload or a
+  // shared link lands on it, and the row a jump names is lit through state.
   const showGroup = (group: GroupId, highlight: string | null = null) => {
-    navigateUrl(
+    const next = group === "general" ? null : group;
+    setTab(next);
+    setTarget(highlight);
+    setFlash(highlight);
+    setQueryState("");
+    replaceSearch(
       urlWith((p) => {
         p.delete("q");
         if (highlight) p.set("s", highlight);
         else p.delete("s");
-        if (group === "general") p.delete("tab");
-        else p.set("tab", group);
+        if (next) p.set("tab", next);
+        else p.delete("tab");
       }),
-      { replace: true },
     );
+    // A new group starts at its top; a jump scrolls to its row instead.
+    if (!highlight) pageRef.current?.scrollTo?.({ top: 0 });
   };
 
   // `?s=` names a setting: its group wins over `?tab=`.
-  const deep = byId(params.get("s") ?? "");
-  const current: GroupId = deep ? deep.group : resolveGroup(params.get("tab"), groups);
+  const deep = byId(target ?? "");
+  const current: GroupId = deep ? deep.group : resolveGroup(tab, groups);
 
   const hits = useMemo(() => searchSettings(entries, tokens), [entries, tokens]);
   const view: SettingsView = {
@@ -249,7 +260,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     : groupOf(current).blurb;
 
   return (
-    <div className="settings-page">
+    <div className="settings-page" ref={pageRef}>
       <div className="settings-header">
         {/* Framed inside the Bots page's panel the panel's own bar carries
             the title; a second heading here read as a repeat. */}
