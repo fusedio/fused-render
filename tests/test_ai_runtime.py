@@ -13674,6 +13674,24 @@ def test_speech_takes_kokoros_voices_and_refuses_a_style_line(client, fake_speec
     _wait_job(default["jobId"])
 
 
+def test_a_snapshot_with_a_config_is_not_listed_for_the_kokoro_layout(hub, monkeypatch):
+    """`speech_traits` runs for every speech row on every catalog request; a
+    Qwen3-style snapshot has a `config.json` and must not pay a directory walk."""
+    config = {"model_type": "qwen3_tts", "tts_model_type": "custom_voice",
+              "talker_config": {"spk_id": {"ryan": 1}, "codec_language_id": {"english": 1}}}
+    _cached_repo(hub, "org/qwen-like", files=("model.safetensors",),
+                 dirs=("speech_tokenizer",), config=config)
+    real = os.listdir
+
+    def guarded(path="."):
+        if "qwen-like" in str(path):
+            raise AssertionError(f"listed {path}")
+        return real(path)
+
+    monkeypatch.setattr(os, "listdir", guarded)
+    assert ai_models.speech_traits("org/qwen-like")["voices"] == ["ryan"]
+
+
 def test_the_catalog_says_a_kokoro_entry_has_no_style_line(client, fake_speech_runner, hub):
     _cached_repo(hub, "org/fake-preset", files=KOKORO_FILES, dirs=KOKORO_DIRS)
     rows = client.get("/api/ai/catalog").json()["capabilities"]

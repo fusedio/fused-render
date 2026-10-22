@@ -1556,16 +1556,20 @@ def speech_traits(repo_id: str) -> dict | None:
     snapshot_dir = _embed_snapshot_dir(repo_id)
     if snapshot_dir is None:
         return None
+    config = _read_json(os.path.join(snapshot_dir, "config.json"))
+    if config:
+        return formats.speech_traits(config)
+    # Kokoro's sherpa export has no config.json — the layout is the evidence,
+    # so the directory is listed only when there is no config to read.
     try:
         entries = os.listdir(snapshot_dir)
     except OSError:
         entries = []
     dirnames = {name for name in entries if os.path.isdir(os.path.join(snapshot_dir, name))}
-    # Kokoro's sherpa export has no config.json — the layout is the evidence.
     kokoro = formats.kokoro_traits_from_names(set(entries), dirnames)
     if kokoro is not None:
         return kokoro
-    return formats.speech_traits(_read_json(os.path.join(snapshot_dir, "config.json")) or {})
+    return formats.speech_traits({})
 
 
 def is_sherpa_transducer(repo_id: str) -> bool | None:
