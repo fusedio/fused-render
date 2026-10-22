@@ -247,15 +247,21 @@ CLI_CACHE_S = 30.0
 _cli_cache: dict[tuple, tuple[float, str]] = {}
 
 
-def _run_cli(cmd: list[str]) -> str:
+def _run_cli(cmd: list[str], fresh: bool = False) -> str:
     """The token a vendor CLI prints (e.g. `gh auth token`). Raises NotConnected.
     Cached for CLI_CACHE_S: one MCP call is two or three requests, and a
-    subprocess per request is what made the first GitHub call slow."""
+    subprocess per request is what made the first GitHub call slow. `fresh`
+    (a 401's retry, `token(force_refresh=True)`) re-runs the command, so a
+    token the CLI rotated is picked up on the very next call."""
     k = tuple(cmd)
-    hit = _cli_cache.get(k)
+    hit = None if fresh else _cli_cache.get(k)
     if hit and time.monotonic() - hit[0] < CLI_CACHE_S:
         return hit[1]
-    tok = _run_cli_uncached(cmd)
+    try:
+        tok = _run_cli_uncached(cmd)
+    except NotConnected:
+        _cli_cache.pop(k, None)
+        raise
     _cli_cache[k] = (time.monotonic(), tok)
     return tok
 
@@ -644,7 +650,7 @@ def token(key: str, force_refresh: bool = False) -> str:
         if entry is None:
             raise NotConnected(f"{key} no longer offers a command-line sign-in")
         try:
-            return _run_cli(entry["command"])
+            return _run_cli(entry["command"], fresh=force_refresh)
         except NotConnected:
             mark_reconnect(key)
             raise

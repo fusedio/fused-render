@@ -280,7 +280,7 @@ def providers() -> list[Provider]:
     changes: the bots' roster calls this several times per step, which is
     what the cache is for."""
     global _cache
-    env = os.environ.get("FUSED_RENDER_CONNECT_PROVIDERS", "")
+    env = _env_signature() + "\n" + _disk_signature()
     now = time.monotonic()
     with _cache_lock:
         if _cache is not None and _cache[1] == env and now - _cache[0] < _CACHE_TTL_S:
@@ -289,6 +289,34 @@ def providers() -> list[Provider]:
     with _cache_lock:
         _cache = (now, env, found)
     return list(found)
+
+
+def _env_signature() -> str:
+    """Every FUSED_RENDER_* variable, since packs expand `${VAR}` placeholders
+    and the client-id overrides at load: a change to any of them must show
+    on the next call, not after the TTL (the test fake vendor moves port
+    between tests)."""
+    return "\n".join(f"{k}={v}" for k, v in sorted(os.environ.items()) if k.startswith("FUSED_RENDER_"))
+
+
+def _disk_signature() -> str:
+    """The pack files' mtimes: a handful of stats per call, so a pack
+    rewritten in place (tests do; a user editing one does) is re-read at once."""
+    parts = []
+    for d in _pack_dirs():
+        for name in ("provider.json", "tools.py"):
+            try:
+                parts.append(f"{d}/{name}={os.stat(os.path.join(d, name)).st_mtime_ns}")
+            except OSError:
+                parts.append(f"{d}/{name}=-")
+    return "\n".join(parts)
+
+
+def invalidate() -> None:
+    """Drop the cache (tests that rewrite a pack on disk within the TTL)."""
+    global _cache
+    with _cache_lock:
+        _cache = None
 
 
 def _read_packs() -> list[Provider]:

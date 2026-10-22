@@ -136,10 +136,12 @@ def test_cli_login_rereads_token_each_time(vendor, tmp_path):
     assert store.get("demo") == {"kind": "cli", "account": "octo"}   # no token persisted
     assert manager.token("demo") == "good"
     (tmp_path / "cli-token").write_text("rotated\n")
+    assert manager.token("demo") == "good"                        # cached for CLI_CACHE_S
+    assert manager.token("demo", force_refresh=True) == "rotated"  # a 401's retry re-runs the CLI
     assert manager.token("demo") == "rotated"
     (tmp_path / "cli-token").unlink()
     with pytest.raises(manager.NotConnected):
-        manager.token("demo")
+        manager.token("demo", force_refresh=True)
     assert manager.status("demo")["state"] == "reconnect"
     manager.logout("demo")
     assert manager.status("demo")["state"] == "disconnected"
