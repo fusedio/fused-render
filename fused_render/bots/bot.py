@@ -3416,12 +3416,10 @@ class Bot:
 
     def run_tool(self, app, name, args):
         """`tool`: run one app MCP tool (apptools.py), or a connected service's tool
-        (fused_render.connect, which needs no bundled module). The first call into
+        (fused_render.connect). The first call into
         a local app in a task also drops that app's card into the chat."""
         recs = apptools.registry()
         rec = apptools.find(recs, app, name)
-        if not apptools.available() and (rec is None or not apptools.is_connect(rec)):
-            return f"tool {app} › {name}", "error: app tools are not available in this copy of the app (bundled fused module missing)"
         if rec is None:
             have = ", ".join(sorted({r.app for r in recs})) or "none"
             return f"tool {app or '?'} › {name or '?'}", f"error: no such tool. Apps with tools: {have}. Use exact names from APP TOOLS."

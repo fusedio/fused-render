@@ -77,11 +77,6 @@ ROOTS = [apps_root()]  # bot.py's builds root is ROOTS[0]
 REGISTRY_FILES = [os.path.join(FUSED_HOME, "registered_apps.json")]
 SKIP_DIR = None  # OpenBot skipped its own folder; this app has none under ROOTS
 TTL_S = 10
-def available():
-    """App tools run on the vendored runner, so they are always available."""
-    return True
-
-
 @dataclass
 class ToolRec:
     app: str
@@ -164,8 +159,6 @@ def _load_dir(d):
 
 def discover(roots, registry_files, skip_dir=None):
     """All tool records from every app with a valid manifest, deduplicated by real path."""
-    if not available():
-        return []
     seen, out = set(), []
     skip = os.path.realpath(skip_dir) if skip_dir else None
     blocked = _blocked_dirs()
@@ -228,8 +221,6 @@ def registry(force=False):
 
 def _local_registry(force=False):
     global _cache, _cache_at, _cache_sig
-    if not available():
-        return []
     with _lock:
         now = time.time()
         if not force and now - _cache_at < TTL_S:
