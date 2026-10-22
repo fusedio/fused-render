@@ -1201,6 +1201,28 @@ def test_login_for_custom_runs_with_fused_env_unset(harness, tmp_path, monkeypat
     assert [e for e, argv in harness.env_calls() if "login" in argv] == [None]
 
 
+def test_a_login_for_another_store_is_neither_reused_nor_cancelled(harness, tmp_path, monkeypatch):
+    """One browser sign-in at a time, matched on the store it writes: with a
+    hosted sign-in waiting, a custom one is refused (not silently reused),
+    custom's status does not report it in flight, and a custom sign-out
+    leaves it running."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    _write_token(custom, "abc-tok")
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    canvases_mod._active_login = canvases_mod._ActiveLogin(
+        proc=proc, started_at=time.time(), store=str(hosted))
+    res = harness.client.post("/api/canvases/login?env=custom", headers=GUARD)
+    assert res.status_code == 409 and res.json()["code"] == "busy"
+    assert harness.client.get("/api/canvases/status?env=custom").json()["login_in_flight"] is False
+    assert harness.client.get("/api/canvases/status?env=prod").json()["login_in_flight"] is True
+    monkeypatch.setenv("FUSED_STUB_LOGOUT_FILE", str(custom))
+    assert harness.client.post("/api/canvases/logout?env=custom", headers=GUARD).status_code == 200
+    assert proc.poll() is None, "a custom sign-out cancelled the hosted sign-in"
+    # Same store: reused, not refused.
+    res = harness.client.post("/api/canvases/login?env=prod", headers=GUARD)
+    assert res.status_code == 200 and canvases_mod._active_login.proc is proc
+
+
 def test_logout_for_custom_stops_only_its_stores_watchers(harness, tmp_path, monkeypatch):
     """custom's login is its own store: signing out of it leaves the hosted
     envs' watchers (and their store) alone."""

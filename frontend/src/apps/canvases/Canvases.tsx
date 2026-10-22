@@ -190,6 +190,9 @@ export default function Canvases() {
       // The PICKED env's login (custom has its own `[auth]`, D1412); with no
       // pick yet, the default env's — the same env `effectiveEnv` lands on.
       const s = await getCanvasesStatus(pickedRef.current);
+      // Another env picked while this read was out: its answer describes
+      // the old env's login, and the new pick's own refresh is on its way.
+      if (gen !== envGenRef.current) return;
       setStatus(s);
       if (s.logged_in) {
         setLoggingIn(false);
@@ -208,6 +211,7 @@ export default function Canvases() {
       }
       setError(null);
     } catch (e) {
+      if (gen !== envGenRef.current) return;
       const err = e as Error & { status?: number };
       // 401: the credentials file exists but is unrefreshable (the CLI says
       // re-authenticate) — show the sign-in flow, not a dead error page.
@@ -216,7 +220,6 @@ export default function Canvases() {
         setError(`Your Fused sign-in expired — sign in again. (${err.message})`);
         return;
       }
-      if (gen !== envGenRef.current) return;
       setError(err.message);
     }
   }, [fillPreviews]);

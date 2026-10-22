@@ -580,10 +580,20 @@ def _run_cli(args: list[str], timeout: float,
 class _ActiveLogin:
     proc: subprocess.Popen
     started_at: float
+    # The credentials store this login writes (`credentials_file(env)`): prod
+    # and unstable share one, custom's may be its own (D1412). Reuse, status
+    # and logout match on it, never on "a login is running".
+    store: str
 
 
 _LOGIN_LOCK = threading.Lock()
 _active_login: _ActiveLogin | None = None
+
+
+def _login_for(store: str) -> _ActiveLogin | None:
+    """The live login child if it writes `store`, else None."""
+    login = _reap_login()
+    return login if login is not None and login.store == store else None
 
 
 def _reap_login() -> _ActiveLogin | None:
@@ -647,7 +657,9 @@ def api_canvases_status(env: str = ""):
         # never flips logged_in, so the client watches this stamp change to
         # know the browser flow completed.
         "creds_stamp": stamp,
-        "login_in_flight": _reap_login() is not None,
+        # Only a login writing THIS store: another env's sign-in in the
+        # browser is not one this answer's `logged_in` will flip on.
+        "login_in_flight": _login_for(credentials_file(auth_env)) is not None,
         # The DEFAULT environment (the catalog's initial pick), and whether
         # FUSED_RENDER_WORKBENCH_ENV pins it — the catalog then disables its
         # environment picker, since `_require_env` refuses the other env.
@@ -791,8 +803,16 @@ def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)
     if cli is None:
         return _no_cli_error()
     global _active_login
+    store = credentials_file(env)
     with _LOGIN_LOCK:
         login = _active_login
+        if login is not None and login.proc.poll() is None and login.store != store:
+            # One browser sign-in at a time, and this one writes another
+            # store: reusing it would leave the caller waiting on a stamp that
+            # never changes; killing it would drop a sign-in someone is
+            # mid-way through.
+            return _busy("a Fused sign-in for another environment is already waiting "
+                         "in the browser — finish or cancel it first")
         if login is None or login.proc.poll() is not None:
             child = _cli_env(cli, env)
             child["PYTHONUNBUFFERED"] = "1"
@@ -821,7 +841,7 @@ def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)
                 )
             except OSError as e:
                 return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
-            login = _ActiveLogin(proc=proc, started_at=time.time())
+            login = _ActiveLogin(proc=proc, started_at=time.time(), store=store)
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
     return {"ok": True, "login_in_flight": True}
@@ -1460,9 +1480,11 @@ def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None
     env, bad = _optional_env(env)
     if bad is not None:
         return bad
+    store = credentials_file(env)
     # A completing browser login could rewrite the credentials file right
-    # after we clear it — cancel it first.
-    login = _reap_login()
+    # after we clear it — cancel it first. Only one writing THIS store: a
+    # custom sign-out must not drop a hosted sign-in in progress.
+    login = _login_for(store)
     if login is not None:
         login.proc.terminate()
     # Pause every watcher on the store being cleared — prod's and unstable's
@@ -1471,7 +1493,6 @@ def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None
     # don't stop them until logout actually succeeds — a failed logout leaves
     # the user signed in, and stopping first would leave sync dead until a
     # canvas is reopened.
-    store = credentials_file(env)
 
     def on_store() -> list:
         return [(key, m) for key, m in _syncs.items() if credentials_file(m.env) == store]
