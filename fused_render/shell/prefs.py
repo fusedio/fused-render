@@ -34,9 +34,6 @@ and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **github_link_enabled** (whether the Share sheet offers a GitHub install link
 for an app whose folder is its own pushed GitHub repo — opt-in, default off;
 see ``github_link_enabled``),
-**task_auto_archive_missing_enabled** (whether a task whose folder
-is gone from the disk is archived by the listing itself — opt-in, default
-off; see ``task_auto_archive_missing_enabled``),
 **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
 **chromium_windows_enabled** (whether the macOS app's NEW windows are hosted
@@ -409,32 +406,6 @@ def task_summary_titles_enabled() -> bool:
     recap or Claude's reply (default off; only a stored `true` is on).
     Rows then carry `title_mode: "summary"`; the key is absent when off."""
     return read_prefs().get("task_summary_titles_enabled") is True
-
-
-def task_auto_archive_missing_enabled() -> bool:
-    """Whether a task whose folder no longer exists is archived automatically
-    (default off — opt-in).
-
-    The Tasks listing already stamps every row with `folder_missing` — the
-    project (or target) folder answered "gone" to one `os.path.exists`. With
-    this on, the listing build files such a task away the same way the Archive
-    button does (`routers/tasks.py archive_task`: pending runs into the gone
-    folder are called off, the session is filed), instead of leaving a row
-    whose only door reads "Folder no longer exists". A row that is running
-    is left to settle first; a draft is never a candidate.
-
-    WHILE THE FOLDER IS GONE THE FILING STICKS: the pass runs on every full
-    build, so Unarchive (or activity reviving the row) lasts one poll and the
-    task is filed again. The ways back are the folder existing again, or
-    this switch going off — then the ordinary doors (Unarchive, activity)
-    work as they always have.
-
-    Opt-in because "gone" is `exists`, not "deleted": an unmounted external
-    or network volume reads the same way, and with this on every task under
-    it is filed until the volume is back — a surprise nobody should meet by
-    default. Only a stored `true` is on, like `task_summary_titles_enabled`.
-    """
-    return read_prefs().get("task_auto_archive_missing_enabled") is True
 # ---- moved off localStorage (D1386) -----------------------------------------
 #
 # The four below were browser localStorage keys until D1386. localStorage is
@@ -998,9 +969,6 @@ def _prefs_response() -> dict:
         "task_recap": {"enabled": task_recap_titles_enabled()},
         # Summary-only Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
-        # Tasks whose folder is gone are archived by the listing
-        # (`task_auto_archive_missing_enabled`, opt-in, default off).
-        "task_auto_archive_missing": {"enabled": task_auto_archive_missing_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default on).
         "claude_strict_mcp": {"enabled": claude_strict_mcp_enabled()},
         "claude_default_permission": claude_default_permission(),
@@ -1344,13 +1312,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["task_summary_titles_enabled"] = value
             changed = True
-        if "task_auto_archive_missing_enabled" in body:
-            value = body.get("task_auto_archive_missing_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'task_auto_archive_missing_enabled' must be a boolean"},
-                                    status_code=400)
-            prefs["task_auto_archive_missing_enabled"] = value
-            changed = True
         for key in ("bots_autostage", "bots_sounds", "bots_clear_enabled"):
             if key in body:
                 value = body.get(key)
@@ -1613,7 +1574,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
                           "'task_summary_titles_enabled', "
-                          "'task_auto_archive_missing_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
                           "'tasks_view_tabs', "

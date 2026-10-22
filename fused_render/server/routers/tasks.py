@@ -5528,6 +5528,15 @@ def _task_rows(only: frozenset | set | None = None,
     return _narrowed(only, at_least)[0]
 
 
+#: Whether the full listing build files away a task whose folder is gone
+#: (see the pass in `_build_task_rows`). Not a preference — the owner's call
+#: (2026-10-22) is that this is simply what the listing does — but a module
+#: seam, because nearly every transcript the test suite writes names a cwd
+#: that does not exist (`/p`), and `tests/conftest.py` turns it off for the
+#: suite; the one test of the pass turns it back on.
+ARCHIVE_MISSING_FOLDERS = True
+
+
 def _folder_missing(project: object, target: object) -> bool:
     """Is the folder this task's conversation lives in gone from the disk?
 
@@ -5844,25 +5853,35 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # hashes replaces stringifying both sides of every row in every window.
     # Stamped here, after the sort and the drafts, so a draft row and a
     # narrowed build carry them too. The hash is of the row WITHOUT itself.
-    # A TASK WHOSE FOLDER IS GONE IS FILED AWAY — with the preference on
-    # (`task_auto_archive_missing_enabled`, default off). Decided off the same
-    # `folder_missing` stamp the row is about to carry, by the same gesture the
-    # Archive button makes (`archive_task`: pending runs into the gone folder
-    # called off, the session filed), on the FULL listing only — a narrowed
-    # changes answer stats a few rows and should not be the one filing things.
-    # A row that is in flight (running, parked on a card, standing in the
-    # queue) is left to settle and is caught on a later poll: `archive_task`
-    # would stop its run from inside the builder, and a parked stop can wait.
-    # A draft has no session to file. Best-effort like `revived` above: one
-    # filing that fails costs the row coming back next poll, never the page.
-    auto_file = only is None and shell_prefs.task_auto_archive_missing_enabled()
+    # A TASK WHOSE FOLDER IS GONE IS FILED AWAY (owner, 2026-10-22: the
+    # default, not a switch). Decided off the same `folder_missing` stamp the
+    # row is about to carry, by the same gesture the Archive button makes
+    # (`archive_task`: pending runs into the gone folder called off, the
+    # session filed), on the FULL listing only — a narrowed changes answer
+    # stats a few rows and should not be the one filing things. A row that is
+    # in flight (running, parked on a card, standing in the queue) is left to
+    # settle and is caught on a later poll: `archive_task` would stop its run
+    # from inside the builder, and a parked stop can wait. A draft has no
+    # session to file. The filing sticks while the folder is gone — Unarchive
+    # or a reviving message lasts one poll — and "gone" is `exists`, so a
+    # folder on an unmounted volume is filed until the volume is back.
+    # ONLY A TASK WITH A SESSION (CodeRabbit, PR #1863): a pending-only task
+    # — a scheduled message whose run has not happened yet — has nothing to
+    # file, so `archive_task` would cancel its entry and file nothing, and the
+    # next build would drop the task altogether (`_is_task`): work called off
+    # with no archived row to take it back from. It keeps its row, wearing the
+    # "Folder no longer exists" door, for the person to decide.
+    # Best-effort like `revived` above: one filing that fails costs the row
+    # coming back next poll, never the page.
+    auto_file = only is None and ARCHIVE_MISSING_FOLDERS
     auto_filed: set[str] = set()
     for row in rows:
         row["folder_missing"] = _folder_missing(row.get("project"), row.get("target"))
         if (auto_file and row["folder_missing"] and row.get("kind") != "draft"
                 and row.get("status") not in ("in_progress", "needs_attention",
                                               "queued", _FILED)
-                and row.get("key") in listed):
+                and row.get("key") in listed
+                and listed[row["key"]].get("session_id")):
             try:
                 _, filed, _ = archive_task(listed[row["key"]], parked)
             except (OSError, ValueError, KeyError, TypeError):

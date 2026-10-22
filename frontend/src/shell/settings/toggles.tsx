@@ -18,7 +18,6 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putTaskRecapTitlesEnabled,
   putTaskSummaryTitlesEnabled,
-  putTaskAutoArchiveMissingEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
 } from "@platform/lib/api";
@@ -82,19 +81,6 @@ export function TaskSummaryTitlesControl({ prefs, onChange }: PrefControlProps) 
       id="task-summary-titles"
       checked={prefs.task_summary_titles?.enabled === true}
       put={putTaskSummaryTitlesEnabled}
-      onChange={onChange}
-    />
-  );
-}
-
-// Tasks whose folder no longer exists are archived by the server's listing
-// build; the row reads archived on the next poll, so no publish.
-export function TaskAutoArchiveMissingControl({ prefs, onChange }: PrefControlProps) {
-  return (
-    <PrefToggleRow
-      id="task-auto-archive-missing"
-      checked={prefs.task_auto_archive_missing?.enabled === true}
-      put={putTaskAutoArchiveMissingEnabled}
       onChange={onChange}
     />
   );

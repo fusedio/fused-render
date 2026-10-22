@@ -5513,27 +5513,16 @@ def test_a_task_without_a_session_cannot_be_renamed(client, tmp_path):
     assert r.json() == {"error": "only a started task can be renamed"}
 
 
-# ---------------------------- auto-archive on a gone folder (task_auto_archive_missing_enabled)
+# ---------------------------- auto-archive on a gone folder
 
-def test_a_task_whose_folder_is_gone_is_left_alone_by_default(client, projects_dir,
-                                                               state_dir, tmp_path):
-    folder = tmp_path / "gone"
-    folder.mkdir()
-    _write_transcript(projects_dir, "sess-gone", str(folder), [_user("hi", T9)])
-    folder.rmdir()
-    row = _by_key(client)["sess-gone"]
-    assert row["folder_missing"] is True
-    assert row["status"] == "done"
-    assert not (state_dir / "triage.json").exists() or "sess-gone" not in json.loads(
-        (state_dir / "triage.json").read_text())
-
-
-def test_with_the_preference_on_a_task_whose_folder_is_gone_is_archived(
-        client, projects_dir, state_dir, tmp_path, monkeypatch):
+def test_a_task_whose_folder_is_gone_is_archived(client, projects_dir, state_dir,
+                                                 tmp_path, monkeypatch):
     """The listing files the task the way the Archive button would: the row
     reads archived in the SAME build, its pending run is called off, and a
-    task whose folder is still there is untouched."""
-    monkeypatch.setattr(prefs_mod, "task_auto_archive_missing_enabled", lambda: True)
+    task whose folder is still there is untouched. (The suite's conftest turns
+    the pass off because its transcripts name `/p`; this is the one test that
+    wants it on.)"""
+    monkeypatch.setattr(tasks_mod, "ARCHIVE_MISSING_FOLDERS", True)
     gone = tmp_path / "gone"
     gone.mkdir()
     kept = tmp_path / "kept"
@@ -5555,3 +5544,20 @@ def test_with_the_preference_on_a_task_whose_folder_is_gone_is_archived(
     assert states["e-gone"] == schedule.CANCELLED
     # And it stays archived on the next build rather than being re-filed.
     assert _by_key(client)["sess-gone"]["status"] == "archived"
+
+
+def test_a_pending_only_task_in_a_gone_folder_is_not_cancelled(client, tmp_path,
+                                                                monkeypatch):
+    """No session, nothing to file: `archive_task` would only cancel the entry
+    and the next build would drop the task with no archived row to take it
+    back from (CodeRabbit, PR #1863). It keeps its row and its pending run."""
+    monkeypatch.setattr(tasks_mod, "ARCHIVE_MISSING_FOLDERS", True)
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    _seed_schedule([_entry("e-only", "later", T12, target=str(gone / "page.html"))])
+    gone.rmdir()
+    row = _by_key(client)["pending:e-only"]
+    assert row["folder_missing"] is True
+    assert row["status"] != "archived"
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["e-only"] == schedule.PENDING
