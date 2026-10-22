@@ -21,7 +21,7 @@ import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   CanvasOwnedError,
-  ENV_LABELS,
+  ENV_NAMES,
   WORKBENCH_ENVS,
   canvasWorkspacePath,
   catalogPath,
@@ -507,7 +507,7 @@ export default function Canvases() {
                       the settings editor instead (customUnconfigured). */}
                   {WORKBENCH_ENVS.map((e) => (
                     <option key={e} value={e}>
-                      {ENV_LABELS[e]}
+                      {ENV_NAMES[e].label}
                     </option>
                   ))}
                 </select>

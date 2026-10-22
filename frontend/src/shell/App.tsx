@@ -33,7 +33,7 @@ import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
 // sidebar's sign-in probe imports it); the barrel would pull the sub-app in.
-import { ENV_LABELS, canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
+import { ENV_NAMES, canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
 import {
   appIconUrl,
   getAppIcon,
@@ -851,9 +851,9 @@ export default function App({ config }: { config: Config }) {
                               : isBots
                                 ? "Bots"
                               : canvasWorkspace
-                                ? `Canvas: ${canvasWorkspace.name} · ${ENV_LABELS[canvasWorkspace.env]}`
+                                ? `Canvas: ${canvasWorkspace.name} · ${ENV_NAMES[canvasWorkspace.env].label}`
                               : canvasProject
-                                ? `Canvas: ${canvasProject.name} · ${ENV_LABELS[canvasProject.env]}`
+                                ? `Canvas: ${canvasProject.name} · ${ENV_NAMES[canvasProject.env].label}`
                                 : fsPath
                                   ? undefined
                                   : null,

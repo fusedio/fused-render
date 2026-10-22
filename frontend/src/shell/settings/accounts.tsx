@@ -9,7 +9,7 @@
 // — the wait is a person finishing a browser round trip — and is otherwise idle.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ENV_LABELS,
+  ENV_NAMES,
   WORKBENCH_ENVS,
   cancelLogin,
   loginOutcome,
@@ -269,7 +269,7 @@ export function WorkbenchEnvControl() {
               const n = info.cloned_count;
               return (
                 <div key={e}>
-                  {`${ENV_LABELS[e]}: ${n} ${n === 1 ? "canvas" : "canvases"} cloned under ${info.canvases_dir}`}
+                  {`${ENV_NAMES[e].label}: ${n} ${n === 1 ? "canvas" : "canvases"} cloned under ${info.canvases_dir}`}
                   {/* The one env whose workbench is not fixed: say where
                       settings.toml points it right now. */}
                   {e === "custom" && ` (workbench: ${info.base_url})`}
@@ -288,7 +288,7 @@ export function WorkbenchEnvControl() {
               ...(known ? [] : [{ key: "", label: current }]),
               ...WORKBENCH_ENVS.map((e) => ({
                 key: e,
-                label: ENV_LABELS[e],
+                label: ENV_NAMES[e].label,
               })),
             ]}
             disabled={busy || status.locked}
