@@ -287,3 +287,43 @@ test("no ResizeObserver: it falls back to the window query", () => {
     else G.ResizeObserver = real;
   }
 });
+
+// `chatViewOnly` (`_noann=1`, the canvas node pane): the chat alone on screen
+// at EVERY width, pane mounted but never shown. A wide node pane used to split
+// into code + chat past 800px, duplicating the host's Code tab (PR #1880).
+test("chatViewOnly pins the narrow CHAT view at any width, and `paneview` cannot leave it", () => {
+  const p = fakeParams();
+  p.store.set({ paneview: "preview" });
+  p.calls.length = 0;
+  const box = fakeBox(1400);
+  let api!: ReturnType<typeof useNarrowView>;
+  let disarms = 0;
+  function Probe() {
+    api = useNarrowView({
+      params: p.store as never,
+      noPane: false,
+      boxRef: box.ref,
+      chatViewOnly: true,
+      onArriveChat: () => void disarms++,
+    });
+    return null;
+  }
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(createElement(Probe));
+  });
+  mounted.push(r);
+  expect(api.narrow).toBe(true);
+  expect(api.view).toBe("chat");
+  expect(api.classNames).toBe("narrow view-chat");
+  expect(api.composerLocked).toBe(false);
+  // Disarmed on BOOT as well: the preview can never come on screen here, so an
+  // `annmode=1` a URL carried in has nothing to act on.
+  expect(disarms).toBe(1);
+
+  act(() => box.resize(500));
+  act(() => box.resize(1600));
+  expect(api.narrow).toBe(true);
+  expect(api.view).toBe("chat");
+  expect(p.calls).toHaveLength(0);
+});
