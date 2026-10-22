@@ -278,6 +278,11 @@ a.sidebar-rail-btn {
   width: 22px;
   height: 22px;
 }
+/* The Canvases section's row glyph (CanvasGlyph, 16px), on the rail. */
+.sidebar-rail-canvas-glyph {
+  display: flex;
+  line-height: 1;
+}
 .sidebar-rail-bm-glyph {
   font-size: 15px;
   line-height: 1;
