@@ -267,10 +267,10 @@ test("the Claude Config panel is the Claude tab set of the Agents page", () => {
   expect(row("statusline")).toBe("/claude-code?tab=settings");
   expect(row("mcp")).toBe("/claude-code?tab=mcp");
   expect(row("preferences")).toBe("/claude-code?tab=settings");
-  expect(row("history")).toBe("/claude-code?tab=history");
-  expect(row("profiles")).toBe("/claude-code?tab=history");
+  expect(row("history")).toBe("/claude-code");
+  expect(row("profiles")).toBe("/claude-code");
   expect(row("claudemd")).toBe("/claude-code");
-  expect(rewriteLegacyUrl("/claude-config?cctab=profiles&embed=1")).toBe("/claude-code?embed=1&tab=history");
+  expect(rewriteLegacyUrl("/claude-config?cctab=profiles&embed=1")).toBe("/claude-code?embed=1");
   expect(rewriteLegacyUrl("/preferences?tab=claude")).toBe("/claude-code");
   expect(rewriteLegacyUrl("/preferences?tab=claude-mcp")).toBe("/claude-code?tab=mcp");
   expect(rewriteLegacyUrl("/preferences?tab=ai")).toBe("/preferences?tab=ai");

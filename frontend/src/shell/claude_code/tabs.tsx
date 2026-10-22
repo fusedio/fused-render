@@ -1,25 +1,21 @@
 // The tabs of the Claude Code page: Claude Code's own configuration under
 // ~/.claude, drawn with the settings page's rows and cards.
 //
-// TWO THINGS LIVE HERE AND NOWHERE ELSE:
+// TWO THINGS LIVE HERE:
 //
 //   * the settings.json rows. The catalog (GET preferences) is fetched once
 //     per mount and each of its entries becomes a row, bucketed into the
 //     catalog's own groups ("Model & reasoning", …). The registry cannot list
-//     them: they are data the server ships, refreshed from Anthropic's docs by
-//     the Refresh catalog button.
+//     them: they are data the server ships.
 //
-//   * the git epoch. Every section can dirty the repo (`onChanged`), the
-//     History section commits it (`onCommitted`), and the chip on the History
-//     tab's header carries the dirty state. A commit rewrites state no section
-//     could have predicted, so each remounts on the commit epoch and refetches.
+//   * the provider that fetches that catalog once per mount, and wakes only
+//     when a tab that needs it mounts.
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Clock, RefreshCw, Undo2 } from "lucide-react";
+import { Undo2 } from "lucide-react";
 import * as cc from "@apps/claude_config/api";
 import type { PrefEntry, PreferencesGet } from "@apps/claude_config/api";
-import { Head, toastErr, toastOk, useGitStatus, type GitStatusState } from "@apps/claude_config/bits";
+import { Head, toastErr, toastOk } from "@apps/claude_config/bits";
 import { optionLabel, storedOptionLabel } from "@apps/claude_config/pref-option-label";
-import HistorySection from "@apps/claude_config/sections/HistorySection";
 import McpSection from "@apps/claude_config/sections/McpSection";
 import MemorySection from "@apps/claude_config/sections/MemorySection";
 import PluginsSection from "@apps/claude_config/sections/PluginsSection";
@@ -36,57 +32,31 @@ import { labelId, SettingRow, SettingSelect } from "../settings/SettingRow";
 
 interface ClaudeStore {
   available: boolean;
-  /** Bumped by every edit; the git chip re-reads on it. */
-  badgeEpoch: number;
-  /** Bumped by a commit; every block remounts on it. */
-  sectionEpoch: number;
-  onChanged: () => void;
-  onCommitted: () => void;
-  git: GitStatusState;
   catalog: PreferencesGet | null;
   catalogError: string | null;
   /** The catalog GET has answered (rows or an error): the page can count. */
   catalogReady: boolean;
   reloadCatalog: () => void;
   patch: (key: string, value: unknown) => Promise<void>;
-  refreshCatalog: () => Promise<void>;
-  refreshing: boolean;
   /** Start the reads. The provider wraps the whole page; a tab that needs the
-   *  git status or the catalog calls this when it mounts. */
+   *  catalog calls this when it mounts. */
   wake: () => void;
 }
 
-const IDLE_GIT: GitStatusState = { status: null, failed: false, recheck: () => undefined };
-
 const ClaudeContext = createContext<ClaudeStore>({
   available: false,
-  badgeEpoch: 0,
-  sectionEpoch: 0,
-  onChanged: () => undefined,
-  onCommitted: () => undefined,
-  git: IDLE_GIT,
   catalog: null,
   catalogError: null,
   catalogReady: false,
   reloadCatalog: () => undefined,
   patch: async () => undefined,
-  refreshCatalog: async () => undefined,
-  refreshing: false,
   wake: () => undefined,
 });
 
 export function ClaudeConfigProvider({ available, children }: { available: boolean; children: ReactNode }) {
-  const [badgeEpoch, setBadgeEpoch] = useState(0);
-  const [sectionEpoch, setSectionEpoch] = useState(0);
-  const onChanged = useCallback(() => setBadgeEpoch((n) => n + 1), []);
-  const onCommitted = useCallback(() => {
-    setBadgeEpoch((n) => n + 1);
-    setSectionEpoch((n) => n + 1);
-  }, []);
   const [awake, setAwake] = useState(false);
   const wake = useCallback(() => setAwake(true), []);
   const live = available && awake;
-  const git = useGitStatus(badgeEpoch, live);
 
   const [catalog, setCatalog] = useState<PreferencesGet | null>(null);
   const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -112,52 +82,25 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
     return () => {
       alive = false;
     };
-  }, [live, catalogEpoch, sectionEpoch]);
+  }, [live, catalogEpoch]);
 
   const patch = useCallback(
     async (key: string, value: unknown) => {
       try {
         const res = await cc.preferences.patch({ [key]: value });
         if (!res.ok) toastErr(res.error || "Save failed");
-        else {
-          toastOk("Saved");
-          onChanged();
-        }
+        else toastOk("Saved");
       } catch (e) {
         toastErr((e as Error).message);
       }
       reloadCatalog();
     },
-    [onChanged, reloadCatalog],
+    [reloadCatalog],
   );
-
-  const [refreshing, setRefreshing] = useState(false);
-  const refreshCatalog = useCallback(async () => {
-    setRefreshing(true);
-    try {
-      const res = await cc.refreshCatalog();
-      if (!res.ok) {
-        toastErr(res.error || "Refresh failed");
-        return;
-      }
-      const extra = res.undocumented?.length ? ` · ${res.undocumented.length} undocumented` : "";
-      toastOk(`Catalog refreshed: ${res.updated}/${res.total} entries${extra}`);
-      reloadCatalog();
-    } catch (e) {
-      toastErr((e as Error).message);
-    } finally {
-      setRefreshing(false);
-    }
-  }, [reloadCatalog]);
 
   const value = useMemo<ClaudeStore>(
     () => ({
       available,
-      badgeEpoch,
-      sectionEpoch,
-      onChanged,
-      onCommitted,
-      git,
       catalog,
       catalogError,
       // On `available`, not `live`: the page wakes the store in an effect, and
@@ -165,26 +108,9 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
       catalogReady: !available || catalog !== null || catalogError !== null,
       reloadCatalog,
       patch,
-      refreshCatalog,
-      refreshing,
       wake,
     }),
-    [
-      available,
-      live,
-      badgeEpoch,
-      sectionEpoch,
-      onChanged,
-      onCommitted,
-      git,
-      catalog,
-      catalogError,
-      reloadCatalog,
-      patch,
-      refreshCatalog,
-      refreshing,
-      wake,
-    ],
+    [available, catalog, catalogError, reloadCatalog, patch, wake],
   );
   return <ClaudeContext.Provider value={value}>{children}</ClaudeContext.Provider>;
 }
@@ -363,50 +289,11 @@ export function ClaudePrefRow({ entry }: { entry: ClaudePrefEntry }) {
   );
 }
 
-/** The catalog row is built here, not in the registry: the registry only
- *  lists Preferences rows, and this one lives on the Claude Code page. */
-const CATALOG_ENTRY: SettingEntry = {
-  id: "claude-catalog",
-  group: "ai",
-  section: "settings.json",
-  label: "Settings catalog",
-  description: "The settings below come from the checked-in catalog. Refresh re-fetches defaults and docs from code.claude.com and rewrites it.",
-  keywords: "",
-};
-
-/** The row that leads the settings.json rows: how many, and the refresh. */
-export function ClaudeCatalogControl() {
-  const store = useContext(ClaudeContext);
-  const n = store.catalog?.schema.length;
-  return (
-    <SettingRow
-      id="claude-catalog"
-      entry={CATALOG_ENTRY}
-      status={n !== undefined ? `${n} settings in the catalog` : store.catalogError ? null : "Loading…"}
-      control={
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={store.refreshing || !store.available}
-          title="Re-fetch defaults & docs from code.claude.com and rewrite settings_catalog.json"
-          onClick={() => void store.refreshCatalog()}
-        >
-          <RefreshCw data-icon="inline-start" className={cn(store.refreshing && "animate-spin")} />
-          {store.refreshing ? "Refreshing…" : "Refresh catalog"}
-        </Button>
-      }
-    >
-      {store.catalogError && <ErrorBanner>{store.catalogError}</ErrorBanner>}
-    </SettingRow>
-  );
-}
-
 type HeadProps = { title: string; blurb: string };
 
 // -- the tabs ------------------------------------------------------------------
 
-/** Settings tab: every settings.json key in cards by the catalog's group,
- *  led by the catalog's refresh. */
+/** Settings tab: every settings.json key in cards by the catalog's group. */
 export function ClaudeSettingsTab({ filter, title, blurb }: HeadProps & { filter: string }) {
   const { catalog, catalogError, wake, available } = useContext(ClaudeContext);
   useEffect(() => wake(), [wake]);
@@ -426,11 +313,6 @@ export function ClaudeSettingsTab({ filter, title, blurb }: HeadProps & { filter
   return (
     <>
       <Head title={title} blurb={blurb} />
-      <section className="settings-section" aria-label="Catalog">
-        <div className="settings-card">
-          <ClaudeCatalogControl />
-        </div>
-      </section>
       {catalogError && <ErrorBanner>{catalogError}</ErrorBanner>}
       {sections.map((sec) => (
         <section key={sec} className="settings-section" aria-label={sec}>
@@ -448,88 +330,30 @@ export function ClaudeSettingsTab({ filter, title, blurb }: HeadProps & { filter
   );
 }
 
-function Block({ children }: { children: ReactNode }) {
-  const { sectionEpoch } = useContext(ClaudeContext);
+export function ClaudePluginsTab({ filter, title, blurb }: HeadProps & { filter: string }) {
   return (
-    <div key={sectionEpoch} className="settings-block">
-      {children}
+    <div className="settings-block">
+      <PluginsSection filter={filter} title={title} blurb={blurb} />
     </div>
   );
 }
 
-export function ClaudePluginsTab({ filter, title, blurb }: HeadProps & { filter: string }) {
-  const { onChanged } = useContext(ClaudeContext);
-  return (
-    <Block>
-      <PluginsSection onChanged={onChanged} filter={filter} title={title} blurb={blurb} />
-    </Block>
-  );
-}
-
 export function ClaudeMemoryTab({ filter, title, blurb }: HeadProps & { filter: string }) {
-  const { onChanged } = useContext(ClaudeContext);
   return (
-    <Block>
-      <MemorySection onChanged={onChanged} filter={filter} title={title} blurb={blurb} />
-    </Block>
+    <div className="settings-block">
+      <MemorySection filter={filter} title={title} blurb={blurb} />
+    </div>
   );
 }
 
 export function ClaudeSkillsTab({ filter }: { filter: string }) {
-  const { onChanged, sectionEpoch } = useContext(ClaudeContext);
-  return (
-    <SkillsSection key={sectionEpoch} onChanged={onChanged} filter={filter} />
-  );
+  return <SkillsSection filter={filter} />;
 }
 
 export function ClaudeMcpTab({ filter, title, blurb }: HeadProps & { filter: string }) {
-  const { onChanged } = useContext(ClaudeContext);
   return (
-    <Block>
-      <McpSection onChanged={onChanged} filter={filter} title={title} blurb={blurb} />
-    </Block>
-  );
-}
-
-export function ClaudeHistoryTab() {
-  const { onCommitted, onChanged, badgeEpoch } = useContext(ClaudeContext);
-  // Keyed on EVERY edit, not only on a commit: the card reads its own git
-  // status and log, and a plugin toggle or a settings.json write elsewhere is
-  // drift it must show beside the chip that already counts it.
-  return (
-    <Block>
-      <HistorySection key={badgeEpoch} onChanged={onChanged} onCommitted={onCommitted} />
-    </Block>
-  );
-}
-
-// -- the git chip ---------------------------------------------------------------
-
-/** On the History tab's header: Clean / N uncommitted / Status unknown.
- *  (`onOpen` — the page navigates to History.) Three states, not two: it states "Clean"
- *  POSITIVELY, so it must never say that from a null status — during the
- *  first read, or forever if the read keeps failing. */
-export function ClaudeGitChip({ onOpen }: { onOpen: () => void }) {
-  const { git } = useContext(ClaudeContext);
-  const { status, failed } = git;
-  return (
-    <button
-      type="button"
-      className={cn("cc-gitchip", status?.dirty && "dirty", (!status || failed) && "unknown")}
-      title={
-        failed
-          ? "Git status unavailable — could not be reached"
-          : !status
-            ? "Checking git status…"
-            : status.dirty
-              ? `${status.files.length} uncommitted change(s) — review and commit them under History`
-              : "Commits, profiles and uncommitted changes"
-      }
-      onClick={onOpen}
-    >
-      <span className="cc-gitchip-dot" aria-hidden="true" />
-      {failed ? "Status unknown" : !status ? "Checking…" : status.dirty ? `${status.files.length} uncommitted` : "Clean"}
-      <Clock aria-hidden="true" className="size-3" />
-    </button>
+    <div className="settings-block">
+      <McpSection filter={filter} title={title} blurb={blurb} />
+    </div>
   );
 }

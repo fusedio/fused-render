@@ -54,7 +54,7 @@ import {
   Toggle3,
   toastErr,
   toastOk,
-  useChangePreview,
+  useConfirm,
   useModuleData,
 } from "../bits";
 import type { HeadedSectionProps } from "../bits";
@@ -236,8 +236,8 @@ function PluginContentsPanel({ id }: { id: string }) {
   );
 }
 
-export default function PluginsSection({ onChanged, filter = "", title, blurb }: HeadedSectionProps) {
-  const { node: modal, ask } = useChangePreview();
+export default function PluginsSection({ filter = "", title, blurb }: HeadedSectionProps) {
+  const { node: modal, ask } = useConfirm();
   const load = useCallback(() => cc.plugins.list(), []);
   const { data, error, reload } = useModuleData(load);
   const loadMkt = useCallback(() => cc.marketplaces.list(), []);
@@ -294,7 +294,6 @@ export default function PluginsSection({ onChanged, filter = "", title, blurb }:
       const res = await cc.plugins.toggle(p.id, next);
       if (!res.ok) throw new Error(res.error || "Toggle failed");
       toastOk(next ? "Enabled" : "Disabled");
-      onChanged();
     } catch (e) {
       toastErr((e as Error).message);
       setFlipped((f) => {
@@ -336,7 +335,6 @@ export default function PluginsSection({ onChanged, filter = "", title, blurb }:
         return;
       }
       toastOk(`Uninstalled ${p.name}`);
-      onChanged();
       reload();
     } catch (e) {
       toastErr((e as Error).message);
@@ -354,12 +352,9 @@ export default function PluginsSection({ onChanged, filter = "", title, blurb }:
         return;
       }
       toastOk(`Installed ${p.name}`);
-      // Both lists moved: the plugin left Discover and joined Installed. And
-      // the CLI may have written settings.json's enabledPlugins, which is the
-      // config repo — hence onChanged, even though plugins/ itself is ignored.
+      // Both lists moved: the plugin left Discover and joined Installed.
       reload();
       loadAvail();
-      onChanged();
     } catch (e) {
       toastErr((e as Error).message);
     } finally {
@@ -408,7 +403,6 @@ export default function PluginsSection({ onChanged, filter = "", title, blurb }:
       setMktName("");
       setMktValue("");
       setAddingMkt(false);
-      onChanged();
       reloadMkt();
     } catch (e) {
       toastErr((e as Error).message);
@@ -451,7 +445,6 @@ export default function PluginsSection({ onChanged, filter = "", title, blurb }:
       // Removing a marketplace can orphan the current filter — and its plugins
       // left both lists, so the two reads that depend on it both refetch.
       if (marketplace === mktName) filterTo(ALL);
-      onChanged();
       reloadMkt();
       reload();
       if (avail) loadAvail();

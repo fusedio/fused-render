@@ -108,7 +108,6 @@ const PREFS_CLAUDE_TABS: Record<string, string> = {
   "claude-memory": "memory",
   "claude-skills": "skills",
   "claude-mcp": "mcp",
-  "claude-history": "history",
 };
 
 // The panel's section ids → the Claude Code page's tabs.
@@ -126,9 +125,6 @@ function claudeConfigTab(tab: string | null): string | null {
       return "settings";
     case "mcp":
       return "mcp";
-    case "history":
-    case "profiles":
-      return "history";
     default:
       return null;
   }

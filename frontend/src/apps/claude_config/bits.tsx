@@ -1,15 +1,11 @@
 // Shared pieces of the Claude-config app: the ONE list row every tab's items
-// render as (`ListRow`), the card/pill/group vocabulary around it, the
-// three-state toggle, the change-preview modal, the load-once-with-reload hook
-// every section uses, and the git-status hook the tab strip and the History
-// page share. They lived in ClaudeConfig.tsx; they sit here so a section and
-// the panel can both reach them without importing across pages.
+// render as (`ListRow`), the card and pill vocabulary around it, the
+// three-state toggle, the confirm modal, and the load-once-with-reload hook
+// every section uses.
 //
-// The bias is deliberately towards ONE of each thing. Nine tabs doing the same
-// job four ways is four sets of paddings, verbs and action placements for the
-// user to re-learn per tab, and it happened here simply because each section
-// was written on a different day. So: one row, one toolbar, one skeleton
-// length, one empty-state shape.
+// The bias is deliberately towards ONE of each thing: one row, one skeleton
+// length, one empty-state shape, so every tab's paddings, verbs and action
+// placements are the same to re-learn.
 //
 // Nothing here re-invents something the shell already ships. Toasts are
 // @platform/lib/notifications (the app-root NotificationHost surface — the
@@ -29,14 +25,10 @@ import {
 import { notify } from "@platform/lib/notifications";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Modal } from "@platform/ui/modal/Modal";
-import * as cc from "./api";
-import type { ChangePreview } from "./api";
 
-// Every section reports that the on-disk config changed (so the nav's git
-// badge re-reads) and receives the page's name filter. Sections own their own
-// data and reload it themselves.
+// Every section receives the page's name filter. Sections own their own data
+// and reload it themselves.
 export interface SectionProps {
-  onChanged: () => void;
   filter?: string;
 }
 
@@ -140,15 +132,6 @@ export function useModuleData<T>(load: () => Promise<T>): Loaded<T> {
 
 // -- layout vocabulary --------------------------------------------------------
 
-export function Group({ title, children }: { title: ReactNode; children: ReactNode }) {
-  return (
-    <div className="cc-group">
-      <h3 className="cc-group-title">{title}</h3>
-      {children}
-    </div>
-  );
-}
-
 export function Card({ children }: { children: ReactNode }) {
   return <div className="cc-card">{children}</div>;
 }
@@ -205,27 +188,6 @@ export function CardActions({ children }: { children: ReactNode }) {
   return <div className="cc-card-actions">{children}</div>;
 }
 
-// A settings row: label + doc on the left, control on the right.
-export function Row({
-  label,
-  doc,
-  control,
-}: {
-  label: ReactNode;
-  doc?: ReactNode;
-  control: ReactNode;
-}) {
-  return (
-    <div className="cc-row">
-      <div className="cc-row-meta">
-        <div className="cc-row-label">{label}</div>
-        {doc ? <div className="cc-row-doc">{doc}</div> : null}
-      </div>
-      <div className="cc-row-control">{control}</div>
-    </div>
-  );
-}
-
 // An empty state, with the control that fixes it where there is one. Every list
 // in this app can be empty on a fresh machine, and "nothing here" without a way
 // out is a dead end — so `action` is part of the shape rather than something
@@ -239,66 +201,8 @@ export function Empty({ children, action }: { children: ReactNode; action?: Reac
   );
 }
 
-// -- one toolbar --------------------------------------------------------------
-
-// The header row every tab opens with: a plain summary of what you are looking
-// at on the left, the tab's own controls, then — in the same slot on every tab —
-// the refresh icon. Before this, each tab hand-rolled its own header, which is
-// how MCP ended up with a text `Refresh` button INSIDE its add-a-server form,
-// where refreshing has nothing to do with adding.
-//
-// `summary` is deliberately a fact and not a title ("12 marketplaces", "4
-// servers · 3 connected"): the caption above already names the file, and the tab
-// strip already names the tab.
-export function SectionToolbar({
-  summary,
-  children,
-  onRefresh,
-}: {
-  summary: ReactNode;
-  children?: ReactNode;
-  onRefresh?: () => void;
-}) {
-  return (
-    <div className="cc-toolbar">
-      <span className="cc-summary" title={typeof summary === "string" ? summary : undefined}>
-        {summary}
-      </span>
-      {/* Every control after the summary travels as ONE flex item — see
-          .cc-toolbar-controls in claude-config.css. That is what stops the
-          toolbar wrapping into a ragged stack at a narrow width: the summary
-          drops to its own line first, and the controls keep their single row
-          for as long as there is room for any of them. `-solo` (no children,
-          just the refresh icon — Memory, Skills) is the one exception: at a
-          narrow width the base rule still forces the summary onto its own
-          full line even though a single icon button had room to share it,
-          which read as a dead row under "10 skill(s)". The modifier lets the
-          narrow media query recognize that case and keep them together. */}
-      {(children || onRefresh) && (
-        <div className={"cc-toolbar-controls" + (children ? "" : " cc-toolbar-controls-solo")}>
-          {children}
-          {onRefresh && (
-            <button
-              type="button"
-              className="cc-iconbtn"
-              title="Refresh"
-              aria-label="Refresh"
-              onClick={onRefresh}
-            >
-              <Icon name="refresh" />
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// The toolbar control that opens an add form inline above the list. Three tabs
-// (Marketplaces, MCP, Profiles) used to OPEN with their add form expanded —
-// Profiles with two of them stacked — so the content you came for started half
-// a page down on a tab you mostly visit to look at what's already there.
-// Adding is the rarer act, so it asks first, and the same button cancels.
+// The control that opens an add form inline above the list. Adding is the rarer
+// act, so the form starts closed and the same button cancels.
 export function DisclosureButton({
   open,
   controls,
@@ -328,12 +232,8 @@ export function DisclosureButton({
 // -- one list row -------------------------------------------------------------
 
 // Every list in this app renders through this: Plugins, Marketplaces, Skills,
-// MCP, Profiles, Memory and History's log. (MD Files keeps its card grid —
-// browse-and-preview is a different job — and Preferences keeps .cc-row, which
-// is label-plus-control, not an item.) Before this there were four shapes for
-// one job, which is four sets of paddings, fonts and action placements for the
-// user to re-learn per tab.
-//
+// MCP and Memory.
+
 // One line AT REST, never wrapping, so every row is the same height and twenty
 // of them can be scanned. But one line must not mean information thrown away:
 // where a row has more to say than fits — a description, a file list, extra
@@ -504,7 +404,7 @@ export function Toggle3({
   );
 }
 
-// -- change-preview modal -----------------------------------------------------
+// -- confirm modal -----------------------------------------------------------
 
 export interface PreviewButton<T> {
   label: string;
@@ -515,10 +415,7 @@ export interface PreviewButton<T> {
 
 export interface AskOptions<T> {
   title: string;
-  // The {files, settings} pair git_ops returns; omitted for a plain confirm.
-  preview?: ChangePreview;
-  // Prose shown when there is nothing to diff (the MCP OAuth hand-off), or a
-  // confirm's warning.
+  // Prose shown in the body: a confirm's warning, or the MCP OAuth hand-off.
   note?: ReactNode;
   buttons: PreviewButton<T>[];
 }
@@ -528,13 +425,9 @@ interface AskState {
   resolve: (v: unknown) => void;
 }
 
-// An imperative confirm/preview modal: `await ask({...})` resolves the clicked
-// button's value, or `false` if the modal was dismissed (Esc / backdrop / ✕).
-// Promise-shaped rather than declarative because the flows it serves are
-// sequential — a profile switch previews, then may ask to commit first, then
-// switches — and expressing that as nested render state would scatter one
-// decision across three components.
-export function useChangePreview(): { node: ReactNode; ask: <T>(o: AskOptions<T>) => Promise<T | false> } {
+// An imperative confirm modal: `await ask({...})` resolves the clicked button's
+// value, or `false` if the modal was dismissed (Esc / backdrop / ✕).
+export function useConfirm(): { node: ReactNode; ask: <T>(o: AskOptions<T>) => Promise<T | false> } {
   const [state, setState] = useState<AskState | null>(null);
 
   const ask = useCallback(
@@ -555,10 +448,7 @@ export function useChangePreview(): { node: ReactNode; ask: <T>(o: AskOptions<T>
 
   if (!state) return { node: null, ask };
 
-  const { title, preview, note, buttons } = state.opts;
-  const files = preview?.files ?? [];
-  const settings = preview?.settings ?? [];
-  const hasDiff = files.length > 0 || settings.length > 0;
+  const { title, note, buttons } = state.opts;
 
   const node = (
     <Modal
@@ -579,94 +469,9 @@ export function useChangePreview(): { node: ReactNode; ask: <T>(o: AskOptions<T>
       ))}
     >
       {note ? <p className="cc-note">{note}</p> : null}
-      {settings.length > 0 && (
-        <>
-          <h4 className="cc-delta-head">Settings changes</h4>
-          {settings.map((d) => (
-            <div className="cc-delta" key={d.key}>
-              <span className="cc-delta-key">{d.key}</span>{" "}
-              <span className="cc-delta-fromto cc-mono">
-                {JSON.stringify(d.from)} → {JSON.stringify(d.to)}
-              </span>
-            </div>
-          ))}
-        </>
-      )}
-      {files.length > 0 && (
-        <>
-          <h4 className="cc-delta-head">Files</h4>
-          {files.map((f) => (
-            <div className="cc-delta" key={f.status + f.path}>
-              <span className={"cc-fstat cc-fstat-" + f.status}>{f.status}</span>{" "}
-              <span className="cc-mono">{f.path}</span>
-            </div>
-          ))}
-        </>
-      )}
-      {!hasDiff && !note && <Empty>No changes.</Empty>}
     </Modal>
   );
   return { node, ask };
-}
-
-// -- git status ---------------------------------------------------------------
-
-export interface GitStatusState {
-  // null until the first read lands; stays null if it failed.
-  status: cc.GitStatus | null;
-  failed: boolean;
-  // Re-read WITHOUT bumping the caller's epoch — a plain re-check must not
-  // remount anything the way a commit does.
-  recheck: () => void;
-}
-
-// One `git status` read per epoch, shared by the two places that need it: the
-// tab strip's History button (which only renders the dirty dot) and the History
-// page's "Uncommitted changes" card (which acts on it). A hook rather than a
-// component because those two render the same fact completely differently, and
-// the thing worth sharing is the fetch — one status call per epoch, no more.
-export function useGitStatus(epoch: number, enabled = true): GitStatusState {
-  const [status, setStatus] = useState<cc.GitStatus | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [n, setN] = useState(0);
-
-  useEffect(() => {
-    // `enabled` false = no ~/.claude on this machine (the Preferences page
-    // mounts the provider either way): nothing to ask, and a 4xx here would
-    // paint "Status unknown" for a repo that does not exist.
-    if (!enabled) return;
-    let alive = true;
-    cc.gitOps.status().then(
-      (s) => {
-        if (!alive) return;
-        setStatus(s);
-        // Clearing this is not tidiness — it is the difference between a
-        // recoverable failure and a dead page. A stale `failed` outlives the
-        // success that fixed it, and the History card would then render
-        // "Status unavailable" ABOVE a live "Review & commit" button.
-        setFailed(false);
-      },
-      () => alive && setFailed(true),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [epoch, n, enabled]);
-
-  return { status, failed, recheck: useCallback(() => setN((v) => v + 1), []) };
-}
-
-// -- misc ---------------------------------------------------------------------
-
-// Read a File as base64 with the data: prefix stripped — what the profiles
-// module's b64 kwargs expect.
-export function fileToB64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result).split(",")[1] || "");
-    r.onerror = () => reject(new Error("could not read file"));
-    r.readAsDataURL(file);
-  });
 }
 
 // Feather-style stroke icons for the card actions. stroke=currentColor so each
@@ -674,52 +479,16 @@ export function fileToB64(file: File): Promise<string> {
 export function Icon({
   name,
 }: {
-  name:
-    | "edit"
-    | "eye"
-    | "folder"
-    | "trash"
-    | "refresh"
-    | "clock"
-    | "copy"
-    | "chevron"
-    | "plus"
-    | "undo"
-    | "info"
-    | "kebab"
-    | "check";
+  name: "folder" | "trash" | "refresh" | "copy" | "chevron" | "plus" | "kebab";
 }) {
   const paths: Record<string, ReactNode> = {
-    // The Preferences unset-value hint (title= carries the actual text —
-    // see .cc-row-hint in claude-config.css for why it isn't inline text).
-    info: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <line x1="12" y1="11" x2="12" y2="16" />
-        <line x1="12" y1="8" x2="12.01" y2="8" />
-      </>
-    ),
-    // Memory's per-project Commit — a plain checkmark, distinct from the
-    // trash (Clear) and folder (Reveal) glyphs beside it.
-    check: <polyline points="20 6 9 17 4 12" />,
-    // Per-marketplace menu, in the Plugins rail. One trailing slot for every
-    // action a row has, in place of the two icon buttons and the read-only
-    // lock that used to sit there — three glyphs' worth of a 180px column,
-    // spent on a row whose main job is to show a name and a count.
+    // Per-marketplace menu, in the Plugins rail: one trailing slot for every
+    // action a row has, so the 180px column goes to the name and count.
     kebab: (
       <>
         <circle cx="12" cy="5" r="1.4" />
         <circle cx="12" cy="12" r="1.4" />
         <circle cx="12" cy="19" r="1.4" />
-      </>
-    ),
-    // The Preferences "reset to default" ghost icon button — a corner-arrow
-    // undo, deliberately not the refresh icon's rotation glyph, so the two
-    // don't read as the same action.
-    undo: (
-      <>
-        <polyline points="9 14 4 9 9 4" />
-        <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
       </>
     ),
     // Points down at rest; .cc-lrow.open rotates it (CSS, so no second glyph).
@@ -730,23 +499,10 @@ export function Icon({
         <line x1="5" y1="12" x2="19" y2="12" />
       </>
     ),
-    clock: (
-      <>
-        <circle cx="12" cy="12" r="9" />
-        <polyline points="12 7 12 12 15.5 14" />
-      </>
-    ),
     copy: (
       <>
         <rect x="9" y="9" width="12" height="12" rx="2" />
         <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-      </>
-    ),
-    edit: <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z" />,
-    eye: (
-      <>
-        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-        <circle cx="12" cy="12" r="3" />
       </>
     ),
     folder: <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />,

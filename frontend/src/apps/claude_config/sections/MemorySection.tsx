@@ -1,34 +1,16 @@
 // Memory section: Claude Code's persistent memory under
-// projects/*/memory/, with the per-folder git lifecycle beside it.
+// projects/*/memory/.
 //
-// Round 2 redesign: the memory FILE is the row now, not the project. Before
-// this, a row was a project folder and the files hid inside an expanded <dl>
-// as one newline-joined blob — the files ARE the content of this tab (which
-// lesson lives where), so they earn a row each, grouped under the project
-// that owns them. Each file's row shows its name and the one-line
-// `description` from its own YAML frontmatter (claude_config/memory.py parses
-// it; falls back to nothing shown when the frontmatter is missing or
-// malformed — the row's own filename already carries the fallback, so there
-// is no separate "untitled" state to invent).
+// The memory FILE is the row, grouped under the project that owns it: the files
+// ARE the content of this tab (which lesson lives where). Each file's row shows
+// its name and the one-line `description` from its own YAML frontmatter
+// (claude_config/memory.py parses it; nothing is shown when the frontmatter is
+// missing or malformed — the row's own filename already carries the fallback,
+// so there is no separate "untitled" state to invent).
 //
-// Each file row opens an in-app editor and has a delete of its own. The UI also
-// adds the lifecycle the files themselves can't express: which folders
-// have uncommitted drift, a path-limited Commit per project, and a Clear that
-// deletes the .md files and commits the deletion (recoverable from History,
-// which is why Clear is a confirm and not a two-step). All three live on the
-// project GROUP, not on an individual file row, because they act on the
-// whole folder.
-//
-// Commit's history: round 2 first dropped it outright (argument: the drift
-// marker is the fact, the *act* of committing belongs on History) — then the
-// user asked for it back, smaller. It returns as a plain .cc-iconbtn beside
-// Reveal and Clear rather than the old always-visible, always-enabled .btn,
-// and it renders ONLY when this project actually has drift (`dirty > 0`)
-// instead of sitting there disabled with no indication of what it would do —
-// that ambiguity was the original complaint. Fading in on
-// hover/focus-within like Clear (see .cc-memgroup-actions in
-// claude-config.css); Reveal alone stays permanently visible, since it is
-// informational rather than an act on the repo.
+// Each file row opens an in-app editor and has a delete of its own. Reveal and
+// Clear sit on the project GROUP, because they act on the whole folder; Clear
+// deletes the folder's .md files behind a confirm.
 //
 // A group is titled by the PROJECT FOLDER, not by the projects/ directory
 // name: that name is a munged cwd ("-Users-me-Work-fused-render") and reads
@@ -54,7 +36,7 @@ import {
   guard,
   toastErr,
   toastOk,
-  useChangePreview,
+  useConfirm,
   useModuleData,
 } from "../bits";
 import type { HeadedSectionProps } from "../bits";
@@ -87,22 +69,15 @@ function MemoryFileEditor({ project, file, onDelete }: { project: string; file: 
   );
 }
 
-export default function MemorySection({ onChanged, filter = "", title, blurb }: HeadedSectionProps) {
+export default function MemorySection({ filter = "", title, blurb }: HeadedSectionProps) {
   const load = useCallback(() => cc.memory.list(), []);
   const { data, error, reload } = useModuleData(load);
-  const { node: modal, ask } = useChangePreview();
-
-  const commit = async (project: string) => {
-    if (!(await guard(cc.memory.commit(project)))) return;
-    toastOk("Committed");
-    onChanged();
-    reload();
-  };
+  const { node: modal, ask } = useConfirm();
 
   const clear = async (project: string) => {
     const ok = await ask<boolean>({
       title: `Clear memory for ${project}?`,
-      note: "Every .md file in this project's memory folder is deleted and the deletion is committed — recoverable from History.",
+      note: "Every .md file in this project's memory folder is deleted. This can't be undone.",
       buttons: [
         { label: "Cancel", value: false },
         { label: "Clear", value: true, primary: true, danger: true },
@@ -111,14 +86,13 @@ export default function MemorySection({ onChanged, filter = "", title, blurb }: 
     if (!ok) return;
     if (!(await guard(cc.memory.clear(project)))) return;
     toastOk("Cleared");
-    onChanged();
     reload();
   };
 
   const deleteFile = async (project: string, file: string) => {
     const ok = await ask<boolean>({
       title: `Delete ${file}?`,
-      note: "The file is deleted and the deletion is committed — recoverable from History.",
+      note: "The file is deleted. This can't be undone.",
       buttons: [
         { label: "Cancel", value: false },
         { label: "Delete", value: true, primary: true, danger: true },
@@ -132,7 +106,6 @@ export default function MemorySection({ onChanged, filter = "", title, blurb }: 
       return;
     }
     toastOk("Deleted");
-    onChanged();
     reload();
   };
 
@@ -171,7 +144,6 @@ export default function MemorySection({ onChanged, filter = "", title, blurb }: 
         <Empty>{needle ? "No memory files match." : "No persistent memory found under projects/*/memory/."}</Empty>
       )}
       {projects.map((p) => {
-        const dirty = p.changes.length;
         const count = plural(p.files.length, "file");
         return (
           <div className="cc-memgroup" key={p.project}>
@@ -186,16 +158,7 @@ export default function MemorySection({ onChanged, filter = "", title, blurb }: 
                   {p.path ?? p.project}
                 </span>
                 <span className="cc-memgroup-count">{count}</span>
-                {dirty > 0 && <span className="cc-change">{dirty} uncommitted</span>}
               </div>
-              {/* Reveal is informational and stays visible outright. Commit
-                  and Clear are acts on the repo — Commit only exists to look
-                  at when there is drift to act on, and Clear is the most
-                  destructive thing on this page — so both fade in on
-                  hover/focus-within (cc-memgroup-head:hover/:focus-within
-                  below) rather than sitting there always, reachable by
-                  keyboard and visible outright where hover doesn't apply.
-                  Reveal being first is what the CSS rule keys off of. */}
               <div className="cc-memgroup-actions">
                 <button
                   type="button"
@@ -206,17 +169,6 @@ export default function MemorySection({ onChanged, filter = "", title, blurb }: 
                 >
                   <Icon name="folder" />
                 </button>
-                {dirty > 0 && (
-                  <button
-                    type="button"
-                    className="cc-iconbtn"
-                    title="Commit this project's memory folder"
-                    aria-label={`Commit memory for ${p.path ?? p.project}`}
-                    onClick={() => commit(p.project)}
-                  >
-                    <Icon name="check" />
-                  </button>
-                )}
                 <button
                   type="button"
                   className="cc-iconbtn cc-iconbtn-danger"

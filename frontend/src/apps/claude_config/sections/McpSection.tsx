@@ -1,7 +1,6 @@
 // MCP section: the global MCP servers, listed and acted on through the
 // `claude mcp` CLI — this feature never reads or writes ~/.claude.json itself,
-// the CLI owns that file. Which is also why nothing here is version-controlled
-// and no action refreshes the git badge.
+// the CLI owns that file.
 //
 // Authentication is a fire-and-forget hand-off: the CLI opens a browser and
 // blocks well past any request timeout, so the module spawns it detached and the
@@ -29,7 +28,7 @@ import {
   guard,
   toastErr,
   toastOk,
-  useChangePreview,
+  useConfirm,
   useModuleData,
 } from "../bits";
 import type { HeadedSectionProps, PillTone } from "../bits";
@@ -62,7 +61,7 @@ function cliError(res: CliResult, fallback: string): string {
   return res.stderr || res.error || fallback;
 }
 
-export default function McpSection({ onChanged, filter = "", title, blurb }: HeadedSectionProps) {
+export default function McpSection({ filter = "", title, blurb }: HeadedSectionProps) {
   const load = useCallback(() => cc.mcp.list(), []);
   const { data: cached, error, reload: reloadCached } = useModuleData(load);
   // The server answers from its cache at once (`stale`) because the real
@@ -91,7 +90,7 @@ export default function McpSection({ onChanged, filter = "", title, blurb }: Hea
       alive = false;
     };
   }, [cached]);
-  const { node: modal, ask } = useChangePreview();
+  const { node: modal, ask } = useConfirm();
   const [name, setName] = useState("");
   const [json, setJson] = useState("");
   const [busy, setBusy] = useState(false);
@@ -118,7 +117,6 @@ export default function McpSection({ onChanged, filter = "", title, blurb }: Hea
       setJson("");
       setAdding(false);
       setEditing(null);
-      onChanged();
       reload();
     } catch (e) {
       toastErr((e as Error).message);

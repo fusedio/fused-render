@@ -1,20 +1,17 @@
 // Claude Code page — `/claude-code?tab=<tab>`: Claude Code's own configuration
 // under ~/.claude, framed like Preferences: title and filter across the top, a
-// nav of the six tabs (Skills, the default, Memory, Plugins, MCP servers,
-// Settings, History) on the left, the tab's heading and cards on the right.
+// nav of the five tabs (Skills, the default, Memory, Plugins, MCP servers,
+// Settings) on the left, the tab's heading and cards on the right.
 // Each tab draws its own heading, so the description can carry a live count;
 // Skills also swaps between a list and a skill's editor.
 import { useEffect, useState } from "react";
-import { Blocks, Brain, History, Search, Server, SlidersHorizontal, Sparkles, X, type LucideIcon } from "lucide-react";
+import { Blocks, Brain, Search, Server, SlidersHorizontal, Sparkles, X, type LucideIcon } from "lucide-react";
 import { useClaudeConfigStatus } from "@apps/claude_config/available";
-import { Head } from "@apps/claude_config/bits";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import {
   ClaudeConfigProvider,
-  ClaudeGitChip,
-  ClaudeHistoryTab,
   ClaudeMcpTab,
   ClaudeMemoryTab,
   ClaudePluginsTab,
@@ -52,13 +49,6 @@ const TABS = [
     filter: "Search settings",
     blurb: "The keys of settings.json, with Claude's defaults.",
   },
-  {
-    id: "history",
-    label: "History",
-    icon: History,
-    filter: "",
-    blurb: "Every change to this configuration is committed; undo one here.",
-  },
 ] as const satisfies readonly { id: string; label: string; icon: LucideIcon; filter: string; blurb: string }[];
 type TabId = (typeof TABS)[number]["id"];
 
@@ -95,32 +85,30 @@ export default function ClaudeCode() {
       <div className="settings-page">
         <div className="settings-header">
           <h1 className="settings-title">Claude Code</h1>
-          {tab !== "history" && (
-            <div className="settings-search" role="search">
-              <Search aria-hidden="true" className="settings-search-icon" />
-              <Input
-                type="search"
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder={current.filter}
-                aria-label={current.filter}
-                className="settings-search-input"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              {filter && (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Clear filter"
-                  className="settings-search-clear"
-                  onClick={() => setFilter("")}
-                >
-                  <X />
-                </Button>
-              )}
-            </div>
-          )}
+          <div className="settings-search" role="search">
+            <Search aria-hidden="true" className="settings-search-icon" />
+            <Input
+              type="search"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder={current.filter}
+              aria-label={current.filter}
+              className="settings-search-input"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {filter && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Clear filter"
+                className="settings-search-clear"
+                onClick={() => setFilter("")}
+              >
+                <X />
+              </Button>
+            )}
+          </div>
         </div>
         <div className="settings-body">
           <nav className="settings-nav" aria-label="Claude Code">
@@ -151,12 +139,6 @@ export default function ClaudeCode() {
             {tab === "plugins" && <ClaudePluginsTab filter={filter} {...head} />}
             {tab === "mcp" && <ClaudeMcpTab filter={filter} {...head} />}
             {tab === "settings" && <ClaudeSettingsTab filter={filter} {...head} />}
-            {tab === "history" && (
-              <>
-                <Head title={head.title} blurb={head.blurb} aside={<ClaudeGitChip onOpen={() => pickTab("history")} />} />
-                <ClaudeHistoryTab />
-              </>
-            )}
           </main>
         </div>
       </div>

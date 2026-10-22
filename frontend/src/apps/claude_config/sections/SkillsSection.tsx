@@ -21,7 +21,7 @@ import {
   guard,
   toastErr,
   toastOk,
-  useChangePreview,
+  useConfirm,
   useModuleData,
 } from "../bits";
 import type { SectionProps } from "../bits";
@@ -54,7 +54,7 @@ function SkillDetail({
   onChanged: () => void;
   onDeleted: () => void;
 }) {
-  const { node: modal, ask } = useChangePreview();
+  const { node: modal, ask } = useConfirm();
   const [path, setPath] = useState("SKILL.md");
   const [files, setFiles] = useState<string[]>(["SKILL.md"]);
   const [saved, setSaved] = useState<string | null>(null);
@@ -225,7 +225,7 @@ function SkillDetail({
   );
 }
 
-export default function SkillsSection({ onChanged, filter = "" }: SectionProps) {
+export default function SkillsSection({ filter = "" }: SectionProps) {
   const load = useCallback(() => cc.skills.list(), []);
   const { data, error, reload } = useModuleData(load);
   const [skill, setSkill] = useState<string | null>(readSkill);
@@ -247,7 +247,6 @@ export default function SkillsSection({ onChanged, filter = "" }: SectionProps) 
     toastOk(`Created ${name.trim()}`);
     setName("");
     setCreating(false);
-    onChanged();
     reload();
   };
 
@@ -275,12 +274,8 @@ export default function SkillsSection({ onChanged, filter = "" }: SectionProps) 
         description={picked.description}
         linked={picked.linked}
         onBack={() => open(null)}
-        onChanged={() => {
-          onChanged();
-          reload();
-        }}
+        onChanged={reload}
         onDeleted={() => {
-          onChanged();
           reload();
           open(null);
         }}
