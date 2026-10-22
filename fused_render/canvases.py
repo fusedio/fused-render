@@ -695,6 +695,23 @@ def _cloned_names(env: str) -> set[str]:
     return {d for d in entries if os.path.isfile(os.path.join(root, d, "canvas.toml"))}
 
 
+def cloned_canvases() -> list[tuple[str, str, str]]:
+    """Every clone on this machine, both environments: ``(env, name,
+    clone_dir)`` in env order (`WORKBENCH_ENV_CHOICES`), names sorted
+    casefold within an env. The launcher's canvas rows (launcher.py): a
+    clone is findable by typing whether or not it is on the desk, the way
+    a workspace app is. The clone rule is `_cloned_names`'s (a dir holding
+    a canvas.toml); a root that is missing or unreadable is simply empty."""
+    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
+
+    out: list[tuple[str, str, str]] = []
+    for env in WORKBENCH_ENV_CHOICES:
+        for name in sorted(_cloned_names(env), key=str.casefold):
+            if _NAME_RE.match(name):
+                out.append((env, name, _canvas_dir(env, name)))
+    return out
+
+
 def clone_dir_for(path: str) -> tuple[str, str, str] | None:
     """The canvas CLONE `path` is, or sits inside — `(env, name, clone_dir)`
     — or None. A clone is `<canvases_root(env)>/<name>` (one level under an
