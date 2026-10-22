@@ -2517,10 +2517,15 @@ export function TaskList({
     const mine = sectionsHolding(groups, groupBy, new Set([rows[arrived]!.key]));
     const deepest = (mine[mine.length - 1] ?? open[0]!).replace(/[^\w-]+/g, "_");
     requestAnimationFrame(() => {
-      const section = listRef.current
-        ?.querySelector(`#tasks-group-${groupBy}-${deepest}`)
-        ?.closest<HTMLElement>(".tasks-group");
+      // The row's OWN section where the row is on screen — one task is drawn
+      // once, but reading the section off the node is the answer that cannot
+      // disagree with it (CodeRabbit, #1855); the deepest key is the fallback
+      // for a row not drawn yet.
       const row = elsByKey.current.get(rowKeys[arrived] ?? "");
+      const section = (row instanceof HTMLElement ? row.closest<HTMLElement>(".tasks-group") : null)
+        ?? listRef.current
+          ?.querySelector(`#tasks-group-${groupBy}-${deepest}`)
+          ?.closest<HTMLElement>(".tasks-group");
       const node = (row instanceof HTMLElement && section?.contains(row) ? row : section) ?? null;
       if (!node || !section) return;
       const outer = section.closest<HTMLElement>(".tasks-group[data-depth='0']") ?? section;
