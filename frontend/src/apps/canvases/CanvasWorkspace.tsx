@@ -1804,6 +1804,9 @@ export default function CanvasWorkspace({
               ref={frameRef}
               src={frameSrc}
               title={`Workbench: ${name}`}
+              // Cross-origin frame: without this the workbench's
+              // navigator.clipboard calls (Copy link, copy/paste UDFs) reject.
+              allow="clipboard-read; clipboard-write"
               /* NO `data-fused-annotate-target` here, deliberately: the canvas
                  chat gets this frame as a getter (`annotateTarget` below), and
                  the explorer engine in the right pane finds its own content
