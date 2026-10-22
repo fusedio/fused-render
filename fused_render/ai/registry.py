@@ -1732,6 +1732,10 @@ _RUNNERS: tuple[Runner, ...] = (
         # No Hub tag: the one repo this loads carries only `onnx`, and a
         # "kokoro" filter would hide it while surfacing repos it cannot open.
         hub_filter_tags=(),
+        # The catalog POOL still pages that tag (D1304): with neither field the
+        # Linux pool would be the whole text-to-speech pipeline tag, and a
+        # Mac's union would stay `("qwen3_tts",)`, leaving Kokoro's repo out.
+        hub_pool_tags=("onnx",),
         _available=_always,
     ),
 )

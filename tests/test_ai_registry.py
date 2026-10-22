@@ -408,13 +408,15 @@ def test_text_to_speech_has_the_mlx_row_first_and_kokoro_last():
     because `mlx-audio-tts` is registered above the cross-platform row."""
     rows = [r for r in registry.all_runners() if r.capability == registry.TEXT_TO_SPEECH]
     assert [r.code for r in rows] == ["mlx-audio-tts", "sherpa-tts"]
-    assert registry.all_runners()[-1].code == "sherpa-tts"
     kokoro = _runner("sherpa-tts")
     assert (kokoro.label, kokoro.short, kokoro.family) == (
         "Kokoro (sherpa-onnx)", "Kokoro", "Kokoro")
     # The one loadable repo (csukuangfj/kokoro-multi-lang-v1_1) carries only
     # the tags ['onnx', 'region:us']; a "kokoro" tag filter would hide it.
     assert kokoro.hub_filter_tags == ()
+    # ...but the catalog POOL must still page that tag (D1304), or Linux pages
+    # the whole text-to-speech pipeline and a Mac's pool drops Kokoro's repo.
+    assert kokoro.hub_pool_tags == ("onnx",)
 
 
 def test_kokoro_runs_everywhere_and_the_mac_default_stays_qwen(monkeypatch):
