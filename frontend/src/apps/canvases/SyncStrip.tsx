@@ -193,7 +193,7 @@ export function SyncStrip({
         <ArrowLeftIcon size={14} />
       </button>
       <span className="canvases-env-chip" title={`${name} syncs with ${ENV_NAMES[env].label}`}>
-        {ENV_NAMES[env].label}
+        {ENV_NAMES[env].tag}
       </span>
         </>
       )}

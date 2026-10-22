@@ -275,7 +275,7 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
                 className="canvases-env-chip canvas-page-env"
                 title={`${name} syncs with ${ENV_NAMES[env].label}`}
               >
-                {ENV_NAMES[env].label}
+                {ENV_NAMES[env].tag}
               </span>
             </h1>
             {/* The hosted workbench editor's URL, as the caption under the
