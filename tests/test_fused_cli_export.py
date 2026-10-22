@@ -162,13 +162,38 @@ def test_render_wrapper_runs_this_interpreter_on_the_cli_module(monkeypatch, tmp
     assert "PYTHONHOME" not in text
 
 
-def test_render_wrapper_bakes_the_bundle_interpreter_env(monkeypatch, tmp_path):
+def test_render_wrapper_bakes_only_a_real_bundle_pythonhome(monkeypatch, tmp_path):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("PYTHONHOME", "/Bundle/Resources/python")
-    monkeypatch.setenv("PYTHONPATH", "/Bundle/Resources/lib dir")
+    bundle = tmp_path / "Bundle Resources"
+    bundle.mkdir()
+    monkeypatch.setenv("PYTHONHOME", str(bundle))
+    monkeypatch.setenv("PYTHONPATH", "/transient/path")
     text = open(fusedcli.export_render_wrapper(), encoding="utf-8").read()
-    assert "export PYTHONHOME=/Bundle/Resources/python" in text
-    assert "export PYTHONPATH='/Bundle/Resources/lib dir'" in text
+    assert f"export PYTHONHOME={shlex.quote(str(bundle))}" in text
+    assert "PYTHONPATH" not in text
+    assert "/transient/path" not in text
+
+
+def test_render_wrapper_ignores_a_pythonhome_that_is_not_a_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PYTHONHOME", str(tmp_path / "nope"))
+    text = open(fusedcli.export_render_wrapper(), encoding="utf-8").read()
+    assert "PYTHONHOME" not in text
+
+
+@pytest.mark.parametrize("stderr", [
+    "RuntimeError: Auth0 refused. Re-authenticate by running `fused login` (or, in a notebook, x).",
+    "Error: please run fused login first",
+    "PermissionError: Fused credentials not found -- please log in using the Workbench.",
+])
+def test_cli_error_adds_the_in_app_login_hint(monkeypatch, stderr):
+    monkeypatch.setattr(fusedcli, "setup_cli_hint", lambda: "/app/fused-bin/fused")
+    assert fusedcli.cli_error(stderr, "x").endswith("(in this app: /app/fused-bin/fused login)")
+
+
+def test_cli_error_leaves_other_errors_alone(monkeypatch):
+    monkeypatch.setattr(fusedcli, "setup_cli_hint", lambda: "/app/fused-bin/fused")
+    assert fusedcli.cli_error("Error: canvas not found", "x") == "canvas not found"
 
 
 def test_render_wrapper_exists_with_no_fused_cli(monkeypatch, tmp_path):
