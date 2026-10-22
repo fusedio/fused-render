@@ -359,6 +359,17 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_ORIGIN",
 
 
 @pytest.fixture(autouse=True)
+def _no_archiving_of_missing_folders(monkeypatch):
+    """The Tasks listing files away a task whose folder is gone from disk
+    (`routers/tasks.py ARCHIVE_MISSING_FOLDERS`), and nearly every transcript
+    the suite writes names a cwd that does not exist (`/p`). Off for the suite;
+    the test of the pass itself (test_tasks_api.py, "gone folder") turns it
+    back on."""
+    from fused_render.server.routers import tasks as tasks_router
+    monkeypatch.setattr(tasks_router, "ARCHIVE_MISSING_FOLDERS", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_session_count(monkeypatch):
     """The Claude session cap counts live hosts under the REAL runs tree, which
     on a developer machine with ten chats open would hold every scheduler test.
