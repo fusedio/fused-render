@@ -1,0 +1,16 @@
+{
+  "name": "Slack",
+  "_comment": "client_id is empty until the Fused Slack app ships with PKCE and public distribution on; FUSED_RENDER_CONNECT_SLACK_CLIENT_ID fills it, or create your own app from manifest.json (byo). There is no client secret anywhere: PKCE replaces it.",
+  "auth": [
+    {"kind": "oauth-pkce", "client_id": "",
+     "authorize_url": "https://slack.com/oauth/v2/authorize",
+     "token_url": "https://slack.com/api/oauth.v2.access",
+     "revoke_url": "https://slack.com/api/auth.revoke",
+     "identity_url": "https://slack.com/api/auth.test",
+     "scopes": {"user_scope": "channels:history,channels:read,groups:history,groups:read,im:history,im:read,mpim:history,mpim:read,users:read,search:read,reactions:read,reactions:write,chat:write"},
+     "redirect": {"host": "localhost", "ports": [47823, 47824, 47825, 47826, 47827], "path": "/callback"},
+     "byo": {"manifest": "manifest.json", "docs": "https://api.slack.com/apps"}}
+  ],
+  "tools": {"remote": null},
+  "privacy": "Sign-in and every call go straight from this computer to Slack. The token stays on this computer. Fused runs no server in this flow."
+}
