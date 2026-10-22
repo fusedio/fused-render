@@ -10,6 +10,8 @@
 import { useSyncExternalStore } from "react";
 import { api, apiHooks, markBotSeen, type Bot, type BotEvent, type ImessageState, type SlowCall, type UsageSummary, ApiError } from "../lib/api";
 import { SEEN_KEY, newMarkFor, parseSeenMap, unreadOf, unviewedOf } from "../lib/unread";
+import { landingBot } from "../lib/landing";
+import { botHasUnread } from "@platform/lib/botsPulse";
 import { getPrefsShared, putBotsPref } from "@platform/lib/api";
 import { sentByYou } from "../lib/derive";
 import { chime, notifyEvents, notifyHandover, updateTitle } from "../lib/notify";
@@ -300,7 +302,7 @@ export function markSeen(id: string | null | undefined, seq: number): void {
  *  the server's raw `seen_seq`: a bot you just opened is read here at once, and the chip must not count it for the
  *  poll or two until the server echoes the POST. Called on every poll and on every local mark. */
 function publishPulse(): void {
-  publishBots(S.bots.map((b) => ({ id: b.id, status: b.status, seq: b.seq, seen_seq: S.seen[b.id], hidden: b.hidden })));
+  publishBots(S.bots.map((b) => ({ id: b.id, status: b.status, seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id], hidden: b.hidden })));
 }
 export const unreadCount = (b: Bot): number => unreadOf(S.seen[b.id], eventsOf(b.id), b);
 /** The "new" rule sits at the seen mark as of opening this bot and stays put until you switch bots; set only when something is past it, else cleared. */
@@ -433,18 +435,37 @@ export function jumpTo(id: string, seq: number): void {
 }
 export const clearScrollSeq = (): void => { if (S.scrollSeq) commit({ scrollSeq: null }); };
 
+/** The sidebar's dot rule, over this store's merged read mark (publishPulse): the bare door lands on what the dot
+ *  pointed at. */
+const hasNews = (b: Bot): boolean => botHasUnread({ seq: b.seq, news_seq: b.news_seq, seen_seq: S.seen[b.id] });
+
+/** Fill in the bare `/bots` (the sidebar row, the Dock, a remount) with a bot: the one waiting on you, else one
+ *  with unread news, else the one that was open (lib/landing.ts). A replace: the click already made the history
+ *  entry. A different bot than the one on screen gets the select resets (applySel), and landing marks it read.
+ *  With no rows yet the pick waits for the first poll (pollOnce), which calls this again. */
+function landOnBare(): void {
+  const pick = S.bots.length ? landingBot(S.bots, hasNews, S.sel) : S.sel;
+  if (!pick) return;
+  batch(() => {
+    if (pick !== S.sel) applySel(pick);
+    writeUrl(pick, "replace");
+  });
+}
+
 // The URL moved under us (back/forward, the Dock's fallback rewrite, the sidebar's Bots row): follow it. A bot the
 // path names gets the full select resets — Back between two chats is a bot switch like any click, and B's reply
 // quote must not land in A's composer. The bare `/bots` reached while the page is mounted (the sidebar row from a
-// chat) is filled in with the bot on screen, a replace, so the URL never stays behind the view (I4). A gesture of
-// ours already committed `sel` before it navigated, so for it this is a no-op.
+// chat) is filled in by landOnBare — a bot waiting on you or carrying unread news first (owner, 2026-10-22: "when
+// click on bot from sidebar, it should go to the bot with unread messages if any … blocker > unread"), else the
+// bot on screen — a replace, so the URL never stays behind the view (I4). A gesture of ours already committed
+// `sel` before it navigated, so for it this is a no-op.
 function syncFromUrl() {
   const id = urlSel();
   if (id) {
     if (id !== S.sel && (!S.bots.length || S.bots.some((b) => b.id === id))) batch(() => applySel(id));
     return;
   }
-  if (S.sel && isBotsPath(location.pathname) && parseBotsPath(location.pathname).kind === "list" && (!S.bots.length || S.bots.some((b) => b.id === S.sel))) writeUrl(S.sel, "replace");
+  if (isBotsPath(location.pathname) && parseBotsPath(location.pathname).kind === "list" && (S.bots.length || S.sel)) landOnBare();
 }
 
 /** The menu-bar Dock's bot tile (fused_render/mac_window.py `show_bot`) lands here: a user gesture from outside
@@ -545,8 +566,9 @@ export async function pollOnce(): Promise<void> {
       }
       // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
       if (first && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
-      // Nothing selected yet: Super Bot (seeded on first run, registry.seed_super) is the chat a new user should land in.
-      if (!S.sel && r.bots.length) select(r.bots.find((b) => b.kind === "super" && !b.hidden)?.id || r.bots.filter((b) => !b.hidden)[0]?.id || r.bots[0].id, { replace: true });
+      // Nothing selected yet: a bot waiting on you, else one with news, else Super Bot (seeded on first run,
+      // registry.seed_super) — the chat a new user should land in (lib/landing.ts).
+      if (!S.sel && r.bots.length) landOnBare();
       if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null, { replace: true });
       // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
       // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
@@ -616,7 +638,7 @@ export function startStore(): () => void {
   window.addEventListener(OPEN_EVENT, onOpenEvent);
   const urlBot = urlSel();
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
-  else if (!urlBot && S.sel) writeUrl(S.sel, "replace");
+  else if (!urlBot && S.sel) landOnBare();  // the bare door from another page: waiting > unread > the bot that was open
   const gen = Math.abs(loopGen) + 1;
   loopGen = gen;
   void loop(gen);
