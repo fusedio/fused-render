@@ -44,7 +44,9 @@ export interface CanvasesStatus {
    *  frames (the same, or — custom env with the embed proxy on — the
    *  loopback proxy in front of it), its clone folder
    *  (`~/Fused/canvas/<env>`), how many clones it holds here, and whether it
-   *  can be picked (false only for custom with no `~/.fused/settings.toml`). */
+   *  is configured (false only for custom whose `~/.fused/settings.toml`
+   *  names no `base_url`). The Settings picker disables an unconfigured
+   *  custom; the Canvases page offers it and opens the settings editor. */
   envs: Record<
     WorkbenchEnv,
     {
@@ -55,7 +57,39 @@ export interface CanvasesStatus {
       available: boolean;
     }
   >;
+  /** The custom environment's settings file (`~/.fused/settings.toml`,
+   *  expanded) — what the settings editor edits. */
+  settings_path: string;
 }
+
+/** The settings editor's read. Creates the file EMPTY when there is none,
+ *  so the reader edits a real path from the start; an empty file configures
+ *  nothing, so `configured` stays false until a `base_url` is saved. */
+export const openFusedSettings = () =>
+  postJson<{ path: string; text: string; created: boolean; configured: boolean }>(
+    "/api/canvases/settings/open",
+    {},
+  );
+
+/** Write the settings file. A paste that is not TOML is refused (400,
+ *  code `invalid_toml`, the parser's sentence in `error`) and the file is
+ *  left as it was. */
+export const saveFusedSettings = (text: string) =>
+  postJson<{
+    ok: boolean;
+    path: string;
+    configured: boolean;
+    base_url: string | null;
+    web_url: string;
+  }>("/api/canvases/settings/save", { text });
+
+/** Remove the settings file (only the TOML one); custom is unconfigured
+ *  again afterwards. A missing file is `removed: false`, not an error. */
+export const deleteFusedSettings = () =>
+  postJson<{ ok: boolean; path: string; removed: boolean; configured: boolean }>(
+    "/api/canvases/settings/delete",
+    {},
+  );
 
 /** `custom` (fusedcli.CUSTOM_WORKBENCH_ENV) is no Fused of its own: its CLI
  *  runs leave FUSED_ENV unset, so they talk to whatever endpoint
