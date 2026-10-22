@@ -980,3 +980,15 @@ polls or syncs that did not before:
 - A merged proposal not yet in the copy says it comes in on the next open or
   Check, not "shortly".
 
+### 16.15 The explorer's dialog (2026-10-22)
+
+People work from the explorer, not the app page. The three-dot menu of an
+app's entry (`apps/explorer/EntryActionsMenu.tsx`) gains a **GitHub** row,
+offered while any Community switch is on, which opens
+`shell/contrib/ContribModal.tsx`: the Source panel (state, every button,
+Activity with Undo), the contributors line and, for the author's own app, the
+Proposals inbox — the same components the app page mounts, reading the
+folder's state with `useAppContrib` themselves. It is the one shell module
+the app layer may import (`scripts/check-boundaries.mjs`,
+`SHELL_OPEN_TO_APPS`). With the preview off it says where to turn it on.
+

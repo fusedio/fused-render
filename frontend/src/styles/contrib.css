@@ -1007,3 +1007,31 @@
   color: var(--fg-muted);
 }
 
+/* The explorer's dialog: the Source panel, then the inbox, in one scroll. */
+.contrib-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.contrib-modal-off {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--fg-muted);
+}
+.contrib-modal-inbox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.contrib-modal-h {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
