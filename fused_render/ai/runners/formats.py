@@ -2018,6 +2018,9 @@ def speech_traits(config: dict) -> dict | None:
 #: otherwise an `onnx-embed` graph question and this one is not an embedder.
 KOKORO_FILES = ("model.onnx", "voices.bin", "tokens.txt")
 KOKORO_DATA_DIR = "espeak-ng-data"
+#: The Chinese front end's folder; `sherpa_tts.worker.load` always passes it, so
+#: the claim requires it too rather than letting sherpa-onnx's constructor fail.
+KOKORO_DICT_DIR = "dict"
 #: Speaker id -> name, index = sid (the sherpa-onnx table for kokoro-multi-lang-v1_1:
 #: https://k2-fsa.github.io/sherpa/onnx/tts/all/Chinese-English/kokoro-multi-lang-v1_1.html).
 #: Three English voices, then 55 `zf_*` and 45 `zm_*` Chinese ones. The count is
@@ -2042,7 +2045,8 @@ KOKORO_VOICES = (
 
 
 def is_kokoro_snapshot(names, dirnames) -> bool:
-    return all(name in names for name in KOKORO_FILES) and KOKORO_DATA_DIR in dirnames
+    return (all(name in names for name in KOKORO_FILES)
+            and KOKORO_DATA_DIR in dirnames and KOKORO_DICT_DIR in dirnames)
 
 
 def kokoro_traits() -> dict:

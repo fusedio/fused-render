@@ -125,7 +125,7 @@ def test_load_refuses_a_directory_that_is_not_a_kokoro_export(monkeypatch, tmp_p
         worker.load("org/other", str(tmp_path))
     message = str(error.value)
     assert "org/other" in message and "not a Kokoro sherpa-onnx export" in message
-    for name in ("model.onnx", "voices.bin", "tokens.txt", "espeak-ng-data"):
+    for name in ("model.onnx", "voices.bin", "tokens.txt", "espeak-ng-data", "dict"):
         assert name in message
     assert sherpa.built == []
 
