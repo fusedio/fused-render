@@ -73,7 +73,7 @@ import { ProposeDialog } from "./ProposeDialog";
 import { RemixDialog } from "./RemixDialog";
 import { SignInSheet } from "./SignInSheet";
 import { QuietAction, StatusStrip, type StripTone } from "./StatusStrip";
-import { authorOf, plural } from "./words";
+import { authorOf, checksWhen, plural, STEPS_FOR } from "./words";
 
 /** Drawn in the "checked" line, not the button row. */
 const CHECK_ID = "check";
@@ -92,18 +92,8 @@ const ATTENTION_STATES = new Set([
 ]);
 /** States that say all is well. */
 const QUIET_STATES = new Set(["following", "merged", "published"]);
-/** A long action's progress line, in the words of what it does. */
-const DOING: Record<string, string> = {
-  check: "Checking…",
-  withdraw: "Withdrawing…",
-  "bring-in": "Bringing in…",
-  "publish-now": "Publishing…",
-  "put-on-top": "Publishing…",
-  "publish-over": "Publishing…",
-  "update-proposal": "Sending…",
-  "push-main": "Sending…",
-  discard: "Discarding…",
-};
+/** Check now's own line (the one action whose progress is not a step list). */
+const DOING = { check: "Checking…" };
 /** Opens the new-files sheet first when the copy has new files. */
 const UPDATE_ID = "update-proposal";
 const DISCARD_ID = "discard";
@@ -127,7 +117,7 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The job a long action is running, for its progress line.
-  const [job, setJob] = useState<{ id: string; step: string | null } | null>(null);
+  const [job, setJob] = useState<{ id: string; step: string | null; since: number } | null>(null);
   const [activityOpen, setActivityOpen] = useState(false);
   const [withdrawToo, setWithdrawToo] = useState(false);
   const [include, setInclude] = useState<ReadonlySet<string>>(() => new Set());
@@ -215,10 +205,11 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
         if (started.ok) say(started);
         return started;
       }
-      setJob({ id: a.id, step: null });
+      const since = Date.now();
+      setJob({ id: a.id, step: null, since });
       const r = await runJob(Promise.resolve(started), {
         signal: signal(),
-        onTick: (j: ContribJob) => setJob({ id: a.id, step: j.step ?? null }),
+        onTick: (j: ContribJob) => setJob({ id: a.id, step: j.step ?? null, since }),
       });
       if (r.ok) say(r);
       return r;
@@ -310,7 +301,11 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
           <FileList files={panel.files} />
           {/* Check now says "Checking…" in its own line: no second spinner. */}
           {job && job.id !== CHECK_ID && (
-            <JobProgress steps={[{ key: job.step ?? "run", label: DOING[job.id] ?? "Working…" }]} current={job.step} />
+            <JobProgress
+              steps={STEPS_FOR[job.id] ?? [{ key: "run", label: "Working…" }]}
+              current={job.step ?? STEPS_FOR[job.id]?.[0]?.key ?? "run"}
+              since={job.since}
+            />
           )}
           {merge && <MergeReview dir={dir} job={merge} brief disabled={!!busy} refresh={contrib.refresh} />}
           {error && sheet?.k !== "confirm" && (
@@ -330,6 +325,9 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
                 </>
               )}
             </span>
+            {(panel.state === "proposed" || panel.state === "merged") && (
+              <span className="contrib-panel-when">{checksWhen(panel.state, who)}</span>
+            )}
             {activity.length > 0 && (
               <button
                 type="button"

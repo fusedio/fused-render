@@ -48,9 +48,64 @@ export function elapsed(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+/** One step of a long operation: its label, and for the steps whose length
+ *  is GitHub's or Claude's to decide, a hint saying so (§16.13: latency is
+ *  fine as long as the person is told why). */
+export interface Step {
+  key: string;
+  label: string;
+  hint?: string;
+}
+
+/** What GitHub's own delay usually is, in one clause the hints share. */
+const GITHUB_LAG = "GitHub shows a change a few seconds after it arrives.";
+
 /** The progress steps of sending a proposal, keyed by the job's `step`. */
-export const SEND_STEPS: { key: string; label: string }[] = [
-  { key: "copy", label: "Making your copy on GitHub…" },
+export const SEND_STEPS: Step[] = [
+  {
+    key: "copy",
+    label: "Making your copy on GitHub…",
+    hint: "Usually a few seconds; GitHub sometimes takes up to a minute to set a copy up.",
+  },
   { key: "send", label: "Sending your changes…" },
   { key: "open", label: "Opening the proposal…" },
 ];
+
+/** Update proposal: the push, then a short wait for GitHub to show it. */
+export const UPDATE_STEPS: Step[] = [
+  { key: "send", label: "Sending your newer edits…" },
+  { key: "confirm", label: "Waiting for GitHub to confirm…", hint: GITHUB_LAG },
+];
+
+export const WITHDRAW_STEPS: Step[] = [
+  { key: "close", label: "Closing the proposal…" },
+  { key: "tidy", label: "Removing your copy on GitHub…" },
+];
+
+/** Accept, on the author's side: GitHub merges, then her copy is synced. */
+export const ACCEPT_STEPS: Step[] = [
+  { key: "merge", label: "Merging on GitHub…", hint: "GitHub usually answers in a few seconds." },
+  { key: "sync", label: "Bringing your copy up to date…" },
+];
+
+/** The steps of each long action the Source panel runs, by action id; an
+ *  action not listed shows one unnamed step. */
+export const STEPS_FOR: Record<string, Step[]> = {
+  "update-proposal": UPDATE_STEPS,
+  withdraw: WITHDRAW_STEPS,
+  "push-main": [{ key: "run", label: "Sending your changes to the app…" }],
+  "bring-in": [{ key: "run", label: "Bringing in the latest…" }],
+  "publish-now": [{ key: "run", label: "Publishing…" }],
+  "put-on-top": [{ key: "run", label: "Publishing…" }],
+  "publish-over": [{ key: "run", label: "Publishing…" }],
+  "move-aside": [{ key: "run", label: "Moving your file aside and updating…" }],
+  discard: [{ key: "run", label: "Discarding…" }],
+  remix: [{ key: "run", label: "Publishing your remix…" }],
+};
+
+/** Why the panel's "Checked …" line reads as it does: when checks happen,
+ *  so nobody waits on one that is not coming. */
+export function checksWhen(state: string, who: string): string {
+  const what = state === "proposed" || state === "merged" ? `${possessive(who)} reply` : `${possessive(who)} latest`;
+  return `Checks for ${what} when you open the app, every minute while it's open, and when you press Check.`;
+}

@@ -202,7 +202,8 @@ def inbox_snapshot(app_dir: str) -> dict:
         note_inbox(app_dir, items)
         # A list kept across an invalidate (minus the closed proposal) is
         # shown with a loading mark until the fresh one lands.
-        return {"items": items, "count": len(items), "loading": bool(inbox.refreshing(app_dir))}
+        return _with_age({"items": items, "count": len(items),
+                          "loading": bool(inbox.refreshing(app_dir))}, inbox, app_dir)
     key = _key(app_dir)
     now = time.monotonic()
     with _lock:
@@ -215,8 +216,8 @@ def inbox_snapshot(app_dir: str) -> dict:
         _submit(_P_OPEN, "inbox-open", key, lambda: _list_inbox(app_dir))
         items = inbox.cached(app_dir, start_reviews=True)  # an inline run (tests) may have listed
         if isinstance(items, list):
-            return {"items": items, "count": len(items),
-                    "loading": bool(inbox.refreshing(app_dir))}
+            return _with_age({"items": items, "count": len(items),
+                              "loading": bool(inbox.refreshing(app_dir))}, inbox, app_dir)
     with _lock:
         running = ("inbox-open", key) in _queued or ("open", key) in _queued
         failed = _inbox_reached.get(key) is False
@@ -452,6 +453,24 @@ def refresh_now(app_dir: str) -> bool:
         return False
     _refresh_app(app_dir, force=True)
     return True
+
+
+def _with_age(out: dict, inbox, app_dir: str) -> dict:
+    """`listed_at` (epoch seconds the list was read from GitHub) on the
+    snapshot when the inbox knows it — the page says "from 2 min ago";
+    absent for a stand-in module without the question (the route tests)."""
+    fn = getattr(inbox, "listed_at", None)
+    at = fn(app_dir) if callable(fn) else None
+    if at:
+        out["listed_at"] = at
+    return out
+
+
+def forced_ago(app_dir: str) -> float | None:
+    """Seconds since the last forced check of this app ran (None: never)."""
+    with _lock:
+        last = _last_force.get(_key(app_dir))
+    return None if last is None else max(0.0, time.monotonic() - last)
 
 
 def classify_soon(paths: list[str]) -> None:

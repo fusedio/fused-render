@@ -970,3 +970,40 @@
     animation: none;
   }
 }
+
+/* §16.13: every wait names itself — a clock beside the current step and a
+   hint saying whose time it is (GitHub's, Claude's). */
+.contrib-step-text {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.contrib-step-clock {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.contrib-step-hint {
+  display: block;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+.contrib-inbox-age {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+.contrib-inbox-wait {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+.contrib-panel-when {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+

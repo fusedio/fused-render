@@ -954,6 +954,7 @@ def update(app_dir, *, include=None, step=None) -> dict:
     if head == remote:
         raise PlainError("Your proposal already has all your changes.", reason="nothing-new")
     _push(root, head, fork, head_branch)
+    caught_up = _github_shows(p["repo"], p["number"], head, step)
     now = time.time()
 
     def put(rec):
@@ -967,7 +968,32 @@ def update(app_dir, *, include=None, step=None) -> dict:
 
     _store().update(root, put)
     _activity(root, "proposal-updated", f"Sent your newer edits to your proposal for {who}")
-    return view(root) or {}
+    out = view(root) or {}
+    if not caught_up:
+        out["message"] = ("Sent. GitHub hasn't caught up yet; your newer edits show on the "
+                          "proposal in a moment.")
+    return out
+
+
+#: After a push, GitHub shows the proposal's new version a few seconds later.
+#: Update waits for that, briefly and visibly (step "confirm"), so the page
+#: never reads the old version back as if it were current (§16.13).
+CONFIRM_TRIES = 4
+CONFIRM_WAIT_S = 1.5
+
+
+def _github_shows(repo, number, head, step) -> bool:
+    """Whether GitHub already reports `head` as the proposal's version."""
+    _say(step, "confirm")
+    for i in range(CONFIRM_TRIES):
+        try:
+            if gh.get_pr(repo, number).get("head_sha") == head:
+                return True
+        except gh.GitHubError:
+            return False
+        if i < CONFIRM_TRIES - 1:
+            time.sleep(CONFIRM_WAIT_S)
+    return False
 
 
 def merge_accepted(app_dir) -> dict:
@@ -1032,13 +1058,17 @@ def withdraw(app_dir) -> dict:
     _gate(root)
     was_open = _is_open(p)
     if was_open:
+        from fused_render.contrib import jobs
+
         me = gh.identity() or {}
         who = me.get("login") or p.get("user") or "The sender"
+        jobs.set_step(jobs.current_id(), "close")
         try:
             gh.close_pr(p["repo"], p["number"], comment=f"{who} withdrew this proposal.")
         except gh.GitHubError as exc:
             if exc.reason != "not-found":
                 raise
+        jobs.set_step(jobs.current_id(), "tidy")
         _delete_branch(p.get("head_repo"), p.get("head_branch"), p.get("repo"))
 
     def clear(rec):

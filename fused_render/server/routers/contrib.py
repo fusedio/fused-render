@@ -699,7 +699,15 @@ def _check(t: _Target) -> dict:
             from fused_render import git_upstream
 
             res = _sync_answer(git_upstream.sync_repo(t.app_dir, action="Check now", push=False))
-        _safely("refresh", refresh.refresh_now, t.app_dir)
+        ran = _safely("refresh", refresh.refresh_now, t.app_dir)
+        if ran is False and isinstance(res, dict) and res.get("ok"):
+            # The GitHub side (proposal state, inbox) was asked within the
+            # last few seconds: its answer stands, and the page says so
+            # rather than pretending to have asked again (§16.13).
+            ago = refresh.forced_ago(t.app_dir)
+            when = f"{int(ago)}s ago" if ago is not None and ago >= 1 else "just now"
+            res = {**res, "message": f"Already checked GitHub {when}. Its answer stays the same "
+                                     f"for about {int(refresh.FORCE_TTL_S)} seconds."}
         return res
 
     return _job("action-check", t.app_dir, run)

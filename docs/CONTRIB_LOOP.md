@@ -952,3 +952,31 @@ author's "asked you to update" (the sender's refresh reads comments by other
 people only); `_delete_branch` never deletes a branch on the author's repo, so a
 withdrawn same-repo proposal leaves its `fused-*` branch behind.
 
+### 16.14 Named waits (2026-10-22) — nothing new runs in the background
+
+The latency of the loop is GitHub's and Claude's; what was missing was the
+reason on screen. Every wait now names itself, with a clock, and nothing
+polls or syncs that did not before:
+
+- Jobs may finish with a `message` (`jobs._run` keeps a result's `message`):
+  Update says "Sent. GitHub hasn't caught up yet…" when, after its push and a
+  bounded visible wait (step `confirm`, ≤ 4 reads 1.5 s apart,
+  `proposals._github_shows`), GitHub still reports the old version.
+- Steps: Update `send → confirm`; Withdraw `close → tidy`; Accept
+  `merge → sync` (`inbox.accept` / `_after_accept`). The page's `JobProgress`
+  shows an elapsed clock on the current step and a hint on the steps whose
+  length GitHub or Claude decides (`words.ts` `Step.hint`).
+- Check now that ran inside `FORCE_TTL_S` of the last forced check answers
+  "Already checked GitHub Ns ago. Its answer stays the same for about 10
+  seconds." (`refresh.forced_ago`); the copy itself is still re-checked.
+- The foot's check names what it looks for ("Check for alice's reply" /
+  "Check for alice's latest"), and a proposed or merged panel says when checks
+  happen (open, every minute while open, Check).
+- The inbox snapshot carries `listed_at`; the tab says "from GitHub 2m ago;
+  Check asks again", "Asking GitHub for proposals…" while cold, a clock on a
+  running review (`review_started_at`) with "usually under a minute; Try and
+  Accept open when it's done", and "GitHub is still checking whether this
+  fits…" while `fits` is unknown.
+- A merged proposal not yet in the copy says it comes in on the next open or
+  Check, not "shortly".
+

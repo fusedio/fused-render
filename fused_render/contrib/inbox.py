@@ -250,6 +250,15 @@ def _fits_for(repo: str, number: int, head, *, network: bool) -> bool | None:
     return value if pr.get("head_sha") == head else None
 
 
+def listed_at(app_dir: str) -> float | None:
+    """When the cached list was read from GitHub (epoch seconds); None when
+    never, or when the cache was dropped (an accept or decline here)."""
+    repo, _ = _repo_of(_key(app_dir))
+    with _lock:
+        hit = _lists.get(repo) if repo else None
+    return hit[0] if hit and hit[0] else None
+
+
 def cached(app_dir: str, *, start_reviews: bool = False) -> builtins.list | None:
     """The inbox from the last listing, with NO network — for GET
     /api/contrib/app. None when never listed. With `start_reviews` (the
@@ -296,9 +305,14 @@ def _items(app_dir: str, repo: str, prs, *, start_reviews: bool) -> builtins.lis
             try_state = _mod("trycopy").status(app_dir, number)
         except Exception:  # noqa: BLE001
             try_state = None
+        started = None
+        if status in ("pending", "running"):
+            job = jobs.latest(_job_kind(number), app_dir)
+            started = job.get("started_at") if job else None
         out.append({
             "number": number, "url": pr.get("url") or "", "title": pr.get("title") or "",
             "author": pr.get("user") or "", "from_fused": from_fused,
+            "review_started_at": started,
             "fits": _fits_for(repo, number, head, network=False),
             "merge_job": _merge_for(app_dir, number),
             "summary": summary, "summary_source": source, "description": description,
@@ -815,6 +829,7 @@ def accept(app_dir: str, number: int, *, confirm: bool = False) -> dict:
     if review_obj.get("verdict") != "fine" and not confirm:
         return {"ok": False, "reason": "confirm",
                 "message": "Claude thinks this proposal needs a look. Accept it anyway?"}
+    jobs.set_step(jobs.current_id(), "merge")
     try:
         result = gh.merge_pr(repo, number, sha=head, method=_merge_method(repo))
     except Exception as exc:  # noqa: BLE001
@@ -884,6 +899,7 @@ def _after_accept(app_dir: str, number: int, message: str, author: str | None = 
         _activity(app_dir, "inbox-accepted", f"Accepted {author}'s proposal")
     _cleanup(app_dir, number)
     synced = False
+    jobs.set_step(jobs.current_id(), "sync")
     try:
         out = _gu().sync_repo(app_dir, action="Accept proposal", push=True)
         synced = (out or {}).get("status") == "synced"

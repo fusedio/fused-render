@@ -81,6 +81,7 @@ export function ProposeDialog({
   const [include, setInclude] = useState<ReadonlySet<string>>(() => new Set());
   const touched = useRef({ title: false, description: false });
   const [step, setStep] = useState<string | null>(null);
+  const [sendingSince, setSendingSince] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<SentProposal | null>(null);
   const live = useRef(true);
@@ -127,6 +128,7 @@ export function ProposeDialog({
     setPhase("sending");
     setError(null);
     setStep(null);
+    setSendingSince(Date.now());
     const r = await runJob<SentProposal>(
       runAction(dir, "propose", {
         args: {
@@ -186,7 +188,8 @@ export function ProposeDialog({
         <div className="flex min-w-0 flex-col gap-1">
           <p className="m-0 text-sm font-medium">Sent to {author}.</p>
           <p className="m-0 text-[13px] leading-5 text-muted-foreground">
-            This page shows {possessive(author)} answer as soon as there is one.
+            GitHub shows it a few seconds from now. This page checks for {possessive(author)} answer when you open
+            the app, every minute while it&rsquo;s open, and when you press Check.
           </p>
         </div>
       </div>
@@ -205,7 +208,7 @@ export function ProposeDialog({
   } else {
     const sending = phase === "sending";
     body = sending ? (
-      <JobProgress steps={SEND_STEPS} current={step} />
+      <JobProgress steps={SEND_STEPS} current={step} since={sendingSince} />
     ) : (
       <>
         <FieldGroup className="gap-4">

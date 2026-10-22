@@ -383,7 +383,8 @@ def _github(f: dict, flags: dict) -> dict:
         if copy.get("taken_back"):
             sentence = f"{who} merged your change, then took it back."
         elif not copy.get("merged_in_tip"):
-            sentence = f"{who} merged your change; fused will bring it in shortly."
+            sentence = (f"{who} merged your change. It comes into your copy the next time "
+                        "you open the app, or when you press Check now.")
         else:
             sentence = f"{who} merged your change. You're on {who}'s latest version."
         if has_changes:
@@ -450,7 +451,10 @@ def _github(f: dict, flags: dict) -> dict:
     if not f.get("owner_checked", True) and signed_out:
         extra.append("Sign in so fused can tell whether this app is yours.")
         b.add("sign-in", "Sign in to GitHub", dialog="sign-in")
-    b.add("check", "Check now")
+    # The foot's check names what it looks for, so nobody waits on a check
+    # that cannot answer their question (§16.13).
+    b.add("check", (f"Check for {who}'s reply" if state in ("proposed", "merged")
+                    else f"Check for {who}'s latest"))
     if b.has("propose") or b.has("update-proposal"):
         panel["untracked"] = _strs(f.get("untracked"))
     panel.update(state=state, sentence=" ".join([sentence, *extra]).strip())

@@ -77,6 +77,10 @@ def _run(job_id: str, fn: Callable[[], dict]) -> None:
         result = fn()
         if result is not None and not isinstance(result, dict):
             result = {"value": result}
+        # A job that finished but has something to say (the page shows it
+        # as a toast): "Sent, GitHub hasn't caught up yet".
+        if isinstance(result, dict) and isinstance(result.get("message"), str):
+            message = result["message"] or None
     except PlainError as e:
         status, message = "failed", e.message or GENERIC_MESSAGE
         reason = getattr(e, "reason", None)

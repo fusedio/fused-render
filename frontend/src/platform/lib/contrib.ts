@@ -183,6 +183,8 @@ export interface InboxItem {
   review: Review | null;
   /** "none": no review started yet — brief, the page's read starts one. */
   review_status: "none" | "pending" | "running" | "ready" | "failed";
+  /** Epoch seconds the running review started (for its elapsed clock). */
+  review_started_at?: number | null;
   try: TryCopy | null;
   head_sha: string;
   /** ISO timestamp from GitHub. */
@@ -261,7 +263,14 @@ export interface AppContrib {
   /** `loading`: the list has never been read from GitHub yet (a cold
    *  cache) — not the same as an empty inbox. `unavailable`: it could not be
    *  read at all. */
-  inbox: { items: InboxItem[]; count: number; loading?: boolean; unavailable?: boolean } | null;
+  inbox: {
+    items: InboxItem[];
+    count: number;
+    loading?: boolean;
+    unavailable?: boolean;
+    /** Epoch seconds the list was read from GitHub, when known. */
+    listed_at?: number | null;
+  } | null;
   contributors: Contributor[] | null;
   /** `checking`: this machine has not asked GitHub yet — "signed out" is
    *  not known, so nothing says "Sign in" on its strength (the sign-in

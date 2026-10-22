@@ -58,9 +58,10 @@ import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { ContribDialog } from "./ContribDialog";
+import { JobProgress, useElapsed } from "./JobProgress";
 import { MergeReview, mergeShown } from "./MergeReview";
 import { QuietAction } from "./StatusStrip";
-import { plural, possessive } from "./words";
+import { ACCEPT_STEPS, plural, possessive } from "./words";
 
 export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string; contrib: AppContribState }) {
   const inbox = contrib.data?.inbox ?? null;
@@ -102,10 +103,14 @@ export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string
   if (!inbox || (inbox.loading && items.length === 0)) {
     return (
       <div className="contrib-inbox" aria-busy="true">
+        <p className="contrib-inbox-count" role="status">
+          Asking GitHub for proposals… usually a few seconds.
+        </p>
         <Skeleton className="h-[148px] w-full rounded-[10px]" />
       </div>
     );
   }
+  const listedAgo = timeAgo(inbox.listed_at);
   if (items.length === 0) {
     return (
       <div className="contrib-inbox">
@@ -127,6 +132,12 @@ export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string
     <div className="contrib-inbox">
       <p className="contrib-inbox-count">
         {plural(items.length, "proposal")} for {slug}
+        {listedAgo && (
+          <span className="contrib-inbox-age">
+            {" · "}
+            {inbox.loading ? "asking GitHub again…" : `from GitHub ${listedAgo}; Check asks again`}
+          </span>
+        )}
       </p>
       <ul className="contrib-inbox-list">
         {items.map((item) => (
@@ -171,6 +182,8 @@ function InboxCard({
   // "confirm") although this card had not seen the verdict: the confirm then
   // reads as the flagged one, and the next press sends `confirm: true`.
   const [mustConfirm, setMustConfirm] = useState(false);
+  // Accept's steps (merge on GitHub, then the author's copy), with a clock.
+  const [accepting, setAccepting] = useState<{ step: string | null; since: number } | null>(null);
   const signal = useUnmountSignal();
 
   const review = item.review_status === "ready" ? item.review : null;
@@ -260,6 +273,15 @@ function InboxCard({
         onRetry={() => void act("review", () => reviewProposal(dir, item.number))}
       />
 
+      {accepting && <JobProgress steps={ACCEPT_STEPS} current={accepting.step ?? "merge"} since={accepting.since} />}
+      {/* GitHub decides whether a proposal still fits, a few seconds after
+          either side moves; until it answers, say that it is deciding. */}
+      {!stale && !merging && review && item.fits == null && (
+        <p className="contrib-inbox-wait" role="status">
+          GitHub is still checking whether this fits your latest version. It usually answers within a few
+          seconds; Check asks again.
+        </p>
+      )}
       {/* Claude's merge of this proposal onto the app's latest: its clock,
           then Keep (sent onto the sender's proposal by the server) or
           Discard. While it stands, it is the card's one way forward. */}
@@ -393,7 +415,13 @@ function InboxCard({
                 setAsk(null);
                 const confirmLook = flagged || mustConfirm;
                 void act("accept", async () => {
-                  const r = await runJob(acceptProposal(dir, item.number, confirmLook), { signal: signal() });
+                  const since = Date.now();
+                  setAccepting({ step: null, since });
+                  const r = await runJob(acceptProposal(dir, item.number, confirmLook), {
+                    signal: signal(),
+                    onTick: (j) => setAccepting({ step: j.step ?? null, since }),
+                  });
+                  setAccepting(null);
                   if (r.ok) {
                     setMustConfirm(false);
                     notify({ title: okMessage(r, `Accepted. ${possessive(who)} change is in ${slug}.`), tone: "info" });
@@ -569,6 +597,22 @@ function ClampedText({ text }: { text: string }) {
   );
 }
 
+/** The review's wait, with its clock: Claude's to decide, usually under a
+ *  minute, and what opens when it is done. */
+function Reading({ since, queued }: { since: number | null; queued: boolean }) {
+  const clock = useElapsed(since);
+  return (
+    <div className="contrib-review is-reading" role="status">
+      <ClaudeMark className="contrib-claude-working" />
+      <span>
+        {queued ? "Claude will read this proposal next" : "Claude is reading this proposal"}
+        {clock && <span className="contrib-step-clock">{clock}</span>}
+        <span className="contrib-step-hint">Usually under a minute. Try and Accept open when it&rsquo;s done.</span>
+      </span>
+    </div>
+  );
+}
+
 function ReviewBlock({ item, busy, onRetry }: { item: InboxItem; busy: boolean; onRetry: () => void }) {
   // "none": no review started yet — brief, since opening the page starts
   // one. A still mark (nothing is running yet), said as what WILL happen.
@@ -581,12 +625,7 @@ function ReviewBlock({ item, busy, onRetry }: { item: InboxItem; busy: boolean; 
     );
   }
   if (item.review_status === "pending" || item.review_status === "running") {
-    return (
-      <div className="contrib-review is-reading" role="status">
-        <ClaudeMark className="contrib-claude-working" />
-        <span>Claude is reading this proposal before anything runs…</span>
-      </div>
-    );
+    return <Reading since={item.review_started_at ? item.review_started_at * 1000 : null} queued={item.review_status === "pending"} />;
   }
   if (item.review_status === "failed" || !item.review) {
     return (

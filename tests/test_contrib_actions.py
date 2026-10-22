@@ -381,7 +381,7 @@ def test_nothing_to_show_is_null():
     (gh(behind=1), "following", "alice has a newer version."),
     (gh("merged"), "merged", "alice merged your change. You're on alice's latest version."),
     (gh("merged", merged_in_tip=False), "merged",
-     "alice merged your change; fused will bring it in shortly."),
+     "alice merged your change. It comes into your copy the next time you open the app, or when you press Check now."),
     (gh("merged", taken_back=True), "merged", "alice merged your change, then took it back."),
     (gh("needs-merge", merge_job={"id": "m", "status": "choice",
                                   "error": "logo.png isn't text, so it can't be combined."}),
