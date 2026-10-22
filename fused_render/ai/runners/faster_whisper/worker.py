@@ -684,6 +684,14 @@ def _sherpa_segments(result, pack_seconds):
     quote or bracket may trail it). The text is rebuilt from the tokens so it
     agrees with the words by construction.
 
+    **Abbreviations split a sentence, and that is accepted.** "Dr.", "e.g.",
+    "U.S." and "Mr." end a segment like any full stop, with no heuristic to tell
+    them apart: a list of abbreviations is per-language guesswork, and the one
+    cheap guard (a lower-case next word) fixes "e.g. the" but not "Dr. Smith".
+    It costs little because a segment is a timing container, not a unit of
+    meaning — the text of consecutive segments concatenates back to the same
+    sentence, and every word keeps its own span.
+
     **Ends are the next thing's start**, as a transducer gives no ends: a word
     ends where the next word begins, a sentence where the next sentence begins,
     and the last of each where the pack does. The pack's own end is the honest
