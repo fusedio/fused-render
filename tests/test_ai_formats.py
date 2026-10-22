@@ -1456,7 +1456,8 @@ def test_kokoro_traits_are_preset_voices_without_a_style_line():
     traits = formats.kokoro_traits()
     assert traits["mode"] == "preset"
     assert traits["voices"] == list(formats.KOKORO_VOICES)
-    assert traits["languages"] == ["english", "chinese"]
+    # No language input on the engine: an empty list hides the selector.
+    assert traits["languages"] == []
     assert traits["instructable"] is False
     assert formats.kokoro_traits_from_names(KOKORO_NAMES, {"espeak-ng-data", "dict"}) == traits
     assert formats.kokoro_traits_from_names({"model.onnx"}, set()) is None
