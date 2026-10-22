@@ -139,7 +139,7 @@ def test_every_registered_runner_appears_in_loaders():
         config={"model_type": formats.QWEN3_TTS_MODEL_TYPE}, torch_weights=True))
     # Kokoro on sherpa-onnx: three root files plus the espeak-ng data folder.
     seen |= set(formats.loaders(
-        repo_id="x/y", names=set(formats.KOKORO_FILES),
+        repo_id="x/y", names=set(formats.KOKORO_FILES) | {"lexicon-us-en.txt"},
         dirnames={formats.KOKORO_DATA_DIR, formats.KOKORO_DICT_DIR}, config={},
         torch_weights=False, onnx_weights=True))
     missing = _codes() - seen
@@ -1441,6 +1441,11 @@ def test_a_kokoro_snapshot_needs_its_three_files_and_espeak_data():
     assert not formats.is_kokoro_snapshot(KOKORO_NAMES, {"espeak-ng-data"})
     assert not formats.is_kokoro_snapshot(KOKORO_NAMES - {"voices.bin"}, {"espeak-ng-data"})
     assert not formats.is_kokoro_snapshot({"model.onnx"}, {"espeak-ng-data"})
+    # `load` passes the lexicons to sherpa-onnx; an export with none is not Kokoro's.
+    assert not formats.is_kokoro_snapshot(
+        KOKORO_NAMES - {"lexicon-us-en.txt"}, {"espeak-ng-data", "dict"})
+    assert formats.is_kokoro_snapshot(
+        (KOKORO_NAMES - {"lexicon-us-en.txt"}) | {"lexicon-zh.txt"}, {"espeak-ng-data", "dict"})
 
 
 def test_kokoro_claims_only_the_sherpa_tts_runner():
