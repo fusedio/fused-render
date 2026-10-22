@@ -808,10 +808,10 @@ def _consume_sherpa(recognizer, audio, packs, progressive, job, row, total,
     once silence is dropped).
 
     **Every endpoint travels `vad.py`'s inverse on its own**, a segment's start
-    and end through `original_start`/`original_end` and a word through
-    `original_word_span` (never stretched across a join), because the clip the
-    recognizer heard had the silence removed. Words are then clamped into their
-    segment and never dropped — the invariant a caller builds on is that a
+    and end through `original_start`/`original_end` and its words through
+    `stt_common.words_in_original_time` (never stretched across a join), because
+    the clip the recognizer heard had the silence removed. Words are then clamped
+    into their segment and never dropped — the invariant a caller builds on is that a
     segment's words are its text, in order, complete.
     """
     import vad as vad_module
@@ -846,14 +846,8 @@ def _consume_sherpa(recognizer, audio, packs, progressive, job, row, total,
             if words:
                 # An EMPTY list when the result had no usable timings, like
                 # `_ct2_words`: a caller that asked reads "none were timed".
-                line["words"] = []
-                for w_start, w_end, word in spans:
-                    w_at, w_until = vad_module.original_word_span(pack, w_start, w_end)
-                    w_at = min(max(w_at, at), until)
-                    w_until = min(max(w_until, w_at), until)
-                    line["words"].append({"start": round(w_at, 2),
-                                          "end": round(max(w_until, w_at), 2),
-                                          "word": word})
+                line["words"] = stt_common.words_in_original_time(
+                    pack, spans, at, until)
             segments.append(line)
             progressive.add(line)
         done = round(min(pack[-1][1], duration), 2)

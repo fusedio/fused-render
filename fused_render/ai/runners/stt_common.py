@@ -197,3 +197,53 @@ def packs_to_decode(regions, duration):
     import vad as vad_module
 
     return vad_module.pack_regions(list(regions))
+
+
+def words_in_original_time(pack, spans, at, until):
+    """One segment's words, remapped into RECORDING time and clamped into it.
+
+    `spans` is `[(start, end, text), …]` in seconds of the packed CLIP, whatever
+    engine timed them (mlx-whisper's word dicts, a transducer's token groups);
+    returns `[{"start", "end", "word"}, …]`, the shape both engines publish.
+
+    Each word travels the packing's one inverse (`vad.original_word_span`), NOT
+    the segment's endpoint pair: a segment may straddle a join (real speech on
+    both sides of the silence that was cut), a word may not, so mapping a word's
+    two ends independently would stretch any token that strictly contains a join
+    across the whole dropped pause (AI-10f).
+
+    **Clamped into the segment, never dropped** — the opposite of what a
+    segment that inverts gets, and deliberately. A dropped SEGMENT loses text
+    that was never spoken in the recording's timeline. A dropped WORD loses text
+    that IS in the transcript, breaking the one invariant a caller builds on:
+    that the words of a segment are that segment's text, in order, complete. So a
+    word that inverts after mapping (timed into Whisper's 30-second padding, say)
+    collapses to an INSTANT at the nearest bound rather than vanishing; a
+    zero-length word renders as un-highlightable, which is the honest rendering of
+    "this word is here and its span is not known". Only a word with NO TEXT is
+    skipped: nothing downstream can render it.
+
+    `probability` is not carried: it is an engine-tell (AI-10c), and the
+    leading space on `word` is kept because it is how the text reconstructs by
+    concatenation.
+    """
+    import vad as vad_module
+
+    out = []
+    for w_start, w_end, text in spans:
+        if not text:
+            continue
+        start, end = vad_module.original_word_span(pack, float(w_start or 0.0),
+                                                   float(w_end or 0.0))
+        # Into the SEGMENT's bounds, not the pack's: a word outside its own
+        # segment would highlight text belonging to a neighbouring line.
+        start = min(max(start, at), until)
+        end = min(max(end, at), until)
+        out.append({
+            "start": round(start, 2),
+            # `max`, so rounding cannot invert a word whose two ends round
+            # across each other — 2dp is the transcript's precision everywhere.
+            "end": round(max(end, start), 2),
+            "word": text,
+        })
+    return out

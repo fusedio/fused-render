@@ -1151,62 +1151,17 @@ def _word_span(pack, at, until):
 def _words_in_original_time(pack, segment, at, until):
     """One segment's `words`, remapped into RECORDING time and clamped into it.
 
-    Each word travels the same inverse its segment did, because a word carries
-    the same problem: the library timed it against a packed clip whose silence
-    this runner removed, and a page seeking a player off a clip-relative
-    timestamp lands in the wrong minute. Reusing the packing's one inverse
-    rather than a second of its own is the point (AI-10f). It travels that
-    inverse through `_word_span`, NOT through the segment's endpoint pair: a
-    word that strictly contains a join is a 0.2s token mapped to a 25s span
-    otherwise, and the clamp below cannot catch it because the segment is
-    allowed to straddle that same join.
-
-    **Clamped into the segment, never dropped**, which is the opposite of what
-    `_transcribe_regions` does to a segment that inverts — and the asymmetry is
-    deliberate. A dropped SEGMENT loses text that was never spoken in the
-    recording's timeline. A dropped WORD loses text that IS in the transcript,
-    breaking the one invariant a caller will build on: that the words of a
-    segment are that segment's text, in order, complete. So a word that inverts
-    after mapping (the library timing it into the 30-second padding, the same
-    place a segment can invert) collapses to an INSTANT at the nearest bound
-    rather than vanishing. A zero-length word renders as un-highlightable, which
-    is the honest rendering of "this word is here and its span is not known";
-    a missing word renders as a hole in the sentence.
-
-    `probability` is dropped along with the logprobs and temperatures beside it
-    — the reason the withdrawn `parakeet_mlx` runner (D406) dropped it too: it
-    is an engine-tell. Whisper's DTW alignment has a per-word probability and a
-    transducer's per-token confidence would have been a different number
-    measuring a different thing, so publishing it would make the reply depend
-    on which engine ran (AI-10c). `word` keeps the
-    library's LEADING SPACE — it is how the text reconstructs by concatenation,
-    and stripping it would make a caller guess where spaces went.
+    A thin adapter: the library's word dicts become the `(start, end, text)`
+    tuples `stt_common.words_in_original_time` takes, and that function carries
+    the whole rule (the packing's inverse per word, clamped into the segment and
+    never dropped, `probability` left out) — shared with the faster-whisper
+    runner's Parakeet path so the two cannot drift (AI-10c/AI-10f).
     """
-    out = []
-    for word in (segment.get("words") or []):
-        text = str(word.get("word") or "")
-        if not text:
-            # No text to place. Nothing downstream can render it and it would
-            # only add a phantom interval to the list.
-            continue
-        start, end = _word_span(pack,
-                                float(word.get("start") or 0.0),
-                                float(word.get("end") or 0.0))
-        # Into the SEGMENT's bounds, not the pack's: the segment was already
-        # clamped to the pack, and a word outside its own segment is a span a
-        # caller cannot use — it would highlight text belonging to a
-        # neighbouring line.
-        start = min(max(start, at), until)
-        end = min(max(end, at), until)
-        out.append({
-            "start": round(start, 2),
-            # `max`, so rounding cannot invert a word whose two ends round
-            # across each other — 2dp is the transcript's precision everywhere
-            # and the clamp above cannot see it.
-            "end": round(max(end, start), 2),
-            "word": text,
-        })
-    return out
+    return stt_common.words_in_original_time(
+        pack,
+        [(word.get("start"), word.get("end"), str(word.get("word") or ""))
+         for word in (segment.get("words") or [])],
+        at, until)
 
 
 # --------------------------------------------------------------- transcription
