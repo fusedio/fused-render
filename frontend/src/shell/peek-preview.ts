@@ -357,10 +357,10 @@ export function ensureAppFor(project: string): Promise<boolean> {
   const ask = ensureCurrentApp(project)
     .then(({ app, added, apps }) => {
       if (!app) return false;
-      // Announce FIRST: the module-level listener above drops the cache on
-      // the event, and the fresh table must survive it.
-      announceCurrentAppsChanged();
       if (added && apps && gen === ensureGen) {
+        // Announce FIRST: the module-level listener above drops the cache on
+        // the event, and the fresh table must survive it.
+        announceCurrentAppsChanged();
         appsCache = currentApps(apps, []);
         adoptedGen = gen;
         return true;
@@ -374,8 +374,26 @@ export function ensureAppFor(project: string): Promise<boolean> {
       return (appsInFlight ?? Promise.resolve()).then(() => {
         // A newer answer adopted its table during the wait: that table is
         // the current one; clearing it would only risk an empty cache if
-        // the re-read failed.
-        if (adoptedGen > gen) return true;
+        // the re-read failed. NOT ANNOUNCED EITHER: the newer answer
+        // announced its own change, and announcing here would have the
+        // listener above drop the very table this branch keeps — which is
+        // how a stale answer used to leave the cache empty whenever the
+        // announce went out ahead of this check.
+        //
+        // UNLESS the newer table lacks THIS ask's app: the server may have
+        // answered the newer ask before it had added this one (the asks
+        // are concurrent, their order on the server is its own), in which
+        // case the "newer" snapshot is the one that is behind, and this
+        // added app would be missing from the desk until the next fresh
+        // read. Then it is the re-read below, after all (CodeRabbit on
+        // this PR). THE APP'S OWN PATH, not `appForProject`: that one
+        // answers with an ancestor app too, and a parent on the desk is not
+        // the nested app the server just added under it.
+        if (adoptedGen > gen
+            && (!added || (appsCache !== null && appsCache.some((row) => row.path === app)))) {
+          return true;
+        }
+        announceCurrentAppsChanged();
         appsCache = null;
         return ensureApps().then(() => true);
       });

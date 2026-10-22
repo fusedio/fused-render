@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 
 import {
   CLAUDE_INSTALL_COMMAND,
+  CODEX_INSTALL_COMMAND,
   troubleInstructions,
   resetAnnouncedTemplateErrors,
   shouldAnnounceTemplateError,
@@ -378,4 +379,59 @@ test("an empty or blank error is never announced", () => {
   syncRegistryToast("   ", true, r.io);
   expect(r.pushed).toEqual([]);
   expect(r.dismissed).toEqual([]);
+});
+
+// -- Codex (docs/CODEX_BACKEND.md D13, §8) ------------------------------------
+
+test("codex's own markers classify a Codex session's failure", () => {
+  // The account markers, verbatim from agent_backends/codex.py.
+  for (const msg of [
+    "Not logged in",
+    '{"account":null,"requiresOpenaiAuth":true}',
+    "Run `codex login` first",
+    "401 Unauthorized",
+    "Authentication failed",
+    "login required",
+    "Please sign in again",
+  ]) expect(troubleKind(msg, "codex")).toBe("login");
+  // The limit markers, likewise.
+  for (const msg of [
+    "Rate limit reached for gpt-6-luna",
+    "You've hit your usage limit. Try again at 3pm.",
+    "quota exceeded",
+    "insufficient_quota",
+    "spend control limit reached",
+    "Too Many Requests",
+    "HTTP 429",
+  ]) expect(troubleKind(msg, "codex")).toBe("limit");
+});
+
+test("codex's markers are Codex's alone", () => {
+  // The same sentence on a Claude session is not about an OpenAI account.
+  expect(troubleKind("401 Unauthorized", "claude")).toBe("raw");
+  expect(troubleKind("spend control limit reached", "copilot")).toBe("raw");
+  // A 429 that is only part of a bigger number is not a limit.
+  expect(troubleKind("listening on port 14290", "codex")).toBe("raw");
+});
+
+test("a failure shape counts for Codex when it names Codex or OpenAI", () => {
+  expect(troubleKind("codex: command not found", "codex")).toBe("notfound");
+  expect(troubleKind("spawn codex ENOENT", "codex")).toBe("notfound");
+  // ...but a disk path is still not about Codex.
+  expect(troubleKind("could not write the file: no such file or directory", "codex")).toBe("raw");
+  // And a Claude-shaped message on a Codex session is not Codex's.
+  expect(troubleKind("claude: command not found", "codex")).toBe("raw");
+});
+
+test("the Codex brief installs with npm and signs in with a device code", () => {
+  const missing = troubleInstructions({ what: "x", error: "codex: command not found", backend: "codex" });
+  expect(missing).toContain("which codex");
+  expect(missing).toContain(CODEX_INSTALL_COMMAND);
+  expect(missing).not.toContain("install.sh");
+  expect(missing).toContain("codex --version");
+
+  const signedOut = troubleInstructions({ what: "x", error: "Not logged in", backend: "codex" });
+  expect(signedOut).toContain("codex login --device-auth");
+  expect(signedOut).not.toContain("/login");
+  expect(signedOut).not.toContain(CODEX_INSTALL_COMMAND);
 });

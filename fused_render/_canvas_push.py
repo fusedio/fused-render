@@ -80,7 +80,10 @@ _DEFAULT_FUSED_DIR = "~/Fused"
 # (`~/Fused/canvas/<env>/<name>`): fusedcli.WORKBENCH_ENV_CHOICES, duplicated
 # for the same no-heavy-imports reason. Anything else in that position is not
 # a clone of ours.
-_ENVS = ("unstable", "prod")
+_ENVS = ("unstable", "prod", "custom")
+# fusedcli.CUSTOM_WORKBENCH_ENV, duplicated likewise: the env whose runs leave
+# FUSED_ENV unset, so the CLI keeps `~/.fused/settings.toml`'s endpoint.
+_CUSTOM_ENV = "custom"
 
 # The server's own bound origin, published by server/app.py:set_server_origin_env
 # before it serves, so every spawned session inherits it. Absent means "no
@@ -125,22 +128,35 @@ _BARE_OPTS = ("--id",)
 # parsing stops and falls through — same conservative rule as everywhere else
 # in this matcher.
 _GLOBAL_VALUE_OPTS = ("--backend", "--env")
+# The `workbench` group's OWN options (fused `workbench/cli/__init__.py`'s
+# `cli()`), between `workbench` and `canvas`. Its `--env` is not the
+# top-level one above (that is agent_core's OPENFUSED_ENV, which does not
+# move a workbench push): it is FUSED_ENV's flag form, beats the variable,
+# and so is the run's real target on a fall-through (`_fall_through`).
+_WORKBENCH_VALUE_OPTS = ("--env", "--format")
 
 
-def _skip_global_options(args: list[str]) -> list[str]:
-    """Argv with any recognised leading global options removed, so the
-    `workbench canvas push` match below still fires behind them."""
+def _skip_global_options(args: list[str], opts: tuple[str, ...] = _GLOBAL_VALUE_OPTS,
+                         seen: dict[str, str] | None = None) -> list[str]:
+    """Argv with any recognised leading value options (`opts`, the top-level
+    group's by default) removed, so the `workbench canvas push` match below
+    still fires behind them. Each skipped option's value lands in `seen`
+    when given, the last one winning as in click."""
     i = 0
     while i < len(args):
         token = args[i]
-        if token in _GLOBAL_VALUE_OPTS:
+        if token in opts:
             if i + 1 >= len(args):
                 break  # malformed; let the real CLI produce the error
+            if seen is not None:
+                seen[token] = args[i + 1]
             i += 2
             continue
         matched = False
-        for opt in _GLOBAL_VALUE_OPTS:
+        for opt in opts:
             if token.startswith(opt + "="):
+                if seen is not None:
+                    seen[opt] = token[len(opt) + 1:]
                 i += 1
                 matched = True
                 break
@@ -182,15 +198,20 @@ def _clone_name(source_dir: str) -> tuple[str, str] | None:
 
 
 def parse_push(args: list[str]) -> dict | None:
-    """`{"source_dir", "canvas", "unsupported"}` for a `workbench canvas push`
-    we recognise, else None ("not ours, fall through").
+    """`{"source_dir", "canvas", "unsupported", "env"}` for a `workbench
+    canvas push` we recognise, else None ("not ours, fall through"). `env` is
+    the workbench group's `--env`, or None.
 
     `args` is argv WITHOUT the program name, i.e. what click sees.
     """
     skipped = _skip_global_options(args)
-    if skipped[:3] != ["workbench", "canvas", "push"]:
+    if skipped[:1] != ["workbench"]:
         return None
-    rest = skipped[3:]
+    workbench_opts: dict[str, str] = {}
+    skipped = _skip_global_options(skipped[1:], _WORKBENCH_VALUE_OPTS, workbench_opts)
+    if skipped[:2] != ["canvas", "push"]:
+        return None
+    rest = skipped[2:]
     positionals: list[str] = []
     canvas = None
     unsupported = []
@@ -235,7 +256,7 @@ def parse_push(args: list[str]) -> dict | None:
         # usage error (the CLI should say so) or a shape we do not model.
         return None
     return {"source_dir": positionals[0], "canvas": canvas,
-            "unsupported": unsupported}
+            "unsupported": unsupported, "env": workbench_opts.get("--env")}
 
 
 _TIMED_OUT = -1  # sentinel status: connected, but no response within _HTTP_TIMEOUT_S
@@ -293,7 +314,7 @@ def _decode(raw: bytes) -> dict:
     return body if isinstance(body, dict) else {}
 
 
-def _fall_through(name: str, env: str, err) -> int | None:
+def _fall_through(name: str, env: str, err, cli_env: str | None = None) -> int | None:
     """None (run the real CLI) unless that run would target the WRONG Fused:
     1, with the refusal written.
 
@@ -303,17 +324,43 @@ def _fall_through(name: str, env: str, err) -> int | None:
     the wrapper takes from the clone path when run inside one, from the
     DEFAULT environment otherwise, and an explicit `FUSED_ENV=x fused ...`
     beats both. For a clone of the other environment that is one Fused's
-    files into the other's same-named canvas: not inert, so refuse."""
-    target_env = os.environ.get("FUSED_ENV")
+    files into the other's same-named canvas: not inert, so refuse.
+
+    The custom env is the one targeted by an UNSET FUSED_ENV (the CLI then
+    keeps `~/.fused/settings.toml`'s endpoint), so a custom clone refuses any
+    set FUSED_ENV. A prod/unstable clone under an unset one (a custom default
+    outside the clone, or a bare shell) gets FUSED_ENV bound to its own env
+    before falling through: unset would otherwise send the raw push to
+    `~/.fused/settings.toml`'s endpoint, over a same-named canvas there. The
+    shim imports and runs the CLI in this same process right after
+    (`_fused_cli.py`), and click reads the variable at parse time.
+
+    `cli_env` is the command's own `workbench --env`, which beats FUSED_ENV
+    exactly as it does in the CLI (click: an option over its envvar)."""
+    target_env = cli_env or os.environ.get("FUSED_ENV")
+    source = "--env" if cli_env else "FUSED_ENV"
+    if env == _CUSTOM_ENV:
+        if target_env:
+            err.write(
+                "fused-render: canvas clone %r belongs to the custom environment "
+                "(~/.fused/settings.toml), but this `fused` run targets %s "
+                "(%s).\n"
+                "Pushing it there would overwrite a different canvas. Run the push "
+                "from inside the clone folder, with no --env and FUSED_ENV unset.\n"
+                % (name, target_env, source))
+            return 1
+        return None
     if target_env and target_env != env:
         err.write(
             "fused-render: canvas clone %r belongs to the %s environment, but this "
-            "`fused` run targets %s (FUSED_ENV).\n"
+            "`fused` run targets %s (%s).\n"
             "Pushing it there would overwrite a different canvas. Run the push "
             "from inside the clone folder (`fused` then targets the clone's own "
             "environment), or with FUSED_ENV=%s.\n"
-            % (name, env, target_env, env))
+            % (name, env, target_env, source, env))
         return 1
+    if not target_env:
+        os.environ["FUSED_ENV"] = env
     return None
 
 
@@ -337,12 +384,12 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     name, env = clone
     origin = os.environ.get(_ORIGIN_ENV)
     if not origin:
-        return _fall_through(name, env, err)  # no server around
+        return _fall_through(name, env, err, parsed["env"])  # no server around
     if parsed["canvas"] is not None and parsed["canvas"] != name:
         # Pushing one clone's contents at a DIFFERENT canvas. The endpoint is
         # keyed on the watcher for this folder, so it cannot express that; the
         # real CLI can, and there is no merge base for the named canvas here.
-        return _fall_through(name, env, err)
+        return _fall_through(name, env, err, parsed["env"])
     if parsed["unsupported"]:
         err.write(
             "fused-render: %s cannot be used inside the canvas clone %r.\n"
@@ -356,7 +403,7 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     status, body = _post_push(origin, name, env)
     if status is None:
         # Server unreachable — the real CLI is the honest fallback.
-        return _fall_through(name, env, err)
+        return _fall_through(name, env, err, parsed["env"])
     if status == _TIMED_OUT:
         # We connected — the server IS running a guarded push for this canvas,
         # possibly still in flight. Falling through would run the raw,

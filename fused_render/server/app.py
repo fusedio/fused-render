@@ -54,6 +54,7 @@ from fused_render.server.routers.claude_config import router as claude_config_ro
 from fused_render.server.routers.agent_backends import router as agent_backends_router
 from fused_render.server.routers.claude_health import router as claude_health_router
 from fused_render.server.routers.copilot_health import router as copilot_health_router
+from fused_render.server.routers.codex_health import router as codex_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.marketplace import router as marketplace_router
@@ -1106,6 +1107,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # health/refresh, install, login, login/cancel}, same snapshot keys, same
     # entry-point warm-up rule.
     app.include_router(copilot_health_router)
+    # The Codex twin (routers/codex_health.py): /api/codex/{health,
+    # health/refresh, install, login, login/cancel, link-path}, same rules.
+    app.include_router(codex_health_router)
     # The agent catalog (routers/agent_backends.py): which agents exist, which
     # are on, and each one's models/efforts/modes/caps — the one list every
     # picker reads (docs/COPILOT_BACKEND.md D11). Read-only, no auth guard.

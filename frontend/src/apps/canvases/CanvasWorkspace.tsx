@@ -690,7 +690,9 @@ export default function CanvasWorkspace({
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) return;
     try {
-      const { access_token } = await getAccessToken();
+      // THIS canvas's env's login, as the origin is its env's: a custom
+      // deployment has its own `[auth]` tenant (D1412).
+      const { access_token } = await getAccessToken(env);
       frame.contentWindow.postMessage(
         { type: "fused-embed-auth-token", accessToken: access_token },
         origin, // exact origin — this message carries a credential
@@ -698,7 +700,7 @@ export default function CanvasWorkspace({
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [env]);
 
   // Ask the workbench to select a node (or, with null, to deselect). Exact
   // targetOrigin, like every message to the frame.
@@ -1641,16 +1643,14 @@ export default function CanvasWorkspace({
         {!embedded && (
           <>
         <div
+          // The explorer's preview/side seam, reused as-is: one hairline that
+          // lights `--seam-hot` on hover and drag like every other draggable
+          // seam in the app. It used to be a 6px grey band that turned blue
+          // under the cursor — the only seam styled on its own.
+          className={dragging ? "preview-side-divider dragging" : "preview-side-divider"}
           onMouseDown={(e) => {
             e.preventDefault();
             setDragging(true);
-          }}
-          style={{
-            flex: "0 0 6px",
-            cursor: "col-resize",
-            background: dragging
-              ? "rgba(100,140,255,0.5)"
-              : "rgba(128,128,128,0.25)",
           }}
           title="Drag to resize"
         />

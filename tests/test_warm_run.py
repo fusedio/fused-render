@@ -1,4 +1,4 @@
-"""Pre-spawned idle interpreters for /api/run (SPEC PY-20, D1411).
+"""Pre-spawned idle interpreters for /api/run (SPEC PY-20, D1415).
 
 Real subprocesses throughout: a faked Popen cannot see the lifecycle bugs this
 feature is made of (pipe inheritance, orphans, a spare that is reused). Every

@@ -1,4 +1,4 @@
-"""Pre-spawned idle interpreters for `/api/run` (SPEC PY-20, D1411).
+"""Pre-spawned idle interpreters for `/api/run` (SPEC PY-20, D1415).
 
 A run still gets a FRESH process (SPEC PY-6, D5): this module only starts that
 process a little earlier than the request, so the interpreter start-up (about 11

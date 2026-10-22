@@ -262,6 +262,14 @@ const ENTRIES = [
     keywords: "github copilot agent backend cli sign in login",
   },
   {
+    id: "agent-codex",
+    group: "ai",
+    section: "Agents",
+    label: "OpenAI Codex CLI",
+    description: "Runs chats and tasks with your ChatGPT or OpenAI account. Bots keep using Claude.",
+    keywords: "openai codex chatgpt gpt agent backend cli sign in login",
+  },
+  {
     id: "agent-default",
     group: "ai",
     section: "Agents",
@@ -269,7 +277,10 @@ const ENTRIES = [
     description: "With more than one agent on, new chats and tasks start here. A conversation keeps the agent it started with.",
     keywords: "default agent backend",
     child: true,
-    available: ({ prefs }) => !!prefs.agents?.claude && !!prefs.agents?.copilot,
+    // Two or more of the three on: a default only means something when there
+    // is a choice to make.
+    available: ({ prefs }) =>
+      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex].filter(Boolean).length >= 2,
   },
   {
     id: "claude-model",
@@ -612,9 +623,9 @@ const ENTRIES = [
     id: "agent-signin",
     group: "integrations",
     section: ELSEWHERE,
-    label: "Claude Code and Copilot sign-in",
+    label: "Claude Code, Copilot and Codex sign-in",
     description: "Shown with each agent's health under AI & agents.",
-    keywords: "claude login anthropic copilot github sign in",
+    keywords: "claude login anthropic copilot github codex openai chatgpt sign in",
     elsewhere: true,
   },
 
