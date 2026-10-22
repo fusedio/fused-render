@@ -210,9 +210,11 @@ WORKBENCH_ENV_CHOICES = ("unstable", "prod", "custom")
 # the hosted defaults (owner, 2026-10-21). Use `set_fused_env`, never
 # `child["FUSED_ENV"] = env`, wherever a run is pointed at an environment.
 CUSTOM_WORKBENCH_ENV = "custom"
-# Owner, 2026-10-17: unstable while embed v3 lands on the unstable workbench
-# first; flip to prod once it is live there.
-DEFAULT_WORKBENCH_ENV = "unstable"
+# Owner, 2026-10-17: unstable while embed v3 landed on the unstable workbench
+# first; owner, 2026-10-22: prod now that it is live there. Only the default
+# moves — a stored `workbench_env` preference and every clone's own env are
+# untouched.
+DEFAULT_WORKBENCH_ENV = "prod"
 
 
 def workbench_env() -> str:
@@ -326,7 +328,7 @@ def _wrapper_text(cli: FusedCli) -> str:
       * FUSED_ENV, when unset, comes from the working directory first: under
         `~/Fused/canvas/<env>/` it is that `<env>`, because the path segment
         IS the clone's environment (D1382) and a session in a prod clone must
-        reach prod even when the default is unstable — a bare `fused
+        reach prod even when the default is another env — a bare `fused
         workbench canvas pull`/`validate`/`whoami` there would otherwise hit
         the wrong Fused. Both `$PWD` and `pwd -P` are matched against both
         the base as given and its realpath, so a symlinked path (macOS
