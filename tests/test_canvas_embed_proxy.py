@@ -29,6 +29,14 @@ class _Upstream(BaseHTTPRequestHandler):
         type(self).seen.append({"path": self.path, "method": self.command,
                                 "headers": {k.lower(): v for k, v in self.headers.items()},
                                 "body": body})
+        if self.path.startswith("/hop"):
+            self.send_response(200)
+            self.send_header("Connection", "X-Up-Hop")
+            self.send_header("X-Up-Hop", "1")
+            self.send_header("X-Up-End", "1")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self.path.startswith("/redirect"):
             self.send_response(302)
             self.send_header("Location", f"{self.server.origin}/workbench/x")
@@ -95,9 +103,19 @@ def test_forwards_with_the_custom_bearer_and_relays_the_answer(proxy):
     assert seen["headers"]["authorization"] == "Bearer tok-1"
     # the inbound Authorization never overrides ours; Host is upstream's own
     assert seen["headers"]["host"] == proxy.upstream.removeprefix("http://")
+    # loopback cookies (any port's) are not the deployment's to see
+    assert "cookie" not in seen["headers"]
     assert r.headers["x-keep"] == "yes"
     for dropped in ("set-cookie", "x-frame-options", "strict-transport-security"):
         assert dropped not in r.headers
+
+
+def test_headers_a_connection_header_names_are_dropped_both_ways(proxy):
+    r = _get(proxy, "/hop", connection="X-Down-Hop", **{"x-down-hop": "1", "x-down-end": "1"})
+    assert r.status_code == 200
+    seen = _Upstream.seen[-1]["headers"]
+    assert "x-down-hop" not in seen and seen["x-down-end"] == "1"
+    assert "x-up-hop" not in r.headers and r.headers["x-up-end"] == "1"
 
 
 def test_token_is_cached_and_forgotten_on_401(proxy):

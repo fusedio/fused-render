@@ -442,6 +442,10 @@ export default function CanvasWorkspace({
   syncSlot?: HTMLElement | null;
 }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
+  // The workbench's own origin, for links a person opens: `baseUrl` is the
+  // embed proxy's loopback origin while that runs, which changes port on
+  // every restart and is gone once it stops.
+  const [workbenchBase, setWorkbenchBase] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
   // The claude template's path, from the clone dir's own stat — the same
@@ -693,6 +697,7 @@ export default function CanvasWorkspace({
         // (canvas_embed_proxy.py); otherwise the workbench itself.
         const base = status.envs[env].embed_url ?? status.envs[env].base_url;
         setBaseUrl(base);
+        setWorkbenchBase(status.envs[env].base_url);
         baseOriginRef.current = new URL(base).origin;
         // The clone onto the sidebar's desk (its Canvases section, the
         // Projects store): opening a canvas is what puts it there, as a task
@@ -1304,8 +1309,8 @@ export default function CanvasWorkspace({
 
   // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
   const workbenchUrl =
-    baseUrl && handle
-      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+    workbenchBase && handle
+      ? `${workbenchBase}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
       : null;
   useEffect(() => {
     onWorkbenchUrl?.(workbenchUrl);

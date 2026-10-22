@@ -34,6 +34,7 @@ def _install_fake_fused(monkeypatch):
         shared_udf_base_url="https://udf.fused.ai",
         base_url="https://www.fused.io/server/v1",
         base_web_url="https://www.fused.io",
+        model_fields_set=set(),
     )
 
     monkeypatch.setitem(sys.modules, "fused", fused_mod)
@@ -52,12 +53,13 @@ def shim(monkeypatch):
     sys.modules.pop("fused_render._fused_share_app", None)
 
 
-def _custom(shim, base_url, shared="https://udf.ai"):
+def _custom(shim, base_url, shared=None):
     """A custom-deployment run: FUSED_ENV unset, settings.toml's base_url,
     and shared_udf_base_url left at fused's PROD default unless named."""
     shim._env_name = None
     shim.OPTIONS.base_url = base_url
-    shim.OPTIONS.shared_udf_base_url = shared
+    shim.OPTIONS.shared_udf_base_url = shared or "https://udf.ai"
+    shim.OPTIONS.model_fields_set = {"base_url"} | ({"shared_udf_base_url"} if shared else set())
 
 
 def test_share_url_follows_fused_env_when_set(shim):
@@ -78,6 +80,12 @@ def test_share_url_custom_explicit_shared_host_wins(shim):
     assert shim._share_url("fsh_x", "app") == "https://shares.example.com/fsh_x/app.html"
 
 
+def test_share_url_custom_explicit_prod_shared_host_wins(shim):
+    # named in the file, the PROD host is a choice, not fused's default
+    _custom(shim, "https://acme.fused.io/server/v1", shared="https://udf.ai")
+    assert shim._share_url("fsh_x", "app") == "https://udf.ai/fsh_x/app.html"
+
+
 def test_share_url_custom_enterprise_host_derives_udf_ai(shim):
     # settings.toml names base_url but not shared_udf_base_url: fused keeps
     # the PROD default, which would send every link to the wrong deployment.
@@ -91,6 +99,15 @@ def test_share_url_custom_unknown_host_refuses_with_the_fix(shim):
     _custom(shim, "https://fused.internal.example.com/server/v1")
     with pytest.raises(shim.ShareError, match="shared_udf_base_url"):
         shim._share_url("fsh_x", "app")
+
+
+def test_publish_refuses_an_unknown_share_host_before_anything_is_written(shim, monkeypatch):
+    _custom(shim, "https://fused.internal.example.com/server/v1")
+    monkeypatch.setattr(shim, "get_api", lambda: pytest.fail("reached the API"))
+    monkeypatch.setattr(shim.fused.api, "upload", lambda *a: pytest.fail("uploaded"), raising=False)
+    with pytest.raises(shim.ShareError, match="shared_udf_base_url"):
+        shim.publish({"share_id": "app", "name": "App", "viewer_token": "v",
+                      "file": __file__})
 
 
 def test_canvas_name_unchanged_for_an_app_id(shim):

@@ -197,7 +197,8 @@ def _scope(value) -> str | None:
 # point at the wrong Fused. Derive it by the workbench's own enterprise rule
 # (<name>.fused.io serves its shares from <name>.udf.ai) and refuse, naming
 # the fix, for a host that rule does not cover: a wrong link is worse than
-# none. An explicit `shared_udf_base_url` in the settings file always wins.
+# none. An explicit `shared_udf_base_url` in the settings file always wins,
+# even one naming the PROD host (`model_fields_set` holds what the file set).
 _PROD_API_URL = "https://www.fused.io/server/v1"
 _PROD_SHARED_URL = "https://udf.ai"
 _ENTERPRISE_HOST = re.compile(r"^(?P<name>[a-z0-9-]+)\.fused\.io$", re.IGNORECASE)
@@ -205,7 +206,8 @@ _ENTERPRISE_HOST = re.compile(r"^(?P<name>[a-z0-9-]+)\.fused\.io$", re.IGNORECAS
 
 def _shared_udf_base_url() -> str:
     configured = OPTIONS.shared_udf_base_url
-    if _env_name or configured != _PROD_SHARED_URL or OPTIONS.base_url == _PROD_API_URL:
+    if _env_name or "shared_udf_base_url" in OPTIONS.model_fields_set \
+            or configured != _PROD_SHARED_URL or OPTIONS.base_url == _PROD_API_URL:
         return configured
     host = urlparse(OPTIONS.base_url).hostname or ""
     m = _ENTERPRISE_HOST.match(host)
@@ -256,6 +258,9 @@ def publish(req: dict) -> dict:
     if mode not in ("public", "temporary"):
         raise ShareError(f"unknown share mode {mode!r}")
     target_scope = "team" if mode == "temporary" else "public"
+    # A share host this run cannot name refuses before the upload and the
+    # canvas writes below, not after them with the canvas already shared.
+    _shared_udf_base_url()
 
     api = get_api()
     handle = _handle()

@@ -72,7 +72,10 @@ _HOP_BY_HOP = {
 }
 #: Request headers never forwarded: the proxy sets its own Host and
 #: Authorization, and an inbound Authorization must not override ours.
-_DROP_REQUEST = _HOP_BY_HOP | {b"host", b"authorization", b"content-length"}
+#: Cookie: a browser scopes cookies to the host, not the port, so this
+#: origin is sent every cookie set on 127.0.0.1 (the app's own, any other
+#: local server's), none of which is the deployment's to see.
+_DROP_REQUEST = _HOP_BY_HOP | {b"host", b"authorization", b"content-length", b"cookie"}
 #: Response headers never relayed: Set-Cookie (see module doc), HSTS (this
 #: origin is plain http on loopback) and the framing policies a deployment
 #: may set for its own origin, which would stop the workspace framing us.
@@ -83,6 +86,14 @@ _DROP_RESPONSE = _HOP_BY_HOP | {
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
 TokenSource = Callable[[], str]
+
+
+def _strip_headers(headers, drop: set[bytes]) -> list[tuple[bytes, bytes]]:
+    """`headers` without `drop` and without any header a `Connection` header
+    names: those are hop-by-hop for this one message (RFC 9110 §7.6.1)."""
+    nominated = {name.strip().lower() for k, v in headers if k.lower() == b"connection"
+                 for name in v.split(b",")}
+    return [(k, v) for k, v in headers if k.lower() not in drop and k.lower() not in nominated]
 
 
 def _is_loopback_host(hostport: str) -> bool:
@@ -192,7 +203,7 @@ class ProxyApp:
         path = scope.get("raw_path") or scope["path"].encode()
         query = scope.get("query_string", b"")
         url = self.upstream + path.decode("latin-1") + (("?" + query.decode("latin-1")) if query else "")
-        out_headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() not in _DROP_REQUEST]
+        out_headers = _strip_headers(scope.get("headers", []), _DROP_REQUEST)
         body = await _read_body(receive)
         client = await self._get_client()
         try:
@@ -215,10 +226,8 @@ class ProxyApp:
                 # embed's own refresh handling fires on it).
                 self._tokens.forget()
             relay = []
-            for k, v in response.headers.raw:
+            for k, v in _strip_headers(response.headers.raw, _DROP_RESPONSE):
                 lk = k.lower()
-                if lk in _DROP_RESPONSE:
-                    continue
                 if lk == b"location":
                     v = self._rewrite_location(v)
                 relay.append((lk, v))
