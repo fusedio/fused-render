@@ -546,7 +546,7 @@ def prefer_venv_site_packages(env: dict, python: str) -> dict:
 
 def _venv_python(venv_dir: str) -> str:
     """Where a venv keeps its own interpreter."""
-    return os.path.join(venv_dir, "bin", "python")
+    return _platform.venv_python(venv_dir)
 
 
 def _venv_runs(venv_dir: str) -> bool | None:
