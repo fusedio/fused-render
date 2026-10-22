@@ -65,13 +65,25 @@ function writeTab(tab: TabId) {
 export default function ClaudeConfig() {
   const [tab, setTab] = useState<TabId>(readTab);
   const [filter, setFilter] = useState("");
+  // Tabs already opened stay mounted, hidden, so going back to one shows its
+  // loaded rows rather than a skeleton and a second read. A tab nobody opened
+  // reads nothing.
+  const [seen, setSeen] = useState<readonly TabId[]>(() => [tab]);
+  // Bumped to remount Plugins and Skills, which read `?view=` and `?skill=`
+  // once at mount.
+  const [pluginsRun, setPluginsRun] = useState(0);
+  const [skillsRun, setSkillsRun] = useState(0);
   const current = TABS.find((t) => t.id === tab) ?? TABS[0];
-  const head = { title: current.label, blurb: current.blurb };
 
   useEffect(() => writeTab(tab), [tab]);
 
   const pickTab = (next: TabId) => {
+    // Leaving a skill's editor drops `?skill=` (writeTab); the hidden Skills
+    // tab starts over on its list rather than keep an editor the URL no longer
+    // names.
+    if (next !== "skills" && new URLSearchParams(location.search).has("skill")) setSkillsRun((n) => n + 1);
     setTab(next);
+    setSeen((s) => (s.includes(next) ? s : [...s, next]));
     setFilter("");
   };
 
@@ -81,6 +93,7 @@ export default function ClaudeConfig() {
     const p = new URLSearchParams(location.search);
     p.set("view", "discover");
     history.replaceState(history.state, "", `${location.pathname}?${p.toString()}`);
+    setPluginsRun((n) => n + 1);
     pickTab("plugins");
   };
 
@@ -134,10 +147,14 @@ export default function ClaudeConfig() {
             </div>
           </nav>
           <main className="settings-main">
-            {tab === "skills" && <ClaudeSkillsTab filter={filter} onOpenPluginsDiscover={openPluginsDiscover} />}
-            {tab === "memory" && <ClaudeMemoryTab filter={filter} {...head} />}
-            {tab === "plugins" && <ClaudePluginsTab filter={filter} {...head} />}
-            {tab === "mcp" && <ClaudeMcpTab filter={filter} {...head} />}
+            {TABS.filter((t) => seen.includes(t.id)).map((t) => (
+              <div key={t.id === "plugins" ? `plugins-${pluginsRun}` : t.id === "skills" ? `skills-${skillsRun}` : t.id} style={{ display: t.id === tab ? "contents" : "none" }}>
+                {t.id === "skills" && <ClaudeSkillsTab filter={filter} onOpenPluginsDiscover={openPluginsDiscover} />}
+                {t.id === "memory" && <ClaudeMemoryTab filter={filter} title={t.label} blurb={t.blurb} />}
+                {t.id === "plugins" && <ClaudePluginsTab filter={filter} title={t.label} blurb={t.blurb} />}
+                {t.id === "mcp" && <ClaudeMcpTab filter={filter} title={t.label} blurb={t.blurb} />}
+              </div>
+            ))}
           </main>
         </div>
       </div>
