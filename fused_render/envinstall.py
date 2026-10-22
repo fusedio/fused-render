@@ -780,6 +780,11 @@ def reset_venv_validation_cache() -> None:
         _GENERATION.clear()
         _REBUILD_ATTEMPTED.clear()
         _BOUND_LOGGED.clear()
+    # A venv rebuilt or extended (`uv sync`, a `.pth`) is something an
+    # interpreter started before the change cannot see: drop the spares.
+    from . import warm_run
+
+    warm_run.discard_all("venv validation cache reset")
 
 
 def is_installed(project_dir: str) -> bool:

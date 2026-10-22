@@ -1,11 +1,13 @@
-"""Server plumbing for the second agent backend (docs/COPILOT_BACKEND.md,
-WS-A): the root LIST every transcript reader walks, the `backend` field on
-the task row and the settings record, the Preferences switches' rule, the
-scheduler's disabled gate, erase under the Copilot root, the catalog
-endpoint, and the grep-test behind invariant 7.
+"""Server plumbing for the second and third agent backends
+(docs/COPILOT_BACKEND.md and docs/CODEX_BACKEND.md, WS-A): the root LIST
+every transcript reader walks, the `backend` field on the task row and the
+settings record, the Preferences switches' rule, the scheduler's disabled
+gate, erase under the Copilot and Codex roots, the catalog endpoint, and the
+grep-tests behind invariants 7 and 16.
 
-Every path is under tmp: FUSED_RENDER_HOME (which `copilot_dir()` hangs off)
-and the Claude roots the modules expose for patching.
+Every path is under tmp: FUSED_RENDER_HOME (which `copilot_dir()` and
+`codex_dir()` hang off), CODEX_HOME, and the Claude roots the modules expose
+for patching.
 """
 import json
 import os
@@ -77,6 +79,23 @@ def copilot_projects(home):
 
 
 @pytest.fixture()
+def codex_projects(home):
+    d = home / "codex" / "projects"
+    d.mkdir(parents=True)
+    assert roots.projects_dir("codex") == str(d)
+    return d
+
+
+@pytest.fixture(autouse=True)
+def codex_home(tmp_path, monkeypatch):
+    """Codex CLI's own home, where its rollout files live — redirected for
+    every test, so no erase here can ever reach the real `~/.codex`."""
+    d = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(d))
+    return d
+
+
+@pytest.fixture()
 def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
@@ -106,32 +125,77 @@ def _enable_copilot():
     prefs_mod.write_pref("copilot_enabled", True)
 
 
+def _enable_codex():
+    prefs_mod.write_pref("codex_enabled", True)
+
+
 # ------------------------------------------------------------------ roots
 
 
-def test_both_roots_are_walked_and_the_root_names_the_backend(
-        tmp_path, claude_projects, copilot_projects, client):
+def test_every_root_list_names_three_roots_in_backends_order(
+        tmp_path, home, claude_projects):
+    """docs/CODEX_BACKEND.md §1: a third root everywhere a list is built —
+    the shared file's own lists, the app-side helpers a module with a
+    patchable Claude constant builds through, and the modules' own doors.
+    `codex_dir()` hangs off the UNNESTED home, as `copilot_dir()` does."""
+    assert roots.BACKENDS == ("claude", "copilot", "codex")
+    assert roots.codex_dir() == str(home / "codex")
+    assert roots.base_dir("codex") == str(home / "codex")
+    assert roots.projects_dir("codex") == str(home / "codex" / "projects")
+    assert roots.sessions_dir("codex") == str(home / "codex" / "sessions")
+    claude = roots.claude_dir()
+    assert roots.transcript_roots() == [
+        ("claude", os.path.join(claude, "projects")),
+        ("copilot", str(home / "copilot" / "projects")),
+        ("codex", str(home / "codex" / "projects"))]
+    assert roots.registry_roots() == [
+        ("claude", os.path.join(claude, "sessions")),
+        ("copilot", str(home / "copilot" / "sessions")),
+        ("codex", str(home / "codex" / "sessions"))]
+    assert roots.projects_roots("/c/projects") == [
+        ("claude", "/c/projects"),
+        ("copilot", str(home / "copilot" / "projects")),
+        ("codex", str(home / "codex" / "projects"))]
+    assert roots.sessions_roots("/c/sessions") == [
+        ("claude", "/c/sessions"),
+        ("copilot", str(home / "copilot" / "sessions")),
+        ("codex", str(home / "codex" / "sessions"))]
+    # The routers' and the store's doors carry the patched Claude root first.
+    assert [b for b, _ in sessions_mod.projects_roots()] == list(roots.BACKENDS)
+    assert sessions_mod.projects_roots()[0][1] == str(claude_projects)
+    assert [b for b, _ in tasks_store.projects_roots()] == list(roots.BACKENDS)
+
+
+def test_every_root_is_walked_and_the_root_names_the_backend(
+        tmp_path, claude_projects, copilot_projects, codex_projects, client):
     target = tmp_path / "p"
     target.mkdir()
     a = _write_transcript(claude_projects, "sess-claude", str(target), [_user("one")])
     b = _write_transcript(copilot_projects, "sess-copilot", str(target), [_user("two")])
+    c = _write_transcript(codex_projects, "sess-codex", str(target), [_user("three")])
 
-    assert tasks_store.transcripts() == [str(a), str(b)]
+    assert tasks_store.transcripts() == [str(a), str(b), str(c)]
     assert tasks_store.transcripts_by_backend() == [
-        ("claude", str(a)), ("copilot", str(b))]
+        ("claude", str(a)), ("copilot", str(b)), ("codex", str(c))]
     assert roots.backend_for_transcript(str(b)) == "copilot"
+    assert roots.backend_for_transcript(str(c)) == "codex"
     # A patched Claude root is under neither real root, and reads as Claude.
     assert roots.backend_for_transcript(str(a)) == "claude"
+    assert roots.find_transcript("sess-codex", str(target)) == ("codex", str(c))
+    assert roots.backend_for_session("sess-codex") == "codex"
 
     rows = {r["key"]: r for r in client.get("/api/tasks").json()["tasks"]}
     assert rows["sess-copilot"]["backend"] == "copilot"
+    assert rows["sess-codex"]["backend"] == "codex"
     assert rows["sess-claude"]["backend"] == "claude"
     pulse = {r["key"]: r for r in client.get("/api/tasks/pulse").json()["tasks"]}
     assert pulse["sess-copilot"]["backend"] == "copilot"
+    assert pulse["sess-codex"]["backend"] == "codex"
 
-    # The sessions router's scans see the Copilot transcript too.
+    # The sessions router's scans see the Copilot and Codex transcripts too.
     summaries = client.get("/api/claude-sessions/summaries").json()["sessions"]
-    assert {s["session_id"] for s in summaries} >= {"sess-claude", "sess-copilot"}
+    assert {s["session_id"] for s in summaries} >= {
+        "sess-claude", "sess-copilot", "sess-codex"}
     folders = client.get("/api/claude-sessions").json()["folders"]
     assert [f["path"] for f in folders] == [str(target)]
 
@@ -159,22 +223,27 @@ def test_the_liveness_route_accepts_a_path_under_the_copilot_root(
     assert r.status_code == 400
 
 
-def test_the_registry_watcher_reads_both_sessions_dirs(tmp_path, home, monkeypatch):
+def test_the_registry_watcher_reads_every_sessions_dir(tmp_path, home, monkeypatch):
     claude_sessions = tmp_path / "claude-sessions"
     claude_sessions.mkdir()
     monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(claude_sessions))
     copilot_sessions = home / "copilot" / "sessions"
     copilot_sessions.mkdir(parents=True)
+    codex_sessions = home / "codex" / "sessions"
+    codex_sessions.mkdir(parents=True)
     monkeypatch.setattr(tasks_watch, "_pid_alive", lambda pid: True)
     (claude_sessions / "11.json").write_text(json.dumps(
         {"sessionId": "s-claude", "pid": 11, "cwd": "/a", "status": "busy"}))
     (copilot_sessions / "22.json").write_text(json.dumps(
         {"sessionId": "s-copilot", "pid": 22, "cwd": "/a", "status": "idle"}))
+    (codex_sessions / "55.json").write_text(json.dumps(
+        {"sessionId": "s-codex", "pid": 55, "cwd": "/a", "status": "busy"}))
     tasks_watch._read_registry()
     assert tasks_watch.session_for_pid(11) == "s-claude"
     assert tasks_watch.session_for_pid(22) == "s-copilot"
+    assert tasks_watch.session_for_pid(55) == "s-codex"
     with tasks_watch._cond:
-        assert set(tasks_watch._registry) >= {"s-claude", "s-copilot"}
+        assert set(tasks_watch._registry) >= {"s-claude", "s-copilot", "s-codex"}
 
 
 # ------------------------------------------------------------------ backend field
@@ -184,9 +253,15 @@ def test_the_settings_record_carries_the_backend_once(client):
     r = client.post("/api/tasks/settings", headers=FUSED,
                     json={"session_id": "sess-x", "backend": "copilot"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "model": "", "effort": "", "backend": "copilot"}
+    assert r.json() == {"ok": True, "model": "", "effort": "", "backend": "copilot",
+                        "permission": ""}
     assert client.get("/api/tasks/settings",
                       params={"session_id": "sess-x"}).json()["backend"] == "copilot"
+    # The third agent is a backend the record takes like the others.
+    r = client.post("/api/tasks/settings", headers=FUSED,
+                    json={"session_id": "sess-y", "backend": "codex"})
+    assert r.status_code == 200, r.text
+    assert r.json()["backend"] == "codex"
     # A pill pick says nothing about the backend and leaves it alone.
     client.post("/api/tasks/settings", headers=FUSED,
                 json={"session_id": "sess-x", "effort": "low"})
@@ -407,13 +482,13 @@ def test_spawn_helper_hands_backend_to_start(monkeypatch):
 def test_the_last_enabled_agent_cannot_be_switched_off(client):
     r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": False})
     assert r.status_code == 400
-    assert r.json()["error"] == "turn on the other agent first"
+    assert r.json()["error"] == "turn on another agent first"
     # Both in one body is fine: the merged result has one on.
     r = client.put("/api/prefs", headers=FUSED,
                    json={"claude_enabled": False, "copilot_enabled": True})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": True,
-                                  "default": "copilot"}
+                                  "codex": False, "default": "copilot"}
     assert prefs_mod.read_prefs()["default_backend"] == "copilot"
     assert registry.enabled_ids() == ["copilot"]
     # And now Copilot is the last one.
@@ -428,14 +503,74 @@ def test_default_backend_is_repointed_in_the_same_write(client):
     r = client.put("/api/prefs", headers=FUSED, json={"copilot_enabled": False})
     assert r.status_code == 200
     assert r.json()["agents"] == {"claude": True, "copilot": False,
-                                  "default": "claude"}
+                                  "codex": False, "default": "claude"}
     assert prefs_mod.read_prefs()["default_backend"] == "claude"
     r = client.put("/api/prefs", headers=FUSED, json={"default_backend": "gemini"})
     assert r.status_code == 400
     r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": "yes"})
     assert r.status_code == 400
     body = client.get("/api/prefs").json()
-    assert body["agents"] == {"claude": True, "copilot": False, "default": "claude"}
+    assert body["agents"] == {"claude": True, "copilot": False, "codex": False,
+                              "default": "claude"}
+
+
+def test_codex_is_off_until_stored_on_and_takes_part_in_the_rule(client):
+    """docs/CODEX_BACKEND.md D17: a third switch, off by default; the PUT
+    rule is "at least one of the THREE on", judged on the merged record."""
+    assert prefs_mod.codex_enabled() is False
+    assert prefs_mod.AGENT_BACKEND_KEYS["codex"] == "codex_enabled"
+    assert prefs_mod.VALID_DEFAULT_BACKENDS == registry.ORDER
+    body = client.get("/api/prefs").json()
+    assert body["agents"]["codex"] is False
+    r = client.put("/api/prefs", headers=FUSED, json={"codex_enabled": "yes"})
+    assert r.status_code == 400
+    # Codex on, then Claude and Copilot off in one body: two off with the
+    # third on is fine, and the default walks ORDER to the one left.
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"codex_enabled": True, "copilot_enabled": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"] == {"claude": True, "copilot": True,
+                                  "codex": True, "default": "claude"}
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"claude_enabled": False, "copilot_enabled": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"] == {"claude": False, "copilot": False,
+                                  "codex": True, "default": "codex"}
+    assert prefs_mod.read_prefs()["default_backend"] == "codex"
+    assert registry.enabled_ids() == ["codex"]
+    assert registry.default_id() == "codex"
+    # All three off is refused whole — nothing in that body is written.
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"codex_enabled": False, "default_backend": "claude"})
+    assert r.status_code == 400
+    assert r.json()["error"] == "turn on another agent first"
+    assert prefs_mod.read_prefs()["codex_enabled"] is True
+    assert prefs_mod.read_prefs()["default_backend"] == "codex"
+
+
+def test_the_default_repoints_to_the_first_enabled_in_order(client):
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"copilot_enabled": True, "codex_enabled": True,
+                         "default_backend": "codex"})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"]["default"] == "codex"
+    # Codex goes off: Claude and Copilot are both on, Claude is first.
+    r = client.put("/api/prefs", headers=FUSED, json={"codex_enabled": False})
+    assert r.json()["agents"]["default"] == "claude"
+    # A default naming an agent that is off in the same body is re-pointed.
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"claude_enabled": False, "default_backend": "claude"})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"]["default"] == "copilot"
+    r = client.put("/api/prefs", headers=FUSED, json={"default_backend": "codex"})
+    assert r.status_code == 200
+    assert prefs_mod.read_prefs()["default_backend"] == "copilot"
+
+
+def test_the_unknown_key_message_names_the_codex_switch(client):
+    r = client.put("/api/prefs", headers=FUSED, json={"nothing_known": 1})
+    assert r.status_code == 400
+    assert "'codex_enabled'" in r.json()["error"]
 
 
 def test_fused_ai_never_reads_the_default_agent(monkeypatch):
@@ -458,17 +593,45 @@ def test_the_catalog_endpoint_serves_the_registry(client, monkeypatch):
                         lambda: {"ok": True, "fingerprint": "x"})
     monkeypatch.setattr(claude_health, "summary",
                         lambda: pytest.fail("the catalog must not probe"))
+    from fused_render import codex_health, copilot_health
+    # A disabled agent's health is read from its cache too, never probed.
+    monkeypatch.setattr(copilot_health, "cached", lambda: None)
+    monkeypatch.setattr(codex_health, "cached", lambda: None)
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude"]
-    assert [b["id"] for b in body["all"]] == ["claude", "copilot"]
+    assert [b["id"] for b in body["all"]] == ["claude", "copilot", "codex"]
+    assert [b["id"] for b in body["all"]] == list(registry.ORDER)
     assert body["default"] == "claude"
     claude = body["all"][0]
     assert claude["health"] == {"ok": True}
     assert claude["caps"]["plan_mode"] is True
     assert body["all"][1]["enabled"] is False
+    codex = body["all"][2]
+    assert codex["enabled"] is False
+    assert codex["label"] == "Codex"
+    assert codex["default_model"] == "gpt-6-luna"
+    assert codex["modes"] == ["prompt", "acceptEdits", "auto"]
+    assert codex["caps"]["plan_mode"] is False
+    assert codex["caps"]["live_model_switch"] is True
+    assert codex["caps"]["live_mode_switch"] is True
+    assert codex["health"] is None
     _enable_copilot()
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude", "copilot"]
+    _enable_codex()
+    body = client.get("/api/agent-backends").json()
+    assert [b["id"] for b in body["backends"]] == ["claude", "copilot", "codex"]
+
+
+def test_codexs_terminal_resume_line():
+    codex = registry.get("codex")
+    assert codex.terminal_resume("/a b", "01a15f4b-da04") == (
+        "cd '/a b' && codex resume 01a15f4b-da04")
+    assert codex.terminal_resume("/a", "") == "cd /a && codex"
+    assert codex.routes_prefix == "/api/codex"
+    assert codex.pref_key == "codex_enabled"
+    # `pref_key` names a function prefs really has (base.Backend's contract).
+    assert getattr(prefs_mod, codex.pref_key)() is False
 
 
 # ------------------------------------------------------------------ erase (D15)
@@ -510,6 +673,91 @@ def test_erase_of_a_claude_session_leaves_the_copilot_cli_store_alone(
     assert r.status_code == 200, r.text
     assert not path.exists()
     assert (state / "sess-a").exists()
+
+
+def _rollout(codex_home, sub, rel_dir, session_id, ts="2026-10-21T10-00-00"):
+    d = codex_home / sub / rel_dir
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"rollout-{ts}-{session_id}.jsonl"
+    p.write_text("{}\n")
+    return p
+
+
+CODEX_SID = "01a15f4b-da04-7b11-8b21-41c96595aa15"
+OTHER_SID = "01a15f4b-da04-7b11-8b21-000000000000"
+
+
+def test_erase_under_the_codex_root_takes_the_cli_rollouts_too(
+        tmp_path, claude_projects, codex_projects, codex_home, client):
+    """docs/CODEX_BACKEND.md D15: `codex resume <sid>` replays from Codex's
+    own rollout file, so an erase that left it would leave the conversation
+    resumable from a terminal. Both stores go — the dated live one and the
+    archive — and only this id's files."""
+    target = tmp_path / "p"
+    target.mkdir()
+    path = _write_transcript(codex_projects, CODEX_SID, str(target), [_user("two")])
+    live = _rollout(codex_home, "sessions", "2026/10/21", CODEX_SID)
+    later = _rollout(codex_home, "sessions", "2026/10/22", CODEX_SID,
+                     ts="2026-10-22T08-00-00")
+    archived = _rollout(codex_home, "archived_sessions", "", CODEX_SID)
+    other = _rollout(codex_home, "sessions", "2026/10/21", OTHER_SID)
+    # A file that merely CONTAINS the id is not a rollout of it.
+    lookalike = codex_home / "sessions" / "2026" / "10" / "21" / f"notes-{CODEX_SID}.jsonl"
+    lookalike.write_text("{}\n")
+    assert tasks_mod._codex_home() == str(codex_home)
+    assert sorted(tasks_mod._codex_rollout_files(CODEX_SID)) == sorted(
+        os.path.realpath(p) for p in (live, later, archived))
+
+    assert client.get("/api/tasks").json()["tasks"][0]["key"] == CODEX_SID
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": CODEX_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert not live.exists() and not later.exists() and not archived.exists()
+    assert other.exists() and lookalike.exists()
+
+
+def test_erase_of_a_claude_session_leaves_the_codex_rollouts_alone(
+        tmp_path, claude_projects, codex_home, client):
+    target = tmp_path / "p"
+    target.mkdir()
+    path = _write_transcript(claude_projects, CODEX_SID, str(target), [_user("one")])
+    live = _rollout(codex_home, "sessions", "2026/10/21", CODEX_SID)
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": CODEX_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert live.exists()
+
+
+def test_erase_through_a_symlinked_codex_bucket_takes_the_rollouts_too(
+        tmp_path, claude_projects, codex_projects, codex_home, client):
+    target = tmp_path / "p"
+    target.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    path = _write_transcript(elsewhere, CODEX_SID, str(target), [_user("two")])
+    (codex_projects / path.parent.name).symlink_to(path.parent)
+    live = _rollout(codex_home, "sessions", "2026/10/21", CODEX_SID)
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": CODEX_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert not live.exists()
+
+
+def test_the_codex_rollout_glob_refuses_a_bad_id_and_a_symlink_out(
+        tmp_path, codex_home):
+    """The same safety the Copilot path has: an id that is not a name never
+    builds a path, and a hit must RESOLVE inside the Codex dir it was globbed
+    under — a rollout-named symlink to a file elsewhere is not followed."""
+    _rollout(codex_home, "sessions", "2026/10/21", "x")
+    for bad in ("..", ".", "a/b", "*", "", "-x"):
+        assert tasks_mod._codex_rollout_files(bad) == []
+    outside = tmp_path / "precious.jsonl"
+    outside.write_text("keep me\n")
+    link_dir = codex_home / "sessions" / "2026" / "10" / "23"
+    link_dir.mkdir(parents=True)
+    (link_dir / f"rollout-2026-10-23T00-00-00-{CODEX_SID}.jsonl").symlink_to(outside)
+    assert tasks_mod._codex_rollout_files(CODEX_SID) == []
+    # No Codex home at all is simply nothing to remove.
+    assert tasks_mod._codex_rollout_files(OTHER_SID) == []
 
 
 # ------------------------------------------------------------------ round 2
@@ -914,6 +1162,59 @@ def test_no_module_touched_here_spells_the_claude_root_itself():
                 if _LITERAL.search(code):
                     offenders.append(f"{rel}:{n}: {line.strip()}")
     assert offenders == []
+
+
+# ------------------------------------------------------------------ invariant 16
+
+
+#: Code (not prose) that resolves Codex CLI's own home: a `"~/.codex"` or a
+#: `"CODEX_HOME"` string literal. Docstrings and comments may SAY either —
+#: in backticks — and are not matched.
+_CODEX_LITERAL = re.compile(r"""["'](?:~/\.codex|CODEX_HOME)\b""")
+
+#: docs/CODEX_BACKEND.md invariant 16: the only modules that may name Codex's
+#: home — the roots file, the health/login/install trio that probe and sign
+#: in, erase (D15) and the recap's one-shot (D12).
+_CODEX_HOME_ALLOWED = {
+    "templates/shared/agent_roots.py", "codex_health.py", "codex_login.py",
+    "codex_install.py", "server/routers/tasks.py",
+    "server/routers/claude_sessions.py",
+}
+
+
+def test_only_the_allowed_modules_name_codexs_own_home():
+    """Invariant 16 (invariant 7's twin for Codex): Codex's `CODEX_HOME` /
+    `~/.codex` is named in code only where the contract allows it — every
+    other module reaches it through one of those. Walks the WHOLE package,
+    the hosts and agent.py included, because a new reader is exactly what
+    this exists to catch."""
+    import fused_render
+    base = os.path.dirname(fused_render.__file__)
+    offenders = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in ("__pycache__", "node_modules")]
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, base).replace(os.sep, "/")
+            if rel in _CODEX_HOME_ALLOWED:
+                continue
+            with open(full, encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    code = line.split("#", 1)[0]
+                    if _CODEX_LITERAL.search(code):
+                        offenders.append(f"{rel}:{n}: {line.strip()}")
+    assert offenders == []
+
+
+def test_the_codex_literal_pattern_catches_code_and_spares_prose():
+    assert _CODEX_LITERAL.search('os.environ.get("CODEX_HOME")')
+    assert _CODEX_LITERAL.search("expanduser('~/.codex')")
+    assert _CODEX_LITERAL.search('os.path.expanduser("~/.codex/sessions")')
+    assert not _CODEX_LITERAL.search("leaves `CODEX_HOME` exactly as found")
+    assert not _CODEX_LITERAL.search("under `~/.codex`")
+    assert not _CODEX_LITERAL.search('"CODEX_HOME_X"')
 
 
 def test_spawn_helper_forwards_isolate_mcp_only_when_true(monkeypatch):

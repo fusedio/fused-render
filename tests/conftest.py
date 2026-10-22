@@ -370,6 +370,20 @@ def _no_real_session_count(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _warm_run_off_by_default(monkeypatch):
+    """`/api/run` claims pre-spawned idle interpreters by default (SPEC PY-20).
+    Tests that spy `executor.subprocess.Popen` or assert the cold spawn flags
+    must keep exercising the cold path, so every test starts with the switch off;
+    `tests/test_warm_run.py` turns it on itself. Teardown kills any spare a test
+    started so none outlives it."""
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "0")
+    yield
+    from fused_render import warm_run
+
+    warm_run.reset()
+
+
+@pytest.fixture(autouse=True)
 def _no_git_auto_sync_threads(monkeypatch):
     """App-made commits and app opens must not spawn real background git
     fetch/push threads in every unrelated test (they would outlive the test's
