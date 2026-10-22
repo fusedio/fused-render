@@ -1462,7 +1462,14 @@ def test_a_result_with_no_usable_timestamps_is_one_segment_over_the_pack(
     (segment,) = written["segments"]
     assert (segment["start"], segment["end"], segment["text"]) == (
         0.0, 6.0, "No times here.")
-    assert "words" not in segment
+    # Asked for and not timed is an EMPTY list (`_ct2_words`' rule), never a
+    # missing key — "none were timed" must not read as "this engine declined".
+    assert segment["words"] == []
+
+    sherpa.results = [("No times here.", [], [])]
+    worker.generate(_request(tmp_path))
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    assert "words" not in written["segments"][0]
 
 
 def test_the_reply_language_is_none_because_sherpa_reports_none(

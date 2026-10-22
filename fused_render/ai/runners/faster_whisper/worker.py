@@ -692,7 +692,7 @@ def _sherpa_segments(result, pack_seconds):
     monotonic input.
 
     **No usable timestamps is one segment over the whole pack**, with the text
-    and no words: `tokens` and `timestamps` that disagree in length mean the
+    and no word spans (`_consume_sherpa` then publishes an empty `words`): `tokens` and `timestamps` that disagree in length mean the
     export or the library changed under us, and a transcript with coarse times
     is a better answer than a failed run or a silently shifted one.
     """
@@ -838,7 +838,9 @@ def _consume_sherpa(recognizer, audio, packs, progressive, job, row, total,
             at = vad_module.original_start(pack, start)
             until = max(vad_module.original_end(pack, end), at)
             line = {"start": round(at, 2), "end": round(until, 2), "text": text}
-            if words and spans:
+            if words:
+                # An EMPTY list when the result had no usable timings, like
+                # `_ct2_words`: a caller that asked reads "none were timed".
                 line["words"] = []
                 for w_start, w_end, word in spans:
                     w_at, w_until = vad_module.original_word_span(pack, w_start, w_end)
