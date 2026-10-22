@@ -47,63 +47,20 @@ def _fresh_interpreter_probe():
     engine.reset_app_interpreter_cache()
 
 
-# --- engine warm-up + non-blocking availability (PY cold-start) --------------
+# --- engine warm-up ----------------------------------------------------------
 
 
-def test_available_nonblocking_never_triggers_the_cold_import(monkeypatch):
-    def _boom():
-        raise AssertionError("the cold engine import must not run on the request path")
-
-    monkeypatch.setattr(engine, "available", _boom)
-    assert isinstance(engine.available_nonblocking(), bool)
+def test_the_compute_backend_is_always_available():
+    assert engine.available() is True
 
 
-def test_available_nonblocking_reads_find_spec_not_the_import(monkeypatch):
-    monkeypatch.setattr(engine, "available",
-                        lambda: (_ for _ in ()).throw(AssertionError("no cold import")))
-    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
-    assert engine.available_nonblocking() is True
-    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: None)
-    assert engine.available_nonblocking() is False
-
-
-def test_warm_caches_a_positive_and_short_circuits(monkeypatch):
-    monkeypatch.setattr(engine, "available", lambda: True)
+def test_warm_primes_the_pre_spawned_interpreters(monkeypatch):
+    seen = []
+    monkeypatch.setattr(engine.warm_run, "prime",
+                        lambda backend, resolve: seen.append((backend, resolve)))
+    monkeypatch.setattr(engine, "get_backend", lambda: "the-backend")
     engine.warm()
-    assert engine._available_cached is True
-
-    def _no_find_spec(_name):
-        raise AssertionError("cached result must be used, not a fresh probe")
-
-    monkeypatch.setattr(engine.importlib.util, "find_spec", _no_find_spec)
-    assert engine.available_nonblocking() is True
-
-
-def test_warm_caches_a_negative_so_a_broken_fused_is_not_reported_available(monkeypatch):
-    # find_spec sees the package but the backend import fails: cache the truth, not find_spec.
-    monkeypatch.setattr(engine, "available", lambda: False)
-    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
-    engine.warm()
-    assert engine._available_cached is False
-    assert engine.available_nonblocking() is False
-
-
-def test_invalidate_lets_a_mid_session_install_flip_the_engine(monkeypatch):
-    # Warm caches False (fused absent); invalidate() lets a later install be seen.
-    monkeypatch.setattr(engine, "available", lambda: False)
-    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: None)
-    engine.warm()
-    assert engine.available_nonblocking() is False
-    monkeypatch.setattr(engine.importlib.util, "find_spec", lambda _n: object())
-    engine.invalidate()
-    assert engine.available_nonblocking() is True
-
-
-def test_warm_logs_the_duration(monkeypatch, caplog):
-    monkeypatch.setattr(engine, "available", lambda: True)
-    with caplog.at_level("INFO", logger="fused_render.engine"):
-        engine.warm()
-    assert "engine warm-up" in caplog.text
+    assert seen == [("the-backend", engine.app_interpreter)]
 
 
 def test_forced_override_is_the_one_normalized_reader_of_the_env_var(monkeypatch):
@@ -449,20 +406,11 @@ class _FakeResult:
 
 
 class _FakeBackend:
-    """Both halves of the real backend's contract, so `calls` shows WHICH ran.
-
-    A fake with only `execute()` would make every header-less run look like the
-    venv path (engine.py falls back when `_execute_sync` is absent), which is
-    exactly the distinction these tests are about.
-    """
+    """Records each `_execute_sync` call (the one entry the engine uses)."""
 
     def __init__(self, result):
         self._result = result
         self.calls = []
-
-    async def execute(self, **kw):
-        self.calls.append({"via": "execute", **kw})
-        return self._result
 
     def _execute_sync(self, **kw):
         self.calls.append({"via": "_execute_sync", **kw})
@@ -578,38 +526,13 @@ def test_missing_file_is_legacy_error(monkeypatch, tmp_path):
     assert out["ok"] is False and out["error"]["type"] == "FileNotFoundError"
 
 
-# --- real-backend integration (runs only when `fused` is importable) ----------
-
-requires_fused = pytest.mark.skipif(
-    not engine.available(), reason="fused package not installed (engine falls back)"
-)
+# --- real-backend integration -------------------------------------------------
 
 
-def test_ci_claiming_to_cover_this_engine_actually_runs_it():
-    """`engine.available()` must not be allowed to silently switch CI off.
-
-    Everything below gates on it, which is right for a dev machine or a matrix
-    entry without the extra — and wrong for the job that exists to run this
-    engine (.github/workflows/test.yml's `fused-engine`): a job that installs
-    `[fused]`, skips every test, and reports green is worse than no job. That
-    job sets FUSED_RENDER_REQUIRE_FUSED_ENGINE=1, which turns the skip
-    condition into an assertion here. Unset, this is a no-op.
-    """
-    if os.environ.get("FUSED_RENDER_REQUIRE_FUSED_ENGINE") != "1":
-        pytest.skip("only meaningful where the [fused] extra is expected")
-    assert engine.available(), (
-        "FUSED_RENDER_REQUIRE_FUSED_ENGINE=1 but the fused local backend is not "
-        "importable — the `[fused]` extra did not take effect (a pre-release pin "
-        "marked python_version >= '3.11': check the interpreter), so every "
-        "engine test would have skipped while the job reported success"
-    )
-
-
-@requires_fused
 def test_the_backend_is_built_from_the_RESOLVED_script_interpreter(monkeypatch):
     """D214: the pin only exists if it reaches the backend.
 
-    `envinstall._python_executable()` reads this attribute straight back off the
+    `envinstall._python_executable()` reads this attribute (`python_executable`) straight back off the
     live backend, and `venv_key_for` folds it into the venv key — so the resolution
     and the key are one value with one source. A resolver whose answer never
     reached the constructor would leave every venv still keyed on whatever
@@ -618,27 +541,25 @@ def test_the_backend_is_built_from_the_RESOLVED_script_interpreter(monkeypatch):
     monkeypatch.setattr(engine, "_backend", None)
     monkeypatch.setattr(envinstall, "script_python", lambda: "/pinned/python3.12")
     backend = engine.get_backend()
-    assert backend._python_executable == "/pinned/python3.12"
+    assert backend.python_executable == "/pinned/python3.12"
     # And read back through the loader, which is what actually keys the venv.
     assert envinstall._python_executable() == "/pinned/python3.12"
 
 
-@requires_fused
 def test_a_server_already_on_312_leaves_the_backend_default_untouched(monkeypatch):
     """None must stay None all the way to the constructor.
 
     This is the packaged-build path, and `None` is what makes it a no-op: it is
-    the value the backend has always been given, so `python_identity` produces the
-    identical key and no existing venv is orphaned. Passing something merely
+    the value the backend has always been given, so venv keys do not move and no
+    existing venv is orphaned. Passing something merely
     equivalent (`sys.executable`) instead would re-key every venv on every
     installed app for no behavioural gain.
     """
     monkeypatch.setattr(engine, "_backend", None)
     monkeypatch.setattr(envinstall, "script_python", lambda: None)
-    assert engine.get_backend()._python_executable is None
+    assert engine.get_backend().python_executable is None
 
 
-@requires_fused
 def test_real_backend_runs_bare_main(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "sine.py"
@@ -652,7 +573,6 @@ def test_real_backend_runs_bare_main(monkeypatch, tmp_path):
     assert out["result"] == {"n": 8, "y0": 0.0}
 
 
-@requires_fused
 def test_real_backend_error_points_at_user_file(monkeypatch, tmp_path):
     monkeypatch.setattr(engine, "_backend", None)
     target = tmp_path / "boom.py"
@@ -727,7 +647,7 @@ def test_app_interpreter_probe_rejects_a_foreign_python(monkeypatch, tmp_path):
 def test_app_interpreter_probe_survives_the_stripped_child_env(monkeypatch):
     """The probe must run under the env the BACKEND will use, not ours.
 
-    `python_compute` strips PYTHONHOME/PYTHONPATH/VIRTUAL_ENV/PYTHONSTARTUP
+    The backend strips PYTHONHOME/PYTHONPATH/VIRTUAL_ENV/PYTHONSTARTUP
     from the child. A packaged interpreter that only self-locates its stdlib
     *because* the app process exports PYTHONHOME would pass a probe run with
     our env and then die in the real child — so the probe drops the same vars.
@@ -785,7 +705,6 @@ def test_the_probe_timeout_is_short_enough_to_not_read_as_a_hang():
     assert engine._PROBE_TIMEOUT_S <= 10
 
 
-@requires_fused
 def test_a_headerless_script_runs_on_the_app_interpreter(monkeypatch, tmp_path):
     """The end-to-end assertion: no venv, and the child IS the app's python.
 
@@ -806,7 +725,6 @@ def test_a_headerless_script_runs_on_the_app_interpreter(monkeypatch, tmp_path):
     assert out["result"]["exe"] == engine.app_interpreter()
 
 
-@requires_fused
 def test_a_headerless_script_sees_the_app_s_own_packages(monkeypatch, tmp_path):
     """The point of the switch: `[bundled]` works with no header and no install."""
     monkeypatch.setattr(engine, "_backend", None)
@@ -833,7 +751,6 @@ def test_a_headerless_script_sees_the_app_s_own_packages(monkeypatch, tmp_path):
     assert out["result"] == [1, 2]
 
 
-@requires_fused
 def test_a_declared_project_runs_in_its_own_venv(
     monkeypatch, tmp_path, warm_fused_backend_venv
 ):
@@ -888,9 +805,7 @@ def test_the_declaration_is_the_complete_requirement_list(monkeypatch, tmp_path)
     # interpreter to run on rather than resolving a requirement set of its own.
     assert call["via"] == "_execute_sync"
     assert call["interpreter"] == envinstall.venv_python_for(str(tmp_path))
-    assert "requirements" not in call, (
-        "upstream ignores requirements once interpreter is set; passing both misleads"
-    )
+    assert "requirements" not in call
 
 
 @requires_tomllib
@@ -935,9 +850,8 @@ def test_a_preflight_that_raises_is_still_contained_off_thread(
 ):
     """Moving the pre-flight to a thread must not widen what escapes /api/run.
 
-    `is_installed` -> `venv_key_for` reaches into `fused.agent_core...` unguarded,
-    and `_backend_attr` raises RuntimeError BY DESIGN when an upstream private
-    attribute disappears. Uncontained, that made /api/run an unhandled 500 whose
+    `is_installed` can raise ImportError or RuntimeError (no `uv`, no usable
+    pinned Python). Uncontained, that made /api/run an unhandled 500 whose
     body is `{"error": "<string>"}`, which runtime.js renders as the literal word
     `undefined`. `asyncio.to_thread` re-raises in the awaiting frame, so the
     existing `try` still covers it — verified here rather than assumed, because
@@ -990,28 +904,6 @@ def test_no_resolvable_interpreter_is_a_loud_error_not_a_venv(monkeypatch, tmp_p
     assert backend.calls == [], "nothing may be executed"
 
 
-def test_a_missing_execute_sync_is_loud_too(monkeypatch, tmp_path):
-    """Same rule for the other way the interpreter path can be unavailable."""
-
-    class NoSyncBackend:
-        def __init__(self):
-            self.calls = []
-
-        async def execute(self, **kw):
-            self.calls.append(kw)
-            raise AssertionError("must not run in a venv")
-
-    backend = NoSyncBackend()
-    monkeypatch.setattr(engine, "get_backend", lambda: backend)
-    target = tmp_path / "plain.py"
-    target.write_text("def main():\n    return None\n")
-    out = asyncio.run(engine.run_python(str(target), {}))
-    assert out["ok"] is False
-    assert out["error"]["type"] == "EngineError"
-    assert "_execute_sync" in out["error"]["traceback"]
-    assert backend.calls == []
-
-
 # --- a header the app interpreter ALREADY satisfies ----------------------------
 #
 # The `[bundled]` extra puts pandas/duckdb/pyarrow/numpy/pillow/openpyxl/
@@ -1046,7 +938,6 @@ def _preflight_spy(monkeypatch):
 
 
 @requires_tomllib
-@requires_fused
 def test_a_declaration_the_app_already_satisfies_builds_no_venv(monkeypatch, tmp_path):
     """pandas is on the app interpreter, so a header naming it needs no venv."""
     _declare(tmp_path, '"pandas>=2.0.0"')
@@ -1063,13 +954,10 @@ def test_a_declaration_the_app_already_satisfies_builds_no_venv(monkeypatch, tmp
     call = backend.calls[0]
     assert call["via"] == "_execute_sync"
     assert call["interpreter"] == engine.app_interpreter()
-    assert "requirements" not in call, (
-        "upstream ignores requirements once interpreter is set; passing both misleads"
-    )
+    assert "requirements" not in call
 
 
 @requires_tomllib
-@requires_fused
 def test_one_missing_package_sends_the_whole_project_to_the_venv_path(
     monkeypatch, tmp_path
 ):
@@ -1094,7 +982,6 @@ def test_one_missing_package_sends_the_whole_project_to_the_venv_path(
 
 
 @requires_tomllib
-@requires_fused
 def test_a_version_the_app_cannot_meet_is_not_treated_as_satisfied(
     monkeypatch, tmp_path
 ):
@@ -1117,7 +1004,6 @@ def test_a_version_the_app_cannot_meet_is_not_treated_as_satisfied(
 
 
 @requires_tomllib
-@requires_fused
 def test_extras_are_never_treated_as_satisfied(monkeypatch, tmp_path):
     """`pandas[performance]` asks for packages a version number cannot vouch for.
 
@@ -1138,7 +1024,6 @@ def test_extras_are_never_treated_as_satisfied(monkeypatch, tmp_path):
 
 
 @requires_tomllib
-@requires_fused
 def test_the_escape_hatch_forces_the_venv_path(monkeypatch, tmp_path):
     """One env var puts a satisfied header back on the old, isolated venv path."""
     monkeypatch.setenv(engine._FORCE_VENV_ENV, "1")
@@ -1154,7 +1039,6 @@ def test_the_escape_hatch_forces_the_venv_path(monkeypatch, tmp_path):
     assert backend.calls[0]["interpreter"] == envinstall.venv_python_for(str(tmp_path))
 
 
-@requires_fused
 def test_the_app_package_probe_runs_at_most_once_per_process(monkeypatch):
     """One subprocess per server process, not one per /api/run.
 
@@ -1175,69 +1059,6 @@ def test_the_app_package_probe_runs_at_most_once_per_process(monkeypatch):
     assert "pandas" in first, first
 
 
-class _NoSyncBackend:
-    """A backend with only the async half — a `fused` lacking `_execute_sync`."""
-
-    def __init__(self, result):
-        self._result = result
-        self.calls = []
-
-    async def execute(self, **kw):
-        self.calls.append({"via": "execute", **kw})
-        return self._result
-
-
-@requires_tomllib
-@requires_fused
-def test_no_execute_sync_is_a_named_configuration_error_not_an_inline_build(
-    monkeypatch, tmp_path
-):
-    """Without `_execute_sync` a project venv cannot be used, and that is SAID.
-
-    `_execute_sync` is the only way to run on an interpreter WE pick, and since
-    the environment now lives under our own home dir rather than in the backend's
-    store, being told the interpreter is the ONLY way the backend can reach it —
-    there is no requirement set it could resolve to the same place.
-
-    So the old fallback (`execute(requirements=…)`) is not available and must not
-    be resurrected: it would build a SECOND, different venv inline, a blocking
-    download inside /api/run, which is the exact thing PY-18 moved out of it. The
-    honest answer is the configuration error `_execute` already raises, surfaced
-    through the house wire shape.
-
-    The pre-flight still runs first, so a genuinely missing venv is still reported
-    as `needs_install` rather than as this error.
-    """
-    _declare(tmp_path, '"pandas>=2.0.0"')
-    target = tmp_path / "declared.py"
-    target.write_text("def main():\n    return 1\n")
-    backend = _NoSyncBackend(_FakeResult(return_value="1"))
-    monkeypatch.setattr(engine, "get_backend", lambda: backend)
-    seen = _preflight_spy(monkeypatch)
-
-    out = asyncio.run(engine.run_python(str(target), {}))
-    assert out["ok"] is False
-    assert seen == [["pandas>=2.0.0"]], (
-        "the pre-flight was skipped, so a missing venv would be built inline"
-    )
-    assert backend.calls == [], "a second venv was built inline"
-    assert "_execute_sync" in out["error"]["traceback"]
-
-
-@requires_fused
-def test_the_fast_path_is_not_taken_when_the_backend_cannot_run_on_an_interpreter(
-    monkeypatch,
-):
-    """The gate itself, independent of any script."""
-    monkeypatch.setattr(engine, "get_backend",
-                        lambda: _NoSyncBackend(_FakeResult(return_value="1")))
-    assert engine._interpreter_path_available() is False
-    monkeypatch.setattr(engine, "get_backend",
-                        lambda: _FakeBackend(_FakeResult(return_value="1")))
-    assert engine._interpreter_path_available() is True
-
-
-@requires_fused
 def test_a_direct_url_requirement_is_never_treated_as_satisfied(monkeypatch):
     """`pandas @ https://…` names a SOURCE, which a version cannot vouch for.
 
@@ -1258,7 +1079,6 @@ def test_a_direct_url_requirement_is_never_treated_as_satisfied(monkeypatch):
         assert engine.app_satisfies([spec]) is False, spec
 
 
-@requires_fused
 def test_an_unparseable_requirement_is_not_satisfied():
     """"I could not read it" must never read as "it is already there"."""
     assert engine.app_satisfies(["not a requirement at all!!"]) is False
@@ -1280,23 +1100,6 @@ def test_an_empty_requirement_list_is_not_the_fast_path(monkeypatch):
     would make `app_satisfies([])` answer True for a script that never asked."""
     monkeypatch.setattr(engine, "app_packages", lambda: {"pandas": "2.3.3"})
     assert engine.app_satisfies([]) is False
-
-
-def test_a_backend_that_cannot_be_resolved_is_not_an_interpreter_path(monkeypatch):
-    """`get_backend()` raising is a "no", not an error to propagate.
-
-    The gate is the FIRST thing /api/run touches for a header, and `get_backend`
-    raises outright when `fused` is absent — so letting that through made every
-    more specific failure downstream unreachable. CI caught it: the plain
-    `test-python` jobs install no `fused`, and
-    `test_a_preflight_that_cannot_answer_returns_the_house_error_shape` saw a bare
-    ModuleNotFoundError from this probe instead of the pre-flight's own diagnosis.
-    """
-    def _no_fused():
-        raise ModuleNotFoundError("No module named 'fused'")
-
-    monkeypatch.setattr(engine, "get_backend", _no_fused)
-    assert engine._interpreter_path_available() is False
 
 
 def test_a_missing_packaging_warns_instead_of_probing(monkeypatch):

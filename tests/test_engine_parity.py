@@ -110,10 +110,6 @@ CASES = [
 
 IDS = [c[0] for c in CASES]
 
-requires_fused = pytest.mark.skipif(
-    not engine.available(), reason="fused package not installed (engine falls back)"
-)
-
 
 def _wire(out: dict) -> dict:
     """Reduce a /api/run response to just what parity is asserted on."""
@@ -191,7 +187,6 @@ def test_wrapper_binding_matches_builtin(tmp_path, case):
     assert _fused_wrapper(tmp_path, src, params) == builtin
 
 
-@requires_fused
 @pytest.mark.parametrize("case", CASES, ids=IDS)
 def test_real_backend_binding_matches_builtin(tmp_path, case, monkeypatch):
     _id, src, params, expected = case
