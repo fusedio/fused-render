@@ -3012,7 +3012,7 @@ class Bot:
                         bd["done_at"] = time.time()
                         # The app it just built is ticked under "Apps it may use without asking": its scripts run
                         # without a card from here on, and Settings shows that (tools.risk reads only the tick).
-                        apptools.trust_app(self.meta, os.path.basename(str(bd.get("dir") or "").rstrip("/")), "build")
+                        apptools.trust_app(self.meta, os.path.basename(str(bd.get("dir") or "").rstrip("/")))
                         self.save()
                     return
                 stable = ""
@@ -4366,7 +4366,6 @@ def clone(src_id, name="", share=True):
             "approval": src.meta.get("approval", "ask"), "build_access": src.meta.get("build_access", "scoped"),
             "terminal": src.meta.get("terminal") is True,
             "trusted_apps": apptools.clean_trusted_apps(src.meta.get("trusted_apps")),
-            "trusted_via": apptools.clean_trusted_via(src.meta),
             "allow_rules": _tools_mod().clean_allow_rules(src.meta.get("allow_rules")),
             "folders": clean_folders(src.meta.get("folders")),
             "status": "idle", "created": time.time(), "task": "", "step": 0, "url": None, "title": None}

@@ -963,10 +963,8 @@ def test_trusted_app_write_tool_skips_the_gate(monkeypatch):
     d = {"app": "fake-docs", "name": "send_mail", "args": {}}
     assert T.risk(B(), "tool", d, {}) == ""
     assert T.risk(B(), "tool", {"app": "other", "name": "delete_all"}, {}) != ""
-    # the bot's own `risky: true` flag still wins: it knows something the tick does not, and such a card offers no
-    # "Always approve" (the tick would not silence it)
-    assert T.risk(B(), "tool", dict(d, risky=True), {}) != ""
-    assert T.forever_rule(B(), "tool", dict(d, risky=True), {}) is None
+    # one list, ticked = without asking: the bot's own `risky: true` does not bring the card back
+    assert T.risk(B(), "tool", dict(d, risky=True), {}) == ""
     # an unticked app: "Always approve" on its card offers one rule for the app, not the tool
     assert T.forever_rule(B(), "tool", {"app": "other", "name": "delete_all"}, {}) == {"kind": "trusted", "key": "other", "label": "uses the other app"}
 
@@ -978,13 +976,11 @@ def test_trust_app_and_migration_tick_the_checkbox():
             "builds": [{"dir": "/tmp/fx/app/Counter_Notes", "done_at": 1.0}, {"dir": "/tmp/fx/app/half", "done_at": None}]}
     assert T.migrate_app_rules(meta) is True
     assert meta["trusted_apps"] == ["mail", "fake-docs", "counter-notes"]
-    assert meta["trusted_via"] == {"fake-docs": "card", "counter-notes": "build"}
     assert meta["allow_rules"] == [{"kind": "browser", "key": "a.com|save", "label": "y"}]
     assert meta["trusted_migrated"] is True
     assert T.migrate_app_rules(meta) is False  # once per bot
     apptools.set_trusted_apps(meta, add=["New App"], remove=["fake-docs", "counter-notes"])
     assert meta["trusted_apps"] == ["mail", "new-app"]
-    assert meta["trusted_via"] == {}  # a dropped tick loses its via, a dialog tick has none
     assert T.migrate_app_rules(meta) is False  # a restart must not re-tick the build the user unticked
     assert meta["trusted_apps"] == ["mail", "new-app"]
 

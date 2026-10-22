@@ -182,9 +182,6 @@ export interface Bot {
   /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. The one app-level
    *  permission: a build this bot finished and an "Always approve" on a tool/script card both tick it. */
   trusted_apps?: string[];
-  /** How a ticked app got its tick: "build" (this bot built it) or "card" (approved forever on a card); absent when
-   *  ticked in Settings. */
-  trusted_via?: Record<string, "build" | "card" | (string & {})>;
   /** Calls the user approved forever from a card; revoked under Settings › Permissions. */
   allow_rules?: AllowRule[];
   /** Folders on this Mac the bot may READ (`ls` / `find` / `readfile`; Settings › Permissions › Folders it may read).

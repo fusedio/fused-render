@@ -758,7 +758,6 @@ def _settings(bid, body):
     elif isinstance(body.get("trusted_apps"), list):
         with b.lock:
             b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
-            b.meta["trusted_via"] = _apptools().clean_trusted_via(b.meta)
     if folders is not None:
         # The folders this bot may READ (docs §2). The dialog is the only writer, so the full list is taken as sent;
         # a bot's own `bot_settings` never carries this key (a bot granting folders to a bot is escalation).

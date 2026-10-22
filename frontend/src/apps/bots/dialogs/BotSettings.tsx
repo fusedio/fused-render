@@ -321,20 +321,15 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
                   )}
                 </Row>
                 {appRows.length ? (
-                  <Row title="Apps it may use without asking"
-                    text="A ticked app's tools and scripts run at once. An app it built, or one you approved with “Always approve” on a card, is ticked here too; untick it to be asked again. An unticked app still reads without asking; anything that changes something asks first." stack>
+                  <Row title="Apps it may use without asking" text="A ticked app's tools and scripts run without asking. Everything else asks first." stack>
                     <div className="max-h-48 divide-y divide-foreground/5 overflow-y-auto rounded-lg border border-input" id="bmtrusted">
                       {appRows.map((a) => {
-                        const k = normApp(a.folder);
-                        const on = trustedApps.includes(k);
-                        const via = on ? (bot.trusted_via || {})[k] : undefined;
-                        const how = via === "build" ? "built by this bot" : via === "card" ? "approved on a card" : "";
+                        const on = trustedApps.includes(normApp(a.folder));
                         return (
                           <label key={a.folder} className="flex cursor-pointer items-center gap-2.5 px-3 py-2 text-sm hover:bg-foreground/[0.04]">
                             <Checkbox checked={on} onCheckedChange={(c) => toggleTrusted(a.folder, !!c)} />
                             <span>{a.name || a.folder}</span>
-                            {how ? <span className="ml-auto shrink-0 text-xs text-muted-foreground">{how}</span> : null}
-                            {!how && a.name && a.name !== a.folder ? <span className="ml-auto text-xs text-muted-foreground">{a.folder}</span> : null}
+                            {a.name && a.name !== a.folder ? <span className="ml-auto text-xs text-muted-foreground">{a.folder}</span> : null}
                           </label>
                         );
                       })}

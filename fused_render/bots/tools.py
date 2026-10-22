@@ -469,10 +469,6 @@ def forever_rule(bot, act: str, d: dict, obs: dict):
             return None
         verb = {"click": "clicks", "type": "types into", "press": "presses a key in", "select": "picks in"}[act]
         return {"kind": "browser", "key": f"{host}|{lbl}", "label": f'{verb} "{lbl}" on {host}'}
-    if act in ("tool", "py") and d.get("risky") is True:
-        # The tick never silences a call the bot itself flagged (risk()), so there is nothing a forever answer could
-        # remember here: no third button.
-        return None
     if act == "tool":
         # One rule per APP, not per tool: a forever answer ticks "Apps it may use without asking" (trusted_apps),
         # the one switch Settings › Permissions shows for an app.
@@ -596,14 +592,14 @@ def migrate_app_rules(meta) -> bool:
     keep, apps = [], []
     for r in meta.get("allow_rules") or []:
         if isinstance(r, dict) and r.get("kind") in ("tool", "py") and "/" in str(r.get("key") or ""):
-            apps.append((str(r["key"]).split("/", 1)[0], "card"))
+            apps.append(str(r["key"]).split("/", 1)[0])
         else:
             keep.append(r)
     for bd in meta.get("builds") or []:
         if isinstance(bd, dict) and bd.get("done_at") and bd.get("dir"):
-            apps.append((os.path.basename(str(bd["dir"]).rstrip("/")), "build"))
-    for app, via in apps:
-        apptools.trust_app(meta, app, via)
+            apps.append(os.path.basename(str(bd["dir"]).rstrip("/")))
+    for app in apps:
+        apptools.trust_app(meta, app)
     meta["allow_rules"] = keep
     return changed
 
@@ -646,7 +642,7 @@ def add_allow_rule(bot, rule) -> None:
         return
     with bot.lock:
         if rule["kind"] == TRUSTED_KIND:
-            apptools.trust_app(bot.meta, rule["key"], "card")  # the Settings checkbox, not a rule row
+            apptools.trust_app(bot.meta, rule["key"])  # the Settings checkbox, not a rule row
         else:
             bot.meta["allow_rules"] = clean_allow_rules([*(bot.meta.get("allow_rules") or []), rule])
     bot.save()
@@ -1256,11 +1252,10 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         rec = apptools.find(apptools.registry(), app, name)
         if rec is None:
             return ""
-        if d.get("risky") is True:
-            # The bot's own flag beats the tick: it knows something about THIS call the app-level permission does not.
-            return f"It calls {rec.app} › {rec.name}, which changes something outside this chat."
         if apptools.is_trusted(bot.meta, rec.app):
-            return ""  # ticked under "Apps it may use without asking" (bot.json trusted_apps): runs at once
+            return ""  # ticked under "Apps it may use without asking" (bot.json trusted_apps): runs at once, risky or not
+        if d.get("risky") is True:
+            return f"It calls {rec.app} › {rec.name}, which changes something outside this chat."
         if apptools.is_write(rec):
             return f"It calls {rec.app} › {rec.name}, which changes something outside this chat."
         return ""
@@ -1274,13 +1269,13 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
             return ""
         says = f" Its SKILL.md: \"{skill['files'][name][:200]}\"" if skill["files"].get(name) else ""
         stem = os.path.basename(app_dir)
-        if d.get("risky") is True:
-            return f"It runs {stem} › {name}; the bot flagged it as irreversible.{says}"  # the flag beats the tick
         if apptools.is_trusted(bot.meta, stem):
             return ""  # ticked under "Apps it may use without asking": its documented scripts run without a card
         # A build this bot made is ticked when it finishes (bot.py); an unticked app always asks, built or not.
         if name in skill["approve"]:
             return f"It runs {stem} › {name}, which the app's SKILL.md marks as needing approval.{says}"
+        if d.get("risky") is True:
+            return f"It runs {stem} › {name}; the bot flagged it as irreversible.{says}"
         return f"It runs {stem} › {name} on this Mac; this bot may not use {stem} without asking.{says}"
     if act not in ("click", "type", "press", "select"):
         return ""

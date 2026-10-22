@@ -189,17 +189,15 @@ Usage summary and iMessage state are the OpenBot shapes (`_usage_summary`,
 `status` values: `idle | running | waiting | paused | error`. `approval`:
 `ask | auto`. `build_access`: `scoped | full`. `trusted_apps`: app folder names
 (normalised lower, `-`/`_`/space → `-`, see `apptools.norm_app`) whose `tool`
-and `py` calls skip the approval card for this bot whatever the write heuristic
-or the app's SKILL.md say; a call the bot flags `risky: true` still asks (and
-that card offers no "Always approve": the tick would not silence it), and
-browser actions, texts and builds are not apps. It is the ONE app-level
-permission (2026-10-22): a
-build this bot finishes ticks its app (`bot.py`, where `builds[].done_at` is
-set), and "Always approve" on a `tool` / `py` card ticks the app (the rule kind
-`trusted`, key = the folder; `tools.forever_rule` no longer makes per-tool
-rules, and old `tool` / `py` rows plus finished builds migrate into ticks on
-load, `tools.migrate_app_rules`). `trusted_via`: `{app: "build" | "card"}`
-says how a tick got there (absent = ticked in the dialog). Shown as Settings →
+and `py` calls skip the approval card for this bot whatever the write heuristic,
+the app's SKILL.md or the bot's own `risky: true` say (owner, 2026-10-22: one
+list, ticked = without asking, nothing else); browser actions, texts and builds
+are not apps. It is the ONE app-level permission: a build this bot finishes
+ticks its app (`bot.py`, where `builds[].done_at` is set), and "Always approve"
+on a `tool` / `py` card ticks the app (the rule kind `trusted`, key = the
+folder; `tools.forever_rule` no longer makes per-tool rules, and old `tool` /
+`py` rows plus finished builds migrate into ticks once per bot on load,
+`tools.migrate_app_rules` / `trusted_migrated`). Shown as Settings →
 Permissions → "Apps it may use without asking" (a checklist of `/api/bot-apps`);
 the dialog sends `trusted_apps_add` / `trusted_apps_remove` against the live
 list, never the full list, since builds and cards write it too. An unticked app
