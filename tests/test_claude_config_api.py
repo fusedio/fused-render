@@ -59,8 +59,6 @@ def claude_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(lib, "_LOCK_PATH", str(root / ".config-ui.lock"))
     monkeypatch.setattr(memory, "PROJECTS_DIR", str(root / "projects"))
     monkeypatch.setattr(skills, "SKILLS_DIR", str(root / "skills"))
-    monkeypatch.setattr(skills, "SKILL_LOCK_PATH",
-                        str(tmp_path / ".agents" / ".skill-lock.json"))
     # HOME drives claude_md's ~/.claude.json probe (and nothing else here).
     monkeypatch.setenv("HOME", str(tmp_path))
     return root
@@ -1266,3 +1264,80 @@ def test_mcp_failed_refresh_leaves_the_cache_alone(client, mcp_cache, monkeypatc
     body = _post(client, "mcp", action="list", fresh=True).json()
     assert body == {"ok": False, "error": "boom"}
     assert mcp_cache._read_cache()["servers"][0]["name"] == "srv"
+
+
+# -- skills: the user's own plus every enabled plugin's -----------------------
+
+
+def _enable(claude_dir, **flags):
+    (claude_dir / "settings.json").write_text(json.dumps({"enabledPlugins": flags}))
+
+
+def _plugin_with_skills(claude_dir, tmp_path, pid, slugs, **extra):
+    root = _plugin_tree(tmp_path, pid.split("@")[0])
+    for slug in slugs:
+        _write(root / "skills" / slug / "SKILL.md",
+               f"---\nname: {slug}\ndescription: {slug} from {pid}.\n---\nbody\n")
+    _installed(claude_dir, pid, root, **extra)
+    return root
+
+
+def test_skills_list_merges_user_and_enabled_plugin_skills(client, claude_dir, tmp_path):
+    _write(claude_dir / "skills" / "mine" / "SKILL.md", "---\nname: mine\ndescription: Own.\n---\n")
+    root = _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop", "caveman"])
+    _plugin_with_skills(claude_dir, tmp_path, "off@local", ["hidden"])
+    # An old cache dir next to the current install is never listed.
+    _write(tmp_path / "plugin-cache" / "utilities-old" / "skills" / "stale" / "SKILL.md", "---\nname: stale\n---\n")
+    _enable(claude_dir, **{"utilities@local": True, "off@local": False})
+
+    got = _post(client, "skills", action="list").json()["skills"]
+    assert [(s["source"], s.get("plugin"), s["slug"]) for s in got] == [
+        ("user", None, "mine"), ("plugin", "utilities", "caveman"), ("plugin", "utilities", "unslop"),
+    ]
+    plug = got[2]
+    assert plug["marketplace"] == "local"
+    assert plug["description"] == "unslop from utilities@local."
+    assert plug["path"] == str(root / "skills" / "unslop")
+    assert plug["linked"] is False
+
+
+def test_skills_read_and_files_work_for_plugin_skills(client, claude_dir, tmp_path):
+    root = _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop"])
+    _write(root / "skills" / "unslop" / "extra.md", "more")
+    _enable(claude_dir, **{"utilities@local": True})
+    r = _post(client, "skills", action="read", slug="unslop", source="plugin",
+              plugin="utilities", marketplace="local").json()
+    assert r["ok"] is True and r["text"].startswith("---")
+    assert r["files"] == ["SKILL.md", "extra.md"]
+    r = _post(client, "skills", action="read", slug="unslop", source="plugin",
+              plugin="utilities", path="../../.claude-plugin/plugin.json").json()
+    assert r["ok"] is False
+    r = _post(client, "skills", action="read", slug="nope", source="plugin", plugin="utilities").json()
+    assert r["ok"] is False
+
+
+def test_skills_write_and_delete_refuse_plugin_skills(client, claude_dir, tmp_path):
+    root = _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop"])
+    _enable(claude_dir, **{"utilities@local": True})
+    for action in ("write", "delete"):
+        r = _post(client, "skills", action=action, slug="unslop", source="plugin",
+                  plugin="utilities", path="SKILL.md", text="x").json()
+        assert r["ok"] is False and "read-only" in r["error"]
+    assert (root / "skills" / "unslop" / "SKILL.md").read_text().endswith("body\n")
+
+
+def test_skills_slug_shared_by_user_and_plugin_is_addressed_by_source(client, claude_dir, tmp_path):
+    _write(claude_dir / "skills" / "unslop" / "SKILL.md", "---\nname: unslop\n---\nuser copy\n")
+    _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop"])
+    _plugin_with_skills(claude_dir, tmp_path, "other@local", ["unslop"])
+    _enable(claude_dir, **{"utilities@local": True, "other@local": True})
+
+    assert len(_post(client, "skills", action="list").json()["skills"]) == 3
+    user = _post(client, "skills", action="read", slug="unslop").json()
+    assert user["text"].endswith("user copy\n")
+    for plugin in ("utilities", "other"):
+        r = _post(client, "skills", action="read", slug="unslop", source="plugin", plugin=plugin).json()
+        assert f"{plugin}@local" in r["text"]
+    # Writing the user copy leaves the plugin copies alone.
+    assert _post(client, "skills", action="write", slug="unslop", path="SKILL.md", text="new").json()["ok"]
+    assert _post(client, "skills", action="read", slug="unslop").json()["text"] == "new"

@@ -297,6 +297,21 @@ def _read_frontmatter(path: str) -> dict:
         return {}
 
 
+def _manifest(root: str) -> dict:
+    """The plugin's .claude-plugin/plugin.json, or {} when missing or broken.
+
+    Tolerant, unlike lib.read_json: that helper lets malformed JSON raise
+    because the user's OWN config being corrupt must surface. A plugin's
+    manifest is somebody else's file, and a broken one costs its non-default
+    paths, not a 500."""
+    try:
+        with open(os.path.join(root, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return manifest if isinstance(manifest, dict) else {}
+
+
 def _skills(root: str, manifest: dict, budget: _WalkBudget) -> list:
     """A skill is a directory with a SKILL.md in it (D490's rule, applied to a
     plugin's tree rather than the repo's). Nested, because a plugin is free to
@@ -461,17 +476,7 @@ def _contents(pid: str) -> dict:
     if not root or not os.path.isdir(root):
         return {"ok": False, "error": "plugin files are missing — reinstall it"}
     root = os.path.normpath(root)
-    # Tolerant, unlike lib.read_json: that helper lets malformed JSON raise
-    # because the user's OWN config being corrupt must surface. A plugin's
-    # manifest is somebody else's file, and a broken one costs this panel its
-    # non-default paths — not a 500 on a row the user merely expanded.
-    try:
-        with open(os.path.join(root, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
-            manifest = json.load(f)
-    except (OSError, ValueError):
-        manifest = {}
-    if not isinstance(manifest, dict):
-        manifest = {}
+    manifest = _manifest(root)
     # One budget for the whole read, not one per group (code review,
     # 2026-08-26 — see _WalkBudget): skills and commands/agents all draw
     # against it, so the panel's total disk cost stays bounded regardless of
