@@ -12,10 +12,14 @@ import { expect, test } from "bun:test";
 import {
   CLAUDE_BIN_ENV,
   CLAUDE_UPDATE_COMMAND,
+  CODEX_BIN_ENV,
+  COPILOT_BIN_ENV,
+  agentAccountLine,
+  agentIssues,
   claudeIssues,
   issueHelpUrl,
 } from "./claude-health";
-import { CLAUDE_INSTALL_COMMAND } from "./trouble";
+import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND } from "./trouble";
 import type { ClaudeHealth } from "./api";
 
 // A machine where everything is fine. Each test breaks exactly one thing, so
@@ -172,4 +176,118 @@ test("every issue deep-links to a real troubleshooting tab", () => {
 test("a signed-out install links to the login tab, not the install tab", () => {
   const [issue] = claudeIssues(healthy({ signed_in: false }));
   expect(issueHelpUrl(issue)).toContain("#troubleshooting-login");
+});
+
+// -- Codex (docs/CODEX_BACKEND.md D10) ----------------------------------------
+//
+// The same rules over the same keys; only the words change. Each test is the
+// Codex reading of a Claude one above, plus what Codex alone says.
+
+function codexHealthy(over: Partial<ClaudeHealth> = {}): ClaudeHealth {
+  return healthy({
+    path: "/Users/x/.npm-global/bin/codex",
+    version: "0.163.0",
+    min_version: "0.160.0",
+    account: { method: "chatgpt", email: null, org: null, plan: "go" },
+    install_command: "",
+    update_command: null,
+    ...over,
+  });
+}
+
+const codexIds = (h: ClaudeHealth | null) => agentIssues(h, "codex").map((i) => i.id);
+const claudeWords = () => "CLAUDE LINE";
+
+test("codex: a healthy machine produces no issues", () => {
+  expect(agentIssues(codexHealthy(), "codex")).toEqual([]);
+});
+
+test("codex: a missing CLI names Codex and offers npm, even from a server too old to say", () => {
+  const [issue] = agentIssues(codexHealthy({ found: false, path: null, version: null, signed_in: false }), "codex");
+  expect(issue.id).toBe("missing");
+  expect(issue.title).toBe("The app can't find Codex");
+  expect(issue.command).toBe(CODEX_INSTALL_COMMAND);
+  expect(issue.action).toEqual({ kind: "install", label: "Install Codex" });
+  // The server's own line still wins when it states one.
+  const stated = agentIssues(codexHealthy({ found: false, install_command: "brew install codex" }), "codex");
+  expect(stated[0].command).toBe("brew install codex");
+});
+
+test("codex: a stale override names Codex's own env var", () => {
+  const [issue] = agentIssues(codexHealthy({ found: false, source: "override" }), "codex");
+  expect(issue.id).toBe("unusable-override");
+  expect(issue.title).toContain(CODEX_BIN_ENV);
+  expect(CODEX_BIN_ENV).toBe("FUSED_RENDER_CODEX_BIN");
+  expect(issue.title).not.toContain(CLAUDE_BIN_ENV);
+  expect(issue.title).not.toContain(COPILOT_BIN_ENV);
+});
+
+test("codex: a broken CLI is never offered `claude doctor`", () => {
+  const [issue] = agentIssues(codexHealthy({ broken: true }), "codex");
+  expect(issue.id).toBe("broken");
+  expect(issue.action).toBeUndefined();
+  expect(issue.detail).not.toContain("diagnostics");
+});
+
+test("codex: an outdated CLI updates with npm, never `claude update`", () => {
+  const [issue] = agentIssues(codexHealthy({ outdated: true, version: "0.150.0" }), "codex");
+  expect(issue.id).toBe("outdated");
+  expect(issue.title).toBe("Codex 0.150.0 is older than this app needs");
+  expect(issue.command).toBe(CODEX_INSTALL_COMMAND);
+  expect(issue.command).not.toBe(CLAUDE_UPDATE_COMMAND);
+  expect(issue.action).toEqual({ kind: "update", label: "Update Codex" });
+  const managed = agentIssues(codexHealthy({ outdated: true, updatable: false, update_command: "brew upgrade codex" }), "codex");
+  expect(managed[0].command).toBe("brew upgrade codex");
+  expect(managed[0].action).toBeUndefined();
+});
+
+test("codex: a signed-out CLI says ChatGPT and the device code, on an explicit false only", () => {
+  expect(codexIds(codexHealthy({ signed_in: null }))).toEqual([]);
+  const [issue] = agentIssues(codexHealthy({ signed_in: false, account: null }), "codex");
+  expect(issue.id).toBe("signed-out");
+  expect(issue.title).toBe("Codex isn't signed in");
+  expect(issue.detail).toContain("Sign in with ChatGPT (device code)");
+  expect(issue.detail).toContain("codex login");
+  expect(issue.action).toEqual({ kind: "login", label: "Sign in" });
+  expect(issue.helpKind).toBe("login");
+});
+
+test("codex: off the shell PATH is offered the link, naming `codex`", () => {
+  const [issue] = agentIssues(codexHealthy({ on_shell_path: false, path_fix_command: "echo 'export PATH=…' >> ~/.zshrc" }), "codex");
+  expect(issue.id).toBe("not-on-path");
+  expect(issue.title).toBe("Codex works in this app, but not in your terminal yet");
+  expect(issue.detail).toContain("`codex`");
+  expect(issue.action?.kind).toBe("link-path");
+  expect(issue.optional).toBe(true);
+});
+
+test("copilot is still never offered the PATH link", () => {
+  expect(agentIssues(healthy({ on_shell_path: false, path_fix_command: "x" }), "copilot")).toEqual([]);
+});
+
+test("claude's words are unchanged by the per-agent table", () => {
+  const [path] = claudeIssues(healthy({ on_shell_path: false, path_fix_command: "x" }));
+  expect(path.title).toBe("Claude Code works in this app, but not in your terminal yet");
+  expect(path.detail).toContain("so `claude` there says");
+  const [old] = claudeIssues(healthy({ outdated: true, updatable: false, update_command: null }));
+  expect(old.detail).toContain("Running `claude update` here would not change anything");
+  const [cop] = agentIssues(healthy({ outdated: true, updatable: false, update_command: null }), "copilot");
+  expect(cop.detail).toContain("Running `copilot update` here would not change anything");
+  expect(cop.command).toBeUndefined();
+});
+
+test("codex's account line: ChatGPT with its plan, or an API key", () => {
+  expect(agentAccountLine(codexHealthy(), "codex", claudeWords)).toBe("Signed in with ChatGPT (Go plan)");
+  // `planType` is Codex's own key, for a server that passes it through.
+  const planType = codexHealthy({
+    account: { method: "chatgpt", email: null, org: null, plan: null, planType: "plus" },
+  });
+  expect(agentAccountLine(planType, "codex", claudeWords)).toBe("Signed in with ChatGPT (Plus plan)");
+  const noPlan = codexHealthy({ account: { method: "chatgpt", email: null, org: null, plan: null } });
+  expect(agentAccountLine(noPlan, "codex", claudeWords)).toBe("Signed in with ChatGPT");
+  const key = codexHealthy({ account: { method: "api_key", email: null, org: null, plan: null } });
+  expect(agentAccountLine(key, "codex", claudeWords)).toBe("Signed in with an OpenAI API key");
+  expect(agentAccountLine(codexHealthy({ signed_in: false }), "codex", claudeWords)).toBeNull();
+  // Claude's line is still the caller's.
+  expect(agentAccountLine(healthy(), "claude", claudeWords)).toBe("CLAUDE LINE");
 });

@@ -27,6 +27,10 @@ export interface ComposerProps {
 }
 
 export const ATTACH_MAX = 8 * 1024 * 1024;
+/** Unsent drafts per bot (text + pending attachments), kept in memory for the page's life: the Composer is one mount
+ *  whose `b` swaps, so without this the box carried one bot's half-written message into the next. Written when a bot
+ *  leaves the box, read back when it is selected again; a send empties the box, so nothing stale is saved after it. */
+const drafts = new Map<string, { text: string; files: File[] }>();
 const MIC_MAX = 120;  // seconds; the recording stops itself here and is still transcribed
 const MIC_HINT = "Dictate: click to record, click again to stop. The text lands here for you to review before sending.";
 
@@ -170,6 +174,20 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
     ro.observe(t);
     return () => ro.disconnect();
   }, []);
+  // Per-bot drafts: the layout effect brings in the arriving bot's text + attachments; its cleanup stashes the leaving
+  // bot's (also on unmount: layout cleanups run before the textarea ref is detached). Layout, so the box never paints
+  // the old bot's text on the new bot. The fresh pending list re-fits the box (the [pending] effect above).
+  const liveId = useRef<string | undefined>(undefined);  // which bot the box holds right now (send's failure path)
+  useLayoutEffect(() => {
+    const t = ta.current, id = b?.id;
+    liveId.current = id;
+    const d = id ? drafts.get(id) : undefined;
+    if (t) t.value = d?.text ?? "";
+    setPending(d?.files ?? []);
+    setCmd(null); lastVal.current = t ? t.value : "";
+    fitInput();
+    return () => { if (id && ta.current) drafts.set(id, { text: ta.current.value, files: pendingRef.current }); };
+  }, [b?.id]);  // eslint-disable-line react-hooks/exhaustive-deps
   // A reply quote focuses the box.
   useEffect(() => { if (reply) ta.current?.focus(); }, [reply]);
   // Just handed the browser back (store noteFor, from the poll): a one-shot, optional "anything to add?" for 15 s. The box
@@ -298,7 +316,10 @@ export function Composer({ b, reply, setReply, threadRef }: ComposerProps) {
       const th = threadRef.current; if (th) th.scrollTop = th.scrollHeight;
     } catch (e) {
       showBanner(errMsg(e));
-      t.value = text; fitInput(); setReply(r);  // give the text (and the quote) back so nothing is lost
+      // Give the text (and the quote) back so nothing is lost: to the box when it still shows this bot, else to its draft
+      // (the box was switched to another bot while the send was in flight; the quote belongs to the thread that left).
+      if (liveId.current === b.id) { t.value = text; fitInput(); setReply(r); }
+      else drafts.set(b.id, { text, files: drafts.get(b.id)?.files ?? [] });
     } finally { setSending(false); }
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {

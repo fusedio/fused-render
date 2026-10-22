@@ -113,6 +113,76 @@ def test_executor_spawn_runs_no_atfork_child_handler(tmp_path, monkeypatch):
     )
 
 
+def test_warm_run_spawn_disables_fork(monkeypatch):
+    """The warm pool's spares are spawned from the server process too: same
+    rule as the cold child (close_fds=False, absolute exe, no cwd, no
+    start_new_session), or a parked spare reopens the PROJ atfork SIGSEGV."""
+    import sys
+    from fused_render import warm_run
+
+    captured = {}
+    real_popen = subprocess.Popen
+
+    def fake_popen(argv, **kw):
+        captured.update(kw)
+        captured["argv0"] = argv[0]
+        return real_popen(argv, **kw)
+
+    monkeypatch.setattr(warm_run.subprocess, "Popen", fake_popen)
+    p = warm_run._spawn([sys.executable, "-c", "import sys; sys.stdin.read()"], None)
+    try:
+        assert captured.get("close_fds") is False
+        assert captured.get("cwd") is None
+        assert not captured.get("start_new_session")
+        assert captured.get("preexec_fn") is None
+        assert os.path.isabs(captured["argv0"])
+    finally:
+        p.kill()
+        p.wait()
+
+
+def test_warm_run_spawn_runs_no_atfork_child_handler(tmp_path, monkeypatch):
+    """Behavioral twin of the executor guard, for the spare spawn site."""
+    import ctypes
+    import sys
+    from fused_render import warm_run
+
+    libc = ctypes.CDLL(None)
+    try:
+        register_atfork = libc.pthread_atfork
+    except AttributeError:
+        pytest.skip("pthread_atfork not dynamically resolvable here (e.g. glibc)")
+
+    marker = tmp_path / "atfork_child_ran_warm"
+    monkeypatch.setenv("FR_ATFORK_MARKER_WARM", str(marker))
+    HANDLER = ctypes.CFUNCTYPE(None)
+
+    def _child_handler():
+        pth = os.environ.get("FR_ATFORK_MARKER_WARM")
+        if not pth:
+            return
+        try:
+            fd = os.open(pth, os.O_CREAT | os.O_WRONLY, 0o644)
+            os.write(fd, b"x")
+            os.close(fd)
+        except Exception:
+            pass
+
+    _cb = HANDLER(_child_handler)
+    globals().setdefault("_atfork_cbs", []).append(_cb)
+    register_atfork(None, None, _cb)
+
+    p = warm_run._spawn([sys.executable, "-c", "import sys; sys.stdin.read()"], None)
+    try:
+        p.stdin.close()
+        p.wait(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+    assert not marker.exists(), "spare spawn took the fork() path"
+
+
 # --------------------------------------------------------------------------
 # pyramid template worker spawns (_child.py running main() forks the worker)
 # --------------------------------------------------------------------------

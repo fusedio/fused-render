@@ -194,7 +194,7 @@ export function IssueRow({
           {install!.detail || "Working…"}
         </p>
       )}
-      {/* A DEVICE-CODE sign-in (Copilot, D10) has a code to type, and it is
+      {/* A DEVICE-CODE sign-in (Copilot and Codex, D10) has a code to type, and it is
           drawn only while that flow is OPEN: the record keeps the last one's
           code after it ends, and a stale code is a code that no longer works. */}
       {signingIn && login?.detail?.code && login.detail.url ? (

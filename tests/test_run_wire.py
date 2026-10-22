@@ -6,6 +6,7 @@ worker now emits one line carrying the result's encoded text; `_run_python`
 hands that text to `_PreEncodedRun` so `dumps_result` splices it unchanged.
 """
 import json
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -82,3 +83,37 @@ def test_http_body_matches_json_kw(tmp_path):
     assert body["ok"] is True and body["result"] == {"n": 1, "u": "\u00e9"}
     assert r.text == json.dumps(body, **_JSON_KW)
     assert body["resolved_py"] == path
+
+
+@pytest.mark.skipif(__import__("os").name != "posix", reason="warm run is POSIX only")
+def test_warm_pool_body_is_byte_identical_to_cold(tmp_path, monkeypatch):
+    """A call claimed by a parked spare goes through the same pre-encoded
+    parsing: U+2028 and non-ASCII text must produce the cold path's bytes."""
+    from fused_render import engine, warm_run
+
+    path = _py(
+        tmp_path,
+        "def main():\n    return {'s': 'a\\u2028b\\u2029c héllo ☃', 'n': [1, 2.5]}\n",
+    )
+    monkeypatch.setattr(engine, "_backend", None)
+
+    def norm(body):  # timing fields differ per call
+        return re.sub(r'"duration_ms":[0-9.]+', '"duration_ms":0', body)
+
+    try:
+        monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "0")
+        cold = run_python(path, {}, 30)
+        cold_body = norm(dumps_result(cold))
+
+        monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "1")
+        warm = None
+        for _ in range(3):  # first call may be a pool miss; later ones claim a spare
+            warm = run_python(path, {}, 30)
+            assert warm["ok"] is True
+            assert isinstance(warm, _PreEncodedRun)
+            assert norm(dumps_result(warm)) == cold_body
+            import time
+            time.sleep(1.0)
+        assert " " in warm["result"]["s"]
+    finally:
+        warm_run.reset()

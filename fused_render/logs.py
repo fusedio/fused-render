@@ -227,7 +227,7 @@ def uvicorn_fast_kwargs() -> dict:
 
     `http="httptools"` only when the wheel is importable; otherwise "auto" (the
     pure-Python h11), so a lean install still starts. The loop stays on stdlib
-    asyncio on purpose: uvloop is not shipped (see DECISIONS D1412).
+    asyncio on purpose: uvloop is not shipped (see DECISIONS D1414).
     """
     import importlib.util
 

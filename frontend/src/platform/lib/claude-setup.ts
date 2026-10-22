@@ -13,7 +13,7 @@ import {
   getAgentHealth,
   getAgentInstall,
   getAgentLogin,
-  linkClaudePath,
+  linkAgentPath,
   refreshAgentHealth,
   runClaudeDoctor,
   startAgentInstall,
@@ -93,10 +93,10 @@ export function useClaudeSetup(watching: boolean): ClaudeSetup {
 }
 
 /**
- * The same machine for EITHER agent — `/api/claude/*` or `/api/copilot/*`,
- * which answer the same bodies (D10). `doctor` and `link-path` are Claude-only
- * repairs; `agentIssues` never offers them for Copilot, so they are not
- * generalised here.
+ * The same machine for EVERY agent — `/api/claude/*`, `/api/copilot/*` or
+ * `/api/codex/*` (docs/CODEX_BACKEND.md D10), which answer the same bodies.
+ * `doctor` is a Claude-only repair; `agentIssues` never offers it for another
+ * agent, so it is not generalised here. `link-path` is, for Codex.
  */
 export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
   const [health, setHealth] = useState<ClaudeHealth | null>(cached.get(backend) ?? null);
@@ -249,12 +249,14 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
       return;
     }
     if (issue.action.kind === "link-path") {
-      linkClaudePath().then(
+      linkAgentPath(backend).then(
         (res) => {
           done();
+          // The route segment is the CLI's name for every agent.
+          const cli = backend === "copilot" || backend === "codex" ? backend : "claude";
           setLinkedNote(
             `Added to ${res.rc_file ?? "your shell profile"}. Terminals ` +
-              "opened from now on will find `claude` — one that is already " +
+              `opened from now on will find \`${cli}\` — one that is already ` +
               "open needs a new tab or window.",
           );
         },

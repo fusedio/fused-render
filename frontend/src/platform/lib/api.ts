@@ -476,12 +476,16 @@ export interface ClaudeHealth {
       The COPILOT snapshot (`/api/copilot/health`, D10) says one of three:
       "copilot" (its own `copilot login`), "gh" (a `gh auth login` token the
       app hands it) or "token" (a token already in the environment) — worded
-      by `agentAccountLine` in platform/lib/claude-health. */
+      by `agentAccountLine` in platform/lib/claude-health. The CODEX snapshot
+      (`/api/codex/health`, docs/CODEX_BACKEND.md D10) says "chatgpt" or
+      "api_key", with the ChatGPT plan in `plan` (or `planType`, Codex's own
+      key, from a server that passes it through). */
   account: {
     method: string | null;
     email: string | null;
     org: string | null;
     plan: string | null;
+    planType?: string | null;
   } | null;
   config_dir: string;
   /** `sys.platform`. Here so the UI never guesses which install line to show. */
@@ -581,7 +585,7 @@ export function linkClaudePath(): Promise<{
   already?: boolean;
   error?: string;
 }> {
-  return postJson("/api/claude/link-path", {});
+  return linkAgentPath("claude");
 }
 
 /** A browser sign-in, as the server holds it.
@@ -594,7 +598,7 @@ export interface ClaudeLoginStatus {
   started_at: number | null;
   /** The child's own diagnosis when a sign-in ended without signing in. */
   error: string | null;
-  /** A DEVICE-CODE sign-in's two facts (Copilot, docs/COPILOT_BACKEND.md D10):
+  /** A DEVICE-CODE sign-in's two facts (Copilot and Codex, D10 of both contracts):
    *  the code to type and the page to type it on. Meaningful ONLY while
    *  `in_flight` — the record keeps the last flow's after it ends, so a reader
    *  must never show it otherwise. Absent for Claude, whose browser sign-in
@@ -618,17 +622,32 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
     "/api/claude/login/cancel", {});
 }
 
-// -- The same five doors, PER AGENT (docs/COPILOT_BACKEND.md D10) -----------
+// -- The same doors, PER AGENT (docs/COPILOT_BACKEND.md D10) ----------------
 //
-// `/api/copilot/{health, health/refresh, install, login, login/cancel}` answer
-// the same bodies as the Claude ones above, so one set of functions keyed on
-// the backend id serves both — `useAgentSetup(backend)` in claude-setup.ts is
-// the caller. The Claude-named functions stay for every reader that predates
-// the second agent. `link-path` and `doctor` are Claude-only (no Copilot twin
-// in the contract) and are not generalised.
+// `/api/copilot/*` and `/api/codex/*` (docs/CODEX_BACKEND.md D10) — `health,
+// health/refresh, install, login, login/cancel, link-path` — answer the same
+// bodies as the Claude ones above, so one set of functions keyed on the
+// backend id serves every agent — `useAgentSetup(backend)` in claude-setup.ts
+// is the caller. The Claude-named functions stay for every reader that
+// predates the second agent. `doctor` is Claude-only (no twin in either
+// contract) and is not generalised.
+
+/** Each agent's route segment; an id not here (or none) is Claude's. */
+const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex" };
 
 function agentRoute(backend: string, tail: string): string {
-  return `/api/${backend === "copilot" ? "copilot" : "claude"}/${tail}`;
+  return `/api/${AGENT_ROUTES[backend] ?? "claude"}/${tail}`;
+}
+
+/** `linkClaudePath`, for any agent's CLI. */
+export function linkAgentPath(backend: string): Promise<{
+  ok: boolean;
+  rc_file?: string;
+  line?: string;
+  already?: boolean;
+  error?: string;
+}> {
+  return postJson(agentRoute(backend, "link-path"), {});
 }
 
 export function getAgentHealth(backend: string): Promise<ClaudeHealth> {
@@ -686,7 +705,7 @@ export interface AgentCaps {
 
 export interface AgentBackendRow {
   id: string;
-  /** "Claude" / "Copilot" — the word every surface names the agent by. */
+  /** "Claude" / "Copilot" / "Codex" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
   models: { id: string; label: string }[];
@@ -1603,11 +1622,12 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it.
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
-  // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
-  // one new chats and tasks open on. The server refuses a PUT that would turn
-  // the last one off (400 "turn on the other agent first"). OPTIONAL: an older
-  // server answers without it, and the reader treats absence as Claude only.
-  agents?: { claude: boolean; copilot: boolean; default: string };
+  // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled`
+  // (default off, docs/CODEX_BACKEND.md D17), and the one new chats and tasks
+  // open on. The server refuses a PUT that would turn the last one off (400
+  // "turn on another agent first"). OPTIONAL: an older server answers without
+  // it, and the reader treats absence as Claude only.
+  agents?: { claude: boolean; copilot: boolean; codex: boolean; default: string };
 }
 
 export type ChromiumEngineState =
@@ -1853,9 +1873,9 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
 }
 
 /** The default Fused environment (`prefs.workbench.env`). 400 outside
- *  `unstable` / `prod`, 423 while FUSED_RENDER_WORKBENCH_ENV pins it. The
- *  server re-exports the `fused` wrapper so its default follows. */
-export function putWorkbenchEnv(env: "unstable" | "prod"): Promise<Prefs> {
+ *  `unstable` / `prod` / `custom`, 423 while FUSED_RENDER_WORKBENCH_ENV pins
+ *  it. The server re-exports the `fused` wrapper so its default follows. */
+export function putWorkbenchEnv(env: "unstable" | "prod" | "custom"): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { workbench_env: env });
 }
 
@@ -3527,7 +3547,7 @@ export function createApp(
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
-  // Which agent runs the scaffolding task: "claude" | "copilot" | "" for the
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "" for the
   // catalog's default (docs/COPILOT_BACKEND.md D17).
   backend: string = "",
 ): Promise<NewAppResult> {
@@ -3717,7 +3737,7 @@ export interface Task {
    *  for every other row. The door lands on the canvas page, node selected,
    *  chat on the task's session, instead of the clone in the explorer.
    *  Optional: pulse rows and older fixtures do not carry it. */
-  canvas?: { env: "unstable" | "prod"; name: string; file: string } | null;
+  canvas?: { env: "unstable" | "prod" | "custom"; name: string; file: string } | null;
   session_id: string; // "" until the first run
   // How the transcript's own session ENTERED — "cli" for an interactive
   // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic
@@ -3780,8 +3800,8 @@ export interface Task {
    */
   model: string;
   effort: string;
-  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" (docs/COPILOT_BACKEND.md
-   *  D2), chosen at the first turn and immutable. Optional: an older server
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex"
+   *  (docs/COPILOT_BACKEND.md D2), chosen at the first turn and immutable. Optional: an older server
    *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
   backend?: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
