@@ -351,8 +351,9 @@ export function WorktreeMenu({
         else setConfirming(false);
       } else if (onRemoved) {
         // The host owns the landing (tasks page: stay, re-read the rows).
-        setOpen(false);
-        setConfirming(false);
+        // Closed through `onOpenChange` so the dirty refusal is forgotten too:
+        // a menu that stays mounted must not reopen offering a forced remove.
+        onOpenChange(false);
         onRemoved();
       } else {
         // Back to the main checkout — on the chat's own file there when it exists.
@@ -364,7 +365,7 @@ export function WorktreeMenu({
     } finally {
       if (!stale(at)) setBusy(false);
     }
-  }, [confirming, current, dirt, file, go, list, running, onRemoved]);
+  }, [confirming, current, dirt, file, go, list, running, onRemoved, onOpenChange]);
 
   // `/worktree` from the composer: no name opens this menu, a name is
   // create-or-switch — with a refusal shown in the menu it would have used,
