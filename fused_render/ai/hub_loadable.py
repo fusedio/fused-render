@@ -83,7 +83,7 @@ import os
 
 from fused_render.ai.hub_architecture import Architecture, is_diffusers_repo
 from fused_render.ai.runners import formats
-from fused_render.ai.runners.formats import DIFFUSERS_RUNNERS
+from fused_render.ai.runners.formats import DIFFUSERS_RUNNERS, DIFFUSERS_VIDEO_RUNNERS
 
 #: runner venv dir -> the `model_type`s its installed `mlx_vlm.models`
 #: package can open, or `None` if that venv is not installed yet. Cached
@@ -254,7 +254,7 @@ def loadable_kind(code: str) -> tuple[str, frozenset[str] | None]:
         return ("model_types", mlx_vlm_model_types())
     if code == "ltx-video":
         return ("file_layout", None)
-    if code in DIFFUSERS_RUNNERS:
+    if code in DIFFUSERS_RUNNERS or code in DIFFUSERS_VIDEO_RUNNERS:
         return ("diffusers", None)
     return ("any", None)
 

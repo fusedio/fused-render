@@ -35,6 +35,7 @@ def _codes():
 #: pass.
 _TEXT = {"mlx-text"}
 _IMAGE = set(formats.DIFFUSERS_RUNNERS)
+_WAN_INDEX = {"_class_name": "WanPipeline", "vae": ["diffusers", "AutoencoderKLWan"]}
 
 
 def test_every_runner_code_named_here_is_a_registered_runner():
@@ -137,6 +138,11 @@ def test_every_registered_runner_appears_in_loaders():
         repo_id="x/y", names={"config.json", "model.safetensors"},
         dirnames={formats.QWEN3_TTS_TOKENIZER_DIR},
         config={"model_type": formats.QWEN3_TTS_MODEL_TYPE}, torch_weights=True))
+    # A Wan `model_index.json` (D1424): the video runner's own early-returning
+    # branch, which is why the plain `model_index.json` call above never sees it.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={formats.DIFFUSERS_INDEX}, dirnames={"transformer"},
+        config={}, torch_weights=True, model_index=_WAN_INDEX))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -1386,3 +1392,30 @@ def test_speech_options_auto_bypasses_the_language_catalog():
     assert formats.speech_options("org/tts", {**PRESET, "languages": ["English"]},
                                   {"language": "AUTO"}) == {
         "voice": "aiden", "language": "auto"}
+
+
+def test_a_wan_pipeline_is_claimed_by_the_video_runner_and_nothing_else():
+    """D1291, D1424: a text-to-video diffusers repo must never read as
+    image-loadable. The same files carrying an image pipeline's index still
+    claim the three image rows."""
+    names, dirs = {formats.DIFFUSERS_INDEX}, {"transformer", "vae"}
+    for cls in ("WanPipeline", "WanImageToVideoPipeline"):
+        assert formats.loaders(
+            repo_id="Wan-AI/x", names=names, dirnames=dirs, config={},
+            torch_weights=True, model_index={"_class_name": cls},
+        ) == ("diffusers-video-cuda",)
+    assert formats.loaders(
+        repo_id="x/y", names=names, dirnames=dirs, config={}, torch_weights=True,
+        model_index={"_class_name": "FluxPipeline"}) == tuple(formats.DIFFUSERS_RUNNERS)
+    # An index nobody read is the old behaviour, not a Wan claim.
+    assert formats.loaders(
+        repo_id="x/y", names=names, dirnames=dirs, config={},
+        torch_weights=True) == tuple(formats.DIFFUSERS_RUNNERS)
+
+
+def test_the_video_runner_is_decisive_and_wan_detection_is_strict():
+    assert set(formats.DIFFUSERS_VIDEO_RUNNERS) <= set(formats.DECISIVE)
+    assert formats.is_wan_diffusers_index({"_class_name": "WanPipeline"})
+    assert not formats.is_wan_diffusers_index({"_class_name": "LTXPipeline"})
+    assert not formats.is_wan_diffusers_index({})
+    assert not formats.is_wan_diffusers_index(None)

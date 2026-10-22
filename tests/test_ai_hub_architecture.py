@@ -190,20 +190,34 @@ def test_gguf_still_resolves_when_no_diffusers_signal_present():
     assert arch.engine == "llama.cpp"
 
 
-def test_is_shipped_gated_on_capability_a_video_repo_is_not_shipped_by_diffusers_image():
-    """Finding 4: `_ENGINE_RUNNER_CODES["Diffusers"]` holds only IMAGE runner
-    codes. A text-to-video Diffusers repo judged against the VIDEO
-    capability's runner codes must read as NOT shipped — advising "needs
-    Diffusers" for an engine with no video runner is a bug; the honest
-    reading is "recognised, but no runner for THIS capability"."""
+def test_is_shipped_is_gated_on_the_rows_own_capability():
+    """Finding 4: `_ENGINE_RUNNER_CODES["Diffusers"]` mixes runner codes across
+    capabilities, so a code registered for a DIFFERENT capability than the
+    row's own must not count. D1424 gave Diffusers a VIDEO runner
+    (`diffusers-video-cuda`), so a text-to-video repo now reads as shipped —
+    through THAT runner, never an image one — while a capability no Diffusers
+    runner serves still does not."""
     raw = {"library_name": "diffusers", "tags": ["diffusers:SomeVideoPipeline"]}
-    arch_video = hub_architecture.resolve(raw, capability="text-to-video")
-    assert arch_video.engine == "Diffusers"
-    assert arch_video.shipped is False
+    assert hub_architecture.resolve(raw, capability="text-to-video").shipped is True
+    assert hub_architecture.resolve(raw, capability="text-to-image").shipped is True
+    arch_other = hub_architecture.resolve(raw, capability="automatic-speech-recognition")
+    assert arch_other.engine == "Diffusers"
+    assert arch_other.shipped is False
 
-    arch_image = hub_architecture.resolve(raw, capability="text-to-image")
-    assert arch_image.engine == "Diffusers"
-    assert arch_image.shipped is True
+
+def test_a_text_to_video_diffusers_repo_is_servable_by_video_and_not_by_image():
+    """D1291, with the video runner registered: the runner codes that open a
+    Diffusers repo split by capability, and the image rows do not gain a video
+    job (nor the video row an image one)."""
+    from fused_render.ai import registry
+    from fused_render.ai.runners import formats
+
+    by_capability = {}
+    for code in hub_architecture._ENGINE_RUNNER_CODES["Diffusers"]:
+        by_capability.setdefault(registry.by_code(code).capability, set()).add(code)
+    assert by_capability[registry.VIDEO_GENERATION] == set(formats.DIFFUSERS_VIDEO_RUNNERS)
+    assert by_capability[registry.IMAGE_GENERATION] == set(formats.DIFFUSERS_RUNNERS)
+    assert not set(formats.DIFFUSERS_VIDEO_RUNNERS) & set(formats.DIFFUSERS_RUNNERS)
 
 
 def test_is_shipped_with_no_capability_given_falls_back_to_any_runner():
@@ -273,7 +287,7 @@ def test_base_model_tag_recovers_a_family_name_when_config_is_empty():
     assert arch.name == "MiniMax-H3"
     assert arch.name_is_bare_library is False
     assert arch.engine == "Diffusers"
-    assert arch.shipped is False
+    assert arch.shipped is True  # D1424: the CUDA Wan runner serves video
 
 
 def test_base_model_tag_recovers_a_family_name_for_an_mlx_format_video_repo():
@@ -314,7 +328,7 @@ def test_no_base_model_tag_and_empty_config_falls_back_to_bare_library():
     assert arch.name == "diffusers"
     assert arch.name_is_bare_library is True
     assert arch.engine == "Diffusers"
-    assert arch.shipped is False
+    assert arch.shipped is True  # D1424: the CUDA Wan runner serves video
 
 
 def test_parse_base_model_tag_matches_hub_models_own_parse():

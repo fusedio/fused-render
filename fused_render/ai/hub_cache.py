@@ -500,7 +500,8 @@ def _diffusers_task(class_name: str) -> str:
     classification serve both this path and a model card that says the same
     thing."""
     lowered = class_name.lower()
-    if "video" in lowered:
+    # `WanPipeline` is the one video class whose name does not say so (D1424).
+    if "video" in lowered or lowered.startswith("wan"):
         return "text-to-video"
     if "audio" in lowered or "music" in lowered:
         return "text-to-audio"
@@ -601,7 +602,8 @@ def _weight_files(snapshot_dir: str) -> list[str]:
     return found
 
 
-def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str] | None:
+def _format_task(repo_id: str, names, dirnames, config: dict,
+                 model_index: dict | None = None) -> tuple[str, str] | None:
     """What the WEIGHT LAYOUT says this is, when it says anything at all.
 
     Only the formats that are decisive about the modality — a `weights.npz` is
@@ -636,6 +638,8 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return _ai_registry.TEXT_TO_SPEECH, "its Qwen3-TTS speech tokenizer"
     if formats.vision_torch_recipe(repo_id):
         return _ai_registry.VISION, "its vision-torch recipe"
+    if formats.is_wan_diffusers_index(model_index):
+        return _ai_registry.VIDEO_GENERATION, "its Wan diffusers layout"
     return None
 
 
@@ -808,8 +812,10 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # is actually in this snapshot, written by the library that will load it.
     # Ranking the card first took the Load button off the app's own recommended
     # image model, on the tab beside the one recommending it.
+    diffusers_index = None
     if formats.DIFFUSERS_INDEX in names:
         index = _read_json(os.path.join(snapshot, formats.DIFFUSERS_INDEX)) or {}
+        diffusers_index = index
         class_name = index.get("_class_name")
         if isinstance(class_name, str) and class_name:
             meta.task = _diffusers_task(class_name)
@@ -880,7 +886,7 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
     # image-text-to-text, which would route it to the text runner.
     if (not _tasks.classify(meta.task).supported or meta.task == "image-to-image"
             or formats.vision_torch_recipe(repo_id)):
-        found = _format_task(repo_id, names, dirnames, config)
+        found = _format_task(repo_id, names, dirnames, config, diffusers_index)
         if found:
             meta.task, meta.task_source = found
 
@@ -931,6 +937,7 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         torch_weights=_has_torch_weights(snapshot),
         onnx_weights=_has_onnx_weights(snapshot),
         gguf_architecture=gguf_architecture,
+        model_index=diffusers_index,
     )
     # The snapshot's own top-level listing, carried past this function for
     # the one caller that needs it beyond format inference:

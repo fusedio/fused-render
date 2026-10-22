@@ -90,7 +90,8 @@ class Architecture:
 #: (`"Sentence Transformers"`: the embedding runners gate on `model_type`,
 #: never on this library name alone, so no runner code is keyed to it).
 _ENGINE_RUNNER_CODES: dict[str, tuple[str, ...]] = {
-    "Diffusers": ("diffusers-image", "diffusers-image-cuda", "diffusers-image-rocm"),
+    "Diffusers": ("diffusers-image", "diffusers-image-cuda", "diffusers-image-rocm",
+                  "diffusers-video-cuda"),
     "llama.cpp": ("llamacpp-text", "llamacpp-text-vulkan"),
     "MLX": ("mlx-text",),
     "ltx-2-mlx": ("ltx-video",),

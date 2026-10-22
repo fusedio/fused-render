@@ -84,6 +84,8 @@ def test_diffusers_runners_are_the_diffusers_kind():
     assert hub_loadable.loadable_kind("diffusers-image") == ("diffusers", None)
     assert hub_loadable.loadable_kind("diffusers-image-cuda") == ("diffusers", None)
     assert hub_loadable.loadable_kind("diffusers-image-rocm") == ("diffusers", None)
+    # D1424: the Wan video runner reads the same `model_index.json` manifest.
+    assert hub_loadable.loadable_kind("diffusers-video-cuda") == ("diffusers", None)
 
 
 def test_admission_admits_when_any_available_runner_would_load_it():

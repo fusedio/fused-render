@@ -1685,6 +1685,25 @@ def test_a_diffusers_video_pipeline_is_supported_but_has_no_engine(client, hub, 
             == _ai_registry.VIDEO_GENERATION)
 
 
+def test_a_wan_snapshot_is_video_generation_and_never_image_loadable(client, hub, monkeypatch):
+    """D1424 / D1291: `WanPipeline` has no "video" in its name, so the label
+    came out `text-to-image` and the format claimed the image runners. A Wan
+    index is video generation, and only the video runner reads it."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(_ai_registry, "_cuda", lambda: True)
+    repo = _repo(hub, "models--Wan-AI--Wan2.1-T2V-1.3B-Diffusers", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "WanPipeline"}))
+    row = _repo_row(client, "Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
+    assert row["task"] == "video generation"
+    assert row["capability"] == _ai_registry.VIDEO_GENERATION
+    meta = ai_models_mod.cached_capability("Wan-AI/Wan2.1-T2V-1.3B-Diffusers")
+    assert meta.capability == _ai_registry.VIDEO_GENERATION
+    assert row["engine"] is not None and row["engine"]["code"] == "diffusers-video-cuda"
+
+
 def test_a_genuine_image_to_image_repo_keeps_its_label_and_gets_no_load(client, hub):
     """D1235: `image-to-image` now maps to IMAGE_GENERATION in tasks.py (the
     hub_catalog spec — the FLUX.2-klein family and the mflux edit path do

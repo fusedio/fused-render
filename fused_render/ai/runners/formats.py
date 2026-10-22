@@ -1736,6 +1736,9 @@ UNLOADABLE_QUANT = frozenset({"awq", "gptq", "bitsandbytes", "compressed-tensors
 #: just decisive about matching NOTHING, which the early return in `loaders()`
 #: enforces directly rather than through this table.
 DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
+            # A Wan `model_index.json` (D1424) — decisive for the diffusers rows'
+            # reason below: the format says video whichever machine is here.
+            "diffusers-video-cuda",
             # A root `rl_agent_config.json` is Laya's decision-head config and
             # nothing else's (D887) — it is what separates a Laya checkpoint
             # from the sentiment BERTs that share its `text-classification`
@@ -2096,6 +2099,23 @@ def missing_mflux_components(snapshot_dir: str) -> list[str]:
 #: forget one.
 DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
                      "diffusers-image-rocm")
+#: The diffusers VIDEO runners (D1424). The same `model_index.json` file as
+#: `DIFFUSERS_RUNNERS` reads, but a different job: a Wan pipeline is claimed by
+#: these and by NONE of the image rows (see the branch in `loaders()`), so a
+#: text-to-video repo can never read as image-loadable (D1291). A tuple per
+#: library, for `DIFFUSERS_RUNNERS`' reason.
+DIFFUSERS_VIDEO_RUNNERS = ("diffusers-video-cuda",)
+#: The pipeline classes `diffusers-video-cuda` opens: Wan 2.1 / 2.2 text-to-video
+#: and the image-conditioned class an I2V repo declares.
+WAN_PIPELINE_CLASSES = frozenset({"WanPipeline", "WanImageToVideoPipeline"})
+
+
+def is_wan_diffusers_index(model_index: dict | None) -> bool:
+    """Is this parsed root `model_index.json` a Wan video pipeline?"""
+    return (isinstance(model_index, dict)
+            and model_index.get("_class_name") in WAN_PIPELINE_CLASSES)
+
+
 #: Both llama.cpp builds — CPU/Metal and Vulkan — for the identical reason:
 #: a root `.gguf` is the same FORMAT whichever wheel opens it, and naming only
 #: `llamacpp-text` here is exactly the trap this comment already describes for
@@ -2119,7 +2139,8 @@ ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm")
 
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
            onnx_weights: bool = False,
-           gguf_architecture: str | None = None) -> tuple[str, ...]:
+           gguf_architecture: str | None = None,
+           model_index: dict | None = None) -> tuple[str, ...]:
     """Which runners' `load()` would accept this snapshot, by code.
 
     Format only: whether such a runner RUNS here, and whether the capability is
@@ -2136,6 +2157,10 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     file is I/O this pure evidence-classifier has never otherwise done, and
     the caller (`ai_models.py`) already has the snapshot path this needs.
     `None` when there is no GGUF, or when the caller could not read one.
+    `model_index` is the parsed root `model_index.json` (as `config` is the
+    parsed `config.json`), `None` when absent or unread: the only thing that
+    tells a Wan video pipeline from an image one, since both are a
+    `model_index.json` beside component folders.
     """
     found: list[str] = []
     if has_ct2_weights(names):
@@ -2205,6 +2230,13 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     # the two must not disagree about which repos are mflux's.
     if mflux_native_mode(repo_id) and has_mflux_components(dirnames):
         found.append("mflux-image")
+    if DIFFUSERS_INDEX in names and is_wan_diffusers_index(model_index):
+        found.extend(DIFFUSERS_VIDEO_RUNNERS)
+        # …and NOTHING else, for the `ltx-video` branch's reason above, and
+        # D1291's: a text-to-video diffusers repo must never read as
+        # image-loadable. Falling through to the line below would add the three
+        # image rows and put an image Load button on a video model.
+        return tuple(found)
     if DIFFUSERS_INDEX in names:
         found.extend(DIFFUSERS_RUNNERS)
     if is_parakeet_checkpoint(config) and PARAKEET_WEIGHTS in names:
