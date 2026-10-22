@@ -1606,6 +1606,20 @@ def has_cached_snapshot(repo_id: str) -> bool:
     return _embed_snapshot_dir(repo_id) is not None
 
 
+def cached_loaders(repo_id: str) -> tuple[str, ...] | None:
+    """The runner codes whose `load()` accepts the cached snapshot of `repo_id`
+    by format, or None when nothing usable is cached (so the format has not
+    been seen and has no say). Local only, with `cached_capability`'s
+    path-segment guard."""
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return None
+    repo_dir = os.path.join(hub_cache_dir(), dirname)
+    if not os.path.isdir(repo_dir) or _default_snapshot(repo_dir) is None:
+        return None
+    return tuple(_repo_meta(repo_dir).loaders or ())
+
+
 def cached_capability(repo_id: str) -> CacheReading:
     """Which capability `repo_id` would load as, read off the local snapshot.
 
