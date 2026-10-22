@@ -12,6 +12,7 @@ import zipfile
 import pytest
 
 from fused_render import chromium as eng
+from fused_render import jobs
 
 
 def _manifest(sha=None, size=None, arch="arm64"):
@@ -52,9 +53,12 @@ def home(tmp_path, monkeypatch):
     monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
     # this is a Linux CI box: the engine is a macOS thing, so pretend
     monkeypatch.setattr(eng, "platform_supported", lambda system=None: system != "linux")
-    # fresh module state per test
+    # fresh module state per test — and a fresh job registry, which the
+    # install mirrors itself into (process-global, like the module state)
     eng._state.__init__()
-    return tmp_path
+    jobs.reset()
+    yield tmp_path
+    jobs.reset()
 
 
 def _fake_fetch(data: bytes, calls=None):
@@ -276,6 +280,102 @@ def test_status_reports_downloading_while_the_fetch_runs(home, monkeypatch):
     assert not eng.remove("arm64")  # refused mid-download
     release.set()
     t.join(5)
+    assert eng.status("arm64", system="darwin")["state"] == eng.READY
+
+
+# ---- the Activity row (D1421) -------------------------------------------------
+
+def _row():
+    rows = [j for j in jobs.list_jobs() if j["id"].startswith(eng.JOB_ID_PREFIX)]
+    assert len(rows) <= 1
+    return rows[0] if rows else None
+
+
+def test_install_reports_a_download_row_with_bytes_then_done(home, monkeypatch):
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+    started, release = threading.Event(), threading.Event()
+
+    def slow(url, dest, progress):
+        progress(0.25)
+        started.set()
+        release.wait(5)
+        with open(dest, "wb") as f:
+            f.write(data)
+        progress(1.0)
+
+    assert _row() is None
+    eng.install("arm64", fetch=slow)
+    assert started.wait(5)
+    row = _row()
+    assert row is not None
+    assert row["id"] == "sys:chromium-engine:7-arm64"
+    assert row["owner"] == "server" and row["cancellable"] is False
+    assert row["kind"] == "download" and row["unit"] == "bytes"
+    assert row["title"] == eng.JOB_TITLE and row["detail"] == "Downloading"
+    assert row["origin"] == "Preferences" and row["page"] == "/preferences"
+    assert row["state"] == "running"
+    # the fetch's own fraction, in bytes of the manifest's size
+    assert row["total"] == len(data) and row["done"] == pytest.approx(0.25 * len(data))
+    release.set()
+    eng._state.thread.join(5)
+    row = _row()
+    assert row["state"] == "done" and row["done"] == row["total"] == len(data)
+    assert row["message"] == eng.JOB_DONE_MESSAGE
+
+
+def test_install_row_exists_before_the_worker_runs(home, monkeypatch):
+    # The row is opened by `install` itself, so the request that turned the
+    # preference on returns with it already there for the chip's next poll.
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+    release = threading.Event()
+
+    def slow(url, dest, progress):
+        release.wait(5)
+        with open(dest, "wb") as f:
+            f.write(data)
+
+    eng.install("arm64", fetch=slow)
+    row = _row()
+    assert row is not None and row["state"] == "running" and row["done"] == 0.0
+    assert row["total"] == len(data)
+    release.set()
+    eng._state.thread.join(5)
+
+
+def test_failed_install_reports_an_error_row_and_a_retry_reopens_it(home, monkeypatch):
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+
+    def boom(url, dest, progress):
+        raise OSError("network down")
+
+    assert not eng.ensure("arm64", fetch=boom, timeout=10)
+    row = _row()
+    assert row["state"] == "error" and row["message"] == "network down"
+    assert eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
+    row = _row()
+    assert row["state"] == "done" and row["message"] == eng.JOB_DONE_MESSAGE
+
+
+def test_verify_and_unpack_phases_name_their_verb(home, monkeypatch):
+    data = _engine_zip()
+    art = eng.artifact("arm64", manifest=_published(data))
+    assert eng._job_fields(art, 0.45, "download")["done"] == pytest.approx(0.5 * len(data))
+    assert eng._job_fields(art, 0.9, "verify") == {
+        "state": "running", "done": float(len(data)), "total": float(len(data)),
+        "detail": "Verifying", "message": ""}
+    assert eng._job_fields(art, 0.92, "unpack")["detail"] == "Unpacking"
+    # the final tick is the worker's terminal row, not a progress one
+    assert eng._job_fields(art, 1.0, "ready") is None
+
+
+def test_a_registry_failure_never_breaks_the_install(home, monkeypatch):
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+    monkeypatch.setattr(jobs, "upsert", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    assert eng.ensure("arm64", fetch=_fake_fetch(data), timeout=10)
     assert eng.status("arm64", system="darwin")["state"] == eng.READY
 
 
