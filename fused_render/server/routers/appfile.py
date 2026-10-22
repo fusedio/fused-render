@@ -21,6 +21,7 @@ work (``needs_force``) answers 409 until the client sends ``force``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 import shutil
@@ -114,13 +115,23 @@ async def api_appfile_export_with_preview(
         preview_bytes = await preview.read(appfile.MAX_PREVIEW_BYTES + 1)
         if not preview_bytes or len(preview_bytes) > appfile.MAX_PREVIEW_BYTES:
             preview_bytes = None
-    tmp_dir = tempfile.mkdtemp(prefix="fused-appfile-export-")
     file_name = appfile.default_file_name(path)
-    out_path = os.path.join(tmp_dir, file_name)
+
+    def _build() -> tuple[str, str]:
+        # mkdtemp + the zip of the whole app folder + the error-path rmtree are
+        # all blocking disk work: off the event loop.
+        tmp_dir = tempfile.mkdtemp(prefix="fused-appfile-export-")
+        out_path = os.path.join(tmp_dir, file_name)
+        try:
+            appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)
+        except BaseException:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
+        return tmp_dir, out_path
+
     try:
-        appfile.export_app_file(path, out_path, preview_bytes=preview_bytes)
+        tmp_dir, out_path = await asyncio.to_thread(_build)
     except appfile.AppFileError as exc:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
         return _error(str(exc))
     return FileResponse(
         out_path,

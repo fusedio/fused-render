@@ -29,6 +29,7 @@ fused.tasks.archive(key) / .unarchive(key) / .delete(key)
 fused.tasks.markRead(key, messageId?)
 fused.tasks.messages(key)          // -> TaskMessage[]
 fused.tasks.transcript(key, {scope?, ...}) // -> HistoryEntry[]
+fused.tasks.export(key, {format?: "md"|"json", scope?}) // -> string: whole transcript as one file's text (md = Bots export layout)
 fused.tasks.settings(key, {model?, effort?}, {scope?})
 fused.tasks.watch(fn, opts?)       // -> unsubscribe(); fn(rows, change)
 fused.tasks.ui({view?, task?, scope?}) // -> Promise<url> for an <iframe>: the shell's Tasks UI

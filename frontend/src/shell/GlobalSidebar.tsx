@@ -43,10 +43,17 @@ import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
+import { botsPulseTitle, botsRunningLabel, botsWaitingLabel, useBotsPulse } from "@platform/lib/botsPulse";
 import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
-import CurrentAppsSection, { NewAppModal, useDeskAppsOrdered } from "@shell/CurrentAppsSection";
+import CurrentAppsSection, {
+  NewAppModal,
+  canvasRowHref,
+  useDeskAppsOrdered,
+} from "@shell/CurrentAppsSection";
+import { canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
+import { CanvasGlyph } from "@apps/canvases/glyph";
 import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
 import { useRestartFlow } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
@@ -598,7 +605,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the rail's corner is the one place on screen a reader cannot look away from,
   // and nothing there may blink. The words below and the tooltip are unchanged.
   const tasksDot =
-    pulse.attention > 0 ? (
+    pulse.attention + pulse.blocked > 0 ? (
       <span className="sidebar-rail-dot is-attention" title={tasksTip} />
     ) : pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
@@ -613,18 +620,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // kind of fact, not a lookalike. The dot says THAT there is something; the
   // words say how much, and the chip's number is the ungated one (see above).
   const tasksTrailing =
-    pulse.running > 0 || pulse.doneUnread > 0 ? (
+    pulse.running > 0 || pulse.blocked > 0 || pulse.doneUnread > 0 ? (
       <>
         {/* The waiting count SPEAKS INSTEAD of the running one when there is
             one, rather than beside it: they are the same rows counted twice
             (tasks-lib.tasksPulse), and printing "1 waiting for you · 1 running"
             about one task would read as two. The one that asks for something
             wins the words; the total is still in the tooltip. */}
-        {pulse.attention > 0 ? (
+        {pulse.attention + pulse.blocked > 0 ? (
           // Red, like the dot beside it: one state, one colour, on the mark and
           // on the words (Akshil, 2026-09-03: "this should be red as well").
           <span className="sidebar-running is-attention" title={tasksTip}>
-            {attentionLabel(pulse.attention)}
+            {attentionLabel(pulse.attention + pulse.blocked)}
           </span>
         ) : pulse.running > 0 && (
           <span className="sidebar-running" title={tasksTip}>
@@ -634,6 +641,61 @@ export default function GlobalSidebar({ config }: { config: Config }) {
         {pulse.doneUnread > 0 && (
           <span className="sidebar-count-chip" title={tasksTip}>
             {pulse.doneUnread}
+          </span>
+        )}
+      </>
+    ) : undefined;
+
+  // THE BOTS ROW SAYS THE SAME THINGS THE TASKS ROW DOES (Akshil, 2026-10-20:
+  // "like tasks in left sidebar has status… can we have the same for bots").
+  // Same marks, same words, same order of precedence, read from
+  // platform/lib/botsPulse (one poll shared with the Bots page):
+  //   red    — a bot is WAITING on an approval / question card. The one state
+  //            that goes nowhere until the reader acts, so it outranks the rest;
+  //            red is the hue a blocked task wears, and "waiting" is the bot
+  //            status's own word (statusLabel: "waiting for you").
+  //   yellow — a bot is running.
+  //   green  — a bot has events past the reader's mark (a bot they have opened
+  //            before; a never-opened bot has nothing to catch up on).
+  //   chip   — how many bots have such unread news. A count of BOTS, like the
+  //            Tasks chip counts rows, and ungated by the visit for the Tasks
+  //            chip's reason: it clears when the bot is opened, not glanced at.
+  // Errors are in the tooltip only ("1 error"): an errored bot is not asking
+  // for anything, and a fourth colour on one dot is one too many.
+  //
+  // NOTHING IS SUPPRESSED ON /bots — unlike the Tasks dot on /tasks (Akshil,
+  // 2026-10-21: "when I click on Bots it becomes clear even though I didn't
+  // read the bot"). The Tasks page shows every done task at once, so landing
+  // there IS seeing them; the Bots page shows ONE bot's chat, and a bot with
+  // news in the list beside it is still unread. The dot therefore says exactly
+  // what the chip says, and both clear when the bot is opened (markSeen), not
+  // when the page is.
+  const botsPulse = useBotsPulse();
+  const botsTip = botsPulseTitle(botsPulse);
+  const botsDot = botsPulse.waiting > 0 ? (
+    <span className="sidebar-rail-dot is-attention" title={botsTip} />
+  ) : botsPulse.running > 0 ? (
+    <span className="sidebar-rail-dot is-running" title={botsTip} />
+  ) : botsPulse.unread > 0 ? (
+    <span className="sidebar-rail-dot is-unread" title={botsTip} />
+  ) : undefined;
+  const botsTrailing =
+    botsPulse.waiting > 0 || botsPulse.running > 0 || botsPulse.unread > 0 ? (
+      <>
+        {/* Waiting speaks INSTEAD of running, as on the Tasks row: the one that
+            asks for something wins the words; the total is in the tooltip. */}
+        {botsPulse.waiting > 0 ? (
+          <span className="sidebar-running is-attention" title={botsTip}>
+            {botsWaitingLabel(botsPulse.waiting)}
+          </span>
+        ) : botsPulse.running > 0 && (
+          <span className="sidebar-running" title={botsTip}>
+            {botsRunningLabel(botsPulse.running)}
+          </span>
+        )}
+        {botsPulse.unread > 0 && (
+          <span className="sidebar-count-chip" title={botsTip}>
+            {botsPulse.unread}
           </span>
         )}
       </>
@@ -737,13 +799,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the wizard. Null = nothing to show (never started, or finished).
   const setupMeter = useSetupMeter(config);
 
-  // THE RAIL'S DOORS INTO THE SECTIONS: the desk's apps and the pinned
-  // bookmarks, in their sections' order, capped (sidebar-rail-lib). The apps
-  // fetch runs only while the rail is on screen — expanded, the section owns it.
+  // THE RAIL'S DOORS INTO THE SECTIONS: the desk's apps, its canvases and
+  // the pinned bookmarks, in their sections' order, capped (sidebar-rail-lib).
+  // The desk fetch runs only while the rail is on screen — expanded, the
+  // sections own it. The canvases group wears the Canvases section's gate.
   const { collapsed: sidebarCollapsed } = useSidebarState();
   useBookmarksVersion();
-  const deskApps = useDeskAppsOrdered(sidebarCollapsed && !bot);
-  const extras = railExtras({ apps: deskApps, pins: pinnedBookmarks(loadBookmarks()), bot });
+  const desk = useDeskAppsOrdered(sidebarCollapsed && !bot);
+  const extras = railExtras({
+    desk,
+    pins: pinnedBookmarks(loadBookmarks()),
+    bot,
+    canvases: canvasesInNav,
+  });
   const onAppPath = appPathFromPath(pathname);
   const here = pathname + location.search;
   // The Projects section's "+ New app" row, on the rail: same composer, same
@@ -776,6 +844,47 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     active: onAppPath === app.path,
     scrolls: true,
   }));
+  // A canvas door lights on its project page OR its editor, the section's own
+  // rule (both are "the canvas open"); the href is the row's (canvasRowHref),
+  // with the row's fallback for a clone of an unknown environment.
+  const onCanvas = canvasProjectFromPath(pathname) ?? canvasNameFromPath(pathname);
+  // The Canvases section's "+ Canvas" row, on the rail: the catalog
+  // (/canvases), at the head of the canvases group, behind the section's gate
+  // — the one door in, since the primary nav has no Canvases row. Plain
+  // navigation, not a composer: create and clone live on the catalog page.
+  const railNewCanvas: SidebarRailItem[] = canvasesInNav
+    ? [
+        {
+          key: "new-canvas",
+          label: "Canvas — open or create",
+          icon: (
+            <span className="sidebar-rail-new-glyph" aria-hidden="true">
+              +
+            </span>
+          ),
+          href: "/canvases",
+          active: pathname === "/canvases",
+          dividerBefore: true,
+          scrolls: true,
+        },
+      ]
+    : [];
+  const railCanvases: SidebarRailItem[] = extras.canvases.map((app) => ({
+    key: "canvas:" + app.path,
+    label: app.name,
+    icon: (
+      <span className="sidebar-rail-canvas-glyph" aria-hidden="true">
+        <CanvasGlyph size={16} />
+      </span>
+    ),
+    href: canvasRowHref(app) ?? appPageUrl(app.path),
+    active:
+      !!app.canvas &&
+      !!onCanvas &&
+      onCanvas.env === app.canvas.env &&
+      onCanvas.name === app.canvas.name,
+    scrolls: true,
+  }));
   const railPins: SidebarRailItem[] = extras.pins.map((b, i) => ({
     key: "pin:" + b.id,
     label: b.name,
@@ -800,7 +909,14 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ...(bot
       ? []
       : [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }]),
-    { key: "bots", label: "Bots", icon: BOTS_ICON, href: "/bots", active: botsActive },
+    {
+      key: "bots",
+      label: botsTip ? `Bots — ${botsTip}` : "Bots",
+      icon: BOTS_ICON,
+      href: "/bots",
+      active: botsActive,
+      badge: botsDot,
+    },
     {
       key: "tasks",
       label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
@@ -837,6 +953,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       : []),
     ...railNewApp,
     ...railApps,
+    ...railNewCanvas,
+    ...railCanvases,
     ...railPins,
     // Same gate and same place as the expanded row: the rail is the whole
     // sidebar when collapsed, and a meter that vanished on collapse would read
@@ -899,6 +1017,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             label="Bots"
             icon={BOTS_ICON}
             active={botsActive}
+            extra={botsDot}
+            trailing={botsTrailing}
+            // Errors have no dot and no words, so the row itself carries the
+            // sentence; the rail says it through its label either way.
+            title={botsTip}
           />
           {/* Tasks took Inbox's place as well as its job: the two pages showed
               the same pile of work from two ends, and the one that survives is

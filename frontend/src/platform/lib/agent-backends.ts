@@ -97,11 +97,45 @@ export const COPILOT_FALLBACK: AgentBackendRow = {
   health: null,
 };
 
+/** The Codex row (docs/CODEX_BACKEND.md §8), Copilot's twin for the same
+ *  reason: a Codex chat answers with Codex's caps from the first frame. Off
+ *  until the server says otherwise (D17). Unlike Copilot, model and mode are
+ *  per turn on Codex's wire, so both live switches are on (§7).
+ *  KEEP IN SYNC BY HAND with fused_render/agent_backends/codex.py — pinned
+ *  field for field by tests/test_agent_backend_pins.py. */
+export const CODEX_FALLBACK: AgentBackendRow = {
+  id: "codex",
+  label: "Codex",
+  enabled: false,
+  models: [
+    { id: "gpt-6-luna", label: "GPT-6 Luna" },
+    { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+  ],
+  default_model: "gpt-6-luna",
+  efforts: ["low", "medium", "high", "xhigh", "max"],
+  modes: ["prompt", "acceptEdits", "auto"],
+  caps: {
+    plan_mode: false,
+    live_model_switch: true,
+    live_mode_switch: true,
+    snapshots: false,
+    artifacts: false,
+    worktrees: false,
+    bg_tasks: false,
+    ask_user: false,
+    terminal_mirror: false,
+    mid_turn_messages: false,
+  },
+  health: null,
+};
+
 const FALLBACK: AgentCatalog = {
-  // ENABLED: Claude alone, the defaults of both switches (D17).
+  // ENABLED: Claude alone, the defaults of every switch (D17).
   backends: [CLAUDE_FALLBACK],
   default: "claude",
-  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK],
+  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK],
 };
 
 export interface AgentCatalogState extends AgentCatalog {
@@ -247,7 +281,7 @@ export function backendOf(id: string | null | undefined): AgentBackendRow {
   return current.all.find((b) => b.id === want) ?? current.backends.find((b) => b.id === want) ?? CLAUDE_FALLBACK;
 }
 
-/** "Claude" / "Copilot" — the word every surface names the agent by. */
+/** "Claude" / "Copilot" / "Codex" — the word every surface names the agent by. */
 export function agentLabel(id: string | null | undefined): string {
   return backendOf(id).label;
 }

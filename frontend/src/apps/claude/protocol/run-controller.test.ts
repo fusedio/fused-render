@@ -2681,6 +2681,31 @@ describe("permission cards: pinned open, parked once answered (T:14665-14775)", 
     expect(row.liveMode).toBe("prompt");
   });
 
+  test("a late risk assessment republishes the open card", async () => {
+    const { controller } = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ permissions: [permRow({ risk_state: "pending", severity: "", risk_summary: "" })] })
+          : n === 1
+            ? poll({
+                permissions: [
+                  permRow({ risk_state: "ready", severity: "high", risk_summary: "Deletes everything." }),
+                ],
+              })
+            : poll({ done: true, permissions: [permRow({ decision: "allow", scope: "once" })] }),
+    });
+    const seen: string[] = [];
+    const off = controller.subscribe(() => {
+      const p = controller.getState().permissions[0];
+      if (p) seen.push(String(p.risk_state));
+    });
+    await controller.sendMessage("go");
+    off();
+    expect(seen).toContain("pending");
+    expect(seen).toContain("ready");
+  });
+
   test("open cards sort after parked ones, in request order", async () => {
     const { controller } = makeController({
       start: () => ({ run_id: "r1" }),
@@ -5218,5 +5243,42 @@ describe("the run's tasks", () => {
       expect(m.ended_at).toBe(null);
       expect(controller.getState().tasksRunId).toBe("r1");
     }
+  });
+});
+
+describe("the working clock survives a reload (server stamp)", () => {
+  test("a poll's turn_started_at sets working.startedAt with empty sessionStorage", async () => {
+    // `now` is fixed at 1000 ms here, so a stamp of 0.4 s is 600 ms in the past.
+    const seen: number[] = [];
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n === 1) seen.push(controller.getState().working?.startedAt ?? -1);
+        return n <= 1
+          ? poll({ turn_started_at: 0.4, segments: [text("still going")] })
+          : poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(seen).toEqual([400]);
+  });
+
+  test("a 0 stamp keeps the local clock", async () => {
+    const seen: number[] = [];
+    let controller!: ChatController;
+    const made = makeController({
+      start: () => ({ run_id: "r1" }),
+      poll: (_f, n) => {
+        if (n === 1) seen.push(controller.getState().working?.startedAt ?? -1);
+        return n <= 1
+          ? poll({ turn_started_at: 0, segments: [text("still going")] })
+          : poll({ done: true, segments: [text("still going")] });
+      },
+    });
+    controller = made.controller;
+    await controller.sendMessage("go");
+    expect(seen).toEqual([1000]);
   });
 });

@@ -440,6 +440,40 @@ describe("resumeRun reconciles against what is already on screen", () => {
     expect(assistants(rig.controller).map((t) => t.text)).toEqual(["SECOND", "THIRD"]);
   });
 
+  test("A RE-ATTACH TO A RUN WHOSE OPENING IS ON SCREEN (but not last) NEITHER RE-TYPES IT NOR REPLAYS TURN 1", async () => {
+    // One run held a turn that folded a mid-turn note, then a queued slash
+    // command whose row the agent could not read as a turn start: the poll
+    // answers `window: 0` with `message` = the run's OPENING text, while the
+    // restored history's LAST user line is the folded note. `matches` is false,
+    // and a plain re-attach is neither `neverShown` nor `quiet`, so the opening
+    // was typed a second time and the loop re-streamed turn 1 under the newest
+    // reply.
+    const segs = [text("turn one reply"), text("folded reply")];
+    const rig = makeController({
+      history: () => ({
+        turns: [
+          { role: "user", text: "opening words", uuid: "u1" },
+          { role: "assistant", text: "turn one reply", uuid: "a1" },
+          { role: "user", text: "folded note", uuid: "u2" },
+          { role: "assistant", text: "folded reply", uuid: "a2" },
+        ],
+        transcript: { path: "/p/s1.jsonl", mtime: 1, size: 2 },
+      }),
+      live_run: () => ({ run_id: "" }),
+      poll: (_f, n) =>
+        n === 0
+          ? poll({ message: "opening words", window: 0, segments: segs })
+          : poll({ done: true, message: "opening words", window: 0, segments: segs }),
+    });
+    await rig.controller.openSession("s1");
+    await rig.controller.resumeRun("r1");
+    expect(users(rig.controller).filter((t) => t.text === "opening words").length).toBe(1);
+    expect(assistants(rig.controller).map((t) => t.text)).toEqual([
+      "turn one reply",
+      "folded reply",
+    ]);
+  });
+
   test("AN UNMOVED WINDOW STILL STRIPS: the guard is the cursor, not the match", async () => {
     // The other side of it, and the behaviour the strip exists for: window 0 —
     // or an older agent.py that sends none at all — is a payload that really

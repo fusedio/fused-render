@@ -72,7 +72,7 @@ dependencies = [
     # deploy, share and MCP features need on top. The version must match that
     # extra's pin (tests/test_bundle_contents.py checks it), so the base
     # engine and the full one are the same build.
-    "fused==2.9.3b11",
+    "fused==2.9.3b12",
 ]
 
 [project.optional-dependencies]
@@ -151,7 +151,10 @@ bundled = [
     "numpy",
     "pandas",
     "requests",
-    "pillow",
+    # CEILING <13: Pillow 13.0.0's `PIL/_typing.py` imports `numbers._IntegralLike`
+    # at import time, which exists only on Python 3.15, so `import PIL._typing`
+    # fails on the bundled 3.12. Drop the ceiling once a 3.12-safe 13.x ships.
+    "pillow<13",
     "openpyxl",
     # REMOVED (D276): polars (197 MB — `polars` + the `polars-runtime-32` wheel
     # that carries the actual engine). It was the single largest thing in this
@@ -232,7 +235,7 @@ bundled = [
 # that keeps the index honest between scans (server/index_watch.py). pyarrow
 # writes the index; duckdb reads it; watchfiles is the watcher.
 index = [
-    "duckdb>=1.1",
+    "duckdb>=1.1,<2",
     "pyarrow>=14",
     "watchfiles>=1.0",
 ]
@@ -270,7 +273,7 @@ desktop = [
     "pyobjc-framework-ScreenCaptureKit; sys_platform == 'darwin'",
     "pyobjc-framework-AVFoundation; sys_platform == 'darwin'",
     "pyobjc-framework-CoreAudio; sys_platform == 'darwin'",
-    "pillow; sys_platform == 'linux'",
+    "pillow<13; sys_platform == 'linux'",
     "dbus-fast; sys_platform == 'linux'",
 ]
 # The Hugging Face login in Preferences (routers/hf_auth.py, D402). The token
@@ -299,7 +302,7 @@ hf = [
 # WARNS on an unknown extra, so tests/test_bundle_contents.py checks that every
 # extra named here is one the installed `fused` provides.
 fused = [
-    'fused[aws,mcp]==2.9.3b11 ; python_version >= "3.11"',
+    'fused[aws,mcp]==2.9.3b12 ; python_version >= "3.11"',
     'anthropic>=0.40.0 ; python_version >= "3.11"',
     # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1). fused-render
     # does not use cryptography itself, but `pyjwt[crypto]` from both
@@ -319,13 +322,17 @@ fused = [
 # pillow is listed because the thumbnail route (server/routers/fs_read.py)
 # imports PIL unguarded and `[desktop]` only installs it on Linux.
 cli = [
-    "pillow",
+    "pillow<13",
+    # Fast HTTP request parser for the local uvicorn server (logs.uvicorn_fast_kwargs).
+    "httptools>=0.6.3",
     "fused-render[index,data,hf,fused]",
 ]
 # `[cli]` plus the native desktop integrations; every packaged build and `[dev]`
 # include it. pillow is repeated because `[desktop]` only brings it on Linux.
 all = [
-    "pillow",
+    "pillow<13",
+    # Fast HTTP request parser for the local uvicorn server (logs.uvicorn_fast_kwargs).
+    "httptools>=0.6.3",
     "fused-render[index,data,desktop,hf,fused]",
 ]
 # ---------------------------------------------------------------------------
@@ -371,7 +378,7 @@ app = [
 # libgirepository-2.0-dev AND dropping Ubuntu 22.04 support: do both or neither.
 linux-desktop = [
     'dbus-fast ; sys_platform == "linux"',
-    'pillow ; sys_platform == "linux"',
+    'pillow<13 ; sys_platform == "linux"',
     # `fused.capture.audio` on Linux: PipeWire's pulse-compatible pulseaudio
     # client lib, bound through pasimple (ctypes, pure Python, no build step).
     # See `fused_render/capture/_linux_audio.py` for why this and not PyAV or
@@ -443,6 +450,10 @@ allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["fused_render"]
+# The Chromium engine's native sources (ObjC++, CMake) are built by
+# fused_render/chromium/native/build.sh from a checkout into a separately
+# downloaded artifact; the wheel and the app ship only manifest.json.
+exclude = ["fused_render/chromium/native/**"]
 # The Vite-built shell is gitignored (D54) but must ship in the wheel;
 # `artifacts` overrides hatchling's VCS-based exclusion for it. The starter
 # kit's authoring skills are copied in at build time from skills/ (D106) — also

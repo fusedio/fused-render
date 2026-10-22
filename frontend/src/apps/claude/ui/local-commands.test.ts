@@ -34,6 +34,18 @@ describe("planLocalCommand", () => {
   });
 });
 
+test("/remote-control needs Claude and a session", () => {
+  const rc = (backend: string, hasSession: boolean) =>
+    planLocalCommand(classifyCommand("/remote-control  my laptop ")!, { worktreeReady: true, backend, hasSession });
+  expect(rc("claude", true)).toEqual({ do: "remote-control", name: "my laptop" });
+  expect(rc("", true)).toEqual({ do: "remote-control", name: "my laptop" });
+  expect("refuse" in rc("copilot", true)).toBe(true);
+  const codex = rc("codex", true);
+  expect("refuse" in codex && codex.refuse).toContain("not available for Codex");
+  const none = rc("claude", false);
+  expect("refuse" in none && none.refuse).toContain("first message");
+});
+
 describe("/model argument", () => {
   test("shortlist id or label, or a full claude id passed through", () => {
     expect(localModelArg("Opus")).toBe("opus");
@@ -43,5 +55,27 @@ describe("/model argument", () => {
     expect(localModelArg("")).toBe("");
     expect(localEffortArg("max")).toBe("max");
     expect(localEffortArg("extreme")).toBe("");
+  });
+
+  test("Codex's shortlist and its own full ids, never Claude's", () => {
+    // The static CODEX_FALLBACK row answers before the catalog lands.
+    expect(localModelArg("gpt-6-luna", "codex")).toBe("gpt-6-luna");
+    expect(localModelArg("GPT-6.1 Sol", "codex")).toBe("gpt-6.1-sol");
+    expect(localModelArg("gpt-5.6-terra", "codex")).toBe("gpt-5.6-terra");
+    // A newer or plan-only id is passed through as typed (§8: a seed).
+    expect(localModelArg("gpt-7-nova", "codex")).toBe("gpt-7-nova");
+    expect(localModelArg("gpt 6", "codex")).toBe("");
+    expect(localModelArg("gpt-6-luna")).toBe("");
+    expect(localEffortArg("xhigh", "codex")).toBe("xhigh");
+    const bad = planLocalCommand(classifyCommand("/model ???")!, { worktreeReady: true, backend: "codex" });
+    expect("refuse" in bad && bad.refuse).toContain("gpt-6-luna, gpt-6.1-sol, gpt-5.6-terra, gpt-5.6-luna, or a full model id");
+  });
+
+  test("Codex has no worktrees and no background tasks (§7)", () => {
+    const at = (text: string) => planLocalCommand(classifyCommand(text)!, { worktreeReady: true, backend: "codex" });
+    const wt = at("/worktree feat");
+    expect("refuse" in wt && wt.refuse).toBe("Codex has no worktrees");
+    const tasks = at("/tasks");
+    expect("refuse" in tasks && tasks.refuse).toBe("Codex has no background tasks");
   });
 });

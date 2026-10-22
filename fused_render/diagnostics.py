@@ -53,7 +53,7 @@ import tempfile
 import time
 import zipfile
 
-from fused_render import _flavor
+from fused_render import _flavor, _platform
 
 logger = logging.getLogger(__name__)
 
@@ -432,7 +432,7 @@ def _claude_runs_root() -> str:
     import on purpose: the diagnostics bundle must still collect the runs'
     logs when the agent module itself will not import, which is one of the
     failures a bundle exists to explain."""
-    return os.path.join(tempfile.gettempdir(), "fused_render_claude-%d" % os.geteuid(), "runs")
+    return os.path.join(tempfile.gettempdir(), "fused_render_claude-%d" % _platform.euid(), "runs")
 
 
 def _plan_claude(plan: _Plan) -> None:

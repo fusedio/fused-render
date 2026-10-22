@@ -102,7 +102,13 @@ async def run_request(body: dict, call: dict | None) -> tuple[int, str]:
     # for auto-reload (LR-2). Set on failed runs too, so a broken py that
     # gets fixed still triggers a reload.
     result["resolved_py"] = resolved
-    return 200, dumps_result(result)
+    if getattr(result, "payload_json", None) is None:
+        # Encoding a big result blocks; keep it off the event loop. A
+        # pre-encoded run is only a join of short pieces, cheap inline.
+        content = await asyncio.to_thread(dumps_result, result)
+    else:
+        content = dumps_result(result)
+    return 200, content
 
 
 # ---- /api/run over a WebSocket ----------------------------------------------

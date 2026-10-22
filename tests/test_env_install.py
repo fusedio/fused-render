@@ -2563,20 +2563,31 @@ def test_a_declared_project_with_no_venv_asks_for_an_install(tmp_path, monkeypat
     assert "imagecodecs" in out["error"]["message"]
 
 
+def _tests_conftest(config):
+    """The module pytest loaded as tests/conftest.py (a bare `import conftest`
+    can bind to a template test dir's conftest.py in a full run)."""
+    here = Path(__file__).with_name("conftest.py")
+    for plugin in config.pluginmanager.get_plugins():
+        path = getattr(plugin, "__file__", None)
+        if path and os.path.exists(path) and os.path.samefile(path, here):
+            return plugin
+    raise LookupError(f"{here} is not a registered pytest plugin")
+
+
 @requires_fused
-def test_a_project_whose_venv_exists_just_runs(tmp_path, monkeypatch, warm_fused_backend_venv):
+def test_a_project_whose_venv_exists_just_runs(tmp_path, monkeypatch, warm_fused_backend_venv, request):
     """No pre-flight interference once the venv is there."""
     import asyncio
 
-    import conftest
+    warm_home = _tests_conftest(request.config).WARM_HOME
 
     # This module's autouse fixture redirects FUSED_RENDER_HOME per test, and the
     # venv store hangs off it — so without restoring the home the warm fixture
     # built under, this would look for the venv in a directory nobody filled.
-    if conftest.WARM_HOME is None:
+    if warm_home is None:
         monkeypatch.delenv("FUSED_RENDER_HOME", raising=False)
     else:
-        monkeypatch.setenv("FUSED_RENDER_HOME", conftest.WARM_HOME)
+        monkeypatch.setenv("FUSED_RENDER_HOME", warm_home)
     monkeypatch.setattr(engine, "_backend", None)
     target = Path(warm_fused_backend_venv) / "ready.py"
     target.write_text("def main():\n    return 42\n")

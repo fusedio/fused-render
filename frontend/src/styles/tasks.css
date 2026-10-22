@@ -1031,6 +1031,18 @@ button.tasks-caret,
   cursor: default;
 }
 
+/* THE PR VIEW'S `#N` CHIP wears the folder tag's pill (`.schedule-tv-id--tag`,
+   above) inside the same shield, so it only overrides what makes it a link: a
+   pointer in place of the filter funnel, no underline, tabular digits. */
+.tasks-row .task-pr-num {
+  text-decoration: none;
+  cursor: pointer;
+  color: inherit;
+}
+.tasks-row .task-pr-num .schedule-tv-id-name {
+  font-variant-numeric: tabular-nums;
+}
+
 .tasks-row .schedule-tv-id-shield::after {
   content: "";
   position: absolute;

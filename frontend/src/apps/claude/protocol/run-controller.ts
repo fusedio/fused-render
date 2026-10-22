@@ -1445,6 +1445,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // UNANSWERED until this arrives, so the poll that brings it has to republish
     // even though every other field reads exactly the same.
     a.held === b.held &&
+    // The model's read lands a poll or two AFTER the card opens (agent.py writes
+    // the sidecar from a thread), so a late assessment has to republish the row.
+    a.severity === b.severity &&
+    a.risk_summary === b.risk_summary &&
+    a.risk_state === b.risk_state &&
     JSON.stringify(a.answers ?? {}) === JSON.stringify(b.answers ?? {});
 
   const permissionRows = (): PermissionRow[] => {
@@ -1538,12 +1543,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
   let workingStartedAt = 0;
   /** WHEN THIS TURN STARTED, kept across a reload (owner E2E R1, F10): the
    *  working line's "(10s)" restarted from 0 on F5 because the start was a
-   *  controller-local `now()`. The frame that starts a turn stamps the run
-   *  in sessionStorage; a frame that re-attaches to the same run reads the
-   *  stamp back. Same tab only, which is the reload case; a new tab starts
-   *  its clock at attach, as before. Cleared when the loop ends so an
-   *  idle-time send into the same host does not inherit the last turn's
-   *  clock. */
+   *  controller-local `now()`. THE SOURCE OF TRUTH IS THE SERVER: the poll's
+   *  `turn_started_at` (stamped when the turn's first message was written)
+   *  replaces this clock whenever it is earlier, so a reload, another tab or
+   *  a reopened task pane all keep counting from the real start.
+   *  sessionStorage is the fallback for an older server that sends none: the
+   *  frame that starts a turn stamps the run, a re-attaching frame reads it
+   *  back (same tab only). Cleared when the loop ends so an idle-time send
+   *  into the same host does not inherit the last turn's clock. */
   const turnStartKey = (runId: string) => `fused-render:claude-turn-start:${runId}`;
   const turnStartedAt = (runId: string): number => {
     try {
@@ -1957,6 +1964,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (poll.session_id) noteSessionId(String(poll.session_id), seat, opts.prompt);
         if (loopSeq === seat) noteBackend(poll.backend);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
+
+        // The server's stamp of when this turn began wins on re-attach.
+        // 0 means the server does not know (keep our own clock); a stamp
+        // older than a day is a stale one, not this turn's start.
+        const serverStart = Number(poll.turn_started_at || 0) * 1000;
+        if (serverStart > 0 && now() - serverStart <= 24 * 3600 * 1000) {
+          const at = Math.min(serverStart, now());
+          if (!(workingStartedAt > 0) || at < workingStartedAt) workingStartedAt = at;
+        }
 
         // usage arrives only at message end; estimate from streamed text meanwhile
         const tokens = Math.max(poll.tokens || 0, Math.round((poll.text || "").length / 4));
@@ -4365,8 +4381,22 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // that prompt and everything before it — then drop the partial rows
         // beneath it, which is exactly what the loop re-renders.
         if (await refreshFromTranscript()) stripUnderRefreshedUser();
-      } else if (probeMsg && !shownAlready) {
+      } else if (probeMsg && !onScreen(probeMsg)) {
         addUser(probeMsg);
+      } else if (probeMsg && !shownAlready) {
+        // THE OPENING LINE IS ON SCREEN BUT IS NOT THE LAST ONE, on a plain
+        // re-attach (neither `neverShown` nor `quiet`, so `shownAlready` is
+        // false). `poll.message` is the run's FIRST message, and a run that
+        // folded a note mid-turn, or queued a second turn behind the first,
+        // has a later last bubble — so `matches` refuses it. Typing the line
+        // again was a duplicate bubble, and `pollLoop` then replayed the
+        // window from offset 0 under the newest reply. The line is up: let the
+        // transcript supply whatever followed it, and mark the window as
+        // landed so the loop renders only what streams from here on. Not
+        // `stripUnderRefreshedUser`: that exists so the loop can re-render the
+        // stripped rows, and this loop is told not to.
+        await refreshFromTranscript();
+        landedWindow = { runId, segments: probeSegs.length, text: probeText };
       }
       sending = false; // pollLoop is not gated on it, and follow-ups need it free
       await pollLoop(runId, gen);

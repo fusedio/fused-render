@@ -348,6 +348,29 @@ FAKE_TRANSCRIBE_WORKER = textwrap.dedent('''
 ''')
 
 
+# Workers start in their own session (SPAWN_KWARGS), so a SIGKILLed pytest run
+# skips every teardown and its fakes would orphan to ppid 1 forever. Test-only:
+# real workers must outlive a server restart (adoption), so nothing under
+# fused_render/ changes.
+_FAKE_IMPORTS = "    import argparse, http.server, json, os, socketserver, sys, threading, time"
+_PARENT_GUARD = textwrap.indent(textwrap.dedent("""
+    # parent-death guard
+    _ppid = os.getppid()
+    def _watch_parent():
+        while True:
+            time.sleep(0.5)
+            if os.getppid() != _ppid:
+                os._exit(0)
+    threading.Thread(target=_watch_parent, daemon=True).start()
+"""), "    ")
+_FAKE_SCRIPTS = ("FAKE_WORKER", "FAKE_IMAGE_WORKER", "FAKE_VIDEO_WORKER", "FAKE_TRANSCRIBE_WORKER")
+for _name in _FAKE_SCRIPTS:
+    _src = globals()[_name]
+    _line = textwrap.dedent(_FAKE_IMPORTS)
+    assert _src.count(_line) == 1, _name
+    globals()[_name] = _src.replace(_line, _line + textwrap.dedent(_PARENT_GUARD), 1)
+
+
 @pytest.fixture()
 def fake_runner(tmp_path, monkeypatch):
     """A registry with one runner whose worker is the fake, and whose venv is
@@ -13493,3 +13516,117 @@ def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_ru
     section = _skill_section("Speech: `fused.ai.speech({text, ...})`")
     assert sorted(field for field in fields if field not in section) == []
     _wait_job(started["jobId"])
+
+
+# --- runner venv site-packages precede the bundled interpreter's stdlib dir ---
+
+def _make_venv(root, with_cfg=True):
+    site = root / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    (root / "bin").mkdir()
+    (root / "bin" / "python").write_text("")
+    if with_cfg:
+        (root / "pyvenv.cfg").write_text("home = /x\n")
+    return site
+
+
+def test_venv_site_packages_finds_the_venv_dir(tmp_path):
+    from fused_render import envinstall
+    site = _make_venv(tmp_path / "v")
+    assert envinstall.venv_site_packages(str(tmp_path / "v" / "bin" / "python")) == str(site)
+
+
+def test_venv_site_packages_is_none_without_pyvenv_cfg(tmp_path):
+    from fused_render import envinstall
+    _make_venv(tmp_path / "v", with_cfg=False)
+    assert envinstall.venv_site_packages(str(tmp_path / "v" / "bin" / "python")) is None
+
+
+def test_venv_site_packages_does_not_resolve_the_python_symlink(tmp_path):
+    """A venv python is a symlink to the base interpreter; resolving it would
+    walk out of the venv."""
+    from fused_render import envinstall
+    site = _make_venv(tmp_path / "v")
+    base = tmp_path / "base" / "bin"
+    base.mkdir(parents=True)
+    (base / "python3.12").write_text("")
+    py = tmp_path / "v" / "bin" / "python"
+    py.unlink()
+    py.symlink_to(base / "python3.12")
+    assert envinstall.venv_site_packages(str(py)) == str(site)
+
+
+def _captured_spawn_env(monkeypatch, python):
+    from types import SimpleNamespace
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_popen(argv, **kwargs):
+        seen["env"] = kwargs["env"]
+        raise _Stop
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda w: os.devnull)
+    monkeypatch.setenv("PYTHONPATH", "/inherited")
+    runner = SimpleNamespace(worker="worker.py", folder="/tmp")
+    worker = supervisor.Worker(model="m", capability="text", runner_code="r", token="t")
+    with pytest.raises(_Stop):
+        supervisor._spawn(runner, worker, python)
+    return seen["env"]
+
+
+def test_spawn_puts_the_venv_site_packages_on_pythonpath(monkeypatch, tmp_path):
+    site = _make_venv(tmp_path / "v")
+    env = _captured_spawn_env(monkeypatch, str(tmp_path / "v" / "bin" / "python"))
+    assert env["PYTHONPATH"] == str(site)
+
+
+def test_spawn_of_a_non_venv_python_gets_no_pythonpath(monkeypatch, tmp_path):
+    _make_venv(tmp_path / "v", with_cfg=False)
+    env = _captured_spawn_env(monkeypatch, str(tmp_path / "v" / "bin" / "python"))
+    assert "PYTHONPATH" not in env
+
+
+def test_every_fake_worker_script_has_the_parent_guard():
+    for name in _FAKE_SCRIPTS:
+        assert "# parent-death guard" in globals()[name], name
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(pid, 0) is CTRL_C_EVENT on Windows")
+def test_a_fake_worker_exits_when_its_parent_dies(tmp_path):
+    script = tmp_path / "worker.py"
+    script.write_text(FAKE_WORKER, encoding="utf-8")
+    status = tmp_path / "status.json"
+    launcher = (
+        "import subprocess, sys\n"
+        "p = subprocess.Popen([sys.executable, sys.argv[1], '--status', sys.argv[2]],"
+        " start_new_session=True, close_fds=False,"
+        " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "print(p.pid, flush=True)\n"
+        # Outlive the child's startup so it records THIS process as its parent
+        # (a ppid read after reparenting would be 1 and the guard never fire).
+        "import time; time.sleep(1.5)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", launcher, str(script), str(status)],
+        capture_output=True, text=True, timeout=30, close_fds=False,
+    )
+    pid = int(out.stdout.strip())
+    try:
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                pass
+            time.sleep(0.1)
+        raise AssertionError(f"orphaned fake worker {pid} survived its parent")
+    finally:
+        try:
+            os.kill(pid, 9)
+        except (ProcessLookupError, PermissionError):
+            pass

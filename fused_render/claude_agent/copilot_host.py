@@ -1407,18 +1407,23 @@ class _Host:
                     # raises while it winds down is refused at once.
                     self.cancelling = True
                     self.cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
+                # Answered NOW, as Claude answers it: `_await_control_response`
+                # tree-kills a session that is silent for 5 s — which a
+                # Copilot still unwinding a tool would be. The turn's `result`
+                # follows on the cancelled reply, or from `_reap_cancel` if
+                # that reply never comes. Nothing reaches the CLI's own queue
+                # (held follow-ups stay in inbox/, which `_cancel_run`
+                # empties), so there is nothing `still_queued`.
+                # Written BEFORE the cancel goes out and under the lock
+                # `_on_prompt_reply` writes the result under: answered after
+                # the notify, a fast cancelled reply on the reader thread
+                # could land its `result` first (seen on a loaded CI runner),
+                # and the answer must precede the turn's close, as Claude's
+                # does.
+                self._control_response(request_id, {"still_queued": []})
             if cancel:
                 self.peer.notify("session/cancel", {"sessionId": self.sid})
                 self.reject_pending("cancelled")
-            # Answered NOW, as Claude answers it: the cancel is delivered,
-            # and `_await_control_response` tree-kills a session that is
-            # silent for 5 s — which a Copilot still unwinding a tool would
-            # be. The turn's `result` follows on the cancelled reply, or
-            # from `_reap_cancel` if that reply never comes. Nothing reaches
-            # the CLI's own queue (held follow-ups stay in inbox/, which
-            # `_cancel_run` empties), so there is nothing `still_queued`.
-            with self.lock:
-                self._control_response(request_id, {"still_queued": []})
         elif subtype == "set_permission_mode":
             mode = str(request.get("mode") or "")
 
@@ -1713,10 +1718,11 @@ class _Host:
 
 def main() -> None:
     _enable_faulthandler()
-    try:
-        os.setsid()
-    except OSError:
-        pass
+    if hasattr(os, "setsid"):
+        try:
+            os.setsid()
+        except OSError:
+            pass
     # A SIGTERM (a tree-kill's first signal) unwinds as SystemExit, so
     # `_Host.run`'s finally still runs `close()`: the open turn gets its
     # result, every card its answer, the registry row its removal.

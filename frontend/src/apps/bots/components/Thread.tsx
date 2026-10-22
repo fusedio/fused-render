@@ -17,6 +17,10 @@ import { botsRoot } from "../lib/root";
 import { chosenOption, clearIndex, firstNewIndex, foldHint, foldStretches, isHandoff, isNoise, isTaskEnd, liveCards, optionKey, rowKeys, searchCountText, searchHit, sessionBreak } from "../lib/thread";
 import { act, clearScrollSeq, cur, errMsg, eventsOf, getState, jumpTo, markSeen, openDialog, poll, select, setNewCount, setScrollToEnd, showBanner, unviewed, useBots, viewedSet } from "../state/store";
 import { END_GAP, clearSearchHighlight, gapOf, evBox, highlightSearch, pinToEnd, restoreAnchor, copyCsv, tableToCsv, topVisible, updateToBottom, type Anchor } from "./threadDom";
+import { approvalParts } from "@platform/lib/approvalParts";
+import { GateCard } from "@platform/ui/GateCard";
+
+import { ApprovalCard } from "./ApprovalCard";
 import { HandBackRow, HandoverNote } from "./HandoverCard";
 import { SetupLines } from "./SetupLines";
 
@@ -60,8 +64,10 @@ interface RowProps {
   hbBot?: Bot;
   /** Your message queued while you hold the browser (Bot.held): greyed, dashed, sent when you hand back. */
   queued?: boolean;
-  /** Answered question: your answer, normalized (optionKey); null otherwise. */
+  /** Answered question or approval: your answer, normalized (optionKey); null otherwise. */
   chosen: string | null;
+  /** The selected bot's display name, for the approval card's head. */
+  botName?: string;
   /** The apps root (appFromText needs it; "" until loaded). */
   appsRoot: string;
   onBeside: (a: AppRef) => void;
@@ -134,7 +140,7 @@ function Action({ text, result, detail, thumbSrc, title }: { text: string; resul
 /** Hand-off events written before 2026-10-07 carry the old state names; bot.json rows were renamed on load, events were not. */
 const LEGACY_HANDOFF_STATE: Record<string, string> = { queued: "received", running: "working", waiting: "blocked", error: "failed", stopped: "cancelled" };
 
-function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: BotEvent; state: string; targetLive: boolean; targetWaiting?: number | null }) {
+export function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: BotEvent; state: string; targetLive: boolean; targetWaiting?: number | null }) {
   const state = LEGACY_HANDOFF_STATE[rawState] || rawState;
   const h = e.handoff!, who = h.target_name || "the bot";
   const relay = e.role === "question" ? e.relay : undefined;
@@ -161,6 +167,37 @@ function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: Bot
       await poll();
     })();
   };
+  const openChat = (
+    <div className="ft">
+      <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"}
+        onClick={() => { if (getState().bots.some((x) => x.id === h.target)) select(h.target); }}>Open {who}'s chat</button>
+    </div>
+  );
+  // A relayed APPROVAL is the shared gate card, the same one the bot's own chat shows; this wrapper only adds the door
+  // to that bot's chat under it.
+  if (relay?.kind === "approval") {
+    // With the target's own text + detail the card splits the command from the why, as a direct card does.
+    const parts = relay.detail ? approvalParts({ text: relay.text ?? text, detail: relay.detail }) : null;
+    return (
+      <div className={`handoff-card gated ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
+        <GateCard
+          head={head}
+          severity={e.severity}
+          riskSummary={e.risk_summary}
+          body={parts ? parts.body : text}
+          bodyWhat={parts ? parts.bodyWhat : "request"}
+          sub={parts?.sub}
+          resolved={!live}
+          status={!live && !sent && targetWaiting !== relay.seq ? { tone: "expired", text: "Answered" } : undefined}
+          actions={[
+            { key: "approve", text: "Approve", kind: "primary", onClick: () => answer("approve") },
+            { key: "deny", text: "Deny", kind: "default", onClick: () => answer("deny") },
+          ]}
+        />
+        {openChat}
+      </div>
+    );
+  }
   return (
     <div className={`handoff-card ${state}`} data-seq={e.seq} title={fmtWhen(e.ts)}>
       <div className="hd"><span className="ttl">{head}</span><span className={`pill ${state}`}>{state}</span></div>
@@ -168,16 +205,11 @@ function HandoffCard({ e, state: rawState, targetLive, targetWaiting }: { e: Bot
       {relay ? (
         // Its own class, not `.msg.approval` / `.msg.question`: the thread's click handler reads those as Super Bot's cards.
         <div className={`relay${live ? "" : " settled"}`}>
-          {relay.kind === "approval"
-            ? <><button className="primary" disabled={!live} onClick={() => answer("approve")}>Approve</button><button disabled={!live} onClick={() => answer("deny")}>Deny</button></>
-            : relay.options.map((o) => <button key={o} disabled={!live} onClick={() => answer(o)}>{o}</button>)}
+          {relay.options.map((o) => <button key={o} disabled={!live} onClick={() => answer(o)}>{o}</button>)}
           {!live && !sent && targetWaiting !== relay.seq ? <span className="hint">Answered</span> : null}
         </div>
       ) : null}
-      <div className="ft">
-        <button disabled={!targetLive} title={targetLive ? (h.task_dir || undefined) : "That bot is gone"}
-          onClick={() => { if (getState().bots.some((x) => x.id === h.target)) select(h.target); }}>Open {who}'s chat</button>
-      </div>
+      {openChat}
     </div>
   );
 }
@@ -232,7 +264,7 @@ function ClearMark({ e, n, open, onFold }: { e: BotEvent; n: number; open: boole
 /** Channel names in chips and "Texted" lines; a task Super Bot handed off reads "from Super Bot" (docs §11). */
 const chanLabel = (k: string) => (k === "imessage" ? "iMessage" : k === "handoff" ? "Super Bot" : k === "routine" ? "a routine" : k);
 
-function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, targetWaiting, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
+function body({ e, botId, botName, reaction, live, chosen, appsRoot, onBeside, hstate, targetLive, targetWaiting, linkLive, hbSecs, hbShot, hbBot, queued, bopen, foldN, foldOpen, onFold }: RowProps): JSX.Element {
   const title = fmtWhen(e.ts);
   if (e.source === "clear") return <ClearMark e={e} n={foldN || 0} open={!!foldOpen} onFold={onFold} />;
   if (e.handoff && isHandoff(e)) return <HandoffCard e={e} state={hstate || e.handoff.state} targetLive={!!targetLive} targetWaiting={targetWaiting} />;
@@ -256,25 +288,7 @@ function body({ e, botId, reaction, live, chosen, appsRoot, onBeside, hstate, ta
     const app = e.app?.dir ? e.app : appFromText(e.text, appsRoot);
     return <><div className="msg note" title={title}>{e.text}</div>{app ? <AppCard app={app} onBeside={onBeside} /> : null}</>;
   }
-  if (e.role === "approval") {
-    // Live card while the bot is still waiting on this one; a plain note once answered.
-    return (
-      <div className={`msg approval${live ? "" : " settled"}`} data-seq={e.seq} title={title}>
-        {e.text}
-        <div className="btns">
-          <button className="primary" data-approve="1" disabled={!live}>Approve</button>
-          <button data-deny="1" disabled={!live}>Deny</button>
-          {e.forever ? (
-            // The third answer: a yes that also writes the card's rule (bot.json allow_rules), so this bot never asks
-            // again when it does the same thing. Only cards whose call can be remembered carry `forever`.
-            <button className="forever" data-forever="1" disabled={!live} title={`Never ask again when this bot ${e.forever.label}. Undo it in Settings › Permissions.`}>
-              Approve, don't ask again
-            </button>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
+  if (e.role === "approval") return <ApprovalCard e={e} live={live} title={title} botName={botName} answer={chosen} />;  // live while the bot still waits on this card
   if (e.role === "question") {
     // Optional one-click answers: lettered rows, like a quick poll. Typing in the composer still works.
     const options = e.options || [];
@@ -732,7 +746,7 @@ export function Thread({ b, threadRef, searchQ, onSearchCount, onReact, onReply 
       return (
         <Row key={keys[i]} e={e} botId={botId} day={sessionBreak(evs[i - 1], e)} isNew={i === firstNew} texted={texted.get(e.seq)}
           reaction={!ho && ACTABLE.has(e.role) ? rxs[e.seq] || "" : ""} live={card && live.has(e.seq) && !held.has(e.seq)}
-          chosen={card && e.role === "question" ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
+          botName={b.name} chosen={card ? chosenOption(evs, e.seq) : null} appsRoot={appsRoot} onBeside={onBeside}
           hstate={ho ? (e.role === "system" ? hds.get(ho.id) : undefined) || ho.state : undefined} targetLive={ho ? botIds.has(ho.target) : undefined}
           targetWaiting={ho && e.relay ? S.bots.find((x) => x.id === ho.target)?.waiting_on ?? null : undefined}
           linkLive={e.link ? botIds.has(e.link.bot) : undefined} bopen={e.build ? buildOpen(evs, e) : undefined}

@@ -65,6 +65,8 @@ import threading
 import time
 from typing import Any
 
+from fused_render import _platform
+
 logger = logging.getLogger(__name__)
 
 # `projectenv.venv_key_for` returns sha256(...)[:16], so every real key is 16
@@ -508,6 +510,40 @@ def venv_python_for(project_dir: str) -> str:
     return _venv_python(venv_dir_for(project_dir))
 
 
+def venv_site_packages(python: str) -> str | None:
+    """The `site-packages` of the venv that owns `python`, or None.
+
+    `python` is deliberately NOT realpath'd: a venv interpreter is a symlink to
+    the base interpreter, and resolving it would leave the venv behind. None
+    when there is no `pyvenv.cfg` next to it (a system python fallback).
+    """
+    import glob
+
+    venv = os.path.dirname(os.path.dirname(python))
+    if not os.path.exists(os.path.join(venv, "pyvenv.cfg")):
+        return None
+    for cand in sorted(glob.glob(os.path.join(glob.escape(venv), "lib", "python3.*", "site-packages"))):
+        if os.path.isdir(cand):
+            return cand
+    return None
+
+
+def prefer_venv_site_packages(env: dict, python: str) -> dict:
+    """Make `python`'s own venv packages win over the interpreter's stdlib dir.
+
+    The bundled app's interpreter keeps the app's own packages in its stdlib
+    directory (py2app layout), which precedes a venv's site-packages on
+    `sys.path`; without this the bundle's versions shadow the runner's pins (the
+    Pillow 13 / mflux `numbers._IntegralLike` failure). PYTHONPATH entries come
+    first, so pointing it at the venv fixes the order. Harmless in a dev
+    checkout, where that dir holds only stdlib. Mutates and returns `env`.
+    """
+    site = venv_site_packages(python)
+    if site:
+        env["PYTHONPATH"] = site
+    return env
+
+
 def _venv_python(venv_dir: str) -> str:
     """Where a venv keeps its own interpreter."""
     return os.path.join(venv_dir, "bin", "python")
@@ -746,6 +782,11 @@ def reset_venv_validation_cache() -> None:
         _GENERATION.clear()
         _REBUILD_ATTEMPTED.clear()
         _BOUND_LOGGED.clear()
+    # A venv rebuilt or extended (`uv sync`, a `.pth`) is something an
+    # interpreter started before the change cannot see: drop the spares.
+    from . import warm_run
+
+    warm_run.discard_all("venv validation cache reset")
 
 
 def is_installed(project_dir: str) -> bool:
@@ -1119,7 +1160,7 @@ def _pid_alive(pid: int) -> bool:
         except OSError:
             pass
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:
@@ -1138,22 +1179,7 @@ def _kill(pid: int) -> bool:
     server down. (It did exactly that to a pytest session, which is how the
     guard got here.) Anything not a group leader gets a plain single-pid kill.
     """
-    try:
-        leader = os.getpgid(pid) == pid
-    except OSError:
-        leader = False
-    try:
-        if leader:
-            os.killpg(pid, signal.SIGTERM)
-        else:
-            logger.warning(
-                "install worker pid %s is not a process-group leader, so only it "
-                "(not any download it started) is being killed", pid,
-            )
-            os.kill(pid, signal.SIGTERM)
-        return True
-    except OSError:
-        return False
+    return _platform.kill_tree(pid, signal.SIGTERM)
 
 
 def _read_record(key: str) -> dict | None:

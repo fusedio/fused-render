@@ -337,6 +337,21 @@ body.embed .schedule-page {
   color: var(--fg-muted);
 }
 
+/* "Beta" after the Calendar word: the sidebar's own Beta chip (sidebar.css), so
+   the tag reads the same in both places. It lives inside the label span, so it
+   folds away with the word when the toolbar is short on room. The rule is
+   addressed by the button's `data-view` rather than by `.schedule-fit-lbl`: it
+   is layout for the tag, not a fold rule, and every `.schedule-fit-lbl` rule in
+   this file is scoped to a `[data-fit]` toolbar. */
+.schedule-view-btn[data-view="calendar"] > span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.schedule-beta-tag {
+  margin-left: 6px;
+}
+
 .schedule-view-btn > svg {
   flex: 0 0 auto;
   color: inherit;
@@ -4827,6 +4842,17 @@ input.schedule-when-field {
   padding-left: 16px;
   font-size: 12px;
   color: var(--fg-muted);
+}
+.schedule-view-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.schedule-view-sort-lbl {
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 .schedule-view-editor-end {
   display: flex;

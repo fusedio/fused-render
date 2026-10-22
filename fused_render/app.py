@@ -25,9 +25,9 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from fused_render import _flavor, desktop_probe, relaunch_windows
+from fused_render import _flavor, _platform, desktop_probe, relaunch_windows
 from fused_render._branch import branch_dir, branch_port
-from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
+from fused_render.logs import log_dir, setup_logging, uvicorn_fast_kwargs, uvicorn_log_config
 
 # NOT imported here: `uvicorn` and `fused_render.server` (create_app & co, which
 # pull in FastAPI and every router) cost ~0.7 s warm and several seconds on a
@@ -181,7 +181,7 @@ def _close_duckdb_stash() -> None:
 
 def _is_process_alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except OSError:
         return False
     return True
@@ -304,13 +304,15 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     # the first-run strip's GET is a disk read. Mirrors cli._run_serve — an entry
     # point, never create_app.
     # Each agent's probe follows its Preferences switch (D17), as in cli.py.
-    from fused_render import claude_health, copilot_health
+    from fused_render import claude_health, codex_health, copilot_health
     from fused_render.agent_backends import registry as _agent_registry
 
     if _agent_registry.is_enabled("claude"):
         claude_health.warm_in_background()
     if _agent_registry.is_enabled("copilot"):
         copilot_health.warm_in_background()
+    if _agent_registry.is_enabled("codex"):
+        codex_health.warm_in_background()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.
@@ -329,7 +331,8 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     # permessage-deflate would compress multi-MB replies ON the event loop for
     # zero gain over loopback, so it is off.
     config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
-                            log_config=uvicorn_log_config(), ws_per_message_deflate=False)
+                            log_config=uvicorn_log_config(), ws_per_message_deflate=False,
+                            **uvicorn_fast_kwargs())
     server = uvicorn.Server(config)
     # Named so a crashlog/threading.excepthook line and the D6 watchdog's
     # "server thread died" line both say WHICH thread it was.
@@ -506,16 +509,23 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.bots import browser as bots_browser
         from fused_render.server import engine_host
 
-        from fused_render import canvases
+        from fused_render import canvases, warm_run
 
         engine_host.refuse_new_children()
         supervisor.refuse_new_workers()
         bots_browser.refuse_launches()
         canvases.refuse_new_managers()
+        warm_run.refuse_new()
 
     def engines():
         from fused_render.server import engine_host
 
+        from fused_render import warm_run
+
+        # The pre-spawned idle interpreters (SPEC PY-20), first and fast so a
+        # slow `stop_all` cannot keep them alive past `os._exit` (they would
+        # otherwise only exit on stdin EOF).
+        warm_run.shutdown()
         engine_host.stop_all()
 
     def ai_workers():
@@ -1837,6 +1847,7 @@ def main() -> None:
 
             if NSThread.isMainThread():
                 manager.close_all()
+                manager.shutdown_engines()
         except Exception:
             logger.debug("closing windows on quit failed", exc_info=True)
 
@@ -2141,6 +2152,47 @@ def main() -> None:
         _apply_windows(native_windows_enabled())
         window_policy.native_hooks["apply"] = lambda on: AppHelper.callAfter(_apply_windows, on)
 
+        # The Chromium-engine row (shell/prefs.py): how many open windows are
+        # on the other engine, and "close them all, open one Home window on
+        # the current one". The reopen is deferred a beat so the request's
+        # response lands before the Preferences window itself goes away.
+        def _windows_not_on(engine: str) -> int:
+            manager = state["windows"]
+            return manager.windows_not_on(engine) if manager is not None else 0
+
+        def _reopen_windows() -> bool:
+            manager = state["windows"]
+            if manager is None:
+                return False
+            threading.Timer(0.3, lambda: AppHelper.callAfter(manager.reopen_all)).start()
+            return True
+
+        window_policy.native_hooks["windows_not_on"] = _windows_not_on
+        window_policy.native_hooks["reopen_windows"] = _reopen_windows
+
+        # The preference is on but the engine this build pins is not on
+        # disk (an app update moved the pin, or the update's prefetch did
+        # not finish): fetch it now rather than at the next visit to
+        # Preferences — windows opened meanwhile are WebKit, and the row
+        # offers "Reopen windows" once it lands. Ready: drop older engines.
+        def _settle_chromium_engine() -> None:
+            try:
+                from fused_render import chromium
+                from fused_render.shell.prefs import chromium_windows_enabled
+
+                if not chromium_windows_enabled():
+                    return
+                st = chromium.status()["state"]
+                if st == chromium.MISSING:
+                    chromium.install()
+                elif st == chromium.READY:
+                    chromium.prune_others()
+            except Exception:  # noqa: BLE001 — never part of the boot path's failures
+                logger.debug("chromium engine check at start failed", exc_info=True)
+
+        threading.Thread(target=_settle_chromium_engine, daemon=True,
+                         name="chromium-engine-settle").start()
+
         def _open_window(target: str) -> None:
             # A menu-bar surface's `window.open` / target=_blank, main
             # thread already. Classified FIRST, like a window's own policy:
@@ -2192,19 +2244,35 @@ def main() -> None:
             NSApp.activateIgnoringOtherApps_(True)
             manager.show_bot(bid)
 
-        def _open_bots_native() -> None:
-            """The launcher's Fused Bot row (launcher.BOTS_ROW): the Bots
-            page itself, no bot picked — a window already on it comes
+        def _open_page_native(path: str) -> None:
+            """A shell PAGE picked in the launcher (the Bots page row, a
+            canvas row's project page): a window already on it comes
             forward, else one opens (`WindowManager.show_page`); a browser
             tab with the windows off. Main thread."""
             manager = state["windows"]
             if manager is None or not manager.enabled:
-                webbrowser.open(url.rstrip("/") + "/bots")
+                webbrowser.open(url.rstrip("/") + path)
                 return
             from AppKit import NSApp
 
             NSApp.activateIgnoringOtherApps_(True)
-            manager.show_page("/bots")
+            manager.show_page(path)
+
+        def _open_bots_native() -> None:
+            """The launcher's Fused Bot row (launcher.BOTS_ROW): the Bots
+            page itself, no bot picked."""
+            _open_page_native("/bots")
+
+        def _open_canvas_native(clone_dir: str) -> None:
+            """A cloned canvas picked in the launcher (`kind: "canvas"`, key
+            = the clone dir): its PROJECT page (`launcher.canvas_page_for`),
+            the sidebar's canvas-row door. A key that is no clone (the row
+            outlived a deleted folder) opens nothing."""
+            from fused_render import launcher as launcher_mod
+
+            path = launcher_mod.canvas_page_for(clone_dir)
+            if path is not None:
+                _open_page_native(path)
 
         # The launcher (launcher_panel.py): a Spotlight-like panel on a
         # global shortcut that opens any known app (Fused Render, ⌥Space by
@@ -2215,8 +2283,9 @@ def main() -> None:
         # windows preference: with native windows on its pick
         # focuses-or-opens a window, off it opens a browser tab at the same
         # address. A row opens through `open_row(kind, key)`: a bot to
-        # `_open_bot_native`, anything else to `_open_app_native`, the same
-        # doors the Dock uses. Guarded — no launcher is a lesser outcome than
+        # `_open_bot_native`, a canvas to `_open_canvas_native` (its project
+        # page), anything else to `_open_app_native`, the same doors the
+        # Dock uses. Guarded — no launcher is a lesser outcome than
         # no app; `state["launcher"]` then stays None, which is what the
         # ready path, the "Search …" menu key and /api/launcher's
         # `available` key off.
@@ -2232,6 +2301,8 @@ def main() -> None:
                     _open_bot_native(key)
                 elif kind == "bots":
                     _open_bots_native()
+                elif kind == "canvas":
+                    _open_canvas_native(key)
                 else:
                     _open_app_native(key)
 

@@ -1401,7 +1401,7 @@ def test_a_flat_index_snapshot_has_the_diffusers_loaders():
     ({"modular_model_index.json"}, {"library_name": "diffusers"}),
 ])
 def test_modular_only_and_library_name_snapshots_have_no_diffusers_loader(names, config):
-    """The worker has no ModularPipeline path (D1397) and `library_name` is
+    """The worker has no ModularPipeline path (D1422) and `library_name` is
     on every LoRA repo."""
     assert formats.loaders(
         repo_id="org/m", names=names, dirnames=set(), config=config,
