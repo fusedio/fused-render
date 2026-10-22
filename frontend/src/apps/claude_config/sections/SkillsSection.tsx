@@ -131,7 +131,7 @@ function SkillDetail({
   const remove = async () => {
     const ok = await ask<boolean>({
       title: `Delete skill "${slug}"?`,
-      note: "The skill folder is deleted and the deletion is committed — recoverable from History.",
+      note: "The skill folder is deleted. This cannot be undone.",
       buttons: [
         { label: "Cancel", value: false },
         { label: "Delete", value: true, primary: true, danger: true },

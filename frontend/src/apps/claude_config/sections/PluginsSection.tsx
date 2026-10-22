@@ -19,7 +19,7 @@
 // next to the shell's own.
 //
 // The Installed toggle is optimistic: the flip shows immediately and is rolled
-// back if the write fails, because the write is a git commit in the config repo
+// back if the write fails, because the write is a config file update
 // and waiting for it made a switch feel like a form submit. There is
 // deliberately no reload after a successful toggle — the only thing that
 // changed is the flag we already painted, and a refetch here would fight the
