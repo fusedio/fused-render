@@ -96,6 +96,7 @@ describe("Chromium engine for windows", () => {
     expect(calls).toEqual([{ method: "PUT", url: "/api/prefs", body: { chromium_windows_enabled: false } }]);
     expect(prefs().chromium_windows?.enabled).toBe(false);
     expect(sw(box).props.checked).toBe(false);
+    expect(text(box)).toContain("WebKit. New windows use it");
     await act(async () => box.unmount());
   });
 

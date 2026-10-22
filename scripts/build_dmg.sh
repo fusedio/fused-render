@@ -1140,6 +1140,11 @@ fi
 echo "==> building the Chromium engine"
 CHROMIUM_DEST="$APP_DIR/Contents/Frameworks/FusedChromium"
 rm -rf "$CHROMIUM_DEST"
+# Set when a pinned arch ends up without its engine. The FATAL checks here
+# only see FUSED_RENDER_CODESIGN_IDENTITY; a release signed with an identity
+# step 5 auto-detects from the keychain would otherwise sail past them, so
+# step 5 re-checks this flag once SIGN_IDENTITY is resolved.
+CHROMIUM_MISSING=""
 CHROMIUM_PINNED="$(python3 -c 'import json,sys;print("yes" if (json.load(open(sys.argv[1])).get("cef_sha1") or {}).get(sys.argv[2]) else "")' "$REPO_ROOT/fused_render/chromium/manifest.json" "$ARCH")"
 if [[ -z "$CHROMIUM_PINNED" ]]; then
   echo "    skipped: the manifest pins no CEF for $ARCH (new windows use WebKit on this build)"
@@ -1149,6 +1154,7 @@ elif ! command -v cmake >/dev/null 2>&1; then
     exit 1
   fi
   echo "    skipped: cmake not installed (brew install cmake; this DMG's windows use WebKit)"
+  CHROMIUM_MISSING="cmake is not installed"
 else
   CHROMIUM_OUT="$BUILD_DIR/chromium-engine"
   if bash "$REPO_ROOT/fused_render/chromium/native/build.sh" "$ARCH" "$CHROMIUM_OUT"; then
@@ -1174,6 +1180,7 @@ PYEOF
   else
     echo "    skipped: native/build.sh failed (this DMG's windows use WebKit)"
     rm -rf "$CHROMIUM_DEST"
+    CHROMIUM_MISSING="native/build.sh failed"
   fi
 fi
 
@@ -1330,6 +1337,10 @@ fi
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
   echo "==> Developer ID signing (hardened runtime): $SIGN_IDENTITY"
+  if [[ -n "$CHROMIUM_MISSING" ]]; then
+    echo "FATAL: a Developer ID build needs the Chromium engine, and step 4e-bis skipped it: $CHROMIUM_MISSING" >&2
+    exit 1
+  fi
 
   # Entitlements the bundled interpreter + native stack need under the
   # hardened runtime. Build artifact, not committed.

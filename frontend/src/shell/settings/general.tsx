@@ -94,13 +94,17 @@ export function NativeWindowsControl({ prefs, onChange }: PrefControlProps) {
 // engine (D1415), lives under Optional features. Only drawn where the running
 // app can honour it (`chromium_windows.available`); where the build carries
 // no engine (Intel) the switch is off and disabled.
-function chromiumStatusLine(engine: ChromiumEngineStatus | undefined): string | null {
+function chromiumStatusLine(engine: ChromiumEngineStatus | undefined, enabled: boolean): string | null {
   if (!engine) return null;
   switch (engine.state) {
     case "missing":
       return "This build ships no Chromium engine; windows use WebKit.";
-    case "ready":
-      return `Chromium${engine.cef_version ? ` ${engine.cef_version.split("+")[0]}` : ""}. New windows use it; open windows keep their engine.`;
+    case "ready": {
+      // Off with the engine present: the next window is WebKit (the window
+      // layer's rule), so the line must not promise Chromium.
+      const next = enabled ? `Chromium${engine.cef_version ? ` ${engine.cef_version.split("+")[0]}` : ""}` : "WebKit";
+      return `${next}. New windows use it; open windows keep their engine.`;
+    }
     default:
       return null;
   }
@@ -152,7 +156,7 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
   const staleLine =
     (stale === 1 ? "1 open window still uses" : `${stale} open windows still use`) +
     " the previous engine. Reopen them for the change to take effect.";
-  const line = chromiumStatusLine(engine);
+  const line = chromiumStatusLine(engine, enabled);
   const usable = state === "ready";
 
   return (
