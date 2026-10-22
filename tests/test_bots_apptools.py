@@ -479,8 +479,8 @@ def test_native_non_main_entrypoint_and_sibling_imports(native, tool_roots):
 def test_a_tool_runs_on_the_apps_interpreter(tool_roots, monkeypatch):
     seen = {}
 
-    def fake_interpreter(app_dir):
-        seen["dir"] = str(app_dir)
+    async def fake_interpreter(spec):
+        seen["dir"] = str(spec.app_dir)
         return sys.executable
 
     monkeypatch.setattr("fused_render.compute.app_mcp._app_interpreter", fake_interpreter)

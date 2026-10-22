@@ -30,7 +30,7 @@ entrypoint is.
 **Top-level only, both for files and for defs.** A `.py` a directory down is not
 this app's entrypoint, and a `main` that is a method or a closure is not an
 entrypoint at all: the server invokes one by looking the name up in the executed
-module's namespace (openfused spec/serve/app-mcp.md §5), where neither appears.
+module's namespace (`fused_render.compute.app_mcp`), where neither appears.
 Reporting them would offer the user a tool that cannot be called.
 
 Refusals are PAYLOADS, not exceptions (`{ok: false, reason, message}` — the shape
