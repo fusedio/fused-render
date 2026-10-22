@@ -1517,7 +1517,6 @@ export interface EnginePrefs {
   // The raw FUSED_RENDER_ENGINE value when set — the process-level override
   // that beats the pref (the page shows the switch locked).
   forced_by: string | null;
-  fused_available: boolean;
 }
 
 /** The contribution loop's switches as stored (`Prefs.contrib`): the loop,

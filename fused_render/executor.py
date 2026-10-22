@@ -227,8 +227,7 @@ def explain_missing_module(path: str, error: dict) -> str | None:
         f"environment — but the built-in executor cannot build one (it has no "
         f"venv machinery at all), so the script ran on the app's interpreter, "
         f"which is missing {', '.join(missing)}. Set engine = fused in "
-        f"Preferences, or install fused-render[fused] (requires Python 3.11+), "
-        f"and the environment is built for you on the next render "
+        f"Preferences and the environment is built for you on the next render "
         f"(SPEC PY-16/PY-18)."
     )
 
